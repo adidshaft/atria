@@ -1185,6 +1185,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
     var currentZone: HRZone { HRZone.zone(for: heartRate, maxHR: maxHRSetting) }
 
+    /// Resting HR fed into historical consumer projections (crash resume,
+    /// full drain, terminal drain): live-session evidence first, then the
+    /// learned personal baseline. 60 bpm is a last-resort physiological
+    /// default that applies only when neither exists — a fresh wearer with no
+    /// learned baseline, or a relaunch before this session's first accepted HR.
+    private var historicalProjectionRestingHeartRate: Int {
+        restingHR ?? PersonalBaseline.load().restingInt ?? 60
+    }
+
     // Capture: when recording, every frame, HR sample, RR interval, and HRV
     // snapshot is appended as a CSV row for reference validation.
     @Published var isRecording = false
@@ -12289,7 +12298,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return false
         }
         let timeZoneIdentifier = TimeZone.current.identifier
-        let restingHeartRate = restingHR ?? 60
+        let restingHeartRate = historicalProjectionRestingHeartRate
         let configuration = AtriaHistoricalConsumerProjectionConfiguration.production(
             restingHeartRate: restingHeartRate,
             maximumHeartRate: maxHRSetting,
@@ -31116,7 +31125,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
 
-        let restingHeartRate = restingHR ?? 60
+        let restingHeartRate = historicalProjectionRestingHeartRate
         let configuration = AtriaHistoricalConsumerProjectionConfiguration.production(
             restingHeartRate: restingHeartRate,
             maximumHeartRate: maxHRSetting,
@@ -33036,7 +33045,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
         let completedAt = Date()
         let timeZoneIdentifier = TimeZone.current.identifier
-        let restingHeartRate = restingHR ?? 60
+        let restingHeartRate = historicalProjectionRestingHeartRate
         let configuration = AtriaHistoricalConsumerProjectionConfiguration.production(
             restingHeartRate: restingHeartRate,
             maximumHeartRate: maxHRSetting,

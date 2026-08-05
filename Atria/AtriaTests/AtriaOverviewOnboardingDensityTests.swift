@@ -104,47 +104,10 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         XCTAssertFalse(source.contains("detail: \"First sleep\""))
     }
 
-    func testOverviewRemovesDuplicateVisibleConnectionDetailButKeepsVoiceOverHint() throws {
-        let source = try source("AtriaOverviewSections.swift")
-        let start = try XCTUnwrap(source.range(of: "private struct AtriaDisconnectedOverviewPanel"))
-        let end = try XCTUnwrap(source.range(of: "private struct AtriaOverviewLeadingHost", range: start.upperBound..<source.endIndex))
-        let panel = String(source[start.lowerBound..<end.lowerBound])
-
-        XCTAssertFalse(panel.contains("Text(detail)"))
-        XCTAssertTrue(panel.contains("AtriaPanelSectionHeader(title: \"Overview\", subtitle: title)"))
-        XCTAssertTrue(panel.contains(".accessibilityHint(detail)"))
-    }
-
-    func testCompletedOverviewChecklistRowsDoNotRepeatExplanationsVisually() throws {
-        let source = try source("AtriaOverviewSections.swift")
-        let start = try XCTUnwrap(source.range(of: "private struct AtriaLaunchChecklistRow"))
-        let end = try XCTUnwrap(source.range(of: "struct AtriaOverviewGuidanceSectionHost", range: start.upperBound..<source.endIndex))
-        let row = String(source[start.lowerBound..<end.lowerBound])
-
-        XCTAssertTrue(row.contains("if !item.isComplete"))
-        XCTAssertTrue(row.contains(".accessibilityHint(item.detail)"))
-    }
-
-    func testOverviewGatesHighFrequencyLiveStateBeforeLargeReadinessTree() throws {
-        let source = try source("AtriaOverviewSections.swift")
-        let stateStart = try XCTUnwrap(source.range(of: "struct AtriaOverviewLiveProjectionState"))
-        let hostStart = try XCTUnwrap(source.range(of: "struct AtriaOverviewReadinessSectionHost",
-                                                   range: stateStart.upperBound..<source.endIndex))
-        let state = String(source[stateStart.lowerBound..<hostStart.lowerBound])
-        let hostEnd = try XCTUnwrap(source.range(of: "private func moveMetric",
-                                                 range: hostStart.upperBound..<source.endIndex))
-        let host = String(source[hostStart.lowerBound..<hostEnd.lowerBound])
-
-        XCTAssertTrue(state.contains(".removeDuplicates()"))
-        XCTAssertTrue(state.contains("sessionProgressBucket"))
-        XCTAssertTrue(state.contains("liveActiveCaloriesText"))
-        XCTAssertTrue(state.contains("strapStepResearchCount"),
-                      "Exact strap-step changes must remain immediate")
-        XCTAssertTrue(host.contains("let liveStore: AtriaHomeModel.CoreLiveStore"))
-        XCTAssertFalse(host.contains("@ObservedObject var liveStore"),
-                       "Every accepted strap sample must not invalidate the full readiness host")
-        XCTAssertTrue(host.contains("@StateObject private var liveProjectionStore"))
-    }
+    // 2026-08-06: audit fix — dead twin deleted. Three source-pin tests here
+    // targeted AtriaDisconnectedOverviewPanel, AtriaLaunchChecklistRow, and the
+    // AtriaOverviewLiveProjectionState/AtriaOverviewReadinessSectionHost pair,
+    // all part of the unmounted legacy Overview tree that was removed.
 
     func testOverviewDynamicRowsUseDomainIdentityInsteadOfMutableOffsets() throws {
         let source = try source("AtriaOverviewSections.swift")
@@ -154,7 +117,9 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         // domain-identity loop nor the offset anti-pattern exists for them.
         // The remaining loops must still use domain identity, never offsets.
         XCTAssertTrue(source.contains("id: \\.element.label) { _, band in"))
-        XCTAssertTrue(source.contains("id: \\.element) { index, item in"))
+        // 2026-08-06: audit fix — dead twin deleted. The "id: \.element) {
+        // index, item in" loop lived in the removed AtriaDisconnectedOverview
+        // checklist card; only the anti-pattern absences below still apply.
         XCTAssertFalse(source.contains("ForEach(Array(companions.enumerated()), id: \\.offset)"))
         XCTAssertFalse(source.contains("ForEach(Array(bands.enumerated()), id: \\.offset)"))
         XCTAssertFalse(source.contains("ForEach(Array(items.enumerated()), id: \\.offset)"))

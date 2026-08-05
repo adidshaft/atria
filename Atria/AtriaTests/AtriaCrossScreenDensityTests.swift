@@ -440,11 +440,11 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(today.contains("AtriaTriRing.zoneTint(.recovery"))
         XCTAssertFalse(today.contains("AtriaTriRing.zoneTint(.strain"))
 
+        // 2026-08-06: audit fix — dead twin deleted. The overview pins here
+        // (recoveryZone/qualifiedStrainZone tint gating) lived in the removed
+        // legacy AtriaOverviewReadinessSection; the live equivalent is asserted
+        // on AtriaTodayScreen above.
         let overview = try source("AtriaOverviewSections.swift")
-        XCTAssertTrue(overview.contains("switch recoveryZone?.level"))
-        XCTAssertTrue(overview.contains("let unqualified = pending || strainIsPartial"))
-        XCTAssertTrue(overview.contains("stateTint: unqualified ? nil : qualifiedStrainZone?.tint"),
-                      "pending or partial strain must not receive a confident target-zone tint")
         XCTAssertFalse(overview.contains("hero.guidance.target ?? 21"))
 
         let home = try source("AtriaHomeView.swift")

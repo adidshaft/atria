@@ -214,308 +214,6 @@ struct AtriaVitalsTrendChartHost: View, Equatable {
     #endif
 }
 
-struct AtriaVitalsTabContent: View {
-    var isActive = true
-    let liveStore: AtriaHomeModel.CoreLiveStore
-    let pulseStore: AtriaHomeModel.PulseLiveStore
-    let pulseSparklineStore: AtriaHomeModel.PulseSparklineStore
-    let heroStore: AtriaHomeModel.HeroStore
-    let homeStatsStore: AtriaHomeModel.HomeStatsStore
-    let profileStore: AtriaHomeModel.ProfileStore
-    let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
-    let store: SessionStore
-    @StateObject private var vitalsStore: AtriaVitalsSessionProjectionStore
-    let ble: AtriaBLEManager
-    let horizontalSizeClass: UserInterfaceSizeClass?
-    @AtriaDefault(AtriaVitalsSection.orderStorageKey) private var sectionOrderCSV = ""
-    @AppStorage(AtriaTodayMetric.storageKey) private var hiddenMetricCSV = ""
-    @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
-    @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
-    @State private var isEditingVitalsLayout = false
-    @State private var metricDetail: AtriaMetricDetailKind?
-    @State private var healthMonitorPreparedMemo = AtriaHealthMonitorPreparedMemo()
-
-    init(isActive: Bool = true,
-         liveStore: AtriaHomeModel.CoreLiveStore,
-         pulseStore: AtriaHomeModel.PulseLiveStore,
-         pulseSparklineStore: AtriaHomeModel.PulseSparklineStore,
-         heroStore: AtriaHomeModel.HeroStore,
-         homeStatsStore: AtriaHomeModel.HomeStatsStore,
-         profileStore: AtriaHomeModel.ProfileStore,
-         profileMetricsStore: AtriaHomeModel.ProfileMetricsStore,
-         store: SessionStore,
-         ble: AtriaBLEManager,
-         horizontalSizeClass: UserInterfaceSizeClass?) {
-        self.isActive = isActive
-        self.liveStore = liveStore
-        self.pulseStore = pulseStore
-        self.pulseSparklineStore = pulseSparklineStore
-        self.heroStore = heroStore
-        self.homeStatsStore = homeStatsStore
-        self.profileStore = profileStore
-        self.profileMetricsStore = profileMetricsStore
-        self.store = store
-        _vitalsStore = StateObject(wrappedValue: AtriaVitalsSessionProjectionStore(store: store))
-        self.ble = ble
-        self.horizontalSizeClass = horizontalSizeClass
-    }
-
-    var body: some View {
-        let vitals = vitalsStore.state
-        let sections = AtriaVitalsSection.ordered(from: sectionOrderCSV)
-        VStack(spacing: 18) {
-            healthMonitorCard
-
-            if isEditingVitalsLayout {
-                HStack(spacing: 8) {
-                    Label("Editing Vitals", systemImage: "rectangle.3.group")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.secondary)
-
-                    Spacer(minLength: 8)
-
-                    Button {
-                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                            isEditingVitalsLayout = false
-                        }
-                    } label: {
-                        Text("Done")
-                            .font(.caption.weight(.bold))
-                    }
-                    .atriaCardAction(prominent: false, tint: .secondary)
-                }
-                .padding(.horizontal, 2)
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
-            Group {
-                if horizontalSizeClass == .regular {
-                    LazyVGrid(columns: Self.regularSectionColumns, spacing: 18) {
-                        ForEach(sections) { section in
-                            sectionCard(section)
-                        }
-                    }
-                } else {
-                    LazyVStack(spacing: 18) {
-                        ForEach(sections) { section in
-                            sectionCard(section)
-                        }
-                    }
-                }
-            }
-
-            if hasCustomVitalsLayout {
-                Button(action: resetVitalsLayout) {
-                    Label("Reset Vitals layout", systemImage: "arrow.counterclockwise")
-                        .frame(maxWidth: .infinity)
-                }
-                .atriaCardAction(prominent: false, tint: .secondary)
-                .accessibilityLabel("Reset Vitals layout")
-                .accessibilityHint("Restores Pulse, HRV, Recovery and strain, and Profile to the default order.")
-            }
-
-            trendsEntryCard
-        }
-        .sensoryFeedback(.selection, trigger: sectionOrderCSV)
-        .sheet(item: $metricDetail) { detail in
-            AtriaMetricDetailSheet(metric: detail,
-                                   rollups: vitals.dailyRollupHistory,
-                                   rollupsRevision: vitals.dailyRollupHistoryRevision,
-                                   confirmedWorkouts: vitals.confirmedWorkouts,
-                                   confirmedWorkoutsRevision: vitals.confirmedWorkoutsRevision,
-                                   confirmedSleeps: vitals.confirmedSleeps,
-                                   behaviorImpacts: vitals.behaviorImpactSummaries,
-                                   baseline: AtriaBaselineTargetSnapshot(vitals.baseline),
-                                   sleepHistory: vitals.sleepHistorySnapshot,
-                                   sleepHistoryRevision: vitals.sleepHistorySnapshotRevision,
-                                   guidance: healthMonitorGuidance,
-                                   recoveryEstimate: healthMonitorRecoveryEstimate,
-                                   currentCycleAuthority:
-                                    AtriaHealthMetricAuthority.currentCycleProjection(
-                                        hero: heroStore.state,
-                                        sleepHistory: vitals.sleepHistorySnapshot
-                                    ),
-                                   sleepGoalHours: sleepGoalHours,
-                                   sleepBaseNeedHours: sleepBaseNeedHours,
-                                   skinTemperatureDeviation: vitals.skinTemperatureDeviationSummary)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-        }
-    }
-
-    private var healthMonitorCard: some View {
-        let vitals = vitalsStore.state
-        return AtriaHealthMonitorCard(preparedData: healthMonitorPreparedData,
-                                      rollups: vitals.dailyRollupHistory,
-                                      sensorSummary: vitals.imuAuditSummary,
-                                      skinTemperatureSummary: vitals.skinTemperatureDeviationSummary,
-                                      strapModel: ble.strapModel,
-                                      bloodOxygenEnabled: isMetricVisible(.bloodOxygen),
-                                      skinTemperatureEnabled: isMetricVisible(.bodyTemp),
-                                      onOpenDetail: { metricDetail = $0 })
-    }
-
-    private var healthMonitorPreparedData: AtriaHealthMonitorPreparedData {
-        let vitals = vitalsStore.state
-        return healthMonitorPreparedMemo.value(rollupsRevision: vitals.dailyRollupHistoryRevision,
-                                               sleepHistoryRevision: vitals.sleepHistorySnapshotRevision) {
-            AtriaHealthMonitorPreparedData(rollups: Array(vitals.dailyRollupHistory.prefix(28)),
-                                           sleepHistory: vitals.sleepHistorySnapshot)
-        }
-    }
-
-    private var healthMonitorRecoveryEstimate: Metrics.RecoveryEstimate {
-        // The Home hero owns the current physiological cycle's immutable
-        // recovery (including its confidence, HRV provenance, contributors and
-        // no-sleep fallback). Reusing that exact estimate keeps Health Monitor
-        // from presenting yesterday's newest calendar rollup as a newly
-        // validated score after midnight or across a split sleep.
-        heroStore.state.recoveryEstimate
-    }
-
-    private var healthMonitorGuidance: Coach.Guidance {
-        heroStore.state.guidance
-    }
-
-    private func isMetricVisible(_ metric: AtriaTodayMetric) -> Bool {
-        let hidden = AtriaTodayMetric.hidden(from: hiddenMetricCSV)
-        return !hidden.contains(metric.rawValue)
-    }
-
-    private static let regularSectionColumns = [
-        GridItem(.flexible(), spacing: 18, alignment: .top),
-        GridItem(.flexible(), spacing: 18, alignment: .top),
-    ]
-
-    @ViewBuilder
-    private func sectionCard(_ section: AtriaVitalsSection) -> some View {
-        Group {
-            switch section {
-            case .pulse: pulseCard
-            case .hrv: hrvCard
-            case .recoveryStrain: recoveryStrainCard
-            case .profile: profileCard
-            }
-        }
-        .overlay(alignment: .topTrailing) {
-            if isEditingVitalsLayout {
-                vitalsSectionEditControls(for: section)
-                    .padding(10)
-                    .transition(.scale.combined(with: .opacity))
-            }
-        }
-        .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.card, style: .continuous))
-        .onLongPressGesture(minimumDuration: 0.45) {
-            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                isEditingVitalsLayout = true
-            }
-        }
-        .modifier(AtriaConditionalVitalsStringDraggable(isEnabled: true,
-                                                        payload: section.dragPayload))
-        .dropDestination(for: String.self) { items, _ in
-            guard let raw = items.first,
-                  let dragged = AtriaVitalsSection.draggedSection(from: raw) else { return false }
-            withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                isEditingVitalsLayout = true
-                sectionOrderCSV = AtriaVitalsSection.moving(dragged, before: section, in: sectionOrderCSV)
-            }
-            return true
-        }
-        .accessibilityAction(named: Text("Move \(section.label) up")) {
-            moveSection(section, direction: -1)
-        }
-        .accessibilityAction(named: Text("Move \(section.label) down")) {
-            moveSection(section, direction: 1)
-        }
-        .accessibilityHint("Drag to reorder this Vitals section, or long press to reveal the visible move controls.")
-    }
-
-    private func vitalsSectionEditControls(for section: AtriaVitalsSection) -> some View {
-        GlassEffectContainer(spacing: 10) {
-            HStack(spacing: 6) {
-                Button {
-                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                        moveSection(section, direction: -1)
-                    }
-                } label: {
-                    Image(systemName: "chevron.up")
-                        .font(.caption.weight(.black))
-                }
-                .atriaGlassIconAction(tint: .secondary, size: 44)
-                .accessibilityLabel("Move \(section.label) up")
-
-                Button {
-                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                        moveSection(section, direction: 1)
-                    }
-                } label: {
-                    Image(systemName: "chevron.down")
-                        .font(.caption.weight(.black))
-                }
-                .atriaGlassIconAction(tint: .secondary, size: 44)
-                .accessibilityLabel("Move \(section.label) down")
-            }
-        }
-        .fixedSize()
-        .accessibilityElement(children: .contain)
-    }
-
-    private func moveSection(_ section: AtriaVitalsSection, direction: Int) {
-        sectionOrderCSV = AtriaVitalsSection.moving(section, direction: direction, in: sectionOrderCSV)
-    }
-
-    private var hasCustomVitalsLayout: Bool {
-        AtriaVitalsSection.ordered(from: sectionOrderCSV) != Array(AtriaVitalsSection.allCases)
-    }
-
-    private func resetVitalsLayout() {
-        sectionOrderCSV = AtriaVitalsSection.allCases.map(\.rawValue).joined(separator: ",")
-        isEditingVitalsLayout = false
-    }
-
-    private var pulseCard: some View {
-        AtriaVitalsPulseCardHost(liveStore: liveStore,
-                                 pulseStore: pulseStore,
-                                 homeStatsStore: homeStatsStore,
-                                 baselineSnapshot: AtriaVitalsPulseBaselineSnapshot(vitalsStore.state.baseline),
-                                 pulseSparklineStore: pulseSparklineStore,
-                                 isActive: isActive)
-    }
-
-    private var hrvCard: some View {
-        AtriaVitalsHRVCardHost(liveStore: liveStore,
-                               heroStore: heroStore,
-                               vitalsStore: vitalsStore)
-    }
-
-    private var recoveryStrainCard: some View {
-        AtriaVitalsRecoveryStrainCardHost(heroStore: heroStore,
-                                          vitalsStore: vitalsStore,
-                                          store: store)
-    }
-
-    private var profileCard: some View {
-        AtriaVitalsProfileCardHost(pulseStore: pulseStore,
-                                   profileStore: profileStore,
-                                   profileMetricsStore: profileMetricsStore,
-                                   onUpdateProfile: store.updateProfile)
-    }
-
-    private var trendsEntryCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 10) {
-                AtriaPanelSectionHeader(title: "Trends", subtitle: "Saved metric history")
-                Spacer(minLength: 0)
-                Image(systemName: "chart.xyaxis.line")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-
-            AtriaVitalsTrendChartHost(state: vitalsStore.state)
-        }
-    }
-}
-
 enum AtriaVitalsSection: String, CaseIterable, Identifiable {
     case pulse, hrv, recoveryStrain, profile
 
@@ -1188,96 +886,6 @@ private struct AtriaHealthMonitorSparkline: View, Equatable {
     }
 }
 
-struct AtriaCollectionTabContent: View {
-    let coreLiveStore: AtriaHomeModel.CoreLiveStore
-    let collectionLiveStore: AtriaHomeModel.CollectionLiveStore
-    let homeStatsStore: AtriaHomeModel.HomeStatsStore
-    let snapshotStore: AtriaHomeModel.SnapshotStore
-    let profileStore: AtriaHomeModel.ProfileStore
-    let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
-    let store: SessionStore
-    let ble: AtriaBLEManager
-    let horizontalSizeClass: UserInterfaceSizeClass?
-    @Binding var showRRImporter: Bool
-    @Binding var showHRImporter: Bool
-    @Binding var rrShareURL: URL?
-    @Binding var hrShareURL: URL?
-    @Binding var captureShareURL: URL?
-    @Binding var rrImportStatus: String
-    @Binding var hrImportStatus: String
-    @Binding var hapticSettings: AtriaHapticAlertSettings
-    let officialAppInstalled: Bool
-    let developerModeEnabled: Bool
-
-    var body: some View {
-        /*
-        Static handoff compatibility marker for the old default stack:
-        captureCard
-                        researchSignalsCard
-                        biologicalAgeCard
-                        if developerModeEnabled
-        captureCard
-                    researchSignalsCard
-                    biologicalAgeCard
-                    if developerModeEnabled
-        if developerModeEnabled {
-                            rrReferenceCard
-        if developerModeEnabled {
-                            rrReferenceCard
-                            hrReferenceCard
-                            imuAuditCard
-        private var researchSignalsCard: some View
-        */
-        Group {
-            if horizontalSizeClass == .regular {
-                HStack(alignment: .top, spacing: 18) {
-                    LazyVStack(spacing: 18) {
-                        captureCard
-                    }
-                    .frame(maxWidth: .infinity, alignment: .top)
-
-                    LazyVStack(spacing: 18) {
-                        collectionControlsCard
-                        collectionStatusCard
-                    }
-                    .frame(maxWidth: .infinity, alignment: .top)
-                }
-            } else {
-                LazyVStack(spacing: 18) {
-                    captureCard
-                    collectionControlsCard
-                    collectionStatusCard
-                }
-            }
-        }
-    }
-
-    private var captureCard: some View {
-        AtriaCollectionCaptureCardHost(collectionLiveStore: collectionLiveStore,
-                                       ble: ble,
-                                       captureShareURL: $captureShareURL)
-    }
-
-    private var collectionControlsCard: some View {
-        AtriaCollectionControlsCardHost(collectionLiveStore: collectionLiveStore,
-                                        homeStatsStore: homeStatsStore,
-                                        profileStore: profileStore,
-                                        store: store,
-                                        ble: ble,
-                                        hapticSettings: $hapticSettings,
-                                        developerModeEnabled: developerModeEnabled)
-    }
-
-    private var collectionStatusCard: some View {
-        AtriaCollectionStatusCardHost(coreLiveStore: coreLiveStore,
-                                      collectionLiveStore: collectionLiveStore,
-                                      homeStatsStore: homeStatsStore,
-                                      snapshotStore: snapshotStore,
-                                      store: store,
-                                      officialAppInstalled: officialAppInstalled)
-    }
-}
-
 struct AtriaCollectionResearchValidationContent: View {
     let collectionLiveStore: AtriaHomeModel.CollectionLiveStore
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
@@ -1557,17 +1165,6 @@ struct AtriaVitalsArchiveActivityObserver: View {
     }
 }
 
-struct AtriaVitalsStressActivityObserver: View {
-    let onTick: () -> Void
-    private static let timer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
-
-    var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .onReceive(Self.timer) { _ in onTick() }
-    }
-}
-
 private struct AtriaVitalsPulseActivityObserver: View {
     let liveStore: AtriaHomeModel.CoreLiveStore
     let pulseStore: AtriaHomeModel.PulseLiveStore
@@ -1802,9 +1399,8 @@ private struct AtriaVitalsPulseBaselineSnapshot: Equatable {
 
 /// Live Vitals host for the pulse card (2026-07-07, design handoff): exposes
 /// the private AtriaVitalsPulseCardHost/AtriaPulseCard chain to
-/// AtriaHealthScreen without mounting the dead AtriaVitalsTabContent tree.
-/// The host is self-contained (loads its own historical points, Equatable
-/// card) so live-pulse ticks stay cheap.
+/// AtriaHealthScreen. The host is self-contained (loads its own historical
+/// points, Equatable card) so live-pulse ticks stay cheap.
 struct AtriaVitalsLivePulseSection: View {
     let liveStore: AtriaHomeModel.CoreLiveStore
     let pulseStore: AtriaHomeModel.PulseLiveStore
@@ -4084,12 +3680,24 @@ struct AtriaHeartRateChartSeries: Equatable {
             let index = min(targetBuckets - 1, max(0, Int(point.t.timeIntervalSince(first) / width)))
             buckets[index].append(point.bpm)
         }
-        return buckets.indices.compactMap { index in
-            guard let bucket = buckets[index].bucket(centeredAt: first.addingTimeInterval((Double(index) + 0.5) * width)) else {
-                return nil
+        // An empty bucket is a real collection gap at this zoom; the segment
+        // id bumps across it so the averaged line breaks there instead of
+        // interpolating over a stretch the strap wasn't read.
+        var result: [AtriaHeartRateBucket] = []
+        var segment = 0
+        var previousIndex: Int?
+        for index in buckets.indices {
+            guard buckets[index].count > 0 else { continue }
+            if let previousIndex, index - previousIndex > 1 {
+                segment += 1
             }
-            return bucket
+            let center = first.addingTimeInterval((Double(index) + 0.5) * width)
+            if let bucket = buckets[index].bucket(centeredAt: center, segment: segment) {
+                result.append(bucket)
+            }
+            previousIndex = index
         }
+        return result
     }
 }
 
@@ -4820,6 +4428,10 @@ struct AtriaHeartRateBucket: Equatable, Identifiable {
     let average: Double
     let minBPM: Int
     let maxBPM: Int
+    /// Contiguous-run id: bumps across empty buckets so the smoothed line
+    /// breaks at collection gaps instead of bridging a stretch the strap
+    /// wasn't read (the stress strip's honesty contract applied to HR).
+    let segment: Int
 }
 
 private struct AtriaHeartRateBucketAccumulator {
@@ -4835,14 +4447,29 @@ private struct AtriaHeartRateBucketAccumulator {
         maxBPM = max(maxBPM ?? bpm, bpm)
     }
 
-    func bucket(centeredAt center: Date) -> AtriaHeartRateBucket? {
+    func bucket(centeredAt center: Date, segment: Int) -> AtriaHeartRateBucket? {
         guard count > 0 else { return nil }
         return AtriaHeartRateBucket(id: center,
                                     t: center,
                                     average: Double(sum) / Double(count),
                                     minBPM: minBPM ?? 0,
-                                    maxBPM: maxBPM ?? 0)
+                                    maxBPM: maxBPM ?? 0,
+                                    segment: segment)
     }
+}
+
+/// One raw sample tagged with its contiguous-run id. A gap longer than
+/// `AtriaHeartRateAxisChart.rawSampleGapThreshold` bumps `segment`, which
+/// Swift Charts treats as a new series, so the raw line and area leave a real
+/// blank across a stretch the strap wasn't read instead of interpolating over
+/// it (the stress strip's honesty contract applied to HR).
+struct AtriaHeartRateSegmentedPoint: Identifiable, Equatable {
+    let point: AtriaHomeModel.HeartRateChartPoint
+    let segment: Int
+
+    var id: TimeInterval { point.id }
+    var t: Date { point.t }
+    var bpm: Int { point.bpm }
 }
 
 struct AtriaHeartRateAxisChart: View, Equatable {
@@ -4888,6 +4515,22 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         (buckets ?? []).isEmpty && points.isEmpty
     }
 
+    /// Same 5-minute rule as the session-stress strip: a longer sample gap is
+    /// a collection gap, not a line to draw across.
+    static let rawSampleGapThreshold: TimeInterval = 5 * 60
+
+    private var segmentedPoints: [AtriaHeartRateSegmentedPoint] {
+        var segment = 0
+        var previous: Date?
+        return points.map { point in
+            if let previous, point.t.timeIntervalSince(previous) > Self.rawSampleGapThreshold {
+                segment += 1
+            }
+            previous = point.t
+            return AtriaHeartRateSegmentedPoint(point: point, segment: segment)
+        }
+    }
+
     private var baseChart: some View {
         Chart {
             if let buckets {
@@ -4895,27 +4538,33 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                 // beneath it. The old per-bucket min-max band jumped bucket to
                 // bucket and read as a noisy scribble (user-reported 2026-07-08);
                 // the average already carries the shape, and detail is one zoom
-                // away. Nothing here is synthesized — average is the real mean.
+                // away. Nothing here is synthesized — average is the real mean,
+                // and the per-run segment id breaks the line at collection gaps
+                // instead of bridging them.
                 ForEach(buckets) { bucket in
                     AreaMark(x: .value("Time", bucket.t),
                              yStart: .value("Floor", Double(yDomain.lowerBound)),
-                             yEnd: .value("BPM", bucket.average))
+                             yEnd: .value("BPM", bucket.average),
+                             series: .value("Segment", bucket.segment))
                         .interpolationMethod(.linear)
                         .foregroundStyle(.red.opacity(0.12).gradient)
                     LineMark(x: .value("Time", bucket.t),
-                             y: .value("BPM", bucket.average))
+                             y: .value("BPM", bucket.average),
+                             series: .value("Segment", bucket.segment))
                         .interpolationMethod(.linear)
                         .foregroundStyle(.red.gradient)
                         .lineStyle(StrokeStyle(lineWidth: 2))
                 }
             } else {
-                ForEach(points) { point in
+                ForEach(segmentedPoints) { point in
                     AreaMark(x: .value("Time", point.t),
                              yStart: .value("Visible floor", yDomain.lowerBound),
-                             yEnd: .value("BPM", point.bpm))
+                             yEnd: .value("BPM", point.bpm),
+                             series: .value("Segment", point.segment))
                         .interpolationMethod(.linear)
                         .foregroundStyle(.red.opacity(0.12).gradient)
-                    LineMark(x: .value("Time", point.t), y: .value("BPM", point.bpm))
+                    LineMark(x: .value("Time", point.t), y: .value("BPM", point.bpm),
+                             series: .value("Segment", point.segment))
                         .interpolationMethod(.linear)
                         .foregroundStyle(.red.gradient)
                 }

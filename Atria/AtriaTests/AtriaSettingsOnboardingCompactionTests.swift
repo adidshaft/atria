@@ -264,7 +264,10 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
         let flow = try source("AtriaOnboardingFlow.swift")
         let content = try source("ContentView.swift")
         let start = try XCTUnwrap(content.range(of: "struct AtriaOnboardingSharingChoiceStep"))
-        let end = try XCTUnwrap(content.range(of: "private enum OfficialAppCoexistenceRisk",
+        // 2026-08-06: audit fix — dead twin deleted. The slice used to end at the
+        // dead private OfficialAppCoexistenceRisk enum, removed from ContentView;
+        // the boundary is now the next surviving declaration.
+        let end = try XCTUnwrap(content.range(of: "struct AtriaDashboardBackdrop",
                                                range: start.upperBound..<content.endIndex))
         let sharing = String(content[start.lowerBound..<end.lowerBound])
 

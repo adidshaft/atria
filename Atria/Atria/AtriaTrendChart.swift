@@ -216,12 +216,19 @@ struct AtriaTrendChartCard: View {
                                    unit: expandedUnit,
                                    tint: metric.tint,
                                    points: expandedChartPoints,
+                                   priorPoints: expandedPriorPoints,
                                    events: events,
+                                   overlays: expandedChartOverlays,
+                                   comparisonPeriodNoun: range.narrativeLabel,
                                    onDismiss: { showExpandedChart = false })
         }
     }
 
     private var expandedUnit: String {
+        Self.expandedUnit(for: metric)
+    }
+
+    private static func expandedUnit(for metric: AtriaTrendMetric) -> String {
         switch metric {
         case .restingHR: return " bpm"
         case .strain: return ""
@@ -234,6 +241,10 @@ struct AtriaTrendChartCard: View {
     /// "last week" chart must not silently widen it to the full 92-day
     /// series. Days without a value are simply absent.
     private var expandedChartPoints: [AtriaDetailChartPoint] {
+        chartPoints(for: metric)
+    }
+
+    private func chartPoints(for metric: AtriaTrendMetric) -> [AtriaDetailChartPoint] {
         let cutoff = range.cutoffDate()
         return points.compactMap { point in
             guard point.date >= cutoff else { return nil }
@@ -242,6 +253,29 @@ struct AtriaTrendChartCard: View {
             }
         }
         .sorted { $0.day < $1.day }
+    }
+
+    /// The prior-period series the compact card already draws as its dashed
+    /// ghost (time-shifted onto the current window), passed through so the
+    /// expanded chart's Compare keys on the real saved history instead of
+    /// claiming none exists (2026-08-06 audit fix).
+    private var expandedPriorPoints: [AtriaDetailChartPoint] {
+        prepared.previousSeries.map {
+            AtriaDetailChartPoint(day: $0.date, value: $0.value, tint: metric.tint)
+        }
+    }
+
+    /// The sibling metrics' real series over the same window, offered in the
+    /// expanded chart's edit sheet — matching the metric-detail expand.
+    private var expandedChartOverlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] {
+        AtriaTrendMetric.allCases
+            .filter { $0 != metric }
+            .map { sibling in
+                (title: sibling.shortLabel,
+                 unit: Self.expandedUnit(for: sibling),
+                 tint: sibling.tint,
+                 points: chartPoints(for: sibling))
+            }
     }
 
     private func refreshPreparedSeries(now: Date = Date()) {
@@ -442,11 +476,15 @@ struct AtriaTrendChartCard: View {
             }
 
             if showGhost {
-                ForEach(prepared.previousSeries) { ghostSample in
+                // Contiguous day-runs (2026-08-06 audit fix): one point per
+                // civil day means a skipped wear night must render as a blank,
+                // not a straight segment inventing readings — same rule as
+                // the current line below.
+                ForEach(prepared.previousSeries.contiguousDayRuns(), id: \.sample.date) { entry in
                     LineMark(
-                        x: .value("Date", ghostSample.date),
-                        y: .value("Prior \(metric.shortLabel)", ghostSample.value),
-                        series: .value("Series", "prior")
+                        x: .value("Date", entry.sample.date),
+                        y: .value("Prior \(metric.shortLabel)", entry.sample.value),
+                        series: .value("Series", "prior-\(entry.runID)")
                     )
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
@@ -457,10 +495,14 @@ struct AtriaTrendChartCard: View {
                 }
             }
 
-            ForEach(prepared.series) { sample in
+            // Contiguous day-runs so the line and its area fill BREAK at day
+            // gaps instead of bridging days with no reading (2026-08-06 audit
+            // fix — the chart-honesty rule the other daily charts follow).
+            ForEach(prepared.series.contiguousDayRuns(), id: \.sample.date) { entry in
                 AreaMark(
-                    x: .value("Date", sample.date),
-                    y: .value(metric.shortLabel, sample.value)
+                    x: .value("Date", entry.sample.date),
+                    y: .value(metric.shortLabel, entry.sample.value),
+                    series: .value("Series", "current-area-\(entry.runID)")
                 )
                 .interpolationMethod(.linear)
                 .foregroundStyle(
@@ -469,10 +511,14 @@ struct AtriaTrendChartCard: View {
                         startPoint: .top, endPoint: .bottom
                     )
                 )
+                // Gradient on a multi-series mark must resolve against the
+                // plot area, not each run's own bounding box.
+                .alignsMarkStylesWithPlotArea()
 
                 LineMark(
-                    x: .value("Date", sample.date),
-                    y: .value(metric.shortLabel, sample.value)
+                    x: .value("Date", entry.sample.date),
+                    y: .value(metric.shortLabel, entry.sample.value),
+                    series: .value("Series", "current-\(entry.runID)")
                 )
                 .interpolationMethod(.linear)
                 .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
@@ -2880,6 +2926,31 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
     }
 }
 
+extension Array where Element == AtriaTrendPoint.Sample {
+    /// Same contiguous day-run split as `[AtriaDetailChartPoint].contiguousDayRuns()`
+    /// (AtriaStrainRecoveryComboChart): the run id increments whenever
+    /// consecutive samples are more than a day apart; feed it to
+    /// `LineMark(series:)` so a charted line BREAKS at day gaps instead of
+    /// drawing a straight segment across days with no reading (2026-08-06
+    /// audit fix).
+    func contiguousDayRuns(calendar: Calendar = .current)
+        -> [(runID: Int, sample: AtriaTrendPoint.Sample)] {
+        let sorted = self.sorted { $0.date < $1.date }
+        var out: [(Int, AtriaTrendPoint.Sample)] = []
+        var run = 0
+        var previous: Date?
+        for sample in sorted {
+            if let previous {
+                let days = calendar.dateComponents([.day], from: previous, to: sample.date).day ?? 1
+                if days > 1 { run += 1 }
+            }
+            out.append((run, sample))
+            previous = sample.date
+        }
+        return out
+    }
+}
+
 /// One day's trend-relevant values, prepared on the main-actor store side so
 /// the chart view stays cheap and Equatable.
 struct AtriaTrendPoint: Equatable, Identifiable {
@@ -2968,58 +3039,6 @@ extension AtriaTrendChartCard {
         guard let scrubDate, !prepared.series.isEmpty else { return nil }
         return prepared.series.min {
             abs($0.date.timeIntervalSince(scrubDate)) < abs($1.date.timeIntervalSince(scrubDate))
-        }
-    }
-}
-
-/// Full-height inspection sheet for a trend chart: same data, same scrubbing,
-/// more room. Kept deliberately plain — a chart you can actually read is the
-/// premium feature.
-struct AtriaTrendExpandedSheet: View {
-    let title: String
-    let subtitle: String
-    let chart: AnyView
-    // Added depth (2026-07-05): expand used to render only the same chart taller.
-    // It now also carries the metric's "how to read this" knowledge and tint so
-    // tapping to expand is a genuine deep-dive, not just a bigger chart.
-    var explainer: String = ""
-    var tint: Color = .secondary
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    chart
-                        .frame(minHeight: 280)
-                    Text("Drag across the chart to inspect a day.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-
-                    if !explainer.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Label("How to read this", systemImage: "book")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(tint)
-                            Text(explainer)
-                                .font(.callout)
-                                .foregroundStyle(.primary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(16)
-                        .atriaInsetCard(cornerRadius: AtriaDesignTokens.Radius.tile, tint: tint)
-                    }
-                }
-                .padding(20)
-            }
-            .navigationTitle(title)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                }
-            }
         }
     }
 }

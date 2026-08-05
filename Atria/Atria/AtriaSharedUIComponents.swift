@@ -30,6 +30,26 @@ enum AtriaMetricFormat {
         return String(format: "%.1f /min", value)
     }
 
+    static func years(_ value: Double?) -> String {
+        guard let value else { return "--" }
+        // Fitness-age deltas are signed years vs calendar age — the sign IS
+        // the meaning (+ older, − younger), so it always renders; values are
+        // whole years everywhere else ("+2 yr", "0y"), and nothing clamps:
+        // this case exists so "y" summaries stop falling through to the
+        // strain formatter's 0-21 clamp (2026-08-06 audit).
+        return "\(signedYearCount(value)) yr"
+    }
+
+    /// Signed whole-year token for fitness-age deltas. "yr" with a leading
+    /// space matches the fitness-age copy convention (AtriaAnalytics
+    /// targetSummary, About sheet) and lets the hero split style it as the
+    /// smaller secondary token like "54 ms".
+    private static func signedYearCount(_ value: Double) -> String {
+        let rounded = Int(value.rounded())
+        if rounded == 0 { return "0" }
+        return rounded > 0 ? "+\(rounded)" : "\u{2212}\(abs(rounded))"
+    }
+
     static func sleepDuration(seconds: TimeInterval?) -> String {
         guard let seconds else { return "--" }
         let totalMinutes = max(0, Int((seconds / 60).rounded()))
@@ -60,6 +80,8 @@ enum AtriaMetricFormat {
             return sleepHours(value)
         case .respiratory:
             return respiratory(value)
+        case .years:
+            return years(value)
         }
     }
 
@@ -79,6 +101,8 @@ enum AtriaMetricFormat {
             return "\(sleepPrefix)\(sleepHours(abs(value)))"
         case .respiratory:
             return "\(prefix)\(String(format: "%.1f", value)) /min"
+        case .years:
+            return "\(signedYearCount(value)) yr"
         }
     }
 
@@ -96,6 +120,10 @@ enum AtriaMetricFormat {
             return "\(sleepHours(low))-\(sleepHours(high))"
         case .respiratory:
             return String(format: "%.1f-%.1f /min", low, high)
+        case .years:
+            // Signed range needs "to", not "-": "−2-+1 yr" is unreadable
+            // (same precedent as the About sheet's vo2max range).
+            return "\(signedYearCount(low)) to \(signedYearCount(high)) yr"
         }
     }
 }
@@ -107,6 +135,7 @@ enum AtriaMetricUnit {
     case strain
     case sleep
     case respiratory
+    case years
 }
 
 struct AtriaCalibratingLabel: View, Equatable {

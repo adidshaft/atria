@@ -950,14 +950,16 @@ struct AtriaHomeView: View {
     }()
     @State private var didApplyDebugUIScreenLaunchArgument = false
     // Static handoff compatibility marker for the old segment state:
-    // @State private var debugInitialOverviewSegment: AtriaTodaySegment = .today
     // @State private var activeOverviewSegment: AtriaTodaySegment = .today
     // _activeOverviewSegment = State(initialValue: debugOverviewSegment ?? .today)
     // private static func debugLaunchOverviewSegmentArgument(arguments: [String] = ProcessInfo.processInfo.arguments) -> AtriaTodaySegment?
     // return AtriaTodaySegment.debugLaunchValue(from: arguments[arguments.index(after: segmentIndex)])
     // onSegmentChange: { segment in
     // activeOverviewSegment = segment
-    @State private var debugInitialOverviewSegment: AtriaLegacyOverviewDestination = .today
+    // 2026-08-06 audit fix: debugInitialOverviewSegment removed — AtriaTodayScreen
+    // never read its initialSegment parameter (the Today tab renders one scroll),
+    // so the segment value was a silent no-op. The launch argument still routes
+    // tabs and forces fixture content via debugShowsOverviewSegmentContent below.
     @State private var debugShowsOverviewSegmentContent = false
     @State private var coexistenceSnoozedUntil: Date?
     @State private var connectionGuideSnoozedUntil: Date?
@@ -1035,7 +1037,6 @@ struct AtriaHomeView: View {
 #else
         let showsShowcaseFixture = false
 #endif
-        _debugInitialOverviewSegment = State(initialValue: debugOverviewSegment ?? .today)
         _debugShowsOverviewSegmentContent = State(initialValue: debugOverviewSegment != nil || showsShowcaseFixture)
         _model = State(initialValue: AtriaHomeModel(ble: ble, store: store))
     }
@@ -1281,7 +1282,7 @@ struct AtriaHomeView: View {
                 .allowsHitTesting(false)
 
             TabView(selection: $selectedTab) {
-                tabNavigation(title: "Today", showsHero: false) {
+                tabNavigation(title: "Today") {
                     // Always render real content from first frame: the model is
                     // seeded synchronously (cold-start rollup/widget-snapshot
                     // seed, see AtriaHomeModel.makeColdStartSnapshot) so there is
@@ -1293,19 +1294,19 @@ struct AtriaHomeView: View {
                 .tabItem { Label(HomeTab.overview.title, systemImage: HomeTab.overview.systemImage) }
                 .tag(HomeTab.overview)
 
-                tabNavigation(title: "Vitals", showsHero: false) {
+                tabNavigation(title: "Vitals") {
                     vitalsContent
                 }
                 .tabItem { Label(HomeTab.vitals.title, systemImage: HomeTab.vitals.systemImage) }
                 .tag(HomeTab.vitals)
 
-                tabNavigation(title: "Journal", showsHero: false) {
+                tabNavigation(title: "Journal") {
                     journalContent
                 }
                 .tabItem { Label(HomeTab.journal.title, systemImage: HomeTab.journal.systemImage) }
                 .tag(HomeTab.journal)
 
-                tabNavigation(title: "Activity", showsHero: false) {
+                tabNavigation(title: "Activity") {
                     planContent
                 }
                 .tabItem { Label(HomeTab.plan.title, systemImage: HomeTab.plan.systemImage) }
@@ -2713,8 +2714,7 @@ struct AtriaHomeView: View {
                 await store.seedDebugStrengthWorkoutProofIfRequested(arguments: arguments)
             }
         }
-        if let requestedOverviewSegment {
-            debugInitialOverviewSegment = requestedOverviewSegment
+        if requestedOverviewSegment != nil {
             debugShowsOverviewSegmentContent = true
         }
         if shouldOpenMetricDetailFixture {
@@ -4304,7 +4304,6 @@ struct AtriaHomeView: View {
     }
 
     private func tabNavigation<Content: View>(title: String,
-                                              showsHero: Bool = true,
                                               @ViewBuilder content: @escaping () -> Content) -> some View {
         NavigationStack {
             AtriaDashboardScrollSurface(showsCompactTodayHeader: title == "Today",
@@ -4326,9 +4325,6 @@ struct AtriaHomeView: View {
                     Color.clear
                         .frame(height: 1)
                         .id(Self.debugDashboardScrollTopID)
-                    if showsHero && !debugShowsSleepPlanBedtimeFixture {
-                        hero
-                    }
                     content()
                     Color.clear
                         .frame(height: 1)
@@ -4741,13 +4737,6 @@ struct AtriaHomeView: View {
         }
     }
 
-    private var hero: some View {
-        AtriaHeroPanelHost(statusStore: model.statusStore,
-                           liveStore: model.coreLiveStore,
-                           heroStore: model.heroStore,
-                           pulseStore: model.heroPulseStore)
-    }
-
     private var currentHomeLayoutConfig: AtriaHomeLayoutConfig {
         guard let data = homeLayoutConfigStorage.data(using: .utf8),
               !data.isEmpty,
@@ -4994,7 +4983,6 @@ struct AtriaHomeView: View {
                              connectionContext: connectionGuideContext,
                              debugShowsSegmentContent: debugShowsOverviewSegmentContent,
                              suppressSleepSyncPrompt: hasPrimaryReviewAction,
-                             initialSegment: debugInitialOverviewSegment,
                              onAICoachSettingsChange: { settings in
                                  aiCoachSettings = settings
                              },

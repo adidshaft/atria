@@ -410,6 +410,12 @@ private struct AtriaCustomizePreview: View {
                                 tint: tint(for: metric))
                 }
             }
+
+            // Honesty (2026-08-06): the numerals above are invented layout
+            // samples, so say so on screen -- not only in VoiceOver.
+            Text("Example values")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(14)
         .frame(maxWidth: .infinity)
