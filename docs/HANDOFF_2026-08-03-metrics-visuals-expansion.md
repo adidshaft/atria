@@ -3056,3 +3056,11 @@ gate | tail -1 && git push` pushes on tail's exit code, not the
 gate's — a 5-failure run reached the remote for ~2min. Rule: parse
 the failure COUNT and gate the push on == 4, or run gate and push
 in separate steps after reading the output.
+
+## 15.60 Device detached ~21:34 — monitoring paused (expected)
+
+devicectl pulls fail with CoreDeviceError 4016 (usage assertion) —
+phone unplugged/locked per user's earlier plan. Last good pull 21:27
+(post-install clean). Overnight experiments proceed on-device;
+resume pulls on next attach. Sim-only work (H4 radius sweep)
+continues meanwhile.
