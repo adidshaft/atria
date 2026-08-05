@@ -80,11 +80,56 @@ enum AtriaMemprobe {
                     malloc_zone_statistics(nil, &stats)
                     write(line: "vmtags \(vmTagSummary()) | live=\(stats.size_in_use / (1024*1024))MB blocks=\(stats.blocks_in_use)")
                 }
+                // THE EYE (2026-08-05 round 6): five note-elimination rounds
+                // still left a note-less ~600MB/s climber. On any ≥150MB jump
+                // between 250ms samples, name the busiest threads — the burst
+                // burns CPU on the allocating thread, so top-CPU thread names
+                // identify the lane directly.
+                if delta >= 150 * 1024 * 1024 {
+                    write(line: "burst_threads \(topBusyThreads())")
+                }
                 write(line: delta >= deltaThresholdBytes ? "sample" : "beat")
             }
             source.resume()
             timer = source
         }
+    }
+
+    /// Top-3 threads by recent CPU with their names — the burst eye. Same-task
+    /// thread enumeration only; ports are deallocated after inspection.
+    private static func topBusyThreads() -> String {
+        var threads: thread_act_array_t?
+        var count: mach_msg_type_number_t = 0
+        guard task_threads(mach_task_self_, &threads, &count) == KERN_SUCCESS,
+              let threads else { return "unavailable" }
+        defer {
+            for i in 0..<Int(count) { mach_port_deallocate(mach_task_self_, threads[i]) }
+            vm_deallocate(mach_task_self_,
+                          vm_address_t(UInt(bitPattern: threads)),
+                          vm_size_t(count) * vm_size_t(MemoryLayout<thread_t>.stride))
+        }
+        var entries: [(usage: Int32, name: String)] = []
+        for i in 0..<Int(count) {
+            var info = thread_extended_info_data_t()
+            var infoCount = mach_msg_type_number_t(
+                MemoryLayout<thread_extended_info_data_t>.size / MemoryLayout<natural_t>.size
+            )
+            let kr = withUnsafeMutablePointer(to: &info) {
+                $0.withMemoryRebound(to: integer_t.self, capacity: Int(infoCount)) {
+                    thread_info(threads[i], thread_flavor_t(THREAD_EXTENDED_INFO), $0, &infoCount)
+                }
+            }
+            guard kr == KERN_SUCCESS, info.pth_cpu_usage > 0 else { continue }
+            let name = withUnsafePointer(to: &info.pth_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: 64) { String(cString: $0) }
+            }
+            entries.append((info.pth_cpu_usage,
+                            name.isEmpty ? "unnamed" : name))
+        }
+        return entries.sorted { $0.usage > $1.usage }
+            .prefix(3)
+            .map { "\($0.name)=\($0.usage)" }
+            .joined(separator: " ")
     }
 
     /// Drop a lane breadcrumb (always written, with the current resident size).
