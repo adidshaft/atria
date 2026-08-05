@@ -7447,7 +7447,6 @@ final class SessionStore: ObservableObject {
                 // failure; the publish path's own history component covers
                 // freshness on success.
                 pendingHistoryRefreshDeferredByProjectionScan = true
-                AtriaMemprobe.note("hist_deferred_scan_active")
                 AtriaDebugLog(
                     "ATRIADBG history_snapshot status=deferred_projection_scan_active action=single_heavy_lane"
                 )
@@ -7458,10 +7457,6 @@ final class SessionStore: ObservableObject {
             }
             return
         }
-        // TEMP instrumentation (2026-08-05 burst hunt): distinguishes this
-        // pass's ENTRY materialization (canonical-history load and inputs)
-        // from its first hist_stage substage note.
-        AtriaMemprobe.note("hist_entry reuse=\(reuseLoadedCanonicalHistory ? 1 : 0)")
         historySnapshotRevision &+= 1
         let revision = historySnapshotRevision
         let sourceSessions = canonicalSessions(includeActiveJournal: true)
@@ -7533,7 +7528,6 @@ final class SessionStore: ObservableObject {
                     // ran on this long-lived queue during a recompute rest
                     // window. The note makes the lane discriminable forever;
                     // the dying thread returns its parse garbage at teardown.
-                    AtriaMemprobe.note("hist_canonical_page_read")
                     let canonicalPage = AtriaTransientWorkThread.run(
                         name: "atria.hist-canonical-page",
                         qualityOfService: .utility
@@ -7544,7 +7538,6 @@ final class SessionStore: ObservableObject {
                                 maximumSourceCount: 8
                             )
                     }
-                    AtriaMemprobe.note("hist_canonical_page_read_done sources=\(canonicalPage.sources.count)")
                     canonicalHistory = canonicalPage.sources
                     canonicalPageCursor = canonicalPage.nextCursor
                     canonicalHistoryHasMore = canonicalPage.hasMore
@@ -7598,7 +7591,6 @@ final class SessionStore: ObservableObject {
                         maxHR: maxHR
                     )
                 }
-                AtriaMemprobe.note("history_snapshots_begin incremental=\(incremental != nil ? 1 : 0)")
                 // Fresh dying thread for the FULL rebuild (2026-08-04): with
                 // ~700k recovered archive points installed, the whole-history
                 // day slicing churned ~2.4GB of transient allocations in one
@@ -7627,7 +7619,6 @@ final class SessionStore: ObservableObject {
                         maxHR: maxHR
                     )
                 }
-                AtriaMemprobe.note("history_snapshots_end")
                 let preparationSessions = recoveredAffectedDays.map {
                     SessionStore.recoveredDailyPreparationSessions(
                         sessions: sourceSessions,
@@ -9096,9 +9087,6 @@ final class SessionStore: ObservableObject {
         deferDerivedPublication: Bool = false,
         completion: ((Bool) -> Void)? = nil
     ) {
-        // TEMP instrumentation (2026-08-05 round-4): covers EVERY caller —
-        // the coordinator's comp_begin note misses external status refreshes.
-        AtriaMemprobe.note("arch_status_entry reason=\(reason.prefix(24))")
         historicalArchiveStatusRevision &+= 1
         let revision = historicalArchiveStatusRevision
         let confirmedWorkouts = cachedConfirmedWorkouts
@@ -9380,7 +9368,6 @@ final class SessionStore: ObservableObject {
                 }
                 return
             }
-            AtriaMemprobe.note("recovered_snapshot_begin")
             // Per-stage dying threads inside the recompute (2026-08-04): the
             // snapshot materialization, HR projection, and session emission
             // each generate 500-650MB of transient garbage; run serially on
@@ -9414,7 +9401,6 @@ final class SessionStore: ObservableObject {
                     }
                 }
             ) }
-            AtriaMemprobe.note("recovered_snapshot_end hrPoints=\(recoveredSnapshot.heartRatePoints.count) rrBeats=\(recoveredSnapshot.rrProjection.beats.count)")
             Task { @MainActor [weak self, ticket] in
                 self?.renewRecoveredProjectionLease(
                     ticket: ticket,
@@ -9450,7 +9436,6 @@ final class SessionStore: ObservableObject {
                 maximumGap: SavedSession.workoutContinuityGapLimit,
                 expectedSampleInterval: 1
             )
-            AtriaMemprobe.note("proj_hr_begin points=\(archivePoints.count)")
             let projection = AtriaTransientWorkThread.run(
                 name: "atria.recompute-hr-projection",
                 qualityOfService: .userInitiated
@@ -9461,7 +9446,6 @@ final class SessionStore: ObservableObject {
                     configuration: configuration
                 )
             }
-            AtriaMemprobe.note("proj_hr_end")
             Task { @MainActor [weak self, ticket] in
                 self?.renewRecoveredProjectionLease(
                     ticket: ticket,
@@ -9473,23 +9457,19 @@ final class SessionStore: ObservableObject {
                 name: "atria.recompute-sessions",
                 qualityOfService: .userInitiated
             ) { () -> ([SavedSession], SessionStore.RecoveredSkinTemperatureProjection, Int) in
-                AtriaMemprobe.note("proj_sessions_begin beats=\(rrProjection.beats.count)")
                 var recoveredSessions = AtriaRecoveredHeartRateProjection.recoveredSessions(
                     from: projection,
                     maximumGap: configuration.maximumGap,
                     recoveredRRBeats: rrProjection.beats
                 )
-                AtriaMemprobe.note("proj_sessions_end count=\(recoveredSessions.count)")
                 let motionWindows = recoveredSessions.map {
                     AtriaRecoveredMotionProjection.Window(id: $0.id.uuidString,
                                                            start: $0.start,
                                                            end: $0.end)
                 }
-                AtriaMemprobe.note("proj_motion_begin")
                 let motionEpochsBySessionID = recoveredSnapshot.motion.recoveredEpochs(
                     windows: motionWindows
                 )
-                AtriaMemprobe.note("proj_motion_end")
                 for index in recoveredSessions.indices {
                     let session = recoveredSessions[index]
                     let epochs = motionEpochsBySessionID[session.id.uuidString] ?? []
@@ -9509,7 +9489,6 @@ final class SessionStore: ObservableObject {
                     recoveredSessions[index].imuValidationState = fields.imuValidationState
                     recoveredSessions[index].strapStepResearchCount = fields.strapStepResearchCount
                 }
-                AtriaMemprobe.note("proj_fields_done")
                 if recoveredSnapshot.skinTemperatureCompleteness == .complete {
                     recoveredSessions = Self.attachRecoveredSkinTemperature(
                         recoveredSnapshot.skinTemperatureRawPoints,
@@ -9528,7 +9507,6 @@ final class SessionStore: ObservableObject {
                     recoveredSnapshot.skinTemperatureCompleteness == .complete
                     ? recoveredSnapshot.skinTemperatureRawPoints.count
                     : 0
-                AtriaMemprobe.note("proj_skin_done")
                 return (recoveredSessions,
                         recoveredSkinTemperatureProjection,
                         recoveredSkinTemperatureCandidateFrameCount)
@@ -9572,7 +9550,6 @@ final class SessionStore: ObservableObject {
                     return
                 }
 
-                AtriaMemprobe.note("recovered_sessions_swap count=\(recoveredSessions.count)")
                 let previous = self.cachedRecoveredHeartRateSessions
                 self.cachedRecoveredHeartRateSessions = recoveredSessions
                 self.cachedRecoveredSkinTemperatureDeviationByDay =
@@ -9593,11 +9570,9 @@ final class SessionStore: ObservableObject {
                 }
                 self.cachedHistoricalCycleStart = cacheInterval.start
                 self.invalidateDailyDerivedDays(for: previous + recoveredSessions)
-                AtriaMemprobe.note("post_swap_canonical_begin")
                 self.setCachedCanonicalSessions(Self.makeCanonicalSessions(
                     from: self.sessions + recoveredSessions
                 ))
-                AtriaMemprobe.note("post_swap_canonical_end")
                 self.refreshLatestHRVSourcesFromCanonicalSessions()
                 self.recoveryProjectionCache.invalidate()
                 self.cachedHomeSavedAggregate = nil
@@ -9608,7 +9583,6 @@ final class SessionStore: ObservableObject {
                 // Existing consumers now read the same merged, exact-timestamp
                 // session set. Stage backfill remains fail-closed when validated
                 // timestamped staging cannot cover the full sleep.
-                AtriaMemprobe.note("post_swap_motion_provenance_begin")
                 guard await self.rebuildConfirmedSleepRecoveredMotionProvenance(
                     reason: "historical_projection_\(ticket.reason)",
                     deferDerivedPublication: true
@@ -9621,7 +9595,6 @@ final class SessionStore: ObservableObject {
                     )
                     return
                 }
-                AtriaMemprobe.note("post_swap_stage_backfill_begin")
                 guard await self.backfillConfirmedSleepStagesFromSessions(
                     reason: "historical_projection_\(ticket.reason)",
                     deferDerivedPublication: true
@@ -9634,7 +9607,6 @@ final class SessionStore: ObservableObject {
                     )
                     return
                 }
-                AtriaMemprobe.note("post_swap_hrv_requalify_begin")
                 let hrvRequalification = await self.requalifyPersistedConfirmedSleepHRVFromSessionsIfNeeded(
                     self.cachedCanonicalSessions,
                     reason: "historical_projection_\(ticket.reason)",
@@ -9649,13 +9621,11 @@ final class SessionStore: ObservableObject {
                     )
                     return
                 }
-                AtriaMemprobe.note("post_swap_baseline_begin")
                 self.rebuildBaselineFromEligibleSessions(
                     reason: "historical_projection_\(ticket.reason)",
                     refreshDiagnosticsCache: false,
                     refreshDerivedCaches: false
                 )
-                AtriaMemprobe.note("post_swap_done")
                 self.handleRecoveredDataRecomputeEffects(
                     self.recoveredDataRecompute.projectionCompleted(ticket: ticket)
                 )
@@ -10209,11 +10179,6 @@ final class SessionStore: ObservableObject {
     private func rollbackRecoveredDataMutationTransaction(
         ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
     ) -> Bool {
-        // TEMP instrumentation (2026-08-05 round-5): every gauntlet death
-        // lands right after a supersede; the rollback + its required-refresh
-        // tail were the last un-noted post-swap lanes.
-        AtriaMemprobe.note("rollback_begin ops=\(recoveredDataMutationTransaction.rollbackOperationCount)")
-        defer { AtriaMemprobe.note("rollback_end") }
         let hadPreparedMutation = recoveredDataMutationTransaction.rollbackOperationCount > 0
         guard recoveredDataMutationTransaction.rollback(ticket: ticket) else { return false }
         if hadPreparedMutation {
@@ -10222,7 +10187,6 @@ final class SessionStore: ObservableObject {
         // A launch-time card rebuild may have completed while this recovered
         // image was provisional. Rollback restored the prior canonical image;
         // rerun the required refresh rather than publishing either intermediate.
-        AtriaMemprobe.note("required_hist_refresh_check")
         refreshRequiredHistorySnapshotIfPending()
         return true
     }
@@ -10480,7 +10444,6 @@ final class SessionStore: ObservableObject {
         phase: String,
         component: AtriaRecoveredDataRecomputeCoordinator.Component?
     ) {
-        AtriaMemprobe.note("recompute_stage phase=\(phase) component=\(component.map(String.init(describing:)) ?? "-")")
         recoveredDataRecomputeTimeoutTask?.cancel()
         recoveredDataRecomputeTimeoutContext = .init(
             ticket: ticket,
@@ -10566,10 +10529,6 @@ final class SessionStore: ObservableObject {
     private func runRecoveredArchiveStatusStep(
         ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
     ) {
-        // TEMP instrumentation (2026-08-05 burst hunt): the +67s balloon fired
-        // with NO stage note in frame — component entry notes make the last
-        // note before a death name the phase. Strip with AtriaMemprobe.
-        AtriaMemprobe.note("comp_begin archive_status")
         refreshHistoricalArchiveStatus(
             reason: "recovered_fence_\(ticket.reason)",
             deferDerivedPublication: true
@@ -10611,7 +10570,6 @@ final class SessionStore: ObservableObject {
         // minutes and let any later cycle run it. The proper bounded-read fix
         // for the reader stays on the backlog.
         if Date().timeIntervalSince(storeCreatedAt) < 600 {
-            AtriaMemprobe.note("shadow_step_skipped_cold_launch")
             AtriaDebugLog("ATRIADBG verified_activity_consumer_shadow status=skipped_cold_launch action=run_on_later_cycle")
             guard recoveredDataRecompute.pendingComponents(ticket: ticket)?
                 .contains(.confirmedWorkouts) == true else { return }
@@ -10626,8 +10584,6 @@ final class SessionStore: ObservableObject {
             // happens at thread teardown).
             AtriaTransientWorkThread.run(name: "atria.shadow-step",
                                          qualityOfService: .utility) {
-            AtriaMemprobe.note("shadow_step_begin")
-            defer { AtriaMemprobe.note("shadow_step_end") }
             let store = AtriaHistoricalVerifiedActivityConsumerApplicationStore(
                 directoryURL: destination
             )
@@ -10710,7 +10666,6 @@ final class SessionStore: ObservableObject {
         // lease on the physical phone. Reuse that immutable image for workouts
         // fully contained by its proven window; older incomplete workouts stay
         // untouched and remain eligible for the ordinary deferred repair pass.
-        AtriaMemprobe.note("comp_begin workouts")
         let recoveredArchiveCoverageStart =
             Date().addingTimeInterval(-14 * 24 * 60 * 60)
         scheduleConfirmedWorkoutArchiveRehydration(
@@ -10733,7 +10688,6 @@ final class SessionStore: ObservableObject {
     private func runRecoveredSleepSettlementStep(
         ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
     ) {
-        AtriaMemprobe.note("comp_begin sleep_settlement")
         autoConfirmSleepOnForegroundIfUseful(
             reason: "recovered_fence_\(ticket.reason)",
             force: true,
@@ -10755,7 +10709,6 @@ final class SessionStore: ObservableObject {
     private func runRecoveredHistoryStep(
         ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
     ) {
-        AtriaMemprobe.note("comp_begin history")
         let affectedDays = Self.currentExactRecoveryAffectedDays()
         if let affectedDays {
             pendingDailyDerivedInvalidationDays.formUnion(affectedDays)
@@ -10868,27 +10821,22 @@ final class SessionStore: ObservableObject {
         // overruns alone. Failure of one step still lets the rest complete
         // (matching the old parallel behavior — completion rejection is
         // handled per-component by the coordinator).
-        AtriaMemprobe.note("derived_step overviewTrends")
         refreshOverviewTrendPointsCache(deferred: false) { [weak self] succeeded in
             self?.completeRecoveredDataComponent(ticket: ticket,
                                                  component: .overviewTrends,
                                                  succeeded: succeeded)
-            AtriaMemprobe.note("derived_step trainingLoad")
             self?.refreshTrainingLoadSummaryCache(deferred: false) { [weak self] succeeded in
                 self?.completeRecoveredDataComponent(ticket: ticket,
                                                      component: .trainingLoad,
                                                      succeeded: succeeded)
-                AtriaMemprobe.note("derived_step todayHeartRateZones")
                 self?.refreshTodayHRZoneMinutesCache(deferred: false) { [weak self] succeeded in
                     self?.completeRecoveredDataComponent(ticket: ticket,
                                                          component: .todayHeartRateZones,
                                                          succeeded: succeeded)
-                    AtriaMemprobe.note("derived_step behaviorInsights")
                     self?.recomputeBehaviorInsights { [weak self] succeeded in
                         self?.completeRecoveredDataComponent(ticket: ticket,
                                                              component: .behaviorInsights,
                                                              succeeded: succeeded)
-                        AtriaMemprobe.note("derived_steps_done")
                     }
                 }
             }
@@ -11119,7 +11067,6 @@ final class SessionStore: ObservableObject {
                     // eligible workouts. The global ceiling remains
                     // fail-closed: overflow withholds every HR replacement
                     // instead of publishing a partial prefix.
-                    AtriaMemprobe.note("rehydration_raw_window_scan begin")
                     archiveHeartRateWindow = AtriaTransientWorkThread.run(
                         name: "atria.rehydration-window-scan",
                         qualityOfService: .utility
@@ -11130,7 +11077,6 @@ final class SessionStore: ObservableObject {
                             maximumPoints: 1_500_000
                         )
                     }
-                    AtriaMemprobe.note("rehydration_raw_window_scan end")
                 }
             } else {
                 archiveHeartRateWindow = nil
@@ -11344,7 +11290,6 @@ final class SessionStore: ObservableObject {
                 [(UserConfirmedWorkout, UserConfirmedWorkout)] = []
             if let old = eligible {
                 attempted = 1
-                AtriaMemprobe.note("step_evidence_worker_begin")
                 let read = HistoricalArchive.motionTickWindowRead(
                     start: old.start,
                     end: old.end,
@@ -11524,7 +11469,6 @@ final class SessionStore: ObservableObject {
         ) else { return }
         if workoutRehydrationDeferredUntilForeground {
             workoutRehydrationDeferredUntilForeground = false
-            AtriaMemprobe.note("fg_workout_rehydration_scheduled")
             // Reuse the recovered projection here too (2026-08-05): this
             // foreground replay was the third raw-scan entry point — it fired
             // at +29s of a cold launch and its 1.5M-point window scan stacked
@@ -11538,13 +11482,11 @@ final class SessionStore: ObservableObject {
             )
         }
         if workoutStepEvidenceDeferredUntilForeground {
-            AtriaMemprobe.note("fg_step_evidence_scheduled")
             scheduleConfirmedWorkoutStepEvidencePublication(
                 reason: "foreground_\(reason)"
             )
         }
         if currentCycleStepReceiptDeferredUntilForeground {
-            AtriaMemprobe.note("fg_step_receipt_scheduled")
             prepareCurrentCycleStrapStepReceipt(
                 reason: "foreground_\(reason)"
             )
@@ -11562,7 +11504,6 @@ final class SessionStore: ObservableObject {
         }
         if archiveCompactionDeferredUntilForeground {
             archiveCompactionDeferredUntilForeground = false
-            AtriaMemprobe.note("fg_compaction_scheduled")
             compactHistoricalArchiveIfUseful(
                 reason: "foreground_\(reason)"
             )
@@ -11744,12 +11685,10 @@ final class SessionStore: ObservableObject {
         // recovered archive points existed. Splitting the pipeline bounds the
         // peak to the worst single stage AND the per-stage probe notes name
         // that stage if it alone still overruns.
-        AtriaMemprobe.note("hist_stage canonical")
         let canonical = AtriaTransientWorkThread.run(name: "atria.hist-canonical",
                                                      qualityOfService: .utility) {
             makeCanonicalSessions(from: sessions)
         }
-        AtriaMemprobe.note("hist_stage detections")
         let detections = AtriaTransientWorkThread.run(name: "atria.hist-detections",
                                                       qualityOfService: .utility) {
             mergeCanonicalHistoricalDetections(
@@ -11761,7 +11700,6 @@ final class SessionStore: ObservableObject {
                 sources: canonicalHistory
             )
         }
-        AtriaMemprobe.note("hist_stage rollups")
         let rollups = AtriaTransientWorkThread.run(name: "atria.hist-rollups",
                                                    qualityOfService: .utility) {
             mergeCanonicalHistoricalRollups(
@@ -11779,7 +11717,6 @@ final class SessionStore: ObservableObject {
                 maxHR: maxHR,
                 calendar: calendar)
         }
-        AtriaMemprobe.note("hist_stage trends")
         let trends = AtriaTransientWorkThread.run(name: "atria.hist-trends",
                                                   qualityOfService: .utility) {
             makeHistoryTrendSummaries(sessions: canonical,
@@ -11789,7 +11726,6 @@ final class SessionStore: ObservableObject {
                                       maxHR: maxHR,
                                       calendar: calendar)
         }
-        AtriaMemprobe.note("hist_stage tail")
         var stepEvidenceDays = verifiedCanonicalStepEvidenceDays(
             sources: canonicalHistory,
             calendar: calendar
@@ -13950,40 +13886,6 @@ final class SessionStore: ObservableObject {
                 self.compactHistoricalArchiveIfUseful(reason: "archive_did_update")
             }
         }
-        // TEMP repro lever (2026-08-05): pairs with the force-rebuild flag in
-        // makeRecoveredDataSnapshot — requests one recompute shortly after
-        // launch so the full rebuild gauntlet runs deterministically. Remove
-        // with the memprobe.
-        // One-shot FILE flag (2026-08-05): devicectl silently swallowed the
-        // launch arg in every invocation form tried, so the repro lever is a
-        // flag file pushed into Documents via `devicectl device copy to`,
-        // consumed (deleted) here. The launch arg remains as a second path.
-        let forceRebuildFlagURL = FileManager.default.urls(
-            for: .documentDirectory, in: .userDomainMask
-        )[0].appendingPathComponent("atria-debug-force-rebuild")
-        let forceRebuildFlagPresent =
-            FileManager.default.fileExists(atPath: forceRebuildFlagURL.path)
-        if forceRebuildFlagPresent {
-            try? FileManager.default.removeItem(at: forceRebuildFlagURL)
-            UserDefaults.standard.set(
-                true, forKey: "atria.debug.forceRebuildOnce"
-            )
-        }
-        if forceRebuildFlagPresent || ProcessInfo.processInfo.arguments
-            .contains("--atria-debug-force-recovered-rebuild") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                // Ride the exact lane when the full-drain authority owns
-                // archive priority (this device's July gap state defers every
-                // ordinary request), and note the outcome so a silent guard
-                // rejection is visible in the probe log.
-                let requested = self?.requestRecoveredDataRecomputation(
-                    reason: "debug_forced_rebuild",
-                    isExactRecoveryPublication:
-                        HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority()
-                ) ?? false
-                AtriaMemprobe.note("debug_forced_rebuild requested=\(requested ? 1 : 0)")
-            }
-        }
         self.motionBankOffloadObserver = NotificationCenter.default.addObserver(
             forName: AtriaWhoop4MotionBankCoverageLedger
                 .didFinalizeOffloadNotification,
@@ -14706,11 +14608,9 @@ final class SessionStore: ObservableObject {
     }
 
     private func refreshSessionDerivedCaches() {
-        AtriaMemprobe.note("canonical_rebuild_begin live=\(sessions.count) recovered=\(cachedRecoveredHeartRateSessions.count)")
         setCachedCanonicalSessions(Self.makeCanonicalSessions(
             from: sessions + cachedRecoveredHeartRateSessions
         ))
-        AtriaMemprobe.note("canonical_rebuild_end")
         refreshLatestHRVSourcesFromCanonicalSessions()
         cachedHomeSavedAggregate = nil
         cachedTodayTRIMP = nil
@@ -15030,7 +14930,6 @@ final class SessionStore: ObservableObject {
     }
 
     private func publishDashboardRevision() {
-        AtriaMemprobe.note("dashboard_publish")
         dashboardRevision &+= 1
     }
 
@@ -15777,14 +15676,12 @@ final class SessionStore: ObservableObject {
         // defers while any recompute cycle is running or queued; every flush
         // notification re-offers it, so deferral costs only latency.
         guard !recoveredProjectionScanActive else {
-            AtriaMemprobe.note("compaction_deferred_heavy_lane")
             AtriaDebugLog(
                 "ATRIADBG archive_compaction_driver status=deferred_recompute_cycle reason=%@ action=retry_on_next_flush",
                 reason
             )
             return
         }
-        AtriaMemprobe.note("compaction_begin reason=\(reason.prefix(24))")
         let forced = ProcessInfo.processInfo.arguments.contains("--atria-compact-archive")
         let defaults = UserDefaults.standard
         if !forced, !bypassDailyLease {
@@ -15820,7 +15717,6 @@ final class SessionStore: ObservableObject {
                           result.summaryRows,
                           result.bytesBefore,
                           result.bytesAfter)
-            AtriaMemprobe.note("compaction_end status=\(result.status.prefix(28))")
             DispatchQueue.main.async {
                 Self.archiveCompactionInFlight = false
                 // Only measured stable states earn the daily lease. In
@@ -16080,9 +15976,7 @@ final class SessionStore: ObservableObject {
                                                             to url: URL,
                                                             reason: String) -> Bool {
         do {
-            AtriaMemprobe.note("sessions_encode_begin count=\(sessions.count) reason=\(reason)")
             let data = try JSONEncoder().encode(sessions)
-            AtriaMemprobe.note("sessions_encode_end bytes=\(data.count)")
             try data.write(to: url, options: .atomic)
             AtriaDebugLog("ATRIADBG session_store_save status=ok op=%@ sessions=%d bytes=%d",
                   reason,
@@ -16424,8 +16318,6 @@ final class SessionStore: ObservableObject {
     }
 
     func homeDashboardDiagnostics() -> HomeDashboardDiagnostics {
-        AtriaMemprobe.note("dash_diag_begin")
-        defer { AtriaMemprobe.note("dash_diag_end") }
         if let cachedHomeDashboardDiagnostics {
             return cachedHomeDashboardDiagnostics
         }
@@ -28160,8 +28052,6 @@ final class SessionStore: ObservableObject {
                                                              maxHR: Int,
                                                              calendar: Calendar = .current,
                                                              historicalMotionPolicy: HistoricalSleepMotionPolicy = .boundedRecent) -> [AggregateSleepCandidate] {
-        AtriaMemprobe.note("sleep_candidates_begin sessions=\(sourceSessions.count)")
-        defer { AtriaMemprobe.note("sleep_candidates_end") }
         var fullArchiveMotionSnapshot: HistoricalArchive.MotionArchiveSnapshot?
         func historicalMotionDiagnostics(start: Date, end: Date) -> HistoricalArchive.MotionWindowDiagnostics {
             switch historicalMotionPolicy {

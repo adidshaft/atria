@@ -10379,8 +10379,6 @@ final class AtriaHomeModel {
                                          savedAggregate: SavedAggregate,
                                          deferredDetails: DeferredDetails?,
                                          stressState: AtriaStressState) -> HeroSnapshot {
-        AtriaMemprobe.note("hero_snapshot_begin")
-        defer { AtriaMemprobe.note("hero_snapshot_end") }
         let restingContext = savedAggregate.restingContext
         let rest = restingContext.resolved
         let calendar = Calendar.current
@@ -10922,8 +10920,6 @@ final class AtriaHomeModel {
     private static func makeDeferredDetails(ble: AtriaBLEManager,
                                             store: SessionStore,
                                             recoveryIsLearning: Bool) -> DeferredDetails {
-        AtriaMemprobe.note("deferred_details_begin")
-        defer { AtriaMemprobe.note("deferred_details_end") }
         let diagnostics = store.homeDashboardDiagnostics()
         let now = Date()
         let validatedDisplayHRV = store.latestReferenceValidatedHRVForDisplay

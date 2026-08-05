@@ -138,10 +138,6 @@ struct AtriaHistoricalVerifiedConsumerReader {
         catalogStore: AtriaHistoricalArchiveCatalogStore,
         configuration: Configuration
     ) -> SourceArtifacts {
-        // TEMP instrumentation (2026-08-05 round-4): a per-source verified
-        // read is a remaining heavy lane with no probe note.
-        AtriaMemprobe.note("verified_read_source chunk=\(chunkID.prefix(12))")
-        defer { AtriaMemprobe.note("verified_read_source_exit") }
         guard !chunkID.isEmpty, limits.isValid else {
             return deferredBundle(chunkID: chunkID, reason: .readerLimitExceeded)
         }
