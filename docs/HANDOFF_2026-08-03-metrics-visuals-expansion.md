@@ -2470,3 +2470,25 @@ interning through BOTH appendRecoveredRecord call sites per F2).
 Review + ship + AFTER breadcrumb comparison when it reports. Device
 otherwise healthy: durable_history_ledger_ready, flush debt low
 (197 records).
+
+## 15.33 UI BRANCH MERGED + shipped; both branches unified (2026-08-05 ~19:50)
+
+USER CORRECTION: the real UI branch is claude/ui-design-2026-08-05
+(worktree ui-parallel-2026-08-05) — claude/fast-mode-c6877a is
+CONTENT-EMPTY (tree-identical to its merge base, committed Jul 17 ==
+main; the merge agent proved this with tree-hash equality). Merge
+verified in an isolated worktree: BUILD SUCCEEDED, TEST SUCCEEDED
+374/0 across 11 suites, one adjacent-hunk file (AtriaActivityMonitor:
+engine's caps STRESS MONITOR title + UI's smoothed range-line chart,
+both intents audited present), zero new gate failures.
+
+INTEGRATED: engine branch fast-forwarded to the merge; 3 stale Picker
+pins migrated to the AtriaTextSelector idiom (gate baseline 4 on the
+merged tree); claude/ui-design-2026-08-05 fast-forwarded to the same
+head f19f6c35 — BOTH branches identical now. UI session continues on
+ui-design with all engine work aboard. Merged build SHIPPED to the
+phone (f19f6c35) — carries the compaction Edits 1-3; the AFTER
+breadcrumb comparison (vs BEFORE physMB=783, 18:13) reads on the next
+recompute publish. UI branch also brought: native selectors, Dynamic
+Island HR zones, lock-screen recovery gauge, stress range-line graph,
+manual-sleep hypnogram card.
