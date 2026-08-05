@@ -3214,7 +3214,7 @@ private struct AtriaTodayWeeklyPlanCard: View, Equatable {
                         .font(.headline.weight(.bold))
                         .foregroundStyle(.primary)
                     Spacer(minLength: 8)
-                    Text("W\(plan.isoWeek)")
+                    Text(plan.dateRangeText)
                         .font(.caption.weight(.bold).monospacedDigit())
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 8)
