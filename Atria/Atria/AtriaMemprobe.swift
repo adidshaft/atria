@@ -192,13 +192,13 @@ enum AtriaMemprobe {
             for _ in 0..<8 {
                 guard fp > 0x1000 else { break }
                 var frame = [UInt64](repeating: 0, count: 2)
-                var outSize: mach_vm_size_t = 0
+                var outSize: vm_size_t = 0
                 let read = frame.withUnsafeMutableBytes { buffer in
-                    mach_vm_read_overwrite(
+                    vm_read_overwrite(
                         mach_task_self_,
-                        mach_vm_address_t(fp),
+                        vm_address_t(UInt(fp)),
                         16,
-                        mach_vm_address_t(UInt(bitPattern: buffer.baseAddress)),
+                        vm_address_t(UInt(bitPattern: buffer.baseAddress)),
                         &outSize
                     )
                 }
