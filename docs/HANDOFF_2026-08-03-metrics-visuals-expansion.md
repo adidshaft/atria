@@ -2403,3 +2403,22 @@ on build failure; fingerprint-latch; reuse=0 refresh coalescing;
 Jul-24 range-loss backfill windows (separate lane, defers on live
 link by design). lastStatus=deferred_thermal_pressure is the phone
 cooling from today's campaign — benign.
+
+## 15.30 Post-resolution health + next-item design armed (2026-08-05 ~17:30)
+
+DEVICE HEALTH after both campaign closures: flushDebtLevel=caught_up,
+17 pending records (~17s) — the strap pipeline runs neck-and-neck with
+real time, the original steps-coverage goal state. Thermal defer on a
+background lane = the phone cooling from the campaign; benign.
+
+TOOLING: scripts/ship-device.sh (8311c8b1) — hard-stop build→verify→
+install→launch; requires the literal BUILD SUCCEEDED marker before
+installing. Use it for ALL future device ships (the grep-pipe trap
+shipped stale binaries twice today).
+
+DESIGN ARMED: working-set-bounding workflow (wf_50d14675) mapping
+every holder/consumer of the ~1.3GB retained recovered working set →
+bounding design (target ≤400MB retained) → adversarial verify
+(data-honesty / lease-latency / incremental-plan-integrity lenses).
+Implementation is the next session's headline engine item; the
+design lands in this workflow's output for pickup.
