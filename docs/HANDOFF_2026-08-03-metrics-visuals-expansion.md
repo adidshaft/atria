@@ -3160,3 +3160,20 @@ already merged at 149737a3, spec file unchanged. Merged clean as
 both refs pushed. Device deploy still queued on attach (phone
 detached since 21:34) — next ship delivers this + H4 + copy audit
 in one install.
+
+## 15.65 Phone re-attached; BATTERY VERDICT CLOSED; pending build SHIPPED (23:05)
+
+Attach pull 22:57 (pre-install, deliberately first): battery
+SELF-RESTORED at 22:33 — fresh 2A19 accepted 68min post-install,
+latch cleared, level 71 live. §15.62b closed: honesty latch works
+as designed; no bug. Day duty-cycle so far: armed 2.3h / sync 1.3h
+/ link_down 16min. Tickets 6→16 (evening churn); charge test covers
+16. NEW morning item: terminal failure stamped 21:25 IST == install
+kill time (expected collateral; pipeline healthy after — boundary
+current, debt draining; confirm diagnostic string + repair path in
+the morning).
+SHIPPED 58b1dff7 (battery-badge fix + H4 + copy audit) at ~22:59
+per user order; relaunch verified alive at 23:03 (fresh notes,
+boundary 23:01, no bt-off diag; strap in normal reconnect window).
+NOTE: battery latch re-armed by this install — pill hidden up to
+~1h again, expected.
