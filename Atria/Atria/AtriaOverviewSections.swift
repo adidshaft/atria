@@ -8909,6 +8909,16 @@ struct AtriaMetricDetailSheet: View {
                 .presentationDetents([.height(380)])
                 .presentationDragIndicator(.visible)
         }
+        .onAppear {
+            #if DEBUG
+            let arguments = ProcessInfo.processInfo.arguments
+            if let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture"),
+               arguments.indices.contains(arguments.index(after: fixtureIndex)),
+               arguments[arguments.index(after: fixtureIndex)] == "chart-options" {
+                showChartOptions = true
+            }
+            #endif
+        }
         .sheet(item: $openedHistoryDay) { day in
             AtriaHistoryDayDetailSheet(day: day,
                                        medians: AtriaHistoryModel.make(rollups: rollups,
