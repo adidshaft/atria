@@ -1,4 +1,5 @@
 import Foundation
+import MachO
 
 /// File-backed resident-memory probe. Reinstated 2026-08-04: per-process-limit
 /// jetsams at ~3.45GB recurred on-device this morning (06:07 active, 06:42
@@ -50,6 +51,9 @@ enum AtriaMemprobe {
             handle = try? FileHandle(forWritingTo: url)
             _ = try? handle?.seekToEnd()
             write(line: "start pid=\(ProcessInfo.processInfo.processIdentifier) build=inplace-parser-v1")
+            // ASLR slide for offline burst_stack symbolication (round 6b):
+            // atos -arch arm64 -o <dSYM DWARF> -s <slide> <addresses>.
+            write(line: String(format: "aslr slide=0x%lx", _dyld_get_image_vmaddr_slide(0)))
 
             let source = DispatchSource.makeTimerSource(queue: queue)
             source.schedule(deadline: .now(), repeating: .milliseconds(250))
@@ -87,6 +91,7 @@ enum AtriaMemprobe {
                 // identify the lane directly.
                 if delta >= 150 * 1024 * 1024 {
                     write(line: "burst_threads \(topBusyThreads())")
+                    write(line: "burst_stack \(burstStackOfBusiestThread())")
                 }
                 write(line: delta >= deltaThresholdBytes ? "sample" : "beat")
             }
@@ -130,6 +135,81 @@ enum AtriaMemprobe {
             .prefix(3)
             .map { "\($0.name)=\($0.usage)" }
             .joined(separator: " ")
+    }
+
+    /// THE DEEP EYE (2026-08-05 round 6b): thread names were empty for plain
+    /// GCD workers, so on a burst the probe now suspends the single busiest
+    /// thread for microseconds, captures pc/lr + an fp-chain walk (guarded by
+    /// vm_read_overwrite so a torn frame cannot crash), resumes, and logs hex
+    /// addresses. Symbolicate offline: atos -arch arm64 -o <dSYM DWARF>
+    /// -s <slide from the aslr note> <addresses>.
+    private static func burstStackOfBusiestThread() -> String {
+        var threads: thread_act_array_t?
+        var count: mach_msg_type_number_t = 0
+        guard task_threads(mach_task_self_, &threads, &count) == KERN_SUCCESS,
+              let threads else { return "unavailable" }
+        defer {
+            for i in 0..<Int(count) { mach_port_deallocate(mach_task_self_, threads[i]) }
+            vm_deallocate(mach_task_self_,
+                          vm_address_t(UInt(bitPattern: threads)),
+                          vm_size_t(count) * vm_size_t(MemoryLayout<thread_t>.stride))
+        }
+        var best: thread_t = 0
+        var bestUsage: Int32 = -1
+        let selfThread = mach_thread_self()
+        defer { mach_port_deallocate(mach_task_self_, selfThread) }
+        for i in 0..<Int(count) where threads[i] != selfThread {
+            var info = thread_extended_info_data_t()
+            var infoCount = mach_msg_type_number_t(
+                MemoryLayout<thread_extended_info_data_t>.size / MemoryLayout<natural_t>.size
+            )
+            let kr = withUnsafeMutablePointer(to: &info) {
+                $0.withMemoryRebound(to: integer_t.self, capacity: Int(infoCount)) {
+                    thread_info(threads[i], thread_flavor_t(THREAD_EXTENDED_INFO), $0, &infoCount)
+                }
+            }
+            if kr == KERN_SUCCESS, info.pth_cpu_usage > bestUsage {
+                bestUsage = info.pth_cpu_usage
+                best = threads[i]
+            }
+        }
+        guard bestUsage > 200, best != 0 else { return "no_hot_thread" }
+        guard thread_suspend(best) == KERN_SUCCESS else { return "suspend_failed" }
+        var state = arm_thread_state64_t()
+        var stateCount = mach_msg_type_number_t(
+            MemoryLayout<arm_thread_state64_t>.size / MemoryLayout<UInt32>.size
+        )
+        let kr = withUnsafeMutablePointer(to: &state) {
+            $0.withMemoryRebound(to: natural_t.self, capacity: Int(stateCount)) {
+                thread_get_state(best, ARM_THREAD_STATE64, $0, &stateCount)
+            }
+        }
+        var frames: [UInt64] = []
+        if kr == KERN_SUCCESS {
+            frames.append(state.__pc)
+            frames.append(state.__lr)
+            var fp = state.__fp
+            for _ in 0..<8 {
+                guard fp > 0x1000 else { break }
+                var frame = [UInt64](repeating: 0, count: 2)
+                var outSize: mach_vm_size_t = 0
+                let read = frame.withUnsafeMutableBytes { buffer in
+                    mach_vm_read_overwrite(
+                        mach_task_self_,
+                        mach_vm_address_t(fp),
+                        16,
+                        mach_vm_address_t(UInt(bitPattern: buffer.baseAddress)),
+                        &outSize
+                    )
+                }
+                guard read == KERN_SUCCESS, outSize == 16 else { break }
+                if frame[1] > 0x1000 { frames.append(frame[1]) }
+                guard frame[0] > fp else { break }
+                fp = frame[0]
+            }
+        }
+        thread_resume(best)
+        return "cpu=\(bestUsage) " + frames.map { String(format: "0x%llx", $0) }.joined(separator: " ")
     }
 
     /// Drop a lane breadcrumb (always written, with the current resident size).
