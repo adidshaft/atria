@@ -1946,3 +1946,21 @@ entry notes to all three, reproduce once, read the last note.
 User-visible state UNCHANGED all along: one silent restart on
 backlogged launches, relaunch stable, data intact (post_swap commits
 before the death every time).
+
+## 15.12 USER DIRECTIVES + round-4b armed (2026-08-05 ~05:50)
+
+DIRECTIVE (mid-loop): this session = ENGINE ONLY — UI belongs to the
+parallel session (WHOOP-adoption queue in §15.2-15.5 + the design spec
+is theirs to consume). No overnight soaks: force same-day verification.
+
+Round-4 verdict: 11799 ran clean (311MB/205s) but likely incremental —
+no gauntlet. Round-4b build adds the LAST un-noted heavy lanes:
+arch_status_entry (all callers), terminal_publish_entry/exit,
+verified_read_source/exit, daily_metrics_build. Installed ~05:47.
+FORCED REPRO ARMED: 10min backlog accumulation → terminate+relaunch →
++180s pull → last-note-before-death analysis (background task, result
+next cycle). If the climber shows, its note names it; if the launch is
+clean N times under forced backlog, the +65s death is closed by the
+lane+skip fixes and the remaining kill needs the LONG backlog only a
+real overnight gap produces (then: reproduce by seeding a synthetic
+gap, still today).
