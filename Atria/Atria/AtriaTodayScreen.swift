@@ -26,12 +26,6 @@ struct AtriaTodaySessionState: Equatable {
     let skinTemperatureDeviationSummary: IMUAuditSummary.SkinTemperatureDeviationSummary
     let behaviorJournalEntries: [BehaviorJournalEntry]
     let behaviorJournalRevision: Int
-    /// Behavior-insights engine output for the Insights glance tile
-    /// (2026-08-06 audit fix: the engine's output was computed and persisted
-    /// but had no live surface -- its only renderer sat in the unmounted
-    /// legacy Overview tree while the tile counted highlights instead).
-    let behaviorInsights: [AtriaInsight]
-    let behaviorInsightsRevision: Int
     let restingTrend14: [Int]
     let weeklyPlan: WeeklyPlan
     private let baselineSamplesKey: [BaselineSampleKey]
@@ -57,8 +51,6 @@ struct AtriaTodaySessionState: Equatable {
         skinTemperatureDeviationSummary = store.skinTemperatureDeviationSummary
         behaviorJournalEntries = store.behaviorJournalEntries
         behaviorJournalRevision = store.behaviorJournalRevision
-        behaviorInsights = store.behaviorInsights
-        behaviorInsightsRevision = store.behaviorInsightsRevision
         restingTrend14 = store.restingTrend14
         weeklyPlan = store.currentWeeklyPlan()
     }
@@ -76,7 +68,6 @@ struct AtriaTodaySessionState: Equatable {
             && lhs.maxHeartRate == rhs.maxHeartRate
             && lhs.skinTemperatureDeviationSummary == rhs.skinTemperatureDeviationSummary
             && lhs.behaviorJournalRevision == rhs.behaviorJournalRevision
-            && lhs.behaviorInsightsRevision == rhs.behaviorInsightsRevision
             && lhs.restingTrend14 == rhs.restingTrend14
             && lhs.weeklyPlan == rhs.weeklyPlan
     }
@@ -103,7 +94,6 @@ final class AtriaTodaySessionProjectionStore: ObservableObject {
             store.$profile.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$imuAuditSummary.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$restingTrend14.dropFirst().map { _ in () }.eraseToAnyPublisher(),
-            store.$behaviorInsights.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             NotificationCenter.default.publisher(for: .NSCalendarDayChanged)
                 .map { _ in () }
                 .eraseToAnyPublisher(),
@@ -178,6 +168,7 @@ struct AtriaTodayScreen: View {
     let connectionContext: AtriaConnectionGuideContext
     let debugShowsSegmentContent: Bool
     let suppressSleepSyncPrompt: Bool
+    let initialSegment: AtriaLegacyOverviewDestination
     let onAICoachSettingsChange: (AtriaAICoachSettings) -> Void
     let onSaveAICoachAPIKey: (String) -> Void
     let onDeleteAICoachAPIKey: () -> Void
@@ -203,8 +194,6 @@ struct AtriaTodayScreen: View {
     // user feedback: "let people drag drop and arrange entire big sections").
     @AtriaDefault("atria.today.sectionOrder") private var todaySectionOrderCSV: String = ""
     @State private var showWeeklyReport = false
-    @State private var showMonthlyReport = false
-    @State private var showBehaviorInsights = false
     @State private var showBreathworkSession = false
     @State private var isEditingGlance = false
     @State private var showAddGlanceMetrics = false
@@ -341,31 +330,6 @@ struct AtriaTodayScreen: View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
-        .sheet(isPresented: $showMonthlyReport) {
-            // Current-month fallback mirrors the legacy presenter: the sheet
-            // itself renders honest "building" copy below the data threshold.
-            AtriaMonthlyReportSheet(report: monthlyReportHighlight ?? MonthlyReport(rollups: highlightRollups))
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $showBehaviorInsights) {
-            NavigationStack {
-                ScrollView {
-                    AtriaInsightsCardHost(store: store)
-                        .padding(18)
-                }
-                .navigationTitle("Insights")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("Done") { showBehaviorInsights = false }
-                            .font(.body.weight(.semibold))
-                    }
-                }
-            }
-            .presentationDetents([.medium, .large])
-            .presentationDragIndicator(.visible)
-        }
         .sheet(isPresented: $showAddGlanceMetrics) {
             AtriaTodayAddMetricsSheet(selectedKeys: layoutConfig.validated().glanceMetrics,
                                       onToggle: { metric, isSelected in
@@ -451,9 +415,8 @@ struct AtriaTodayScreen: View {
     /// dead-end on tap except Stress -- and even that was broken (see below),
     /// so in practice ALL of them dead-ended. Maps each metric to the detail
     /// kind it should open; tiles with no honest detail yet (load, workouts,
-    /// steps, calories, trend) are intentionally left out rather than routed
-    /// to a placeholder. Insights routes to its own behavior-insights sheet
-    /// (2026-08-06 audit fix), not a metric detail.
+    /// steps, calories, trend, insights) are intentionally left out rather
+    /// than routed to a placeholder.
     private static let glanceDetailRoutes: [AtriaTodayMetric: AtriaMetricDetailKind] = [
         .recovery: .recovery,
         .strain: .strain,
@@ -477,8 +440,7 @@ struct AtriaTodayScreen: View {
     /// broken `item.id == "Stress"` string check -- `AtriaTodayMetric.stress`
     /// raw-values to `"stress"`, never the capitalized literal, so that
     /// branch never actually ran and Stress dead-ended along with everything
-    /// else). Insights opens the behavior-insights sheet (2026-08-06 audit
-    /// fix). Everything else that has a real or honest-partial detail opens
+    /// else). Everything else that has a real or honest-partial detail opens
     /// `metricDetail`; anything without one renders as a plain, non-tappable
     /// tile rather than a fake affordance.
     @ViewBuilder
@@ -487,13 +449,6 @@ struct AtriaTodayScreen: View {
         if metric == .stress {
             Button {
                 showBreathworkSession = true
-            } label: {
-                AtriaTodayGlanceTile(item: item, isBar: isBar)
-            }
-            .buttonStyle(.plain)
-        } else if metric == .insights {
-            Button {
-                showBehaviorInsights = true
             } label: {
                 AtriaTodayGlanceTile(item: item, isBar: isBar)
             }
@@ -658,19 +613,6 @@ struct AtriaTodayScreen: View {
             if layoutConfig.showPlan {
                 AtriaTodayWeeklyPlanCard(plan: weeklyPlan) {
                     showWeeklyReport = true
-                }
-                // 2026-08-06 audit fix: the monthly report's only presenter
-                // lived in the unmounted legacy Overview tree, so the fully
-                // computed report was unreachable. Same surfacing gate as
-                // that tree used: the prior month's report, through the
-                // first days of a new month, never a "building" row.
-                if let monthly = monthlyReportHighlight {
-                    Button {
-                        showMonthlyReport = true
-                    } label: {
-                        AtriaMonthlyReportHighlightRow(report: monthly)
-                    }
-                    .buttonStyle(.plain)
                 }
             }
         case .glance:
@@ -1870,34 +1812,6 @@ struct AtriaTodayScreen: View {
         return report
     }
 
-    /// Prior-month report highlight (2026-08-06 audit fix: the monthly report
-    /// was computed but only presentable from the unmounted legacy Overview
-    /// tree). Same gate that tree used: surfaced through the first 5 days of
-    /// a new month, and only once the report clears MonthlyReport's own
-    /// minimum-days honesty threshold -- a "building" month never earns a
-    /// highlight row. Memoized like `weeklyReport` above.
-    private var monthlyReportHighlight: MonthlyReport? {
-        let revision = sessionProjectionStore.state.dailyRollupHistoryRevision
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        if glanceMemo.monthlyReportRevision == revision,
-           glanceMemo.monthlyReportDay == today {
-            return glanceMemo.monthlyReportValue
-        }
-        var report: MonthlyReport?
-        if calendar.component(.day, from: today) <= 5,
-           let priorMonthDate = calendar.date(byAdding: .month, value: -1, to: today) {
-            let candidate = MonthlyReport(rollups: highlightRollups,
-                                          now: priorMonthDate,
-                                          calendar: calendar)
-            report = candidate.isBuilding ? nil : candidate
-        }
-        glanceMemo.monthlyReportRevision = revision
-        glanceMemo.monthlyReportDay = today
-        glanceMemo.monthlyReportValue = report
-        return report
-    }
-
     private var centerValue: String {
         switch layoutConfig.ringCenterMetric {
         case .recovery:
@@ -2356,14 +2270,10 @@ struct AtriaTodayScreen: View {
                                         tint: layoutConfig.accent.color,
                                         layoutSize: layoutSize(for: metric))
         case .insights:
-            // 2026-08-06 audit fix: this tile counted AtriaHighlights (a
-            // different feature) under the "Insights" label while the
-            // behavior-insights engine's ranked output had no live surface.
-            // It now counts -- and its tap shows -- the engine's real output.
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: "\(sessionProjectionStore.state.behaviorInsights.count)",
-                                        detail: legendDetail("Behavior patterns"),
+                                        value: "\(highlights.count)",
+                                        detail: legendDetail("Highlights"),
                                         systemImage: metric.systemImage,
                                         tint: layoutConfig.accent.color,
                                         layoutSize: layoutSize(for: metric))
@@ -2615,9 +2525,6 @@ private final class AtriaTodayGlanceMemo {
     var weeklyReportRevision: Int?
     var weeklyReportWeekStart: Date?
     var weeklyReportValue: WeeklyReport?
-    var monthlyReportRevision: Int?
-    var monthlyReportDay: Date?
-    var monthlyReportValue: MonthlyReport?
     var coachPayloadRevision: Int?
     var coachPayloadValue: AtriaCoachPayload?
     var sleepNeedKey: AtriaTodaySleepNeedKey?

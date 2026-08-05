@@ -200,6 +200,44 @@ final class AtriaRoutineProjectionStoreTests: XCTestCase {
     }
 }
 
-// 2026-08-06: audit fix — dead twin deleted. AtriaPlanProjectionStoreTests
-// covered AtriaPlanTab/AtriaPlanProjectionStore, the unmounted legacy Plan tab
-// root removed with its file (the .plan slot mounts AtriaActivityMonitorTab).
+@MainActor
+final class AtriaPlanProjectionStoreTests: XCTestCase {
+    private func plan(offset: TimeInterval = 0) -> WeeklyPlan {
+        WeeklyPlan(rollups: [],
+                   now: Date(timeIntervalSinceReferenceDate: 800_000_000 + offset))
+    }
+
+    func testEqualWeeklyPlanRefreshDoesNotPublish() {
+        let initial = plan()
+        let projection = AtriaPlanProjectionStore(weeklyPlan: initial)
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        XCTAssertFalse(projection.refresh(initial))
+        XCTAssertEqual(publications, 0)
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testChangedWeeklyPlanPublishesExactlyOnce() {
+        let projection = AtriaPlanProjectionStore(weeklyPlan: plan())
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        XCTAssertTrue(projection.refresh(plan(offset: 7 * 24 * 60 * 60)))
+        XCTAssertEqual(publications, 1)
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testPlanTabUsesRollupProjectionInsteadOfWholeSessionStoreObservation() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaPlanTab.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains("@ObservedObject var store: SessionStore"))
+        XCTAssertTrue(source.contains("@StateObject private var projectionStore: AtriaPlanProjectionStore"))
+        XCTAssertTrue(source.contains("store.$dailyRollupHistory"))
+        XCTAssertTrue(source.contains("NotificationCenter.default.publisher(for: .NSCalendarDayChanged)"))
+    }
+}

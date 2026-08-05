@@ -136,6 +136,346 @@ struct ContentView: View {
     }
 }
 
+/// Onboarding step: an optional friendly nickname used for a warmer greeting
+/// elsewhere in the app. Purely cosmetic — skipping leaves the key unset and
+/// nothing else depends on it. Written directly via `UserDefaults.standard`
+/// (not `@AppStorage`/`@AtriaDefault`) since this view exists for a single
+/// tap and has no reason to observe the key afterward.
+struct AtriaOnboardingNicknameStep: View {
+    static let nicknameKey = "atria.user.nickname"
+
+    let onContinue: () -> Void
+    @State private var nickname = ""
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                AtriaDashboardBackdrop()
+                    .ignoresSafeArea()
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Image(systemName: "person.text.rectangle.fill")
+                            .font(.system(size: 42, weight: .semibold))
+                            .foregroundStyle(.blue)
+                            .symbolRenderingMode(.hierarchical)
+                        Text("What should we call you?")
+                            .font(.system(size: 34, weight: .bold, design: .rounded))
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("Optional — used for a friendlier greeting around the app. Skip if you'd rather not.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        TextField("Nickname", text: $nickname)
+                            .textInputAutocapitalization(.words)
+                            .autocorrectionDisabled()
+                            .submitLabel(.done)
+                            .padding(18)
+                            .atriaCard(emphasis: .soft)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 24)
+                    .padding(.bottom, 124)
+                }
+            }
+            .safeAreaBar(edge: .bottom) {
+                VStack(spacing: 10) {
+                    Button {
+                        persistNickname()
+                        onContinue()
+                    } label: {
+                        Text(trimmedNickname.isEmpty ? "Skip" : "Continue")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .atriaCardAction(tint: .green)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 16)
+            }
+        }
+    }
+
+    private var trimmedNickname: String {
+        nickname.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func persistNickname() {
+        let trimmed = trimmedNickname
+        if trimmed.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.nicknameKey)
+        } else {
+            UserDefaults.standard.set(trimmed, forKey: Self.nicknameKey)
+        }
+    }
+}
+
+/// Onboarding step: pick which of the five supported metrics (sleep/recovery/
+/// strain/hrv/rhr) each of the three home-screen rings shows, and which
+/// metric sits in the ring's center number. Pre-checked to the same defaults
+/// the Today screen and `AtriaHomeLayoutConfig` already fall back to
+/// (sleep/recovery/strain, center recovery) so skipping this step is
+/// indistinguishable from never having seen it. Persists to the exact same
+/// keys/formats `AtriaTodayScreen.swift` and `AtriaHomeLayoutConfig.swift`
+/// read: the `atria.today.ringMetrics` CSV of `AtriaTriRingSlot` raw values,
+/// and `ringCenterMetric` inside the `AtriaHomeLayoutConfig` JSON blob at
+/// `AtriaHomeLayoutConfig.storageKey`.
+struct AtriaOnboardingRingPickerStep: View {
+    static let ringMetricsKey = "atria.today.ringMetrics"
+
+    let onContinue: () -> Void
+    @State private var ringSlots: [AtriaTriRingSlot] = AtriaTriRingSlot.defaultOrder
+    @State private var centerMetric: AtriaHomeLayoutConfig.RingCenterMetric = .recovery
+
+    private static let positionLabels = ["Outer ring", "Middle ring", "Inner ring"]
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                AtriaDashboardBackdrop()
+                    .ignoresSafeArea()
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        // Live preview of the actual ring choices (2026-07-07
+                        // design handoff) -- fills are illustrative, same
+                        // precedent as AtriaOnboardingFlow.onboardingRingCard.
+                        ringPreviewCard
+                        Text("Choose your rings")
+                            .font(.system(size: 34, weight: .bold, design: .rounded))
+                        Text("Pick what the three rings track, and which one sits in the center. You can always change this later from Customize Today.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        VStack(alignment: .leading, spacing: 16) {
+                            ForEach(Array(ringSlots.enumerated()), id: \.offset) { index, slot in
+                                HStack(spacing: 10) {
+                                    Circle()
+                                        .fill(Self.slotTint(slot))
+                                        .frame(width: 10, height: 10)
+                                        .accessibilityHidden(true)
+                                    Text(Self.positionLabels[index])
+                                        .font(.subheadline.weight(.semibold))
+                                    Spacer()
+                                    Picker(Self.positionLabels[index], selection: Binding(
+                                        get: { slot },
+                                        set: { assignRingSlot($0, toPosition: index) }
+                                    )) {
+                                        ForEach(AtriaTriRingSlot.allCases, id: \.self) { option in
+                                            Text(option.label).tag(option)
+                                        }
+                                    }
+                                    .pickerStyle(.menu)
+                                }
+                            }
+                        }
+                        .padding(18)
+                        .atriaCard(emphasis: .soft)
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Center number")
+                                .font(.subheadline.weight(.semibold))
+                            Picker("Center metric", selection: $centerMetric) {
+                                ForEach(AtriaHomeLayoutConfig.RingCenterMetric.allCases, id: \.self) { metric in
+                                    Text(centerMetricLabel(metric)).tag(metric)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                        }
+                        .padding(18)
+                        .atriaCard(emphasis: .soft)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 24)
+                    .padding(.bottom, 124)
+                }
+            }
+            .safeAreaBar(edge: .bottom) {
+                VStack(spacing: 10) {
+                    Button {
+                        persistRingChoices()
+                        onContinue()
+                    } label: {
+                        Text("Continue")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .atriaCardAction(tint: .green)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 16)
+            }
+        }
+    }
+
+    private var ringPreviewCard: some View {
+        AtriaTriRing(slots: ringSlots.enumerated().map { index, slot in
+            AtriaTriRingSlotContent(slot: slot,
+                                    metric: AtriaTriRingMetric(title: slot.label,
+                                                               value: Self.sampleValue(slot),
+                                                               detail: "Example",
+                                                               systemImage: Self.slotIcon(slot),
+                                                               tint: Self.slotTint(slot),
+                                                               fill: [0.82, 0.62, 0.46][index]))
+        },
+        centerValue: Self.sampleValue(centerSlot),
+        centerState: "Example \u{00b7} \(centerMetricLabel(centerMetric))",
+        accessibilitySummary: "Preview of your ring choices with example fills, not real data.",
+        actions: [:])
+        .frame(maxWidth: 240)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 6)
+        .atriaCard(emphasis: .soft)
+    }
+
+    /// The slot whose example value shows in the preview's center.
+    private var centerSlot: AtriaTriRingSlot {
+        switch centerMetric {
+        case .recovery: return .recovery
+        case .sleep: return .sleep
+        case .strain: return .strain
+        }
+    }
+
+    /// One identity hue per metric -- the same Metrics.electric* hues the
+    /// live ring and glance tiles use, so the picker dots and preview match
+    /// what the Today screen will actually paint.
+    private static func slotTint(_ slot: AtriaTriRingSlot) -> Color {
+        switch slot {
+        case .sleep: return Metrics.electricSleep
+        case .recovery: return Metrics.electricGreen
+        case .strain: return Metrics.electricStrain
+        case .hrv: return Metrics.electricHRV
+        case .rhr: return Metrics.electricRHR
+        }
+    }
+
+    private static func slotIcon(_ slot: AtriaTriRingSlot) -> String {
+        switch slot {
+        case .sleep: return "bed.double.fill"
+        case .recovery: return "heart.fill"
+        case .strain: return "flame.fill"
+        case .hrv: return "waveform.path.ecg"
+        case .rhr: return "heart.circle.fill"
+        }
+    }
+
+    private static func sampleValue(_ slot: AtriaTriRingSlot) -> String {
+        switch slot {
+        case .sleep: return "7h 24m"
+        case .recovery: return "78%"
+        case .strain: return "12.4"
+        case .hrv: return "62 ms"
+        case .rhr: return "55 bpm"
+        }
+    }
+
+    /// Same swap-rather-than-duplicate assignment `AtriaTodayScreen.swift`
+    /// uses: if the picked metric already occupies a different ring, the two
+    /// positions trade places instead of leaving a metric on two rings.
+    private func assignRingSlot(_ slot: AtriaTriRingSlot, toPosition position: Int) {
+        var slots = ringSlots
+        guard slots.indices.contains(position) else { return }
+        if let existing = slots.firstIndex(of: slot), existing != position {
+            slots.swapAt(existing, position)
+        } else {
+            slots[position] = slot
+        }
+        ringSlots = slots
+    }
+
+    private func centerMetricLabel(_ metric: AtriaHomeLayoutConfig.RingCenterMetric) -> String {
+        switch metric {
+        case .recovery: return "Recovery"
+        case .sleep: return "Sleep"
+        case .strain: return "Strain"
+        }
+    }
+
+    private func persistRingChoices() {
+        let csv = ringSlots.map(\.rawValue).joined(separator: ",")
+        UserDefaults.standard.set(csv, forKey: Self.ringMetricsKey)
+
+        var config: AtriaHomeLayoutConfig = .default
+        if let data = UserDefaults.standard.string(forKey: AtriaHomeLayoutConfig.storageKey)?.data(using: .utf8),
+           !data.isEmpty,
+           let decoded = try? AtriaHomeLayoutConfig.decoded(from: data) {
+            config = decoded
+        }
+        config.ringCenterMetric = centerMetric
+        if let encoded = try? config.encodedData(),
+           let json = String(data: encoded, encoding: .utf8) {
+            UserDefaults.standard.set(json, forKey: AtriaHomeLayoutConfig.storageKey)
+        }
+    }
+}
+
+/// Onboarding step: optional, off-by-default cycle-tracking opt-in. Honest
+/// about scope (stays on this phone, never in research bundles) and phrased
+/// with no gendered assumptions — the toggle is for anyone who wants
+/// phase-aware notes, not addressed to a presumed audience. Writes through
+/// the same `AtriaCycleTracking.setEnabled` path Settings/Journal use, so the
+/// existing off-by-default and no-history-loss guarantees are unchanged.
+struct AtriaOnboardingWomensHealthStep: View {
+    let onContinue: () -> Void
+    @State private var cycleTrackingEnabled = false
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                AtriaDashboardBackdrop()
+                    .ignoresSafeArea()
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Image(systemName: "calendar.circle.fill")
+                            .font(.system(size: 42, weight: .semibold))
+                            .foregroundStyle(.pink)
+                            .symbolRenderingMode(.hierarchical)
+                        Text("Cycle tracking")
+                            .font(.system(size: 34, weight: .bold, design: .rounded))
+                        Text("Optional. Stays on this phone. Not in research bundles.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        Toggle(isOn: $cycleTrackingEnabled) {
+                            Label("Track menstrual cycle", systemImage: "calendar.circle.fill")
+                        }
+                        .padding(18)
+                        .atriaCard(emphasis: .soft)
+
+                        DisclosureGroup("How it works") {
+                            Text("Turn it on any time from Journal. Phase-aware notes are estimates, never a diagnosis.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .font(.subheadline.weight(.semibold))
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 24)
+                    .padding(.bottom, 124)
+                }
+            }
+            .safeAreaBar(edge: .bottom) {
+                VStack(spacing: 10) {
+                    Button {
+                        AtriaCycleTracking.setEnabled(cycleTrackingEnabled)
+                        onContinue()
+                    } label: {
+                        Text("Continue")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .atriaCardAction(tint: .green)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 16)
+            }
+        }
+    }
+}
+
 /// Final onboarding step: the anonymous research-sharing choice. Opt-out —
 /// the toggle starts ON, honest about what leaves the phone, and the user can
 /// decline right here or later in Settings. Consent itself is still only ever
@@ -199,6 +539,13 @@ struct AtriaOnboardingSharingChoiceStep: View {
                 .padding(.bottom, 16)
             }
         }
+    }
+}
+
+private enum OfficialAppCoexistenceRisk {
+    static var mayBeInstalled: Bool {
+        guard let url = URL(string: "whoop://") else { return false }
+        return UIApplication.shared.canOpenURL(url)
     }
 }
 

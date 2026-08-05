@@ -105,9 +105,17 @@ final class AtriaMetricAuthorityConsistencyTests: XCTestCase {
             "sleep?.durationHours / max(sleepGoalHours"
         ))
 
-        // 2026-08-06: audit fix — dead twin deleted. The sleepPlanTargetHours/
-        // sleepPlanTargetText pin targeted the removed legacy Overview guidance
-        // section; the surviving sleepHeroState pin below covers the live path.
+        let planStart = try XCTUnwrap(overview.range(
+            of: "private var sleepPlanTargetHours"
+        ))
+        let planEnd = try XCTUnwrap(overview.range(
+            of: "private var sleepPlanTargetText",
+            range: planStart.upperBound..<overview.endIndex
+        ))
+        XCTAssertTrue(
+            overview[planStart.lowerBound..<planEnd.lowerBound]
+                .contains("yesterdayStrain: yesterdayStrainForLatestSleep")
+        )
 
         let heroStart = try XCTUnwrap(overview.range(
             of: "private var sleepHeroState"
