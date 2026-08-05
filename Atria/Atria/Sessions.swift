@@ -7392,11 +7392,13 @@ final class SessionStore: ObservableObject {
     // ~1.3GB retained recovered working set. The whole recompute cycle is one
     // heavy lane; the pipeline's own history component still passes because
     // it calls with isRecoveredPublication: true.
+    // Widened AGAIN to the rest window (2026-08-05, forced-gauntlet repro):
+    // after a supersede the phase is .idle for the 20s inter-cycle rest with
+    // trailing work queued and the working set still resident — the history
+    // ENTRY load (8 large canonical payloads) ran in exactly that window and
+    // climbed 1259→3372MB. heavyCycleEngaged covers it.
     private var recoveredProjectionScanActive: Bool {
-        switch recoveredDataRecompute.phase {
-        case .projecting, .deriving: return true
-        case .idle, .failed: return false
-        }
+        recoveredDataRecompute.heavyCycleEngaged
     }
 
     private var nonExactArchiveConsumerShouldDefer: Bool {
@@ -7525,11 +7527,24 @@ final class SessionStore: ObservableObject {
                     canonicalPageCursor = loadedCanonicalPageCursor
                     canonicalHistoryHasMore = loadedCanonicalHistoryHasMore
                 } else {
-                    let canonicalPage = HistoricalArchive
-                        .readVerifiedCanonicalConsumerSourcePage(
-                            after: nil,
-                            maximumSourceCount: 8
-                        )
+                    // Dying thread + note (2026-08-05 heavy-lane fix): this
+                    // 8-payload canonical page read is the history pass's
+                    // ENTRY materialization — it climbed 1259→3372MB when it
+                    // ran on this long-lived queue during a recompute rest
+                    // window. The note makes the lane discriminable forever;
+                    // the dying thread returns its parse garbage at teardown.
+                    AtriaMemprobe.note("hist_canonical_page_read")
+                    let canonicalPage = AtriaTransientWorkThread.run(
+                        name: "atria.hist-canonical-page",
+                        qualityOfService: .utility
+                    ) {
+                        HistoricalArchive
+                            .readVerifiedCanonicalConsumerSourcePage(
+                                after: nil,
+                                maximumSourceCount: 8
+                            )
+                    }
+                    AtriaMemprobe.note("hist_canonical_page_read_done sources=\(canonicalPage.sources.count)")
                     canonicalHistory = canonicalPage.sources
                     canonicalPageCursor = canonicalPage.nextCursor
                     canonicalHistoryHasMore = canonicalPage.hasMore

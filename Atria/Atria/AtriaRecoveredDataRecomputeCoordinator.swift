@@ -220,6 +220,21 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         return pending
     }
 
+    /// True while a recompute cycle is running OR one is queued behind the
+    /// inter-cycle rest (2026-08-05 heavy-lane fix): after a supersede the
+    /// phase goes .idle for the 20s rest with trailing work queued — the
+    /// retained recovered working set (~1.3GB) is still resident, so external
+    /// heavy passes must keep deferring through that window. A quiet idle
+    /// (no trailing request) frees the lane.
+    var heavyCycleEngaged: Bool {
+        switch phase {
+        case .projecting, .deriving:
+            return true
+        case .idle, .failed:
+            return trailingRequest != nil
+        }
+    }
+
     /// The owner schedules a bounded timeout for every ticket. A hung archive
     /// read or missing callback must retain the previous dashboard/widget image,
     /// never authorize a partial publication.
