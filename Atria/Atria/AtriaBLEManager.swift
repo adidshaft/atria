@@ -31088,10 +31088,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         ?? authority.historyComplete?.receivedAtUnix
                         ?? authority.gap.endUnix
                 )
-                let catalogMaterialization = try HistoricalArchive
-                    .materializeNextSealedCatalogDependency(
-                        now: stableMaterializationDate
-                    )
+                // Dying threads (2026-08-05 round 7 — the symbolicated killer):
+                // this terminal materialization ran whole-archive digest +
+                // verify + consumer publication on this long-lived queue and
+                // was THE +60s cold-launch jetsam (burst_stack: verifyFiles →
+                // sha256, streamedWholeArchiveDigest, MotionEpoch.encode under
+                // publishPendingConsumersUsingLatestFullScan). Each heavy step
+                // now runs on a thread that dies so its transient garbage
+                // returns at teardown.
+                AtriaMemprobe.note("fulldrain_materialize_begin status=\(String(describing: authority.status).prefix(28))")
+                let catalogMaterialization = try AtriaTransientWorkThread.run(
+                    name: "atria.terminal-catalog",
+                    qualityOfService: .utility
+                ) {
+                    Result {
+                        try HistoricalArchive
+                            .materializeNextSealedCatalogDependency(
+                                now: stableMaterializationDate
+                            )
+                    }
+                }.get()
                 if !catalogMaterialization.isComplete {
                     AtriaDebugLog(
                         "ATRIADBG historical_catalog_materialization status=progress generation=%llu chunk=%@ remaining=%d action=yield_preserve_live_raw",
@@ -31115,11 +31131,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             .pendingConsumerDependencyMissing
                     }
                     let previousFullScan = try fullScanCompletionStore.loadLatest()
-                    let refreshedSnapshot = try HistoricalArchive
-                        .currentFullScanSnapshotEvidence(
-                            sourceChunkID: previousFullScan.sourceChunkID,
-                            sourceRawSHA256: previousFullScan.sourceRawSHA256
-                        )
+                    AtriaMemprobe.note("fulldrain_snapshot_evidence_begin")
+                    let refreshedSnapshot = try AtriaTransientWorkThread.run(
+                        name: "atria.terminal-evidence",
+                        qualityOfService: .utility
+                    ) {
+                        Result {
+                            try HistoricalArchive
+                                .currentFullScanSnapshotEvidence(
+                                    sourceChunkID: previousFullScan.sourceChunkID,
+                                    sourceRawSHA256: previousFullScan.sourceRawSHA256
+                                )
+                        }
+                    }.get()
+                    AtriaMemprobe.note("fulldrain_snapshot_evidence_end")
                     let fullScanSnapshotChanged =
                         previousFullScan.catalogGeneration
                             != refreshedSnapshot.catalogGeneration
@@ -31169,12 +31194,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                 refreshedSnapshot.aggregateSnapshotSHA256
                         ))
                     }
-                    let report = try HistoricalArchive
-                        .publishPendingConsumersUsingLatestFullScan(
-                            dependency: dependency,
-                            fullScanStore: fullScanCompletionStore,
-                            configuration: configuration
-                        )
+                    AtriaMemprobe.note("fulldrain_publish_begin")
+                    let report = try AtriaTransientWorkThread.run(
+                        name: "atria.terminal-consumers",
+                        qualityOfService: .utility
+                    ) {
+                        Result {
+                            try HistoricalArchive
+                                .publishPendingConsumersUsingLatestFullScan(
+                                    dependency: dependency,
+                                    fullScanStore: fullScanCompletionStore,
+                                    configuration: configuration
+                                )
+                        }
+                    }.get()
+                    AtriaMemprobe.note("fulldrain_publish_end")
                     guard report.hasCompleteConsumerCoverage,
                           report.inspectedSourceCount == 1,
                           report.published.count == 5,
