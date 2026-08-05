@@ -2308,3 +2308,24 @@ rebuild byte-determinism across OS builds.
 Implementation delegated to a subagent with the full plan + house
 rules (no commit; gate/build/tests verified positively). Review +
 commit + on-device gap-resolution verification when it reports.
+
+## 15.26 Repair SHIPPED (40ae156a); resolution watch running (2026-08-05 ~15:50)
+
+Two-leg repair committed after independent verification (gate baseline
+4; 18/18 on materializer+crash-at-seal suites; 109/109 total across
+affected suites reported by the implementation pass; build 0 errors).
+Installed + launched. First 7-min pull: authority unchanged and NO new
+failure recorded (failureAt still 03:55) — the materialization had not
+fired yet this process (trigger = transport settle; flush cadence
+~10min; the phone's screen state gates some resume paths). Gate
+analysis: the coverage-failure fingerprint cache is NOT suppressing
+(only seeds on completionCoverageMismatch; ours is
+aggregateCatalogMismatch), and the persisted dependency-mismatch key
+references the OLD Jul-24 gap → fingerprint differs → clears-and-
+proceeds. 20-min telemetry watch running (authority status +
+lastStatus per 5min). Success = status advances past
+gapResolvedConsumersPending + quarantine dir appears with the
+3939d3d6 pair + a NEW failureAt only if a different error class
+surfaces. If the watch expires unchanged: check whether the resume
+entry needs a foreground activation (user opening the phone provides
+it naturally).
