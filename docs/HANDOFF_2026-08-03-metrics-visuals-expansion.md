@@ -2073,3 +2073,25 @@ Lever usage for future sessions:
     --user mobile --domain-type appDataContainer \
     --domain-identifier com.adidshaft.atria
   then terminate+launch; flag is one-shot (consumed at init).
+
+## 15.17 Round-5: rest-lane verified, killer cornered to 5s window (2026-08-05 ~08:55)
+
+Forced gauntlet #2 (rest-lane build): ALL shipped fixes verified live —
+lane guard deflected during rest window (hist_deferred fired), entry
+load instant on dying thread (hist_canonical_page_read sources=0),
+scan 881MB ✓, post_swap 1275MB → reclaimed to 874MB ✓ — then the
+climber AGAIN: 874→3316MB in ~4s (~550MB/s), note-less, non-main
+(hero snapshots interleaved), death +48s. The relaunch (12359) ran
+397s at 297MB — post-death calm as always.
+
+CORNERED: every death lands in the seconds after post_swap of a
+SUPERSEDED cycle. All noted lanes are exonerated by their notes.
+Remaining un-noted post-supersede lanes: the mutation-transaction
+ROLLBACK (+ its required-refresh tail) — round-5 notes now bracket
+them (rollback_begin/ops, rollback_end, required_hist_refresh_check).
+Forced gauntlet #3 armed on the round-5 build. If rollback_begin is
+the last note before the climb, the fix is bounding the rollback's
+restoration (or skipping rollback for superseded-but-committed swaps —
+the swap is VALID data; superseding only means a newer revision is
+queued, and rolling back a just-verified projection may itself be the
+wrong policy — decide with the evidence).
