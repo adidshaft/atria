@@ -1170,10 +1170,6 @@ enum HistoricalArchive {
         requestedEnd: Date,
         completedAt: Date
     ) throws -> TerminalCompletionPublicationResult {
-        // TEMP instrumentation (2026-08-05 round-4): terminal consumer
-        // materialization is a post-drain heavy lane with no probe note.
-        AtriaMemprobe.note("terminal_publish_entry seq=\(durableSequence)")
-        defer { AtriaMemprobe.note("terminal_publish_exit") }
         guard durableSequence > 0,
               requestedEnd > requestedStart,
               completedAt >= requestedEnd else {
@@ -2450,8 +2446,6 @@ enum HistoricalArchive {
                 end: end
             )
         )
-        AtriaMemprobe.note("motion_tick_read_begin files=\(descriptors.count) bytes=\(descriptors.reduce(0) { $0 + $1.size })")
-        defer { AtriaMemprobe.note("motion_tick_read_end") }
         typealias CadencePoint = AtriaWhoop4GravityCadenceStepModel.Point
         var endpoints: [String: CadencePoint] = [:]
         var clockOffsetByPayload: [String: Int] = [:]
@@ -2675,7 +2669,6 @@ enum HistoricalArchive {
         // ~1GB backlogged archive it ballooned ~350MB/s to jetsam (the +65s
         // cold-launch climber, workflow-verified). Same driver pattern as the
         // recovered scan: resumable 32MB passes, each on a thread that dies.
-        AtriaMemprobe.note("step_receipt_day_scan files=\(descriptors.count)")
         func consumeDayEvidenceLine(_ line: Data) {
             guard let object = try? JSONSerialization.jsonObject(with: line)
                     as? [String: Any],
@@ -2808,7 +2801,6 @@ enum HistoricalArchive {
                 break
             }
         }
-        AtriaMemprobe.note("step_receipt_day_scan_done passes=\(dayScanPassIndex) rows=\(rows.count)")
         guard dayScanComplete else { return .incomplete }
         if let compactMigrationStore {
             let migrationPoints = rows.compactMap {
@@ -3511,22 +3503,7 @@ enum HistoricalArchive {
         recoveredDataCacheLock.lock()
         defer { recoveredDataCacheLock.unlock() }
 
-        // TEMP repro lever (2026-08-05): forces plan=rebuild regardless of the
-        // in-memory cache so the backlogged cold-launch gauntlet is a
-        // one-command repro instead of needing organic overnight backlog.
-        // Work-only (rebuilds are idempotent cache rebuilds). Remove with the
-        // memprobe.
-        let forceRebuild = ProcessInfo.processInfo.arguments
-            .contains("--atria-debug-force-recovered-rebuild")
-            || UserDefaults.standard.bool(
-                forKey: "atria.debug.forceRebuildOnce"
-            )
-        if forceRebuild {
-            UserDefaults.standard.removeObject(
-                forKey: "atria.debug.forceRebuildOnce"
-            )
-        }
-        let reusableCache = forceRebuild ? nil : recoveredDataCache.flatMap { cache in
+        let reusableCache = recoveredDataCache.flatMap { cache in
             cache.budget == budget
                 && cache.coveredSince <= cutoff
                 && cutoff - cache.coveredSince <= recoveredDataCacheMaximumWindowDrift
@@ -3596,18 +3573,7 @@ enum HistoricalArchive {
         }
 
         var pressureReliefCountdown = 16
-        // TEMPORARY bisect lever (2026-08-04, footprint hunt): strips the scan
-        // closure layer-by-layer to attribute the ~3.3GB dirty growth.
-        //   --atria-debug-recovered-scan-mode count-only  → scanner+decompress only
-        //   --atria-debug-recovered-scan-mode decode-only → + Record(scanLine:) parse
-        //   --atria-debug-recovered-scan-mode append-sans-motion|-rr|-skin
-        //       → full append minus exactly one subsystem (lane bisect)
-        // Absent → full production behavior. Remove with the memprobe.
-        let scanBisectMode = ProcessInfo.processInfo.arguments
-            .drop { $0 != "--atria-debug-recovered-scan-mode" }.dropFirst().first
-        AtriaMemprobe.note("rec_scan_begin sources=\(sources.count) plan=\(String(describing: plan).prefix(12)) bisect=\(scanBisectMode ?? "full")")
         func scanProgressTick(_ statistics: AtriaHistoricalJSONLRecentScanner.Statistics) {
-                AtriaMemprobe.note("rec_scan_progress bytes=\(statistics.byteCount) hr=\(heartRate.count) rr=\(rrAccumulator.acceptedRecordCount) grav=\(gravity.count) motionIDs=\(motionRecordIdentities.count)")
                 // Footprint probe proved the scan accumulates ~1.4KB of
                 // freed-but-dirty malloc pages per decoded line (3.4GB over a
                 // ~125MB scan) while retained arrays stay tiny — the decode
@@ -3621,10 +3587,6 @@ enum HistoricalArchive {
                 onScanProgress?(statistics)
         }
         func consumeScanCandidate(_ lineData: Data) {
-            if scanBisectMode == "count-only" {
-                decodedRecordCount += 1
-                return
-            }
             // Foundation JSON is banned from this hot path: decode-only
             // bisects proved BOTH JSONDecoder and JSONSerialization retain
             // live memory per parse on iOS 27.0 beta (~2.6GB per scan,
@@ -3634,7 +3596,6 @@ enum HistoricalArchive {
             // JSONDecoder enforced by AtriaRecordScanParserParityTests.
             guard let record = Record(scanLine: lineData) else { return }
             decodedRecordCount += 1
-            if scanBisectMode == "decode-only" { return }
             appendRecoveredRecord(record,
                                   cutoff: coveredSince,
                                   budget: budget,
@@ -3644,9 +3605,9 @@ enum HistoricalArchive {
                                   skinTemperatureRawPoints: &skinTemperatureRawPoints,
                                   gravity: &gravity,
                                   motionRecordIdentities: &motionRecordIdentities,
-                                  skipMotion: scanBisectMode == "append-sans-motion",
-                                  skipRR: scanBisectMode == "append-sans-rr",
-                                  skipSkin: scanBisectMode == "append-sans-skin")
+                                  skipMotion: false,
+                                  skipRR: false,
+                                  skipSkin: false)
         }
         // BUDGETED PASSES (2026-08-04, the balloon's architectural fix): the
         // 3-way append bisect proved every per-line lane contributes transient
@@ -3718,7 +3679,6 @@ enum HistoricalArchive {
                 scanComplete = passResult.complete
                 break
             }
-            AtriaMemprobe.note("rec_scan_pass \(passIndex) bytes=\(priorPassStatistics.byteCount) fp=\(AtriaMemprobe.currentFootprintBytes() / (1024 * 1024))MB")
             remainingSources = remainingSources.compactMap { source in
                 guard let state = mergedScanStates[source.descriptor.path] else {
                     return source  // untouched this pass
@@ -3741,22 +3701,19 @@ enum HistoricalArchive {
             // teardown time to actually return pages before the next burst.
             // Bounded — progress beats a stall if reclaim never comes.
             let unwindDeadline = Date().addingTimeInterval(2.0)
-            var footprint = AtriaMemprobe.currentFootprintBytes()
+            var footprint = Self.currentPhysFootprintBytes()
             while footprint > 900 * 1024 * 1024, Date() < unwindDeadline {
                 usleep(120_000)
-                footprint = AtriaMemprobe.currentFootprintBytes()
+                footprint = Self.currentPhysFootprintBytes()
             }
-            AtriaMemprobe.note("rec_scan_unwind pass=\(passIndex) fp=\(footprint / (1024 * 1024))MB")
         }
         let scanResult = AtriaHistoricalJSONLRecentScanner.Result(
             states: mergedScanStates,
             statistics: priorPassStatistics,
             complete: scanComplete)
-        AtriaMemprobe.note("rec_scan_done hr=\(heartRate.count) rr=\(rrAccumulator.acceptedRecordCount) skin=\(skinTemperatureRawPoints.count) grav=\(gravity.count) motionIDs=\(motionRecordIdentities.count)")
         sortRecoveredData(heartRate: &heartRate,
                           skinTemperatureRawPoints: &skinTemperatureRawPoints,
                           gravity: &gravity)
-        AtriaMemprobe.note("rec_sort_done")
 
         var fileStates: [String: AtriaHistoricalJSONLRecentScanner.FileState]
         if case .incremental = plan {
@@ -3946,6 +3903,21 @@ enum HistoricalArchive {
             }),
             truncatedChannels: cache.truncatedChannels
         )
+    }
+
+    /// phys_footprint — the metric jetsam enforces. Used by the budgeted
+    /// scan's adaptive unwind wait (permanent architecture, 2026-08-04/05).
+    static func currentPhysFootprintBytes() -> UInt64 {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.stride / MemoryLayout<integer_t>.stride)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), rebound, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return 0 }
+        return UInt64(info.phys_footprint)
     }
 
     private static func recoveredBudgetLimit(

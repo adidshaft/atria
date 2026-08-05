@@ -202,9 +202,6 @@ enum AtriaHistoricalDailyConsumerProjection {
         inspectionProof: InspectionProof,
         completionWatermark: Date
     ) throws -> DailyMetricsArtifact {
-        // TEMP instrumentation (2026-08-05 round-4): the per-day flatMap over
-        // dependency chunks is a known O(days×facts) lane with no note.
-        AtriaMemprobe.note("daily_metrics_build deps=\(dependencyChunks.count)")
         let prepared = try prepare(source: source,
                                    dependencyChunks: dependencyChunks,
                                    configuration: configuration,

@@ -112,9 +112,7 @@ struct AtriaHistoricalAggregateReader {
                     frame.split(separator: " ").dropFirst(3).joined(separator: " ")
                 }
                 .joined(separator: " | ")
-            AtriaMemprobe.note("UNBOUNDED_LOAD \(stack)")
         } else {
-            AtriaMemprobe.note("load windowed since=\(since != nil ? 1 : 0) until=\(until != nil ? 1 : 0) limits=\(limits != nil ? 1 : 0)")
         }
         var manifestURLs: [URL] = []
         if let enumerator = fileManager.enumerator(

@@ -12286,8 +12286,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historicalArchiveQueue.async { [weak self] in
             var status = "deferred"
             var detail = "unknown"
-            AtriaMemprobe.note("crash_resume_materialize_begin")
-            defer { AtriaMemprobe.note("crash_resume_materialize_end") }
             do {
                 let result = try HistoricalArchive
                     .resumeTerminalConsumerProjectionsAfterCrash(
@@ -31096,7 +31094,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 // publishPendingConsumersUsingLatestFullScan). Each heavy step
                 // now runs on a thread that dies so its transient garbage
                 // returns at teardown.
-                AtriaMemprobe.note("fulldrain_materialize_begin status=\(String(describing: authority.status).prefix(28))")
                 let catalogMaterialization = try AtriaTransientWorkThread.run(
                     name: "atria.terminal-catalog",
                     qualityOfService: .utility
@@ -31131,7 +31128,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             .pendingConsumerDependencyMissing
                     }
                     let previousFullScan = try fullScanCompletionStore.loadLatest()
-                    AtriaMemprobe.note("fulldrain_snapshot_evidence_begin")
                     let refreshedSnapshot = try AtriaTransientWorkThread.run(
                         name: "atria.terminal-evidence",
                         qualityOfService: .utility
@@ -31144,7 +31140,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                 )
                         }
                     }.get()
-                    AtriaMemprobe.note("fulldrain_snapshot_evidence_end")
                     let fullScanSnapshotChanged =
                         previousFullScan.catalogGeneration
                             != refreshedSnapshot.catalogGeneration
@@ -31194,7 +31189,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                 refreshedSnapshot.aggregateSnapshotSHA256
                         ))
                     }
-                    AtriaMemprobe.note("fulldrain_publish_begin")
                     let report = try AtriaTransientWorkThread.run(
                         name: "atria.terminal-consumers",
                         qualityOfService: .utility
@@ -31208,7 +31202,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                 )
                         }
                     }.get()
-                    AtriaMemprobe.note("fulldrain_publish_end")
                     guard report.hasCompleteConsumerCoverage,
                           report.inspectedSourceCount == 1,
                           report.published.count == 5,
@@ -31342,7 +31335,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 // terminal request/cursor facts against the advanced verified
                 // snapshots. No range or transport authority is widened.
                 if publication.status == .completionPublished {
-                    AtriaMemprobe.note("publish_terminal_refresh_begin")
                     let refreshed = try HistoricalArchive
                         .publishTerminalCompletionAfterDrain(
                             seal: seal,
@@ -31551,7 +31543,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 }
 
                 if publication.status == .rawSealed {
-                    AtriaMemprobe.note("publish_terminal_sealed_begin")
                     let published = try HistoricalArchive.publishTerminalCompletionAfterDrain(
                         seal: seal,
                         terminalBatchNumber: publication.terminalBatchNumber,
@@ -33035,13 +33026,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     detail += "_completion_published"
                 }
 
-                AtriaMemprobe.note("terminal_resume_materialize_begin")
                 let resumed = try HistoricalArchive
                     .resumeTerminalConsumerProjectionsAfterCrash(
                         job: resumeJob,
                         configuration: configuration
                     )
-                AtriaMemprobe.note("terminal_resume_materialize_end")
                 report = resumed.consumers
                 guard report.hasCompleteConsumerCoverage else {
                     detail = "incomplete_consumer_coverage_published_\(report.published.count)_deferred_\(report.deferredSources.count)"

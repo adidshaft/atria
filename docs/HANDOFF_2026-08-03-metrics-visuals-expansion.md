@@ -2178,3 +2178,24 @@ Confirmation gauntlet #10 running. THEN: strip ALL instrumentation
 comp/arch/terminal/fulldrain/gate notes + force-rebuild flag paths),
 full test suite, and the user-facing verdict: backlogged cold opens
 should no longer silently restart.
+
+## 15.21 Confirmation #10 clean + FULL INSTRUMENTATION STRIP (2026-08-05 ~12:30)
+
+Confirmation gauntlet #10: pid 13029 ran the full forced rebuild at
+peak 1103MB, derived chain INCLUDED (phase=derived history component
+completed — no supersede this time), ended at 949MB via ordinary iOS
+background recycle (NOT jetsam — zero climb). TWO consecutive clean
+gauntlets. The +60s cold-launch death is CLOSED.
+
+STRIP EXECUTED: all 112 AtriaMemprobe calls removed across 9 files;
+AtriaMemprobe.swift DELETED (incl. the deep eye); bisect lever
+(scanBisectMode) removed; repro lever (flag file + defaults key +
+launch arg) removed; stale TEMP comments cleaned. KEPT (permanent
+architecture): budgeted dying-thread passes everywhere, the heavy-lane
+guards (heavyCycleEngaged), shadow cold-launch skip, compaction defer,
+streaming sha256, the adaptive unwind wait (footprint helper relocated
+to HistoricalArchive.currentPhysFootprintBytes), malloc pressure
+relief, and ALL AtriaDebugLog lines. Gate has zero probe pins;
+baseline 4 unchanged. Full build + FULL test suite running — final
+verdict next cycle. Re-instrumentation if ever needed: single revert
+of the strip commit restores the entire eye.

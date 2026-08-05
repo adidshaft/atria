@@ -449,8 +449,6 @@ enum WidgetSnapshotPublisher {
                         ble: AtriaBLEManager,
                         reason: String = "update",
                         now: Date = Date()) -> WidgetSnapshot {
-        AtriaMemprobe.note("widget_publish_begin reason=\(reason)")
-        defer { AtriaMemprobe.note("widget_publish_end") }
         // Cold-start strain-flash fix (2026-07-07, device-diagnosed): the
         // volatile live BLE resting reading used to outrank the stable
         // saved-session resting, so the first widget snapshots computed
