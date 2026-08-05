@@ -2953,3 +2953,15 @@ PENDING: visual sign-off on device (phone unplugged; selector swaps
 are sim-verifiable — screenshot pass on next UI-session look or
 next device attach). Rolling digits are animation-only: build-verify
 was the spec's stated bar.
+
+## 15.55 Med items H3+O7 shipped-in-source (2026-08-05 ~21:00)
+
+Same workflow shape, clean run: detection-banner evidence readouts
+(shared evidenceBar helper gained a rollValue parameter — Effort
+keyed on prompt.heartRate, Strain on prompt.strain) + strain-band
+gauge center readout roll digits, reduceMotion-guarded, Motion
+.emphatic. Build succeeded, gate 4 baseline, 0 review problems.
+Spec backlog now: H4 (radius sweep) + O8 (line gradient) — BOTH
+need visual verification (sim screenshot pass or device look);
+O9 + battery chip = judgment calls, deferred per spec.
+NOT installed on phone tonight (install moratorium per §15.50).
