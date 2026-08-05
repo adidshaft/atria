@@ -3272,3 +3272,26 @@ TRIAGE:
 - ENGINE: dev-mode compile-time DEBUG barrier (codebase's own
   standard, Sessions.swift:15886 comment); 60bpm resting-HR default
   shaping historical strain/zones silently.
+
+## 15.68 Midnight verification + audit-fix batch committed (00:32)
+
+AUDIT FIXES: b54bb1a2 — M1 respiratory own-formatter (no strain
+clamp), M2 signed sleep delta, M3 em-dash→"--" ×11 (SpO2 hero
+em-dash kept per documented 2026-08-01 decision; double-glyph
+detector retained), M4 hour rollover, M5 Patterns computed-0, M6
+"/min" everywhere. Reviewer REVERSED my rpm instruction (live
+surfaces + audit suggestion use "/min"; rpm would have split
+tile-vs-sheet one tap apart) — recorded as the right call. Build ✓
+gate 4 ✓ hero tests ✓. NOT on phone yet (morning install).
+
+MIDNIGHT VERIFICATION: drain RELEASED (sync=0, armed, caught_up 12)
+✓ as predicted. Consumers STILL pending at 00:31: last failed
+attempt 23:28 IST (pre-window-close, expected); no attempt since —
+foreground-gated + trigger cadence. App activated once via devicectl
+00:30; no immediate fire. All preconditions now satisfiable →
+publication expected on the app's next materialization trigger
+(likely well before morning; guaranteed by next natural app open).
+OVERNIGHT WATCH: poll authority ~15min; when it flips to published,
+confirm + note. If STILL pending at morning attach WITH the app
+having foregrounded → §15.50-adjacent trigger-cadence gap, add to
+the intraday-dependency design discussion.
