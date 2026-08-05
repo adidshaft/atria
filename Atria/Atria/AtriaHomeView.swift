@@ -627,7 +627,7 @@ struct AtriaHomeView: View {
                             .padding(.horizontal, 11)
                             .padding(.vertical, 10)
                             .background(.primary.opacity(0.055),
-                                        in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                                        in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
                         }
                     }
                 }
@@ -5950,7 +5950,9 @@ private struct AtriaWorkoutDetectionBanner: View, Equatable {
                         rollValue: prompt.strain)
         }
         .padding(12)
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        // Direct child of the banner's .padding(14).atriaCard — concentric keeps
+        // this panel's corners parallel to the card's (28 − 14 = 14).
+        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.concentric(inset: 14), style: .continuous))
     }
 
     private func evidenceBar(title: String, valueText: String, fraction: Double, tint: Color, rollValue: some Equatable) -> some View {
@@ -6102,7 +6104,9 @@ private struct AtriaSavedWorkoutReviewBanner: View, Equatable {
             .font(.caption2.weight(.semibold))
         }
         .padding(12)
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        // Direct child of the banner's .padding(14).atriaCard — concentric keeps
+        // this panel's corners parallel to the card's (28 − 14 = 14).
+        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.concentric(inset: 14), style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Workout window \(timeRangeText). Peak \(candidate.peakHR), average \(candidate.avgHR), duration \(durationText).")
     }
@@ -6169,7 +6173,7 @@ private struct AtriaSavedWorkoutReviewBanner: View, Equatable {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
-        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 
     private var durationText: String {
@@ -6309,7 +6313,7 @@ private struct AtriaWorkoutReviewHoldBanner: View, Equatable {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
-        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 }
 
@@ -6374,9 +6378,9 @@ private struct AtriaWorkoutZoneEvidenceStrip: View, Equatable {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .background(zone.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(zone.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                 .stroke(zone.tint.opacity(0.14), lineWidth: 1)
         }
         .accessibilityElement(children: .ignore)
@@ -6557,9 +6561,9 @@ private struct AtriaWorkoutReviewFlow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                 .stroke(tint.opacity(0.12), lineWidth: 1)
         }
     }
@@ -6592,9 +6596,9 @@ private struct AtriaWorkoutReviewFlow: View {
             }
         }
         .padding(12)
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                 .stroke(Color.orange.opacity(0.12), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
@@ -6631,7 +6635,7 @@ private struct AtriaWorkoutReviewFlow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(9)
-        .background(tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(tint.opacity(0.06), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
     }
 
     private var reviewDecisionLens: some View {
@@ -6787,9 +6791,9 @@ private struct AtriaWorkoutReviewFlow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
         .padding(.vertical, 9)
-        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                 .stroke(tint.opacity(0.12), lineWidth: 1)
         }
     }
@@ -6837,7 +6841,9 @@ private struct AtriaWorkoutReviewFlow: View {
                     .textInputAutocapitalization(.words)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 11)
-                    .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    // Direct child of the step's .padding(14).atriaCard — concentric
+                    // keeps the field's corners parallel to the card's (28 − 14 = 14).
+                    .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.concentric(inset: 14), style: .continuous))
             }
 
             // Plain one-per-row selection list (2026-08-01 gym-session review):
@@ -6944,11 +6950,11 @@ private struct AtriaWorkoutReviewFlow: View {
             }
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .padding(.horizontal, 10)
-            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         }
         .buttonStyle(.plain)
         .background(selected ? Color.orange.opacity(0.10) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .accessibilityLabel(type.rawValue)
         .accessibilityValue(selected ? "Selected" : "Not selected")
     }
@@ -6987,9 +6993,9 @@ private struct AtriaWorkoutReviewFlow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
                         .background((selectedType == type ? Color.orange : Color.secondary).opacity(selectedType == type ? 0.12 : 0.055),
-                                    in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
                         .overlay {
-                            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                                 .stroke((selectedType == type ? Color.orange : Color.secondary).opacity(selectedType == type ? 0.20 : 0.10), lineWidth: 1)
                         }
                     }
@@ -7057,7 +7063,9 @@ private struct AtriaWorkoutReviewFlow: View {
                 .textInputAutocapitalization(.words)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 11)
-                .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                // Direct child of the step's .padding(14).atriaCard — concentric
+                // keeps the field's corners parallel to the card's (28 − 14 = 14).
+                .background(.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.concentric(inset: 14), style: .continuous))
 
             if !selectedExercises.isEmpty {
                 chipSection(title: "Selected", values: selectedExerciseNames, selected: nil) { value in
@@ -7184,10 +7192,14 @@ private struct AtriaWorkoutReviewFlow: View {
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
+            // Intentionally .chip (was 15): this is a grid cell in the same
+            // adaptive(132) LazyVGrid family as exerciseChip, and the review
+            // flow's selection surfaces (workoutTypeRow, exerciseChip) all sit
+            // at .chip. H4's numeric 14–17→inset rule yields to that convention.
             .background((selected ? Color.mint : Color.orange).opacity(selected ? 0.12 : 0.08),
-                        in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                        in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
                     .stroke((selected ? Color.mint : Color.orange).opacity(selected ? 0.18 : 0.12), lineWidth: 1)
             }
         }
@@ -7298,7 +7310,7 @@ private struct AtriaWorkoutReviewFlow: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(10)
-                .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
             }
         }
         .padding(12)
@@ -7327,9 +7339,9 @@ private struct AtriaWorkoutReviewFlow: View {
                 }
             }
             .padding(10)
-            .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                     .stroke(Color.orange.opacity(0.10), lineWidth: 1)
             }
             .accessibilityElement(children: .contain)
@@ -7419,7 +7431,7 @@ private struct AtriaWorkoutReviewFlow: View {
             }
         }
         .padding(10)
-        .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Exercise history \(row.exercise). \(row.days) saved days. Best \(row.bestSet.map(strengthSetShareText) ?? "none"). \(row.currentPRSet == nil ? "" : "New PR.")")
     }
@@ -7481,9 +7493,9 @@ private struct AtriaWorkoutReviewFlow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
-        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                 .stroke(tint.opacity(0.11), lineWidth: 1)
         }
     }
@@ -7508,7 +7520,7 @@ private struct AtriaWorkoutReviewFlow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 9)
         .padding(.vertical, 8)
-        .background(tint.opacity(0.075), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(tint.opacity(0.075), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
     }
 
     private var footer: some View {
@@ -7691,8 +7703,10 @@ private struct AtriaWorkoutReviewFlow: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
+        // Genuine grid chip — .chip (was 14) despite H4's numeric 14–17→inset
+        // rule; 14 is nearer the chip rung and this IS a chip semantically.
         .background((selected ? Color.orange : Color.secondary).opacity(selected ? 0.14 : 0.08),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .foregroundStyle(selected ? Color.orange : Color.primary)
     }
 
@@ -7722,9 +7736,13 @@ private struct AtriaWorkoutReviewFlow: View {
             .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
-            .background(Color.mint.opacity(0.10), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+            // Intentionally .chip (was 15): renders directly below the 12-radius
+            // exerciseChip grid as "one more item" in the exercise selection
+            // area — matching the chips beats H4's numeric 14–17→inset rule,
+            // which would put an 18 corner flush under a field of 12s.
+            .background(Color.mint.opacity(0.10), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
                     .stroke(Color.mint.opacity(0.18), lineWidth: 1)
             }
         }
@@ -8205,10 +8223,10 @@ private struct AtriaStandByMetric: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
         .background {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                 .fill(.white.opacity(0.08))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
                         .stroke(.white.opacity(0.10), lineWidth: 1)
                 }
         }
