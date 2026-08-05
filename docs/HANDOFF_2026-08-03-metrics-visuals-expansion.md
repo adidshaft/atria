@@ -3233,3 +3233,42 @@ intraday consumer with a rolling window dependency; or publish
 partial-day with honest "through HH:MM" labeling. Also verify the
 terminalConsumerDependencyMismatch.v1 key (Jul-25/26 window) is
 stale. USER INFORMED: lines expected shortly after 00:10 IST.
+
+## 15.67 App-wide honesty/completeness AUDIT — 25 confirmed findings (23:45)
+
+User-requested 5-lens scan (hardcoded / fabrication / missing-viz /
+dead-surfaces / units-format), every finding adversarially verified
+for production reachability + truth + not-a-documented-decision.
+FULL REPORT: docs/AUDIT_2026-08-05-honesty-completeness.json
+(file:line evidence + suggested fix per item).
+ZERO fabrication findings survived — evidence gating held app-wide.
+
+HIGHS (6): expanded chart bridges day gaps the compact chart breaks
+(AtriaExpandedChart); trends expanded chart never receives prior-
+period data → Compare falsely claims no history (AtriaTrendChart);
+weekly-report recovery chart bridges missed days against its own
+comment; MONTHLY REPORT UNREACHABLE (presenter in a never-mounted
+view); BEHAVIOR-INSIGHTS ENGINE computed forever, no live UI;
+respiratory summaries fall through to the STRAIN formatter → capped
+at 21 + unit dropped; negative sleep change renders unsigned (drop
+looks like gain).
+
+TRIAGE:
+- MECHANICAL FIX BATCH (next cycles, pin-checked): respiratory
+  formatter fallthrough; signed sleep delta; em-dash→"--"
+  unification (~15 sites across 3 findings); "1 hr 60 min" boundary;
+  Patterns chip 0-vs-placeholder; respiratory unit label
+  unification (pick one of rpm|/min|breaths/min — WHOOP uses "rpm").
+- CHART HONESTY (needs care, contiguousDayRuns precedent): day-gap
+  bridging in expanded/weekly/trends/HR-timeline charts (4 findings)
+  + prior-period plumbing to expanded chart.
+- PRODUCT DECISIONS (user/UI session): mount or delete monthly
+  report; surface or retire behavior-insights output; label or
+  live-feed the Customize preview numerals; delete dead twins
+  (legacy Overview tree, Vitals/Collection twins, PlanTab,
+  TrendExpandedSheet, 3 legacy onboarding screens — the PlanTab one
+  also invalidates part of the fixture-route doc); hero-panel flag
+  stuck off.
+- ENGINE: dev-mode compile-time DEBUG barrier (codebase's own
+  standard, Sessions.swift:15886 comment); 60bpm resting-HR default
+  shaping historical strain/zones silently.
