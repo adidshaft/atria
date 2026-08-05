@@ -206,6 +206,26 @@ struct AtriaTriRingSlotContent: Equatable {
     let metric: AtriaTriRingMetric
 }
 
+/// How the Today vitals rings are laid out — a user preference (Settings ->
+/// Display). `concentric` is the default Apple-Activity-style nested rings;
+/// `separate` is the WHOOP-style row of three side-by-side rings, each carrying
+/// its own value and label. Persisted under `defaultsKey`; read live by
+/// `AtriaTriRing` and the share card, so flipping it updates every ring surface
+/// at once. Default `.concentric` keeps every existing call site unchanged.
+enum AtriaRingLayoutStyle: String, CaseIterable, Equatable {
+    case concentric
+    case separate
+
+    static let defaultsKey = "atria.home.ringLayoutStyle"
+
+    var label: String {
+        switch self {
+        case .concentric: return "Concentric"
+        case .separate: return "Separate"
+        }
+    }
+}
+
 /// Apple-Activity-style concentric progress rings, generalized to any of
 /// five metrics (sleep/recovery/strain/hrv/rhr) per ring position.
 ///
@@ -245,6 +265,11 @@ struct AtriaTriRing: View, Equatable {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var animatedFills: [AtriaTriRingSlot: Double] = [:]
+    /// User-selected layout (Settings). Default concentric keeps Home, the
+    /// customize preview and the share card rendering exactly as before until
+    /// the user opts into the WHOOP-style separate rings.
+    @AtriaDefault(AtriaRingLayoutStyle.defaultsKey) private var ringLayoutRaw: String = "concentric"
+    private var ringLayout: AtriaRingLayoutStyle { AtriaRingLayoutStyle(rawValue: ringLayoutRaw) ?? .concentric }
 
     init(slots: [AtriaTriRingSlotContent],
          centerValue: String,
@@ -367,6 +392,45 @@ struct AtriaTriRing: View, Equatable {
     }
 
     var body: some View {
+        switch ringLayout {
+        case .concentric: concentricBody
+        case .separate: separateBody
+        }
+    }
+
+    /// WHOOP-style row of three equal, side-by-side rings — each carries its own
+    /// value and label (no shared center numeral). Same `slots` and tap actions
+    /// as the concentric layout; only the arrangement differs. Ring size adapts
+    /// to the available width so all three always fit, down to the narrowest
+    /// iPhone. Reuses the tested `AtriaMetricRing` primitive (identity-hue arc,
+    /// honest learning cap, numericText value).
+    private var separateBody: some View {
+        GeometryReader { geo in
+            let count = max(1, slots.count)
+            let spacing: CGFloat = 12
+            let available = geo.size.width - spacing * CGFloat(count - 1)
+            let ringSize = min(120, max(70, available / CGFloat(count)))
+            HStack(spacing: spacing) {
+                ForEach(slots, id: \.slot) { content in
+                    Button(action: action(for: content.slot)) {
+                        AtriaMetricRing(label: content.metric.title,
+                                        value: content.metric.value,
+                                        fraction: content.metric.fill,
+                                        tint: content.metric.tint,
+                                        size: ringSize)
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
+        }
+        .frame(height: 150)
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var concentricBody: some View {
         VStack(spacing: 14) {
             ZStack {
                 if let recovery = slots.first(where: { $0.slot == .recovery })?.metric,
