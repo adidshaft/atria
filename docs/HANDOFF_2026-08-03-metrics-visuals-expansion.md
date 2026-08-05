@@ -2043,3 +2043,33 @@ Remaining engine backlog (ranked): fingerprint-latch (receipts),
 3-4× redundant reuse=0 history refreshes per cold launch (coalesce),
 bounded reads for readVerifiedConsumerSources (task #10 list),
 1.3GB retained recovered working set bounding (durable fix).
+
+## 15.16 Repro lever landed (v3) — deferred-fire watch (2026-08-05 ~07:30)
+
+Lever evolution, all committed: v1 launch-arg (devicectl SILENTLY
+SWALLOWS args in every invocation form tried — including the July-16
+memorized form; do not trust `-- --flag` delivery), v2 exact-lane +
+requested= note, v3 ONE-SHOT FLAG FILE pushed via `devicectl device
+copy to` into Documents (WORKS — consumed at launch, sets a one-shot
+defaults key that makeRecoveredDataSnapshot clears).
+
+Decisive run: flag consumed, `debug_forced_rebuild requested=0` at
++2.2s — the request was RETAINED by
+shouldDeferAutomaticRecoveredDataRecomputation (historyTransportOwnsLink
+= the connected strap's history transport owns the link at +2s). This
+is the coalesce-until-history-finalizer path: the retained request
+fires AUTOMATICALLY when the transport releases. Launch stayed healthy
+(430MB peak at +259s — likely trailing recompute activity). Next pulls
+watch for the deferred gauntlet firing (rec_scan_begin plan=rebuild →
+budgeted receipt scan under BOTH fixes). File service currently
+wedged (error 7000/socket-closed, known flake during heavy writes —
+possibly the gauntlet itself); retry loop running.
+
+Lever usage for future sessions:
+  touch /tmp/atria-debug-force-rebuild
+  xcrun devicectl device copy to --device 3803F5B6-... \
+    --source /tmp/atria-debug-force-rebuild \
+    --destination Documents/atria-debug-force-rebuild \
+    --user mobile --domain-type appDataContainer \
+    --domain-identifier com.adidshaft.atria
+  then terminate+launch; flag is one-shot (consumed at init).
