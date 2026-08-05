@@ -1,5 +1,13 @@
 # Handoff — Metrics visuals enrichment + feature completion (2026-08-03)
 
+> **START HERE (2026-08-05):** current state, day ledger, ranked open
+> items, and hard-won operating notes are in **§15.37** (end of file).
+> The Aug-5 arc — three memory campaigns closed with on-device proof,
+> July gap resolved, UI branch merged, replay-family test debt cleared
+> — runs §15.0–§15.36 in order. Branch of record:
+> `codex/atria-reliability-handoff-2026-07-22` == `claude/ui-design-2026-08-05`
+> (unified, pushed). Ship devices ONLY via `scripts/ship-device.sh`.
+
 Branch: `claude/atria-background-continuity-88ce90` (worktree
 `.claude/worktrees/atria-background-continuity-88ce90`). Codex parity branch:
 `codex/atria-reliability-handoff-2026-07-22`.
