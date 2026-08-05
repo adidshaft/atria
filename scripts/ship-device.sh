@@ -12,7 +12,7 @@ BUNDLE="com.adidshaft.atria"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DERIVED="$ROOT/Atria/build-device"
 APP="$DERIVED/Build/Products/Release-iphoneos/Atria.app"
-LOG="$(mktemp /tmp/atria-ship.XXXXXX.log)"
+LOG="$(mktemp "${TMPDIR:-/tmp}/atria-ship.XXXXXX")"
 
 cd "$ROOT/Atria"
 echo "building…"
