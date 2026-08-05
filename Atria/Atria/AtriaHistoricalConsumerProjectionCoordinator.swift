@@ -637,15 +637,40 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         }), source.source.rawSHA256 == expectedRawSHA256 else {
             throw CoordinatorError.sourceIdentityMismatch
         }
-        let windowedSnapshot = AtriaHistoricalAggregateReader.Snapshot(
-            aggregates: windowed.aggregates,
-            diagnostics: streamed.diagnostics
-        )
         let catalog = try catalogStore.snapshotVerifiedAgainstFiles()
         try catalog.validate()
         let catalogData = try AtriaHistoricalActivityInspectionProofFactory
             .canonicalCatalogData(catalog)
         let scan = try fullScanStore.loadLatest()
+        // The factory's scan-source presence check (its aggregateCatalogMismatch
+        // at the scan-record guard) searches the snapshot it is handed. A
+        // window bounded to the DEPENDENCY range can never contain the latest
+        // full-scan record's own source when that scan sealed after the
+        // dependency window — which is the steady state for an old pending
+        // dependency on a live-draining strap. This wedged the July-31 gap
+        // for five days (handoff §15.23/§15.27: the thrown chunk was the
+        // Aug-4 scan source, not a corrupt aggregate). Merge exactly the scan
+        // source's own range into the snapshot — one chunk's aggregates,
+        // bounded — so the factory verifies the scan identity against a
+        // snapshot that can actually contain it.
+        var proofAggregates = windowed.aggregates
+        if !proofAggregates.contains(where: {
+            $0.source.chunkID == scan.sourceChunkID
+        }) {
+            let scanSourceWindow = aggregateReader.load(
+                since: scan.sourceFirstTimestamp,
+                until: Date(timeIntervalSinceReferenceDate:
+                    scan.sourceLastTimestamp.timeIntervalSinceReferenceDate.nextUp)
+            )
+            let known = Set(proofAggregates.map { $0.source.chunkID })
+            proofAggregates.append(contentsOf: scanSourceWindow.aggregates.filter {
+                !known.contains($0.source.chunkID)
+            })
+        }
+        let windowedSnapshot = AtriaHistoricalAggregateReader.Snapshot(
+            aggregates: proofAggregates,
+            diagnostics: streamed.diagnostics
+        )
         let prepared = try AtriaHistoricalActivityInspectionProofFactory(
             completionStore: completionStore
         ).prepareUsingFullScan(
