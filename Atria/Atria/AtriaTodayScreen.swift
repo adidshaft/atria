@@ -1085,7 +1085,7 @@ struct AtriaTodayScreen: View {
         switch arguments[valueIndex] {
         case "strain-detail": return .strain
         case "recovery-detail", "recovery-detail-nutrition": return .recovery
-        case "hrv-detail": return .hrv
+        case "hrv-detail", "chart-options": return .hrv
         case "rhr-detail": return .restingHeartRate
         case "respiratory-detail": return .respiratoryRate
         case "sleep-detail": return .sleep
