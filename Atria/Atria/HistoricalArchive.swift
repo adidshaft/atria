@@ -3579,6 +3579,7 @@ enum HistoricalArchive {
             // channels honestly budgetExceeded, and discarding the cache here
             // forced a full-archive rebuild on every recompute (2026-08-04).
             recoveredDataCache = reusableCache
+            Self.recordRetainedCacheFootprint(reusableCache, plan: "reuse")
             return recoveredSnapshot(from: reusableCache,
                                      scan: .init(fileReadCount: 0,
                                                  byteCount: 0,
@@ -3795,6 +3796,7 @@ enum HistoricalArchive {
             // incremental instead of paying a full-archive rebuild scan on the
             // next recompute (the 3.45GB jetsam amplifier, 2026-08-04).
             recoveredDataCache = cache
+            Self.recordRetainedCacheFootprint(cache, plan: "scan")
         } else {
             // A truncated FILE READ leaves fileStates untrustworthy; only this
             // case still discards the cache.
@@ -3957,6 +3959,32 @@ enum HistoricalArchive {
                 $0.projectedTimestamp >= cutoff
             }),
             truncatedChannels: cache.truncatedChannels
+        )
+    }
+
+    /// Working-set breadcrumb (2026-08-05, bounding design Edit 0): retained
+    /// cache counts + phys footprint, written to the PULLABLE prefs channel
+    /// (console/AtriaDebugLog is launch-arg-gated and unreachable via
+    /// devicectl — the July-gap saga's lesson). Overwritten per publish;
+    /// bounded. This is the go/no-go measurement gating compaction Edits 1-3
+    /// (verdict F1: attribution must be measured, not assumed) and stays in
+    /// as the regression tripwire afterward.
+    private static func recordRetainedCacheFootprint(
+        _ cache: RecoveredDataCache,
+        plan: String
+    ) {
+        let strapIdMaxLen = cache.skinTemperatureRawPoints
+            .map { $0.strapIdentifier?.utf8.count ?? 0 }.max() ?? 0
+        let line = "plan=\(plan) hr=\(cache.heartRatePoints.count)"
+            + " rrRecords=\(cache.rrAccumulator.acceptedRecordCount)"
+            + " skin=\(cache.skinTemperatureRawPoints.count)"
+            + " grav=\(cache.gravitySamples.count)"
+            + " motionIDs=\(cache.motionRecordIdentities.count)"
+            + " strapIdMaxLen=\(strapIdMaxLen)"
+            + " physMB=\(currentPhysFootprintBytes() / (1024 * 1024))"
+            + " at=\(Int(Date().timeIntervalSince1970))"
+        UserDefaults.standard.set(
+            line, forKey: "atria.debug.recoveredCacheFootprint.v1"
         )
     }
 
