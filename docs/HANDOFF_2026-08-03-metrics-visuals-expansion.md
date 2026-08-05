@@ -2650,3 +2650,29 @@ motionIDs/grav at 750000 caps, strapIdMaxLen=36). Higher than the
 900MB unwind threshold. WATCH: if a later publish trends toward
 900MB, investigate before acting. Jul-24 range-loss lane still
 awaiting natural disconnect (reacquisition marker unchanged, Jul 27).
+
+## 15.41 Watch pull 2026-08-05 18:45 IST — coverage attribution flips
+
+coverage.v2 decoded (Apple-epoch): today 18.2h elapsed, 6.54h in
+closed/verified windows (~36%), pendingOffloads = 6 windows totaling
+~5 MINUTES. Yesterday: 3.74h closed, ~2m pending. So the offload
+BACKLOG is essentially empty — the gap to 100% is windows never
+banked/reported (capture/wear/arming side), NOT drain backlog. This
+refines §15.38: tonight's charge can only add minutes.
+
+WATCH ITEM (new): all 6 pending windows are tiny (0-4m) and starving
+— oldest is Aug-4 10:33 (2m), pending 32+ hours with repeated
+attempts (lastAttempt 16:53 today; others 14:00/16:16/16:38). If
+they survive tonight's charge → small-window offload starvation bug
+candidate. If they clear → offloads just need charge conditions.
+
+NEXT-SESSION QUESTION: why do closed windows cover only ~6.5h of an
+18h worn day? Candidates: physiological-day denominator vs midnight
+(my sum used midnight IST), closed-ledger eviction (512 entries —
+power-of-two smells like a cap; ledger reaches back to Aug-2 21:51),
+window arming gaps between glance/daily checkpoints. Attribute
+before touching any offload policy (§15.38 queue item depends on
+this attribution).
+
+Stream health unchanged from §15.40; no new cache publish (745MB
+reading stands, at=18:34).
