@@ -856,10 +856,12 @@ struct AtriaActivityMonitorTab: View {
                         .foregroundStyle(.red)
                         .labelStyle(.titleAndIcon)
                         .imageScale(.small)
+                        .contentTransition(.numericText())
                         .accessibilityLabel("Heart rate \(heart.bpm) beats per minute")
                 }
                 Text(presentation.value)
                     .font(.subheadline.weight(.bold).monospacedDigit())
+                    .contentTransition(.numericText())
                     .foregroundStyle(stressMonitorStore.state.level?.tint ?? .secondary)
             }
 
