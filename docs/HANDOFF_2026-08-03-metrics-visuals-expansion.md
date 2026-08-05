@@ -2758,3 +2758,15 @@ phone until then — live HR capture interrupted (gap will be honest
 missing coverage; strap keeps banking internally per its own
 firmware behavior). DO NOT uninstall to "fix" — that deletes the
 data container (entire local archive).
+
+## 15.44 Launch-trust blocker RESOLVED; duty-cycle diag LIVE (2026-08-05 ~19:02)
+
+Launch retry succeeded at ~19:00 IST (user cleared device-side
+trust). Capture gap ≈8-10min (18:52 install → 19:00 launch), honest
+missing coverage. Diag verified live on first pull:
+motionBankDutyCycle.v1 day=2026-08-05 lastReason=armed, buckets
+after ~87s: transport_pending 56s / armed 23s / link_down 7s —
+already showing reconnect spends its first minute in TX discovery.
+Bank re-armed. flushDebt=low, handshake confirmed.
+TO CONFIRM next pull: lastDurableFlushBoundaryOKAt advances past
+18:33 (stream resumed post-relaunch).
