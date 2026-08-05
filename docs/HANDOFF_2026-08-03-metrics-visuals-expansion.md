@@ -2199,3 +2199,32 @@ relief, and ALL AtriaDebugLog lines. Gate has zero probe pins;
 baseline 4 unchanged. Full build + FULL test suite running — final
 verdict next cycle. Re-instrumentation if ever needed: single revert
 of the strip commit restores the entire eye.
+
+## 15.22 ✅ CAMPAIGN CLOSED — final verdict (2026-08-05 ~13:00)
+
+FULL SUITE on the stripped build: 3382 passed, 9 failed — ALL NINE
+pre-existing (git-blamed): the July replay/review families (documented
+Jul 22), catalog icon-distinctness 69≠79 (Aug 4 catalog expansion,
+b66b2caa — 10 duplicate icons among the 48 added types), the "≥"
+step-presentation prefix breaking two equality pins (e9ccf347/
+16bf8d99/26057206, Jul 22–Aug 2), and the receipt source-pin
+"never reopen lifetime archive" already violated by the fallback arm
+in e9ccf347. TODAY'S SESSION BROKE ZERO TESTS. The isolated-serial
+rerun protocol note: a filtered grep with no matches is NOT a pass —
+count positively (this session briefly misread clone flakiness).
+
+STRIPPED build (462a0cb6) INSTALLED + launched on the phone — the
+production state: no probe, no levers, all eight permanent fixes.
+
+BACKLOG FOR NEXT SESSIONS (ranked):
+1. Fix the 4 pre-existing Aug-era test failures (icon dupes = give the
+   48 new activities distinct icons; "≥" pins = migrate expectations;
+   receipt source-pin = decide fallback-arm policy vs pin).
+2. July gap authority: 14 windows still gapResolvedConsumersPending —
+   each launch re-runs terminal materialization (now safely); actually
+   RESOLVING the gap retires that recurring work.
+3. Bound the 1.3GB retained recovered working set (durable headroom).
+4. Global heavy-gate (optional now — superposition margins are healthy
+   with the streaming hash, but serialization adds safety).
+5. Fingerprint-latch, redundant reuse=0 refresh coalescing,
+   readVerifiedConsumerSources bounded reads.
