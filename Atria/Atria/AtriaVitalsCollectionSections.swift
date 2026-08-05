@@ -5945,29 +5945,55 @@ struct AtriaSleepStageSummary: View, Equatable {
                 }
             }
 
-            // WHOOP-parity "Restorative sleep" (2026-08-05): REM + slow-wave
-            // + deep summed — the recovery-relevant share of the night, named
-            // the way WHOOP names it. Pure re-presentation of the same
-            // stage evidence above; hidden when stages carry no duration.
+            // Restorative-sleep visualization (2026-08-05): REM + SWS + deep as
+            // the recovery-relevant share of the night, shown as a proportional
+            // stage-composition bar with a restorative callout (upgrades the
+            // former text-only strip). Pure re-presentation of the same stage
+            // evidence above; hidden when stages carry no duration.
+            let stageOrder: [SleepStageKind] = [.deep, .sws, .rem, .light, .awake]
+            let stageDurations = stageOrder.map { ($0, night.stageDuration($0)) }
+            let totalStaged = stageDurations.reduce(0.0) { $0 + $1.1 }
             let restorativeSeconds = night.stageDuration(.rem)
                 + night.stageDuration(.sws)
                 + night.stageDuration(.deep)
-            if restorativeSeconds > 0 {
-                HStack(spacing: 7) {
-                    Image(systemName: "bolt.heart.fill")
-                        .font(.caption2.weight(.bold))
-                    Text("RESTORATIVE (REM + DEEP)")
-                        .font(.caption2.weight(.bold))
-                    Spacer(minLength: 0)
-                    Text(SleepHistorySnapshot.formatDuration(restorativeSeconds))
-                        .font(.caption2.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.secondary)
+            if totalStaged > 0 {
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "bolt.heart.fill")
+                            .font(.caption2.weight(.bold))
+                        Text("RESTORATIVE SLEEP")
+                            .font(.caption2.weight(.bold))
+                        Spacer(minLength: 0)
+                        Text("\(SleepHistorySnapshot.formatDuration(restorativeSeconds)) · \(Int((restorativeSeconds / totalStaged * 100).rounded()))%")
+                            .font(.caption2.weight(.bold).monospacedDigit())
+                    }
+                    .foregroundStyle(.indigo)
+
+                    // Proportional composition: restorative stages (deep→SWS→REM)
+                    // lead, then light and awake, so the recovery share reads as
+                    // the leading block of the bar.
+                    GeometryReader { geo in
+                        let w = geo.size.width
+                        HStack(spacing: 0) {
+                            ForEach(stageDurations.filter { $0.1 > 0 }, id: \.0) { stage, seconds in
+                                color(for: stage)
+                                    .frame(width: CGFloat(seconds / totalStaged) * w)
+                            }
+                        }
+                    }
+                    .frame(height: 10)
+                    .clipShape(Capsule(style: .continuous))
+                    .accessibilityHidden(true)
+
+                    Text("REM + SWS + Deep — the recovery-relevant share of the night.")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(.vertical, 6)
-                .padding(.horizontal, 8)
-                .background(Color.indigo.opacity(0.10),
+                .padding(.vertical, 8)
+                .padding(.horizontal, 10)
+                .background(Color.indigo.opacity(0.08),
                             in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .foregroundStyle(.indigo)
             }
         }
         .padding(10)
