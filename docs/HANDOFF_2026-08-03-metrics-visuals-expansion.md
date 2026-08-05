@@ -2982,3 +2982,32 @@ space). Day-gap breaks preserved; build succeeded; gate 4 baseline
 multi-series marks needs alignsMarkStylesWithPlotArea.
 Spec scoreboard: 11/14 done. Remaining: H4 (radius sweep — needs
 screenshots), O9 + battery chip (judgment, deferred per spec).
+
+## 15.57 Sim screenshot loop RESTORED + O1 visual sign-off (2026-08-05 ~21:15)
+
+WORKING RECIPE (sim MCP tap/screenshot both dead — panel AND tap
+crash-loop): simctl install/launch with --atria-developer-mode
+--atria-complete-onboarding (terminate + SECOND launch to pass the
+connect sheet), route with --atria-ui-fixture <name>, shoot with
+simctl io screenshot. Discovered detail fixtures already exist:
+strain-detail / recovery-detail / hrv-detail / rhr-detail /
+respiratory-detail / sleep-detail auto-open the metric-detail sheet
+(AtriaTodayScreen.debugInitialMetricDetail ~1081).
+
+VISUALLY VERIFIED: O1 — metric-detail sheet shows plain-text
+Day/Week/Month AtriaTextSelector (soft pill on Day), empty-state
+copy honest ("No saved observations"). Vitals Live/Sleep/Trends
+selector confirms the house style on a second surface. Root
+Overview + tri-ring variant render clean post-merge (all
+"--"/learning states honest).
+
+COPY FINDINGS for UI session queue:
+- "This week" card still shows W32 ISO chip on the tri-ring hero
+  layout (UI branch commit bb8b6116 humanized the Routine card —
+  this is either a second surface or incomplete).
+- "1 workouts >= 10 strain" — grammar bug + ASCII >= on a user
+  surface (weekly goals row, bottom of Overview).
+STILL UNSHOT: O3 chart-options sheet, O4 sleep-plan card (below
+fold/behind taps; no fixture route found — consider adding DEBUG
+fixture hooks like sleep-scope precedent), O8 gradient (needs
+seeded chart data). H4 radius sweep can now use this loop.
