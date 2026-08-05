@@ -208,7 +208,7 @@ enum AtriaAnalytics {
             let current = "\(rmssd) ms vs \(baseline) ms baseline."
             let greenValue = Int((Double(baseline) * safeGreen).rounded())
             let yellowValue = Int((Double(baseline) * safeYellow).rounded())
-            let target = "Personal baseline · Green >= \(greenValue) ms and within 1 SD\(zScoreText), yellow to 2 SD or \(yellowValue)-\(greenValue - 1) ms, red below."
+            let target = "Personal baseline · Green \(greenValue)+ ms and within 1 SD\(zScoreText), yellow to 2 SD or \(yellowValue)-\(greenValue - 1) ms, red below."
             return AtriaMetricZone(level: level,
                                    title: "HRV target",
                                    current: current,
@@ -255,7 +255,7 @@ enum AtriaAnalytics {
             case .red:
                 recommendation = "Resting HR is well above your norm. Prioritize rest, hydration, and an easy day."
             }
-            let target = "Personal baseline · Green <= \(baseline + safeGreenDelta) bpm and within 1 SD\(zScoreText), yellow to 2 SD or \(baseline + safeGreenDelta + 1)-\(baseline + safeYellowDelta) bpm, red above."
+            let target = "Personal baseline · Green \(baseline + safeGreenDelta) bpm or lower and within 1 SD\(zScoreText), yellow to 2 SD or \(baseline + safeGreenDelta + 1)-\(baseline + safeYellowDelta) bpm, red above."
             return AtriaMetricZone(level: level,
                                    title: "Resting HR target",
                                    current: "\(bpm) bpm, \(delta >= 0 ? "+" : "")\(delta) vs baseline.",
@@ -300,7 +300,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Sleep efficiency target",
                                    current: "\(pct)% sleep efficiency.",
-                                   targetSummary: "Editable target · Green >= \(Int(safeGreen.rounded()))%, yellow \(Int(safeYellow.rounded()))-\(Int(safeGreen.rounded()) - 1)%, red below \(Int(safeYellow.rounded()))%.",
+                                   targetSummary: "Editable target · Green \(Int(safeGreen.rounded()))%+, yellow \(Int(safeYellow.rounded()))-\(Int(safeGreen.rounded()) - 1)%, red below \(Int(safeYellow.rounded()))%.",
                                    recommendation: recommendation,
                                    disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
         }
@@ -323,7 +323,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Sleep duration target",
                                    current: "\(AtriaMetricFormat.sleepHours(hours)) sleep vs \(AtriaMetricFormat.sleepHours(safeGoal)) goal.",
-                                   targetSummary: "User goal · Green >= \(AtriaMetricFormat.sleepHours(safeGoal)), yellow \(AtriaMetricFormat.sleepHours(safeGoal * 0.85))-\(AtriaMetricFormat.sleepHours(safeGoal - 0.1)), red below \(AtriaMetricFormat.sleepHours(safeGoal * 0.85)).",
+                                   targetSummary: "User goal · Green \(AtriaMetricFormat.sleepHours(safeGoal))+, yellow \(AtriaMetricFormat.sleepHours(safeGoal * 0.85))-\(AtriaMetricFormat.sleepHours(safeGoal - 0.1)), red below \(AtriaMetricFormat.sleepHours(safeGoal * 0.85)).",
                                    recommendation: recommendation,
                                    disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
         }
@@ -375,7 +375,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: .green,
                                    title: "Steps target",
                                    current: "\(steps) steps vs \(safeGoal) goal.",
-                                   targetSummary: "User goal · Green >= \(safeGoal) steps.",
+                                   targetSummary: "User goal · Green \(safeGoal)+ steps.",
                                    recommendation: "Steps are at or above your daily goal.",
                                    disclaimer: AtriaMetricZone.nonMedicalDisclaimer)
         }
@@ -390,7 +390,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: .green,
                                    title: "Calories target",
                                    current: "\(roundedCalories) kcal vs \(safeGoal) kcal goal.",
-                                   targetSummary: "User goal · Green >= \(safeGoal) kcal.",
+                                   targetSummary: "User goal · Green \(safeGoal)+ kcal.",
                                    recommendation: "Estimated active calories are at or above your daily goal.",
                                    disclaimer: "Estimated from heart rate/profile. \(AtriaMetricZone.nonMedicalDisclaimer)")
         }
@@ -426,7 +426,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "VO2max trend",
                                    current: "Trend \(trimmedTrend), \(summary.trendDetail)",
-                                   targetSummary: String(format: "Estimate trend · Green >= +%.1f, yellow %.1f to %.1f, red <= %.1f.", safeGreenDelta, safeRedDelta, safeGreenDelta, safeRedDelta),
+                                   targetSummary: String(format: "Estimate trend · Green +%.1f or more, yellow %.1f to %.1f, red %.1f or lower.", safeGreenDelta, safeRedDelta, safeGreenDelta, safeRedDelta),
                                    recommendation: recommendation,
                                    disclaimer: "Estimated fitness trend. \(AtriaMetricZone.nonMedicalDisclaimer)")
         }
@@ -459,7 +459,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Fitness age target",
                                    current: "\(summary.valueText), \(summary.detailText).",
-                                   targetSummary: "Estimate · Green <= +\(safeGreenDelta)y vs chronological, yellow <= +\(safeYellowDelta)y, red above.",
+                                   targetSummary: "Estimate · Green +\(safeGreenDelta) yr or less vs chronological, yellow +\(safeYellowDelta) yr or less, red above.",
                                    recommendation: recommendation,
                                    disclaimer: summary.footnote)
         }
@@ -541,7 +541,7 @@ enum AtriaAnalytics {
             return AtriaMetricZone(level: level,
                                    title: "Blood oxygen signal evidence",
                                    current: "\(candidateFrames) candidate frames; not an SpO2 reading.",
-                                   targetSummary: "Signal evidence · Green >= \(safeGoal) candidate frames, yellow \(yellowFloor)-\(safeGoal - 1), red below \(yellowFloor).",
+                                   targetSummary: "Signal evidence · Green \(safeGoal)+ candidate frames, yellow \(yellowFloor)-\(safeGoal - 1), red below \(yellowFloor).",
                                    recommendation: recommendation,
                                    disclaimer: "Early signal only; no SpO2 percentage, diagnosis, alarm, or Health export. \(AtriaMetricZone.nonMedicalDisclaimer)")
         }

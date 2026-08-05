@@ -6602,7 +6602,7 @@ private struct AtriaWorkoutReviewFlow: View {
                 .stroke(Color.orange.opacity(0.12), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("What Atria saw. \(draft.prompt.evidenceMinutes) minutes of strap heart rate. Signal \(draft.prompt.confidenceLabel). Next \(draft.prompt.isReviewReady ? "confirm workout" : "wait or adjust timing").")
+        .accessibilityLabel("What Atria saw. \(draft.prompt.evidenceMinutes == 1 ? "1 minute" : "\(draft.prompt.evidenceMinutes) minutes") of strap heart rate. Signal \(draft.prompt.confidenceLabel). Next \(draft.prompt.isReviewReady ? "confirm workout" : "wait or adjust timing").")
     }
 
     private func captureTile(title: String, value: String, progress: Double, tint: Color) -> some View {
@@ -11039,7 +11039,8 @@ final class AtriaHomeModel {
 
         let loggingText: String
         if collection.ready {
-            loggingText = "\(collection.source == "saved_session_tail" ? "saved" : "live") \(collection.samples) samples"
+            let sourceText = collection.source == "saved_session_tail" ? "saved" : "live"
+            loggingText = collection.samples == 1 ? "\(sourceText) 1 sample" : "\(sourceText) \(collection.samples) samples"
         } else {
             loggingText = collection.blocker.replacingOccurrences(of: "_", with: " ")
         }
@@ -11048,7 +11049,7 @@ final class AtriaHomeModel {
         let backupDetail: String
         if backup.current {
             backupValue = "Ready"
-            backupDetail = "\(backup.sessions) sessions"
+            backupDetail = backup.sessions == 1 ? "1 session" : "\(backup.sessions) sessions"
         } else if backup.available {
             backupValue = "Stale"
             backupDetail = backup.reason.replacingOccurrences(of: "_", with: " ")

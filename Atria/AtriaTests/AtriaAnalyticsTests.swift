@@ -2057,7 +2057,8 @@ final class AtriaAnalyticsTests: XCTestCase {
 
         XCTAssertEqual(result.startingHR, 75)
         XCTAssertEqual(result.endingHR, 65)
-        XCTAssertEqual(result.hrText, "HR 75 -> 65 · -10 bpm")
+        // 2026-08-05: copy audit — "HR 75 -> 65" → "HR 75 → 65"
+        XCTAssertEqual(result.hrText, "HR 75 → 65 · -10 bpm")
         XCTAssertNil(result.rmssdText)
 
         let saved = try XCTUnwrap(AtriaBreathworkSession.savedSession(samples: samples, start: start, end: end))

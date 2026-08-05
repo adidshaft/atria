@@ -1138,7 +1138,8 @@ struct AtriaSettingsView: View {
         }
         let state = backupStatus.current ? "Current" : "Needs review"
         let size = ByteCountFormatter.string(fromByteCount: Int64(backupStatus.bytes), countStyle: .file)
-        return "\(state) · \(backupStatus.sessions) sessions · \(size)"
+        let sessionsText = backupStatus.sessions == 1 ? "1 session" : "\(backupStatus.sessions) sessions"
+        return "\(state) · \(sessionsText) · \(size)"
     }
 
     private var backupPathAccessibilityHint: String {

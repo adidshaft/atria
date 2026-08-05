@@ -564,7 +564,8 @@ struct AtriaTrendChartCard: View {
     }
 
     private var chartAccessibilityLabel: String {
-        let base = "\(metric.shortLabel) trend, \(range.headerLabel.lowercased()), \(prepared.series.count) days of data."
+        let daysText = prepared.series.count == 1 ? "1 day of data" : "\(prepared.series.count) days of data"
+        let base = "\(metric.shortLabel) trend, \(range.headerLabel.lowercased()), \(daysText)."
         var combined = base
         if let summary = prepared.summary {
             combined += " Latest \(summary.latestText), average \(summary.averageText), range \(summary.rangeText), \(summary.comparisonAccessibilityText)."
