@@ -2530,3 +2530,29 @@ recommendation). Review + commit on report. This is the final item
 from the day's ranked list actionable in this session; the rest
 (fingerprint-latch, coalescing, bounded verified reads, Jul-24
 range-loss windows) are documented for future sessions.
+
+## 15.36 ✅ Replay family closed — span ceiling regression FIXED (2026-08-05 ~22:20)
+
+The delegated diagnosis (bisect-backed) found the July-27 walk failure
+was a REAL REGRESSION from the Aug-5 span ceiling: `return []` for
+>6h wear clusters erased the bounded ready review of a real 12-min
+walk inside a 17-hour all-day wear cluster. FIXED by slicing
+(f04691ea): the windowed sweep runs per ≤6h slice stepping 4.5h —
+per-slice copy cost equals the old ceiling's bound (memory fix
+preserved), the 90-min max window can't straddle boundaries unseen,
+cross-slice dedupe keeps overlaps to one candidate. The captured-
+fixture test is green again WITHOUT touching the fixture. Also:
+July-15 recovery pin migrated (72→61, stale since the Jul-28
+authority hardening missed it), PhysicalSleepProbeTests deleted
+(unreproducible debug leftover, accidentally committed Aug 4).
+
+227/2-skipped/0-failed across the three suites; gate baseline 4;
+shipped f04691ea to the phone (walk detection during all-day wear is
+live again); pushed. LESSON recorded: e665dcfd's '210/210' did not
+cover AtriaDetectedActivityReviewTests — memory-motivated detection
+changes must run the CAPTURED-FIXTURE suites, they are the product's
+physical ground truth.
+
+TEST DEBT NOW: only the 2 corpus-skips (July-18 corpus absent from
+this machine) + the icon-distinctness fix (UI session). Everything
+else green.
