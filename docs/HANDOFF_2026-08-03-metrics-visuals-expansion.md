@@ -3193,3 +3193,20 @@ consumers materialize (app foreground, minutes). VERDICT LINE
 ~23:20: still empty ⇒ real bug, get screenshot, investigate the
 timeline's data path (AtriaActivityMonitor readings source) not the
 palette.
+
+## 15.66b ROOT CAUSE of missing lines: catalogFileMismatch (23:08)
+
+terminalArchiveFailureAt advanced 21:25 → 23:04:57 with diagnostic
+AtriaHistoricalArchiveCatalogStore.StoreError.catalogFileMismatch —
+the CURRENT materialization attempt fails, keeping
+authority=gapResolvedConsumersPending → past-24h HR/stress series
+(and the gym window) unpublished. Almost certainly divergence from
+the 21:25 install-kill mid-materialization. The two-leg repair
+(quarantine + catalog-truth re-mint, §July campaign) targets exactly
+this; retries fire on foreground/triggers. ALSO NOTED:
+terminalConsumerDependencyMismatch.v1 references a Jul-25/26 window
+— possibly stale key, verify before acting.
+WATCH: next check reads terminalFailAt — advancing again with same
+diagnostic ⇒ repair not engaging ⇒ full forensics (pull
+historical-archive.catalog-v2.json + container file listing, diff
+per July playbook). User informed lines depend on this completing.
