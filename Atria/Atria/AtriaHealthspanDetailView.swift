@@ -139,6 +139,7 @@ struct AtriaHealthspanDetailView: View {
                     }
                     if !model.trendPoints.isEmpty {
                         trendCard
+                        weeklyBreakdownCard
                     }
                     if let confidence = model.confidence {
                         confidenceRow(confidence)
@@ -416,6 +417,101 @@ struct AtriaHealthspanDetailView: View {
         }
         .padding(AtriaDesignTokens.Spacing.lg)
         .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile)
+    }
+
+    /// The fitness-age change across the trailing week, read from the persisted
+    /// trend series (latest value vs the last point at least 7 days earlier).
+    /// nil until the series spans enough days — never inferred.
+    private var weeklyAgeDelta: Double? {
+        let points = model.trendPoints
+        guard let latest = points.last else { return nil }
+        let weekAgo = latest.day.addingTimeInterval(-7 * 24 * 3600)
+        let baseline = points.last(where: { $0.day <= weekAgo }) ?? points.first
+        guard let baseline, baseline.day < latest.day else { return nil }
+        return latest.value - baseline.value
+    }
+
+    /// "This week" breakdown: the weekly fitness-age delta plus the contributors
+    /// grouped by tone (helping vs needs-attention). Pure re-presentation of the
+    /// same persisted contributors + trend — no fabricated weekly attribution.
+    private var weeklyBreakdownCard: some View {
+        let helping = model.contributors.filter { $0.tone == .positive }
+        let attention = model.contributors.filter { $0.tone == .attention }
+        return VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
+            HStack(alignment: .firstTextBaseline) {
+                sectionLabel("THIS WEEK")
+                Spacer(minLength: AtriaDesignTokens.Spacing.sm)
+                weeklyDeltaBadge
+            }
+
+            if helping.isEmpty && attention.isEmpty {
+                Text("Keep wearing — about a week of readings reveals what's moving your fitness age.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                if !helping.isEmpty {
+                    weeklyContributorGroup(title: "HELPING",
+                                           tint: contributorTint(.positive),
+                                           symbol: "arrow.down.right.circle.fill",
+                                           contributors: helping)
+                }
+                if !attention.isEmpty {
+                    weeklyContributorGroup(title: "NEEDS ATTENTION",
+                                           tint: contributorTint(.attention),
+                                           symbol: "arrow.up.right.circle.fill",
+                                           contributors: attention)
+                }
+            }
+        }
+        .padding(AtriaDesignTokens.Spacing.lg)
+        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var weeklyDeltaBadge: some View {
+        if let delta = weeklyAgeDelta {
+            let younger = delta < -0.05
+            let older = delta > 0.05
+            let tint: Color = younger ? contributorTint(.positive)
+                : (older ? contributorTint(.attention) : .secondary)
+            let magnitude = String(format: "%.1f", abs(delta))
+            Label(younger ? "\(magnitude) yr younger"
+                          : (older ? "\(magnitude) yr older" : "Held steady"),
+                  systemImage: younger ? "arrow.down.right" : (older ? "arrow.up.right" : "equal"))
+                .font(.caption.weight(.bold))
+                .foregroundStyle(tint)
+                .labelStyle(.titleAndIcon)
+        }
+    }
+
+    private func weeklyContributorGroup(title: String,
+                                        tint: Color,
+                                        symbol: String,
+                                        contributors: [AtriaHealthspanDetailModel.Contributor]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption2.weight(.black))
+                .foregroundStyle(tint)
+                .kerning(0.6)
+            ForEach(contributors) { contributor in
+                HStack(spacing: AtriaDesignTokens.Spacing.sm) {
+                    Image(systemName: symbol)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(tint)
+                    Text(contributor.label)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                    Spacer(minLength: AtriaDesignTokens.Spacing.sm)
+                    Text(contributor.valueText)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(tint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+            }
+        }
     }
 
     private func contributorRow(_ contributor: AtriaHealthspanDetailModel.Contributor) -> some View {
