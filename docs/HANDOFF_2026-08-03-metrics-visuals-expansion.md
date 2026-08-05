@@ -2017,3 +2017,29 @@ grep -c shell bug and never armed) — kills the app mid-scan so the
 revision stays unpublished, relaunches into the true gauntlet on the
 FIXED build. Expect: step_receipt_day_scan notes bracketing budgeted
 passes, peak well under 3GB, ONE start marker.
+
+## 15.15 Runner-up hardened + latent test break fixed (2026-08-05 ~07:15)
+
+91bc1725 SHIPPED to phone: dying-thread wraps on the session-boundary
+derived trio (overview trends / training load / today HR zones — the
+in-repo derived-lease note records this trio jetsamming at ~700k
+points). Also fixed the ONE latent break from the honesty slice:
+testDisplayStagesFoldSWSIntoDeep used source=manual_sleep as a
+convenience fixture; manual windows now honestly render no stages, so
+the fixture moved to validated_sleep_stages (fold mechanics are
+provenance-independent). 193/193 + fold green.
+
+VERIFICATION STATE: both climber fixes (969debbf budgeted day-scan +
+91bc1725 trio) are aboard the installed build. Mid-scan kill loops
+could not force a gauntlet (incremental scans too fast to catch;
+rebuild needs real backlog). THE MORNING FOREGROUND COLD OPEN is the
+decisive natural sample — expect step_receipt_day_scan/_done notes,
+budgeted passes, peak <1.5GB, ONE start marker. After it verifies:
+STRIP all instrumentation (AtriaMemprobe + ~95 note sites + bisect
+levers + comp_begin/arch_status/terminal_publish/verified_read/
+daily_metrics/step_receipt notes) and run the FULL suite.
+
+Remaining engine backlog (ranked): fingerprint-latch (receipts),
+3-4× redundant reuse=0 history refreshes per cold launch (coalesce),
+bounded reads for readVerifiedConsumerSources (task #10 list),
+1.3GB retained recovered working set bounding (durable fix).
