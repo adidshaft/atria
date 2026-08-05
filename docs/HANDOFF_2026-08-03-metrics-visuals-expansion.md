@@ -3339,3 +3339,19 @@ honest-missing-final; verify against the a1c4acf2 proof-snapshot
 merge semantics + the Jul-24 gap ledger. Forensics saved:
 authority.json + h49 plist in scratchpad; §15.66b/c chain.
 Do NOT clear the mismatch key by hand — fix the convergence rule.
+
+## 15.70b Deadlock anchor SHARPENED (02:35, code-verified read-only)
+
+The repeating failure is AtriaHistoricalActivityInspectionProofFactory
+.FactoryError.completionCoverageMismatch (caught at AtriaBLEManager
+~31898; on catch it caches terminalConsumerCoverageFailureFingerprint
+= dependencyFingerprint + fullScan identity + catalog fingerprint —
+composition at ~32906). The fingerprint is honest: it can't change
+while the dependency window stays uncoverable. MORNING FIX TARGET:
+the proof factory's completion-coverage rule must treat the Jul-24
+gap-ledger windows (documented permanent loss, seek dead) as
+satisfied-by-acknowledgment — the same philosophy as a1c4acf2's
+proof-snapshot merge, one layer deeper. Entry points: the factory's
+completionCoverage check + the gap ledger (gapLedgerGeneration 8421+
+in authority.json). Test-first with the captured-fixture suites +
+a new fixture reproducing an unfillable dependency window.
