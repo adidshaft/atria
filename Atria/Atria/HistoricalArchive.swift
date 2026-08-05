@@ -3518,6 +3518,14 @@ enum HistoricalArchive {
         // memprobe.
         let forceRebuild = ProcessInfo.processInfo.arguments
             .contains("--atria-debug-force-recovered-rebuild")
+            || UserDefaults.standard.bool(
+                forKey: "atria.debug.forceRebuildOnce"
+            )
+        if forceRebuild {
+            UserDefaults.standard.removeObject(
+                forKey: "atria.debug.forceRebuildOnce"
+            )
+        }
         let reusableCache = forceRebuild ? nil : recoveredDataCache.flatMap { cache in
             cache.budget == budget
                 && cache.coveredSince <= cutoff
