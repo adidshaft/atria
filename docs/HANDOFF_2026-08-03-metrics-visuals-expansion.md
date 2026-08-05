@@ -3177,3 +3177,19 @@ per user order; relaunch verified alive at 23:03 (fresh notes,
 boundary 23:01, no bt-off diag; strap in normal reconnect window).
 NOTE: battery latch re-armed by this install — pill hidden up to
 ~1h again, expected.
+
+## 15.66 USER REPORT: no heart/stress lines on Activity view (23:06)
+
+Post-gym report (walk + workout recorded). Ruled OUT: d99276c9
+palette retune is gradient-colors + point-color mapping only —
+cannot remove lines. Evidence at 23:06: rearmDiag sync=1,
+authority=gapResolvedConsumersPending — catch-up drain active and
+recovered consumers (which back the past-24h HR/stress timeline)
+awaiting materialization; the gym-window data crossed the evening's
+wedge/install gaps so it rides recovery, not live publish. The
+"always a graph" empty frame is exactly what unpublished series
+look like. PREDICTION: lines appear after drain completes +
+consumers materialize (app foreground, minutes). VERDICT LINE
+~23:20: still empty ⇒ real bug, get screenshot, investigate the
+timeline's data path (AtriaActivityMonitor readings source) not the
+palette.
