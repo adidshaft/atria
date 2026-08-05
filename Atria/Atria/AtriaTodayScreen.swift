@@ -193,6 +193,9 @@ struct AtriaTodayScreen: View {
     // User-arranged order of the big sections below the ring (2026-07-07
     // user feedback: "let people drag drop and arrange entire big sections").
     @AtriaDefault("atria.today.sectionOrder") private var todaySectionOrderCSV: String = ""
+    // Same shared preference Settings > Personal and the Customize sheet
+    // write, so the ring layout switches from any of the three surfaces.
+    @AtriaDefault(AtriaRingLayoutStyle.defaultsKey) private var ringLayoutRaw: String = "concentric"
     @State private var showWeeklyReport = false
     @State private var showBreathworkSession = false
     @State private var isEditingGlance = false
@@ -745,6 +748,13 @@ struct AtriaTodayScreen: View {
                     }
                     Button(action: rotateRingOrder) {
                         Label("Rotate Ring Order", systemImage: "arrow.triangle.2.circlepath")
+                    }
+                    Picker(selection: $ringLayoutRaw) {
+                        ForEach(AtriaRingLayoutStyle.allCases, id: \.self) { style in
+                            Text(style.label).tag(style.rawValue)
+                        }
+                    } label: {
+                        Label("Ring Style", systemImage: "circle.circle")
                     }
                 } label: {
                     Image(systemName: "ellipsis")
