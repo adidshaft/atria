@@ -11461,7 +11461,10 @@ class HandoffStaticChecks(unittest.TestCase):
             ".recovery: { metricDetail = .recovery }",
             ".strain: { metricDetail = .strain }",
             "case \"strain-detail\": return .strain",
-            "case \"hrv-detail\": return .hrv",
+            # 2026-08-05: hrv-detail case gained the "chart-options" fixture
+            # alias (auto-opens the chart-options sheet for the sim
+            # screenshot loop); the .hrv routing this pin protects is intact.
+            "case \"hrv-detail\", \"chart-options\": return .hrv",
             "case \"rhr-detail\": return .restingHeartRate",
             "case \"respiratory-detail\": return .respiratoryRate",
             "UserConfirmedWorkout(id: \"debug-today-strain-strength\"",
