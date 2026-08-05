@@ -2348,3 +2348,28 @@ Verification chain once foreground: shouldRunTerminalConsumerMaterialization
 error class) → dependency gate (old-gap fingerprint differs → clears)
 → scheduleFullDrainConsumerMaterialization → Leg A repair on 3939d3d6
 → evidence + re-mint (Leg B) → publish → consumersCommitted/resolved.
+
+## 15.28 Window fix advanced the wedge; site-tagged forensics aboard (2026-08-05 ~16:55 IST)
+
+User's 12:44 foreground pass on the repair build EXPOSED the true
+July-gap mechanism: the factory's scan-record guard searched a
+DEPENDENCY-windowed snapshot for the LATEST scan's source — an old
+pending dependency on a live-draining strap makes that structurally
+unsatisfiable (nothing was ever corrupt; Leg A correctly found no
+divergent pairs). Fix a1c4acf2 merges the scan source's own bounded
+range into the proof snapshot (dependencies provably unaffected —
+catalog-filtered; snapshot-superset shape = the whole-archive entry).
+
+User's ~13:21 pass on THAT build advanced past aggregateCatalogMismatch
+(gone!) and now fails publicationCheckpointMissing — which had TWELVE
+context-free throw sites. 89037478+036ec1e3: every site now records
+its #line durably to atria.offlineSync.terminalFailureSite.v1
+(permanent forensics; also — the explicit BUILD-CLEAN/HAD-ERRORS check
+caught a visibility error that the old grep-pipe pattern would have
+shipped stale AGAIN; the install chain still needs restructuring to
+hard-stop on build failure).
+
+NEXT: one more user foreground pass (~3-5min) names the exact line;
+fix that site; repeat until consumersCommitted. Each pass is
+strictly deeper — three distinct layers cleared today
+(aggregateCatalogMismatch window → next).
