@@ -3436,3 +3436,30 @@ STATUS at user bedtime: capturing live, boundary 03:09, debt
 caught_up, strap 59%, sleep pipeline on proven path. Range-loss
 lane armed earlier (lastReason long_wear_range_loss, deferred while
 live link connected — by design).
+
+## 15.74 Night arc: ••• Ring Style + cross-process defer fix SHIPPED (03:55)
+
+SHIPPED dc813b7c: Ring Style picker in the Today ••• menu (user
+found the gap — the menu never presented AtriaCustomizeSheet; now
+binds the shared AtriaRingLayoutStyle default; third surface).
+SHIPPED 0d9f694c: THE DEADLOCK'S FINAL MECHANISM — scene-active only
+replayed an IN-MEMORY deferred generation; a foreground-deferred
+publication from an earlier process left gapResolvedConsumersPending
+unresolved across four foregrounds. Fix: scene-active also re-enters
+the self-guarded top-level resumePendingFullDrainPublicationIfNeeded.
+(The §15.70b coverage math is ALREADY satisfiable post-midnight with
+the 03:03 full scan — the convergence-rule change may not be needed;
+verify before implementing it.)
+REMAINING GATE at 03:51: the range-loss lane re-arms each fresh
+process (tonight's 21:53-22:31 workout gap pending) and owns the
+transport; publication defers behind it. Its 19:52 sibling attempt
+CONVERGED in ~17min (113 boundaries) — so let it run; if it wedges
+in handoff-defer again (like the 03:07 process did), DAYLIGHT
+DECISION: bounded transport occupancy for the lane, or re-disable
+via automaticFullDrainRecoveryEnabled (AtriaHistoricalFullDrain
+CoverageCoordinator.swift:8 — currently true; the 5.27h/1.054x/309-
+day non-convergence analysis + retirement seal live in that file's
+comment; read it FIRST).
+CHECKPOINTS: ~04:10 pull (lane converged? publication landed?);
+morning open = scene-active fires the new trigger with the user's
+real unlock.
