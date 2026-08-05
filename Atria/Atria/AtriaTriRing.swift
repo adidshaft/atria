@@ -778,10 +778,17 @@ struct AtriaTriRing: View, Equatable {
         for content in slots {
             animatedFills[content.slot] = 0
         }
-        for (index, content) in slots.enumerated() {
-            let target = finals[content.slot] ?? 0
-            withAnimation(.spring(duration: 0.8).delay(Double(index) * 0.15)) {
-                animatedFills[content.slot] = target
+        // The withAnimation writes must not share the onAppear frame: on
+        // iOS 27 the same-frame transaction is dropped before the view is
+        // mounted, leaving every concentric fill at 0 (verified 2026-08-06 —
+        // uniform track-only rings; Reduce Motion's direct-assign path was
+        // unaffected). Deferring one runloop makes the spring reliable.
+        Task { @MainActor in
+            for (index, content) in slots.enumerated() {
+                let target = finals[content.slot] ?? 0
+                withAnimation(.spring(duration: 0.8).delay(Double(index) * 0.15)) {
+                    animatedFills[content.slot] = target
+                }
             }
         }
     }
