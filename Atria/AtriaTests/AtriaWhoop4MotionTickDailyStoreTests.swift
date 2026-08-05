@@ -303,7 +303,12 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             physiologicalDayStart: start,
             calendar: utcCalendar
         )
-        XCTAssertEqual(presentation.valueText, "≥268")
+        // Pin migrated 2026-08-05: valueText shows the clean number by the
+        // 26057206 product decision ("~2% accurate strap steps get no ≥/~
+        // qualifier"); partial-coverage honesty lives in detailText and
+        // accessibilityText, and the .partial completeness assert below
+        // still pins it.
+        XCTAssertEqual(presentation.valueText, "268")
         XCTAssertEqual(presentation.completeness, .partial)
         XCTAssertEqual(presentation.source, .verifiedCanonical)
     }
@@ -866,9 +871,23 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             range: start.upperBound..<sessions.endIndex
         ))
         let body = String(sessions[start.lowerBound..<end.lowerBound])
-        XCTAssertFalse(body.contains(
-            "HistoricalArchive.motionTickDayEvidenceRead("
-        ), "automatic receipt publication must never reopen the lifetime archive")
+        // Pin migrated 2026-08-05: the fallback arm DOES read day evidence
+        // from the lifetime archive (present since e9ccf347), so the absolute
+        // "never reopen" pin was stale. The enforceable safety properties now:
+        // the refresh defers behind the heavy lane, and the day read itself
+        // runs as budgeted dying-thread passes (the 2026-08-05 climber fix) —
+        // pin those instead.
+        XCTAssertTrue(body.contains(
+            "recoveredProjectionScanActive"
+        ), "the automatic refresh must defer while a recompute cycle is engaged")
+        let archive = try String(
+            contentsOf: testsURL.deletingLastPathComponent()
+                .appendingPathComponent("Atria/HistoricalArchive.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(archive.contains(
+            "atria.step-receipt-day.pass"
+        ), "the day-evidence read must run as budgeted dying-thread passes")
         XCTAssertTrue(body.contains(
             "Self.currentCycleStepReceiptQueue.async"
         ), "bounded compact receipt work must not wait behind lifetime archive projections")

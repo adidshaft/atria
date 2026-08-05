@@ -492,7 +492,9 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
 
         XCTAssertEqual(value.source, .verifiedCanonical)
         XCTAssertEqual(value.completeness, .partial)
-        XCTAssertEqual(value.valueText, "≥2345")
+        // Pin migrated 2026-08-05: clean number per the 26057206 decision;
+        // partiality is pinned by .partial + coverageFraction below.
+        XCTAssertEqual(value.valueText, "2345")
         XCTAssertEqual(value.coverageFraction ?? -1, 0.75, accuracy: 0.001)
     }
 
