@@ -3463,3 +3463,27 @@ comment; read it FIRST).
 CHECKPOINTS: ~04:10 pull (lane converged? publication landed?);
 morning open = scene-active fires the new trigger with the user's
 real unlock.
+
+## 15.75 CONCENTRIC RING BUG FOUND, FIXED, VERIFIED, SHIPPED (04:05)
+
+User's "strain shows wrong / two intensities" DECODED + FIXED:
+- Two intensities = track (20% tint) vs progress arc (85-100%
+  gradient) — by design; legibility note stands for small rings.
+- REAL BUG (predates tonight's branch; matches every washed
+  near-full ring screenshot): concentric layout painted NO progress
+  arc — animateToFinalValues ran withAnimation in the same onAppear
+  frame; iOS 27 drops that transaction pre-mount → animatedFills
+  stuck at 0 → track-only uniform rings. PROOF: pixel sampling
+  showed zero angular variation; Reduce Motion (direct-assign path)
+  painted arcs. FIX: one-runloop Task deferral around the spring
+  writes. VERIFIED on sim fixture (strain 8.0/target 13): recovery
+  arc 53% vs expected 50%, strain 42% vs 38% (cap rounding).
+  Separate layout was never affected (direct fraction).
+- Also resolved: the "second W32 chip" sighting was the STALE sim
+  binary; fresh build shows "Aug 3–9" everywhere.
+SHIPPED c-commit (see log) — installed on phone; LAUNCH refused
+(device locked, user asleep). App relaunches via CB state
+restoration on next strap event or morning unlock; morning open
+also fires the §15.74 publication trigger.
+Loop continues: 5-min cadence (job f0aac2f3), integration
+re-verification each iteration, accuracy-first on collisions.
