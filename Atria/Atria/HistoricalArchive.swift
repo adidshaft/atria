@@ -3596,6 +3596,14 @@ enum HistoricalArchive {
         var skinTemperatureRawPoints = reusableCache?.skinTemperatureRawPoints ?? []
         var gravity = reusableCache?.gravitySamples ?? []
         var motionRecordIdentities = reusableCache?.motionRecordIdentities ?? []
+        // Strap identifiers repeat a handful of distinct values, and measured
+        // strapIdMaxLen=36 exceeds the 15-byte small-string inline limit — so
+        // every un-interned copy is its own heap allocation across the ~718K
+        // retained skin points (2026-08-05 bounding design, Edit 3). Interning
+        // is intra-scan only (verdict F5): points reused from the prior cache
+        // keep their instances, and an incremental scan adds at most one new
+        // instance per distinct value. The table dies with this call.
+        var strapIdentifierIntern: [String: String] = [:]
         var truncatedChannels = reusableCache?.truncatedChannels ?? []
         var limitations = recoveredBudgetLimitations(
             heartRateCount: heartRate.count,
@@ -3661,6 +3669,7 @@ enum HistoricalArchive {
                                   skinTemperatureRawPoints: &skinTemperatureRawPoints,
                                   gravity: &gravity,
                                   motionRecordIdentities: &motionRecordIdentities,
+                                  strapIdentifierIntern: &strapIdentifierIntern,
                                   skipMotion: false,
                                   skipRR: false,
                                   skipSkin: false)
@@ -3822,6 +3831,7 @@ enum HistoricalArchive {
         skinTemperatureRawPoints: inout [SkinTemperatureRawPoint],
         gravity: inout [GravitySample],
         motionRecordIdentities: inout Set<AtriaRecoveredMotionReplayIdentity>,
+        strapIdentifierIntern: inout [String: String],
         // TEMPORARY bisect levers (2026-08-04 footprint hunt): each skips
         // exactly one append subsystem so a device run can name the lane
         // whose transient garbage ignites the balloon. Remove with the
@@ -3870,7 +3880,8 @@ enum HistoricalArchive {
                 skinTemperatureRawPoints.append(.init(
                     t: Date(timeIntervalSince1970: timestamp),
                     raw: raw,
-                    strapIdentifier: record.strapIdentifier
+                    strapIdentifier: internedStrapIdentifier(
+                        record.strapIdentifier, in: &strapIdentifierIntern)
                 ))
             }
         }
@@ -3897,6 +3908,18 @@ enum HistoricalArchive {
                 }
             }
         }
+    }
+
+    /// Nil-preserving: `Record.strapIdentifier` is Optional and interning
+    /// must never invent or drop a value — only alias byte-equal copies.
+    private static func internedStrapIdentifier(
+        _ value: String?,
+        in intern: inout [String: String]
+    ) -> String? {
+        guard let value else { return nil }
+        if let canonical = intern[value] { return canonical }
+        intern[value] = value
+        return value
     }
 
     private static func sortRecoveredData(
@@ -4120,6 +4143,7 @@ enum HistoricalArchive {
         var skinTemperatureRawPoints: [SkinTemperatureRawPoint] = []
         var gravity: [GravitySample] = []
         var motionRecordIdentities = Set<AtriaRecoveredMotionReplayIdentity>()
+        var strapIdentifierIntern: [String: String] = [:]
         var limitations: [RecoveredDataCompleteness.Channel: Int] = [:]
         for record in records {
             appendRecoveredRecord(record,
@@ -4130,7 +4154,8 @@ enum HistoricalArchive {
                                   rrAccumulator: &rrAccumulator,
                                   skinTemperatureRawPoints: &skinTemperatureRawPoints,
                                   gravity: &gravity,
-                                  motionRecordIdentities: &motionRecordIdentities)
+                                  motionRecordIdentities: &motionRecordIdentities,
+                                  strapIdentifierIntern: &strapIdentifierIntern)
         }
         sortRecoveredData(heartRate: &heartRate,
                           skinTemperatureRawPoints: &skinTemperatureRawPoints,

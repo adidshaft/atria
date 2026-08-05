@@ -498,6 +498,64 @@ final class AtriaRecoveredRRProjectionTests: XCTestCase {
         ))
     }
 
+    func testStableRecordIDAndFingerprintMatchKnownVector() throws {
+        // Known vector computed independently of the implementation
+        // (SHA-256 over the documented canonical string, and over the beat
+        // fingerprint canonical form, for the default makeRecord fixture).
+        // Pins digest-to-string reconstruction so the stored-digest
+        // accumulator can never drift from the retired string-keyed
+        // representation: prefix, hex case, field order, beat-id shape.
+        let expectedRecordID = "recovered-rr-record-v1-"
+            + "5986555fdae3c3a3acd5076b6ca238801cf880c1977d453548381ba6951724a9"
+
+        let result = AtriaRecoveredRRProjection.project(records: [makeRecord()])
+
+        XCTAssertEqual(result.beats.map(\.recordID),
+                       [expectedRecordID, expectedRecordID])
+        XCTAssertEqual(result.beats.map(\.id),
+                       ["\(expectedRecordID):beat:0", "\(expectedRecordID):beat:1"])
+        XCTAssertEqual(
+            result.stableFingerprint,
+            "recovered-rr-projection-v1-"
+                + "7e9567e29d3ae29ff4dd72012328f0e3096ab9d0320728a39cca493f646ab2ec"
+        )
+    }
+
+    func testMultiScanIngestWithPruneBetweenScansMatchesSingleBatchReference() throws {
+        // The production scan ingests incrementally across recomputes with
+        // prune(before:) between scans; the Result it finishes must be
+        // byte-identical (beats, ids, order, stableFingerprint) to a
+        // single-batch projection over the retained records — including a
+        // replay of a surviving record arriving after the prune.
+        let cutoff: TimeInterval = 1_781_626_000
+        let pruned = makeRecord(counter: 200, timestamp: 1_781_620_000)
+        let retained = makeRecord()
+        let late = makeRecord(counter: retained.flash13 + 1,
+                              timestamp: retained.unix7 + 1,
+                              subsecond: 4_096,
+                              intervals: [800])
+
+        var accumulator = AtriaRecoveredRRProjection.Accumulator()
+        accumulator.ingest(pruned)
+        accumulator.ingest(retained)
+        accumulator.prune(before: cutoff)
+        accumulator.ingest(retained)
+        accumulator.ingest(late)
+        let multiScan = accumulator.finish()
+
+        let reference = AtriaRecoveredRRProjection.project(records: [retained, late])
+
+        XCTAssertEqual(multiScan.beats, reference.beats)
+        XCTAssertEqual(multiScan.beats.map(\.id), reference.beats.map(\.id))
+        XCTAssertEqual(multiScan.stableFingerprint, reference.stableFingerprint)
+        XCTAssertEqual(multiScan.statistics.acceptedRecordCount, 2)
+        XCTAssertEqual(multiScan.statistics.replayedRecordCount, 1)
+        XCTAssertEqual(multiScan.beats.count, 3)
+        XCTAssertTrue(multiScan.beats.allSatisfy {
+            $0.timestamp.timeIntervalSince1970 >= cutoff
+        }, "pruned record beats must not resurface at finish()")
+    }
+
     private func makeRecord(
         counter: UInt32 = 0x0131_4944,
         timestamp: UInt32 = 1_781_626_522,
