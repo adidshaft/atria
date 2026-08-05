@@ -2782,7 +2782,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "batteryHeaderChargeText == \"--\" ? batteryChargeText : batteryHeaderChargeText",
             "guard batteryLevel >= 0 else { return \"Strap battery unavailable.\" }",
             "return \"Strap battery \\(batteryText), \\(batteryAccessibilityChargeText).\"",
-            "guard batteryLevel >= 0 else { return \"—\" }",
+            # 2026-08-05: audit fix — battery no-value placeholder unified on
+            # the canonical "--" token (was the em dash "—").
+            "guard batteryLevel >= 0 else { return \"--\" }",
             "batteryChargeStatus == .levelOnly",
             "if batteryShowsPowered || batteryChargeStatus == .full",
             "ble.$batteryChargeStatus.removeDuplicates()",
@@ -7593,7 +7595,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "impactLane(title: \"Support\"",
             "glanceChip(title: \"Logged\"",
             # 2026-07-08: "Links" (raw correlation count) renamed to plain
-            # "Patterns", with "—" instead of "0" in the empty state.
+            # "Patterns". 2026-08-05: audit fix — a computed zero renders "0"
+            # (mirroring the Logged chip); "--" only when no summaries exist.
             "glanceChip(title: \"Patterns\"",
             "glanceChip(title: \"Focus\"",
             "Journal impact glance. \\(taggedDays) logged days.",

@@ -3464,7 +3464,7 @@ private struct AtriaCollectionStatusCardHost: View {
                         tint: .blue)
         AtriaMetricTile(label: "Battery",
                         value: projectionStore.state.batteryLevel >= 0
-                            ? projectionStore.state.batteryStatusSummaryText : "—",
+                            ? projectionStore.state.batteryStatusSummaryText : "--",
                         state: projectionStore.state.batteryLevel >= 0 ? .live : .learning,
                         tint: projectionStore.state.batteryShowsPowered ? .green : .blue,
                         footnote: projectionStore.state.batteryLevel >= 0
@@ -4616,9 +4616,10 @@ struct AtriaHeartRateRangeSummary: Equatable {
     var durationText: String {
         let duration = max(0, end.timeIntervalSince(start))
         if duration < 60 { return "\(Int(duration.rounded())) sec" }
-        if duration < 3_600 { return "\(Int((duration / 60).rounded())) min" }
-        let hours = Int(duration / 3_600)
-        let minutes = Int((duration.truncatingRemainder(dividingBy: 3_600) / 60).rounded())
+        let totalMinutes = Int((duration / 60).rounded())
+        if totalMinutes < 60 { return "\(totalMinutes) min" }
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
         return minutes == 0 ? "\(hours) hr" : "\(hours) hr \(minutes) min"
     }
 

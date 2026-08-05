@@ -550,7 +550,7 @@ struct BaselineCard: View {
                 }
             }
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(baseline.restingInt.map { "\($0)" } ?? "—")
+                Text(baseline.restingInt.map { "\($0)" } ?? "--")
                     .font(.system(size: 34, weight: .bold, design: .rounded))
                 Text("bpm").font(.caption).foregroundStyle(.secondary)
                 Spacer()

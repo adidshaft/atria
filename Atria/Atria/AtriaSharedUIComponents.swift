@@ -21,6 +21,15 @@ enum AtriaMetricFormat {
         return "\(Int(value.rounded()))%"
     }
 
+    static func respiratory(_ value: Double?) -> String {
+        guard let value else { return "--" }
+        // "/min" is the canonical respiratory unit label (2026-08-05 audit:
+        // "rpm" is nonstandard — colloquially revolutions per minute). The
+        // space keeps the hero split (AtriaMetricHeroValueText) styling the
+        // unit as the smaller secondary token, same as "54 ms" / "58 bpm".
+        return String(format: "%.1f /min", value)
+    }
+
     static func sleepDuration(seconds: TimeInterval?) -> String {
         guard let seconds else { return "--" }
         let totalMinutes = max(0, Int((seconds / 60).rounded()))
@@ -49,6 +58,8 @@ enum AtriaMetricFormat {
             return strain(value)
         case .sleep:
             return sleepHours(value)
+        case .respiratory:
+            return respiratory(value)
         }
     }
 
@@ -64,7 +75,10 @@ enum AtriaMetricFormat {
         case .strain:
             return "\(prefix)\(String(format: "%.1f", value))"
         case .sleep:
-            return "\(prefix)\(sleepHours(abs(value)))"
+            let sleepPrefix = value > 0 ? "+" : (value < 0 ? "\u{2212}" : "")
+            return "\(sleepPrefix)\(sleepHours(abs(value)))"
+        case .respiratory:
+            return "\(prefix)\(String(format: "%.1f", value)) /min"
         }
     }
 
@@ -80,6 +94,8 @@ enum AtriaMetricFormat {
             return "\(strain(low))-\(strain(high))"
         case .sleep:
             return "\(sleepHours(low))-\(sleepHours(high))"
+        case .respiratory:
+            return String(format: "%.1f-%.1f /min", low, high)
         }
     }
 }
@@ -90,6 +106,7 @@ enum AtriaMetricUnit {
     case restingHeartRate
     case strain
     case sleep
+    case respiratory
 }
 
 struct AtriaCalibratingLabel: View, Equatable {

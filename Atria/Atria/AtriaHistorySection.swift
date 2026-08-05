@@ -558,7 +558,7 @@ struct AtriaHistoryDayRow: View, Equatable {
 
             Spacer(minLength: 8)
 
-            Text(day.strain.map { "\(AtriaMetricFormat.strain($0)) strain" } ?? "—")
+            Text(day.strain.map { "\(AtriaMetricFormat.strain($0)) strain" } ?? "--")
                 .font(.subheadline.weight(.bold).monospacedDigit())
                 .foregroundStyle(day.strain != nil ? Metrics.electricStrain : .secondary)
                 .lineLimit(1)
@@ -1416,7 +1416,7 @@ struct AtriaHistoryDayDetailSheet: View {
 
     private var recoveryRow: some View {
         AtriaHistoryStatRow(title: "Recovery",
-                            value: day.recovery.map { "\($0)%" } ?? "—",
+                            value: day.recovery.map { "\($0)%" } ?? "--",
                             detail: medians.recovery.map { "Median \(Int($0.rounded()))%" } ?? "Building median",
                             systemImage: "heart.fill",
                             tint: day.recovery.map { Metrics.recoveryColor($0) } ?? .secondary,
@@ -1428,7 +1428,7 @@ struct AtriaHistoryDayDetailSheet: View {
 
     private var rhrRow: some View {
         AtriaHistoryStatRow(title: "Resting HR",
-                            value: day.rhrInt.map { "\($0) bpm" } ?? "—",
+                            value: day.rhrInt.map { "\($0) bpm" } ?? "--",
                             detail: medians.rhr.map { "Median \(Int($0.rounded())) bpm" } ?? "Building median",
                             systemImage: "heart.text.square.fill",
                             tint: .cyan,

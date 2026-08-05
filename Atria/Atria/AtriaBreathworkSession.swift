@@ -374,7 +374,7 @@ struct AtriaBreathworkSession: View {
                     .font(.caption.weight(.semibold).monospacedDigit())
                     .foregroundStyle(feedback.direction.map(stressDirectionTint) ?? .white.opacity(0.52))
             } else {
-                Text("—")
+                Text("--")
                     .font(.system(size: 38, weight: .bold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.56))
                 Text("Measured stress unavailable")
