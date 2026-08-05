@@ -2991,11 +2991,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             if weeklyReportHighlight != nil || monthlyReportHighlight != nil {
                 VStack(alignment: .leading, spacing: 8) {
                     if weeklyReportHighlight != nil && monthlyReportHighlight != nil {
-                        Picker("Report period", selection: $reportPeriod) {
-                            Text("Week").tag(AtriaReportPeriod.week)
-                            Text("Month").tag(AtriaReportPeriod.month)
-                        }
-                        .pickerStyle(.segmented)
+                        AtriaTextSelector(items: [AtriaReportPeriod.week, .month],
+                                          title: { $0.label },
+                                          selection: $reportPeriod)
                     }
 
                     switch reportPeriod {
@@ -4922,8 +4920,14 @@ enum AtriaLiveSignalTruth {
 }
 
 private struct AtriaTriRingLiveStatusStrip: View, Equatable {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let live: AtriaHomeModel.CoreLiveState
     let pulse: AtriaHomeModel.HeroPulseState
+
+    static func == (lhs: AtriaTriRingLiveStatusStrip, rhs: AtriaTriRingLiveStatusStrip) -> Bool {
+        lhs.live == rhs.live && lhs.pulse == rhs.pulse
+    }
 
     private var tint: Color {
         if let zone = pulse.heartRateZone { return zone.tint }
@@ -4940,6 +4944,8 @@ private struct AtriaTriRingLiveStatusStrip: View, Equatable {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(pulse.heartRateText)
                         .font(.subheadline.weight(.bold).monospacedDigit())
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: pulse.heartRateText)
                         .foregroundStyle(pulse.heartRateZone != nil ? tint : .primary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
@@ -4981,6 +4987,8 @@ private struct AtriaTriRingLiveStatusStrip: View, Equatable {
                 Label {
                     Text(live.batteryText)
                         .font(.caption.weight(.bold).monospacedDigit())
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: live.batteryText)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                 } icon: {
@@ -5105,6 +5113,13 @@ private struct AtriaWeeklyPlanTargetRow: View, Equatable {
 private enum AtriaReportPeriod {
     case week
     case month
+
+    var label: String {
+        switch self {
+        case .week: return "Week"
+        case .month: return "Month"
+        }
+    }
 }
 
 private struct AtriaWeeklyReportHighlightRow: View, Equatable {
@@ -6018,6 +6033,7 @@ struct AtriaStrapStepLiveStatus: Equatable {
 
 private struct AtriaStrapStepsDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let count: Int
     let validationState: String
@@ -6067,6 +6083,8 @@ private struct AtriaStrapStepsDetailSheet: View {
                         Text(presentation.valueText)
                             .font(.system(size: 30, weight: .bold, design: .rounded))
                             .monospacedDigit()
+                            .contentTransition(reduceMotion ? .identity : .numericText())
+                            .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: presentation.valueText)
                     }
 
                     HStack(spacing: 10) {
@@ -9587,14 +9605,11 @@ struct AtriaMetricDetailSheet: View {
 
     private func chartSlot<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 16) {
-            Picker("Range", selection: $range) {
-                ForEach(metric == .fitnessAge
-                    ? [.week, .month]
-                    : AtriaTrendRange.primarySegments) { option in
-                    Text(option.menuLabel).tag(option)
-                }
-            }
-            .pickerStyle(.segmented)
+            AtriaTextSelector(items: metric == .fitnessAge
+                                  ? [.week, .month]
+                                  : AtriaTrendRange.primarySegments,
+                              title: { $0.menuLabel },
+                              selection: $range)
 
             HStack(spacing: 12) {
                 Button {
@@ -13442,14 +13457,11 @@ private struct AtriaSleepPlanCard: View {
                 Spacer(minLength: 0)
             }
 
-            Picker("Sleep goal", selection: Binding(
-                get: { AtriaSleepPlannerGoal(rawValue: plannerGoalRaw) ?? .peak },
-                set: { plannerGoalRaw = $0.rawValue })) {
-                ForEach(AtriaSleepPlannerGoal.allCases) { option in
-                    Text(option.title).tag(option)
-                }
-            }
-            .pickerStyle(.segmented)
+            AtriaTextSelector(items: AtriaSleepPlannerGoal.allCases,
+                              title: { $0.title },
+                              selection: Binding(
+                                  get: { AtriaSleepPlannerGoal(rawValue: plannerGoalRaw) ?? .peak },
+                                  set: { plannerGoalRaw = $0.rawValue }))
 
             Text("\(goal.detail) tonight, assuming your \(plan.efficiencyIsDefault ? "typical-population" : "own typical") efficiency (\(Int((plan.assumedEfficiency * 100).rounded()))%)\(plan.efficiencyIsDefault ? " \u{2014} learning yours" : ""). Anchored to your wake-by time above.")
                 .font(.caption2)
@@ -13493,12 +13505,11 @@ private struct AtriaSleepPlanCard: View {
                 }
             }
 
-            Picker("Wake mode", selection: $wakeAlarmMode) {
-                ForEach(AtriaWakeAlarmPlan.Mode.allCases, id: \.rawValue) { mode in
-                    Text(mode.title).tag(mode.rawValue)
-                }
-            }
-            .pickerStyle(.segmented)
+            AtriaTextSelector(items: AtriaWakeAlarmPlan.Mode.allCases,
+                              title: { $0.title },
+                              selection: Binding(
+                                  get: { AtriaWakeAlarmPlan.Mode(rawValue: wakeAlarmMode) ?? .smartWindow },
+                                  set: { wakeAlarmMode = $0.rawValue }))
             .onChange(of: wakeAlarmMode) { _, _ in
                 if wakeAlarmEnabled { scheduleWakeAlarm() }
             }
@@ -15825,12 +15836,9 @@ struct AtriaChartOptionsSheet: View {
                         .font(.caption2.weight(.black))
                         .foregroundStyle(.tertiary)
                         .kerning(0.8)
-                    Picker("Window", selection: $draftWindow) {
-                        ForEach(Self.windowOptions) { option in
-                            Text(option.segmentedLabel).tag(option)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+                    AtriaTextSelector(items: Self.windowOptions,
+                                      title: { $0.segmentedLabel },
+                                      selection: $draftWindow)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -15838,12 +15846,9 @@ struct AtriaChartOptionsSheet: View {
                         .font(.caption2.weight(.black))
                         .foregroundStyle(.tertiary)
                         .kerning(0.8)
-                    Picker("Bucket", selection: $draftBucket) {
-                        ForEach(AtriaChartBucketOverride.allCases) { option in
-                            Text(option.label).tag(option)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+                    AtriaTextSelector(items: AtriaChartBucketOverride.allCases,
+                                      title: { $0.label },
+                                      selection: $draftBucket)
                     Text("Auto shows daily points on short ranges and weekly averages past 3 months.")
                         .font(.caption)
                         .foregroundStyle(.secondary)

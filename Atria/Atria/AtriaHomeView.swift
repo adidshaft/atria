@@ -8022,6 +8022,7 @@ private struct AtriaLiveWorkoutTabAccessory: View {
     let strain: Double
     let isInline: Bool
     let onOpenWorkout: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let presentation = AtriaLiveTabAccessoryPresentation(heartRate: pulseStore.state.heartRate,
@@ -8036,6 +8037,9 @@ private struct AtriaLiveWorkoutTabAccessory: View {
                     Text(elapsedText(context.date, since: workoutStart))
                         .font((isInline ? Font.caption : Font.subheadline).weight(.bold))
                         .monospacedDigit()
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
+                                   value: context.date)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
                         .layoutPriority(2)
@@ -8044,6 +8048,9 @@ private struct AtriaLiveWorkoutTabAccessory: View {
                 Text(pulseStore.state.heartRate > 0 ? "\(pulseStore.state.heartRate) bpm" : "-- bpm")
                     .font((isInline ? Font.caption : Font.subheadline).weight(.semibold))
                     .monospacedDigit()
+                    .contentTransition(reduceMotion ? .identity : .numericText())
+                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
+                               value: pulseStore.state.heartRate)
                     .lineLimit(1)
                     .minimumScaleFactor(0.62)
                     .allowsTightening(true)
@@ -8052,6 +8059,10 @@ private struct AtriaLiveWorkoutTabAccessory: View {
                 Text(String(format: "%.1f strain", strain))
                     .font((isInline ? Font.caption2 : Font.caption).weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .contentTransition(reduceMotion ? .identity : .numericText())
+                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
+                               value: strain)
                     .lineLimit(1)
                     .minimumScaleFactor(0.76)
 
@@ -8100,7 +8111,7 @@ private struct AtriaStandByOverlay: View {
                         .font(.system(size: 118, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .lineLimit(1)
-                        .contentTransition(.numericText())
+                        .contentTransition(reduceMotion ? .identity : .numericText())
                         .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
                                    value: pulseLiveStore.state.heartRate)
                         .foregroundStyle(.white)
@@ -8163,6 +8174,7 @@ private struct AtriaStandByMetric: View {
     let value: String
     let detail: String
     let tint: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -8172,6 +8184,9 @@ private struct AtriaStandByMetric: View {
             Text(value)
                 .font(.system(size: 34, weight: .bold, design: .rounded))
                 .monospacedDigit()
+                .contentTransition(reduceMotion ? .identity : .numericText())
+                .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
+                           value: value)
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
