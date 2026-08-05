@@ -2228,3 +2228,39 @@ BACKLOG FOR NEXT SESSIONS (ranked):
    with the streaming hash, but serialization adds safety).
 5. Fingerprint-latch, redundant reuse=0 refresh coalescing,
    readVerifiedConsumerSources bounded reads.
+
+## 15.23 July-gap authority: root cause DIAGNOSED (2026-08-05 ~13:40)
+
+Why the 20-SECOND Jul-31 gap (66049f87, 02:37:34–54) never resolves:
+the terminal materialization fails EVERY pass on
+`AtriaHistoricalActivityInspectionProofFactory.FactoryError
+.aggregateCatalogMismatch("3939d3d6-…")` — durably recorded at
+`atria.offlineSync.terminalArchiveFailureDiagnostic.v1` (03:55 today;
+the diagnostic channel EXISTS and is pullable via the prefs plist —
+remember this: Library/Preferences/com.adidshaft.atria.plist).
+
+Chunk 3939d3d6: SEALED Aug 5 03:05 IST — mid-gauntlet-kill era — its
+aggregate written at seal time is inconsistent with the catalog
+(crash-at-seal artifact). The proof factory fails closed; consumer
+publication can never complete; the authority stays
+gapResolvedConsumersPending; every launch re-runs (now-safe) ~90s×2
+materialization passes for nothing. Earlier silent failures since
+Jul 31 were presumably the same class from that week's jetsam storms
+(the key only retains the latest error).
+
+Evidence set: authority JSON (gap tiny + already resolved;
+pendingConsumerDependency = chunk d15c6bf0, range Jul 29 18:30 →
+Jul 31 18:30 UTC, 11 sealed dependency chunks — well under limits),
+consumer-receipts frozen Jul 30, full-scan completions advancing
+daily (evidence arm works), 2 zero-byte sealed chunks without
+timestamps (separate cosmetic debt).
+
+FIX DESIGN (next cycle, workflow-mapped before writing): proof-gated
+aggregate REBUILD for a sealed chunk whose aggregate mismatches the
+catalog — raw is retained (22MB, contentSHA256 verifiable), the
+aggregate builder exists; the invariants to hold: retention-manifest
+coherence, catalog aggregateSnapshotSHA256 chains, digest parity,
+never touching raw. The existing sealed-catalog repair
+(materializeNextSealedCatalogDependency) does NOT cover this class —
+extend it there. When repaired → materialization completes → gap
+resolves → per-launch recurring work retires.
