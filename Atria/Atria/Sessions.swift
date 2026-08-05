@@ -7882,6 +7882,21 @@ final class SessionStore: ObservableObject {
             currentCycleStepReceiptDeferredUntilForeground = false
             return
         }
+        // Single heavy lane (2026-08-05 climber fix): this arm lacked the
+        // defer guard its sibling `prepareCurrentCycleStrapStepReceipt` has,
+        // so the day-evidence archive scan could start the moment a recovery
+        // cycle released priority — stacking onto the retained recovered
+        // working set. Defer during exact-recovery priority AND any active
+        // recompute cycle; resumeDeferredForegroundArchiveWork re-arms it.
+        guard !nonExactArchiveConsumerShouldDefer,
+              !recoveredProjectionScanActive else {
+            currentCycleStepReceiptDeferredUntilForeground = true
+            AtriaDebugLog(
+                "ATRIADBG whoop4_daily_steps status=receipt_refresh_deferred reason=%@ detail=heavy_lane_active action=resume_on_release",
+                reason
+            )
+            return
+        }
         let applicationIsActive =
             UIApplication.shared.applicationState == .active
         let identifiers =
