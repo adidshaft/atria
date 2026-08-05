@@ -27927,23 +27927,48 @@ final class SessionStore: ObservableObject {
         guard let clusterStart = absolutePoints.first?.date,
               let clusterEnd = absolutePoints.last?.date,
               clusterEnd.timeIntervalSince(clusterStart) >= 10 * 60 else { return [] }
-        // Span ceiling (2026-08-05 allocation audit): the ≤6h SESSION filter
-        // upstream does not bound the CLUSTER — workoutClusters chains ≤6h
-        // chunks across ≤30min gaps, so an all-day recovered wear day
-        // re-formed an unbounded span here and the window sweep (~61 point-
-        // copies per point, ~3k windows/day, each with a full readiness
-        // replay) was the surviving cold-launch burst. Windowed candidates
-        // over a multi-hour continuous span are noise anyway — the whole-
-        // cluster and stitched candidates above still represent long
-        // efforts, and the qualified-window review path owns real workouts.
-        guard clusterEnd.timeIntervalSince(clusterStart) <= 6 * 3600 else { return [] }
-
+        // Span SLICING (2026-08-05, replaces the blanket span ceiling from the
+        // allocation audit): the ceiling's `return []` for >6h clusters erased
+        // real detections — the captured July-27 physical walk sat inside a
+        // 17-hour all-day wear cluster and its bounded ready review vanished
+        // (AtriaDetectedActivityReviewTests pinned it; bisect-proven). The
+        // memory concern the ceiling fixed (per-window point copies × ~3k
+        // windows over an unbounded span) is preserved by sweeping ≤6h time
+        // slices instead: each slice's copy cost is exactly the old ceiling's
+        // bound, slices step by 4.5h so the 90-minute maximum window can
+        // never straddle two boundaries unseen, and the dedupe set spans
+        // slices so overlap regions yield one candidate.
         let durations: [TimeInterval] = [10, 20, 30, 45, 60, 90].map { $0 * 60 }
         let minimumDuration = 10 * 60.0
         let coarseStep: TimeInterval = 5 * 60
         let fineStep: TimeInterval = 60
+        let sliceSpan: TimeInterval = 6 * 3600
+        let sliceStride: TimeInterval = sliceSpan - (durations.last ?? 5_400)
+        var sliceRanges: [(start: Date, end: Date)] = []
+        if clusterEnd.timeIntervalSince(clusterStart) <= sliceSpan {
+            sliceRanges = [(clusterStart, clusterEnd)]
+        } else {
+            var sliceStart = clusterStart
+            while sliceStart < clusterEnd {
+                sliceRanges.append((sliceStart,
+                                    min(sliceStart.addingTimeInterval(sliceSpan),
+                                        clusterEnd)))
+                sliceStart = sliceStart.addingTimeInterval(sliceStride)
+            }
+        }
         var candidates: [AggregateWorkoutCandidate] = []
         var seenActual = Set<String>()
+        for slice in sliceRanges {
+        let slicePoints = absolutePoints.filter {
+            $0.date >= slice.start && $0.date <= slice.end
+        }
+        guard let sliceFirst = slicePoints.first?.date,
+              let sliceLast = slicePoints.last?.date,
+              sliceLast.timeIntervalSince(sliceFirst) >= 10 * 60 else { continue }
+        let absolutePoints = slicePoints
+        let clusterStart = sliceFirst
+        let clusterEnd = sliceLast
+        _ = clusterStart
         let absoluteDates = absolutePoints.map(\.date)
         // A short effort can begin between the legacy five-minute anchors.
         // Search only the minimum detector window at one-minute resolution;
@@ -27995,6 +28020,7 @@ final class SessionStore: ObservableObject {
                     candidates.append(candidate)
                 }
             }
+        }
         }
         return candidates
     }
