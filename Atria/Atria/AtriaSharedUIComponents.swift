@@ -821,3 +821,192 @@ struct AtriaPulsingHeart: View, Equatable {
         }
     }
 }
+
+/// Honest event-window visual for manual entry sheets (sleep, nap, workout):
+/// draws ONLY the user-entered start→end span on an hour-ticked time track with
+/// a duration readout. It never implies stage/zone data — it's a pure function
+/// of the two times the user picked — so it stays within Atria's honesty rules
+/// (no fabricated sensor detail). Updates live as the pickers move.
+struct AtriaEventWindowTimeline: View, Equatable {
+    let title: String
+    let start: Date
+    let end: Date
+    let tint: Color
+    var timeZoneIdentifier: String? = nil
+
+    private var duration: TimeInterval { max(0, end.timeIntervalSince(start)) }
+
+    private var spanStart: Date {
+        start.addingTimeInterval(-max(30 * 60, duration * 0.2))
+    }
+
+    private var spanEnd: Date {
+        end.addingTimeInterval(max(30 * 60, duration * 0.2))
+    }
+
+    private func fraction(_ date: Date) -> CGFloat {
+        let total = spanEnd.timeIntervalSince(spanStart)
+        guard total > 0 else { return 0 }
+        return CGFloat(min(1, max(0, date.timeIntervalSince(spanStart) / total)))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                Spacer(minLength: 8)
+                Text(Self.durationText(duration))
+                    .font(.caption2.weight(.bold).monospacedDigit())
+                    .foregroundStyle(tint)
+            }
+
+            GeometryReader { geo in
+                let w = geo.size.width
+                let trackH: CGFloat = 34
+                let x0 = fraction(start) * w
+                let x1 = fraction(end) * w
+                let capW = max(6, x1 - x0)
+
+                ZStack(alignment: .topLeading) {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                        .frame(width: w, height: trackH)
+
+                    hourTicks(width: w, height: trackH)
+
+                    Capsule(style: .continuous)
+                        .fill(LinearGradient(colors: [tint.opacity(0.92), tint.opacity(0.55)],
+                                             startPoint: .leading, endPoint: .trailing))
+                        .frame(width: capW, height: trackH)
+                        .offset(x: x0)
+                }
+                .frame(width: w, height: trackH)
+            }
+            .frame(height: 34)
+
+            HStack {
+                Text(Self.timeText(start, timeZoneIdentifier: timeZoneIdentifier))
+                Spacer(minLength: 0)
+                Text(Self.timeText(end, timeZoneIdentifier: timeZoneIdentifier))
+            }
+            .font(.system(size: 10, weight: .semibold).monospacedDigit())
+            .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title) from \(Self.timeText(start, timeZoneIdentifier: timeZoneIdentifier)) to \(Self.timeText(end, timeZoneIdentifier: timeZoneIdentifier)), duration \(Self.durationText(duration))")
+    }
+
+    private func hourTicks(width: CGFloat, height: CGFloat) -> some View {
+        Canvas { context, size in
+            let total = spanEnd.timeIntervalSince(spanStart)
+            guard total > 0 else { return }
+            var calendar = Calendar.current
+            if let timeZoneIdentifier, let timeZone = TimeZone(identifier: timeZoneIdentifier) {
+                calendar.timeZone = timeZone
+            }
+            // Keep decorations inside the rounded track.
+            context.clip(to: Path(roundedRect: CGRect(origin: .zero, size: size),
+                                  cornerRadius: 9, style: .continuous))
+
+            // Day/night context bands: shade the hours the window spans that
+            // fall in typical night (21:00-06:00) so a sleep/nap window visibly
+            // sits in the dark hours. Pure clock derivation from the entered
+            // times -- no sensor claim, no stage data.
+            func isNight(_ date: Date) -> Bool {
+                let hour = calendar.component(.hour, from: date)
+                return hour >= 21 || hour < 6
+            }
+            let comps = calendar.dateComponents([.year, .month, .day, .hour], from: spanStart)
+            if var cell = calendar.date(from: comps) {
+                while cell < spanEnd {
+                    let cellEnd = cell.addingTimeInterval(3600)
+                    let x0 = CGFloat(max(0, cell.timeIntervalSince(spanStart)) / total) * size.width
+                    let x1 = CGFloat(min(total, cellEnd.timeIntervalSince(spanStart)) / total) * size.width
+                    if isNight(cell), x1 > x0 {
+                        context.fill(Path(CGRect(x: x0, y: 0, width: x1 - x0, height: size.height)),
+                                     with: .color(Color.indigo.opacity(0.09)))
+                    }
+                    cell = cellEnd
+                }
+            }
+
+            // Hour tick hairlines.
+            guard var tick = calendar.date(from: comps) else { return }
+            if tick < spanStart { tick = tick.addingTimeInterval(3600) }
+            while tick < spanEnd {
+                let x = CGFloat(tick.timeIntervalSince(spanStart) / total) * size.width
+                var path = Path()
+                path.move(to: CGPoint(x: x, y: 4))
+                path.addLine(to: CGPoint(x: x, y: size.height - 4))
+                context.stroke(path,
+                               with: .color(Color.primary.opacity(0.08)),
+                               style: StrokeStyle(lineWidth: 1))
+                tick = tick.addingTimeInterval(3600)
+            }
+        }
+        .frame(width: width, height: height)
+        .allowsHitTesting(false)
+    }
+
+    private static func durationText(_ seconds: TimeInterval) -> String {
+        guard seconds > 0 else { return "--" }
+        let minutes = Int((seconds / 60).rounded())
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        if hours > 0 { return "\(hours)h \(remainder)m" }
+        return "\(remainder)m"
+    }
+
+    private static func timeText(_ date: Date, timeZoneIdentifier: String?) -> String {
+        var style = Date.FormatStyle(date: .omitted, time: .shortened)
+        if let timeZoneIdentifier, let timeZone = TimeZone(identifier: timeZoneIdentifier) {
+            style.timeZone = timeZone
+        }
+        return date.formatted(style)
+    }
+}
+
+/// Apple-Stocks-style plain-text selector (design direction 2026-08-05): a
+/// spacious row of text items with a single subtle capsule that slides under
+/// the selected one. Replaces congested `.pickerStyle(.segmented)` controls --
+/// no heavy pill-in-pill container, generous tap targets, clearer selected
+/// state, more breathing room.
+struct AtriaTextSelector<Item: Hashable>: View {
+    let items: [Item]
+    let title: (Item) -> String
+    @Binding var selection: Item
+
+    @Namespace private var highlight
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(items, id: \.self) { item in
+                let isSelected = item == selection
+                Button {
+                    withAnimation(.snappy(duration: 0.28)) { selection = item }
+                } label: {
+                    Text(title(item))
+                        .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .contentShape(Capsule())
+                        .background {
+                            if isSelected {
+                                Capsule(style: .continuous)
+                                    .fill(Color.primary.opacity(0.07))
+                                    .matchedGeometryEffect(id: "atria.selector.highlight", in: highlight)
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(title(item))
+                .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+}

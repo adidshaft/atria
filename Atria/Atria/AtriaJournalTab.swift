@@ -211,16 +211,34 @@ private struct AtriaJournalCycleCard: View {
                     .foregroundStyle(.tertiary)
                     .kerning(0.8)
                 ForEach(patterns, id: \.phase) { pattern in
-                    HStack {
-                        Text(pattern.phase.title)
-                            .font(.caption.weight(.semibold))
-                        Spacer(minLength: 8)
-                        Text("\(pattern.averageRecovery)% avg")
-                            .font(.caption.weight(.bold).monospacedDigit())
-                            .foregroundStyle(Metrics.recoveryColor(pattern.averageRecovery))
-                        Text("\u{00B7} \(pattern.dayCount)d")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text(pattern.phase.title)
+                                .font(.caption.weight(.semibold))
+                            Spacer(minLength: 8)
+                            Text("\(pattern.averageRecovery)% avg")
+                                .font(.caption.weight(.bold).monospacedDigit())
+                                .foregroundStyle(Metrics.recoveryColor(pattern.averageRecovery))
+                            Text("\u{00B7} \(pattern.dayCount)d")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        // Proportional recovery bar (design UI pass): a visual of
+                        // the same averageRecovery number, colored by the shared
+                        // recovery scale. Adds no new claim — the card already
+                        // labels this a 90-day association estimate, not a prediction.
+                        GeometryReader { geo in
+                            let fraction = min(1, max(0, CGFloat(pattern.averageRecovery) / 100))
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(Color.primary.opacity(0.06))
+                                Capsule()
+                                    .fill(Metrics.recoveryColor(pattern.averageRecovery))
+                                    .frame(width: max(6, geo.size.width * fraction))
+                            }
+                        }
+                        .frame(height: 6)
+                        .accessibilityHidden(true)
                     }
                 }
                 Text("90-day association from logged dates; not a prediction.")

@@ -4488,12 +4488,11 @@ struct AtriaHeartRateExplorer: View {
     }
 
     private var selectionModePicker: some View {
-        Picker("Inspection mode", selection: $selectionMode) {
-            ForEach(SelectionMode.allCases) { mode in
-                Text(mode.rawValue).tag(mode)
-            }
-        }
-        .pickerStyle(.segmented)
+        // Native-clean (design 2026-08-05): plain-text selector replaces the
+        // boxed segmented control, matching the app-wide style.
+        AtriaTextSelector(items: SelectionMode.allCases,
+                          title: { $0.rawValue },
+                          selection: $selectionMode)
         .onChange(of: selectionMode) { _, mode in
             if mode == .point { selectedRange = nil }
             else { selectedTime = nil }

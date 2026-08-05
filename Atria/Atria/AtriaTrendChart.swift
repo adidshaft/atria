@@ -103,22 +103,17 @@ struct AtriaTrendChartCard: View {
                 }
             }
 
-            VStack(spacing: 8) {
-                Picker("Range", selection: $range) {
-                    ForEach(AtriaTrendRange.trendCardSegments) { item in
-                        Text(item.segmentedLabel)
-                            .tag(item)
-                            .accessibilityLabel(item.menuLabel)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Picker("Metric", selection: $metric) {
-                    ForEach(AtriaTrendMetric.allCases) { item in
-                        Text(item.shortLabel).tag(item)
-                    }
-                }
-                .pickerStyle(.segmented)
+            // Native-clean (design 2026-08-05): replaced two stacked segmented
+            // pill bars with light plain-text selector rows (Apple-Stocks feel).
+            // The range stays a fully-visible tappable selector -- not a Menu --
+            // honoring the readability guard on AtriaTrendRange.
+            VStack(spacing: 10) {
+                AtriaTextSelector(items: AtriaTrendMetric.allCases,
+                                  title: { $0.shortLabel },
+                                  selection: $metric)
+                AtriaTextSelector(items: AtriaTrendRange.trendCardSegments,
+                                  title: { $0.segmentedLabel },
+                                  selection: $range)
             }
 
             // Chart-first (2026-07-06): the trend chart was buried at the BOTTOM of
