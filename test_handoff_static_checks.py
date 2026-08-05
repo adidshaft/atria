@@ -3499,7 +3499,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "captureTile(title: \"Time seen\"",
             "captureTile(title: \"Signal\"",
             "captureTile(title: \"Next\"",
-            "What Atria saw. \\(draft.prompt.evidenceMinutes) minutes of strap heart rate. Signal \\(draft.prompt.confidenceLabel). Next",
+            # 2026-08-05: copy audit — "N minutes of strap heart rate" → count-conditional "1 minute"/"N minutes"
+            "What Atria saw. \\(draft.prompt.evidenceMinutes == 1 ? \"1 minute\" : \"\\(draft.prompt.evidenceMinutes) minutes\") of strap heart rate. Signal \\(draft.prompt.confidenceLabel). Next",
             "Label(\"Movements saved locally\", systemImage: \"checkmark.seal.fill\")",
             "Save to history and learn from this label.",
             "Workout save receipt. Window",
@@ -7079,7 +7080,8 @@ class HandoffStaticChecks(unittest.TestCase):
             ".accessibilityLabel(chartAccessibilityLabel)",
             "private var chartAccessibilityLabel: String",
             # 2026-07-31 audit item 13: honest sample-count wording.
-            "\\(prepared.series.count) days of data.",
+            # 2026-08-05: copy audit — "N days of data" → count-conditional "1 day of data"/"N days of data"
+            "prepared.series.count == 1 ? \"1 day of data\" : \"\\(prepared.series.count) days of data\"",
             # 2026-07-07 dedup audit: Latest/Range pills removed from the
             # summary strip (position band owns them).
             "Average \\(summary.averageText)",
@@ -13752,7 +13754,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "static func zone(for value: Double, target: AtriaMetricTarget) -> AtriaMetricZoneLevel",
             "optimalRange.contains(value)",
             "case .targetBand:",
-            "\"\\(source.label) · Green >=",
+            # 2026-08-05: copy audit — "Green >= N%" → "Green N%+"
+            "\"\\(source.label) · Green \\(Int(greenLower.rounded()))%+",
             "yellow \\(Int(yellowLower.rounded()))-\\(Int(greenLower.rounded()) - 1)%",
             "static func recoveryZone(_ pct: Int?, target: AtriaMetricTarget = .recoveryRecommended) -> AtriaMetricZone?",
             "static func strainZone(strain: Double,",
@@ -13884,7 +13887,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "yellow to 2 SD",
             "ratio >= safeGreen",
             "ratio >= safeYellow",
-            "\"Personal baseline · Green >= \\(greenValue) ms",
+            # 2026-08-05: copy audit — "Green >= N ms" → "Green N+ ms"
+            "\"Personal baseline · Green \\(greenValue)+ ms",
             "HRV below your norm -- usually stress, short sleep, alcohol, or heavy load.",
             "static func restingHeartRate(_ bpm: Int?,",
             "baselineTarget: AtriaBaselineTargetSnapshot? = nil",
@@ -13895,36 +13899,43 @@ class HandoffStaticChecks(unittest.TestCase):
             "level = worst(deltaLevel, zLevel)",
             "delta <= safeGreenDelta",
             "delta <= safeYellowDelta",
-            "\"Personal baseline · Green <= \\(baseline + safeGreenDelta) bpm",
+            # 2026-08-05: copy audit — "Green <= N bpm" → "Green N bpm or lower"
+            "\"Personal baseline · Green \\(baseline + safeGreenDelta) bpm or lower",
             "Resting HR is up vs your norm",
             "static func sleepEfficiency(_ efficiency: Double?,",
             "safeGreen",
             "safeYellow",
-            "\"Editable target · Green >= \\(Int(safeGreen.rounded()))%",
+            # 2026-08-05: copy audit — "Green >= N%" → "Green N%+"
+            "\"Editable target · Green \\(Int(safeGreen.rounded()))%+",
             "Restless night -- cut late caffeine or alcohol",
             "static func sleepDuration(_ hours: Double?, goalHours: Double = 8.0) -> AtriaMetricZone?",
             "ratio >= 1.0",
             "ratio >= 0.85",
-            "\"User goal · Green >= \\(AtriaMetricFormat.sleepHours(safeGoal)),",
+            # 2026-08-05: copy audit — "Green >= N h" → "Green N h+"
+            "\"User goal · Green \\(AtriaMetricFormat.sleepHours(safeGoal))+,",
             "Under your sleep need -- aim for about",
             "static func steps(_ steps: Int?, goal: Int = 8_000) -> AtriaMetricZone?",
             "guard steps >= safeGoal else { return nil }",
-            "\"User goal · Green >= \\(safeGoal) steps.\"",
+            # 2026-08-05: copy audit — "Green >= N steps" → "Green N+ steps"
+            "\"User goal · Green \\(safeGoal)+ steps.\"",
             "Steps are at or above your daily goal.",
             "static func activeCalories(_ calories: Double?, goal: Int = 500) -> AtriaMetricZone?",
-            "\"User goal · Green >= \\(safeGoal) kcal",
+            # 2026-08-05: copy audit — "Green >= N kcal" → "Green N+ kcal"
+            "\"User goal · Green \\(safeGoal)+ kcal",
             "Estimated from heart rate/profile.",
             "static func vo2Trend(_ summary: VO2MaxEstimateSummary,",
             "let trendDelta = summary.trendDelta",
             "trendDelta >= safeGreenDelta",
             "trendDelta <= safeRedDelta",
-            "Estimate trend · Green >= +%.1f",
+            # 2026-08-05: copy audit — "Green >= +N ... red <= -N" → "Green +N or more ... red -N or lower"
+            "Estimate trend · Green +%.1f or more",
             "Trending the wrong way -- consistent cardio, Zone 2, intervals, and sleep move this most.",
             "static func biologicalAge(_ summary: BiologicalAgeSummary,",
             "guard summary.isReady, let delta = summary.ageDelta else { return nil }",
             "delta <= safeGreenDelta",
             "delta <= safeYellowDelta",
-            "Estimate · Green <= +",
+            # 2026-08-05: copy audit — "Green <= +Ny" → "Green +N yr or less"
+            "Estimate · Green +\\(safeGreenDelta) yr or less",
             "static func respiratoryRate(_ breathsPerMinute: Double?,",
             "baselineSamples >= 3",
             "absDelta <= safeGreenDelta",
@@ -13936,7 +13947,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "Early relative sleep-only signal; not an absolute temperature.",
             "static func bloodOxygenResearch(candidateFrames: Int,",
             "guard candidateFrames > 0 else { return nil }",
-            "Signal evidence · Green >= \\(safeGoal) candidate frames",
+            # 2026-08-05: copy audit — "Green >= N candidate frames" → "Green N+ candidate frames"
+            "Signal evidence · Green \\(safeGoal)+ candidate frames",
             "not an SpO2 reading.",
             "no SpO2 percentage, diagnosis, alarm, or Health export",
         ]:

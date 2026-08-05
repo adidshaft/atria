@@ -3965,14 +3965,18 @@ struct TodayHRZoneMinutes: Equatable {
     var accessibilityDetailText: String {
         guard hasSamples else { return "No heart rate zone data today." }
         var parts: [String] = []
-        if restMinutes > 0 { parts.append("\(restMinutes) minutes at rest") }
-        if warmupMinutes > 0 { parts.append("\(warmupMinutes) minutes warmup") }
-        if fatBurnMinutes > 0 { parts.append("\(fatBurnMinutes) minutes in zone 2, fat burn") }
-        if aerobicMinutes > 0 { parts.append("\(aerobicMinutes) minutes in zone 3, aerobic") }
-        if anaerobicMinutes > 0 { parts.append("\(anaerobicMinutes) minutes in zone 4, anaerobic") }
-        if maxMinutes > 0 { parts.append("\(maxMinutes) minutes in zone 5, max effort") }
+        if restMinutes > 0 { parts.append("\(minutesText(restMinutes)) at rest") }
+        if warmupMinutes > 0 { parts.append("\(minutesText(warmupMinutes)) warmup") }
+        if fatBurnMinutes > 0 { parts.append("\(minutesText(fatBurnMinutes)) in zone 2, fat burn") }
+        if aerobicMinutes > 0 { parts.append("\(minutesText(aerobicMinutes)) in zone 3, aerobic") }
+        if anaerobicMinutes > 0 { parts.append("\(minutesText(anaerobicMinutes)) in zone 4, anaerobic") }
+        if maxMinutes > 0 { parts.append("\(minutesText(maxMinutes)) in zone 5, max effort") }
         guard !parts.isEmpty else { return "No time in an elevated heart rate zone today." }
         return "Heart rate zones today: " + parts.joined(separator: ", ") + "."
+    }
+
+    private func minutesText(_ minutes: Int) -> String {
+        minutes == 1 ? "1 minute" : "\(minutes) minutes"
     }
 }
 
@@ -37137,7 +37141,7 @@ private struct TrendWindowFocusCard: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("\(summary.days)-day trend")
                         .font(.headline.weight(.semibold))
-                    Text("\(stateText) · \(summary.coverageDays)/\(summary.requiredCoverageDays) days · \(summary.sessions) sessions")
+                    Text("\(stateText) · \(summary.coverageDays)/\(summary.requiredCoverageDays) days · \(summary.sessions == 1 ? "1 session" : "\(summary.sessions) sessions")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)

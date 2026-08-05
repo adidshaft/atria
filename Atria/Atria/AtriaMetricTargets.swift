@@ -107,7 +107,7 @@ struct AtriaMetricTarget: Equatable, Codable {
     }
 
     var summaryText: String {
-        let base = "\(source.label) · Green >= \(Int(greenLower.rounded()))%, yellow \(Int(yellowLower.rounded()))-\(Int(greenLower.rounded()) - 1)%, red < \(Int(yellowLower.rounded()))%"
+        let base = "\(source.label) · Green \(Int(greenLower.rounded()))%+, yellow \(Int(yellowLower.rounded()))-\(Int(greenLower.rounded()) - 1)%, red < \(Int(yellowLower.rounded()))%"
         let details = [
             optimalRange.map { "optimal \(Int($0.lowerBound.rounded()))-\(Int($0.upperBound.rounded()))" },
             yellowBuffer.map { "yellow buffer \(Int($0.rounded()))" },

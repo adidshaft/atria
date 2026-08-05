@@ -2911,12 +2911,13 @@ struct AtriaLiveWorkoutView: View {
         let records = summary.records
         let history = summary.history
         let best = history.last?.best
+        let daysText = history.count == 1 ? "1 day" : "\(history.count) days"
         return VStack(alignment: .leading, spacing: 7) {
             HStack {
                 Label("History", systemImage: "chart.xyaxis.line")
                     .font(.caption.weight(.black))
                 Spacer()
-                Text(history.isEmpty ? "No sets yet" : "\(history.count) days")
+                Text(history.isEmpty ? "No sets yet" : daysText)
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
             }

@@ -147,7 +147,7 @@ struct AtriaBreathworkSession: View {
         var hrText: String {
             guard let startingHR, let endingHR else { return "HR learning" }
             let delta = endingHR - startingHR
-            return "HR \(startingHR) -> \(endingHR) · \(delta >= 0 ? "+" : "")\(delta) bpm"
+            return "HR \(startingHR) → \(endingHR) · \(delta >= 0 ? "+" : "")\(delta) bpm"
         }
 
         var rmssdText: String? {

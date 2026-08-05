@@ -219,9 +219,10 @@ struct AtriaStrengthProgressView: View {
 
     private func chartAccessibilityText(_ chart: AtriaStrengthProgressPresentation.Chart) -> String {
         let records = chart.points.filter(\.isPersonalRecord).count
+        let recordsText = records == 1 ? "1 personal record" : "\(records) personal records"
         return "Estimated one rep max, \(chart.points.count) sessions, "
             + "\(AtriaStrengthProgressPresentation.weightText(chart.lowValue)) to "
-            + "\(AtriaStrengthProgressPresentation.weightText(chart.highValue)), \(records) personal records."
+            + "\(AtriaStrengthProgressPresentation.weightText(chart.highValue)), \(recordsText)."
     }
 
     private var chartLegend: some View {
