@@ -3210,3 +3210,26 @@ WATCH: next check reads terminalFailAt — advancing again with same
 diagnostic ⇒ repair not engaging ⇒ full forensics (pull
 historical-archive.catalog-v2.json + container file listing, diff
 per July playbook). User informed lines depend on this completing.
+
+## 15.66c RESOLVED-PENDING: full-day dependency window gates intraday lines (23:22)
+
+Authority JSON forensics (Documents/atria-historical/full-drain-
+authority-v1/historical-full-drain-coverage-authority-v1.json,
+saved to scratchpad): drain attempt #2 COMPLETED 20:10:22 (113/113
+boundaries acked, historyComplete + publication present), gap
+resolved 21:41:07, status=gapResolvedConsumersPending because
+pendingConsumerDependency requires requiredStartUnix=Aug-5 00:00
+IST → requiredEndUnix=Aug-6 00:10:30 IST — ~50min IN THE FUTURE at
+diagnosis time. Consumers can't prove a day-window that hasn't
+ended; publication lands after ~00:10 IST. The 23:04
+catalogFileMismatch = bounded-staleness verify racing live writes
+(secondary; catalog-vs-files diff clean apart from the known
+tolerated zero-byte Jul-28 chunk).
+TOMORROW'S TOP ENGINE QUESTION (product+design): intraday surfaces
+(past-24h Activity timeline) are gated on FULL-DAY consumer proof —
+by design conservative, but it guarantees today's captured data
+can't render today after any recovery. Options to evaluate: split
+intraday consumer with a rolling window dependency; or publish
+partial-day with honest "through HH:MM" labeling. Also verify the
+terminalConsumerDependencyMismatch.v1 key (Jul-25/26 window) is
+stale. USER INFORMED: lines expected shortly after 00:10 IST.
