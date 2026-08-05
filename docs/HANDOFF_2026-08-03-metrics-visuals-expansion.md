@@ -3028,3 +3028,22 @@ order (install moratorium lifted by user) — POST-INSTALL CLEAN:
 armed 2s after pull, no bluetooth-off recurrence, cleanest install
 of the day. LESSON for UI session: run the test suite — source-pin
 XCTests + struct-field additions break the test target silently.
+
+## 15.59 O3 visually verified via new chart-options fixture (2026-08-05 ~21:35)
+
+Added DEBUG fixture "chart-options" (routes to HRV detail + auto-
+presents the options sheet; debugInitialMetricDetail + onAppear hook
+in AtriaMetricDetailSheet). O3 VERIFIED on screen: both selectors in
+plain-text style, bucket row shows its "Auto" pill, spacing/copy
+good, draft/Apply intact.
+
+REAL FINDING (pre-existing, surfaced by the sheet shot): the Window
+row shows NO selection when the metric-detail range is .day —
+windowOptions=[.week,.month,.quarter,.sixMonths,.year,.all] excludes
+.day, and the sheet drafts from the same binding the Day/Week/Month
+chartSlot selector writes. Reverse direction mismatches too (Apply
+"All" → chartSlot selector unselected). Old segmented Picker had the
+identical hidden mismatch. UI-SESSION DECISION: recommend snapping
+the draft to the nearest available window on init (e.g. .day→.week)
+AND deciding what the chartSlot selector shows for ranges outside
+its own set. Fix belongs with the range-model owner.
