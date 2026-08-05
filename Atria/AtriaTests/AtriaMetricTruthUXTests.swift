@@ -81,12 +81,12 @@ final class AtriaMetricTruthUXTests: XCTestCase {
     }
 
     func testMetricAcquisitionReasonLivesOnMetricAndVO2NamesItsActualBlocker() throws {
-        // 2026-08-06: audit fix — dead twin deleted. The hero.hrvDetail and
-        // VO2max-unavailable pins lived in the removed legacy Overview readiness
-        // section; the surviving acquisition-reason copy lives on the Health
-        // screen and is asserted there.
-        let health = try source("AtriaHealthScreen.swift")
-        XCTAssertTrue(health.contains("\"Needs quiet rest or sleep\""))
+        let overview = try source("AtriaOverviewSections.swift")
+        XCTAssertTrue(overview.contains("return hero.hrvDetail"))
+        XCTAssertTrue(overview.contains("\"Needs quiet rest or sleep\""))
+        XCTAssertTrue(overview.contains(
+            "\"VO2max unavailable. \\(vo2MaxEstimate.compactStatusText). \\(vo2MaxEstimate.narrative)\""
+        ))
     }
 
     func testSettingsHasNoTimedFakeHistorySyncState() throws {
@@ -97,11 +97,13 @@ final class AtriaMetricTruthUXTests: XCTestCase {
     }
 
     func testUnavailableDetailHeroesUseNeutralNoValuePresentation() throws {
-        // 2026-08-06: audit fix — dead twin deleted. The recoveryHeroRawPercent/
-        // strainHeroRawValue no-value pins lived in the removed legacy Overview
-        // readiness section; the anti-pattern absence and the live fitness-age
-        // guard below still apply.
         let overview = try source("AtriaOverviewSections.swift")
+        XCTAssertTrue(overview.contains(
+            "guard let percent = recoveryHeroRawPercent else {\n            return AtriaCompactMetricPresentation.noValue"
+        ))
+        XCTAssertTrue(overview.contains(
+            "guard let strainHeroRawValue else {\n            return AtriaCompactMetricPresentation.noValue"
+        ))
         XCTAssertFalse(overview.contains(
             "recoveryHeroRawPercent.map { Metrics.recoveryColor(Int($0.rounded())) } ?? Metrics.electricGreen"
         ))
@@ -163,10 +165,23 @@ final class AtriaMetricTruthUXTests: XCTestCase {
     }
 
     func testUnavailableMetricCardsUseNeutralToneAndSpecificReasons() throws {
-        // 2026-08-06: audit fix — dead twin deleted. The five overview pins here
-        // (VO2max/biological-age/skin-temp/recovery neutral-tone gating) lived in
-        // the removed legacy Overview readiness glance cards; the live Health
-        // screen assertions below still guard the behavior.
+        let overview = try source("AtriaOverviewSections.swift")
+        XCTAssertTrue(overview.contains(
+            "vo2MaxEstimate.value == nil ? .secondary : .blue"
+        ))
+        XCTAssertTrue(overview.contains(
+            "biologicalAgeSummary.isEarlyEstimate"
+        ))
+        XCTAssertTrue(overview.contains(
+            ": .secondary),\n                                  zone: biologicalAgeZone"
+        ))
+        XCTAssertTrue(overview.contains(
+            "decoderAvailable\n                                    ? (skinTemperatureDeviationZone?.tint ?? Metrics.electricRespiratory)\n                                    : .secondary"
+        ))
+        XCTAssertTrue(overview.contains(
+            "hero.recoveryEstimate.percent == nil\n                                        ? AtriaCompactMetricPresentation.noValue"
+        ))
+
         let health = try source("AtriaHealthScreen.swift")
         XCTAssertTrue(health.contains(
             "tint: live.vo2MaxEstimate.value == nil\n                                        ? .secondary"

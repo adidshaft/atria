@@ -175,11 +175,8 @@ final class AtriaTodaySleepReviewProjectionTests: XCTestCase {
             source.range(of: "private struct AtriaSleepSyncNeededHost: View", range: bannerStart.upperBound..<source.endIndex)
         )
         let sectionStart = try XCTUnwrap(source.range(of: "struct AtriaTodaySleepReviewSection: View"))
-        // 2026-08-06: audit fix — dead twin deleted. The chain slice used to end
-        // at AtriaOverviewLeadingSection; that legacy Overview struct is gone, so
-        // the boundary is now the next surviving declaration.
         let leadingStart = try XCTUnwrap(
-            source.range(of: "enum AtriaOverviewCurrentSleep", range: sectionStart.upperBound..<source.endIndex)
+            source.range(of: "struct AtriaOverviewLeadingSection: View", range: sectionStart.upperBound..<source.endIndex)
         )
         let chain = String(source[hostStart.lowerBound..<bannerStart.lowerBound])
             + String(source[bannerStart.lowerBound..<syncStart.lowerBound])
@@ -195,9 +192,7 @@ final class AtriaTodaySleepReviewProjectionTests: XCTestCase {
         XCTAssertFalse(chain.contains("store.objectWillChange"))
         XCTAssertTrue(chain.contains("return state.preferredReview"),
                       "Today must resolve a stale snapshot against the growing resident-journal review")
-        // 2026-08-06: audit fix — dead twin deleted. The prioritizesPendingReview:
-        // false mount lived only in the removed AtriaOverviewLeadingSection; the
-        // live mount (AtriaHomeView) uses the section's default argument.
+        XCTAssertTrue(source.contains("AtriaTodaySleepReviewSection(store: store, prioritizesPendingReview: false)"))
 
         let stateStart = try XCTUnwrap(source.range(of: "struct AtriaTodaySleepReviewProjectionState: Equatable"))
         let stateEnd = try XCTUnwrap(

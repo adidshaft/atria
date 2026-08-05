@@ -289,15 +289,12 @@ struct AtriaExpandedChartView: View {
             // Comparison overlay (pattern 2): only drawn when Compare is on and
             // the selected mode is one Atria actually has data for. The prior
             // series is the "previous period"; the other modes stay disabled in
-            // the compare sheet rather than drawing a fabricated line. Split
-            // into contiguous day-runs so the line BREAKS at day gaps instead
-            // of bridging days with no reading — the same honesty rule the
-            // compact charts already apply (2026-08-06 audit fix).
+            // the compare sheet rather than drawing a fabricated line.
             if compareOn, compareMode == .previousPeriod {
-                ForEach(priorPoints.contiguousDayRuns(), id: \.point.day) { entry in
-                    LineMark(x: .value("Day", entry.point.day, unit: .day),
-                             y: .value(title, entry.point.value),
-                             series: .value("Series", "prior-\(entry.runID)"))
+                ForEach(priorPoints) { point in
+                    LineMark(x: .value("Day", point.day, unit: .day),
+                             y: .value(title, point.value),
+                             series: .value("Series", "prior"))
                         .interpolationMethod(.linear)
                         .foregroundStyle(.secondary.opacity(0.4))
                         .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 5]))
@@ -305,10 +302,10 @@ struct AtriaExpandedChartView: View {
             }
 
             if let overlay = activeOverlay {
-                ForEach(overlay.points.contiguousDayRuns(), id: \.point.day) { entry in
-                    LineMark(x: .value("Day", entry.point.day, unit: .day),
-                             y: .value(title, entry.point.value),
-                             series: .value("Series", "overlay-\(entry.runID)"))
+                ForEach(overlay.points) { point in
+                    LineMark(x: .value("Day", point.day, unit: .day),
+                             y: .value(title, point.value),
+                             series: .value("Series", "overlay"))
                         .interpolationMethod(.linear)
                         .foregroundStyle(overlay.tint.opacity(0.7))
                         .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [6, 3]))
@@ -443,33 +440,23 @@ struct AtriaExpandedChartView: View {
     @ChartContentBuilder private var currentSeriesMarks: some ChartContent {
         switch effectiveChartType {
         case .line:
-            // Contiguous day-runs (2026-08-06 audit fix): the compact chart
-            // this screen expands FROM breaks its line at day gaps; drawing
-            // one continuous series here bridged the same gaps, implying
-            // readings that never existed. The area fill splits with it.
-            ForEach(points.contiguousDayRuns(), id: \.point.day) { entry in
+            ForEach(points) { point in
                 // Subtle area fill beneath the current line (Apple Health idiom,
                 // matching AtriaTrendChartCard). Purely decorative: the bounded
                 // y-scale keeps it inside the plot, and no value is implied
                 // beyond the real sampled line it sits under.
-                AreaMark(x: .value("Day", entry.point.day, unit: .day),
-                         y: .value(title, entry.point.value),
-                         series: .value("Series", "current-area-\(entry.runID)"))
+                AreaMark(x: .value("Day", point.day, unit: .day),
+                         y: .value(title, point.value))
                     .interpolationMethod(.linear)
                     .foregroundStyle(
                         LinearGradient(colors: [tint.opacity(0.24), tint.opacity(0.02)],
                                        startPoint: .top, endPoint: .bottom)
                     )
-                    // Gradient on a multi-series mark must resolve against the
-                    // plot area, not each run's own bounding box.
-                    .alignsMarkStylesWithPlotArea()
-                LineMark(x: .value("Day", entry.point.day, unit: .day),
-                         y: .value(title, entry.point.value),
-                         series: .value("Series", "current-\(entry.runID)"))
+                LineMark(x: .value("Day", point.day, unit: .day),
+                         y: .value(title, point.value),
+                         series: .value("Series", "current"))
                     .interpolationMethod(.linear)
                     .foregroundStyle(tint)
-            }
-            ForEach(points) { point in
                 PointMark(x: .value("Day", point.day, unit: .day),
                           y: .value(title, point.value))
                     .foregroundStyle(point.tint)

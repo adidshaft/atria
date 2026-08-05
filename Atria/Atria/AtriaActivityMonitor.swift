@@ -877,23 +877,13 @@ struct AtriaActivityMonitorTab: View {
             let stressAreaFade = LinearGradient(
                 colors: [Color.primary.opacity(0.07), Color.primary.opacity(0.01)],
                 startPoint: .top, endPoint: .bottom)
-            // The latest-point dot is tinted by the monitor's REAL band for
-            // that score (AtriaStressMonitor thresholds), so the dot and the
-            // level readout above never disagree about which band a number
-            // is in.
             let stressPointColor: (Double) -> Color = { score in
-                AtriaStressLevel(rawValue: AtriaStressMonitor.band(score / 3))?.tint ?? .secondary
+                switch score {
+                case ..<1.0: return Metrics.electricStrain
+                case ..<2.0: return Metrics.electricGreen
+                default: return Metrics.electricStress
+                }
             }
-            // Band labels sit at the monitor's real thresholds (the
-            // AtriaStressMonitor bounds ×3 on the 0-3 score scale), each at
-            // the score where its band actually begins — the integer
-            // gridlines are not band boundaries.
-            let stressBandMarks: [(score: Double, label: String)] = [
-                (0, "Calm"),
-                (AtriaStressMonitor.calmUpperBound * 3, "Low"),
-                (AtriaStressMonitor.lowUpperBound * 3, "Med"),
-                (AtriaStressMonitor.mediumUpperBound * 3, "High"),
-            ]
             Chart {
                 ForEach(points) { point in
                     AreaMark(x: .value("Time", point.reading.date),
@@ -919,12 +909,11 @@ struct AtriaActivityMonitorTab: View {
             }
             .chartYScale(domain: 0...3)
             .chartYAxis {
-                AxisMarks(position: .leading, values: stressBandMarks.map(\.score)) { value in
+                AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
                     AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
                     AxisValueLabel {
-                        if let raw = value.as(Double.self),
-                           let mark = stressBandMarks.min(by: { abs($0.score - raw) < abs($1.score - raw) }) {
-                            Text(mark.label)
+                        if let raw = value.as(Int.self) {
+                            Text(["Calm", "Low", "Med", "High"][max(0, min(3, raw))])
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
