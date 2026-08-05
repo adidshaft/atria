@@ -22529,6 +22529,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         switch action {
         case .none:
+            // Sampling pulse only: `.none` means no arming action is due,
+            // but the audit tick is the steadiest clock this diagnostic has.
+            if bankArmedForCurrentConnection {
+                AtriaMotionBankDutyCycleDiag.note("armed")
+            } else if peripheral?.state != .connected {
+                AtriaMotionBankDutyCycleDiag.note("link_down")
+            }
             return
         case .hold:
             allDayMotionSuspendedForBattery = false
@@ -22935,9 +22942,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard !historyOnlyProbeMode,
               !offlineHistoricalSyncInProgress,
               !freshHistoryOwnerCutoverPending else {
+            AtriaMotionBankDutyCycleDiag.note("sync_cutover")
             return
         }
-        guard let peripheral, peripheral.state == .connected else { return }
+        guard let peripheral, peripheral.state == .connected else {
+            AtriaMotionBankDutyCycleDiag.note("link_down")
+            return
+        }
         let defaults = UserDefaults.standard
         let now = Date()
         let manualWorkoutActive =
@@ -22955,6 +22966,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 forKey:
                     Self.workoutHistoricalMotionBankPrearmRequestedKey
             )
+            AtriaMotionBankDutyCycleDiag.note("governor_off")
             return
         }
         let rearmNotBefore = defaults.double(
@@ -22962,6 +22974,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         guard rearmNotBefore <= 0
                 || Date().timeIntervalSince1970 >= rearmNotBefore else {
+            AtriaMotionBankDutyCycleDiag.note("throttle")
             return
         }
         defaults.set(true,
@@ -23080,6 +23093,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     selectedPendingOffload.attempts,
                     reason
                 )
+                AtriaMotionBankDutyCycleDiag.note("offload_first")
                 return
             }
         }
@@ -23094,6 +23108,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 reason,
                 selectedPendingOffload?.attempts ?? -1
             )
+            AtriaMotionBankDutyCycleDiag.note("offload_first")
             return
         }
         guard let txCharacteristic,
@@ -23102,6 +23117,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 peripheral: peripheral,
                 reason: reason
             )
+            AtriaMotionBankDutyCycleDiag.note("transport_pending")
             return
         }
         if Self.historicalMotionBankIsArmedForCurrentConnection(
@@ -23111,6 +23127,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             currentConnectionStartedAt: connectedAt
         ),
            defaults.bool(forKey: Self.workoutHistoricalMotionBankEnabledKey) {
+            AtriaMotionBankDutyCycleDiag.note("armed")
             return
         }
         let armedAt = Date()
@@ -23140,6 +23157,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 : armedAt,
             strapIdentifier: peripheral.identifier.uuidString
         )
+        AtriaMotionBankDutyCycleDiag.note("armed")
         defaults.set(true, forKey: Self.workoutHistoricalMotionBankEnabledKey)
         defaults.set(false, forKey: Self.workoutHistoricalMotionBankStopPendingKey)
         if !persistedWasEnabled || persistedArmedAt <= 0 {
@@ -23535,6 +23553,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             strapIdentifier:
                 expectedIdentity.strapIdentifier.uuidString
         )
+        AtriaMotionBankDutyCycleDiag.note("armed")
         let defaults = UserDefaults.standard
         defaults.set(
             true,
@@ -23661,6 +23680,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             armedConnectionStartedAt:
                 workoutHistoricalMotionBankArmedConnectionStartedAt
         )
+        AtriaMotionBankDutyCycleDiag.note("stopped")
         let strapIdentifier = peripheral.identifier.uuidString
         persistNextUnattemptedMotionBankMaintenanceTicketIfNeeded(
             strapIdentifier: strapIdentifier,
@@ -37608,6 +37628,7 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                         workoutHistoricalMotionBankArmedConnectionStartedAt
                             ?? connectedAt
                 )
+                AtriaMotionBankDutyCycleDiag.note("link_down")
                 persistNextUnattemptedMotionBankMaintenanceTicketIfNeeded(
                     strapIdentifier: peripheral.identifier.uuidString,
                     defaults: defaults

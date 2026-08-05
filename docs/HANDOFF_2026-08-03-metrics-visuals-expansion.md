@@ -2718,3 +2718,43 @@ Tiny-pending note: the 6 starving tickets (§15.41) are all >10s so
 they ARE schedulable; retries are bounded ("honestly exhausted") via
 didFinalizeOffloadNotification — tonight tells whether they clear,
 exhaust, or starve.
+
+## 15.43 Duty-cycle diagnostic SHIPPED-IN-SOURCE + device launch-trust BLOCKER (2026-08-05 ~19:05)
+
+BUILT (the §15.42 attribution plan, same day per directive):
+- NEW Atria/Atria/AtriaMotionBankDutyCycleDiag.swift — persisted
+  per-day buckets of unarmed time by gate reason. Key
+  atria.debug.motionBankDutyCycle.v1 (+ .yesterday.v1 snapshot at
+  rollover). Reasons: armed / link_down / governor_off / throttle /
+  offload_first / transport_pending / sync_cutover / stopped /
+  unsampled. Delta cap 900s → excess lands in "unsampled" (honest
+  under sparse sampling). Cross-midnight delta flows into the NEW
+  day via the same cap (lastAt preserved at rollover). Diagnostic
+  only — never an input to arming/coverage/steps.
+- 12 wiring points in AtriaBLEManager: every decline path in
+  armWorkoutHistoricalMotionBankIfPossible, both ledger.open sites
+  ("armed"), explicit stop ("stopped"), disconnect close
+  ("link_down"), governor .none sampling pulse (armed/link_down).
+- Tests: AtriaMotionBankDutyCycleDiagTests 4/4 PASSED on sim
+  (attribution, cap→unsampled, day rollover snapshot, clock rewind).
+  Static gate 189 ran / 4 failures = known baseline.
+- READ TOMORROW: pull plist → motionBankDutyCycle buckets split the
+  unarmed day into governor/battery vs offload_first vs link_down vs
+  sync — this decides the §15.38 offload-policy question.
+
+BLOCKER — device refuses to LAUNCH the new install (19:00 IST):
+FBSOpenApplication Security denial "invalid code signature,
+inadequate entitlements or profile not explicitly trusted". Forensics
+all clean on our side: codesign --verify --deep --strict OK; app +
+widget embedded profiles are the paid-team ones (JP4HU7X6G7), valid
+to 2027-07-14; entitlements normal (healthkit, app group,
+get-task-allow); app IS installed (devicectl lists 1.0 (3)). Install
+succeeded; only launch is denied, twice. Earlier same-day ships
+worked → device-side trust/validation state changed (beta OS
+re-validation or trust reset). CANNOT be fixed from the Mac; user
+pinged via push: tap Atria icon → trust developer in Settings >
+General > VPN & Device Management. NOTE: app is NOT RUNNING on the
+phone until then — live HR capture interrupted (gap will be honest
+missing coverage; strap keeps banking internally per its own
+firmware behavior). DO NOT uninstall to "fix" — that deletes the
+data container (entire local archive).
