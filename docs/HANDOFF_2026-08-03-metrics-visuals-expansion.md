@@ -3295,3 +3295,24 @@ OVERNIGHT WATCH: poll authority ~15min; when it flips to published,
 confirm + note. If STILL pending at morning attach WITH the app
 having foregrounded → §15.50-adjacent trigger-cadence gap, add to
 the intraday-dependency design discussion.
+
+## 15.69 FULL AUDIT REMEDIATION SHIPPED TO PHONE (02:15)
+
+6688a0ed: all 19 remaining findings fixed (26 files, +7,991/−15,361
+— net −7,370 lines). 11-agent workflow, zero blocked; reviewer
+self-caught the orphaned hero subtree its own deletion created
+(gate-pin-protected dead code) and the fix round deleted it +
+retargeted pins. Notable deviations recorded in the workflow result
+(fitness-age data clamps ±12 at source so the 21.0 render was
+formatter-latent; whole-year " yr" precision matches every existing
+surface; strain's unitless "" fallthrough documented deliberate).
+Verified: app build ✓ test-target build ✓ gate exactly 4 ✓ targeted
+XCTests ✓. Pushed both refs; SHIPPED to phone ~02:10 per user order;
+post-install cleanest of the night (armed in seconds, no wedge, no
+new terminal failure). Consumers still gapResolvedConsumersPending —
+no materialization attempt since 23:28; the fresh cold launch may
+trigger one; morning check remains the verdict.
+MORNING VISUAL CHECKS added: monthly-report row on Today (if
+early-month gate allows), Insights tile shows behavior patterns,
+Customize preview shows "Example values", fitness-age detail shows
+signed yr values, charts break at gaps.
