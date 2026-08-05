@@ -3147,3 +3147,16 @@ proof-card dev vocabulary ("archive rows"/"points" — is it meant to
 be technical?); onboarding "1 records" (rare); recovery-status
 records a11y; day-pattern a11y ternary. NOT installed on phone
 (rides next natural install with H4).
+
+## 15.64 Battery-badge UI fix merged (2026-08-05 ~23:00)
+
+User asked to merge "13 UI commits" — verified against git: only ONE
+commit was actually new (543e0e77, active-workout battery badge
+stacking + lock-screen label hardening, 8 insertions in
+AtriaLiveWorkoutView + AtriaWidget); rings/Customize/etc. were
+already merged at 149737a3, spec file unchanged. Merged clean as
+58b1dff7 via agent with full chain: app build ✓, TEST-TARGET build ✓
+(new standing check after the weekStart break), gate 4 baseline ✓,
+both refs pushed. Device deploy still queued on attach (phone
+detached since 21:34) — next ship delivers this + H4 + copy audit
+in one install.
