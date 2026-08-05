@@ -13577,6 +13577,8 @@ private struct AtriaSleepPlanCard: View {
 }
 
 struct AtriaStrainBandGauge: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let strain: Double
     let target: Double?
     let size: CGFloat
@@ -13631,6 +13633,8 @@ struct AtriaStrainBandGauge: View {
                     Text(String(format: "%.1f", strain))
                         .font(.system(size: 32, weight: .bold, design: .rounded))
                         .monospacedDigit()
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: strain)
                     Text(activeBandLabel)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
