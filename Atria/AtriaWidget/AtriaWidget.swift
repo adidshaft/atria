@@ -711,21 +711,38 @@ struct AtriaWidgetEntryView: View {
 
     /// Recovery / Strain / HR three-line summary for the Lock Screen.
     private var accessoryRectangular: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(accessoryRecoveryLine)
-                .font(.caption.monospacedDigit().weight(.bold))
-                .lineLimit(1)
-            Text(accessoryStrainLine)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            // At 6h+ the HR line is "HR --" anyway (its own capture clock);
-            // spend that line on the staleness disclosure the larger families
-            // already show, so old recovery/strain never read as live.
-            Text(accessoryStaleLine ?? accessoryHRLine)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+        HStack(spacing: 8) {
+            // Leading recovery gauge (design 2026-08-05): a richer lock-screen
+            // glance. Shown only for a FRESH recovery reading so a stale value
+            // never renders as a live gauge (mirrors the honesty rule below).
+            if let recovery = entry.snapshot?.recoveryPercent,
+               entry.snapshot.map({ atriaSnapshotIsStale($0, now: entry.date) }) == false {
+                Gauge(value: Double(recovery), in: 0...100) {
+                    EmptyView()
+                } currentValueLabel: {
+                    Text("\(recovery)")
+                        .font(.system(size: 12, weight: .bold))
+                        .minimumScaleFactor(0.6)
+                }
+                .gaugeStyle(.accessoryCircularCapacity)
+                .tint(atriaRecoveryZoneColor(recovery))
+            }
+            VStack(alignment: .leading, spacing: 1) {
+                Text(accessoryRecoveryLine)
+                    .font(.caption.monospacedDigit().weight(.bold))
+                    .lineLimit(1)
+                Text(accessoryStrainLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                // At 6h+ the HR line is "HR --" anyway (its own capture clock);
+                // spend that line on the staleness disclosure the larger families
+                // already show, so old recovery/strain never read as live.
+                Text(accessoryStaleLine ?? accessoryHRLine)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
         .containerBackground(.background, for: .widget)
     }
