@@ -586,6 +586,10 @@ struct AtriaShareCardView: View {
     let selectedStatIDs: Set<String>
     let canvasStyle: AtriaShareCanvasStyle
     let photoBackground: UIImage?
+    /// Honors the same Today-rings layout preference so a shared card matches
+    /// what the wearer sees in the app (concentric vs WHOOP-style separate).
+    @AtriaDefault(AtriaRingLayoutStyle.defaultsKey) private var ringLayoutRaw: String = "concentric"
+    private var ringLayout: AtriaRingLayoutStyle { AtriaRingLayoutStyle(rawValue: ringLayoutRaw) ?? .concentric }
 
     init(snapshot: AtriaShareSnapshot,
          format: AtriaShareFormat,
@@ -661,7 +665,6 @@ struct AtriaShareCardView: View {
                 Spacer(minLength: format == .story ? 20 : 24)
 
                 shareRings
-                    .frame(width: dailyHeroSize, height: dailyHeroSize)
 
                 Spacer(minLength: format == .story ? 14 : 18)
 
@@ -699,7 +702,64 @@ struct AtriaShareCardView: View {
             .blendMode(canvasStyle.blendMode)
     }
 
+    /// Concentric (default) vs WHOOP-style separate rings, honoring the same
+    /// AtriaRingLayoutStyle preference the Today rings use.
+    @ViewBuilder
     private var shareRings: some View {
+        switch ringLayout {
+        case .concentric:
+            shareRingsConcentric
+                .frame(width: dailyHeroSize, height: dailyHeroSize)
+        case .separate:
+            shareRingsSeparate
+                .frame(maxWidth: .infinity)
+                .frame(height: dailyHeroSize * 0.7)
+        }
+    }
+
+    /// WHOOP-style row of three labeled rings for the share card. Ring size
+    /// adapts to the available card width so all three fit every format.
+    private var shareRingsSeparate: some View {
+        GeometryReader { geo in
+            let spacing: CGFloat = format == .story ? 18 : 14
+            let diameter = min(format == .story ? 108 : 96,
+                               (geo.size.width - spacing * 2) / 3)
+            let lineWidth = max(8, diameter * 0.1)
+            HStack(spacing: spacing) {
+                shareSeparateRing(snapshot.sleep, label: "Sleep", diameter: diameter, lineWidth: lineWidth)
+                shareSeparateRing(snapshot.recovery, label: "Recovery", diameter: diameter, lineWidth: lineWidth)
+                shareSeparateRing(snapshot.strain, label: "Strain", diameter: diameter, lineWidth: lineWidth)
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
+        }
+    }
+
+    private func shareSeparateRing(_ ringData: AtriaShareSnapshot.Ring,
+                                   label: String,
+                                   diameter: CGFloat,
+                                   lineWidth: CGFloat) -> some View {
+        VStack(spacing: 9) {
+            ZStack {
+                ring(ringData, diameter: diameter, lineWidth: lineWidth)
+                Text(ringData.value)
+                    .font(.system(size: diameter * 0.26, weight: .light, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(foreground)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                    .frame(width: diameter * 0.72)
+            }
+            .frame(width: diameter, height: diameter)
+            Text(label)
+                .font(.system(size: format == .story ? 12 : 10, weight: .medium, design: .rounded))
+                .tracking(1.5)
+                .textCase(.uppercase)
+                .foregroundStyle(foreground.opacity(0.48))
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var shareRingsConcentric: some View {
         ZStack {
             ring(snapshot.sleep, diameter: format == .story ? 218 : 220, lineWidth: format == .story ? 14 : 14)
             ring(snapshot.recovery, diameter: format == .story ? 178 : 182, lineWidth: format == .story ? 11 : 12)
