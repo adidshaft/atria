@@ -2422,3 +2422,36 @@ bounding design (target ≤400MB retained) → adversarial verify
 (data-honesty / lease-latency / incremental-plan-integrity lenses).
 Implementation is the next session's headline engine item; the
 design lands in this workflow's output for pickup.
+
+## 15.31 Working-set bounding: design verified, Edit 0 measuring (2026-08-05 ~18:10)
+
+wf_50d14675 design + verdicts (7 agents): THESIS — the 1.3GB retained
+floor is REPRESENTATION, not window: ~2.3M tiny heap allocations
+(750K motion-identity Data payloads, 300-400K RR record-ID strings +
+interval arrays, up to 718K duplicated strap-ID strings) burn the
+memory via headers/rounding/fragmentation on ~100MB of semantic data.
+Plan: in-place compaction to inline fixed-width digests — same data,
+same windows, bit-identical outputs. FOUR REFUSED SHRINKS documented
+with trap evidence (14d HR points → permanent evidence suppression at
+the workout coverage cache; sessions → charts silently under their
+claimed windows; frontier eviction → motion double-count on
+oldest-first replay; budget values → plan=rebuild amplifier).
+
+VERDICT FINDINGS to fold into implementation: F1 attribution is
+optimistic (bottom-up ≈330-430MB, not 500-900) → Edit 0 measures
+FIRST with a go/no-go; F2 second appendRecoveredRecord call site
+(:4098 test adapter) needs intern threading; F3 the RR parity test
+must be WRITTEN (multi-scan ingest + prune between scans + finish);
+F4 finish()-time string materialization adds ~40-60MB transient at
+the snapshot stage peak (net still positive).
+
+EDIT 0 SHIPPED (2a9f1a3f): retained-cache counts + strapIdMaxLen +
+physMB publish to atria.debug.recoveredCacheFootprint.v1 (prefs,
+pullable — NOT AtriaDebugLog, which is console-only+gated). Read the
+BEFORE numbers next cycle after a recompute publishes; then Edits 1-3
+(motion digests, RR digest keys, conditional strap-ID interning) with
+the F2/F3/F4 corrections — next session's implementation item.
+
+ship-device.sh hardened (TMPDIR mktemp) and already earned its keep:
+hard-stopped a compile error that the old pipe pattern would have
+shipped stale.
