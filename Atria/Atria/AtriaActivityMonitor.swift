@@ -830,12 +830,6 @@ struct AtriaActivityMonitorTab: View {
             .filter { $0.t >= cutoff }
             .map(AtriaStressDetailReading.init(historyPoint:))
         let points = AtriaStressTimelinePoint.segment(readings)
-        let hasWindow: Bool = {
-            guard let first = points.first?.reading.date,
-                  let last = points.last?.reading.date else { return false }
-            return last.timeIntervalSince(first) >= 10 * 60
-        }()
-
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 // The card's accessibility label already says "Stress
@@ -861,73 +855,84 @@ struct AtriaActivityMonitorTab: View {
                     .foregroundStyle(stressMonitorStore.state.level?.tint ?? .secondary)
             }
 
-            if hasWindow {
-                // Colored by stress height (calm→high = green→yellow→red), like
-                // the reference stress monitor: a vertical gradient means a point
-                // low on the axis reads green and a spike reads red.
-                let stressGradient = LinearGradient(
-                    colors: [Metrics.electricGreen, Metrics.electricYellow, Metrics.electricRed],
-                    startPoint: .bottom, endPoint: .top)
-                Chart {
-                    ForEach(points) { point in
-                        AreaMark(x: .value("Time", point.reading.date),
-                                 y: .value("Stress", point.reading.score),
-                                 series: .value("Segment", point.segment))
-                            .interpolationMethod(.linear)
-                            .foregroundStyle(stressGradient.opacity(0.18))
-                        LineMark(x: .value("Time", point.reading.date),
-                                 y: .value("Stress", point.reading.score),
-                                 series: .value("Segment", point.segment))
-                            .interpolationMethod(.linear)
-                            .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                            .foregroundStyle(stressGradient)
-                    }
+            // Always a graph (design 2026-08-05): start from whatever readings
+            // exist rather than a text "warming up" card. ONLY the line carries
+            // range color (calm→high = green→yellow→orange→red, highest = red);
+            // the area is a single faint tint, never colored horizontal bands.
+            let stressLineGradient = LinearGradient(
+                colors: [Metrics.electricGreen, Metrics.electricYellow,
+                         Metrics.electricStress, Metrics.electricRed],
+                startPoint: .bottom, endPoint: .top)
+            let stressAreaFade = LinearGradient(
+                colors: [Metrics.electricStress.opacity(0.16), Metrics.electricStress.opacity(0.01)],
+                startPoint: .top, endPoint: .bottom)
+            let stressPointColor: (Double) -> Color = { score in
+                switch score {
+                case ..<0.75: return Metrics.electricGreen
+                case ..<1.5: return Metrics.electricYellow
+                case ..<2.25: return Metrics.electricStress
+                default: return Metrics.electricRed
                 }
-                .chartYScale(domain: 0...3)
-                .chartYAxis {
-                    AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
-                        AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
-                        AxisValueLabel {
-                            if let raw = value.as(Int.self) {
-                                Text(["Calm", "Low", "Med", "High"][max(0, min(3, raw))])
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
+            }
+            Chart {
+                ForEach(points) { point in
+                    AreaMark(x: .value("Time", point.reading.date),
+                             y: .value("Stress", point.reading.score),
+                             series: .value("Segment", point.segment))
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(stressAreaFade)
+                    LineMark(x: .value("Time", point.reading.date),
+                             y: .value("Stress", point.reading.score),
+                             series: .value("Segment", point.segment))
+                        .interpolationMethod(.catmullRom)
+                        .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                        .foregroundStyle(stressLineGradient)
+                }
+                // A lone/sparse reading still reads as a graph: mark the latest
+                // point so the monitor is never an empty rectangle.
+                if let latest = points.last {
+                    PointMark(x: .value("Time", latest.reading.date),
+                              y: .value("Stress", latest.reading.score))
+                        .symbolSize(56)
+                        .foregroundStyle(stressPointColor(Double(latest.reading.score)))
+                }
+            }
+            .chartYScale(domain: 0...3)
+            .chartYAxis {
+                AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
+                    AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
+                    AxisValueLabel {
+                        if let raw = value.as(Int.self) {
+                            Text(["Calm", "Low", "Med", "High"][max(0, min(3, raw))])
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
-                .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                        AxisValueLabel(format: .dateTime.hour())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(height: 100)
-                .clipped()
-
-                Text("Past 24 hours · observed readings only; blanks are collection gaps.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text(presentation.detail.isEmpty
-                     ? "Warming up — stress needs a short window of steady wear before a timeline appears."
-                     : presentation.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                // The state line says WHAT; this says what will unblock it —
-                // copy already written by the presentation model (no new
-                // claims), previously shown only in the detail sheet.
-                if !presentation.narrative.isEmpty,
-                   presentation.narrative != presentation.detail {
-                    Text(presentation.narrative)
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
+            }
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                    AxisValueLabel(format: .dateTime.hour())
+                        .foregroundStyle(.secondary)
                 }
             }
+            .frame(height: 112)
+            .clipped()
+            .overlay {
+                if points.isEmpty {
+                    Text("Collecting — your stress line appears as soon as there's steady wear.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 16)
+                }
+            }
+
+            Text(points.isEmpty
+                 ? "Past 24 hours · no readings yet."
+                 : "Past 24 hours · observed readings only; blanks are collection gaps.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
         .padding(14)
         .atriaInsetCard(tint: Metrics.electricStress)
