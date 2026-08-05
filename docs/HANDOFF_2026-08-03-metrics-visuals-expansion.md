@@ -3103,3 +3103,19 @@ UI-SESSION QUEUE (transient-message theme): battery surfaces hide
 with zero explanation — consider a subdued "confirming battery…"
 placeholder while the gate is unsatisfied, mirroring the BT-off
 remediation-copy item from §15.50.
+
+## 15.62b Battery-pill mechanism CONFIRMED from user screenshot (22:05)
+
+Real-phone shot at 21:58 (remote user): connected, capturing live,
+HR 96 Z1 — battery absent everywhere. Mechanism read end-to-end:
+process launch REVOKES notificationLease + LATCHES
+requiresFreshConfirmation (AtriaBLEManager ~5402, by design: lease
+belongs to its process epoch); latch clears ONLY on an ACCEPTED
+battery event (~28770/~29168, drop-quarantine gate). Strap reports
+battery sparsely (% change ≈20-40min idle) + app schedules a
+corroborating read → expected restore within ~1h of the 21:25
+install. VERDICT LINE: still missing tomorrow morning after
+connected wear = real acceptance-path bug → pull
+BatteryDefaults.source/requiresFreshConfirmation/at on attach.
+Screenshot also confirms: sleep saved+journal ready (efficiency
+should now display), H1 accessory rolling on-device.
