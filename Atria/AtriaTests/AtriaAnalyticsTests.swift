@@ -229,6 +229,10 @@ final class AtriaAnalyticsTests: XCTestCase {
             SleepStageSegment(id: "3", start: start.addingTimeInterval(2_400), end: start.addingTimeInterval(3_600), stage: .deep),
             SleepStageSegment(id: "4", start: start.addingTimeInterval(3_600), end: start.addingTimeInterval(4_200), stage: .rem)
         ]
+        // Fixture migrated 2026-08-05 (manual-sleep honesty): manual windows
+        // now honestly render NO stages, so this fold-mechanics test uses a
+        // validated sensor source instead — the folding under test is
+        // provenance-independent.
         let night = SleepHistorySnapshot.Night(id: "night",
                                                day: start,
                                                start: start,
@@ -239,7 +243,7 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                respiratoryRate: nil,
                                                sleepEfficiency: nil,
                                                confidence: "confirmed",
-                                               source: "manual_sleep",
+                                               source: "validated_sleep_stages",
                                                confirmed: true,
                                                stageSegments: segments)
 
