@@ -13933,7 +13933,22 @@ final class SessionStore: ObservableObject {
         // makeRecoveredDataSnapshot — requests one recompute shortly after
         // launch so the full rebuild gauntlet runs deterministically. Remove
         // with the memprobe.
-        if ProcessInfo.processInfo.arguments
+        // One-shot FILE flag (2026-08-05): devicectl silently swallowed the
+        // launch arg in every invocation form tried, so the repro lever is a
+        // flag file pushed into Documents via `devicectl device copy to`,
+        // consumed (deleted) here. The launch arg remains as a second path.
+        let forceRebuildFlagURL = FileManager.default.urls(
+            for: .documentDirectory, in: .userDomainMask
+        )[0].appendingPathComponent("atria-debug-force-rebuild")
+        let forceRebuildFlagPresent =
+            FileManager.default.fileExists(atPath: forceRebuildFlagURL.path)
+        if forceRebuildFlagPresent {
+            try? FileManager.default.removeItem(at: forceRebuildFlagURL)
+            UserDefaults.standard.set(
+                true, forKey: "atria.debug.forceRebuildOnce"
+            )
+        }
+        if forceRebuildFlagPresent || ProcessInfo.processInfo.arguments
             .contains("--atria-debug-force-recovered-rebuild") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
                 // Ride the exact lane when the full-drain authority owns
