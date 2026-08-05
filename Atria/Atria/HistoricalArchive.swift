@@ -1009,6 +1009,34 @@ enum HistoricalArchive {
             == floor(catalog.timeIntervalSince1970)
     }
 
+    /// The single aggregate-vs-catalog consistency truth. A committed
+    /// aggregate source and a catalog chunk describe the same immutable raw
+    /// payload only when this exact 5-tuple holds: content digest, logical
+    /// byte count, row count, and both time bounds at the catalog's persisted
+    /// whole-second precision. `byteCount` must always be the logical decoded
+    /// JSONL byte count — never `compressedStorage.storedByteCount` — because
+    /// aggregate identity is the canonical decoded stream, not the physical
+    /// artifact. Both enforcement sites (the proof factory's per-aggregate
+    /// guard and the sealed-catalog materializer's completeness check) must
+    /// call this predicate so detection and repair can never disagree about
+    /// what "consistent" means.
+    static func aggregateSourceMatchesCatalogChunk(
+        rawSHA256: String,
+        byteCount: UInt64,
+        rowCount: Int,
+        firstTimestamp: Date,
+        lastTimestamp: Date,
+        chunk: AtriaHistoricalArchiveCatalog.RawChunk
+    ) -> Bool {
+        chunk.contentSHA256 == rawSHA256
+            && chunk.byteCount == byteCount
+            && chunk.rowCount == rowCount
+            && catalogTimestampMatches(raw: firstTimestamp,
+                                       catalog: chunk.firstTimestamp)
+            && catalogTimestampMatches(raw: lastTimestamp,
+                                       catalog: chunk.lastTimestamp)
+    }
+
     static func persistedISO8601Value<T: Codable>(_ value: T) throws -> T {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -1433,15 +1461,17 @@ enum HistoricalArchive {
             throw TerminalConsumerProjectionError.committedAggregateUnavailable
         }
         let catalog = try catalogStoreLocked().snapshotVerifiedAgainstFiles()
+        // The caller's `sourceRawSHA256` is deliberately not consulted for the
+        // match below — see `resolveCommittedFullScanSource` for the honesty
+        // trade this encodes. Every other gate (limit, rejected manifests,
+        // chunk present in the file-verified catalog) is unchanged.
         guard !streamed.diagnostics.limitExceeded,
               streamed.diagnostics.rejectedManifests == 0,
-              let source = streamed.sources.first(where: {
-                  $0.chunkID == sourceChunkID
-                    && $0.rawSHA256 == sourceRawSHA256
-              }),
-              catalog.chunks.contains(where: {
-                  $0.id == sourceChunkID && $0.contentSHA256 == sourceRawSHA256
-              }) else {
+              let source = resolveCommittedFullScanSource(
+                  sourceChunkID: sourceChunkID,
+                  catalog: catalog,
+                  streamedSources: streamed.sources
+              ) else {
             throw TerminalConsumerProjectionError.committedAggregateUnavailable
         }
         return .init(
@@ -1455,6 +1485,31 @@ enum HistoricalArchive {
             ),
             aggregateSnapshotSHA256: streamed.digest
         )
+    }
+
+    /// Honesty trade (2026-08-05 crash-at-seal repair): the committed source
+    /// is resolved by the FILE-VERIFIED catalog chunk's content digest, not by
+    /// a caller-persisted `sourceRawSHA256`. After this, a full-scan record's
+    /// source identity is catalog-derived rather than independent evidence —
+    /// the catalog+file axis is already proven physically by
+    /// `snapshotVerifiedAgainstFiles`, so a record carrying a pre-crash digest
+    /// converts from a fail-closed disagreement into an auto-heal against that
+    /// proven axis. Coverage facts (`cursorWatermark`, transport identity)
+    /// remain independent evidence and are never derived here. A chunk absent
+    /// from the catalog, or whose digest matches no accepted committed source,
+    /// still resolves to nil and fails closed at the caller.
+    static func resolveCommittedFullScanSource(
+        sourceChunkID: String,
+        catalog: AtriaHistoricalArchiveCatalog,
+        streamedSources: [AtriaHistoricalAggregateChunk.Source]
+    ) -> AtriaHistoricalAggregateChunk.Source? {
+        guard let chunk = catalog.chunks.first(where: {
+            $0.id == sourceChunkID
+        }) else { return nil }
+        return streamedSources.first(where: {
+            $0.chunkID == sourceChunkID
+                && $0.rawSHA256 == chunk.contentSHA256
+        })
     }
 
     static func earliestCommittedAggregateTimestamp() -> Date? {

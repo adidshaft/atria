@@ -604,6 +604,28 @@ final class AtriaHistoricalArchiveCatalogStore {
         catalog = value
     }
 
+    /// Durable proof that the committed artifact pair of one sealed chunk was
+    /// re-minted by the crash-at-seal divergence repair. Only the catalog
+    /// generation advances: no chunk field is written, so sealed metadata
+    /// stays write-once and `sealedMetadataConflict` semantics are untouched.
+    /// The bump also changes the canonical catalog bytes — and therefore the
+    /// persisted catalog snapshot digest — so every consumer keyed on
+    /// (generation, snapshot digest) observes a strictly newer checkpoint
+    /// instead of a same-generation digest change, which the terminal
+    /// publication lane rejects permanently.
+    func recordAggregateRepairGenerationAdvance(chunkID: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var value = catalog else { throw StoreError.catalogNotLoaded }
+        guard let chunk = value.chunks.first(where: { $0.id == chunkID }),
+              chunk.state == .sealed else {
+            throw StoreError.chunkNotSealed
+        }
+        value.generation &+= 1
+        try persistDurably(value)
+        catalog = value
+    }
+
     /// Records retirement only after the transaction manifest and aggregate
     /// verify and the raw source is already absent. This method never deletes.
     func markRetired(chunkID: String,

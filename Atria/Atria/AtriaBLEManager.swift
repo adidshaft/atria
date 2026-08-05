@@ -31152,6 +31152,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             catalog: previousFullScan
                                 .observedArchiveFirstTimestamp
                         )
+                    // The re-minted record's source fields must exactly equal
+                    // the ACCEPTED committed aggregate's source (the proof
+                    // factory compares them with exact `==`), so they are
+                    // written from the refreshed catalog-resolved evidence,
+                    // never blind-copied from a record that may predate a
+                    // crash-at-seal repair. `sourceChunkID` is the immutable
+                    // key and is always carried forward.
+                    let sourceIdentityChanged =
+                        refreshedSnapshot.source.rawSHA256
+                            != previousFullScan.sourceRawSHA256
+                        || refreshedSnapshot.source.firstTimestamp
+                            != previousFullScan.sourceFirstTimestamp
+                        || refreshedSnapshot.source.lastTimestamp
+                            != previousFullScan.sourceLastTimestamp
                     if fullScanSnapshotChanged {
                         guard previousFullScan.generation < UInt64.max,
                               refreshedSnapshot.catalogGeneration
@@ -31173,11 +31187,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             terminalAt: previousFullScan.terminalAt,
                             sourceChunkID: previousFullScan.sourceChunkID,
                             sourceRawSHA256:
-                                previousFullScan.sourceRawSHA256,
+                                refreshedSnapshot.source.rawSHA256,
                             sourceFirstTimestamp:
-                                previousFullScan.sourceFirstTimestamp,
+                                refreshedSnapshot.source.firstTimestamp,
                             sourceLastTimestamp:
-                                previousFullScan.sourceLastTimestamp,
+                                refreshedSnapshot.source.lastTimestamp,
                             observedArchiveFirstTimestamp:
                                 refreshedSnapshot
                                     .observedArchiveFirstTimestamp,
@@ -31187,6 +31201,49 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                 refreshedSnapshot.catalogSnapshotSHA256,
                             aggregateSnapshotSHA256:
                                 refreshedSnapshot.aggregateSnapshotSHA256
+                        ))
+                    } else if sourceIdentityChanged {
+                        // Pair-consistent variant: every snapshot digest is
+                        // unchanged, only the persisted source identity is
+                        // stale. Digests and catalog generation are carried
+                        // forward so the same-generation snapshot equality
+                        // gates keep holding; `observedArchiveFirstTimestamp`
+                        // must come from the refreshed evidence (never the
+                        // stale record) because the store validates
+                        // observedFirst <= sourceFirst and the corrected
+                        // first timestamp can precede the stale observation.
+                        guard previousFullScan.generation < UInt64.max else {
+                            throw AtriaBLEHistoryTerminalMaterializationError
+                                .fullScanGenerationExhausted
+                        }
+                        _ = try fullScanCompletionStore.recordCompletion(.init(
+                            version: AtriaHistoricalFullScanCompletionStore
+                                .Record.currentVersion,
+                            generation: previousFullScan.generation + 1,
+                            transportGeneration:
+                                previousFullScan.transportGeneration,
+                            transportNonce: previousFullScan.transportNonce,
+                            peripheralIdentifier:
+                                previousFullScan.peripheralIdentifier,
+                            strapIdentity: previousFullScan.strapIdentity,
+                            cursorWatermark: previousFullScan.cursorWatermark,
+                            terminalAt: previousFullScan.terminalAt,
+                            sourceChunkID: previousFullScan.sourceChunkID,
+                            sourceRawSHA256:
+                                refreshedSnapshot.source.rawSHA256,
+                            sourceFirstTimestamp:
+                                refreshedSnapshot.source.firstTimestamp,
+                            sourceLastTimestamp:
+                                refreshedSnapshot.source.lastTimestamp,
+                            observedArchiveFirstTimestamp:
+                                refreshedSnapshot
+                                    .observedArchiveFirstTimestamp,
+                            catalogGeneration:
+                                previousFullScan.catalogGeneration,
+                            catalogSnapshotSHA256:
+                                previousFullScan.catalogSnapshotSHA256,
+                            aggregateSnapshotSHA256:
+                                previousFullScan.aggregateSnapshotSHA256
                         ))
                     }
                     let report = try AtriaTransientWorkThread.run(

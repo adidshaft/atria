@@ -585,16 +585,13 @@ struct AtriaHistoricalActivityInspectionProofFactory {
                 throw FactoryError.aggregateNotInCatalog(aggregate.source.chunkID)
             }
             guard chunk.state == .sealed || chunk.state == .retired,
-                  chunk.contentSHA256 == aggregate.source.rawSHA256,
-                  chunk.byteCount == aggregate.source.rawByteCount,
-                  chunk.rowCount == aggregate.source.rawRowCount,
-                  HistoricalArchive.catalogTimestampMatches(
-                    raw: aggregate.source.firstTimestamp,
-                    catalog: chunk.firstTimestamp
-                  ),
-                  HistoricalArchive.catalogTimestampMatches(
-                    raw: aggregate.source.lastTimestamp,
-                    catalog: chunk.lastTimestamp
+                  HistoricalArchive.aggregateSourceMatchesCatalogChunk(
+                    rawSHA256: aggregate.source.rawSHA256,
+                    byteCount: aggregate.source.rawByteCount,
+                    rowCount: aggregate.source.rawRowCount,
+                    firstTimestamp: aggregate.source.firstTimestamp,
+                    lastTimestamp: aggregate.source.lastTimestamp,
+                    chunk: chunk
                   ) else {
                 throw FactoryError.aggregateCatalogMismatch(aggregate.source.chunkID)
             }
