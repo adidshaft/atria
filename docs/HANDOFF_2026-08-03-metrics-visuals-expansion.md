@@ -1988,3 +1988,32 @@ Two-front hunt running NOW:
 Also learned: cold relaunches with a committed archive run NO scan at
 all (no pending revision → no recompute) — forced repro must be
 flush-synchronized to exercise the gauntlet.
+
+## 15.14 CLIMBER NAMED AND FIXED (2026-08-05 ~06:45)
+
+18-agent adversarial workflow (wf_3021d643, 2M tokens) + the supersede
+discovery converged on the climber: **motionTickDayEvidenceRead** (the
+strap-step-receipt daily scan, HistoricalArchive.swift ~2629) — ONE
+continuous budget-less scan of the backlogged ~1GB archive on the
+long-lived projection queue. Fully observed causal chain: superseded
+recovery cycle releases archive priority (+53s) →
+resumeDeferredForegroundArchiveWork re-arms the DEFERRED receipt work
+→ climb onset +57s at ~350MB/s (reclaim law: one stretch accumulates
+all parse garbage) → jetsam +65s. Note-less because the lane had no
+probe note. Runner-up (documented, unfixed): the session-boundary
+derived trio (overview trends / training load / HR zones,
+Sessions.swift 8957/8983/9013) — known-jetsammer per in-repo comment
+at 10804; fix pattern identical if it ever shows.
+
+FIX SHIPPED 969debbf: budgeted 32MB dying-thread passes (rec_scan
+driver pattern) + step_receipt_day_scan/_done notes + heavy-lane defer
+guard on refreshCurrentCycleStrapStepReceipt (was missing; prepare
+had it). 79/79 step/motion/authority tests; gate baseline 4.
+DEFERRED: fingerprint-latch improvement (exclude live active segment
+from the attempt signature) — needs its own receipt-correctness pass.
+
+VERIFICATION RUNNING: corrected mid-scan kill loop (prior loop had a
+grep -c shell bug and never armed) — kills the app mid-scan so the
+revision stays unpublished, relaunches into the true gauntlet on the
+FIXED build. Expect: step_receipt_day_scan notes bracketing budgeted
+passes, peak well under 3GB, ONE start marker.
