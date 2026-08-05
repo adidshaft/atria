@@ -15,9 +15,13 @@ enum AtriaDeveloperMode {
     // 2026-07-18: CoreBluetooth may restore the app without launch arguments.
     // Persist a dated lease so developer tools survive that honest relaunch,
     // while still expiring automatically instead of becoming a hidden setting.
+    // 2026-08-06: audit fix -- a shipped binary must have a compile-time
+    // barrier here too, not just the launch-argument gate: in Release the
+    // argument and the persisted lease are both inert and this returns false.
     static func isEnabled(arguments: [String],
                           defaults: UserDefaults,
                           now: Date) -> Bool {
+        #if DEBUG
         if arguments.contains(launchArgument) {
             defaults.set(true, forKey: defaultsKey)
             defaults.set(now.addingTimeInterval(leaseDuration), forKey: expiryDefaultsKey)
@@ -31,6 +35,9 @@ enum AtriaDeveloperMode {
             return false
         }
         return true
+        #else
+        return false
+        #endif
     }
 
     static func disable(defaults: UserDefaults = .standard) {

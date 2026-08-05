@@ -132,19 +132,9 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertFalse(update.contains("ExcludedInterval(start: pauseStartedAt, end: now)"))
     }
 
-    func testOverviewLiveSampleProgressUsesTwentyDisplayBuckets() {
-        XCTAssertEqual(AtriaOverviewLiveProjectionState.sessionProgressBucket(0), 0)
-        XCTAssertEqual(AtriaOverviewLiveProjectionState.sessionProgressBucket(1), 1)
-        XCTAssertEqual(AtriaOverviewLiveProjectionState.sessionProgressBucket(36), 1)
-        XCTAssertEqual(AtriaOverviewLiveProjectionState.sessionProgressBucket(37), 2)
-        XCTAssertEqual(AtriaOverviewLiveProjectionState.sessionProgressBucket(720), 20)
-        XCTAssertEqual(AtriaOverviewLiveProjectionState.sessionProgressBucket(50_000), 20)
-
-        let visibleBuckets = Set((0...720).map {
-            AtriaOverviewLiveProjectionState.sessionProgressBucket($0)
-        })
-        XCTAssertEqual(visibleBuckets, Set(0...20))
-    }
+    // 2026-08-06: audit fix — dead twin deleted. The sessionProgressBucket test
+    // covered AtriaOverviewLiveProjectionState, removed with the unmounted
+    // legacy Overview readiness tree.
 
     func testHeartRatePlausibilityRejectsCorruptPacketsAndHoldsPostGapJumps() {
         XCTAssertEqual(AtriaBLEManager.heartRateHardUpperBound(profileMaxHR: 190), 220)
@@ -765,21 +755,9 @@ final class AtriaPerfFixesTests: XCTestCase {
         ), "zero readings are not evidence")
     }
 
-    func testHealthMonitorUsesTheCurrentPhysiologicalCycleRecoveryEstimate() throws {
-        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        let sourceURL = testsDirectory
-            .deletingLastPathComponent()
-            .appendingPathComponent("Atria/AtriaVitalsCollectionSections.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        let start = try XCTUnwrap(source.range(of: "private var healthMonitorRecoveryEstimate"))
-        let end = try XCTUnwrap(source.range(of: "private var healthMonitorGuidance",
-                                             range: start.upperBound..<source.endIndex))
-        let property = String(source[start.lowerBound..<end.lowerBound])
-
-        XCTAssertTrue(property.contains("heroStore.state.recoveryEstimate"))
-        XCTAssertFalse(property.contains("dailyRollupHistory"))
-        XCTAssertFalse(property.contains("confidence: .validated"))
-    }
+    // 2026-08-06: audit fix — dead twin deleted. The healthMonitorRecoveryEstimate
+    // source pin targeted the unmounted AtriaVitalsTabContent twin, which was
+    // removed; the live Health screen path is covered elsewhere.
 
     func testCheckpointDiagnosticsDoNotEvaluateWhenLoggingIsDisabled() {
         var evaluations = 0

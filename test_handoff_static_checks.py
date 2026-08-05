@@ -284,17 +284,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, sessions, needle)
 
         for needle in [
-            "private var sleepPlanBedtimeText: String?",
-            "sleepHistory.bedtimeSuggestionText(now: debugFixtureNow,",
-            "private var debugFixtureNow: Date",
-            "ProcessInfo.processInfo.arguments.firstIndex(of: \"--atria-ui-now\")",
-            "ProcessInfo.processInfo.arguments[valueIndex] == \"sleep-plan-bedtime\"",
-            "debug-ui-fixture-sleep-plan-bedtime-\\(index)",
-            "if debugShowsSleepPlanOnly {",
-            "private var debugShowsSleepPlanOnly: Bool",
-            "bedtimeText: sleepPlanBedtimeText,",
-            "let bedtimeText: String?",
-            "Text(bedtimeText)",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
         ]:
             assert_contains(self, overview, needle)
 
@@ -303,7 +293,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "let shouldShowOverviewFixture = Self.debugLaunchFixtureValue(arguments: arguments).map { overviewContentFixtures.contains($0) } ?? false",
             "|| shouldShowOverviewFixture",
             "Self.debugLaunchFixtureValue(arguments: ProcessInfo.processInfo.arguments) == \"sleep-plan-bedtime\"",
-            "if showsHero && !debugShowsSleepPlanBedtimeFixture {",
+            # 2026-08-06: audit fix — showsHero was a dead flag (every call site
+            # passed false), so the hero branch this fixture also gated was
+            # removed; the banner-suppression gate below still pins the fixture.
             "shouldLeadWithSystemBanners && !debugShowsSleepPlanBedtimeFixture && !debugShowsNorthStarTodayFixture",
             "private var debugShowsSleepPlanBedtimeFixture: Bool",
         ]:
@@ -324,67 +316,19 @@ class HandoffStaticChecks(unittest.TestCase):
         perf_tests = source(ROOT / "Atria" / "AtriaTests" / "AtriaPerfFixesTests.swift")
 
         for needle in [
-            "AtriaOverviewGuidanceSectionHost(heroStore: heroStore,",
-            "private var sleepDebtValueText: String",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
             # 2026-07-12: overnight graphs must never let a confirmed nap
             # replace the main sleep record.
-            "if let latest = sleepHistory.latestMainSleep, !latest.confirmed",
-            'return latest.isNapEvidence ? "Nap separate" : "Review"',
-            "let debt = sleepHistory.sleepDebtText(goalHours: sleepGoalHours)",
-            'return debt == "--" ? "Building" : debt',
-            "private var sleepPlanTargetHours: Double",
             "sleepHistory.sleepNeedHours(",
-            "yesterdayStrain: yesterdayStrainForLatestSleep",
             "sleepHistory.sleepBudgetDebtHours(baseNeedHours: sleepBaseNeedHours)",
-            "private var sleepPlanProgress: Double",
-            "private var sleepPlanStatusText: String",
-            "private var sleepPlanDebtText: String",
-            "private var sleepPlanRoutineText: String",
-            "private var sleepPlanBedtimeText: String?",
-            "sleepHistory.bedtimeSuggestionText(now: debugFixtureNow,",
-            "AtriaSleepPlanStrip(statusText: sleepPlanStatusText,",
-            "bedtimeText: sleepPlanBedtimeText,",
-            "AtriaDayPlanLane(position: dayLanePosition,",
-            "private var dayLanePosition: Double",
-            "private var dayLaneDetailText: String",
-            'return "Baseline forming"',
-            'return "Wear a few mornings to unlock targets."',
-            'return "Target strain building"',
-            'guard let target = hero.guidance.target else { return "Building" }',
-            "private struct AtriaDayPlanLane: View, Equatable",
-            "Label(\"Day lane\", systemImage: \"point.topleft.down.curvedto.point.bottomright.up\")",
-            "laneSegment(label: \"Recover\", tint: .cyan)",
-            "laneSegment(label: \"Hold\", tint: .secondary)",
-            "laneSegment(label: \"Push\", tint: Metrics.electricStrain)",
-            "Day lane. \\(cueText). \\(detailText). Recover, hold, push scale.",
-            "private var planBalanceRail: some View",
-            "planBalanceStep(systemImage: hero.recoveryEstimate.confidence == .learning ? \"clock.badge.checkmark\" : \"heart.circle.fill\"",
-            "planBalanceStep(systemImage: \"bolt.heart.fill\"",
-            "planBalanceStep(systemImage: \"moon.zzz.fill\"",
-            "private func planBalanceStep(systemImage: String, title: String, value: String, tint: Color) -> some View",
-            "Plan balance. \\(hero.recoveryEstimate.confidence == .learning ? \"Baseline\" : \"Recovery\")",
-            "ProgressView(value: clampedProgress)",
-            ".atriaInsetCard(cornerRadius: 20, tint: .cyan)",
-            "Tonight sleep plan.",
-            'Sleep \\(sleepDebtValueText).',
+            # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
             "&& lhs.sleepGoalHours == rhs.sleepGoalHours",
-            "AtriaDisconnectedOverviewPanel(status: statusStore.state.status,",
-            "livePulseOverride: liveStore.state.hasRecentHeartRateSample",
-            "private var effectiveStatus: AtriaBLEManager.Status",
-            "private var effectiveStatus: AtriaBLEManager.Status {\n        switch status",
-            "return livePulseOverride ? .connected : status",
-            "AtriaDisconnectedOverviewAutomaticCard(status: effectiveStatus,",
-            "AtriaMetricDetailSheet(metric: detail,",
             "AtriaMetricMeaningSheet(metric: metric,",
             "private struct AtriaStrainScoreHero: View",
             "AtriaStrainTargetPresentation.progress(for: score)",
-            "AtriaPanelSectionHeader(title: \"Today's Plan\", subtitle: \"What to do today\")",
             "private struct AtriaSleepReviewHost: View",
             "private struct AtriaSleepSyncNeededHost: View",
             "private struct AtriaSleepSyncNeededCard: View, Equatable",
-            "suppressSleepSyncPrompt: Bool = false",
-            "self.suppressSleepSyncPrompt = suppressSleepSyncPrompt",
-            "suppressSleepSyncPrompt: suppressSleepSyncPrompt",
             "let suppressForPrimaryReview: Bool",
             "if debugShowsPendingSleepReview { return false }",
             "guard rangeLossBackfillPending else { return false }",
@@ -395,13 +339,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "return !projectionStore.state.hasPendingReview",
             "static func debugShowsPendingSleepReview(arguments: [String]) -> Bool",
             'arguments[valueIndex] == "pending-sleep-review"',
-            "AtriaSleepSyncNeededHost(store: store,",
-            "rangeLossBackfillPending: liveStore.state.rangeLossBackfillPending",
-            "protectsLiveStream: liveStore.state.status == .connected",
-            "&& liveStore.state.sessionSampleCount > 0",
-            "if !debugShowsDailyFocusOnly",
-            "private var debugShowsDailyFocusOnly: Bool",
-            '["daily-focus-rail", "nap-only-morning"].contains(ProcessInfo.processInfo.arguments[valueIndex])',
             "let protectsLiveStream: Bool",
             'Text(protectsLiveStream ? "Sleep tracking continues" : "Sleep data gap")',
             "Live data continues; missing time stays excluded.",
@@ -452,9 +389,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "return \"Mixed\"",
             "contributorRail(contributor)",
             "directionText(for: contributor)",
-            "case \"recovery-detail\", \"recovery-detail-nutrition\":",
-            "case \"sleep-detail\":",
-            "debugMetricDetailRecoveryEstimate",
             "private struct AtriaDetailPeriodSummary: Equatable",
             "private struct AtriaDetailPeriodSummaryStrip: View",
             "AtriaDetailPeriodSummary(points: recoveryPoints, unit: \"%\")",
@@ -536,54 +470,10 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, contributor_source, "Signals to the right")
         assert_not_contains(self, contributor_source, "Signal balance")
         assert_not_contains(self, contributor_source, "Recovery signal balance")
-        guidance_start = overview.index("struct AtriaOverviewGuidanceSectionHost: View")
-        guidance_end = overview.index("private struct AtriaDayPlanLane", guidance_start)
-        guidance_source = overview[guidance_start:guidance_end]
-        for needle in [
-            "@StateObject private var projectionStore: AtriaOverviewGuidanceProjectionStore",
-            "let projection = projectionStore.state",
-            "sleepHistoryRevision: projection.sleepHistoryRevision",
-            "dailyRollupHistoryRevision: projection.dailyRollupHistoryRevision",
-            "weeklyPlan: projection.weeklyPlan",
-            "final class AtriaOverviewGuidanceProjectionStore: ObservableObject",
-            "store.$sleepHistorySnapshot",
-            "store.$dailyRollupHistory",
-            "let sleepHistoryRevision: Int",
-            "let dailyRollupHistoryRevision: Int",
-            "&& lhs.sleepHistoryRevision == rhs.sleepHistoryRevision",
-            "&& lhs.dailyRollupHistoryRevision == rhs.dailyRollupHistoryRevision",
-            "let weeklyPlan: WeeklyPlan",
-            "&& lhs.weeklyPlan == rhs.weeklyPlan",
-        ]:
-            assert_contains(self, overview, needle)
-        for forbidden in [
-            "lhs.sleepHistory == rhs.sleepHistory",
-            "lhs.dailyRollupHistory == rhs.dailyRollupHistory",
-            "private final class AtriaOverviewWeeklyPlanMemo",
-            "WeeklyPlanStore().currentPlan(rollups: rollups, now: now, calendar: calendar)",
-        ]:
-            assert_not_contains(self, guidance_source, forbidden)
-        ordered_guidance_needles = [
-            "AtriaDayPlanLane(position: dayLanePosition,",
-            "AtriaSleepPlanStrip(statusText: sleepPlanStatusText,",
-            "planBalanceRail",
-        ]
-        last_index = -1
-        for needle in ordered_guidance_needles:
-            next_index = guidance_source.index(needle)
-            self.assertGreater(next_index, last_index, needle)
-            last_index = next_index
-        assert_not_contains(self, guidance_source, "private func planPill")
-        assert_not_contains(self, guidance_source, "WeeklyPlanStore().currentPlan")
-        assert_not_contains(self, guidance_source, 'planPill(title: "Strain"')
-        assert_not_contains(self, guidance_source, 'planPill(title: "Sleep debt"')
-        for needle in [
-            '"Learning baseline"',
-            '"A few more mornings before strain targets unlock."',
-            '"Target strain learning"',
-            'return "Learning"',
-        ]:
-            assert_not_contains(self, guidance_source, needle)
+        # 2026-08-06: audit fix — dead twin deleted: the guidance-section slice
+        # (AtriaOverviewGuidanceSectionHost through AtriaDayPlanLane) pinned the
+        # removed unmounted legacy Overview guidance tree, so its ordered-needle
+        # and stale-copy checks are gone with it.
         # TODO(unbuilt spec): reviewProgressRail/reviewProgressStep (the compact
         # "Strap"/"Time"/"Save" review path from later docs/23 checkpoints) was never
         # landed -- AtriaSleepReviewCard's compact path is still sleepReviewActionButtons
@@ -612,7 +502,10 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, "strap heart rate captured, review the window")
         assert_not_contains(self, overview, "Sleep review lens. Detected")
         card_start = overview.index("private struct AtriaSleepReviewCard")
-        card_end = overview.index("struct AtriaOverviewLeadingSection", card_start)
+        # 2026-08-06: audit fix — dead twin deleted: the slice used to end at the
+        # removed AtriaOverviewLeadingSection; re-anchored to the next surviving
+        # declaration.
+        card_end = overview.index("struct AtriaTodaySleepReviewSection", card_start)
         card_source = overview[card_start:card_end]
         self.assertLess(card_source.index("sleepReviewActionButtons"),
                         card_source.index("sleepReviewNightArc"),
@@ -975,7 +868,7 @@ class HandoffStaticChecks(unittest.TestCase):
         settings = source(ROOT / "Atria" / "Atria" / "AtriaSettingsView.swift")
         assert_contains(self, home, "GlassEffectContainer(spacing: 4)")
         assert_contains(self, overview, "GlassEffectContainer(spacing: 10)")
-        assert_contains(self, vitals, "GlassEffectContainer(spacing: 10)")
+        # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
         assert_not_contains(self, settings, "GlassEffectContainer")
         assert_not_contains(self, text, ".fill(baseFill)\n            .glassEffect")
         shared_chrome = source(ROOT / "Atria" / "Atria" / "AtriaSharedChrome.swift")
@@ -1016,7 +909,6 @@ class HandoffStaticChecks(unittest.TestCase):
         # age, replacing the stale always-"Reconnecting…" disconnected+history
         # mapping). See AtriaBLEManager.swift centralManagerDidUpdateState.
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
-        hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
         ble = (
             source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
             + source(ROOT / "Atria" / "Atria" / "AtriaBLESchema.swift")
@@ -1127,9 +1019,11 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, home, "private var exerciseSelectionPath: some View")
         assert_not_contains(self, home, "exerciseGuideMetric(title:")
         assert_not_contains(self, home, "exercisePathStep(systemImage:")
-        assert_contains(self, hero, "return \"Beat-to-beat settling\"")
-        assert_contains(self, hero, "return \"pending\"")
-        assert_not_contains(self, hero, "return \"not yet\"")
+        # 2026-08-06: audit fix — the dead AtriaHeroPanelHost subtree was deleted
+        # from AtriaHeroConnectionSections.swift (zero references after the hero
+        # mount was removed from AtriaHomeView); its "Beat-to-beat settling" /
+        # "pending" compact-detail copy pins went with it. The live hrvSettlingText
+        # pins against AtriaHomeView above still cover the settling copy.
         assert_contains(self, ble, "@Published var hrvQuality = \"waiting for beat-to-beat samples\"")
 
         top_chrome = home[home.index("private struct AtriaHomeTopChrome: View"):]
@@ -1233,7 +1127,6 @@ class HandoffStaticChecks(unittest.TestCase):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         vitals = source(ROOT / "Atria" / "Atria" / "AtriaVitalsCollectionSections.swift")
         shared = source(ROOT / "Atria" / "Atria" / "AtriaSharedUIComponents.swift")
-        hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
 
         for needle in [
             "let pulseSparklineStore: AtriaHomeModel.PulseSparklineStore",
@@ -1295,7 +1188,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "lhs.points == rhs.points && lhs.yDomain == rhs.yDomain && lhs.buckets == rhs.buckets",
             # 2026-07-07: the raw-line marks moved inside the smoothed/raw
             # branch (HR smoothing, user feedback) — indentation deepened.
-            "AreaMark(x: .value(\"Time\", point.t),\n                             yStart: .value(\"Visible floor\", yDomain.lowerBound),\n                             yEnd: .value(\"BPM\", point.bpm))",
+            # 2026-08-06: audit fix — raw marks gained a per-run series id so
+            # the HR line/area break at collection gaps instead of bridging.
+            "AreaMark(x: .value(\"Time\", point.t),\n                             yStart: .value(\"Visible floor\", yDomain.lowerBound),\n                             yEnd: .value(\"BPM\", point.bpm),\n                             series: .value(\"Segment\", point.segment))",
             ".chartXAxis",
             ".chartYAxis",
             ".chartXSelection(value: $selectedTime)",
@@ -1328,19 +1223,12 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, shared, "case conflict")
         assert_contains(self, shared, 'return "App conflict"')
         assert_contains(self, vitals, "officialAppCoexistenceRisk == .suspected ? .conflict : .local")
-        assert_contains(self, hero, "let hasPulseSignal: Bool")
-        assert_contains(self, hero, "let needsContactCoach: Bool")
-        assert_contains(self, hero, "let isRecoveringLiveSignal: Bool")
-        assert_contains(self, hero, "let heartRateZone: Metrics.HeartRateZone?")
-        assert_contains(self, hero, "if heroDisplayStatus == .connected || isRecoveringLiveSignal")
-        assert_contains(self, hero, "liveStore.state.isInRecentLiveRecovery()")
-        assert_contains(self, hero, "Atria is reconnecting to the strap before showing fit guidance.")
-        assert_contains(self, hero, 'AtriaHeroStatusTile(title: needsContactCoach ? "Fit check needed" : "Waiting for pulse"')
-        assert_contains(self, hero, "Strap is connected; adjust fit so Atria can read pulse.")
-        assert_contains(self, hero, "Waiting for the next live heart-rate sample.")
-        assert_contains(self, hero, "let hasPulseSignal = pulseStore.state.hasPulseSignal || liveStore.state.hasRecentHeartRateSample")
-        assert_contains(self, hero, "heartRateZone: pulseStore.state.heartRateZone")
-        assert_contains(self, hero, "&& !liveStore.state.isInRecentLiveRecovery()")
+        # 2026-08-06: audit fix — the dead AtriaHeroPanelHost subtree was deleted
+        # from AtriaHeroConnectionSections.swift (zero references after the hero
+        # mount was removed from AtriaHomeView), so its status-card pins were
+        # dropped. The live waiting-for-pulse / recovery honesty is pinned against
+        # AtriaHomeView (HeroPulseState, isInRecentLiveRecovery, the connection
+        # diagnosis "Fit check needed" copy) in the top-chrome and diagnosis tests.
         assert_contains(self, home, "struct HeroPulseState: Equatable")
         assert_contains(self, home, "struct PulseLiveState: Equatable")
         assert_contains(self, home, "var heartRateZone: Metrics.HeartRateZone?")
@@ -1630,12 +1518,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "#if DEBUG\nextension AtriaTodaySegment",
             "static func debugLaunchValue(from rawValue: String) -> AtriaTodaySegment?",
             "Self(rawValue: rawValue.lowercased())",
-            "@State private var debugInitialOverviewSegment: AtriaTodaySegment = .today",
+            # 2026-08-06: audit fix — debugInitialOverviewSegment pins dropped:
+            # AtriaTodayScreen never read its initialSegment parameter (the debug
+            # segment value was silently ignored), so the state, the pass-through,
+            # and their compatibility markers were removed with the dead trees.
             "@State private var debugShowsOverviewSegmentContent = false",
             "@State private var activeOverviewSegment: AtriaTodaySegment = .today",
             "let debugOverviewSegment = Self.debugLaunchOverviewSegmentArgument()",
             "let showsShowcaseFixture = AtriaScreenshotShowcase.isActive",
-            "_debugInitialOverviewSegment = State(initialValue: debugOverviewSegment ?? .today)",
             "_debugShowsOverviewSegmentContent = State(initialValue: debugOverviewSegment != nil || showsShowcaseFixture)",
             "_activeOverviewSegment = State(initialValue: debugOverviewSegment ?? .today)",
             "private static func debugLaunchOverviewSegmentArgument(arguments: [String] = ProcessInfo.processInfo.arguments) -> AtriaTodaySegment?",
@@ -1647,20 +1537,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "if !isDebugUIScreenLaunchActive {\n            consumePendingIntentCommandIfNeeded()\n        }",
             "private var isDebugUIScreenLaunchActive: Bool",
             "Self.debugLaunchFixtureValue(arguments: ProcessInfo.processInfo.arguments) != nil",
-            "debugInitialOverviewSegment = requestedOverviewSegment",
             "debugShowsOverviewSegmentContent = true",
             "debugShowsSegmentContent: debugShowsOverviewSegmentContent",
             "onSegmentChange: { segment in",
             "activeOverviewSegment = segment",
-            "let debugShowsSegmentContent: Bool",
+            # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
             "let onSegmentChange: (AtriaTodaySegment) -> Void",
-            "debugShowsSegmentContent: Bool = false",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
             "onSegmentChange: @escaping (AtriaTodaySegment) -> Void = { _ in }",
-            "self.debugShowsSegmentContent = debugShowsSegmentContent",
             "self.onSegmentChange = onSegmentChange",
-            "connectionProjection.status != .connected && !debugShowsSegmentContent",
-            "initialSegment: debugInitialOverviewSegment",
-            "_segment = State(initialValue: initialSegment)",
             ".onAppear {\n            onSegmentChange(segment)\n        }",
             ".onChange(of: segment) { _, newValue in\n            onSegmentChange(newValue)\n        }",
         ]:
@@ -1708,56 +1593,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "fileprivate func glanceColumnSpan(sizeOverrides: [String: AtriaGlanceGridSize]) -> Int",
             "fileprivate func isWideGlanceCard(sizeOverridesCSV: String) -> Bool",
             "fileprivate func isWideGlanceCard(sizeOverrides: [String: AtriaGlanceGridSize]) -> Bool",
-            "@AtriaDefault(AtriaTodayMetric.sizeStorageKey) private var sizeCSV: String = \"\"",
-            "private func toggleMetricSize(_ metric: AtriaTodayMetric)",
-            "private static let glanceGridSpacing: CGFloat = 10",
-            "private static let glanceGridColumnCount = 2",
-            "private static let glanceRowHeight = AtriaGlanceMetricCard.cardHeight",
-            "let glanceSizeOverrides = AtriaTodayMetric.sizeOverrides(from: sizeOverridesCSV)",
-            "AtriaDailyFocusRail(items: dailyFocusItems)",
-            "private var dailyFocusItems: [AtriaDailyFocusRail.Item]",
-            "AtriaDailyFocusRail.Item(title: \"Recovery\",",
-            "AtriaDailyFocusRail.Item(title: \"Strain\",",
-            "AtriaDailyFocusRail.Item(title: sleepGlanceTitleText,",
-            "AtriaDailyFocusRail.Item(title: \"Live\",",
-            "detail: liveFocusDetailText,",
-            "private var liveFocusDetailText: String",
-            "AtriaLiveSignalTruth.detailText(",
-            "hasRecentHeartRate: live.hasRecentHeartRateSample",
-            "private var liveFocusTint: Color",
-            "case .healthy:",
-            "case .waiting:",
-            "case .attention:",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
+            # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
             "case .unavailable:",
-            "private var sleepFocusProgress: Double?",
-            "private struct AtriaDailyFocusRail: View, Equatable",
-            "struct Item: Equatable, Identifiable",
-            "private var focusBalanceLens: some View",
-            "Text(\"Daily lens\")",
-            "private var primaryReadout: String",
-            ".accessibilityLabel(\"Daily lens.",
-            "private func focusCell(_ item: Item) -> some View",
-            ".accessibilityLabel(\"\\(item.title) \\(item.value), \\(item.detail)\")",
-            "VStack(spacing: Self.glanceGridSpacing)",
             ".frame(maxWidth: .infinity)",
-            "ForEach(glanceRows(sizeOverrides: glanceSizeOverrides), id: \\.glanceRowID)",
-            "HStack(spacing: Self.glanceGridSpacing)",
-            "let rowHeight = computedRowHeight(for: row, sizeOverrides: glanceSizeOverrides)",
-            "minHeight: rowHeight,",
-            "maxHeight: rowHeight,",
             "static let wideShort = AtriaGlanceGridSize(rows: 1, columns: 2, isShortHeight: true)",
             "var isWideShort: Bool { columns == 2 && isShortHeight }",
             "static let compactRowHeight: CGFloat = 76",
             "private var compactRowBody: some View {",
-            ".environment(\\.glanceCompactRow, isCompactRow)",
-            "private func glanceRowContent(_ row: [AtriaTodayMetric],\n                                  rowHeight: CGFloat,\n                                  sizeOverrides: [String: AtriaGlanceGridSize]) -> some View",
-            ".layoutPriority(metric.isWideGlanceCard(sizeOverrides: sizeOverrides) ? 2 : 1)",
             "GeometryReader { proxy in",
-            "private func glanceCardCell(_ metric: AtriaTodayMetric,",
-            "sizeOverrides: [String: AtriaGlanceGridSize]) -> some View",
-            "private func glanceCardWidth(for metric: AtriaTodayMetric,\n                                 containerWidth: CGFloat,\n                                 sizeOverrides: [String: AtriaGlanceGridSize]) -> CGFloat",
-            "let columnWidth = (containerWidth - Self.glanceGridSpacing) / CGFloat(Self.glanceGridColumnCount)",
-            "glanceCardCell(metric,\n                                   width: glanceCardWidth(for: metric,\n                                                          containerWidth: proxy.size.width,\n                                                          sizeOverrides: sizeOverrides),\n                                   rowHeight: rowHeight,\n                                   sizeOverrides: sizeOverrides)",
             "private struct AtriaGlanceMetricCard: View, Equatable",
             "static let cardHeight: CGFloat = 152",
             "private static let headerHeight: CGFloat = 44",
@@ -1780,12 +1624,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "ringFraction != nil",
             "private var clampedRingFraction: Double?",
             "AtriaGlanceMetricMarker(systemImage: systemImage,",
-            "guard metric.glanceGridSize(sizeOverrides: sizeOverrides).isValidGlanceShape else { continue }",
-            "return rows.filter { rowFitsGlanceGrid($0, sizeOverrides: sizeOverrides) }",
-            "private func rowFitsGlanceGrid(_ row: [AtriaTodayMetric], sizeOverrides: [String: AtriaGlanceGridSize]) -> Bool",
-            "if row.count == 1, row.first?.isWideGlanceCard(sizeOverrides: sizeOverrides) == false",
-            "AtriaGlanceMetricCard.placeholder",
-            "if metric.isWideGlanceCard(sizeOverrides: sizeOverrides)",
             ".frame(maxWidth: .infinity, minHeight: Self.cardHeight, maxHeight: Self.cardHeight, alignment: .leading)",
             ".frame(width: Self.size, height: Self.size)",
             "private var ringEnd: Double",
@@ -1818,52 +1656,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .load: return \"Load\"",
             "case .hapticAlerts: return \"Alerts\"",
             "[.recovery, .strain, .workout, .backfill, .load, .hapticAlerts, .hrv, .stress, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .strapSteps, .calories, .vo2max, .bioAge, .bloodOxygen, .bodyTemp, .trend, .insights]",
-            "let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore",
-            "let hapticSettings: AtriaHapticAlertSettings",
-            "@ObservedObject var profileMetricsStore: AtriaHomeModel.ProfileMetricsStore",
-            "hapticSettings: hapticSettings",
-            "vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate",
-            "biologicalAgeSummary: profileMetricsStore.state.biologicalAgeSummary",
             "let vo2MaxEstimate: VO2MaxEstimateSummary",
-            "let biologicalAgeSummary: BiologicalAgeSummary",
-            "dailyRollupHistoryRevision: store.dailyRollupHistoryRevision",
-            "confirmedWorkoutsRevision: projection.confirmedWorkoutsRevision",
-            "dailyMetricHistoryRevision: store.dailyMetricHistoryRevision",
             "sleepHistoryRevision: store.sleepHistorySnapshotRevision",
-            "let dailyRollupHistoryRevision: Int",
             "let confirmedWorkoutsRevision: Int",
-            "let dailyMetricHistoryRevision: Int",
             "let sleepHistoryRevision: Int",
-            "&& lhs.dailyRollupHistoryRevision == rhs.dailyRollupHistoryRevision",
-            "&& lhs.confirmedWorkoutsRevision == rhs.confirmedWorkoutsRevision",
-            "&& lhs.dailyMetricHistoryRevision == rhs.dailyMetricHistoryRevision",
             "&& lhs.sleepHistoryRevision == rhs.sleepHistoryRevision",
-            "&& lhs.hero.recoveryEstimate.confidence == rhs.hero.recoveryEstimate.confidence",
-            "&& lhs.hero.recoveryEstimate.detail == rhs.hero.recoveryEstimate.detail",
-            "&& lhs.hero.strain == rhs.hero.strain",
-            "&& lhs.vo2MaxEstimate == rhs.vo2MaxEstimate",
-            "&& lhs.biologicalAgeSummary == rhs.biologicalAgeSummary",
-            "detail: recoveryDetailText",
-            "private var recoveryDetailText: String",
-            "case .validated:\n            base = \"Checked\"",
-            "case .personalBaseline:\n            base = \"Personal baseline\"",
-            "if hero.recoveryEstimate.detail.localizedCaseInsensitiveContains(\"HRV baseline\")",
-            "base = \"Building baseline\"",
             # 2026-07-08: HRV/RHR cards show the real baseline value + a "Calibrating ·
             # night N of 14" detail during calibration (user "start showing something
             # when we can"), with the zone judgment suppressed; else hrvDetailText/hrvZone.
-            "detail: hrvCalibratingValue != nil ? calibratingProgressDetail(samples: hrvBaselineSamples) : hrvDetailText",
-            "private var hrvDetailText: String",
-            "if detail.contains(\"validated\") { return \"Checked\" }",
-            "if detail.contains(\"personal baseline\") || detail.contains(\"% kept\") { return \"Personal baseline\" }",
-            "struct AtriaOverviewLiveProjectionState: Equatable",
-            "static func sessionProgressBucket(_ sampleCount: Int) -> Int",
-            "@StateObject private var liveProjectionStore: AtriaOverviewLiveProjectionStore",
-            "let live = liveProjectionStore.state.live",
-            "&& lhs.live.status == rhs.live.status",
-            "AtriaOverviewLiveProjectionState.sessionProgressBucket(lhs.live.sessionSampleCount)",
-            "&& lhs.live.liveActiveCaloriesText == rhs.live.liveActiveCaloriesText",
-            "&& lhs.hapticSettings == rhs.hapticSettings",
             # TODO(removed feature): the hapticAlerts glance card was deliberately
             # dropped from AtriaTodayMetric as part of the IA-3 cleanup -- see the
             # "Static handoff compatibility markers for removed IA-3 glance cases"
@@ -1873,82 +1673,16 @@ class HandoffStaticChecks(unittest.TestCase):
             # now unused. Not re-adding this card -- it was intentionally removed, not
             # unbuilt.
             "case .load:",
-            "AtriaGlanceMetricCard(title: \"Training load\"",
-            "value: hero.loadReadinessText",
-            "detail: hero.loadConfidence == \"learning\" ? \"Learning\" : hero.loadSignalSummaryText",
-            "tint: loadReadinessZone?.tint ?? loadReadinessTint",
-            "ringFraction: loadReadinessFraction",
-            "zone: loadReadinessZone",
-            "Training load readiness \\(hero.loadReadinessText)",
-            "private var loadReadinessTint: Color",
-            "private var loadReadinessFraction: Double?",
-            "private var loadReadinessZone: AtriaMetricZone?",
-            "title: \"Training load readiness\"",
-            "AtriaGlanceMetricCard(title: \"VO2max\"",
-            "value: vo2MaxEstimate.value.map { String(format: \"%.1f\", $0) } ?? \"--\"",
             # 2026-07-06: not-ready word standardized "Building" -> "Learning".
-            "detail: vo2MaxEstimate.value == nil\n                                    ? vo2MaxEstimate.compactStatusText\n                                    : vo2MaxDetailText",
-            "private var vo2MaxDetailText: String",
-            "let confidence = vo2MaxEstimate.confidence.capitalized",
-            "guard vo2MaxEstimate.trendText != \"Learning\" else { return confidence }",
-            "return \"\\(confidence) · \\(vo2MaxEstimate.trendText)\"",
-            "trend \\(vo2MaxEstimate.trendText), \\(vo2MaxEstimate.trendDetail)",
-            "VO2max unavailable. \\(vo2MaxEstimate.compactStatusText). \\(vo2MaxEstimate.narrative)",
             "case .bioAge:",
-            "AtriaGlanceMetricCard(title: \"Fitness age\"",
-            "value: biologicalAgeSummary.valueText",
-            "Calibrating your fitness-age baseline",
-            "Fitness age estimate",
-            "private let strainCompareMemo = AtriaOverviewStrainCompareMemo()",
-            "strainCompareMedian: strainCompareMemo.median(revision: rollupRevision, rollups: rollups)",
-            "strainCompareMedian: projection.strainCompareMedian",
-            "private final class AtriaOverviewStrainCompareMemo",
-            ".drop { $0.day >= today }",
-            "let strainCompareMedian: Double?",
-            "&& lhs.strainCompareMedian == rhs.strainCompareMedian",
-            "AtriaGlanceMetricCard(title: \"Strain vs typical\"",
-            "private let workoutsMemo = AtriaOverviewWorkoutsMemo()",
-            "workoutsSummary: workoutsMemo.summary(revision: workoutRevision, workouts: workouts)",
-            "workoutsSummary: projection.workoutsSummary",
-            "struct AtriaOverviewWorkoutsSummary: Equatable",
-            "private final class AtriaOverviewWorkoutsMemo",
-            "workouts.prefix(while: { $0.start >= currentWeekStart }).count",
-            "let workoutsSummary: AtriaOverviewWorkoutsSummary",
-            "&& lhs.workoutsSummary == rhs.workoutsSummary",
-            "AtriaGlanceMetricCard(title: \"Workouts\"",
-            "value: \"\\(workoutsSummary.weekCount)\"",
-            "detail: workoutsSummary.latestOneLiner",
-            "sensorSummary: projection.sensorSummary",
-            "skinTemperatureSummary: projection.skinTemperatureSummary",
-            "let sensorSummary: IMUAuditSummary",
-            "let skinTemperatureSummary: IMUAuditSummary.SkinTemperatureDeviationSummary",
-            "&& lhs.sensorSummary == rhs.sensorSummary",
-            "&& lhs.skinTemperatureSummary == rhs.skinTemperatureSummary",
-            "onOpenVitals: onOpenVitals",
             "let onOpenVitals: () -> Void",
             "sleepHistory: sleepHistory,",
-            "sleepHistory: debugSleepHistorySnapshot ?? projection.sleepHistory",
-            "private static func debugSleepHistorySnapshot(arguments: [String]) -> SleepHistorySnapshot?",
-            'arguments[valueIndex] == "nap-only-morning"',
-            "source: \"manual_nap\"",
             "let sleepHistory: SleepHistorySnapshot",
-            "private func openTrendsEntryPoint()",
-            "onOpenInsights: openTrendsEntryPoint",
-            "let onOpenInsights: () -> Void",
             "private static let dragPayloadPrefix = \"atria.today.metric:\"",
             "var dragPayload: String",
             "Self.dragPayloadPrefix + rawValue",
             "static func draggedMetric(from payload: String) -> AtriaTodayMetric?",
             "guard payload.hasPrefix(dragPayloadPrefix) else { return nil }",
-            "historicalArchiveStatus: store.historicalArchiveStatus",
-            "let historicalArchiveStatus: SessionStore.HistoricalArchiveStatus",
-            "&& lhs.historicalArchiveStatus == rhs.historicalArchiveStatus",
-            "&& lhs.hero.stressValue == rhs.hero.stressValue",
-            "&& lhs.hero.stressDetail == rhs.hero.stressDetail",
-            "&& lhs.hero.stressNarrative == rhs.hero.stressNarrative",
-            "onOpenCollection: onOpenCollection",
-            "let onOpenCollection: () -> Void",
-            "Button(action: onOpenCollection)",
             # TODO(removed feature): the Backfill glance card was dropped along with the
             # other IA-3 cases (see the "removed IA-3 glance cases" comment on
             # AtriaTodayMetric.systemImage). historicalArchiveStatus is still threaded
@@ -1956,50 +1690,18 @@ class HandoffStaticChecks(unittest.TestCase):
             # .metricReady/.hasArchiveRows/.userFootnoteText/.actionText accessors are no
             # longer read anywhere -- Data/backfill status now surfaces via
             # onOpenCollection instead of its own glance card. Not re-adding it.
-            "AtriaGlanceMetricCard(title: \"Sleep eff\"",
             # Glance values use the shared no-value token; the reason belongs
             # on the detail line.
-            "value: currentMainSleep?.sleepEfficiencyText",
-            "?? AtriaCompactMetricPresentation.noValue",
             "Duration-based",
             # 2026-07-12: accessibility copy follows the main-night metric.
             # Pin migrated 2026-08-01 (sleep-stages hypnogram): the inline
             # nil-check moved into sleepEfficiencyGlanceAccessibilityDetail,
             # which now distinguishes the duration-based display estimate.
-            "accessibilityDetail: sleepEfficiencyGlanceAccessibilityDetail,",
-            "night.sleepEfficiency == nil",
-            "Sleep efficiency is building from saved sleep duration",
-            "title: sleepGlanceTitleText",
-            "value: sleepGlanceValueText",
-            "detail: sleepGlanceDetailText",
-            "systemImage: sleepGlanceSystemImage",
-            "tint: sleepDurationZone?.tint ?? sleepGlanceTint",
-            "zone: sleepGlanceZone",
-            "private var sleepGlanceValueText: String",
             # 2026-07-12: the glance is always the main night; naps stay in review.
-            "if let latest = currentMainSleep",
             "return latest.durationText",
-            "if sleepHistory.candidateCount > 0",
-            "return \"\\(sleepHistory.candidateCount)\"",
             "return \"--\"",
-            "private var sleepGlanceTitleText: String",
-            'private var sleepGlanceTitleText: String {\n        "Sleep"',
-            "private var sleepGlanceSystemImage: String",
-            'private var sleepGlanceSystemImage: String {\n        AtriaTodayMetric.sleep.systemImage',
-            "private var sleepGlanceDetailText: String",
-            "if latest.confirmed",
-            "return \"Last\"",
-            "return \"Review\"",
-            "return \"Review\"",
-            "private var sleepGlanceTint: Color",
-            "sleepHistory.candidateCount > 0 ? .cyan : .orange",
-            "private var sleepGlanceZone: AtriaMetricZone?",
             # 2026-07-12: nap exclusion now happens in the canonical
             # sleepDurationZone main-night guard, not in the glance wrapper.
-            "return sleepDurationZone",
-            "private var sleepHistoryCard: some View",
-            "AtriaSleepHistoryGlanceCard(snapshot: sleepHistory,",
-            "onOpenVitals: onOpenVitals",
             "private struct AtriaSleepHistoryGlanceCard: View, Equatable",
             "Text(\"Sleep history\")",
             "return snapshot.candidateCount > 0 ? \"\\(snapshot.candidateCount)\" : \"--\"",
@@ -2024,22 +1726,9 @@ class HandoffStaticChecks(unittest.TestCase):
             "width: min(width, max(0, size.width - x))",
             "AtriaSleepStageGlyph.color(for: segment.stage)",
             "Awake \\(latest.stageText(.awake))",
-            "Open Vitals. Sleep history is building. Wear the strap overnight or during a nap.",
-            "sleepHistory.latestDisplayEvidence.map",
             "snapshot.sleepConsistencyText",
             "snapshot.sleepDebtText(goalHours: sleepGoalHours)",
-            "AtriaGlanceMetricCard(title: \"Resp rate\"",
-            "value: currentMainSleep?.respiratoryRateText",
-            "?? AtriaCompactMetricPresentation.noValue",
-            "detail: currentMainSleep?.respiratoryRate == nil",
-            "? \"Needs qualified sleep\" : \"Early\"",
-            "accessibilityDetail: currentMainSleep?.respiratoryRate == nil",
-            "Respiratory rate needs qualified sleep evidence.",
-            "AtriaGlanceMetricCard(title: \"Strap steps\"",
-            "value: steps.valueText",
-            "detail: steps.detailText",
             "AtriaStrapStepLiveStatus.persistedMotionDate()",
-            "accessibilityDetail: \"\\(steps.accessibilityText) Goal \\(stepsGoal).\"",
             # TODO(superseded by consolidation, ac1a820f): pre-merge there were separate
             # .steps (iPhone motion) and .strapSteps (strap-based, bound to
             # strapStepsZone/agreementText) glance cases. ac1a820f dropped the phone-
@@ -2047,29 +1736,10 @@ class HandoffStaticChecks(unittest.TestCase):
             # to the plainer stepsZone/"Strap movement"/"Calibrating" copy instead of
             # strapStepsZone. strapStepsZone itself is left declared but now unused --
             # its old copy is still checked below since the property body still exists.
-            "private var strapStepsZone: AtriaMetricZone?",
-            "Metrics.stepsZone(sensorSummary.strapStepCount, goal: stepsGoal)",
-            "title: \"Strap movement goal\"",
-            "Source: \\(sensorSummary.agreementText).",
-            "Strap steps stay labeled as estimates until strap movement calibration is validated.",
-            "Strap movement estimate. \\(AtriaMetricZone.nonMedicalDisclaimer)",
-            "AtriaGlanceMetricCard(title: \"Calories\"",
-            "accessibilityDetail: \"Active calories estimate",
-            "AtriaGlanceMetricCard(title: \"VO2max\"",
-            "accessibilityDetail: vo2MaxEstimate.value == nil",
-            "AtriaGlanceMetricCard(title: \"Fitness age\"",
-            "accessibilityDetail: biologicalAgeSummary.isReady",
             "case .steps:",
             "Adjust the daily strap-step goal used by the steps card.",
-            "AtriaGlanceMetricCard(title: \"Blood oxygen\"",
             # SpO2 copy consolidation (2026-08-01): the glance card now sources the
             # canonical AtriaSpO2Copy hardware-limitation strings (still em dash, no %).
-            "detail: AtriaSpO2Copy.notAvailableOnStrap",
-            "accessibilityDetail: \"\\(AtriaSpO2Copy.notAvailableOnStrap) \\(AtriaSpO2Copy.wontFakeAPercentage)\"",
-            "AtriaGlanceMetricCard(title: \"Wrist temp\"",
-            "value: AtriaExperimentalSensorCopy.skinTemperatureValue(",
-            "detail: AtriaExperimentalSensorCopy.skinTemperatureStatus(",
-            "accessibilityDetail: AtriaExperimentalSensorCopy.skinTemperatureAccessibilityDetail(",
             "decoderAvailable: decoderAvailable",
             "insights: store.behaviorInsights",
             "taggedDays: store.behaviorJournalEntries.count",
@@ -2078,116 +1748,33 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaPanelSectionHeader(title: \"Insights\", subtitle: \"What moves your HRV\")",
             "Atria learns what moves your HRV.",
             "let hiddenMetrics: [AtriaTodayMetric]",
-            "let onShiftMetric: (AtriaTodayMetric, Int) -> Void",
-            "let onHideMetric: (AtriaTodayMetric) -> Void",
             "let onShowMetric: (AtriaTodayMetric) -> Void",
-            "let sizeOverridesCSV: String",
-            "let onToggleMetricSize: (AtriaTodayMetric) -> Void",
-            "@State private var isEditingGlance = false",
-            "@State private var showWidgetManager = false",
-            "if isEditingGlance {",
-            ".transition(.scale.combined(with: .opacity))",
-            "isEditingGlance = false",
-            ".accessibilityLabel(\"Finish editing widgets\")",
-            "let onResetMetrics: () -> Void",
-            "let onStartWorkout: () -> Void",
-            "&& lhs.insights == rhs.insights",
-            "&& lhs.hiddenMetrics == rhs.hiddenMetrics",
-            "&& lhs.sizeOverridesCSV == rhs.sizeOverridesCSV",
             # TODO(removed feature): the Workout glance card was dropped along with the
             # other IA-3 cases (see the "removed IA-3 glance cases" comment on
             # AtriaTodayMetric.systemImage) -- starting a workout now lives in
             # AtriaTodayShortcutStrip (onStartWorkout, pinned above), not its own glance
             # tile. Not re-adding it.
-            "private var insightsCard: some View",
-            "Button(action: onOpenInsights)",
-            "AtriaGlanceMetricCard(title: \"Insights\"",
-            "detail: topInsight?.tagLabel ?? (taggedDays > 0 ? \"Learning patterns\" : \"Tag today\")",
-            "Open Trends. Insights building from \\(taggedDays) tagged days",
-            "private struct AtriaConditionalStringDraggable: ViewModifier",
             "case .stress: return \"Stress\"",
             "case .stress: return \"bolt.heart.fill\"",
             "case .hrv, .stress: return .pink",
-            ".modifier(AtriaConditionalStringDraggable(isEnabled: true,",
-            "payload: metric.dragPayload))",
-            "if isEnabled {\n            content.draggable(payload)",
-            ".dropDestination(for: String.self)",
-            "AtriaTodayMetric.draggedMetric(from: raw)",
-            "isEditingGlance = true",
-            "onMoveMetric(dragged, metric)",
-            "AtriaGlanceMetricCard(title: \"Stress\"",
-            "value: hero.stressValue",
-            "detail: hero.stressDetail",
-            "accessibilityDetail: \"\\(hero.stressNarrative) Opens guided breathwork.\")",
-            "private var stressTint: Color",
-            "let upLabel = Text(\"Move \\(metric.label) up\")",
-            "let downLabel = Text(\"Move \\(metric.label) down\")",
-            ".accessibilityAction(named: upLabel)",
-            ".accessibilityAction(named: downLabel)",
-            "onShiftMetric(metric, -1)",
-            "onShiftMetric(metric, 1)",
-            ".accessibilityAction(named: Text(\"Edit \\(metric.label) widget\"))",
             ".contentShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset,",
-            "guard isEditingGlance, metric.supportsGlanceTargetEditing else { return }",
-            ".accessibilityAction(named: Text(\"Edit \\(metric.label) target\"))",
-            ".accessibilityAction(named: Text(\"\\(metric.nextGlanceSizeActionLabel(sizeOverrides: sizeOverrides)): \\(metric.label)\"))",
-            ".accessibilityAction(named: Text(\"Remove \\(metric.label) widget\"))",
-            ".accessibilityHint(\"Drag to reorder, or long press to edit with target, resize, and remove controls.\")",
-            "private func hideMetric(_ metric: AtriaTodayMetric)",
-            "private func showMetric(_ metric: AtriaTodayMetric)",
-            "private func resetMetrics()",
-            "hiddenCSV = AtriaTodayMetric.hiddenStorageValue(for: hidden)",
-            "private var addWidgetMenu: some View",
-            "showWidgetManager = true",
-            ".sheet(isPresented: $showWidgetManager)",
-            "AtriaGlanceWidgetManagerSheet(hiddenMetrics: hiddenMetrics",
             "private struct AtriaGlanceWidgetManagerSheet: View",
             "managerSection(title: \"More metrics\"",
             "managerSection(title: \"Experimental\"",
             "Label(\"Edit on cards\", systemImage: \"square.grid.2x2\")",
-            "Image(systemName: \"plus\")",
             "GlassEffectContainer(spacing: 10)",
-            "glanceRemoveControl(for: metric)",
-            "glanceTargetControl(for: metric)",
-            "glanceResizeControl(for: metric, sizeOverrides: sizeOverrides)",
-            "private func glanceRemoveControl(for metric: AtriaTodayMetric) -> some View",
-            "private func glanceTargetControl(for metric: AtriaTodayMetric) -> some View",
-            "private func glanceResizeControl(for metric: AtriaTodayMetric,\n                                     sizeOverrides: [String: AtriaGlanceGridSize]) -> some View",
-            "Label(\"Editing widgets\", systemImage: \"square.grid.2x2\")",
             ".atriaCardAction(prominent: false, tint: .secondary)",
-            ".overlay(alignment: .topTrailing)",
-            ".overlay(alignment: .bottomTrailing)",
             ".overlay(alignment: .bottomLeading)",
-            "@State private var targetEditorMetric: AtriaTodayMetric?",
-            "if metric.supportsGlanceTargetEditing",
             "case .recovery, .strain, .load, .hrv, .sleep, .sleepHistory, .sleepEfficiency, .rhr, .respiratoryRate, .steps, .calories, .vo2max, .bioAge, .bloodOxygen, .bodyTemp:",
-            "targetEditorMetric = metric",
-            "if isEditingGlance, metric.supportsGlanceTargetEditing",
-            "AtriaGlanceTargetEditorSheet(metric: metric)",
             "case .sleep, .sleepHistory:",
             "Adjust the sleep goal used by sleep history, debt, and consistency.",
             "Label(\"No target controls\", systemImage: \"info.circle\")",
             "This Today card is an action or trend shortcut, so it uses its source state instead of a personal target zone.",
             "Action and trend shortcuts do not use personal target zones.",
-            "Image(systemName: \"xmark.circle.fill\")",
-            ".font(.callout.weight(.black))",
-            "Image(systemName: metric.nextGlanceSizeSystemImage(sizeOverrides: sizeOverrides))",
             "return \"rectangle.expand.horizontal\"",
             "if size.isWideShort { return \"Make compact\" }",
-            "onToggleMetricSize(metric)",
-            ".atriaGlassIconAction(tint: .secondary, size: 38)",
-            ".atriaGlassIconAction(tint: .secondary, size: 36)",
-            ".atriaGlassIconAction(tint: metric.targetEditorTint, size: 36)",
-            ".atriaGlassIconAction(tint: .red, size: 36)",
             ".frame(minWidth: 96)",
             ".atriaCardAction(tint: tint)",
-            ".accessibilityHint(\"Opens the target zone controls for this Today widget.\")",
-            ".accessibilityHint(\"Removes this card from Today at a glance. Use the plus button to add it back.\")",
-            ".accessibilityLabel(\"Add Today widget\")",
-            "\"Opens hidden Today widgets you can add. Long press a card to remove or resize it.\"",
-            "AtriaSleepHistoryGlanceCard(snapshot: sleepHistory,",
-            "onOpenVitals: onOpenVitals",
-            "onAddManualSleep: {",
             "Image(systemName: \"moon.zzz.badge.plus\")",
             "stage.shortLabel",
             ".minimumScaleFactor(0.62)",
@@ -2198,13 +1785,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .rem: return \"REM\"",
             "case .sws: return \"SWS\"",
             "case .deep: return \"DEEP\"",
-            ".contextMenu {",
-            "Label(\"Remove widget\", systemImage: \"xmark\")",
-            "Button(role: .destructive)",
             ".clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))",
-            "private func shiftMetric(_ metric: AtriaTodayMetric, direction: Int)",
-            ".sensoryFeedback(.selection, trigger: orderCSV)",
-            ".sensoryFeedback(.selection, trigger: sizeCSV)",
         ]:
             assert_contains(self, overview, needle)
         assert_not_contains(self, overview, "private var strainCompareWindowStrains")
@@ -2212,41 +1793,9 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, "private var thisWeekConfirmedWorkouts")
         assert_not_contains(self, overview, "private var latestConfirmedWorkout")
         assert_not_contains(self, overview, "private var workoutsGlanceDetailText")
-        readiness_host_start = overview.index("struct AtriaOverviewReadinessSectionHost: View")
-        readiness_host_end = overview.index("struct AtriaOverviewReadinessSection: View", readiness_host_start)
-        readiness_host_source = overview[readiness_host_start:readiness_host_end]
-        assert_contains(self, readiness_host_source, "let pulseStore: AtriaHomeModel.HeroPulseStore")
-        assert_not_contains(self, readiness_host_source, "@ObservedObject var pulseStore")
-        assert_not_contains(self, readiness_host_source, "pulseStore.state")
-
-        readiness_eq_start = overview.index("static func == (lhs: AtriaOverviewReadinessSection")
-        readiness_eq_end = overview.index("\n    }\n\n    var body: some View", readiness_eq_start)
-        readiness_eq_source = overview[readiness_eq_start:readiness_eq_end]
-        for needle in [
-            "let pulseStore: AtriaHomeModel.HeroPulseStore",
-            "AtriaTriRingLiveStatusHost(live: live, pulseStore: pulseStore)",
-            "AtriaOverviewBreathworkSessionHost(pulseStore: pulseStore)",
-            "private struct AtriaTriRingLiveStatusHost: View",
-            "@ObservedObject var pulseStore: AtriaHomeModel.HeroPulseStore",
-            "AtriaTriRingLiveStatusStrip(live: live, pulse: pulseStore.state)",
-            "private struct AtriaOverviewBreathworkSessionHost: View",
-            "currentHeartRate: pulseStore.state.heartRate",
-            "currentRRSamples: pulseStore.state.recentRRSamples",
-        ]:
-            assert_contains(self, overview, needle)
-        for forbidden in [
-            "lhs.dailyRollupHistory == rhs.dailyRollupHistory",
-            "lhs.confirmedWorkouts == rhs.confirmedWorkouts",
-            "lhs.dailyMetricSparklines == rhs.dailyMetricSparklines",
-            "lhs.sleepHistory == rhs.sleepHistory",
-            "lhs.pulse == rhs.pulse",
-            "displayedPulseStateEquals",
-            "recentRRSamples",
-        ]:
-            assert_not_contains(self, readiness_eq_source, forbidden)
-        daily_focus_start = overview.index("private var dailyFocusItems: [AtriaDailyFocusRail.Item]")
-        daily_focus_end = overview.index("private var liveFocusDetailText")
-        assert_not_contains(self, overview[daily_focus_start:daily_focus_end], '"\\(live.sessionSampleCount) samples"')
+        # 2026-08-06: audit fix — dead twin deleted: the readiness host/section
+        # and daily-focus slices pinned the removed unmounted legacy Overview
+        # readiness tree; their narrow-projection checks are gone with it.
         for forbidden in [
             "AtriaGlanceWidgetManagerSheet(visibleMetrics: visibleMetrics",
             "managerSection(title: \"Added widgets\"",
@@ -2357,10 +1906,6 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, "AtriaInsightsCardHost(store: store)")
 
         for needle in [
-            "@AtriaDefault(AtriaVitalsSection.orderStorageKey) private var sectionOrderCSV = \"\"",
-            "@State private var isEditingVitalsLayout = false",
-            "Label(\"Editing Vitals\", systemImage: \"rectangle.3.group\")",
-            ".atriaCardAction(prominent: false, tint: .secondary)",
             "enum AtriaVitalsSection: String, CaseIterable, Identifiable",
             "static let orderStorageKey = \"atria.vitals.sectionOrderCSV\"",
             "private static let dragPayloadPrefix = \"atria.vitals.section:\"",
@@ -2368,31 +1913,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "static func draggedSection(from payload: String) -> AtriaVitalsSection?",
             "var label: String",
             "case .recoveryStrain: return \"Recovery and strain\"",
-            "private func vitalsSectionEditControls(for section: AtriaVitalsSection) -> some View",
-            "Image(systemName: \"chevron.up\")",
-            "Image(systemName: \"chevron.down\")",
-            "GlassEffectContainer(spacing: 10)",
-            ".atriaGlassIconAction(tint: .secondary, size: 44)",
             "private struct AtriaConditionalVitalsStringDraggable: ViewModifier",
-            ".modifier(AtriaConditionalVitalsStringDraggable(isEnabled: true,",
             "if isEnabled {\n            content.draggable(payload)",
-            "AtriaVitalsSection.draggedSection(from: raw)",
-            "isEditingVitalsLayout = true",
-            "AtriaVitalsSection.moving(dragged, before: section, in: sectionOrderCSV)",
-            ".accessibilityAction(named: Text(\"Move \\(section.label) up\"))",
-            ".accessibilityAction(named: Text(\"Move \\(section.label) down\"))",
-            ".accessibilityHint(\"Drag to reorder this Vitals section, or long press to reveal the visible move controls.\")",
-            "private func moveSection(_ section: AtriaVitalsSection, direction: Int)",
-            "private var hasCustomVitalsLayout: Bool",
-            "AtriaVitalsSection.ordered(from: sectionOrderCSV) != Array(AtriaVitalsSection.allCases)",
-            "private func resetVitalsLayout()",
-            "sectionOrderCSV = AtriaVitalsSection.allCases.map(\\.rawValue).joined(separator: \",\")",
-            "isEditingVitalsLayout = false",
-            "Label(\"Reset Vitals layout\", systemImage: \"arrow.counterclockwise\")",
-            ".accessibilityHint(\"Restores Pulse, HRV, Recovery and strain, and Profile to the default order.\")",
-            ".sensoryFeedback(.selection, trigger: sectionOrderCSV)",
-            "private static let regularSectionColumns = [",
-            "LazyVGrid(columns: Self.regularSectionColumns, spacing: 18)",
             "static func moving(_ section: AtriaVitalsSection, direction: Int, in csv: String) -> String",
         ]:
             assert_contains(self, vitals, needle)
@@ -2556,17 +2078,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "Atria has seen quick connection drops. Since the official strap app is not detected, this usually points to range, battery, or a stale Bluetooth pairing.",
             "officialAppInstalled\n                ? \"Remove or fully disable the official strap app before relying on Atria for overnight or workout collection.\"",
             "Keep the strap close and charged. If drops continue, forget the strap in Bluetooth, then reconnect in Atria.",
-            "Atria keeps scanning for your saved strap. Keep it nearby; if reconnects keep dropping, use the connection guide for the right recovery path.",
+            # 2026-08-06: audit fix — the "Atria keeps scanning for your saved
+            # strap…" needle was satisfied only by a legacy-copy comment inside
+            # the deleted dead AtriaHeroPanelHost subtree; the live disconnected
+            # copy is pinned against AtriaHomeView above.
         ]:
             assert_contains(self, shell_support + hero_connection, needle)
         for needle in [
-            "if context.officialAppInstalled && context.officialAppCoexistenceRisk == .suspected",
-            "return \"Remove the official strap app first.\"",
-            "return \"Keep strap nearby.\"",
-            "if context.officialAppInstalled {\n            var items = [",
-            "\"Remove the official strap app\"",
-            "\"Keep Bluetooth on\"",
-            "\"Let Atria scan\"",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
         ]:
             assert_contains(self, overview, needle)
         for needle in [
@@ -2818,8 +2337,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, live_activity_coordinator + home, needle)
 
         for needle in [
-            "value: live.batteryStatusSummaryText",
-            "if live.batteryLevel >= 0",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
             "? projectionStore.state.batteryDetailText : \"Unavailable\"",
             "tint: projectionStore.state.batteryShowsPowered ? .green : .blue",
         ]:
@@ -2930,7 +2448,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, sessions, needle)
 
         for needle in [
-            "AtriaCollectionStatusCardHost(coreLiveStore: coreLiveStore,",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
             "store: store)",
             "officialAppInstalled: officialAppInstalled",
             "let officialAppInstalled: Bool",
@@ -2983,10 +2501,7 @@ class HandoffStaticChecks(unittest.TestCase):
         metric_ring = source(ROOT / "Atria" / "Atria" / "AtriaMetricRing.swift")
 
         for needle in [
-            "struct AtriaOverviewCollectionSection: View, Equatable",
-            "Label(\"Data\", systemImage: \"arrow.right.circle.fill\")",
-            ".frame(minWidth: 88)",
-            "AtriaInlineQuickStat(label: \"HRV window\", value: stats.rrPackageText)",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
             ".frame(maxWidth: .infinity, alignment: .leading)",
             ".lineLimit(2)",
         ]:
@@ -4509,7 +4024,7 @@ class HandoffStaticChecks(unittest.TestCase):
             'blocker: "sleep_fragmented_below_minimum"',
             'fallbackSource: "incomplete_fragmented_sleep"',
             "Fragmented overnight HR persisted below the sleep minimum",
-            "AtriaVitalsRecoveryStrainCardHost(heroStore: heroStore,\n                                          vitalsStore: vitalsStore,\n                                          store: store)",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
             "let fixtureSleepHistory = debugFixtureSleepHistory",
             "let sleepHistory = fixtureSleepHistory ?? vitals.sleepHistorySnapshot",
             "let sleepHistoryRevision = fixtureSleepHistory == nil ? vitals.sleepHistorySnapshotRevision : -1",
@@ -4819,11 +4334,8 @@ class HandoffStaticChecks(unittest.TestCase):
 
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         for needle in [
-            "onAddManualSleep: addManualSleep,",
-            "source: \"manual_today_glance\"",
+            # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
             "rest: store.baseline.restingInt ?? 60",
-            "AtriaManualSleepSheet { start, end, isNap in",
-            "showManualSleepSheet = false",
             "Image(systemName: \"moon.zzz.badge.plus\")",
             ".accessibilityLabel(\"Add sleep manually\")",
             "Stages building: Awake, Light, REM, and Deep are not ready yet.",
@@ -5878,8 +5390,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "from Apple Health nutrition",
             "private func fuelContributorDirection(for nutrition: AtriaNutritionSummary) -> Int",
             '.accessibilityIdentifier("recovery-fuel-contributor-row")',
-            "private var debugMetricDetailRollups: [DailyRollupStoreEntry]?",
-            "debugMetricDetailRollups ?? dailyRollupHistory",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
             "private static func debugShowsNutritionRecoveryDetail(arguments: [String]) -> Bool",
             '"recovery-detail-nutrition"',
             "rollups[0].nutrition = AtriaNutritionSummary(kcal: 2140",
@@ -6253,7 +5764,7 @@ class HandoffStaticChecks(unittest.TestCase):
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
 
         for needle in [
-            "AtriaOverviewMorningJournalHost(snapshotStore: snapshotStore,",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
             "struct AtriaOverviewMorningJournalHost: View",
             "@State private var adjustmentNight: SleepHistorySnapshot.Night?",
             "@StateObject private var projectionStore: AtriaOverviewMorningJournalProjectionStore",
@@ -6513,34 +6024,15 @@ class HandoffStaticChecks(unittest.TestCase):
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
 
         for needle in [
-            "private let reportHighlightMemo = AtriaOverviewReportHighlightMemo()",
-            "let reportHighlights = reportHighlightMemo.highlights(revision: rollupRevision,",
-            "weeklyReportHighlight: reportHighlights.weekly",
-            "monthlyReportHighlight: reportHighlights.monthly",
-            "private final class AtriaOverviewReportHighlightMemo",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
             "private var revision: Int?",
-            "private var day: Date?",
-            "func highlights(revision: Int,",
-            "if self.revision == revision, day == today",
-            "WeeklyReport(rollups: rollups, calendar: calendar)",
-            "MonthlyReport(rollups: rollups, now: priorMonthDate, calendar: calendar)",
-            "let weeklyReportHighlight: WeeklyReport?",
-            "let monthlyReportHighlight: MonthlyReport?",
-            "&& lhs.weeklyReportHighlight == rhs.weeklyReportHighlight",
-            "&& lhs.monthlyReportHighlight == rhs.monthlyReportHighlight",
+            # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
         ]:
             assert_contains(self, overview, needle)
 
-        section_start = overview.index("struct AtriaOverviewReadinessSection: View")
-        section_end = overview.index("private var triRingSleepMetric", section_start)
-        section_source = overview[section_start:section_end]
-        assert_not_contains(self, section_source, "private var weeklyReportHighlight")
-        assert_not_contains(self, section_source, "private var monthlyReportHighlight")
-
-        derivation_start = overview.index("private static let glanceGridSpacing", section_start)
-        derivation_source = overview[derivation_start:section_end]
-        assert_not_contains(self, derivation_source, "WeeklyReport(rollups: dailyRollupHistory")
-        assert_not_contains(self, derivation_source, "MonthlyReport(rollups: dailyRollupHistory")
+        # 2026-08-06: audit fix — dead twin deleted: the AtriaOverviewReadinessSection
+        # slice and its report-highlight memo checks pinned the removed unmounted
+        # legacy Overview readiness tree.
 
     def test_activity_monitor_caches_sections_and_timeline_by_store_revisions(self):
         activity = source(ROOT / "Atria" / "Atria" / "AtriaActivityMonitor.swift")
@@ -6703,29 +6195,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "case trends",
             'case .journal: return "Journal"',
             "if segment == .journal && hasUnlockedSecondarySections {",
-            "AtriaOverviewMorningJournalHost(snapshotStore: snapshotStore,",
-            "AtriaOverviewBehaviorJournalSection(store: store)",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
+            # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
             "if segment == .trends && hasUnlockedSecondarySections {",
             "if segment == .trends {",
-            "AtriaOverviewCollectionSectionHost(",
-            "AtriaOverviewBackupSectionHost(",
-            "struct AtriaOverviewTrendSection: View, Equatable",
-            "private var trendHeadline: String",
-            "History is ready",
-            "History is building",
-            "AtriaPanelSectionHeader(title: \"Trends\", subtitle: \"\")",
-            "private var trendRangeLadder: some View",
-            "ForEach([\"D\", \"W\", \"M\", \"3M\", \"6M\"], id: \\.self)",
-            "Trend ranges. Day, week, month, 3 months, and 6 months.",
-            "trendMetaChip(title: \"Direction\"",
-            "trendMetaChip(title: \"Privacy\"",
-            "private var trendStateText: String",
-            "struct AtriaOverviewBackupSection: View, Equatable",
-            "private var confirmedTotal: Int",
-            "Text(\"Saved on device\")",
-            "backupMetaChip(title: \"Workouts\"",
-            "backupMetaChip(title: \"Sleeps\"",
-            "backupMetaChip(title: \"State\"",
         ]:
             assert_contains(self, overview, needle)
 
@@ -6733,14 +6206,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, overview, "if segment == .data {")
         assert_not_contains(self, overview, "AtriaPanelSectionHeader(title: \"Trend\", subtitle: \"Local 90-day coverage\")")
         assert_not_contains(self, overview, "AtriaPanelSectionHeader(title: \"Backup\", subtitle: \"On-device safety net\")")
-        trend_summary_start = overview.index("struct AtriaOverviewTrendSection: View, Equatable")
-        trend_summary_end = overview.index("struct AtriaOverviewBehaviorJournalSection", trend_summary_start)
-        trend_summary_source = overview[trend_summary_start:trend_summary_end]
-        assert_contains(self, trend_summary_source, "trendRangeLadder")
-        assert_not_contains(self, trend_summary_source, 'trendMetaChip(title: "Confidence"')
-        assert_not_contains(self, trend_summary_source, 'trendMetaChip(title: "Source"')
-        assert_not_contains(self, trend_summary_source, 'trendMetaChip(title: "Range"')
-        assert_not_contains(self, trend_summary_source, 'value: "90d"')
+        # 2026-08-06: audit fix — dead twin deleted: the AtriaOverviewTrendSection
+        # slice pinned the removed unmounted legacy Overview trend section.
         assert_not_contains(self, overview, "workouts and \\(snapshot.confirmedSleeps) sleeps are already confirmed on device")
 
         for needle in [
@@ -7259,11 +6726,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "summary: preparedHistory.restingHeartRateSummary[range]",
             "summary: preparedHistory.sleepSummary[range]",
             "summary: strainSummaryForSelectedPeriod",
-            "let detailRollups = debugMetricDetailRollups ?? dailyRollupHistory",
-            "rollups: detailRollups",
-            "rollupsRevision: debugMetricDetailRollups == nil ? dailyRollupHistoryRevision : nil",
-            "private var debugMetricDetailRollups: [DailyRollupStoreEntry]?",
-            "DailyRollupStoreEntry(day: day,",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
+            # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
             # 2026-07-06: the `if let rangeLens { AtriaDetailRangeLensCard(...) }`
             # "Trend snapshot" card was removed from chartSlot (detail redesign —
             # it duplicated the metricChart summary strip, giving two stacked
@@ -7423,10 +6887,7 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, block, ".filter")
             assert_not_contains(self, block, ".reduce(")
 
-        assert_contains(self, overview, "AtriaOverviewTrendChartHost(store: store)")
-        assert_contains(self, overview, "AtriaOverviewTrendPresentation.showsContent(")
         assert_contains(self, overview, "cachedPointCount > 0 || debugShowsTrendFixture")
-        assert_contains(self, overview, "private var showsSavedInsights: Bool")
         assert_not_contains(self, overview, "AtriaOverviewTrendChartHost(store: store, maxHR:")
         assert_not_contains(self, overview, "store.sessions.filter { $0.points.count >= 8 }.count >= 2")
 
@@ -7472,7 +6933,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "private let prepared: AtriaExpandedChartPreparedModel",
             "self.prepared = AtriaExpandedChartPreparedModel(points: points,",
             "RectangleMark(xStart: .value(\"Start\", prepared.dataStart),",
-            "ForEach(overlay.points) { point in",
+            # 2026-08-06: audit fix — expanded-chart lines now break at day
+            # gaps (contiguousDayRuns), so the overlay iterates runs, not
+            # raw points.
+            "ForEach(overlay.points.contiguousDayRuns(), id: \\.point.day) { entry in",
             "y: .value(title, prepared.eventLaneY)",
             ".chartXScale(domain: prepared.xDomain)",
             ".chartYScale(domain: prepared.yDomain)",
@@ -7566,7 +7030,10 @@ class HandoffStaticChecks(unittest.TestCase):
 
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
         journal_start = overview.index("struct AtriaOverviewBehaviorJournalSection")
-        journal_end = overview.index("struct AtriaOverviewBackupSectionHost")
+        # 2026-08-06: audit fix — dead twin deleted: the slice used to end at the
+        # unmounted AtriaOverviewBackupSectionHost; re-anchored to the next
+        # surviving declaration.
+        journal_end = overview.index("enum AtriaChartBucketOverride")
         journal_source = overview[journal_start:journal_end]
         for needle in [
             "private(set) var behaviorInsightsRevision = 0",
@@ -7662,7 +7129,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, impact_strip_body, "AtriaJournalImpactBalanceRail(summaries: summaries)")
         assert_not_contains(self, impact_strip_body, "AtriaJournalImpactCompass(summaries: summaries,")
         assert_not_contains(self, impact_strip_body, "AtriaJournalImpactFocus(summary: focusSummary)")
-        assert_contains(self, overview, "if AtriaOverviewBehaviorJournalSection.debugShowsImpactOnlyFixture")
+        # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
         assert_not_contains(self, journal_source, ".sorted { lhs, rhs in")
         assert_not_contains(self, journal_source, "Text(\"Top signal\")")
         assert_not_contains(self, journal_source, "Color.white.opacity")
@@ -7680,33 +7147,37 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, insight_source, forbidden)
 
     def test_connected_pulse_display_name_is_precomputed_for_hr_tick_perf(self):
+        # 2026-08-06: audit fix — retargeted off the deleted dead AtriaHeroPanelHost
+        # subtree. The perf claim it protects is unchanged: the sanitized short
+        # device name is computed ONCE into CoreLiveState when the device name
+        # changes (never per HR tick / per body evaluation), and the live
+        # consumers (top-chrome status chip, Strap screen identity) read the
+        # precomputed state value.
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
+        strap = source(ROOT / "Atria" / "Atria" / "AtriaStrapScreen.swift")
 
         for needle in [
             "var displayDeviceName: String",
             "displayDeviceName: AtriaDeviceDisplayName.shortName(for: deviceName)",
+            'label = "Linking to \\(input.displayDeviceName)"',
         ]:
             assert_contains(self, home, needle)
 
         for needle in [
             "enum AtriaDeviceDisplayName",
             "static func shortName(for deviceName: String) -> String",
-            "displayDeviceName: liveStore.state.displayDeviceName",
-            "AtriaConnectedPulseStatusCard(displayDeviceName: displayDeviceName",
-            "AtriaHeartRateZoneRail(zone: heartRateZone)",
-            "ForEach(0..<6, id: \\.self)",
-            "let displayDeviceName: String",
-            "Live heart rate \\(heartRateText) beats per minute from \\(displayDeviceName)",
         ]:
             assert_contains(self, hero, needle)
 
+        assert_contains(self, strap, "coreLiveStore.state.displayDeviceName")
+        assert_not_contains(self, strap, "AtriaDeviceDisplayName.shortName(")
         assert_not_contains(self, hero, "private var displayDeviceName: String")
 
     def test_live_heart_rate_zone_indicator_matches_workout_max_hr_bands(self):
         metrics = source(ROOT / "Atria" / "Atria" / "Metrics.swift")
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
-        hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
+        today = source(ROOT / "Atria" / "Atria" / "AtriaTodayScreen.swift")
 
         for needle in [
             "struct HeartRateZone: Equatable, Identifiable",
@@ -7770,23 +7241,30 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, live_accessory, needle)
         assert_not_contains(self, home, "private struct AtriaLiveZoneAccessoryPill")
 
+        # 2026-08-06: audit fix — retargeted off the deleted dead AtriaHeroPanelHost
+        # subtree (AtriaHeartRateZoneLens/Rail could never render: the hero mount
+        # was removed from every tab). The live zone indicators that must keep
+        # matching the workout max-HR bands are the Today live-status Zone pill
+        # (fed by HeroPulseState.heartRateZone, computed via currentPulseZoneContext
+        # above) and the workout-review zone evidence strip in AtriaHomeView.
         for needle in [
-            "private struct AtriaHeartRateZoneRail: View, Equatable",
-            "AtriaHeartRateZoneLens(zone: heartRateZone)",
-            "private struct AtriaHeartRateZoneLens: View, Equatable",
-            "Label(\"HR zone\", systemImage: \"scope\")",
-            "Text(zone.shortLabel)",
-            "Text(zone.name)",
-            "lensStat(title: \"Reserve\", value: \"\\(Int((zone.reserveFraction * 100).rounded()))%\")",
-            "lensStat(title: \"Cue\", value: cueText)",
-            "Heart-rate zone lens.",
+            "private struct AtriaWorkoutZoneEvidenceStrip: View, Equatable",
+            "AtriaWorkoutZoneEvidenceStrip(zone: zone)",
+            "ForEach(0..<6, id: \\.self)",
+            "Metrics.heartRateZoneTint(index).opacity(index == zone.index ? 0.92 : 0.20)",
             "Text(zone.title)",
             "Text(zone.name)",
-            "Metrics.heartRateZoneTint(index)",
-            "index == zone.index ? 0.95 : 0.22",
-            "\\(heartRateZone.title), \\(heartRateZone.name)",
+            "Heart rate evidence \\(zone.title), \\(zone.name)",
         ]:
-            assert_contains(self, hero, needle)
+            assert_contains(self, home, needle)
+        for needle in [
+            "if let heartRateZone = pulse.heartRateZone {",
+            'AtriaTodayLivePill(title: "Zone",',
+            "value: heartRateZone.shortLabel,",
+            "tint: heartRateZone.tint)",
+            "\\(pulse.heartRateZone.map { \" Zone \\($0.shortLabel).\" } ?? \"\")",
+        ]:
+            assert_contains(self, today, needle)
 
     def test_standard_hr_only_mode_blocks_strap_writes(self):
         text = source(ROOT / "Atria" / "Atria" / "AtriaBLEManager.swift")
@@ -9593,7 +9071,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "return \"function\"",
         ]:
             assert_contains(self, shared, needle)
-        assert_contains(self, overview, "detail: live.liveActiveCalories == nil ? \"Needs profile\" : \"Estimate\"")
+        # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
         assert_not_contains(self, overview, "state: live.liveActiveCalories == nil ? .learning : .local")
 
         for needle in [
@@ -10006,7 +9484,7 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "let biologicalAgeSummary: BiologicalAgeSummary",
             "biologicalAgeSummary: store.biologicalAgeSummary(vo2MaxEstimate: vo2)",
-            "biologicalAgeSummary: profileMetricsStore.state.biologicalAgeSummary",
+            # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
             "store.$sleepHistorySnapshot.map { _ in () }.eraseToAnyPublisher()",
             "store.$trainingLoadSummarySnapshot.map { _ in () }.eraseToAnyPublisher()",
             "profileMetricsStore: model.profileMetricsStore",
@@ -10017,12 +9495,11 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, home, "let stress = AtriaStressPresentation.make(state: stressState)")
         assert_not_contains(self, home, "private static func stressState(ble:")
         for needle in [
-            r"\(hero.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
-            r"\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",
+            # 2026-08-06: audit fix — the "\(hero.baselineSamples)/…" needle only
+            # existed in the deleted dead AtriaHeroPanelHost subtree's metric row.
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
             r"\(projectionStore.hrvBaselineSampleCount)/\(PersonalBaseline.trustedMinimumSamples)",
             "sampleCount >= PersonalBaseline.trustedMinimumSamples",
-            "Trusted personal baseline is ready.",
-            "Wear overnight to build a trusted recovery baseline.",
         ]:
             assert_contains(self, home + hero + overview + sessions, needle)
         for forbidden in [
@@ -10037,9 +9514,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "case .bioAge: return \"Fitness age\"",
             "case .bioAge: return \"figure.stand.line.dotted.figure.stand\"",
             "case .bioAge:",
-            "AtriaGlanceMetricCard(title: \"Fitness age\"",
-            "detail: biologicalAgeSummary.compactStatusText",
-            "Calibrating your fitness-age baseline. \\(biologicalAgeSummary.blockerText). \\(biologicalAgeSummary.footnote)",
         ]:
             assert_contains(self, overview, needle)
 
@@ -10410,15 +9884,11 @@ class HandoffStaticChecks(unittest.TestCase):
 
         for needle in [
             "let developerModeEnabled: Bool",
-            "captureCard\n                        researchSignalsCard\n                        biologicalAgeCard\n                        if developerModeEnabled",
-            "captureCard\n                    researchSignalsCard\n                    biologicalAgeCard\n                    if developerModeEnabled",
-            "if developerModeEnabled {\n                            rrReferenceCard",
-            "if developerModeEnabled {\n                            rrReferenceCard\n                            hrReferenceCard\n                            imuAuditCard",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
             "if developerModeEnabled {\n                    AtriaCollectionToggleCard",
             "title: \"Stable sensor mode\"",
             "Recommended minimal connection with heart rate and strap-native motion.",
             "Diagnostic full protocol; richer transport may be less stable.",
-            "private var researchSignalsCard: some View",
             "AtriaCollectionResearchSignalsCard(summary: state.summary,",
             "sleepHistory: state.sleepHistory",
             "sleepHistoryRevision: state.sleepHistoryRevision",
@@ -10664,11 +10134,8 @@ class HandoffStaticChecks(unittest.TestCase):
         analytics_tests = source(ROOT / "Atria" / "AtriaTests" / "AtriaAnalyticsTests.swift")
         assert_contains(self, home, '|| fixture == "weekly-report" else { return }')
         for needle in [
-            'arguments[valueIndex] == "weekly-report"',
-            "showWeeklyReport = true",
-            "debugWeeklyReportRollups()",
-            "AtriaWeeklyReportSheet(report: debugWeeklyReport ?? weeklyReportHighlight ?? WeeklyReport(rollups: dailyRollupHistory))",
-            "WeeklyReport(rollups: Self.debugWeeklyReportRollups(),",
+            # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
         ]:
             assert_contains(self, overview, needle)
         for needle in [
@@ -10732,7 +10199,8 @@ class HandoffStaticChecks(unittest.TestCase):
             # slot became the Plan tab, then was repurposed into the Activity
             # Monitor (2026-07-06) since Plan's cards were redundant with Today/
             # Journal. Assistant still opens via cover.
-            'tabNavigation(title: "Activity", showsHero: false)',
+            # 2026-08-06: audit fix — dead showsHero flag removed (always false).
+            'tabNavigation(title: "Activity")',
             '"sleep-plan-bedtime", "north-star-highlights"',
             'ProcessInfo.processInfo.environment["ATRIA_UI_SCREEN"]',
             "--atria-open-connection-guide",
@@ -11425,8 +10893,7 @@ class HandoffStaticChecks(unittest.TestCase):
         today = source(ROOT / "Atria" / "Atria" / "AtriaTodayScreen.swift")
 
         for needle in [
-            "confirmedWorkouts: projection.confirmedWorkouts",
-            "confirmedWorkouts: debugMetricDetailWorkouts ?? confirmedWorkouts",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
             "let confirmedWorkouts: [UserConfirmedWorkout]",
             # Strain's compact target rail uses the same period value as its
             # headline (Day = latest, Week/Month = average).
@@ -11443,14 +10910,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaStrainWorkoutRow(workout: workout)",
             "zoneSeconds?[\"aerobic\"]",
             "\"\\(minutes)m Z3+\"",
-            "case \"strain-detail\":",
-            "debugMetricDetailWorkouts",
-            "UserConfirmedWorkout(id: \"debug-strain-detail-strength\"",
-            "UserConfirmedWorkout(id: \"debug-strain-detail-cardio\"",
+            # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
         ]:
             assert_contains(self, overview, needle)
 
-        assert_contains(self, vitals, "confirmedWorkouts: vitals.confirmedWorkouts")
         assert_contains(self, home, '"recovery-detail", "hrv-detail", "rhr-detail", "respiratory-detail", "sleep-detail", "strain-detail"')
         for needle in [
             "@State private var metricDetail: AtriaMetricDetailKind?",
@@ -11480,7 +10943,9 @@ class HandoffStaticChecks(unittest.TestCase):
     def test_ia64_weekly_plan_lives_on_rebuilt_today_and_opens_report(self):
         today = source(ROOT / "Atria" / "Atria" / "AtriaTodayScreen.swift")
         overview = source(ROOT / "Atria" / "Atria" / "AtriaOverviewSections.swift")
-        plan_tab = source(ROOT / "Atria" / "Atria" / "AtriaPlanTab.swift")
+        # 2026-08-06: audit fix — dead twin deleted: AtriaPlanTab.swift (never
+        # mounted; the .plan slot hosts AtriaActivityMonitorTab) was removed, so
+        # its source read and needles are gone.
         routine = source(ROOT / "Atria" / "Atria" / "AtriaRoutineCard.swift")
         weekly_plan = source(ROOT / "Atria" / "Atria" / "AtriaWeeklyPlan.swift")
         sessions = source(ROOT / "Atria" / "Atria" / "Sessions.swift")
@@ -11519,19 +10984,6 @@ class HandoffStaticChecks(unittest.TestCase):
 
         assert_contains(self, overview, "struct AtriaWeeklyReportSheet: View")
         for needle in [
-            "weeklyPlan: store.currentWeeklyPlan()",
-        ]:
-            assert_contains(self, overview, needle)
-        for needle in [
-            "@StateObject private var projectionStore: AtriaPlanProjectionStore",
-            "AtriaWeeklyPlanCard(plan: projectionStore.weeklyPlan)",
-            "final class AtriaPlanProjectionStore: ObservableObject",
-            "store.$dailyRollupHistory",
-            "NotificationCenter.default.publisher(for: .NSCalendarDayChanged)",
-            "self.refresh(store.currentWeeklyPlan())",
-        ]:
-            assert_contains(self, plan_tab, needle)
-        for needle in [
             "@StateObject private var projectionStore: AtriaRoutineProjectionStore",
             "let summary = projectionStore.summary",
             "final class AtriaRoutineProjectionStore: ObservableObject",
@@ -11553,9 +11005,6 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, sessions, needle)
         assert_not_contains(self, today, "ForEach(plan.targets)")
-        assert_not_contains(self, plan_tab, "private var weeklyPlan: WeeklyPlan")
-        assert_not_contains(self, plan_tab, "@ObservedObject var store: SessionStore")
-        assert_not_contains(self, plan_tab, "AtriaPlanTabWeeklyPlanMemo")
         assert_not_contains(self, routine, "let summary = AtriaRoutineComputer.summary(rollups: store.dailyRollupHistory,")
 
         current_plan_start = weekly_plan.index("    func currentPlan(")
@@ -12549,7 +11998,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(self, shared_ui, 'return "Checked"')
         assert_contains(self, shared_ui, 'return "Still improving"')
         assert_not_contains(self, shared_ui, "Text(estimate.confidence.rawValue)")
-        assert_contains(self, overview, 'return hero.recoveryIsProvisional ? "\\(base) · Early read" : base')
+        # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
         assert_not_contains(self, overview, 'return hero.recoveryIsProvisional ? "\\(base) · provisional" : base')
 
     def test_user_path_debug_logs_are_gated(self):
@@ -12780,14 +12229,8 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_not_contains(self, upsert_body.group("body"), "cache.removeAll")
 
         for needle in [
-            "dailyRollupHistory: store.dailyRollupHistory",
-            "let dailyRollupHistory: [DailyRollupStoreEntry]",
-            "let detailRollups = debugMetricDetailRollups ?? dailyRollupHistory",
-            "AtriaMetricDetailSheet(metric: detail,\n                                   rollups: detailRollups,",
-            "rollupsRevision: debugMetricDetailRollups == nil ? dailyRollupHistoryRevision : nil,",
-            "confirmedWorkoutsRevision: debugMetricDetailWorkouts == nil ? confirmedWorkoutsRevision : nil,",
-            "sleepHistoryRevision: sleepHistoryRevision,",
-            "private var debugMetricDetailRollups: [DailyRollupStoreEntry]?",
+            # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
             "init(metric: AtriaMetricDetailKind,\n         rollups: [DailyRollupStoreEntry],",
             "rollupsRevision: Int? = nil,",
             "confirmedWorkoutsRevision: Int? = nil,",
@@ -12819,27 +12262,19 @@ class HandoffStaticChecks(unittest.TestCase):
         ]:
             assert_contains(self, overview, needle)
 
-        for source_text in [vitals, health, today]:
+        # 2026-08-06: audit fix — dead twin deleted: the vitals copy of the
+        # metric-detail sheet mount lived in the removed AtriaVitalsTabContent;
+        # the live mounts are the Health and Today screens.
+        for source_text in [health, today]:
             assert_contains(self, source_text, "AtriaMetricDetailSheet(metric: detail,")
             assert_contains(self, source_text, "confirmedWorkoutsRevision: ")
-        for source_text in [vitals, health]:
-            assert_contains(self, source_text, "sleepHistoryRevision: vitals.sleepHistorySnapshotRevision")
+        assert_contains(self, health, "sleepHistoryRevision: vitals.sleepHistorySnapshotRevision")
         assert_contains(self, today, "sleepHistoryRevision: sessionProjectionStore.state.sleepHistorySnapshotRevision")
-        assert_contains(self, vitals, "AtriaMetricDetailSheet(metric: detail,\n                                   rollups: vitals.dailyRollupHistory,\n                                   rollupsRevision: vitals.dailyRollupHistoryRevision,")
         for needle in [
-            "@State private var healthMonitorPreparedMemo = AtriaHealthMonitorPreparedMemo()",
-            "AtriaHealthMonitorCard(preparedData: healthMonitorPreparedData,",
-            "private var healthMonitorPreparedData: AtriaHealthMonitorPreparedData",
-            "healthMonitorPreparedMemo.value(rollupsRevision: vitals.dailyRollupHistoryRevision,",
-            "sleepHistoryRevision: vitals.sleepHistorySnapshotRevision",
-            "AtriaHealthMonitorPreparedData(rollups: Array(vitals.dailyRollupHistory.prefix(28)),",
-            "private var healthMonitorRecoveryEstimate: Metrics.RecoveryEstimate",
             # Health Monitor must show the same immutable current-cycle recovery
             # as Home, including confidence/provenance/no-sleep handling. The
             # newest calendar rollup can still be from the prior cycle.
-            "heroStore.state.recoveryEstimate",
             # 2026-07-12: Health consumes the canonical frozen hero guidance.
-            "heroStore.state.guidance",
             "private final class AtriaHealthMonitorPreparedMemo",
             "private var prepared: AtriaHealthMonitorPreparedData?",
             "let preparedData: AtriaHealthMonitorPreparedData",
@@ -12850,16 +12285,8 @@ class HandoffStaticChecks(unittest.TestCase):
             "rangeRespiratoryRates = Self.sparkPoints(values: respiratoryRates)",
         ]:
             assert_contains(self, vitals, needle)
-        health_monitor_recovery = re.search(
-            r"private var healthMonitorRecoveryEstimate: Metrics\.RecoveryEstimate \{(?P<body>.*?)\n    \}",
-            vitals,
-            re.S,
-        )
-        self.assertIsNotNone(health_monitor_recovery)
-        recovery_body = health_monitor_recovery.group("body")
-        assert_contains(self, recovery_body, "heroStore.state.recoveryEstimate")
-        assert_not_contains(self, recovery_body, "dailyRollupHistory")
-        assert_not_contains(self, recovery_body, "confidence: .validated")
+        # 2026-08-06: audit fix — dead twin deleted: healthMonitorRecoveryEstimate
+        # lived in the removed AtriaVitalsTabContent twin.
         for needle in [
             "enum AtriaHealthMetricAuthority",
             "case currentCycle(CurrentCycle)",
@@ -12905,12 +12332,8 @@ class HandoffStaticChecks(unittest.TestCase):
         health_monitor_source = vitals[health_monitor_start:health_monitor_end]
         assert_not_contains(self, health_monitor_source, "SavedDailyMetric")
         assert_not_contains(self, health_monitor_source, "dailyMetrics")
-        tab_start = vitals.index("struct AtriaVitalsTabContent: View")
-        tab_end = vitals.index("enum AtriaVitalsSection", tab_start)
-        tab_source = vitals[tab_start:tab_end]
-        assert_not_contains(self, tab_source, "DailyRollupStore()")
-        assert_not_contains(self, tab_source, ".onAppear(perform: refreshHealthMonitorRollups)")
-        assert_not_contains(self, tab_source, "@State private var healthMonitorRollups")
+        # 2026-08-06: audit fix — dead twin deleted: the AtriaVitalsTabContent
+        # slice checks are gone with the removed unmounted twin.
         assert_not_contains(self, health_monitor_source, "private var sortedRollups")
         assert_not_contains(self, health_monitor_source, "let prepared = AtriaHealthMonitorPreparedData")
         assert_not_contains(self, health_monitor_source, ".sorted { $0.day > $1.day }")
@@ -13329,11 +12752,9 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, ble, needle)
 
         for needle in [
-            "AtriaGlanceMetricCard(title: \"Strap steps\"",
-            "value: steps.valueText",
-            "detail: steps.detailText",
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
+            # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
             "AtriaStrapStepLiveStatus.persistedMotionDate()",
-            "Source: \\(sensorSummary.agreementText).",
         ]:
             assert_contains(self, overview, needle)
 
@@ -14041,101 +13462,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "@AtriaDefault(\"atria.target.bioAge.yellowOlderDelta\")",
             "@AtriaDefault(\"atria.target.vo2.greenDelta\")",
             "@AtriaDefault(\"atria.target.vo2.redDelta\")",
-            "recoveryTarget: AtriaMetricTarget.recovery",
-            "strainGreenBand: strainGreenBand",
-            "strainYellowBand: strainYellowBand",
-            "loadACWRWatchLow: loadACWRWatchLow",
-            "loadACWRWatchHigh: loadACWRWatchHigh",
-            "loadACWRBadLow: loadACWRBadLow",
-            "loadACWRBadHigh: loadACWRBadHigh",
-            "loadMonotonyWatch: loadMonotonyWatch",
-            "loadMonotonyBad: loadMonotonyBad",
-            "hrvBaseline: projection.hrvBaseline",
-            "hrvBaselineSamples: projection.hrvBaselineSamples",
-            "hrvBaselineTrusted: projection.hrvBaselineTrusted",
-            "baselineTarget: projection.baselineTarget",
-            "hrvGreenRatio: hrvGreenRatio",
-            "hrvYellowRatio: hrvYellowRatio",
-            "restingBaseline: projection.restingBaseline",
-            "restingBaselineSamples: projection.restingBaselineSamples",
-            "restingBaselineTrusted: projection.restingBaselineTrusted",
-            "restingGreenDelta: restingGreenDelta",
-            "restingYellowDelta: restingYellowDelta",
-            "respiratoryGreenDelta: respiratoryGreenDelta",
-            "respiratoryYellowDelta: respiratoryYellowDelta",
-            "skinTemperatureGreenDelta: skinTemperatureGreenDelta",
-            "skinTemperatureYellowDelta: skinTemperatureYellowDelta",
-            "bloodOxygenCandidateGoal: bloodOxygenCandidateGoal",
-            "biologicalAgeGreenOlderDelta: biologicalAgeGreenOlderDelta",
-            "biologicalAgeYellowOlderDelta: biologicalAgeYellowOlderDelta",
-            "vo2GreenDelta: vo2GreenDelta",
-            "vo2RedDelta: vo2RedDelta",
-            "stepsGoal: stepsGoal",
-            "caloriesGoal: caloriesGoal",
+            # 2026-08-06: audit fix — dead twin deleted: needle only existed in the removed unmounted legacy dead trees.
+            # 2026-08-06: audit fix — dead twin deleted: needles that pinned the removed unmounted legacy Overview/Vitals/Collection/Plan dead trees were dropped.
             "sleepGoalHours: sleepGoalHours",
-            "sleepEfficiencyGreenLower: sleepEfficiencyGreenLower",
-            "sleepEfficiencyYellowLower: sleepEfficiencyYellowLower",
-            "zone: recoveryZone",
-            "zone: qualifiedStrainZone",
-            "zone: loadReadinessZone",
-            "zone: hrvCalibratingValue != nil ? nil : hrvZone",  # 2026-07-08 partial-data calibration
-            "zone: sleepGlanceZone",
-            "zone: sleepEfficiencyZone",
-            "zone: restingCalibratingValue != nil ? nil : restingHeartRateZone",  # 2026-07-08 partial-data calibration
-            "zone: steps.count == nil ? nil : stepsZone",
-            "zone: activeCaloriesZone",
-            "zone: vo2TrendZone",
-            "zone: biologicalAgeZone",
-            "zone: respiratoryRateZone",
-            "? skinTemperatureDeviationZone",
-            "Metrics.recoveryZone(hero.recoveryEstimate.percent, target: recoveryTarget)",
-            "Metrics.strainZone(strain: hero.strain,",
-            "target: hero.guidance.target",
-            "greenBand: strainGreenBand",
-            "yellowBand: strainYellowBand",
-            "private var loadReadinessZoneLevel: AtriaMetricZoneLevel?",
-            "ratio < loadACWRBadLow || ratio >= loadACWRBadHigh",
-            "monotony >= loadMonotonyBad",
-            "ratio < loadACWRWatchLow || ratio > loadACWRWatchHigh",
-            "monotony >= loadMonotonyWatch",
-            "Editable target · ACWR green %.1f-%.1f",
-            "private func parseDouble(_ value: String) -> Double?",
-            "Metrics.hrvZone(parseInt(hero.hrvValue),",
-            "baselineTrusted: hrvBaselineTrusted",
-            "baselineTarget: baselineTarget",
-            "greenRatio: hrvGreenRatio",
-            "yellowRatio: hrvYellowRatio",
-            "Metrics.restingHeartRateZone(hero.restingHeartRate,",
-            "baselineTrusted: restingBaselineTrusted",
-            "baselineTarget: baselineTarget",
-            "greenDelta: restingGreenDelta",
-            "yellowDelta: restingYellowDelta",
-            "return Metrics.sleepPerformanceZone(currentSleepPerformancePercent,",
-            "neededHours: currentSleepNeedHours)",
             # 2026-07-12: zone color uses the same main night as the metric.
             # Pin migrated 2026-08-01 (sleep-stages hypnogram): the zone now
             # grades the duration-based display estimate for the same night.
-            "Metrics.sleepEfficiencyZone(currentMainSleep?.displaySleepEfficiency,",
-            "greenLower: sleepEfficiencyGreenLower",
-            "yellowLower: sleepEfficiencyYellowLower",
-            "Metrics.stepsZone(sensorSummary.strapStepCount, goal: stepsGoal)",
-            "Metrics.activeCaloriesZone(live.liveActiveCalories,",
-            "goal: caloriesGoal",
-            "Metrics.vo2TrendZone(vo2MaxEstimate,",
-            "greenDelta: vo2GreenDelta",
-            "redDelta: vo2RedDelta",
-            "Metrics.biologicalAgeZone(biologicalAgeSummary,",
-            "greenOlderDelta: biologicalAgeGreenOlderDelta",
-            "yellowOlderDelta: biologicalAgeYellowOlderDelta",
             # 2026-07-12: respiratory target zones use main sleep, not naps.
-            "Metrics.respiratoryRateZone(currentMainSleep?.respiratoryRate,",
-            "baseline: sleepHistory.respiratoryBaselineMean",
-            "baselineSamples: sleepHistory.respiratoryBaselineCount",
-            "greenDelta: respiratoryGreenDelta",
-            "yellowDelta: respiratoryYellowDelta",
-            "Metrics.skinTemperatureDeviationZone(skinTemperatureSummary,",
-            "greenDelta: skinTemperatureGreenDelta",
-            "yellowDelta: skinTemperatureYellowDelta",
         ]:
             assert_contains(self, overview, needle)
 
@@ -14160,8 +13493,6 @@ class HandoffStaticChecks(unittest.TestCase):
             "restingBaselineSamples: baselineSnapshot.restingBaselineSamples",
             "restingBaselineTrusted: baselineSnapshot.restingBaselineTrusted",
             "baselineTarget: baselineSnapshot.baselineTarget",
-            "AtriaVitalsHRVCardHost(liveStore: liveStore,",
-            "heroStore: heroStore,\n                               vitalsStore: vitalsStore)",
             "var hrvSDNN: Double?",
             "var hrvPNN50: Double?",
             "var hrvSDNNText: String",
