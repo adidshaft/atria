@@ -1898,12 +1898,11 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 .accessibilityLabel("Preparing heart-rate trace")
         } else if points.count >= 30 || !stressReadings.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Picker("Trace", selection: $traceChartMode) {
-                    ForEach(TraceChartMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
+                // Native-clean (design 2026-08-05): plain-text selector replaces
+                // the boxed segmented control, matching the app-wide style.
+                AtriaTextSelector(items: TraceChartMode.allCases,
+                                  title: { $0.rawValue },
+                                  selection: $traceChartMode)
                 switch traceChartMode {
                 case .heartRate:
                     if points.count >= 30 {
