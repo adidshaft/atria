@@ -13936,9 +13936,16 @@ final class SessionStore: ObservableObject {
         if ProcessInfo.processInfo.arguments
             .contains("--atria-debug-force-recovered-rebuild") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-                _ = self?.requestRecoveredDataRecomputation(
-                    reason: "debug_forced_rebuild"
-                )
+                // Ride the exact lane when the full-drain authority owns
+                // archive priority (this device's July gap state defers every
+                // ordinary request), and note the outcome so a silent guard
+                // rejection is visible in the probe log.
+                let requested = self?.requestRecoveredDataRecomputation(
+                    reason: "debug_forced_rebuild",
+                    isExactRecoveryPublication:
+                        HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority()
+                ) ?? false
+                AtriaMemprobe.note("debug_forced_rebuild requested=\(requested ? 1 : 0)")
             }
         }
         self.motionBankOffloadObserver = NotificationCenter.default.addObserver(
