@@ -2284,3 +2284,27 @@ replay/review families.
 
 aggregate-repair design workflow (wf_8f52b72a) running: 4 mappers →
 design → 3 adversarial lenses. Implementation next.
+
+## 15.25 Repair design VERIFIED; implementation delegated (2026-08-05 ~15:00)
+
+wf_8f52b72a (8 agents, 1.1M tokens): the repair design survived all
+three adversarial lenses (data-loss / digest-coherence /
+crash-idempotence). Load-bearing insight: for a SEALED chunk the
+factory check and the materializer's isComplete are the SAME
+predicate, so the on-device error is almost certainly the OTHER site
+— the persisted full-scan record's stale source identity (factory
+:484) — hence TWO legs ship: Leg A (materializer quarantine+rebuild of
+divergent committed pairs, generation-advance-before-move, quarantine
+dir outside all reader/GC surfaces, content-addressed + retained
+forever as forensics) and Leg B (evidence resolves source identity
+from the file-verified catalog + scan-record re-mint with corrected
+source fields). Six verdict refinements folded in (observedArchive-
+FirstTimestamp from refreshedSnapshot; manifest-divergence+Proof-1
+suffices for undecodable aggregates; convergence-not-error-name
+asserts; E7 honesty-trade comment; Step-0 dependency assert; crash-
+table nit). Weakest assumption (documented, fail-closed if violated):
+rebuild byte-determinism across OS builds.
+
+Implementation delegated to a subagent with the full plan + house
+rules (no commit; gate/build/tests verified positively). Review +
+commit + on-device gap-resolution verification when it reports.
