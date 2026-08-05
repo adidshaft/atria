@@ -110,7 +110,6 @@ enum AtriaRecoveredRRProjection {
     /// preference, same ordering, same fingerprint.
     struct Accumulator {
         fileprivate struct CompactAccepted {
-            let recordID: String
             var clockRank: ClockRank
             var correctedUnix: UInt32
             var subsecond: UInt16
@@ -118,7 +117,7 @@ enum AtriaRecoveredRRProjection {
             var intervals: [Int]
         }
 
-        fileprivate var acceptedByRecordID: [String: CompactAccepted] = [:]
+        fileprivate var acceptedByRecordID: [Digest32: CompactAccepted] = [:]
         fileprivate var rejectionCounts: [RejectionReason: Int] = [:]
         fileprivate var replayedRecordCount = 0
         fileprivate var inputRecordCount = 0
@@ -134,24 +133,23 @@ enum AtriaRecoveredRRProjection {
                 rejectionCounts[reason, default: 0] += 1
 
             case .success(let verified):
-                let recordID = AtriaRecoveredRRProjection.stableRecordID(
+                let digest = AtriaRecoveredRRProjection.stableRecordDigest(
                     record, normalizedPayloadHex: verified.payloadHex)
                 let compact = CompactAccepted(
-                    recordID: recordID,
                     clockRank: AtriaRecoveredRRProjection.clockRank(for: record),
                     correctedUnix: record.clockCorrectedUnix7!,
                     subsecond: record.subsec11,
                     counter: record.flash13,
                     intervals: verified.intervals
                 )
-                if let existing = acceptedByRecordID[recordID] {
+                if let existing = acceptedByRecordID[digest] {
                     replayedRecordCount += 1
                     if AtriaRecoveredRRProjection.prefersClockProvenance(
                         compact.clockRank, over: existing.clockRank) {
-                        acceptedByRecordID[recordID] = compact
+                        acceptedByRecordID[digest] = compact
                     }
                 } else {
-                    acceptedByRecordID[recordID] = compact
+                    acceptedByRecordID[digest] = compact
                 }
             }
         }
@@ -169,14 +167,19 @@ enum AtriaRecoveredRRProjection {
         }
 
         func finish() -> Result {
-            let beats = acceptedByRecordID.values
-                .flatMap { accepted in
+            // Record-ID strings exist only transiently here (2026-08-05
+            // bounding design, Edit 2): reconstructing ~one 87-char string
+            // per accepted record costs ~40-60MB at the snapshot stage's
+            // peak on the dying recompute thread (verdict F4, accepted)
+            // instead of retaining the same bytes between recomputes.
+            let beats = acceptedByRecordID
+                .flatMap { digest, accepted in
                     AtriaRecoveredRRProjection.makeBeats(
                         correctedUnix: accepted.correctedUnix,
                         subsecond: accepted.subsecond,
                         counter: accepted.counter,
                         intervals: accepted.intervals,
-                        recordID: accepted.recordID
+                        recordID: AtriaRecoveredRRProjection.recordID(from: digest)
                     )
                 }
                 .sorted { lhs, rhs in
@@ -202,6 +205,36 @@ enum AtriaRecoveredRRProjection {
     private struct VerifiedRecord {
         let payloadHex: String
         let intervals: [Int]
+    }
+
+    /// Raw SHA-256 digest stored inline (32B, four words). The accumulator
+    /// retains one per accepted record between recomputes; the equivalent
+    /// 87-char recordID String it replaces was a dedicated heap allocation
+    /// each (2026-08-05 bounding design, Edit 2). Words are loaded and
+    /// re-emitted with the same native convention, so `bytes` reproduces the
+    /// digest byte-for-byte.
+    fileprivate struct Digest32: Hashable {
+        let word0: UInt64
+        let word1: UInt64
+        let word2: UInt64
+        let word3: UInt64
+
+        init(_ digest: SHA256.Digest) {
+            let words: (UInt64, UInt64, UInt64, UInt64) = digest.withUnsafeBytes { raw in
+                (raw.loadUnaligned(fromByteOffset: 0, as: UInt64.self),
+                 raw.loadUnaligned(fromByteOffset: 8, as: UInt64.self),
+                 raw.loadUnaligned(fromByteOffset: 16, as: UInt64.self),
+                 raw.loadUnaligned(fromByteOffset: 24, as: UInt64.self))
+            }
+            word0 = words.0
+            word1 = words.1
+            word2 = words.2
+            word3 = words.3
+        }
+
+        var bytes: [UInt8] {
+            withUnsafeBytes(of: (word0, word1, word2, word3)) { Array($0) }
+        }
     }
 
     fileprivate struct ClockRank {
@@ -303,10 +336,10 @@ enum AtriaRecoveredRRProjection {
         }
     }
 
-    private static func stableRecordID(
+    fileprivate static func stableRecordDigest(
         _ record: HistoricalArchive.Record,
         normalizedPayloadHex: String
-    ) -> String {
+    ) -> Digest32 {
         let canonical = [
             "atria-recovered-rr-record-v1",
             record.source,
@@ -316,7 +349,15 @@ enum AtriaRecoveredRRProjection {
             String(record.subsec11),
             normalizedPayloadHex,
         ].joined(separator: "|")
-        return "recovered-rr-record-v1-\(sha256(canonical))"
+        return Digest32(SHA256.hash(data: Data(canonical.utf8)))
+    }
+
+    /// Byte-identical reconstruction of the retired stableRecordID string:
+    /// that string was `"recovered-rr-record-v1-" + lowercase-hex(sha256)`,
+    /// and the stored digest IS that sha256. Pinned by the known-vector
+    /// fixture in AtriaRecoveredRRProjectionTests.
+    fileprivate static func recordID(from digest: Digest32) -> String {
+        "recovered-rr-record-v1-\(hexEncoded(digest.bytes))"
     }
 
     /// A replay may contain the same immutable strap record decoded against a

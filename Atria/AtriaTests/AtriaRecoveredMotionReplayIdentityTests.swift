@@ -25,15 +25,52 @@ final class AtriaRecoveredMotionReplayIdentityTests: XCTestCase {
         XCTAssertNotEqual(historical, realtime)
     }
 
+    func testMalformedPayloadNeverMergesWithWellFormedBytesOfIdenticalDigestInput() {
+        // "616263" decodes to the bytes of UTF-8 "abc"; "abc" itself is
+        // odd-length and stays malformed. Both digest exactly the bytes
+        // [0x61, 0x62, 0x63] — only the domain tag may separate them.
+        let wellFormed = makeIdentity(payload: "616263")
+        let malformed = makeIdentity(payload: "abc")
+
+        XCTAssertNotEqual(wellFormed, malformed)
+        XCTAssertEqual(Set([wellFormed, malformed]).count, 2)
+    }
+
+    func testReplayDedupSurvivesProjectedTimestampPrune() {
+        // The recovered cache prunes this set by projectedTimestamp while
+        // equality stays anchored to the raw frame: a surviving row replayed
+        // by the oldest-first drain under a newer clock projection must still
+        // match its retained identity, never re-count.
+        let retained = makeIdentity(payload: "a10bff",
+                                    projectedTimestamp: 1_721_234_567)
+        let old = makeIdentity(flashCounter: 122,
+                               unixSeconds: 1_721_100_000,
+                               payload: "a10bff",
+                               projectedTimestamp: 1_721_100_000)
+        var identities: Set = [retained, old]
+
+        identities = Set(identities.filter { $0.projectedTimestamp >= 1_721_200_000 })
+        XCTAssertEqual(identities.count, 1)
+
+        let replayed = makeIdentity(payload: "a10bff",
+                                    projectedTimestamp: 1_721_234_999)
+        XCTAssertFalse(identities.insert(replayed).inserted)
+        XCTAssertEqual(identities.count, 1)
+    }
+
     private func makeIdentity(
         source: String = "whoop4-history",
-        payload: String
+        flashCounter: UInt32 = 123,
+        unixSeconds: UInt32 = 1_721_234_567,
+        payload: String,
+        projectedTimestamp: TimeInterval? = nil
     ) -> AtriaRecoveredMotionReplayIdentity {
         AtriaRecoveredMotionReplayIdentity(source: source,
                                            layoutVersion: "whoop4_0x2f_openstrap_v1_v24",
-                                           flashCounter: 123,
-                                           unixSeconds: 1_721_234_567,
+                                           flashCounter: flashCounter,
+                                           unixSeconds: unixSeconds,
                                            subsecond: 456,
-                                           rawPayloadHex: payload)
+                                           rawPayloadHex: payload,
+                                           projectedTimestamp: projectedTimestamp)
     }
 }
