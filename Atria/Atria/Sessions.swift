@@ -10209,6 +10209,11 @@ final class SessionStore: ObservableObject {
     private func rollbackRecoveredDataMutationTransaction(
         ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
     ) -> Bool {
+        // TEMP instrumentation (2026-08-05 round-5): every gauntlet death
+        // lands right after a supersede; the rollback + its required-refresh
+        // tail were the last un-noted post-swap lanes.
+        AtriaMemprobe.note("rollback_begin ops=\(recoveredDataMutationTransaction.rollbackOperationCount)")
+        defer { AtriaMemprobe.note("rollback_end") }
         let hadPreparedMutation = recoveredDataMutationTransaction.rollbackOperationCount > 0
         guard recoveredDataMutationTransaction.rollback(ticket: ticket) else { return false }
         if hadPreparedMutation {
@@ -10217,6 +10222,7 @@ final class SessionStore: ObservableObject {
         // A launch-time card rebuild may have completed while this recovered
         // image was provisional. Rollback restored the prior canonical image;
         // rerun the required refresh rather than publishing either intermediate.
+        AtriaMemprobe.note("required_hist_refresh_check")
         refreshRequiredHistorySnapshotIfPending()
         return true
     }
