@@ -2095,3 +2095,23 @@ restoration (or skipping rollback for superseded-but-committed swaps —
 the swap is VALID data; superseding only means a newer revision is
 queued, and rolling back a just-verified projection may itself be the
 wrong policy — decide with the evidence).
+
+## 15.18 Rounds 5-6: compaction lane verified; deep eye armed (2026-08-05 ~09:55)
+
+Round-5 verdict (gauntlet #3-4): rollback EXONERATED (0.14s ops=1);
+compaction named+fixed (compaction_deferred_heavy_lane fired ×2 in
+gauntlet #4) — yet death persists at +56-69s POST-LAUNCH clustering.
+Round-6 eye: the climber = THREE unnamed full-core GCD workers
+(cpu 97/87/73%) — no concurrentPerform/TaskGroup/concurrent queues
+exist in the codebase, so these are three INDEPENDENT utility lanes
+coinciding. Named dying threads wait on semaphores (0 CPU), so all
+wrapped lanes are exonerated by the eye.
+
+Round-6b DEEP EYE shipped: on any ≥150MB/250ms jump, suspend the
+busiest thread (µs), capture pc/lr + guarded fp-chain walk, resume,
+log hex frames + ASLR slide at start. Symbolicate:
+  atos -arch arm64 -o Atria/build-device/Build/Products/
+    Release-iphoneos/Atria.app.dSYM/Contents/Resources/DWARF/Atria \
+    -s <slide> <addresses>
+Gauntlet #6 armed (flag file + launch). The next burst_stack lines
+name the exact function — no more lane guessing.
