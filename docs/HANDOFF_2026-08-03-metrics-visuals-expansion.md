@@ -3410,3 +3410,29 @@ scrolled Today look "empty" (user + agent both fooled at 2 AM) —
 consider scroll-to-top affordance on the mini cluster tap; ring
 toggle is 4 screens deep in Personal — consider surfacing in ••• 
 Customize more prominently (it IS there per 1d54de74).
+
+## 15.73 USER PRODUCT SPEC (03:10, binding for today's engine work)
+
+1. Steps coverage must reach ~100%-of-worn within 30-60 MIN of
+   catch-up opportunity — 48%-for-24h is unacceptable. Attribution
+   data now exists (full-day duty-cycle buckets + 16-ticket charge
+   test results) — READ FIRST, then fix policy (§15.38/§15.42).
+2. Strap-away / BT-off / phone-off catch-up UX: on foreground with
+   banked strap data, the app must (a) say "keep Atria open to sync"
+   and (b) VISIBLY show wrist-data flushing progress. Verify the
+   existing surfaces do this; build what's missing (presentation →
+   coordinate with UI session; engine hooks here).
+3. Thorough performance pass: engine (launch scans, drain
+   scheduling, memory) + visualization correctness. User reports
+   intermittent 2-3s hang after open — NOT reproduced in 2 probed
+   launches (tabs responsive at t+3s; Vitals/Journal switch clean);
+   keep hunting with MetricKit/hang diagnostics rather than blind
+   fixes.
+4. §15.70 deadlock fix remains #1 (recovered consumers still
+   gapResolvedConsumersPending at 03:10; Vitals 6-hr chart proves
+   the LIVE path renders — the deadlock gates recovered/Activity
+   surfaces + likely step receipts).
+STATUS at user bedtime: capturing live, boundary 03:09, debt
+caught_up, strap 59%, sleep pipeline on proven path. Range-loss
+lane armed earlier (lastReason long_wear_range_loss, deferred while
+live link connected — by design).
