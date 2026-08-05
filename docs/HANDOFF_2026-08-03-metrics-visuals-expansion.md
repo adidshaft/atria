@@ -2915,3 +2915,13 @@ unsampled +201s — the post-wedge catch-up drain parked capture for
 misattribution; armed-aware fix active). This is exactly the §15.38
 policy input: every drain minute is a lost capture minute. Tomorrow's
 full-day read gives the daily total.
+
+## 15.53 Watch 20:22 — debt caught_up; 3 offload tickets cleared pre-charge
+
+flushDebt=caught_up (19 records), boundary 20:22:23 current —
+post-wedge catch-up complete. pendingOffloads 9→6 WITHOUT charge:
+drain transport windows served three tickets → starvation hypothesis
+weakened (tickets clear when transport serves them; question is now
+scheduling frequency, not capability). Charge test tonight decides
+for the remaining 6 (incl. the 32h-old Aug-4 2m ticket). Diag:
+armed +377s / sync +333s since 20:10 — mixed link ownership, normal.
