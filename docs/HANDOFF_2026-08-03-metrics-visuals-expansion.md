@@ -3355,3 +3355,33 @@ proof-snapshot merge, one layer deeper. Entry points: the factory's
 completionCoverage check + the gap ledger (gapLedgerGeneration 8421+
 in authority.json). Test-first with the captured-fixture suites +
 a new fixture reproducing an unfillable dependency window.
+
+## 15.71 INCIDENT: audit remediation BROKE LIVE SURFACES — reverted + reshipped (02:35)
+
+User report (~02:25): rings/toggles/surfaces missing, strain ring
+not turning green, strain/sleep targets not dynamic — on the
+6688a0ed build. Root cause: the dead-twin deletion removed code
+that was LIVE on device; the workflow's adversarial verification
+(static reference-greps + build success) was INSUFFICIENT — this
+codebase mounts surfaces dynamically enough that grep-clean ≠ dead.
+Revert 1a6b09b5 (authored ~02:22) verified clean (exact mirror,
+gate 4 baseline), pushed both refs, CLEAN full rebuild (build-device
+wiped) shipped 02:31; post-install healthy.
+
+STATE AFTER REVERT: all 13 UI-branch commits present and live;
+b54bb1a2 mechanical fixes SURVIVE (not reverted); the 19 audit
+fixes from 6688a0ed are OUT and need RE-LANDING WITHOUT the
+deletions (cherry-pick fix hunks only), each with on-screen
+verification.
+
+LESSONS (binding):
+1. NEVER ship deletions and fixes in one commit — the revert cost
+   all 19 fixes.
+2. Dead-code deletion requires RUNTIME/VISUAL proof per surface
+   (screenshot the live app before+after), not reference-greps.
+3. The user's report list is the morning's visual regression
+   checklist: separate-rings toggle (Settings→Personal "Today
+   rings" + ••• Customize), strain ring green-at-target, dynamic
+   strain/sleep targets.
+§15.70 deadlock diagnosis UNAFFECTED (predates 6688a0ed) — still
+morning item #1 alongside the fix re-landing.
