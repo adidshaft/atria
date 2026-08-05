@@ -8980,7 +8980,17 @@ final class SessionStore: ObservableObject {
         let maxHR = profile.maxHR
         let delay: TimeInterval = deferred ? 0.12 : 0
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self, source, rest, maxHR, revision] in
-            let points = SessionStore.makeOverviewTrendPoints(sessions: source, rest: rest, maxHR: maxHR)
+            // Dying thread (2026-08-05 climber-hunt runner-up hardening): the
+            // whole-corpus trend walk's transient garbage must be reclaimed at
+            // teardown, not retained by this long-lived GCD pool thread — the
+            // in-repo note near the derived-lease renewals records this exact
+            // trio jetsamming at ~700k points.
+            let points = AtriaTransientWorkThread.run(
+                name: "atria.overview-trends",
+                qualityOfService: .utility
+            ) {
+                SessionStore.makeOverviewTrendPoints(sessions: source, rest: rest, maxHR: maxHR)
+            }
             DispatchQueue.main.async {
                 guard let self, revision == self.overviewTrendPointsRefreshRevision else {
                     completion?(false)
@@ -9007,9 +9017,15 @@ final class SessionStore: ObservableObject {
         let maxHR = profile.maxHR
         let delay: TimeInterval = deferred ? 0.12 : 0
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self, source, rest, maxHR, revision] in
-            let summary = SessionStore.makeTrainingLoadSummary(sessions: source,
-                                                               rest: rest,
-                                                               maxHR: maxHR)
+            // Dying thread (2026-08-05): see refreshOverviewTrendPointsCache.
+            let summary = AtriaTransientWorkThread.run(
+                name: "atria.training-load",
+                qualityOfService: .utility
+            ) {
+                SessionStore.makeTrainingLoadSummary(sessions: source,
+                                                     rest: rest,
+                                                     maxHR: maxHR)
+            }
             DispatchQueue.main.async {
                 guard let self, revision == self.trainingLoadSummaryRevision else {
                     completion?(false)
@@ -9039,10 +9055,16 @@ final class SessionStore: ObservableObject {
                                                          calendar: .current).start
         let delay: TimeInterval = deferred ? 0.12 : 0
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self, source, maxHR, now, cycleStart, revision] in
-            let summary = SessionStore.makeTodayHRZoneMinutes(sessions: source,
-                                                              maxHR: maxHR,
-                                                              now: now,
-                                                              cycleStart: cycleStart)
+            // Dying thread (2026-08-05): see refreshOverviewTrendPointsCache.
+            let summary = AtriaTransientWorkThread.run(
+                name: "atria.today-hr-zones",
+                qualityOfService: .utility
+            ) {
+                SessionStore.makeTodayHRZoneMinutes(sessions: source,
+                                                    maxHR: maxHR,
+                                                    now: now,
+                                                    cycleStart: cycleStart)
+            }
             DispatchQueue.main.async {
                 guard let self, revision == self.todayHRZoneMinutesRevision else {
                     completion?(false)
