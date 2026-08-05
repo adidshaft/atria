@@ -3119,3 +3119,24 @@ connected wear = real acceptance-path bug → pull
 BatteryDefaults.source/requiresFreshConfirmation/at on attach.
 Screenshot also confirms: sleep saved+journal ready (efficiency
 should now display), H1 accessory rolling on-device.
+
+## 15.63 Copy audit: 10 confirmed defects fixed, 5 taste calls queued (2026-08-05 ~22:35)
+
+Audit agent swept the app target for count-blind plurals, ASCII/ISO
+jargon, and composable grammar breaks (calibrated on tonight's 3
+precedents; 7 false positives verified and listed — do not re-flag).
+FIXED (workflow: impl+pin protocol → build/gate/tests → adversarial
+review, all green, 13 pins migrated with dated comments):
+C1 target summaries ">= N"→"N+" / "<= N"→"N or lower" family
+(9 AtriaAnalytics strings + AtriaMetricTargets:110; "+1.5y"→"yr");
+C2 breathwork "->"→"→"; C3-C10 count-conditional singulars
+(detection-evidence minutes a11y, six zone-minutes a11y parts via
+shared helper, trend sessions, backup sessions, exercise-history
+days, trend-chart a11y days, strength PRs, status-board
+samples/sessions).
+QUEUED FOR TASTE (J1-J5, do not fix blind): ASCII " -- " vs em dash
+in recommendation copy (5 sites, house-style call); Health timeline
+proof-card dev vocabulary ("archive rows"/"points" — is it meant to
+be technical?); onboarding "1 records" (rare); recovery-status
+records a11y; day-pattern a11y ternary. NOT installed on phone
+(rides next natural install with H4).
