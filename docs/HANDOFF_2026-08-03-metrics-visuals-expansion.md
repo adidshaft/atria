@@ -2676,3 +2676,45 @@ this attribution).
 
 Stream health unchanged from §15.40; no new cache publish (745MB
 reading stands, at=18:34).
+
+## 15.42 Coverage-gap mechanism READ FROM CODE (2026-08-05 ~18:55)
+
+Answers §15.41's "why 6.5h of 18h". Coverage windows exist ONLY while
+the historical-IMU bank is armed on a LIVE link:
+- open at arm (69/01): AtriaBLEManager.swift:23137 (workout arm),
+  :23533 (submitGate4DailyBankRearm).
+- close at explicit stop (:23658) or ANY physical disconnect
+  (:37604 — "firmware bank state dies with the connection").
+- Ledger: AtriaWhoop4MotionBankCoverageLedger.swift — closed
+  intervals MERGED, capped at 512 (removeFirst; ledger currently AT
+  cap, oldest survivor Aug-2 21:51 → historical days undercount, but
+  today unaffected). minimumRecoverableOffloadDuration=10s (sub-10s
+  windows are honest missing coverage, never scheduled).
+
+So coverage %% ≈ bank-armed duty cycle. Rearm throttle is only 5s
+after stop (:23675, key removed on success) — NOT the gap source.
+The real gates (AtriaBLEManager ~22935-22999 + RearmPolicy):
+1. Governor: manualWorkout || calibrationHold ||
+   allDayMotionGovernorWantsHold() (allDayMotionCaptureEnabled +
+   battery/charging via shouldArmAllDayMotionBank + suspendedForBattery).
+2. Rearm needs fresh accepted HR (≤15s) + quiet command pipe —
+   defer reasons include durableFlushPending / replayACK /
+   continuation / ingressBarrier. Heavy drain days (like today)
+   plausibly defer rearm for long stretches.
+3. Skipped entirely during offlineHistoricalSyncInProgress /
+   freshHistoryOwnerCutoverPending / historyOnlyProbeMode.
+4. Every idle link drop closes the window until next governor pass.
+
+ATTRIBUTION PLAN (next active session, before any offload-policy
+work): persistedDrainRearmDiagnostic already snapshots the gate
+state (link/fresh/workout/sync/materializing/authority/defer) — add
+a per-reason unarmed-duty-cycle accumulator (persisted counters,
+read at day end) to split gap time between: governor-off/battery,
+pipe-defer, link-down, sync-cutover. Decision on faster-offload
+policy (§15.38) depends on this split, since offload speed is
+irrelevant if arming duty cycle is the bottleneck.
+
+Tiny-pending note: the 6 starving tickets (§15.41) are all >10s so
+they ARE schedulable; retries are bounded ("honestly exhausted") via
+didFinalizeOffloadNotification — tonight tells whether they clear,
+exhaust, or starve.
