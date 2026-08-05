@@ -523,6 +523,7 @@ struct AtriaSettingsView: View {
                                    todaySizeCSV: todaySizeCSV)
                 profileSection(faceOffDisplayName: faceOffDisplayName)
                 appearanceSection(appearanceMode: appearanceMode)
+                AtriaRingLayoutSection()
                 Section {
                     NavigationLink {
                         coachSettingsPage
@@ -1585,6 +1586,29 @@ private struct AtriaStrapMotionDefaultsScope<Content: View>: View {
 /// change center). The defaults boxes live on this struct rather than on
 /// `AtriaSettingsView` so they register when Personal appears, never on the
 /// Settings hub presentation frame.
+/// Today vitals-ring layout picker (Settings -> Personal): concentric
+/// Activity-style rings vs WHOOP-style separate side-by-side rings. Writes the
+/// shared `AtriaRingLayoutStyle.defaultsKey` that `AtriaTriRing` and the share
+/// card read live, so the whole app switches at once.
+private struct AtriaRingLayoutSection: View {
+    @AtriaDefault(AtriaRingLayoutStyle.defaultsKey) private var ringLayoutRaw: String = "concentric"
+
+    var body: some View {
+        Section {
+            Picker("Ring style", selection: $ringLayoutRaw) {
+                ForEach(AtriaRingLayoutStyle.allCases, id: \.self) { style in
+                    Text(style.label).tag(style.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+        } header: {
+            Text("Today rings")
+        } footer: {
+            Text("Concentric stacks the three rings; Separate shows them side by side, WHOOP-style.")
+        }
+    }
+}
+
 private struct AtriaDailyGoalsSection: View {
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AtriaDefault("atria.target.steps.goal") private var stepsGoal: Int = 8_000
