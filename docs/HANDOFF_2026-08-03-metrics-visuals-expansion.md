@@ -2556,3 +2556,31 @@ physical ground truth.
 TEST DEBT NOW: only the 2 corpus-skips (July-18 corpus absent from
 this machine) + the icon-distinctness fix (UI session). Everything
 else green.
+
+## 15.37 END-OF-SESSION STATE (2026-08-05 ~22:40)
+
+Footprint trajectory at cache publishes (all with GROWING data,
+identity sets at 750K caps): 783MB (pre-compaction, cheap reuse
+moment) → 626MB (compacted, heavy scan moment) → 465MB (slicing
+build, heavy scan moment). 40% reduction at the hardest moments.
+Flush debt low/183; no failure recorded since 07:51 UTC (pre-
+resolution era); deferred_connected_live_link = the Jul-24 range-loss
+lane waiting for a natural disconnect, by design.
+
+EVERYTHING SHIPPED AND PUSHED through c16a9c19. Branches unified
+(engine == ui-design at every push point). Open items for FUTURE
+sessions, ranked: fingerprint-latch; reuse=0 refresh coalescing;
+readVerifiedConsumerSources bounded reads; Jul-24 range-loss windows
+(self-resolve on strap charge/disconnect); icon-distinctness test
+(UI session); July-18 corpus-skips (need the absent corpus).
+
+OPERATING NOTES for the next session, hard-won today:
+- Ship ONLY via scripts/ship-device.sh.
+- devicectl launch args are silently swallowed; the flag-file lever
+  pattern works (§15.16).
+- Log copies lag and rotate — verify a pulled log's recency; per-pid
+  windows only; two processes share one log across rotation.
+- Captured-fixture suites are physical ground truth — run them for
+  ANY detection-adjacent change.
+- Forensics channels: prefs plist (failure diagnostic + site tags +
+  footprint breadcrumb), authority JSON, catalog JSON — all pullable.
