@@ -2264,3 +2264,23 @@ never touching raw. The existing sealed-catalog repair
 (materializeNextSealedCatalogDependency) does NOT cover this class —
 extend it there. When repaired → materialization completes → gap
 resolves → per-launch recurring work retires.
+
+## 15.24 Test-debt cleared to two known families (2026-08-05 ~14:10)
+
+88341739: three stale Aug-era pins migrated (55/55 green, gate
+baseline 4). Key call: the '≥' valueText pins looked like an honesty
+regression but git history shows the CLEAN number is the deliberate
+26057206 product decision (qualifier moved to detailText/a11y, still
+pinned via .partial + coverageFraction) — the tests were stale, not
+the code. The absolute 'never reopen lifetime archive' pin was stale
+since e9ccf347; it now pins the real safety properties (heavy-lane
+defer + budgeted dying-thread day scan).
+
+REMAINING known failures: catalog icon-distinctness 69≠79 (10 dupes
+among the Aug-4 activity additions — UI-owned, LEFT FOR THE PARALLEL
+SESSION: give each of the 48 new activity types a distinct SF Symbol,
+test AtriaActivitySectionsCacheTests:375) + the documented July
+replay/review families.
+
+aggregate-repair design workflow (wf_8f52b72a) running: 4 mappers →
+design → 3 adversarial lenses. Implementation next.
