@@ -920,6 +920,12 @@ struct AtriaHealthScreen: View {
                     AtriaSleepStageSummary(night: currentSleep)
                 }
             }
+
+            // Sleep-consistency insight (design 2026-08-05, WHOOP-parity): the
+            // recent nights' bed→wake windows stacked on a shared axis so a
+            // regular schedule reads as an aligned column. Honest — only real
+            // recorded sleep times; always present (a building note when sparse).
+            AtriaSleepConsistencyStrip(nights: vitalsStore.state.sleepHistorySnapshot.nights)
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
@@ -2206,5 +2212,106 @@ private struct AtriaHealthMetricRow: View, Equatable {
             .contentTransition(reduceMotion ? .identity : .numericText())
             .lineLimit(1)
             .minimumScaleFactor(0.66)
+    }
+}
+
+/// Sleep-consistency regularity strip (design 2026-08-05, WHOOP-parity): the
+/// recent nights' bed→wake windows stacked on a shared 6 PM → noon axis. A
+/// regular schedule reads as an aligned column; irregular nights scatter. It
+/// plots ONLY the real recorded sleep times (no fabricated data) and is always
+/// present — a short building note stands in until there are enough nights.
+private struct AtriaSleepConsistencyStrip: View {
+    let nights: [SleepHistorySnapshot.Night]
+
+    // Night-centric axis: anchored at 18:00, spanning 18h to 12:00 next day.
+    private static let anchorHour: Double = 18
+    private static let spanHours: Double = 18
+
+    private struct Row: Identifiable {
+        let id: String
+        let startFrac: CGFloat
+        let endFrac: CGFloat
+    }
+
+    private var rows: [Row] {
+        nights.prefix(14).compactMap { night in
+            guard let start = night.start, let end = night.end, end > start else { return nil }
+            var calendar = Calendar.current
+            if let identifier = night.eventTimeZoneIdentifier,
+               let timeZone = TimeZone(identifier: identifier) {
+                calendar.timeZone = timeZone
+            }
+            func fraction(_ date: Date) -> CGFloat? {
+                let comps = calendar.dateComponents([.hour, .minute], from: date)
+                let hour = Double(comps.hour ?? 0) + Double(comps.minute ?? 0) / 60
+                var rel = (hour - Self.anchorHour).truncatingRemainder(dividingBy: 24)
+                if rel < 0 { rel += 24 }
+                guard rel <= Self.spanHours else { return nil }   // outside the night window (daytime nap)
+                return CGFloat(rel / Self.spanHours)
+            }
+            guard let startFrac = fraction(start),
+                  let endFrac = fraction(end),
+                  endFrac > startFrac else { return nil }
+            return Row(id: night.id, startFrac: startFrac, endFrac: endFrac)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Sleep consistency")
+                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 0)
+                if !rows.isEmpty {
+                    Text("\(rows.count) \(rows.count == 1 ? "night" : "nights")")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if rows.count >= 2 {
+                GeometryReader { geo in
+                    let w = geo.size.width
+                    VStack(spacing: 4) {
+                        ForEach(rows) { row in
+                            ZStack(alignment: .leading) {
+                                Capsule(style: .continuous)
+                                    .fill(Color.primary.opacity(0.05))
+                                    .frame(height: 9)
+                                Capsule(style: .continuous)
+                                    .fill(Color.cyan.opacity(0.85))
+                                    .frame(width: max(3, (row.endFrac - row.startFrac) * w), height: 9)
+                                    .offset(x: row.startFrac * w)
+                            }
+                        }
+                    }
+                }
+                .frame(height: CGFloat(rows.count) * 13)
+
+                HStack {
+                    Text("6 PM")
+                    Spacer(minLength: 0)
+                    Text("12 AM")
+                    Spacer(minLength: 0)
+                    Text("6 AM")
+                    Spacer(minLength: 0)
+                    Text("12 PM")
+                }
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.tertiary)
+            } else {
+                Text("A few more nights and your bed & wake-time regularity charts here.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(12)
+        .atriaInsetCard(tint: .cyan)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(rows.count >= 2
+                            ? "Sleep consistency across \(rows.count) recent nights."
+                            : "Sleep consistency, building.")
     }
 }

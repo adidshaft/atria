@@ -536,6 +536,7 @@ struct AtriaWidgetEntryView: View {
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.65)
+                    .atriaLiveActivityValueTransition(value)
                 Text(title)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -576,6 +577,7 @@ struct AtriaWidgetEntryView: View {
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.55)
+                .atriaLiveActivityValueTransition(value)
             if let evidenceNote {
                 Text(evidenceNote)
                     .font(.system(size: 9, weight: .semibold))
@@ -859,6 +861,7 @@ private struct AtriaWidgetRecoveryGauge: View {
                     .font(.title3.monospacedDigit().weight(.heavy))
                     .minimumScaleFactor(0.55)
                     .lineLimit(1)
+                    .atriaLiveActivityValueTransition(percent ?? -1)
                 Text("REC")
                     .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.secondary)
@@ -2113,6 +2116,7 @@ struct AtriaMetricWidgetEntryView: View {
                             .monospacedDigit()
                             .minimumScaleFactor(0.6)
                             .lineLimit(1)
+                            .atriaLiveActivityValueTransition(value)
                         Text(metricFooterText)
                             .font(.system(size: 9, weight: .medium))
                             .foregroundStyle(.secondary)
@@ -2135,6 +2139,7 @@ struct AtriaMetricWidgetEntryView: View {
                         .monospacedDigit()
                         .minimumScaleFactor(0.5)
                         .lineLimit(1)
+                        .atriaLiveActivityValueTransition(value)
                 }
                 .containerBackground(for: .widget) { AccessoryWidgetBackground() }
                 .widgetAccentable()
@@ -2168,6 +2173,7 @@ struct AtriaMetricWidgetEntryView: View {
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.45)
+                .atriaLiveActivityValueTransition(value)
 
             Text(metric.title)
                 .font(.headline.weight(.semibold))
@@ -2209,6 +2215,7 @@ struct AtriaMetricWidgetEntryView: View {
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.45)
+                    .atriaLiveActivityValueTransition(value)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 

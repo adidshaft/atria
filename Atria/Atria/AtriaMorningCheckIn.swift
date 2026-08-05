@@ -393,6 +393,7 @@ private struct AtriaMorningCheckInSheet: View {
     let objectiveRecovery: Metrics.RecoveryEstimate
     let onSave: (AtriaMorningCheckInDraft, Metrics.RecoveryEstimate) -> Bool
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var draft: AtriaMorningCheckInDraft
     @State private var saveFailed = false
 
@@ -408,18 +409,19 @@ private struct AtriaMorningCheckInSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.xl) {
                     VStack(alignment: .leading, spacing: 5) {
                         Text("Objective recovery")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         Text(objectiveRecovery.percent.map { "\($0)%" } ?? "Learning")
                             .font(.title2.weight(.bold).monospacedDigit())
+                            .contentTransition(reduceMotion ? .identity : .numericText())
                         Text("Atria keeps this physiological estimate separate. Your answers add context; they never rewrite today’s score.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    .padding(14)
+                    .padding(AtriaDesignTokens.Spacing.md)
                     .atriaInsetCard(tint: .green)
 
                     Text("How you feel")
@@ -472,7 +474,7 @@ private struct AtriaMorningCheckInSheet: View {
                             .foregroundStyle(.orange)
                     }
                 }
-                .padding(18)
+                .padding(AtriaDesignTokens.Spacing.xl)
             }
             .navigationTitle(existing == nil ? "Morning check-in" : "Edit check-in")
             .toolbar {
@@ -495,21 +497,14 @@ private struct AtriaMorningCheckInSheet: View {
             HStack {
                 Text(title).font(.subheadline.weight(.semibold))
                 Spacer()
-                Text("\(value.wrappedValue)/5").font(.subheadline.weight(.bold).monospacedDigit())
+                Text("\(value.wrappedValue)/5")
+                    .font(.subheadline.weight(.bold).monospacedDigit())
+                    .contentTransition(reduceMotion ? .identity : .numericText())
+                    .accessibilityLabel("\(value.wrappedValue) of 5")
             }
-            HStack(spacing: 7) {
-                ForEach(1...5, id: \.self) { level in
-                    Button { value.wrappedValue = level } label: {
-                        Text("\(level)")
-                            .font(.caption.weight(.bold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 9)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(value.wrappedValue == level ? .pink : .secondary)
-                    .accessibilityLabel("\(title), \(level) of 5")
-                }
-            }
+            AtriaTextSelector(items: Array(1...5),
+                              title: { "\($0)" },
+                              selection: value)
             HStack {
                 Text(low)
                 Spacer()

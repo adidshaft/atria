@@ -2446,12 +2446,18 @@ struct AtriaLiveWorkoutView: View {
                     Label("Broadcast HR", systemImage: "antenna.radiowaves.left.and.right")
                 }
             } label: {
-                Label(activityType == .other ? "Workout" : activityType.rawValue,
-                      systemImage: activityType.icon)
-                    .font(.headline.weight(.bold))
-                    .foregroundStyle(.white)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
+                HStack(spacing: 6) {
+                    Label(activityType == .other ? "Workout" : activityType.rawValue,
+                          systemImage: activityType.icon)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .accessibilityHidden(true)
+                }
+                .font(.headline.weight(.bold))
+                .foregroundStyle(.white)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
             .accessibilityHint("Choose the workout activity type")
             Spacer()
@@ -3232,6 +3238,7 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .minimumScaleFactor(0.58)
+                .contentTransition(.numericText())
         }
         .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
         .padding(.horizontal, 8)
@@ -3578,6 +3585,7 @@ private struct AtriaLiveWorkoutStrainGuidance: View {
                 .foregroundStyle(.white)
                 .lineLimit(1)
                 .minimumScaleFactor(0.64)
+                .contentTransition(.numericText())
         }
         .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
         .padding(.horizontal, 9)

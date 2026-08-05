@@ -856,30 +856,32 @@ struct AtriaActivityMonitorTab: View {
                         .foregroundStyle(.red)
                         .labelStyle(.titleAndIcon)
                         .imageScale(.small)
+                        .contentTransition(.numericText())
                         .accessibilityLabel("Heart rate \(heart.bpm) beats per minute")
                 }
                 Text(presentation.value)
                     .font(.subheadline.weight(.bold).monospacedDigit())
+                    .contentTransition(.numericText())
                     .foregroundStyle(stressMonitorStore.state.level?.tint ?? .secondary)
             }
 
             // Always a graph (design 2026-08-05): start from whatever readings
             // exist rather than a text "warming up" card. ONLY the line carries
-            // range color (calm→high = green→yellow→orange→red, highest = red);
-            // the area is a single faint tint, never colored horizontal bands.
+            // range color -- the WHOOP stress palette blue (calm) -> green
+            // (medium) -> orange (high); a point low on the axis reads blue and
+            // a spike reads orange. The area stays a single faint neutral tint,
+            // never colored horizontal bands.
             let stressLineGradient = LinearGradient(
-                colors: [Metrics.electricGreen, Metrics.electricYellow,
-                         Metrics.electricStress, Metrics.electricRed],
+                colors: [Metrics.electricStrain, Metrics.electricGreen, Metrics.electricStress],
                 startPoint: .bottom, endPoint: .top)
             let stressAreaFade = LinearGradient(
-                colors: [Metrics.electricStress.opacity(0.16), Metrics.electricStress.opacity(0.01)],
+                colors: [Color.primary.opacity(0.07), Color.primary.opacity(0.01)],
                 startPoint: .top, endPoint: .bottom)
             let stressPointColor: (Double) -> Color = { score in
                 switch score {
-                case ..<0.75: return Metrics.electricGreen
-                case ..<1.5: return Metrics.electricYellow
-                case ..<2.25: return Metrics.electricStress
-                default: return Metrics.electricRed
+                case ..<1.0: return Metrics.electricStrain
+                case ..<2.0: return Metrics.electricGreen
+                default: return Metrics.electricStress
                 }
             }
             Chart {

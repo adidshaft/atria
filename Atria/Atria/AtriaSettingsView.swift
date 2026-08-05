@@ -1589,6 +1589,7 @@ private struct AtriaDailyGoalsSection: View {
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AtriaDefault("atria.target.steps.goal") private var stepsGoal: Int = 8_000
     @AtriaDefault("atria.target.calories.goal") private var caloriesGoal: Int = 500
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Section {
@@ -1596,6 +1597,8 @@ private struct AtriaDailyGoalsSection: View {
                 LabeledContent {
                     Text(AtriaMetricFormat.sleepHours(sleepGoalHours))
                         .monospacedDigit()
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: sleepGoalHours)
                 } label: {
                     Label("Sleep each night", systemImage: "bed.double.fill")
                 }
@@ -1606,6 +1609,8 @@ private struct AtriaDailyGoalsSection: View {
                 LabeledContent {
                     Text("\(stepsGoal)")
                         .monospacedDigit()
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: stepsGoal)
                 } label: {
                     Label("Steps each day", systemImage: "figure.walk.motion")
                 }
@@ -1616,6 +1621,8 @@ private struct AtriaDailyGoalsSection: View {
                 LabeledContent {
                     Text("\(caloriesGoal) kcal")
                         .monospacedDigit()
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: caloriesGoal)
                 } label: {
                     Label("Active calories", systemImage: "flame.fill")
                 }

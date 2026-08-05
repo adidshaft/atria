@@ -1131,6 +1131,7 @@ private struct AtriaJournalFollowUpSheet: View {
     let onSkip: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var caffeineDate: Binding<Date> {
         Binding(
@@ -1178,7 +1179,9 @@ private struct AtriaJournalFollowUpSheet: View {
             case .alcoholDrinks:
                 HStack(spacing: 18) {
                     Button {
-                        drinks = max(1, drinks - 1)
+                        withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+                            drinks = max(1, drinks - 1)
+                        }
                     } label: {
                         Image(systemName: "minus")
                     }
@@ -1190,11 +1193,14 @@ private struct AtriaJournalFollowUpSheet: View {
                     Text("\(drinks)")
                         .font(.system(size: 48, weight: .bold, design: .rounded))
                         .monospacedDigit()
+                        .contentTransition(reduceMotion ? .identity : .numericText())
                         .frame(maxWidth: .infinity)
                         .accessibilityLabel("\(drinks) drinks")
 
                     Button {
-                        drinks = min(20, drinks + 1)
+                        withAnimation(reduceMotion ? nil : .snappy(duration: 0.22)) {
+                            drinks = min(20, drinks + 1)
+                        }
                     } label: {
                         Image(systemName: "plus")
                     }
@@ -1508,6 +1514,24 @@ struct AtriaJournalHeatStrip: View, Equatable {
                     }
                 }
             }
+
+            // Intensity key for the cyan opacity ramp (visual only; the card's
+            // accessibilityLabel already states the counts). Reuses the grid's
+            // cellColor so the swatches never drift from the cells.
+            HStack(spacing: 6) {
+                Text("Less")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                ForEach([0, 2, 4, 6], id: \.self) { count in
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(cellColor(count: count, isFuture: false))
+                        .frame(width: 10, height: 10)
+                }
+                Text("More")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityHidden(true)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Journal logging history: \(model.loggedDayCount) of the last \(model.usesFullGrid ? Self.weeksToShow * 7 : model.visibleDayCount) days logged.")
