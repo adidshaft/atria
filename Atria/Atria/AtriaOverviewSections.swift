@@ -10583,6 +10583,7 @@ struct AtriaMetricChartPreparedData {
     let domain: ClosedRange<Double>
     let xDomain: ClosedRange<Date>?
     let minMaxPoints: [AtriaDetailChartPoint]
+    let lineGradientStops: [Gradient.Stop]?
     private let pointTimes: [TimeInterval]
     private let companionIndicesByDay: [[Date: Int]]
     private let calendar: Calendar
@@ -10612,6 +10613,19 @@ struct AtriaMetricChartPreparedData {
         include(priorAverage)
         domain = low.flatMap { low in high.map { AtriaTrendChartScale.domain(low: low, high: $0) } } ?? 0...1
         self.xDomain = xDomain
+        if let firstTint = points.first?.tint, points.contains(where: { $0.tint != firstTint }) {
+            let span = domain.upperBound - domain.lowerBound
+            var stops: [Gradient.Stop] = []
+            for point in points.sorted(by: { $0.value < $1.value }) {
+                let location = CGFloat(span > 0 ? (point.value - domain.lowerBound) / span : 0)
+                if stops.last?.location != location {
+                    stops.append(Gradient.Stop(color: point.tint, location: location))
+                }
+            }
+            lineGradientStops = stops
+        } else {
+            lineGradientStops = nil
+        }
         minMaxPoints = points.filter {
             guard let lower = $0.bandLower, let upper = $0.bandUpper else { return false }
             return upper > lower
@@ -10807,7 +10821,15 @@ private struct AtriaPreparedMetricChart: View {
             ForEach(points.contiguousDayRuns(), id: \.point.day) { entry in
                 LineMark(x: .value("Day", entry.point.day, unit: .day), y: .value(title, entry.point.value),
                          series: .value("Series", "current-\(entry.runID)"))
-                    .interpolationMethod(.linear).foregroundStyle(tint)
+                    .interpolationMethod(.linear).foregroundStyle(lineStyle)
+                    // Without plot-area alignment Swift Charts resolves the
+                    // gradient against each run's own bounding box, so the same
+                    // value renders different colors on different runs and none
+                    // of them match `point.tint` (stops are normalized against
+                    // `prepared.domain`). Aligning to the plot area makes
+                    // gradient unit space == chartYScale(domain:) == the stop
+                    // normalization space (2026-08-05 O8 repair).
+                    .alignsMarkStylesWithPlotArea()
             }
             ForEach(points) { point in
                 PointMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value))
@@ -10903,6 +10925,11 @@ private struct AtriaPreparedMetricChart: View {
         let start = points.first?.day ?? Date()
         let end = points.last?.day ?? start.addingTimeInterval(1)
         return start...max(end, start.addingTimeInterval(1))
+    }
+
+    private var lineStyle: AnyShapeStyle {
+        guard let stops = prepared.lineGradientStops else { return AnyShapeStyle(tint) }
+        return AnyShapeStyle(.linearGradient(Gradient(stops: stops), startPoint: .bottom, endPoint: .top))
     }
 
     @ViewBuilder private var chartLegendAndCompanions: some View {
