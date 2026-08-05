@@ -2592,3 +2592,21 @@ OPERATING NOTES for the next session, hard-won today:
   ANY detection-adjacent change.
 - Forensics channels: prefs plist (failure diagnostic + site tags +
   footprint breadcrumb), authority JSON, catalog JSON — all pullable.
+
+## 15.38 Steps coverage explained live (user Q, 2026-08-05 ~23:30)
+
+"59% covered" = verified-evidence fraction of the elapsed
+physiological day. WHOOP4 has no live step counter — motion banks
+on-strap and offloads in chunks (device evidence: last offload
+21:11 IST, pendingOffloads queued in
+workoutHistoricalMotionBank.coverage.v2, step receipts refreshed
+13:20/13:30). Intraday coverage structurally trails wall clock by the
+banking cadence; overnight charge drains the banks so a worn day
+reads ~100%-of-worn-time by morning. Off-wrist minutes stay honestly
+uncovered forever (a day with 1h charging maxes ~96% — correct, not a
+shortfall). HR is the live seconds-behind channel; steps are the
+chunked channel. ADDED TO RANKED QUEUE: optional "faster offload
+while coverage < X%" policy prototype — the documented drain-vs-
+capture tradeoff (memory: steps latency is a drain tradeoff, needs
+real-day validation, NOT a blind fix). Decide after observing
+tomorrow's numbers on the now-healthy pipeline.
