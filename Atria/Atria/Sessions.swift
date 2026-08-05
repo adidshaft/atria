@@ -15768,6 +15768,23 @@ final class SessionStore: ObservableObject {
             )
             return
         }
+        // HEAVY LANE (2026-08-05, forced-gauntlet round 5 — THE cold-launch
+        // killer): on this over-cap archive the cap-pressure probe re-admits
+        // compaction at every flush, and its full-archive rewrite passes ran
+        // on the long-lived projection queue CONCURRENTLY with recompute
+        // cycles — 1108→2234MB of compactor climb plus the trailing cycle's
+        // projection crossed the ceiling at +68s (pid 12457). Compaction
+        // defers while any recompute cycle is running or queued; every flush
+        // notification re-offers it, so deferral costs only latency.
+        guard !recoveredProjectionScanActive else {
+            AtriaMemprobe.note("compaction_deferred_heavy_lane")
+            AtriaDebugLog(
+                "ATRIADBG archive_compaction_driver status=deferred_recompute_cycle reason=%@ action=retry_on_next_flush",
+                reason
+            )
+            return
+        }
+        AtriaMemprobe.note("compaction_begin reason=\(reason.prefix(24))")
         let forced = ProcessInfo.processInfo.arguments.contains("--atria-compact-archive")
         let defaults = UserDefaults.standard
         if !forced, !bypassDailyLease {
@@ -15803,6 +15820,7 @@ final class SessionStore: ObservableObject {
                           result.summaryRows,
                           result.bytesBefore,
                           result.bytesAfter)
+            AtriaMemprobe.note("compaction_end status=\(result.status.prefix(28))")
             DispatchQueue.main.async {
                 Self.archiveCompactionInFlight = false
                 // Only measured stable states earn the daily lease. In
