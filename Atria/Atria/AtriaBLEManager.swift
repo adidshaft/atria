@@ -2523,6 +2523,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private let processLaunchStartedAt = Date()
     nonisolated private static let workoutHistoricalMotionBankEnabledKey =
         "atria.workoutHistoricalMotionBank.enabled"
+    /// Durable site tag for terminal-materialization checkpoint failures
+    /// (2026-08-05): publicationCheckpointMissing has a dozen throw sites and
+    /// the persisted diagnostic carried no context — a five-day wedge was
+    /// diagnosed only through repeated on-device passes. #line at the throw
+    /// site lands in the prefs plist beside the diagnostic.
+    nonisolated static func terminalCheckpointMissing(
+        _ site: String
+    ) -> AtriaBLEHistoryTerminalMaterializationError {
+        UserDefaults.standard.set(
+            site, forKey: "atria.offlineSync.terminalFailureSite.v1"
+        )
+        return .publicationCheckpointMissing
+    }
+
     nonisolated private static let terminalConsumerDependencyMismatchKey =
         "atria.offlineSync.terminalConsumerDependencyMismatch.v2"
     nonisolated private static let terminalConsumerDependencyMismatchAtKey =
@@ -31170,8 +31184,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         guard previousFullScan.generation < UInt64.max,
                               refreshedSnapshot.catalogGeneration
                                 > previousFullScan.catalogGeneration else {
-                            throw AtriaBLEHistoryTerminalMaterializationError
-                                .publicationCheckpointMissing
+                            throw Self.terminalCheckpointMissing("site\(#line)")
                         }
                         _ = try fullScanCompletionStore.recordCompletion(.init(
                             version: AtriaHistoricalFullScanCompletionStore
@@ -31326,8 +31339,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 var current = try coverageStore.load()
                 if current?.publication == nil {
                     guard let terminal = current?.historyComplete else {
-                        throw AtriaBLEHistoryTerminalMaterializationError
-                            .publicationCheckpointMissing
+                        throw Self.terminalCheckpointMissing("site\(#line)")
                     }
                     let terminalBatchNumber = terminal.terminalBatchNumber
                         ?? UInt64(terminal.acknowledgedBoundaryCount)
@@ -31339,8 +31351,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     guard terminalBatchNumber > 0,
                           durableSequence > 0,
                           durableSequence < UInt64.max else {
-                        throw AtriaBLEHistoryTerminalMaterializationError
-                            .publicationCheckpointMissing
+                        throw Self.terminalCheckpointMissing("site\(#line)")
                     }
                     let chunkID = try HistoricalArchive
                         .terminalCatalogCandidateChunkID()
@@ -31354,8 +31365,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     )
                 }
                 guard var publication = current?.publication else {
-                    throw AtriaBLEHistoryTerminalMaterializationError
-                        .publicationCheckpointMissing
+                    throw Self.terminalCheckpointMissing("site\(#line)")
                 }
                 var seal: HistoricalArchive.TerminalCatalogSealResult
                 if publication.status == .prepared {
@@ -31376,8 +31386,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         )
                     )
                     guard let updated = current?.publication else {
-                        throw AtriaBLEHistoryTerminalMaterializationError
-                            .publicationCheckpointMissing
+                        throw Self.terminalCheckpointMissing("site\(#line)")
                     }
                     publication = updated
                 } else {
@@ -31449,8 +31458,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         )
                     }
                     guard let updated = current?.publication else {
-                        throw AtriaBLEHistoryTerminalMaterializationError
-                            .publicationCheckpointMissing
+                        throw Self.terminalCheckpointMissing("site\(#line)")
                     }
                     publication = updated
                 }
@@ -31642,8 +31650,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         )
                     )
                     guard let updated = current?.publication else {
-                        throw AtriaBLEHistoryTerminalMaterializationError
-                            .publicationCheckpointMissing
+                        throw Self.terminalCheckpointMissing("site\(#line)")
                     }
                     publication = updated
                 }
@@ -31659,8 +31666,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     )
                 if case .pendingFutureEvidence(let requiredStart, let requiredEnd) = settlement {
                     guard let pendingAuthority = try coverageStore.load() else {
-                        throw AtriaBLEHistoryTerminalMaterializationError
-                            .publicationCheckpointMissing
+                        throw Self.terminalCheckpointMissing("site\(#line)")
                     }
                     Task { @MainActor [weak self] in
                         guard let self else { return }
@@ -31787,8 +31793,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             identity: identity
                         )
                     guard released else {
-                        throw AtriaBLEHistoryTerminalMaterializationError
-                            .publicationCheckpointMissing
+                        throw Self.terminalCheckpointMissing("site\(#line)")
                     }
                     UserDefaults.standard.set(
                         "terminal_gap_uncovered_raw_retained",
@@ -32106,8 +32111,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         guard var authority = try historicalFullDrainCoverageStore.load(),
               authority.publication?.status == .projectionsPublished else {
-            throw AtriaBLEHistoryTerminalMaterializationError
-                .publicationCheckpointMissing
+            throw Self.terminalCheckpointMissing("site\(#line)")
         }
         for snapshot in authority.terminalGapReconciliations ?? [] {
             guard snapshot.status == .coverageProven
@@ -32143,8 +32147,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     .first(where: {
                         $0.gap.gapIdentifier == entry.gap.gapIdentifier
                     }) else {
-                    throw AtriaBLEHistoryTerminalMaterializationError
-                        .publicationCheckpointMissing
+                    throw Self.terminalCheckpointMissing("site\(#line)")
                 }
                 entry = prepared
                 guard Self.validGapLedgerResolutionSnapshot() != nil else {
@@ -32470,8 +32473,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         authority: AtriaHistoricalFullDrainCoverageStore.Authority
     ) throws -> [AtriaHistoricalFullDrainCoverageStore.ConsumerReceipt] {
         guard let terminal = authority.historyComplete else {
-            throw AtriaBLEHistoryTerminalMaterializationError
-                .publicationCheckpointMissing
+            throw Self.terminalCheckpointMissing("site\(#line)")
         }
         return try publishedReceipts.map { published in
             let kind: String
