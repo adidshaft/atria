@@ -3379,12 +3379,16 @@ private struct AtriaLiveWorkoutBatteryBadge: View {
             }
             Text(state.batteryLevel >= 0 ? "\(state.batteryLevel)%" : "--")
                 .monospacedDigit()
+                .lineLimit(1)
         }
         .font(.caption2.weight(.black))
         .foregroundStyle(.white.opacity(0.82))
         .padding(.horizontal, 8)
         .frame(minHeight: 28)
         .background(.black.opacity(0.32), in: Capsule())
+        // Never let the heart-block row compress this badge -- a squeezed badge
+        // wrapped "73%" into a vertical 7/3/% stack (real-device bug 2026-08-05).
+        .fixedSize()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             state.batteryLevel >= 0

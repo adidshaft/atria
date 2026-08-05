@@ -1790,6 +1790,10 @@ private struct AtriaLiveActivityLockScreenView: View {
             Text(title)
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.secondary)
+                // Never wrap a label like "Strain" into a vertical "St/rai/n"
+                // stack when a column compresses (real-device bug 2026-08-05).
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         // The emphasized three-digit heart rate must win horizontal
