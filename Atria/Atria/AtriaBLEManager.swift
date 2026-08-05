@@ -2528,7 +2528,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// the persisted diagnostic carried no context — a five-day wedge was
     /// diagnosed only through repeated on-device passes. #line at the throw
     /// site lands in the prefs plist beside the diagnostic.
-    nonisolated static func terminalCheckpointMissing(
+    nonisolated private static func terminalCheckpointMissing(
         _ site: String
     ) -> AtriaBLEHistoryTerminalMaterializationError {
         UserDefaults.standard.set(
