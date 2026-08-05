@@ -2782,3 +2782,24 @@ still 18:09 (pre-blocker). Plausibly periodic-cadence lag after the
 18:52-19:00 down window. RECHECK next pull (~19:25): if boundary
 still 18:33 → investigate stream resumption via device log copy
 (remember 60-90s lag + 8MB rotation).
+
+## 15.46 Stream confirmed resumed + armed-aware attribution fix SHIPPED (2026-08-05 ~19:35)
+
+§15.45 ambiguity RESOLVED: boundaryOK advanced 18:33→19:12, flush
+debt 376→216 (observed 19:06) — stream fully resumed post-blocker;
+staleness was periodic-cadence lag.
+
+DIAG FLAW CAUGHT LIVE + FIXED: sync_cutover accumulated 346s while
+the bank was plausibly still ARMED (gate declines fire before the
+already-armed short-circuit → armed time during history sync misfiled
+as sync_cutover, would overstate sync cost in tomorrow's read). Fix:
+noteMotionBankDutyCycle(_ fallback:) helper — if bank is armed for
+the current connection on a live link, note "armed"; else the
+fallback. All 6 decline sites routed through it (sync_cutover,
+governor_off, throttle, offload_first ×2, transport_pending);
+link_down/stop/open sites keep direct notes. Behavior-neutral
+(bucket choice only). 4/4 diag tests, gate 4-failure baseline,
+shipped + launched (trust persisted, no prompt).
+READ RULE for tomorrow: buckets before ~19:35 carry the overstated
+sync_cutover; reconcile pre-fix hours against ledger closed
+intervals if precision matters. Post-19:35 buckets are clean.
