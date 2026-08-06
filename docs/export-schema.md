@@ -215,7 +215,9 @@ For GAP-11, `tools/evaluate_activity_classifier.py` consumes an admitted corpus
 manifest and a local prediction sidecar. It requires a prediction for every
 admitted activity window, measures only held-out participants, and emits
 per-class precision/recall and a confusion matrix under
-`held_out_metrics_for_review_only`. It cannot validate or promote a model.
+`held_out_metrics_for_review_only`. With `--target-gap GAP-12`, it applies the
+same rule to PSG/defensible-reference sleep-stage labels. It cannot validate or
+promote either model.
 
 ## Days
 

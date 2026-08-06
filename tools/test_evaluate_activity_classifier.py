@@ -25,6 +25,13 @@ def gap11_label(activity: str, start: int) -> dict:
     }
 
 
+def gap12_label(stage: str, start: int) -> dict:
+    return {
+        "gap": "GAP-12", "start_rel": start, "end_rel": start + 60,
+        "source": "polysomnography", "stage": stage, "atria_derived": False,
+    }
+
+
 def participant(pseudonym: str, split: str) -> dict:
     return {
         "pseudonym": pseudonym,
@@ -42,6 +49,28 @@ def corpus_manifest() -> dict:
         "production_promotions": 0,
         "targets": ["GAP-11"],
         "participants": [participant("dev-person", "development"), participant("held-person", "held_out")],
+    }
+
+
+def sleep_stage_corpus_manifest() -> dict:
+    stages = ["wake", "light", "deep", "rem"]
+
+    def stage_participant(pseudonym: str, split: str) -> dict:
+        return {
+            "pseudonym": pseudonym,
+            "split": split,
+            "bundle": {"digest_sha256": "b" * 64, "schema": 4},
+            "labels": [gap12_label(stage, index * 70) for index, stage in enumerate(stages)],
+        }
+
+    return {
+        "schema": 1,
+        "research_only": True,
+        "model_validated": False,
+        "production_promotions": 0,
+        "targets": ["GAP-12"],
+        "participants": [stage_participant("psg-dev", "development"),
+                         stage_participant("psg-held", "held_out")],
     }
 
 
@@ -107,6 +136,33 @@ class ActivityClassifierEvaluationTests(unittest.TestCase):
         report = evaluator.evaluate(source, prediction_rows)
         self.assertEqual(report["confusion"]["walking"]["unknown"], 1)
         self.assertEqual(report["per_class"]["walking"]["recall"], 0)
+
+    def test_reports_sleep_stage_metrics_only_from_held_out_people(self) -> None:
+        source = sleep_stage_corpus_manifest()
+        rows = []
+        for participant_row in source["participants"]:
+            for label in participant_row["labels"]:
+                prediction = label["stage"]
+                if participant_row["split"] == "held_out" and label["stage"] == "deep":
+                    prediction = "light"
+                rows.append({"pseudonym": participant_row["pseudonym"],
+                             "start_rel": label["start_rel"],
+                             "end_rel": label["end_rel"],
+                             "prediction": prediction})
+        report = evaluator.evaluate(source,
+                                    {"schema": 1, "research_only": True,
+                                     "model_validated": False, "production_promotions": 0,
+                                     "model_id": "research-stages-v0", "predictions": rows},
+                                    gap="GAP-12")
+        self.assertEqual(report["target"], "GAP-12")
+        self.assertEqual(report["per_class"]["deep"]["recall"], 0)
+        self.assertEqual(report["per_class"]["light"]["precision"], 0.5)
+
+    def test_rejects_an_activity_class_for_stage_evaluation(self) -> None:
+        source = sleep_stage_corpus_manifest()
+        prediction_rows = predictions(corpus_manifest())
+        with self.assertRaisesRegex(evaluator.EvaluationError, "unsupported prediction"):
+            evaluator.evaluate(source, prediction_rows, gap="GAP-12")
 
 
 if __name__ == "__main__":

@@ -165,7 +165,7 @@ bias, MAE, p95, correlation, and three-day requirements in
 7. Only after that review can a separately committed, versioned app model be
    considered. Historical values remain frozen under their prior model.
 
-## GAP-11 held-out report
+## GAP-11 and GAP-12 held-out reports
 
 After the corpus has been admitted, an offline candidate model can be evaluated
 against its complete, time-matched activity windows:
@@ -187,3 +187,11 @@ one-to-one alignment but do not enter those metrics.
 The report status is always `held_out_metrics_for_review_only`. It is evidence
 for a human model review, never an authorization to preselect, save, or
 overwrite a workout type in the app.
+
+The same evaluator accepts `--target-gap GAP-12` for sleep-stage candidates.
+It reads only PSG or defensible-reference stage labels already admitted by the
+manifest, measures wake/light/deep/REM precision and recall on held-out people,
+and permits `unknown` as an explicit abstention. Atria-derived stage estimates
+cannot enter the corpus and cannot become the evaluator's ground truth. Its
+report has the same review-only status and cannot authorize a hypnogram, stage
+typical range, or stage-weighted Recovery contribution in the app.
