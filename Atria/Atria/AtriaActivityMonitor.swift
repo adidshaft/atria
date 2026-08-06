@@ -1129,7 +1129,9 @@ struct AtriaActivityMonitorTab: View {
                 // reads as broken (sighted users previously got only the
                 // VoiceOver label).
                 .chartOverlay { _ in
-                    Text("Nothing recorded yet this day")
+                    Text(window.isCurrentPhysiologicalDay
+                         ? "No activity recorded yet today"
+                         : "No activity recorded on this day")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
