@@ -3511,3 +3511,43 @@ DAYLIGHT FIX (now fully evidenced, §15.73 SLA requires it):
    the link within seconds, not minutes.
 3. Re-measure next day: expect armed >85% of worn time → coverage
    ~100% within the 30-60min SLA.
+
+## 15.77 MORNING: suppression chain fully dismantled + user feedback agenda (09:42)
+
+DEADLOCK CHAIN — four layers found and fixed across 5 ships this
+morning (0d9f694c → 64d3b20f → d8c0f441 → eda13ba0 → 31225021):
+1. scene-active never re-entered cross-process deferred publication.
+2. 24h flat suppression bound outliving its cause (window passed).
+3. fingerprint-equality suppression on a retired-but-resurrected
+   cache.
+4. seed-from-diagnostic path re-minting the cache from the stale
+   persisted diagnostic — retired together now.
+ALSO: automaticFullDrainRecoveryEnabled=false (test pin migrated) —
+range-loss lane no longer owns the transport (§15.76 verdict
+executed). RESULT 09:40: terminalFailAt cleared, REAL materialization
+ran (materializing=1 observed), now deferring honestly on
+archive-warm/bg_processing — expect publication imminently on retry.
+LESSON for the cleanup pass: four defensive layers each defended
+stale state; the suppression architecture needs consolidation
+(single satisfiability-aware gate) — matches user's "clean and
+arrange the code" ask.
+
+USER MORNING FEEDBACK (binding agenda):
+1. Sleep ONSET wrong: slept after 2am, app shows 12:53am — onset
+   detection admits pre-sleep still time. Engine accuracy item.
+2. Sleep ACTIVITY tap lacks visualizations — user expects
+   WHOOP-style: night HR trace, stage bars (Awake/Light/SWS/REM,
+   % + durations + typical ranges), sleep performance components
+   (hours-vs-needed / consistency / efficiency). NOTE: hypnogram +
+   plan + need ledger EXIST on the sleep METRIC detail sheet —
+   the activity-list tap routes to a poorer surface. Fix: route
+   sleep activity taps to the rich sleep detail + add the stage-bars
+   breakdown (composition data exists — restorative bar shipped).
+3. "Every activity should have its own visualization type."
+4. Vitals stress monitor with gradient MISSING per user — verify
+   post-publication (may be consumer-gated) before building;
+   the stress monitor lives on Activity (0a87ebde), user expects
+   it on Vitals too — product call.
+5. Code cleanup/arrangement pass — requested.
+Reference screenshots (WHOOP sleep card/detail/score) attached in
+conversation ~09:25.
