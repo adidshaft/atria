@@ -36551,39 +36551,8 @@ struct SleepHistorySnapshot: Equatable {
     }
 
     private static func makeSleepConsistency(_ nights: [Night]) -> (percent: Int?, text: String, footnote: String) {
-        let durationScore = sleepDurationConsistencyPercent(nights)
-        let scheduleScore = sleepScheduleConsistencyPercent(nights)
-        guard let durationScore else {
-            return (nil, "--", "Needs 2 sleep nights.")
-        }
-        let score = scheduleScore.map {
-            min(max(Int((Double(durationScore) * 0.55 + Double($0) * 0.45).rounded()), 0), 100)
-        } ?? durationScore
-        let basis = scheduleScore == nil ? "recent sleep duration" : "sleep timing and duration"
-        let footnote = score >= 70
-            ? (score >= 85 ? "Very steady \(basis)." : "Mostly steady \(basis).")
-            : "Variable \(basis); keep bed and wake times consistent."
-        return (score, "\(score)%", footnote)
-    }
-
-    private static func sleepDurationConsistencyPercent(_ nights: [Night]) -> Int? {
-        let records = recentSleepNights(nights).prefix(7)
-        guard records.count >= 2 else { return nil }
-        let durations = records.map(\.durationHours)
-        let average = durations.reduce(0, +) / Double(durations.count)
-        let meanAbsoluteDeviation = durations.reduce(0) { $0 + abs($1 - average) } / Double(durations.count)
-        let score = 100 - min(60, Int((meanAbsoluteDeviation / 1.5 * 60).rounded()))
-        return min(max(score, 0), 100)
-    }
-
-    private static func sleepScheduleConsistencyPercent(_ nights: [Night]) -> Int? {
-        let midpointSeconds = recentSleepNights(nights)
-            .prefix(7)
-            .compactMap(Self.sleepMidpointTimeOfDaySeconds)
-        guard midpointSeconds.count >= 2 else { return nil }
-        let deviationHours = Self.circularMeanAbsoluteDeviationHours(midpointSeconds)
-        let score = 100 - min(60, Int((deviationHours / 2.0 * 60).rounded()))
-        return min(max(score, 0), 100)
+        let result = AtriaSleepConsistency.result(from: nights)
+        return (result.combinedPercent, result.displayText, result.footnote)
     }
 
     private static func makeRecentSleepDebtBasis(_ nights: [Night]) -> (averageHours: Double?, recordCount: Int) {
@@ -36731,6 +36700,110 @@ struct SleepHistorySnapshot: Equatable {
             return "\(hours)h \(remainder)m"
         }
         return "\(remainder)m"
+    }
+}
+
+/// One timing-only authority for every Sleep Consistency surface. It uses the
+/// local civil time recorded with each sleep event, so travelling later cannot
+/// shift an old bedtime or wake time into the current phone timezone.
+struct AtriaSleepConsistency: Equatable {
+    static let minimumQualifiedNights = 5
+
+    struct NightDeviation: Equatable, Identifiable {
+        let id: String
+        let bedtimeMinutes: Int
+        let wakeMinutes: Int
+        let bedtimeDeviationMinutes: Int
+        let wakeDeviationMinutes: Int
+    }
+
+    let bedtimeRegularity: Int?
+    let wakeTimeRegularity: Int?
+    let combinedPercent: Int?
+    let qualifiedNightCount: Int
+    let typicalBedtimeMinutes: Int?
+    let typicalWakeTimeMinutes: Int?
+    let deviations: [NightDeviation]
+
+    var isQualified: Bool { combinedPercent != nil }
+    var displayText: String { combinedPercent.map { "\($0)%" } ?? "--" }
+    var typicalBedtimeText: String { Self.clockText(typicalBedtimeMinutes) }
+    var typicalWakeTimeText: String { Self.clockText(typicalWakeTimeMinutes) }
+    var bedtimeVariationMinutes: Int? {
+        deviations.isEmpty ? nil : Int((Double(deviations.map(\.bedtimeDeviationMinutes).reduce(0, +)) / Double(deviations.count)).rounded())
+    }
+    var wakeVariationMinutes: Int? {
+        deviations.isEmpty ? nil : Int((Double(deviations.map(\.wakeDeviationMinutes).reduce(0, +)) / Double(deviations.count)).rounded())
+    }
+    var footnote: String {
+        guard let combinedPercent else {
+            return "Needs \(Self.minimumQualifiedNights) qualified main-sleep nights (\(qualifiedNightCount) so far)."
+        }
+        if combinedPercent >= 85 { return "Very steady bed and wake timing." }
+        if combinedPercent >= 70 { return "Mostly steady bed and wake timing." }
+        return "Variable bed or wake timing; a steadier schedule will improve this."
+    }
+
+    static func result(from nights: [SleepHistorySnapshot.Night]) -> Self {
+        let timings = nights
+            .filter { $0.confirmed && !$0.isNapEvidence }
+            .compactMap { night -> (id: String, bedtime: Int, wake: Int)? in
+                guard let start = night.start, let end = night.end, end > start else { return nil }
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = TimeZone(identifier: night.eventTimeZoneIdentifier ?? "") ?? .current
+                let startParts = calendar.dateComponents([.hour, .minute], from: start)
+                let endParts = calendar.dateComponents([.hour, .minute], from: end)
+                let bedtime = (startParts.hour ?? 0) * 60 + (startParts.minute ?? 0)
+                let wake = (endParts.hour ?? 0) * 60 + (endParts.minute ?? 0)
+                // Anchor both timings at the night that starts in the evening.
+                return (night.id,
+                        bedtime < 12 * 60 ? bedtime + 24 * 60 : bedtime,
+                        wake < 12 * 60 ? wake + 24 * 60 : wake)
+            }
+            .prefix(14)
+
+        guard timings.count >= minimumQualifiedNights else {
+            return Self(bedtimeRegularity: nil,
+                        wakeTimeRegularity: nil,
+                        combinedPercent: nil,
+                        qualifiedNightCount: timings.count,
+                        typicalBedtimeMinutes: nil,
+                        typicalWakeTimeMinutes: nil,
+                        deviations: [])
+        }
+        let bedtimes = timings.map(\.bedtime)
+        let wakes = timings.map(\.wake)
+        let typicalBedtime = Int((Double(bedtimes.reduce(0, +)) / Double(bedtimes.count)).rounded())
+        let typicalWake = Int((Double(wakes.reduce(0, +)) / Double(wakes.count)).rounded())
+        let deviations = timings.map {
+            NightDeviation(id: $0.id,
+                           bedtimeMinutes: $0.bedtime,
+                           wakeMinutes: $0.wake,
+                           bedtimeDeviationMinutes: abs($0.bedtime - typicalBedtime),
+                           wakeDeviationMinutes: abs($0.wake - typicalWake))
+        }
+        func regularity(_ values: [Int], typical: Int) -> Int {
+            let meanDeviation = Double(values.reduce(0) { $0 + abs($1 - typical) }) / Double(values.count)
+            return min(max(100 - Int((meanDeviation / 120 * 60).rounded()), 0), 100)
+        }
+        let bedtimeRegularity = regularity(bedtimes, typical: typicalBedtime)
+        let wakeRegularity = regularity(wakes, typical: typicalWake)
+        return Self(bedtimeRegularity: bedtimeRegularity,
+                    wakeTimeRegularity: wakeRegularity,
+                    combinedPercent: Int((Double(bedtimeRegularity + wakeRegularity) / 2).rounded()),
+                    qualifiedNightCount: timings.count,
+                    typicalBedtimeMinutes: typicalBedtime,
+                    typicalWakeTimeMinutes: typicalWake,
+                    deviations: deviations)
+    }
+
+    private static func clockText(_ minute: Int?) -> String {
+        guard let minute else { return "--" }
+        let normalized = ((minute % 1_440) + 1_440) % 1_440
+        let hour24 = normalized / 60
+        let suffix = hour24 >= 12 ? "PM" : "AM"
+        let hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12
+        return String(format: "%d:%02d %@", hour12, normalized % 60, suffix)
     }
 }
 
