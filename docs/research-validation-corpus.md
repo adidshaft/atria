@@ -139,15 +139,22 @@ An Atria hypnogram is never ground truth for its own validation.
   "end_rel": 46860,
   "signal": "spo2",
   "reference_device": "named independent reference device",
+  "session_id": "opaque-session-identifier",
+  "reference_value": 98.0,
   "pair_age_seconds": 1.2,
   "layout_stable": true,
-  "negative_control": true
+  "negative_control": false
 }
 ```
 
 `signal` is either `skin_temperature` or `spo2`. The two signals may have
 reference pairs for the same interval; repeated pairs for the same signal must
-not overlap.
+not overlap. `reference_value` is the independent device's reading (percent for
+SpO2, °C for skin temperature); it must be absent on a `negative_control` row.
+`session_id` is an opaque per-session identifier used to keep day/session
+splits auditable without adding dates or device identifiers. Both signals need
+development and held-out participants; no signal may inherit validation from
+the other.
 
 This admission check complements—not replaces—the held-out-day, reference-span,
 bias, MAE, p95, correlation, and three-day requirements in
@@ -216,3 +223,21 @@ level confusion, and level-3 precision/recall. It must remain
 `research_only: true`, `model_validated: false`, and
 `production_promotions: 0`; a passing command cannot turn on a production
 overnight physiological-load score or feed the Sleep Score.
+
+## GAP-14 held-out report
+
+Evaluate each sensor signal independently; temperature and SpO2 may not share a
+decoder result:
+
+```sh
+python3 tools/evaluate_sensor_decoder.py \
+  corpus.manifest.json spo2.predictions.json \
+  --signal spo2 --output spo2.held-out-report.json
+```
+
+The prediction sidecar contains a matching `prediction_value` for every paired
+window, or `null` for every negative-control window. The report computes
+held-out bias, MAE, p95 absolute error (SpO2), correlation, reference span,
+session coverage, and false numeric outputs in controls. Threshold results are
+review checks only: the report remains `model_validated: false` and cannot
+enable either decoder.

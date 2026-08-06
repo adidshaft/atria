@@ -224,6 +224,11 @@ external `reference_level` and matching local 0–3 candidate predictions. It
 reports held-out calibration and level-3 classification metrics only; it cannot
 enable the physiological-load model or contribute to Atria Sleep Score.
 
+For GAP-14, `tools/evaluate_sensor_decoder.py` evaluates temperature and SpO2
+as separate candidates against independent reference values and negative
+controls. It reports held-out error, correlation, span, session coverage, and
+false promotions, but does not enable a decoder.
+
 ## Days
 
 Daily metric rollups (aggregates used for charts and context).

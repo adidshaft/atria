@@ -149,17 +149,27 @@ def validate_gap12(label: dict[str, Any], prefix: str) -> None:
 
 
 def validate_gap14(label: dict[str, Any], prefix: str) -> None:
-    item = exact_object(label, {"gap", "start_rel", "end_rel", "signal", "reference_device", "pair_age_seconds", "layout_stable", "negative_control"}, set(), prefix)
+    item = exact_object(label, {"gap", "start_rel", "end_rel", "signal", "reference_device", "session_id", "reference_value", "pair_age_seconds", "layout_stable", "negative_control"}, set(), prefix)
     validate_window(item, prefix)
-    if text(item["signal"], f"{prefix}.signal") not in DECODER_SIGNALS:
+    signal = text(item["signal"], f"{prefix}.signal")
+    if signal not in DECODER_SIGNALS:
         raise CorpusError(f"{prefix} has unsupported decoder signal")
     text(item["reference_device"], f"{prefix}.reference_device")
+    text(item["session_id"], f"{prefix}.session_id")
     if not 0 <= finite(item["pair_age_seconds"], f"{prefix}.pair_age_seconds") <= 2:
         raise CorpusError(f"{prefix}.pair_age_seconds must be within the documented 2-second gate")
     if not boolean(item["layout_stable"], f"{prefix}.layout_stable"):
         raise CorpusError(f"{prefix} lacks stable record-layout evidence")
-    if not boolean(item["negative_control"], f"{prefix}.negative_control"):
-        raise CorpusError(f"{prefix} lacks a negative-control declaration")
+    is_negative_control = boolean(item["negative_control"], f"{prefix}.negative_control")
+    if is_negative_control:
+        if item["reference_value"] is not None:
+            raise CorpusError(f"{prefix} negative control must not carry a reference metric")
+        return
+    reference_value = finite(item["reference_value"], f"{prefix}.reference_value")
+    if signal == "spo2" and not 50 <= reference_value <= 100:
+        raise CorpusError(f"{prefix}.reference_value must be a plausible SpO2 percent")
+    if signal == "skin_temperature" and not 15 <= reference_value <= 45:
+        raise CorpusError(f"{prefix}.reference_value must be a plausible skin temperature in C")
 
 
 VALIDATORS = {"GAP-10": validate_gap10, "GAP-11": validate_gap11, "GAP-12": validate_gap12, "GAP-14": validate_gap14}
@@ -186,6 +196,7 @@ def validate(document: dict[str, Any]) -> dict[str, Any]:
 
     seen: set[str] = set()
     split_by_target: dict[str, set[str]] = defaultdict(set)
+    split_by_decoder_signal: dict[str, set[str]] = defaultdict(set)
     label_counts: Counter[str] = Counter()
     for index, raw in enumerate(participants):
         prefix = f"participants[{index}]"
@@ -220,6 +231,7 @@ def validate(document: dict[str, Any]) -> dict[str, Any]:
             series = gap
             if gap == "GAP-14":
                 series = f"{gap}:{label['signal']}"
+                split_by_decoder_signal[label["signal"]].add(split)
             intervals_by_series[series].append((start, end, label_prefix))
             split_by_target[gap].add(split)
             label_counts[gap] += 1
@@ -238,6 +250,10 @@ def validate(document: dict[str, Any]) -> dict[str, Any]:
     for target in targets:
         if split_by_target[target] != SPLITS:
             raise CorpusError(f"{target} requires both development and held_out participants")
+    if "GAP-14" in targets:
+        for signal in DECODER_SIGNALS:
+            if split_by_decoder_signal[signal] != SPLITS:
+                raise CorpusError(f"GAP-14 {signal} requires both development and held_out participants")
     return {
         "schema": SCHEMA,
         "research_only": True,
