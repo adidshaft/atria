@@ -1277,7 +1277,7 @@ struct SavedSession: Codable, Identifiable {
     }
 
     /// Seconds spent in each HR zone, given a max-HR setting.
-    func timeInZone(maxHR: Int) -> [HRZone: Double] {
+    func timeInZone(maxHR: Int, restingHR: Int? = nil) -> [HRZone: Double] {
         let activePoints = AtriaStrengthLog.pointsExcludingIntervals(points,
                                                                      sessionStart: start,
                                                                      excludedIntervals: excludedIntervals)
@@ -1288,7 +1288,8 @@ struct SavedSession: Codable, Identifiable {
             .reduce(AtriaAnalytics.Strain.MaxHeartRateZoneSeconds.empty) { total, segment in
                 total + AtriaAnalytics.Strain.maxHeartRateZoneSeconds(
                     segment.map { (t: $0.t.timeIntervalSince(start), bpm: $0.bpm) },
-                    maxHR: maxHR
+                    maxHR: maxHR,
+                    restingHR: restingHR
                 )
             }
         guard !summary.isEmpty else { return [:] }
@@ -2031,6 +2032,9 @@ struct UserConfirmedWorkout: Codable, Identifiable, Equatable {
     var activeEnergyKilocalories: Double? = nil
     var activeEnergyConfidence: String? = nil
     var zoneSeconds: [String: TimeInterval]? = nil
+    /// The HRR inputs used to calculate `zoneSeconds`. This locks activity
+    /// history to the same BPM ranges the user saw live.
+    var zoneBoundaries: AtriaHRRZoneBoundaries? = nil
     var eventTimeZoneIdentifier: String? = nil
     /// Pause-adjusted strap-motion steps captured for this exact explicit
     /// workout window. Optional fields keep every pre-step-schema workout
@@ -9123,19 +9127,21 @@ final class SessionStore: ObservableObject {
         todayHRZoneMinutesRevision &+= 1
         let revision = todayHRZoneMinutesRevision
         let source = canonicalSessions()
+        let rest = baseline.restingInt ?? 60
         let maxHR = profile.maxHR
         let now = Date()
         let cycleStart = AtriaPhysiologicalCycle.current(now: now,
                                                          confirmedSleeps: cachedConfirmedSleeps,
                                                          calendar: .current).start
         let delay: TimeInterval = deferred ? 0.12 : 0
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self, source, maxHR, now, cycleStart, revision] in
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self, source, rest, maxHR, now, cycleStart, revision] in
             // Dying thread (2026-08-05): see refreshOverviewTrendPointsCache.
             let summary = AtriaTransientWorkThread.run(
                 name: "atria.today-hr-zones",
                 qualityOfService: .utility
             ) {
                 SessionStore.makeTodayHRZoneMinutes(sessions: source,
+                                                    rest: rest,
                                                     maxHR: maxHR,
                                                     now: now,
                                                     cycleStart: cycleStart)
@@ -11679,6 +11685,7 @@ final class SessionStore: ObservableObject {
     /// intervals from each session the same way `trimp(rest:max:)` and
     /// `timeInZone(maxHR:)` do, so the zone split matches the strain figure.
     nonisolated static func makeTodayHRZoneMinutes(sessions: [SavedSession],
+                                                   rest: Int,
                                                    maxHR: Int,
                                                    now: Date = Date(),
                                                    cycleStart: Date? = nil,
@@ -11708,7 +11715,8 @@ final class SessionStore: ObservableObject {
                 .reduce(AtriaAnalytics.Strain.MaxHeartRateZoneSeconds.empty) { total, segment in
                     total + AtriaAnalytics.Strain.maxHeartRateZoneSeconds(
                         segment.map { (t: $0.t.timeIntervalSince(dayStart), bpm: $0.bpm) },
-                        maxHR: maxHR
+                        maxHR: maxHR,
+                        restingHR: rest
                     )
                 }
             totals = AtriaAnalytics.Strain.MaxHeartRateZoneSeconds(rest: totals.rest + summary.rest,
@@ -20384,7 +20392,8 @@ final class SessionStore: ObservableObject {
         let zoneSummary = segments.reduce(AtriaAnalytics.Strain.MaxHeartRateZoneSeconds.empty) { total, segment in
             total + AtriaAnalytics.Strain.maxHeartRateZoneSeconds(
                 segment.map { (t: $0.t.timeIntervalSince(start), bpm: $0.bpm) },
-                maxHR: maxHR
+                maxHR: maxHR,
+                restingHR: rest
             )
         }
         let energyParts = segments.compactMap { segment in
@@ -21291,7 +21300,7 @@ final class SessionStore: ObservableObject {
         let zoneSummary = segments.reduce(AtriaAnalytics.Strain.MaxHeartRateZoneSeconds.empty) { total, samples in
             total + AtriaAnalytics.Strain.maxHeartRateZoneSeconds(samples.map {
                 (t: $0.t.timeIntervalSince(start), bpm: $0.bpm)
-            }, maxHR: maxHR)
+            }, maxHR: maxHR, restingHR: rest)
         }
         let energyParts = segments.compactMap { samples in
             Metrics.activeCalories(samples, rest: rest, profile: profile)
@@ -21407,7 +21416,8 @@ final class SessionStore: ObservableObject {
             total, segment in
             total + AtriaAnalytics.Strain.maxHeartRateZoneSeconds(
                 segment.map { (t: $0.t.timeIntervalSince(confirmed.start), bpm: $0.bpm) },
-                maxHR: maxHR
+                maxHR: maxHR,
+                restingHR: rest
             )
         }
         let observed = gapAudit.storage.values.reduce(0, +)
@@ -21534,11 +21544,24 @@ final class SessionStore: ObservableObject {
             desired: workouts,
             current: authoritativeCurrent
         )
+        let existingByID = Dictionary(uniqueKeysWithValues: authoritativeCurrent.map { ($0.id, $0) })
+        let settledWorkouts = rebased.map { workout -> UserConfirmedWorkout in
+            guard workout.zoneBoundaries == nil,
+                  existingByID[workout.id] == nil,
+                  workout.zoneSeconds != nil,
+                  let boundaries = AtriaHRRZoneBoundaries(
+                    restingHR: baseline.restingInt ?? 60,
+                    maxHR: profile.maxHR
+                  ) else { return workout }
+            var frozen = workout
+            frozen.zoneBoundaries = boundaries
+            return frozen
+        }
         confirmedRecordWriteGeneration &+= 1
         let generation = confirmedRecordWriteGeneration
         let result = await Self.confirmedRecordWorker.performAsync(.workouts(
             generation: generation,
-            records: rebased,
+            records: settledWorkouts,
             fileURL: fileURL,
             defaultsKey: ConfirmedWorkoutDefaults.key
         ))
@@ -21968,7 +21991,8 @@ final class SessionStore: ObservableObject {
         let activeEnergy = window.activeCalories(rest: rest, profile: profile)
         let zoneSummary = Metrics.maxHeartRateZoneSeconds(
             active.points.map { (t: $0.t, bpm: $0.bpm) },
-            maxHR: maxHR
+            maxHR: maxHR,
+            restingHR: rest
         )
 
         let replacement = UserConfirmedWorkout(
@@ -22264,7 +22288,8 @@ final class SessionStore: ObservableObject {
                 let editActiveEnergy = window.activeCalories(rest: rest, profile: profile)
                 let editZoneSummary = Metrics.maxHeartRateZoneSeconds(
                     activeProjection.points.map { (t: $0.t, bpm: $0.bpm) },
-                    maxHR: maxHR
+                    maxHR: maxHR,
+                    restingHR: rest
                 )
                 let workoutSource = "live_workout_window"
                 let confidence = readiness.ready ? "live_window_user_confirmed" :
@@ -37959,7 +37984,7 @@ private struct SessionDetailSummary {
             : "Incomplete"
         let resolvedMaxHR = max(maxHR, rest + 1)
         let zoneMap: [HRZone: TimeInterval] = metricsComplete
-            ? session.timeInZone(maxHR: resolvedMaxHR)
+            ? session.timeInZone(maxHR: resolvedMaxHR, restingHR: rest)
             : [:]
         zoneRows = HRZone.allCases.compactMap { zone in
                 guard let seconds = zoneMap[zone], seconds > 0 else { return nil }

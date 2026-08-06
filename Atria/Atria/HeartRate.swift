@@ -8,7 +8,8 @@ struct HRSample: Identifiable {
     let bpm: Int
 }
 
-/// Standard 5-zone model as a percentage of max HR.
+/// The public zone model uses heart-rate reserve (HRR): boundaries are
+/// measured from the resting HR used for the workout, never from zero.
 enum HRZone: Int, CaseIterable {
     case rest = 0, warmup, fatBurn, aerobic, anaerobic, max
 
@@ -34,7 +35,7 @@ enum HRZone: Int, CaseIterable {
         }
     }
 
-    /// Lower bound as a fraction of max HR.
+    /// Lower bound as a fraction of heart-rate reserve.
     var lowerFraction: Double {
         switch self {
         case .rest: return 0.0
@@ -46,10 +47,39 @@ enum HRZone: Int, CaseIterable {
         }
     }
 
-    static func zone(for bpm: Int, maxHR: Int) -> HRZone {
+    static func zone(for bpm: Int, maxHR: Int, restingHR: Int? = nil) -> HRZone {
         guard bpm > 0, maxHR > 0 else { return .rest }
-        let frac = Double(bpm) / Double(maxHR)
+        let safeRest = restingHR ?? 0
+        guard maxHR > safeRest else { return .rest }
+        let frac = Double(bpm - safeRest) / Double(maxHR - safeRest)
         return HRZone.allCases.last { frac >= $0.lowerFraction } ?? .rest
+    }
+}
+
+/// Frozen BPM boundaries for one workout.  Old aggregate-only workouts have
+/// no trustworthy historical profile snapshot and intentionally remain nil.
+struct AtriaHRRZoneBoundaries: Codable, Equatable {
+    let restingHR: Int
+    let maxHR: Int
+
+    init?(restingHR: Int, maxHR: Int) {
+        guard restingHR > 0, maxHR > restingHR else { return nil }
+        self.restingHR = restingHR
+        self.maxHR = maxHR
+    }
+
+    func lowerBPM(for zone: HRZone) -> Int {
+        Int((Double(restingHR) + zone.lowerFraction * Double(maxHR - restingHR)).rounded())
+    }
+
+    func rangeText(for zone: HRZone) -> String {
+        switch zone {
+        case .rest: return "< \(lowerBPM(for: .warmup)) bpm"
+        case .max: return "≥ \(lowerBPM(for: .max)) bpm"
+        default:
+            let next = HRZone(rawValue: zone.rawValue + 1)!
+            return "\(lowerBPM(for: zone))–\(lowerBPM(for: next) - 1) bpm"
+        }
     }
 }
 
