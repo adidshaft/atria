@@ -16008,6 +16008,7 @@ final class SessionStore: ObservableObject {
         }
 
         let report = WeeklyReport(rollups: dailyRollupStore.rollups(last: 14),
+                                  sleepNights: sleepHistorySnapshot.nights,
                                   now: now,
                                   calendar: calendar)
         guard report.recoveryAvg != nil else {

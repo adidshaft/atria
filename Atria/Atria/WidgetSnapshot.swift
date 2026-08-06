@@ -230,7 +230,9 @@ enum WidgetSnapshotPublisher {
         batteryChargeStatus: String,
         batteryChargeText: String
     ) -> WidgetSnapshot {
-        let heartRateZone = heartRate.map { HRZone.zone(for: $0, maxHR: current.maxHR) }
+        let heartRateZone = heartRate.map {
+            HRZone.zone(for: $0, maxHR: current.maxHR, restingHR: current.restingHR)
+        }
         return WidgetSnapshot(
             schema: current.schema,
             createdAt: createdAt,
@@ -612,7 +614,9 @@ enum WidgetSnapshotPublisher {
         )
         let liveHeartRateCapturedAt = liveHeartRate > 0 ? ble.session.last?.t : nil
         let liveHeartRateZone = liveHeartRate > 0
-            ? HRZone.zone(for: liveHeartRate, maxHR: store.profile.maxHR)
+            ? HRZone.zone(for: liveHeartRate,
+                          maxHR: store.profile.maxHR,
+                          restingHR: presentationRestingHeartRate ?? rest)
             : nil
         let publishedSteps = dailySteps.count
         let stepsAreValidated = dailySteps.isValidated

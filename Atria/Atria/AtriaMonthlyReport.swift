@@ -38,6 +38,7 @@ struct MonthlyReport: Codable, Equatable {
     let consistencyScore: Int?
 
     init(rollups: [DailyRollupStoreEntry],
+         sleepNights: [SleepHistorySnapshot.Night] = [],
          now: Date = Date(),
          calendar: Calendar = MonthlyReportCalendar.gregorian) {
         let components = calendar.dateComponents([.year, .month], from: now)
@@ -113,7 +114,15 @@ struct MonthlyReport: Codable, Equatable {
             priorHRVAvg.map { current - $0 }
         }
 
-        consistencyScore = Self.sleepConsistencyPercent(from: currentMonth.compactMap(\.bedtimeMinutes))
+        // Never collapse a bed-to-wake consistency measure back into a
+        // bedtime-only rollup score. Without qualified sleep windows this is
+        // intentionally nil ("Schedule building" in the report UI).
+        let monthNights = sleepNights.filter { night in
+            guard let start = night.start else { return false }
+            let parts = calendar.dateComponents([.year, .month], from: start)
+            return parts.year == year && parts.month == month
+        }
+        consistencyScore = AtriaSleepConsistency.result(from: monthNights).combinedPercent
     }
 
     private static func entries(_ rollups: [DailyRollupStoreEntry],
@@ -152,20 +161,6 @@ struct MonthlyReport: Codable, Equatable {
         return WeekSummary(weekStart: hardest.key, totalStrain: hardest.value)
     }
 
-    private static func sleepConsistencyPercent(from bedtimes: [Int]) -> Int? {
-        guard bedtimes.count >= 2 else { return nil }
-        let normalized = bedtimes.map { minute -> Double in
-            let wrapped = ((minute % 1_440) + 1_440) % 1_440
-            return Double(wrapped < 720 ? wrapped + 1_440 : wrapped)
-        }
-        let mean = normalized.reduce(0, +) / Double(normalized.count)
-        let variance = normalized.reduce(0) { partial, value in
-            let delta = value - mean
-            return partial + delta * delta
-        } / Double(normalized.count)
-        let sdMinutes = sqrt(variance)
-        return Int((100 - min(100, sdMinutes / 1.2)).rounded()).clamped(to: 0...100)
-    }
 }
 
 final class MonthlyReportStore {

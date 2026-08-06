@@ -1893,8 +1893,10 @@ final class AtriaOverviewReadinessProjectionStore: ObservableObject {
         let rollups = store.dailyRollupHistory
         let workoutRevision = store.confirmedWorkoutsRevision
         let workouts = store.confirmedWorkouts
-        let reportHighlights = reportHighlightMemo.highlights(revision: rollupRevision,
-                                                              rollups: rollups)
+        let reportHighlights = reportHighlightMemo.highlights(rollupRevision: rollupRevision,
+                                                              sleepRevision: store.sleepHistorySnapshotRevision,
+                                                              rollups: rollups,
+                                                              sleepNights: store.sleepHistorySnapshot.nights)
         let baseline = store.baseline
         return AtriaOverviewReadinessProjectionState(
             trendValues: store.restingTrend14,
@@ -2706,24 +2708,31 @@ private final class AtriaOverviewStrainCompareMemo {
 }
 
 private final class AtriaOverviewReportHighlightMemo {
-    private var revision: Int?
+    private var rollupRevision: Int?
+    private var sleepRevision: Int?
     private var day: Date?
     private var weekly: WeeklyReport?
     private var monthly: MonthlyReport?
 
-    func highlights(revision: Int,
+    func highlights(rollupRevision: Int,
+                    sleepRevision: Int,
                     rollups: [DailyRollupStoreEntry],
+                    sleepNights: [SleepHistorySnapshot.Night],
                     now: Date = Date(),
                     calendar: Calendar = .current) -> (weekly: WeeklyReport?, monthly: MonthlyReport?) {
         let today = calendar.startOfDay(for: now)
-        if self.revision == revision, day == today {
+        if self.rollupRevision == rollupRevision,
+           self.sleepRevision == sleepRevision,
+           day == today {
             return (weekly, monthly)
         }
 
         let weekday = calendar.component(.weekday, from: today)
         let weekReport: WeeklyReport?
         if weekday == 2 || weekday == 3 {
-            let report = WeeklyReport(rollups: rollups, calendar: calendar)
+            let report = WeeklyReport(rollups: rollups,
+                                      sleepNights: sleepNights,
+                                      calendar: calendar)
             weekReport = report.recoveryAvg == nil ? nil : report
         } else {
             weekReport = nil
@@ -2733,13 +2742,17 @@ private final class AtriaOverviewReportHighlightMemo {
         let monthReport: MonthlyReport?
         if dayOfMonth <= 5,
            let priorMonthDate = calendar.date(byAdding: .month, value: -1, to: today) {
-            let report = MonthlyReport(rollups: rollups, now: priorMonthDate, calendar: calendar)
+            let report = MonthlyReport(rollups: rollups,
+                                       sleepNights: sleepNights,
+                                       now: priorMonthDate,
+                                       calendar: calendar)
             monthReport = report.isBuilding ? nil : report
         } else {
             monthReport = nil
         }
 
-        self.revision = revision
+        self.rollupRevision = rollupRevision
+        self.sleepRevision = sleepRevision
         day = today
         weekly = weekReport
         monthly = monthReport
@@ -3118,13 +3131,15 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showWeeklyReport) {
-            AtriaWeeklyReportSheet(report: debugWeeklyReport ?? weeklyReportHighlight ?? WeeklyReport(rollups: dailyRollupHistory),
+            AtriaWeeklyReportSheet(report: debugWeeklyReport ?? weeklyReportHighlight ?? WeeklyReport(rollups: dailyRollupHistory,
+                                                                                                         sleepNights: sleepHistory.nights),
                                    rollups: dailyRollupHistory)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showMonthlyReport) {
-            AtriaMonthlyReportSheet(report: monthlyReportHighlight ?? MonthlyReport(rollups: dailyRollupHistory))
+            AtriaMonthlyReportSheet(report: monthlyReportHighlight ?? MonthlyReport(rollups: dailyRollupHistory,
+                                                                                      sleepNights: sleepHistory.nights))
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
