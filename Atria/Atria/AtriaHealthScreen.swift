@@ -619,6 +619,7 @@ struct AtriaHealthScreen: View {
     let horizontalSizeClass: UserInterfaceSizeClass?
     @State private var historicalHeartRatePoints: [AtriaHomeModel.HeartRateChartPoint] = []
     @State private var isLoadingHistoricalHeartRatePoints = true
+    @State private var sleepStressProjection = AtriaSleepStressProjection.unavailable
     @State private var educationTopic: AtriaVitalsEducationTopic?
     // Visibility/IA fix (2026-07-05): route audit + mounted sections. The
     // Health screen previously had no Trends surface, no sleep-stage
@@ -771,6 +772,9 @@ struct AtriaHealthScreen: View {
         .task(id: historyInput.key) {
             await historyProjectionStore.refresh(from: historyInput)
         }
+        .task(id: sleepStressRequestKey) {
+            await refreshSleepStressProjection()
+        }
         .background {
             if isActive && debugShowsHeartRateTimeline {
                 AtriaVitalsArchiveActivityObserver {
@@ -837,6 +841,47 @@ struct AtriaHealthScreen: View {
                 }
             )
         }
+    }
+
+    private struct SleepStressRequestKey: Equatable {
+        let scope: Scope
+        let nightID: String?
+        let start: Date?
+        let end: Date?
+        let restingHeartRate: Int?
+    }
+
+    private var sleepStressRequestKey: SleepStressRequestKey {
+        SleepStressRequestKey(scope: scope,
+                              nightID: currentMainSleep?.id,
+                              start: currentMainSleep?.start,
+                              end: currentMainSleep?.end,
+                              restingHeartRate: vitalsStore.state.baseline.restingInt)
+    }
+
+    @MainActor
+    private func refreshSleepStressProjection() async {
+        guard scope == .sleep,
+              let sleep = currentMainSleep,
+              let start = sleep.start,
+              let end = sleep.end,
+              end > start else {
+            sleepStressProjection = .unavailable
+            return
+        }
+
+        let restingHeartRate = vitalsStore.state.baseline.restingInt
+        let projection = await Task.detached(priority: .utility) {
+            let raw = HistoricalArchive.metricHeartRatePoints(start: start,
+                                                               end: end,
+                                                               maximumPoints: 50_000)?.points ?? []
+            return AtriaSleepStressProjection.make(points: raw,
+                                                    sleepStart: start,
+                                                    sleepEnd: end,
+                                                    restingHeartRate: restingHeartRate)
+        }.value
+        guard !Task.isCancelled else { return }
+        sleepStressProjection = projection
     }
 
     /// Mounts the sleep-stage hypnogram summary (SWS/REM/Light/Awake) that
@@ -920,12 +965,12 @@ struct AtriaHealthScreen: View {
                 } else {
                     AtriaSleepStageSummary(night: currentSleep)
                 }
+
+                AtriaSleepStressCard(projection: sleepStressProjection)
             }
 
-            // Sleep-consistency insight (design 2026-08-05, WHOOP-parity): the
-            // recent nights' bed→wake windows stacked on a shared axis so a
-            // regular schedule reads as an aligned column. Honest — only real
-            // recorded sleep times; always present (a building note when sparse).
+            // Real bed-to-wake windows, now explicitly explained with their
+            // typical schedule and spread instead of a decorative bar stack.
             AtriaSleepConsistencyStrip(nights: vitalsStore.state.sleepHistorySnapshot.nights)
         }
         .padding(16)
@@ -2215,6 +2260,190 @@ private struct AtriaHealthMetricRow: View, Equatable {
             .contentTransition(reduceMotion ? .identity : .numericText())
             .lineLimit(1)
             .minimumScaleFactor(0.66)
+    }
+}
+
+/// Night-only physiological load from archived, observed heart-rate rows. This
+/// is intentionally a separate projection from the daytime Stress Monitor:
+/// that monitor remains paused during sleep so it cannot accidentally label
+/// an overnight reading as live daytime stress.
+private struct AtriaSleepStressProjection: Equatable {
+    struct Sample: Identifiable, Equatable {
+        let date: Date
+        let score: Double
+        var id: TimeInterval { date.timeIntervalSinceReferenceDate }
+    }
+
+    enum Availability: Equatable {
+        case unavailable
+        case baselineNeeded
+        case insufficientWear
+        case ready
+
+        var title: String {
+            switch self {
+            case .unavailable: return "Sleep window unavailable"
+            case .baselineNeeded: return "Building sleep-stress baseline"
+            case .insufficientWear: return "Not enough overnight wear"
+            case .ready: return "Overnight physiological load"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .unavailable: return "Confirm a sleep window to review overnight stress."
+            case .baselineNeeded: return "A personal resting heart-rate baseline is needed before this can be interpreted."
+            case .insufficientWear: return "Keep the strap on through the night to map observed overnight load."
+            case .ready: return "Relative to your personal resting heart rate; this is not a sleep stage or diagnosis."
+            }
+        }
+    }
+
+    let samples: [Sample]
+    let availability: Availability
+
+    static let unavailable = Self(samples: [], availability: .unavailable)
+
+    static func make(points: [HistoricalArchive.HeartRatePoint],
+                     sleepStart: Date,
+                     sleepEnd: Date,
+                     restingHeartRate: Int?) -> Self {
+        guard let restingHeartRate, (35...120).contains(restingHeartRate) else {
+            return Self(samples: [], availability: .baselineNeeded)
+        }
+        guard sleepEnd.timeIntervalSince(sleepStart) >= 60 * 60 else {
+            return .unavailable
+        }
+
+        // Five-minute buckets make the graph legible without inventing samples
+        // between sparse archive rows. A bucket's score comes from its observed
+        // mean only; missing buckets remain gaps in the chart.
+        let bucketSeconds: TimeInterval = 5 * 60
+        var valuesByBucket: [Int: [Int]] = [:]
+        for point in points where point.t >= sleepStart && point.t <= sleepEnd && (30...240).contains(point.bpm) {
+            let bucket = Int(floor(point.t.timeIntervalSince(sleepStart) / bucketSeconds))
+            valuesByBucket[bucket, default: []].append(point.bpm)
+        }
+        let samples = valuesByBucket.keys.sorted().compactMap { bucket -> Sample? in
+            guard let values = valuesByBucket[bucket], !values.isEmpty else { return nil }
+            let average = Double(values.reduce(0, +)) / Double(values.count)
+            // A deliberately conservative HR-only activation. It takes a
+            // meaningful elevation above the wearer's own resting rate to
+            // enter the high zone; HRV is not silently inferred from HR.
+            let threshold = max(10, Double(restingHeartRate) * 0.20)
+            let score = min(max((average - Double(restingHeartRate) - 3) / threshold, 0), 1) * 3
+            let date = sleepStart.addingTimeInterval((Double(bucket) + 0.5) * bucketSeconds)
+            return Sample(date: date, score: score)
+        }
+
+        guard samples.count >= 12,
+              let first = samples.first?.date,
+              let last = samples.last?.date,
+              last.timeIntervalSince(first) >= min(3 * 60 * 60, sleepEnd.timeIntervalSince(sleepStart) * 0.45) else {
+            return Self(samples: [], availability: .insufficientWear)
+        }
+        return Self(samples: samples, availability: .ready)
+    }
+}
+
+private struct AtriaSleepStressCard: View {
+    let projection: AtriaSleepStressProjection
+
+    private var points: [AtriaStressTimelinePoint] {
+        AtriaStressTimelinePoint.segment(projection.samples.map {
+            AtriaStressDetailReading(date: $0.date, score: $0.score)
+        })
+    }
+
+    private var highWindowCount: Int {
+        projection.samples.filter { $0.score >= 2 }.count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sleep stress")
+                        .font(.subheadline.weight(.bold))
+                    Text(projection.availability.title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                if projection.availability == .ready {
+                    Text(highWindowCount == 0 ? "No high windows" : "\(highWindowCount) high windows")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(highWindowCount == 0 ? Metrics.electricGreen : .orange)
+                }
+            }
+
+            if projection.availability == .ready {
+                Chart {
+                    ForEach(points) { point in
+                        AreaMark(x: .value("Time", point.reading.date),
+                                 y: .value("Stress", point.reading.score),
+                                 series: .value("Segment", point.segment))
+                            .interpolationMethod(.linear)
+                            .foregroundStyle(.linearGradient(colors: [.blue.opacity(0.14), .green.opacity(0.08), .orange.opacity(0.03)],
+                                                              startPoint: .bottom,
+                                                              endPoint: .top))
+                        LineMark(x: .value("Time", point.reading.date),
+                                 y: .value("Stress", point.reading.score),
+                                 series: .value("Segment", point.segment))
+                            .interpolationMethod(.linear)
+                            .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                            .foregroundStyle(.linearGradient(colors: [.blue, .green, .orange],
+                                                              startPoint: .bottom,
+                                                              endPoint: .top))
+                    }
+                    ForEach(points.filter { $0.reading.score >= 2 }) { point in
+                        PointMark(x: .value("Time", point.reading.date),
+                                  y: .value("Stress", point.reading.score))
+                            .symbolSize(28)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .chartYScale(domain: 0...3)
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
+                        AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                        AxisTick().foregroundStyle(.clear)
+                        AxisValueLabel {
+                            if let value = value.as(Int.self) {
+                                Text(value == 3 ? "High" : "\(value)")
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(value >= 2 ? .orange : (value == 1 ? .green : .blue))
+                            }
+                        }
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                        AxisTick().foregroundStyle(.clear)
+                        AxisValueLabel(format: .dateTime.hour().minute())
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(height: 156)
+            } else {
+                ContentUnavailableView(projection.availability.title,
+                                       systemImage: "moon.zzz.fill",
+                                       description: Text(projection.availability.detail))
+                    .frame(maxWidth: .infinity, minHeight: 126)
+                    .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            Text(projection.availability.detail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .atriaInsetCard(tint: .orange)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(projection.availability == .ready
+                            ? "Sleep stress. \(highWindowCount) high stress windows across observed overnight readings."
+                            : "Sleep stress. \(projection.availability.title). \(projection.availability.detail)")
     }
 }
 
