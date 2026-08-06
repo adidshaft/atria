@@ -3551,3 +3551,22 @@ USER MORNING FEEDBACK (binding agenda):
 5. Code cleanup/arrangement pass — requested.
 Reference screenshots (WHOOP sleep card/detail/score) attached in
 conversation ~09:25.
+
+## 15.78 SLEEP-ONSET DEVICE-USE CLAMP SHIPPED (10:15)
+
+Agenda item #1 done (8476c59b): AtriaDeviceUseJournal (lock/unlock +
+scene events, bounded ring, launch-registered observers) + leading-
+edge onset clamp in cluster finalization (sustained use ≥3min
+overlapping the onset chain moves it to use-end + 5min settle;
+never past minimum sleep duration; mid-night phone checks strictly
+untouched). Fixture safety BY CONSTRUCTION: .sessionOnly replay
+bypasses the journal via the same policy switch as the motion
+archive — verified 51/51 incl. BOTH captured-fixture suites.
+Breadcrumb atria.debug.sleepOnsetClamp.v1 on applied clamps.
+PROTECTS FUTURE NIGHTS ONLY (no retro journal for last night).
+NOTE: the workflow harness failed on a missing StructuredOutput from
+the impl agent — work was complete on disk; verified + shipped
+manually. Remaining agenda: sleep-activity visualization routing +
+stage bars; Vitals stress-monitor placement (verify post-
+publication); per-activity visualizations; suppression-architecture
+cleanup; publication flip still awaiting a genuine user unlock.
