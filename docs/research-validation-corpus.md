@@ -67,7 +67,9 @@ appear exactly once, in exactly one split.
 ## Label contracts
 
 All `start_rel` and `end_rel` values use the bundle's schema-v4 day-zero axis.
-They must be non-overlapping for each participant.
+They must not overlap within the same target series. Different targets may share
+the same interval: for example, a PSG stage and an overnight-load reference
+normally describe the same sleep window.
 
 ### GAP-10 — overnight physiological load
 
@@ -132,12 +134,17 @@ An Atria hypnogram is never ground truth for its own validation.
   "gap": "GAP-14",
   "start_rel": 46800,
   "end_rel": 46860,
+  "signal": "spo2",
   "reference_device": "named independent reference device",
   "pair_age_seconds": 1.2,
   "layout_stable": true,
   "negative_control": true
 }
 ```
+
+`signal` is either `skin_temperature` or `spo2`. The two signals may have
+reference pairs for the same interval; repeated pairs for the same signal must
+not overlap.
 
 This admission check complements—not replaces—the held-out-day, reference-span,
 bias, MAE, p95, correlation, and three-day requirements in

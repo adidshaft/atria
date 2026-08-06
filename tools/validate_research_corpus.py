@@ -25,6 +25,7 @@ SPLITS = {"development", "held_out"}
 LOAD_SOURCES = {"controlled_intervention", "validated_questionnaire", "research_protocol"}
 STAGE_SOURCES = {"polysomnography", "defensible_reference"}
 ACTIVITIES = {"walking", "running", "cycling", "strength_training", "other_workout"}
+DECODER_SIGNALS = {"skin_temperature", "spo2"}
 
 
 class CorpusError(ValueError):
@@ -145,8 +146,10 @@ def validate_gap12(label: dict[str, Any], prefix: str) -> None:
 
 
 def validate_gap14(label: dict[str, Any], prefix: str) -> None:
-    item = exact_object(label, {"gap", "start_rel", "end_rel", "reference_device", "pair_age_seconds", "layout_stable", "negative_control"}, set(), prefix)
+    item = exact_object(label, {"gap", "start_rel", "end_rel", "signal", "reference_device", "pair_age_seconds", "layout_stable", "negative_control"}, set(), prefix)
     validate_window(item, prefix)
+    if text(item["signal"], f"{prefix}.signal") not in DECODER_SIGNALS:
+        raise CorpusError(f"{prefix} has unsupported decoder signal")
     text(item["reference_device"], f"{prefix}.reference_device")
     if not 0 <= finite(item["pair_age_seconds"], f"{prefix}.pair_age_seconds") <= 2:
         raise CorpusError(f"{prefix}.pair_age_seconds must be within the documented 2-second gate")
@@ -195,7 +198,7 @@ def validate(document: dict[str, Any]) -> dict[str, Any]:
         labels = item["labels"]
         if not isinstance(labels, list) or not labels:
             raise CorpusError(f"{prefix}.labels must be non-empty")
-        previous_end = -1.0
+        intervals_by_series: dict[str, list[tuple[float, float, str]]] = defaultdict(list)
         for label_index, label in enumerate(labels):
             label_prefix = f"{prefix}.labels[{label_index}]"
             if not isinstance(label, dict):
@@ -205,11 +208,29 @@ def validate(document: dict[str, Any]) -> dict[str, Any]:
                 raise CorpusError(f"{label_prefix} is not declared in targets")
             VALIDATORS[gap](label, label_prefix)
             start, end = validate_window(label, label_prefix)
-            if start < previous_end:
-                raise CorpusError(f"{label_prefix} overlaps a prior label for the same participant")
-            previous_end = end
+            # Labels belonging to different targets naturally overlap: a PSG
+            # stage interval can share a night with an overnight-load label,
+            # and a decoder reference may be captured during either. Only
+            # reject a conflicting overlap inside the same target series. GAP-14
+            # has two independent signals, so temperature and SpO2 may share a
+            # time window but duplicate temperature windows cannot.
+            series = gap
+            if gap == "GAP-14":
+                series = f"{gap}:{label['signal']}"
+            intervals_by_series[series].append((start, end, label_prefix))
             split_by_target[gap].add(split)
             label_counts[gap] += 1
+
+        # Input order must never determine admission. Sidecars are often
+        # appended target-by-target rather than sorted by time, so check each
+        # target series after establishing a chronological order.
+        for intervals in intervals_by_series.values():
+            ordered = sorted(intervals)
+            previous_end = -1.0
+            for start, end, label_prefix in ordered:
+                if start < previous_end:
+                    raise CorpusError(f"{label_prefix} overlaps a prior label for the same target series")
+                previous_end = end
 
     for target in targets:
         if split_by_target[target] != SPLITS:
