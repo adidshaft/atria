@@ -1398,7 +1398,10 @@ struct AtriaHomeView: View {
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showWorkoutStartSheet) {
-            AtriaWorkoutStartSheet(onPrepare: {
+            AtriaWorkoutStartSheet(initial: AtriaWorkoutStartConfiguration(
+                activityType: .other,
+                targetStrain: model.heroStore.state.guidance.target
+            ), onPrepare: {
                 // Warm the two authorities while the picker is on screen.
                 // This is strictly read-only: Start still requires both the
                 // exact persisted intent and a hydrated strap-step ledger.
@@ -2034,6 +2037,7 @@ struct AtriaHomeView: View {
             profile: store.profile
         )
         let session = AtriaWorkoutSession(start: start,
+                                          targetStrain: configuration.targetStrain,
                                           lowerTargetZone: configuration.lowerTargetZone,
                                           upperTargetZone: configuration.upperTargetZone,
                                           activityType: configuration.activityType,

@@ -223,6 +223,7 @@ struct AtriaVitalsTabContent: View {
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
     let profileStore: AtriaHomeModel.ProfileStore
     let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
+    let stressMonitorStore: AtriaStressMonitorStore
     let store: SessionStore
     @StateObject private var vitalsStore: AtriaVitalsSessionProjectionStore
     let ble: AtriaBLEManager
@@ -243,6 +244,7 @@ struct AtriaVitalsTabContent: View {
          homeStatsStore: AtriaHomeModel.HomeStatsStore,
          profileStore: AtriaHomeModel.ProfileStore,
          profileMetricsStore: AtriaHomeModel.ProfileMetricsStore,
+         stressMonitorStore: AtriaStressMonitorStore,
          store: SessionStore,
          ble: AtriaBLEManager,
          horizontalSizeClass: UserInterfaceSizeClass?) {
@@ -254,6 +256,7 @@ struct AtriaVitalsTabContent: View {
         self.homeStatsStore = homeStatsStore
         self.profileStore = profileStore
         self.profileMetricsStore = profileMetricsStore
+        self.stressMonitorStore = stressMonitorStore
         self.store = store
         _vitalsStore = StateObject(wrappedValue: AtriaVitalsSessionProjectionStore(store: store))
         self.ble = ble
@@ -477,6 +480,7 @@ struct AtriaVitalsTabContent: View {
         AtriaVitalsPulseCardHost(liveStore: liveStore,
                                  pulseStore: pulseStore,
                                  homeStatsStore: homeStatsStore,
+                                 stressMonitorStore: stressMonitorStore,
                                  baselineSnapshot: AtriaVitalsPulseBaselineSnapshot(vitalsStore.state.baseline),
                                  pulseSparklineStore: pulseSparklineStore,
                                  isActive: isActive)
@@ -1595,6 +1599,7 @@ private struct AtriaVitalsPulseCardHost: View {
     let liveStore: AtriaHomeModel.CoreLiveStore
     let pulseStore: AtriaHomeModel.PulseLiveStore
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
+    @ObservedObject var stressMonitorStore: AtriaStressMonitorStore
     let baselineSnapshot: AtriaVitalsPulseBaselineSnapshot
     let isActive: Bool
     @AtriaDefault("atria.target.rhr.greenDelta") private var restingGreenDelta: Int = 3
@@ -1613,12 +1618,14 @@ private struct AtriaVitalsPulseCardHost: View {
     init(liveStore: AtriaHomeModel.CoreLiveStore,
          pulseStore: AtriaHomeModel.PulseLiveStore,
          homeStatsStore: AtriaHomeModel.HomeStatsStore,
+         stressMonitorStore: AtriaStressMonitorStore,
          baselineSnapshot: AtriaVitalsPulseBaselineSnapshot,
          pulseSparklineStore: AtriaHomeModel.PulseSparklineStore,
          isActive: Bool) {
         self.liveStore = liveStore
         self.pulseStore = pulseStore
         self.homeStatsStore = homeStatsStore
+        self.stressMonitorStore = stressMonitorStore
         self.baselineSnapshot = baselineSnapshot
         self.pulseSparklineStore = pulseSparklineStore
         self.isActive = isActive
@@ -1677,19 +1684,20 @@ private struct AtriaVitalsPulseCardHost: View {
     }
 
     var body: some View {
-        AtriaPulseCard(isConnected: displayedLive.status == .connected,
-                       live: displayedPulse,
-                       miniTimelineSeries: miniTimelineSeries,
-                       restingHeartRate: displayedHomeStats.restingHeartRate,
-                       restingHeartRateText: displayedHomeStats.restingHeartRateText,
-                       restingBaseline: baselineSnapshot.restingBaseline,
-                       restingBaselineSamples: baselineSnapshot.restingBaselineSamples,
-                       restingBaselineTrusted: baselineSnapshot.restingBaselineTrusted,
-                       baselineTarget: baselineSnapshot.baselineTarget,
-                       restingGreenDelta: restingGreenDelta,
-                       restingYellowDelta: restingYellowDelta,
-                       onOpen: openHeartRateExplorer)
-            .equatable()
+        AtriaVitalsLiveSignalCard(isConnected: displayedLive.status == .connected,
+                                  live: displayedPulse,
+                                  miniTimelineSeries: miniTimelineSeries,
+                                  stressState: stressMonitorStore.state,
+                                  stressHistory: stressMonitorStore.history,
+                                  restingHeartRate: displayedHomeStats.restingHeartRate,
+                                  restingHeartRateText: displayedHomeStats.restingHeartRateText,
+                                  restingBaseline: baselineSnapshot.restingBaseline,
+                                  restingBaselineSamples: baselineSnapshot.restingBaselineSamples,
+                                  restingBaselineTrusted: baselineSnapshot.restingBaselineTrusted,
+                                  baselineTarget: baselineSnapshot.baselineTarget,
+                                  restingGreenDelta: restingGreenDelta,
+                                  restingYellowDelta: restingYellowDelta,
+                                  onOpenHeartRate: openHeartRateExplorer)
             .onAppear(perform: openDebugTimelineIfReady)
             .onChange(of: timelineKey, initial: true) { _, _ in
                 heartRateExplorerPresenter.updateLiveInput(points: chartPoints,
@@ -1809,6 +1817,7 @@ struct AtriaVitalsLivePulseSection: View {
     let liveStore: AtriaHomeModel.CoreLiveStore
     let pulseStore: AtriaHomeModel.PulseLiveStore
     let homeStatsStore: AtriaHomeModel.HomeStatsStore
+    let stressMonitorStore: AtriaStressMonitorStore
     let baseline: PersonalBaseline
     let pulseSparklineStore: AtriaHomeModel.PulseSparklineStore
     let isActive: Bool
@@ -1817,6 +1826,7 @@ struct AtriaVitalsLivePulseSection: View {
         AtriaVitalsPulseCardHost(liveStore: liveStore,
                                  pulseStore: pulseStore,
                                  homeStatsStore: homeStatsStore,
+                                 stressMonitorStore: stressMonitorStore,
                                  baselineSnapshot: AtriaVitalsPulseBaselineSnapshot(baseline),
                                  pulseSparklineStore: pulseSparklineStore,
                                  isActive: isActive)
@@ -3639,10 +3649,22 @@ private struct AtriaCollectionProfilePicker: View, Equatable {
     }
 }
 
-private struct AtriaPulseCard: View, Equatable {
+private enum AtriaVitalsLiveSignalMode: String, CaseIterable, Identifiable {
+    case stress = "Stress"
+    case heartRate = "Heart rate"
+
+    var id: String { rawValue }
+}
+
+/// One top-level monitoring surface keeps the two live signals on the same
+/// canvas. It avoids an extra full-width card while making the requested
+/// Stress / Heart Rate comparison discoverable.
+private struct AtriaVitalsLiveSignalCard: View {
     let isConnected: Bool
     let live: AtriaVitalsPulsePresentationState
     let miniTimelineSeries: AtriaHeartRateChartSeries
+    let stressState: AtriaStressState
+    let stressHistory: [AtriaStressMonitorStore.StressHistoryPoint]
     let restingHeartRate: Int
     let restingHeartRateText: String
     let restingBaseline: Int?
@@ -3651,21 +3673,8 @@ private struct AtriaPulseCard: View, Equatable {
     let baselineTarget: AtriaBaselineTargetSnapshot
     let restingGreenDelta: Int
     let restingYellowDelta: Int
-    let onOpen: () -> Void
-
-    static func == (lhs: AtriaPulseCard, rhs: AtriaPulseCard) -> Bool {
-        lhs.isConnected == rhs.isConnected
-            && lhs.live == rhs.live
-            && lhs.miniTimelineSeries == rhs.miniTimelineSeries
-            && lhs.restingHeartRate == rhs.restingHeartRate
-            && lhs.restingHeartRateText == rhs.restingHeartRateText
-            && lhs.restingBaseline == rhs.restingBaseline
-            && lhs.restingBaselineSamples == rhs.restingBaselineSamples
-            && lhs.restingBaselineTrusted == rhs.restingBaselineTrusted
-            && lhs.baselineTarget == rhs.baselineTarget
-            && lhs.restingGreenDelta == rhs.restingGreenDelta
-            && lhs.restingYellowDelta == rhs.restingYellowDelta
-    }
+    let onOpenHeartRate: () -> Void
+    @State private var mode: AtriaVitalsLiveSignalMode = .stress
 
     private var hasReadablePulse: Bool {
         live.hasPulseSignal
@@ -3685,31 +3694,107 @@ private struct AtriaPulseCard: View, Equatable {
                                      yellowDelta: restingYellowDelta)
     }
 
+    private var stressPresentation: AtriaStressPresentation {
+        AtriaStressPresentation.make(state: stressState)
+    }
+
+    private var stressPoints: [AtriaStressTimelinePoint] {
+        AtriaStressTimelinePoint.segment(stressHistory.map(AtriaStressDetailReading.init(historyPoint:)))
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Heart rate", subtitle: "")
+                AtriaPanelSectionHeader(title: "Live monitor", subtitle: "")
 
                 Spacer(minLength: 0)
 
-                AtriaStateBadge(state: pulseState)
+                AtriaStateBadge(state: mode == .heartRate ? pulseState : stressMetricState)
             }
 
+            AtriaTextSelector(items: AtriaVitalsLiveSignalMode.allCases,
+                              title: { $0.rawValue },
+                              selection: $mode)
+
+            if mode == .stress {
+                stressMonitor
+            } else {
+                heartRateMonitor
+            }
+        }
+        .padding(18)
+        .atriaCard(emphasis: .soft)
+    }
+
+    private var stressMetricState: AtriaMetricState {
+        stressState.level == nil ? .noContact : .live
+    }
+
+    private var stressMonitor: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Continuous stress")
+                        .font(.subheadline.weight(.bold))
+                    Text(stressPresentation.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 8)
+                Text(stressPresentation.value)
+                    .font(.system(.title2, design: .rounded, weight: .black))
+                    .monospacedDigit()
+                    .foregroundStyle(stressState.level?.tint ?? .secondary)
+            }
+
+            if stressPoints.isEmpty {
+                ContentUnavailableView("Collecting stress",
+                                       systemImage: "waveform.path.ecg",
+                                       description: Text("Wear the strap continuously; scored 0–3 readings will appear here when your personal baseline is ready."))
+                    .frame(maxWidth: .infinity, minHeight: 154)
+                    .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
+                AtriaVitalsStressTimelineChart(points: stressPoints)
+                    .frame(height: 172)
+                    .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            HStack(spacing: 0) {
+                stressScaleItem("0", "Calm", tint: .blue)
+                stressScaleItem("1", "Low", tint: .green)
+                stressScaleItem("2", "Medium", tint: .orange)
+                stressScaleItem("3", "High", tint: .red)
+            }
+            .accessibilityLabel("Stress scale: 0 calm, 1 low, 2 medium, 3 high")
+
+            Text("Observed readings only · gaps mean the strap was not collecting.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func stressScaleItem(_ score: String, _ label: String, tint: Color) -> some View {
+        VStack(spacing: 2) {
+            Text(score)
+                .font(.caption.weight(.bold).monospacedDigit())
+                .foregroundStyle(tint)
+            Text(label)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var heartRateMonitor: some View {
+        VStack(alignment: .leading, spacing: 12) {
             AtriaPulseStatRail(now: live.heartRateText,
                                average: live.averageHeartRateText,
                                peak: live.peakHeartRateText,
                                resting: restingHeartRateText,
-                               // No trusted baseline ⇒ no zone ⇒ neutral: a
-                               // judgment color (blue read as "live/good")
-                               // on an unzoned number implied a verdict the
-                               // data can't back (2026-08-04, the fixture's
-                               // "Resting 119" in blue).
                                restingTint: restingHeartRateZone?.tint ?? .secondary)
-
-            AtriaHeartRateTimelineCard(series: miniTimelineSeries, onOpen: onOpen)
+            AtriaHeartRateTimelineCard(series: miniTimelineSeries, onOpen: onOpenHeartRate)
         }
-        .padding(18)
-        .atriaCard(emphasis: .soft)
     }
 
 }
@@ -3863,6 +3948,58 @@ private final class AtriaHeartRateExplorerPresentationModel: ObservableObject {
         if self.currentBPM != currentBPM {
             self.currentBPM = currentBPM
         }
+    }
+
+}
+
+private struct AtriaVitalsStressTimelineChart: View {
+    let points: [AtriaStressTimelinePoint]
+
+    var body: some View {
+        Chart {
+            ForEach(points) { point in
+                AreaMark(x: .value("Time", point.reading.date),
+                         y: .value("Stress", point.reading.score),
+                         series: .value("Segment", point.segment))
+                    .interpolationMethod(.linear)
+                    .foregroundStyle(.linearGradient(colors: [.blue.opacity(0.14), .green.opacity(0.08), .orange.opacity(0.04)],
+                                                      startPoint: .bottom,
+                                                      endPoint: .top))
+                LineMark(x: .value("Time", point.reading.date),
+                         y: .value("Stress", point.reading.score),
+                         series: .value("Segment", point.segment))
+                    .interpolationMethod(.linear)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                    .foregroundStyle(.linearGradient(colors: [.blue, .green, .orange],
+                                                      startPoint: .bottom,
+                                                      endPoint: .top))
+            }
+        }
+        .chartYScale(domain: 0...3)
+        .chartYAxis {
+            AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                AxisTick().foregroundStyle(.clear)
+                AxisValueLabel {
+                    if let value = value.as(Int.self) {
+                        Text("\(value)")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(value >= 2 ? .orange : (value == 1 ? .green : .blue))
+                    }
+                }
+            }
+        }
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                AxisTick().foregroundStyle(.clear)
+                AxisValueLabel(format: .dateTime.hour().minute())
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.trailing, 8)
+        .accessibilityLabel("Continuous stress timeline, scale 0 through 3")
     }
 }
 
