@@ -164,3 +164,26 @@ bias, MAE, p95, correlation, and three-day requirements in
    uncertainty in a review artifact.
 7. Only after that review can a separately committed, versioned app model be
    considered. Historical values remain frozen under their prior model.
+
+## GAP-11 held-out report
+
+After the corpus has been admitted, an offline candidate model can be evaluated
+against its complete, time-matched activity windows:
+
+```sh
+python3 tools/evaluate_activity_classifier.py \
+  corpus.manifest.json activity.predictions.json \
+  --output activity.held-out-report.json
+```
+
+`activity.predictions.json` has one prediction for every admitted GAP-11
+window. It must keep `research_only: true`, `model_validated: false`, and
+`production_promotions: 0`. `prediction` is one of the five scoped classes or
+`unknown` for a deliberate abstention. The tool rejects missing, duplicate, or
+unexpected windows, then reports confusion and per-class precision/recall from
+**held-out participants only**. Development predictions are checked for
+one-to-one alignment but do not enter those metrics.
+
+The report status is always `held_out_metrics_for_review_only`. It is evidence
+for a human model review, never an authorization to preselect, save, or
+overwrite a workout type in the app.

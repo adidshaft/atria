@@ -211,6 +211,12 @@ Successful validation emits only `admitted_for_external_evaluation_only` with
 `model_validated: false` and `production_promotions: 0`. A separate review of
 held-out metrics is required before a versioned production model can exist.
 
+For GAP-11, `tools/evaluate_activity_classifier.py` consumes an admitted corpus
+manifest and a local prediction sidecar. It requires a prediction for every
+admitted activity window, measures only held-out participants, and emits
+per-class precision/recall and a confusion matrix under
+`held_out_metrics_for_review_only`. It cannot validate or promote a model.
+
 ## Days
 
 Daily metric rollups (aggregates used for charts and context).
