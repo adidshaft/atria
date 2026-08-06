@@ -1317,7 +1317,11 @@ struct AtriaHomeView: View {
             // Let the shared Atria backdrop/content continue beneath the native
             // glass control instead.
             .toolbarBackground(.hidden, for: .tabBar)
-            .tabBarMinimizeBehavior(.onScrollDown)
+            // Keep the primary destinations visible on a real phone. On-device,
+            // the iOS 26 minimized treatment collapsed this to the selected
+            // Today bubble plus an opaque affordance, leaving Vitals, Journal,
+            // and Activity undiscoverable. These are core daily destinations,
+            // not secondary actions that can safely hide behind a control.
             .tabViewBottomAccessory(isEnabled: shouldShowLiveAccessory) {
                 AtriaLiveTabAccessoryHost(pulseStore: model.pulseLiveStore,
                                           heroStore: model.heroStore,
