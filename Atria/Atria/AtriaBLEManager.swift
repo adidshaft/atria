@@ -32649,6 +32649,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // megabytes of hashing was the 2026-07-31 foreground hang —
             // NSLock donates no priority, so the UI froze without a watchdog
             // kill. Two UserDefaults reads settle the common case instead.
+            // The daily bound guards the fingerprint's archive-lock cost on
+            // the main thread — but it must not outlive the condition that
+            // caused the failure. If the pending dependency's REQUIRED END
+            // has passed since the failure was cached, satisfiability itself
+            // changed and the bound no longer describes the same situation
+            // (2026-08-06: a pre-midnight completionCoverageMismatch parked
+            // publication a full day even though its window closed at 00:10).
+            // Two already-decoded fields — no lock, no scan, no hang risk.
+            let dependencyWindowPassedSince: (Date) -> Bool = { cachedAt in
+                guard let dependency = authority.pendingConsumerDependency,
+                      dependency.isValid else { return false }
+                let end = Date(timeIntervalSince1970: dependency.requiredEndUnix)
+                return end <= Date() && cachedAt < end
+            }
             if let freshCachedAt = defaults.object(
                 forKey: Self.terminalConsumerCoverageFailureAtKey
             ) as? Date,
@@ -32657,7 +32671,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                ) != nil,
                Date().timeIntervalSince(freshCachedAt) >= 0,
                Date().timeIntervalSince(freshCachedAt)
-                   < Self.terminalConsumerCoverageFailureRetryInterval {
+                   < Self.terminalConsumerCoverageFailureRetryInterval,
+               !dependencyWindowPassedSince(freshCachedAt) {
                 defaults.set(
                     "terminal_consumer_coverage_snapshot_unchanged",
                     forKey: OfflineSyncDefaults.lastStatus
