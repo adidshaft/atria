@@ -16,16 +16,20 @@ enum AtriaResearchSharing {
     static let pseudonymKey = "atria.dataSharing.pseudonymUUID"
     static let consentDateKey = "atria.dataSharing.consentDate"
     static let receiptsKey = "atria.dataSharing.receipts.v1"
-    static let schemaVersion = 1
+    // v2 replaces free-form workout titles with allowlisted activity types and
+    // adds only compact, timestamp-shifted motion features for validation.
+    static let schemaVersion = 2
 
     static var isOptedIn: Bool {
         UserDefaults.standard.bool(forKey: optInKey)
     }
 
-    static func grantConsent(now: Date = Date()) {
+    static func grantConsent(now: Date = Date(), previewPseudonym: String? = nil) {
         let defaults = UserDefaults.standard
+        let resolvedPseudonym = previewPseudonym.flatMap(UUID.init(uuidString:))?.uuidString
+            ?? UUID().uuidString
         defaults.set(true, forKey: optInKey)
-        defaults.set(UUID().uuidString, forKey: pseudonymKey)
+        defaults.set(resolvedPseudonym, forKey: pseudonymKey)
         defaults.set(now.timeIntervalSince1970, forKey: consentDateKey)
         AtriaDebugLog("ATRIADBG research_sharing status=consented")
     }
@@ -76,11 +80,29 @@ struct AtriaResearchBundlePayload: Codable {
     }
 
     struct Session: Codable {
+        /// Bounded features from independently recovered gravity evidence. No
+        /// raw IMU frames, location, device identifier, or free text leaves
+        /// the phone; these windows only preserve label-to-sensor alignment.
+        struct MotionEpoch: Codable {
+            let startRel: Double
+            let endRel: Double
+            let rows: Int
+            let validatedRows: Int
+            let stillnessRatio: Double?
+            let movementIntensity: Double?
+            let p95VectorDelta: Double?
+            let maximumGapSeconds: Int
+            let measurementValidated: Bool
+            let lowMotionQualified: Bool
+            let source: String
+        }
+
         let startRel: Double
         let endRel: Double
         let kind: String
         let hrPoints: [[Double]]      // [tRel, bpm]
         let rrPoints: [[Double]]      // [tRel, ms]
+        let motionEpochs: [MotionEpoch]
         let restingStable: Int
         let hrv: Int?
     }
@@ -96,7 +118,10 @@ struct AtriaResearchBundlePayload: Codable {
     struct Workout: Codable {
         let startRel: Double
         let endRel: Double
-        let label: String
+        /// Canonical picker value, never the free-form workout title. Every
+        /// row is user-confirmed and is for evaluation—not a prediction.
+        let activityType: String
+        let labelSource: String
         let avgHR: Int
         let peakHR: Int
     }
@@ -160,12 +185,27 @@ enum AtriaResearchBundleBuilder {
         return "\(Int(lower))-\(Int(lower + width)) \(unit)"
     }
 
-    /// Builds the anonymized bundle, or nil when not consented. The returned
-    /// payload backs the "see exactly what leaves this phone" inspector.
+    /// Builds the anonymized bundle only after consent. Use `preview` for the
+    /// consent inspector; it is intentionally a distinct, non-uploading path.
     @MainActor
     static func build(store: SessionStore, now: Date = Date()) async -> Built? {
         guard AtriaResearchSharing.isOptedIn,
               let pseudonym = AtriaResearchSharing.pseudonym else { return nil }
+        return await makeBuiltBundle(store: store, now: now, pseudonym: pseudonym)
+    }
+
+    /// Builds a local-only consent preview. The generated pseudonym is not
+    /// persisted or transmitted; the consent sheet adopts it only after its
+    /// inspector has been opened and the user explicitly agrees.
+    @MainActor
+    static func preview(store: SessionStore, now: Date = Date()) async -> Built? {
+        await makeBuiltBundle(store: store, now: now, pseudonym: UUID().uuidString)
+    }
+
+    @MainActor
+    private static func makeBuiltBundle(store: SessionStore,
+                                        now: Date,
+                                        pseudonym: String) async -> Built? {
         let calendar = Calendar.current
         let profile = store.profile
         let manifest = AtriaResearchBundlePayload.Manifest(
@@ -231,12 +271,31 @@ enum AtriaResearchBundleBuilder {
                 let tRel: Double = (point.t * 10).rounded() / 10
                 rrPoints.append([tRel, Double(point.ms)])
             }
+            let sessionEnd = session.start.addingTimeInterval(session.duration)
+            let motionEpochs = (session.recoveredMotionEpochs ?? [])
+                .filter { $0.end > session.start && $0.start < sessionEnd }
+                .map { epoch in
+                    AtriaResearchBundlePayload.Session.MotionEpoch(
+                        startRel: rel(epoch.start),
+                        endRel: rel(epoch.end),
+                        rows: epoch.rows,
+                        validatedRows: epoch.validatedRows,
+                        stillnessRatio: epoch.stillnessRatio,
+                        movementIntensity: epoch.movementIntensity,
+                        p95VectorDelta: epoch.p95VectorDelta,
+                        maximumGapSeconds: epoch.maximumGapSeconds,
+                        measurementValidated: epoch.measurementValidated,
+                        lowMotionQualified: epoch.lowMotionQualified,
+                        source: AtriaRecoveredMotionEpoch.source
+                    )
+                }
             bundleSessions.append(AtriaResearchBundlePayload.Session(
                 startRel: rel(session.start),
-                endRel: rel(session.start.addingTimeInterval(session.duration)),
+                endRel: rel(sessionEnd),
                 kind: session.kind ?? "session",
                 hrPoints: hrPoints,
                 rrPoints: rrPoints,
+                motionEpochs: motionEpochs,
                 restingStable: session.restingStable,
                 hrv: session.hrv))
         }
@@ -252,11 +311,17 @@ enum AtriaResearchBundleBuilder {
                                                     stageSeconds: stages)
         }
         let bundleWorkouts = input.workouts.map { workout in
-            AtriaResearchBundlePayload.Workout(startRel: rel(workout.start),
-                                               endRel: rel(workout.end),
-                                               label: workout.label,
-                                               avgHR: workout.avgHR,
-                                               peakHR: workout.peakHR)
+            let activityType = AtriaWorkoutActivityType.resolved(
+                activityType: workout.activityType,
+                subtype: workout.activitySubtype,
+                label: workout.label
+            )
+            return AtriaResearchBundlePayload.Workout(startRel: rel(workout.start),
+                                                      endRel: rel(workout.end),
+                                                      activityType: activityType.rawValue,
+                                                      labelSource: "user_confirmed",
+                                                      avgHR: workout.avgHR,
+                                                      peakHR: workout.peakHR)
         }
         let bundleDays = input.days.map { metric in
             AtriaResearchBundlePayload.Day(dayIndex: dayIndex(metric.day),
@@ -688,6 +753,7 @@ struct AtriaResearchConsentSheet: View {
     @State private var showInspector = false
     @State private var inspectorText = ""
     @State private var inspectorBytes = 0
+    @State private var previewPseudonym: String?
 
     var body: some View {
         NavigationStack {
@@ -701,7 +767,7 @@ struct AtriaResearchConsentSheet: View {
 
                     If you turn this on, you can send an anonymous copy of your recordings to the Atria developers to improve the recovery, sleep, and strain algorithms.
 
-                    WHAT IS SHARED: heart-rate, heart-rate-variability, sleep, and workout series; daily scores; journal answers; your age range, weight range, height range, and sex.
+                    WHAT IS SHARED: heart-rate, heart-rate-variability, sleep, user-confirmed activity type, and timestamp-shifted motion features; daily scores; journal answers; your age range, weight range, height range, and sex.
 
                     WHAT IS NEVER SHARED: your name, email, device names, exact birth date, exact weight or height, location, timezone, or anything you type.
 
@@ -725,7 +791,7 @@ struct AtriaResearchConsentSheet: View {
                     .buttonStyle(.glass)
 
                     Button {
-                        AtriaResearchSharing.grantConsent()
+                        AtriaResearchSharing.grantConsent(previewPseudonym: previewPseudonym)
                         onConsented()
                         dismiss()
                     } label: {
@@ -785,6 +851,7 @@ struct AtriaResearchConsentSheet: View {
             return
         }
         inspectorBytes = built.bytes
+        previewPseudonym = built.payload.manifest.pseudonym
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         var preview = AtriaResearchBundlePayload(manifest: built.payload.manifest,
@@ -803,6 +870,7 @@ struct AtriaResearchConsentSheet: View {
                                                               kind: first.kind,
                                                               hrPoints: Array(first.hrPoints.prefix(5)),
                                                               rrPoints: Array(first.rrPoints.prefix(5)),
+                                                              motionEpochs: Array(first.motionEpochs.prefix(3)),
                                                               restingStable: first.restingStable,
                                                               hrv: first.hrv)],
                 sleeps: preview.sleeps,
@@ -825,6 +893,9 @@ struct AtriaResearchConsentSheet: View {
 
 /// Settings section: the toggle, the share row, and the receipts line.
 struct AtriaResearchSharingSection: View {
+    /// A pre-consent, on-device-only bundle for the mandatory inspector.
+    let buildPreview: () async -> AtriaResearchBundleBuilder.Built?
+    /// The consent-gated bundle used only by manual / queued sharing actions.
     let buildBundle: () async -> AtriaResearchBundleBuilder.Built?
     @AtriaDefault(AtriaResearchSharing.optInKey) private var optedIn = false
     @State private var showConsent = false
@@ -898,7 +969,7 @@ struct AtriaResearchSharingSection: View {
         }
         .task { outboxStats = await AtriaResearchUploadQueue.outboxStats() }
         .sheet(isPresented: $showConsent) {
-            AtriaResearchConsentSheet(buildPreview: buildBundle) { }
+            AtriaResearchConsentSheet(buildPreview: buildPreview) { }
         }
         .sheet(isPresented: Binding(get: { shareURL != nil }, set: { if !$0 { shareURL = nil } })) {
             if let shareURL {

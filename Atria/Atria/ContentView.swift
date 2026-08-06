@@ -102,7 +102,7 @@ struct ContentView: View {
                                    onboardingStage = .flow
                                }
                            }) {
-                        AtriaResearchConsentSheet(buildPreview: { await AtriaResearchBundleBuilder.build(store: store) },
+                        AtriaResearchConsentSheet(buildPreview: { await AtriaResearchBundleBuilder.preview(store: store) },
                                                   onConsented: {
                                                       showOnboardingConsentSheet = false
                                                   })
