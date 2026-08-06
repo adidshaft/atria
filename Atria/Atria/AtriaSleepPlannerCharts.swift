@@ -419,10 +419,23 @@ struct AtriaSleepDebtChartCard: View {
     }
 
     private var frozenNeedSecondsByDay: [Date: TimeInterval] {
-        Dictionary(uniqueKeysWithValues: rollups.compactMap { rollup -> (Date, TimeInterval)? in
-            guard let need = rollup.sleepNeedSeconds, need > 0 else { return nil }
-            return (Calendar.current.startOfDay(for: rollup.day), need)
-        })
+        var byDay: [Date: TimeInterval] = [:]
+        // Prefer each night's own frozen need — the exact value the sleep-need
+        // ledger, Sufficiency, and day history read (Night.frozenSleepNeed) — so
+        // this chart shows the identical number on every surface, even when no
+        // rollups are threaded in.
+        for night in nights {
+            guard let need = night.sleepNeedSeconds, need > 0 else { continue }
+            byDay[Calendar.current.startOfDay(for: night.day)] = need
+        }
+        // Fall back to a rollup's frozen need only for a day no night froze one,
+        // never overwriting a night's own frozen value with the parallel receipt.
+        for rollup in rollups {
+            guard let need = rollup.sleepNeedSeconds, need > 0 else { continue }
+            let day = Calendar.current.startOfDay(for: rollup.day)
+            if byDay[day] == nil { byDay[day] = need }
+        }
+        return byDay
     }
 
     private var slots: [AtriaSleepDebtChartPresentation.NightSlot] {
