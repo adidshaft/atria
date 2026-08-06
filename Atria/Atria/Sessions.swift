@@ -1723,6 +1723,10 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
     let restingHR: Int?
     let respiratoryRate: Double?
     let sleepDuration: TimeInterval?
+    /// Exact adaptive need used when this completed physiological night was
+    /// frozen. Legacy rows deliberately decode as nil rather than being
+    /// reconstructed from today's baseline, debt, or profile.
+    let sleepNeedSeconds: TimeInterval?
     let sleepSpan: TimeInterval?
     let sleepStart: Date?
     let sleepEnd: Date?
@@ -1748,6 +1752,7 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
          restingHR: Int?,
          respiratoryRate: Double?,
          sleepDuration: TimeInterval?,
+         sleepNeedSeconds: TimeInterval? = nil,
          sleepSpan: TimeInterval?,
          sleepStart: Date?,
          sleepEnd: Date?,
@@ -1771,6 +1776,7 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         self.restingHR = restingHR
         self.respiratoryRate = respiratoryRate
         self.sleepDuration = sleepDuration
+        self.sleepNeedSeconds = sleepNeedSeconds.flatMap { $0 > 0 ? $0 : nil }
         self.sleepSpan = sleepSpan
         self.sleepStart = sleepStart
         self.sleepEnd = sleepEnd
@@ -1794,6 +1800,7 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         case restingHR
         case respiratoryRate
         case sleepDuration
+        case sleepNeedSeconds
         case sleepSpan
         case sleepStart
         case sleepEnd
@@ -1823,6 +1830,7 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         restingHR = try container.decodeIfPresent(Int.self, forKey: .restingHR)
         respiratoryRate = try container.decodeIfPresent(Double.self, forKey: .respiratoryRate)
         sleepDuration = try container.decodeIfPresent(TimeInterval.self, forKey: .sleepDuration)
+        sleepNeedSeconds = try container.decodeIfPresent(TimeInterval.self, forKey: .sleepNeedSeconds)
         sleepSpan = try container.decodeIfPresent(TimeInterval.self, forKey: .sleepSpan)
         sleepStart = try container.decodeIfPresent(Date.self, forKey: .sleepStart)
         sleepEnd = try container.decodeIfPresent(Date.self, forKey: .sleepEnd)
@@ -1868,6 +1876,7 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         try container.encodeIfPresent(restingHR, forKey: .restingHR)
         try container.encodeIfPresent(respiratoryRate, forKey: .respiratoryRate)
         try container.encodeIfPresent(sleepDuration, forKey: .sleepDuration)
+        try container.encodeIfPresent(sleepNeedSeconds, forKey: .sleepNeedSeconds)
         try container.encodeIfPresent(sleepSpan, forKey: .sleepSpan)
         try container.encodeIfPresent(sleepStart, forKey: .sleepStart)
         try container.encodeIfPresent(sleepEnd, forKey: .sleepEnd)
@@ -8597,6 +8606,7 @@ final class SessionStore: ObservableObject {
                                     restingHR: metric.restingHR,
                                     respiratoryRate: metric.respiratoryRate,
                                     sleepDuration: metric.sleepDuration,
+                                    sleepNeedSeconds: metric.sleepNeedSeconds,
                                     sleepSpan: metric.sleepSpan,
                                     sleepStart: metric.sleepStart,
                                     sleepEnd: metric.sleepEnd,
@@ -8785,6 +8795,7 @@ final class SessionStore: ObservableObject {
                                            lnRMSSD: existing?.lnRMSSD,
                                            rhr: existing?.rhr,
                                            sleepSeconds: existing?.sleepSeconds,
+                                           sleepNeedSeconds: existing?.sleepNeedSeconds,
                                            sleepPerformance: existing?.sleepPerformance,
                                            bedtimeMinutes: existing?.bedtimeMinutes,
                                            strain: existing?.strain,
@@ -13175,6 +13186,7 @@ final class SessionStore: ObservableObject {
                                              restingHR: base.restingHR,
                                              respiratoryRate: base.respiratoryRate,
                                              sleepDuration: base.sleepDuration,
+                                             sleepNeedSeconds: base.sleepNeedSeconds,
                                              sleepSpan: base.sleepSpan,
                                              sleepStart: base.sleepStart,
                                              sleepEnd: base.sleepEnd,
@@ -13218,7 +13230,6 @@ final class SessionStore: ObservableObject {
                                                                 respiratoryRateByMorningDay: [Date: Double]? = nil,
                                                                 calendar: Calendar = .current) -> [DailyRollupStoreEntry] {
         let sorted = metrics.sorted { $0.day < $1.day }
-        let baseNeedHours = configuredSleepBaseNeedHours()
         let fallbackRespiratoryRates = respiratoryRateByMorningDay
             ?? makeDailyRespiratoryRatePreparation(sessions: sessions,
                                                    rest: rest,
@@ -13242,25 +13253,24 @@ final class SessionStore: ObservableObject {
         return sorted.enumerated().map { index, metric in
             let priorAndCurrent = Array(sorted[max(0, index - 27)...index])
             let priorAndCurrentRespiratoryRates = resolvedRespiratoryRates[max(0, index - 27)...index].compactMap { $0 }
-            let yesterdayStrain = index > 0 ? sorted[index - 1].strain : nil
-            let priorSleepNights = sorted[..<index].suffix(7).compactMap { prior -> (needed: Double, slept: Double)? in
-                guard let duration = prior.sleepDuration, duration > 0 else { return nil }
-                return (needed: baseNeedHours, slept: duration / 3_600)
-            }
             let hrvMilliseconds = metric.hrv.flatMap { $0 > 0 ? Double($0) : nil }
             let resolvedRespRate = resolvedRespiratoryRates[index]
-            let sameDayNapHours = napHoursByDay[calendar.startOfDay(for: metric.day)] ?? 0
             return DailyRollupStoreEntry(day: metric.day,
                                          recovery: metric.recoveryPercent,
                                          recoverySummary: metric.recoverySummary,
                                          lnRMSSD: hrvMilliseconds.map(log),
                                          rhr: metric.restingHR,
                                          sleepSeconds: metric.sleepDuration,
-                                         sleepPerformance: dailyRollupSleepPerformance(sleepDuration: metric.sleepDuration,
-                                                                                       baseNeedHours: baseNeedHours,
-                                                                                       yesterdayStrain: yesterdayStrain,
-                                                                                       priorNights: priorSleepNights,
-                                                                                       sameDayNapHours: sameDayNapHours),
+                                         sleepNeedSeconds: metric.sleepNeedSeconds,
+                                         sleepPerformance: metric.sleepNeedSeconds.flatMap { need in
+                                             guard let duration = metric.sleepDuration,
+                                                   duration > 0,
+                                                   need > 0 else { return nil }
+                                             return AtriaSleepBudget.performancePercent(
+                                                 slept: duration / 3_600,
+                                                 needed: need / 3_600
+                                             )
+                                         },
                                          bedtimeMinutes: metric.sleepStart.map { bedtimeMinutes(from: $0, calendar: calendar) },
                                          strain: metric.strain,
                                          strainCoverageFraction: metric.strainCoverageFraction,
@@ -13303,20 +13313,6 @@ final class SessionStore: ObservableObject {
         }
         return DailyRespiratoryRatePreparation(respiratoryRateByMorningDay: averagedByMorningDay,
                                                candidateCount: candidateCount)
-    }
-
-    nonisolated static func dailyRollupSleepPerformance(sleepDuration: TimeInterval?,
-                                                        baseNeedHours: Double,
-                                                        yesterdayStrain: Double?,
-                                                        priorNights: [(needed: Double, slept: Double)],
-                                                        sameDayNapHours: Double = 0) -> Int? {
-        guard let sleepDuration, sleepDuration > 0 else { return nil }
-        let debt = AtriaSleepBudget.sleepDebt(nights: priorNights)
-        let need = AtriaSleepBudget.sleepNeed(baseHours: baseNeedHours,
-                                              yesterdayStrain: yesterdayStrain,
-                                              debtHours: debt,
-                                              sameDayNapHours: sameDayNapHours)
-        return AtriaSleepBudget.performancePercent(slept: sleepDuration / 3_600, needed: need)
     }
 
     /// The sole no-confirmed-sleep recovery exception. It accepts only a
@@ -13522,6 +13518,35 @@ final class SessionStore: ObservableObject {
             asOf: day,
             calendar: calendar
         )
+        // A night owns the adaptive Sleep Need that was known when its
+        // physiological cycle settled. We preserve an existing value across
+        // edits, while a newly settled night derives it once from only prior
+        // *frozen* nights. Legacy history stays unknown instead of being
+        // reconstructed with a later profile, debt, or strain setting.
+        let frozenSleepNeedSeconds: TimeInterval? = {
+            guard let confirmedMainSleep,
+                  sleepDuration != nil else { return nil }
+            if let existing = computedToday?.sleepNeedSeconds, existing > 0 {
+                return existing
+            }
+            let prior = computed
+                .filter { calendar.startOfDay(for: $0.day) < calendar.startOfDay(for: day) }
+                .sorted { $0.day < $1.day }
+            let priorFrozenNights = prior.suffix(7).compactMap { metric -> (needed: Double, slept: Double)? in
+                guard let duration = metric.sleepDuration, duration > 0,
+                      let need = metric.sleepNeedSeconds, need > 0 else { return nil }
+                return (needed: need / 3_600, slept: duration / 3_600)
+            }
+            let yesterdayStrain = prior.last?.strain
+            let components = AtriaSleepBudget.sleepNeedComponents(
+                baseHours: configuredSleepBaseNeedHours(),
+                yesterdayStrain: yesterdayStrain,
+                debtHours: AtriaSleepBudget.sleepDebt(nights: priorFrozenNights),
+                sameDayNapHours: sleep.sameDayNapHours(for: confirmedMainSleep,
+                                                        calendar: calendar)
+            )
+            return components.totalHours * 3_600
+        }()
         let strain = computedToday?.strain ?? wearStrain
         let strainDayEnd = min(
             now,
@@ -13577,6 +13602,7 @@ final class SessionStore: ObservableObject {
                                 restingHR: restingHR,
                                 respiratoryRate: respiratoryRate,
                                 sleepDuration: sleepDuration,
+                                sleepNeedSeconds: frozenSleepNeedSeconds,
                                 sleepSpan: sleepSpan,
                                 sleepStart: sleepStart,
                                 sleepEnd: sleepEnd,
@@ -14488,7 +14514,7 @@ final class SessionStore: ObservableObject {
         // Match canonical sleep truth: fewer than three qualified windows is too
         // sparse to let HRV control a recovery number. A bare integer from
         // legacy/projected data is not a measurement.
-        let pendingHRV = night.hrvWindowCount >= AtriaNapRecovery.minimumQualifyingHRVWindows
+        let pendingHRV = night.hrvWindowCount >= AtriaSleepBudget.minimumQualifiedHRVWindows
             ? night.hrv
             : nil
         let estimate = Metrics.recoveryV2(
@@ -36461,34 +36487,6 @@ struct SleepHistorySnapshot: Equatable {
                 return napEnd > lowerBound && napEnd <= mainStart
             }
             .reduce(0) { $0 + $1.durationHours }
-    }
-
-    func napAdjustedRecovery(morningRecovery: Int?,
-                             for night: Night?,
-                             calendar: Calendar = .current) -> AtriaNapRecovery.Result {
-        guard let night,
-              !night.isNapEvidence else {
-            return AtriaNapRecovery.Result(percent: morningRecovery, lifted: false)
-        }
-        let morningLnRMSSD = night.hrv.flatMap { $0 > 0 ? log(Double($0)) : nil }
-        let bestNap = napNights
-            .filter { nap in
-                nap.confirmed
-                    && nap.durationHours >= AtriaNapRecovery.minimumNapHours
-                    && calendar.isDate(nap.day, inSameDayAs: night.day)
-                    && (nap.hrv ?? 0) > 0
-                    && nap.hrvWindowCount >= AtriaNapRecovery.minimumQualifyingHRVWindows
-            }
-            .max { lhs, rhs in
-                (lhs.hrv ?? 0) < (rhs.hrv ?? 0)
-            }
-        let napLnRMSSD = bestNap?.hrv.flatMap { $0 > 0 ? log(Double($0)) : nil }
-        let qualifyingWindows = bestNap?.hrvWindowCount ?? 0
-        return AtriaNapRecovery.adjustedRecovery(morningRecovery: morningRecovery,
-                                                 morningLnRMSSD: morningLnRMSSD,
-                                                 napLnRMSSD: napLnRMSSD,
-                                                 napDurationHours: bestNap?.durationHours ?? 0,
-                                                 qualifyingHRVWindows: qualifyingWindows)
     }
 
     func sleepNeedHours(for night: Night,

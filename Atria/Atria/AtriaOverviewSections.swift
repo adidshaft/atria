@@ -9949,8 +9949,7 @@ struct AtriaMetricDetailSheet: View {
     /// sleep is invented to keep a line visually continuous.
     private var sleepDebtTrendCard: some View {
         return AtriaSleepDebtChartCard(
-            nights: sleepHistory.nights,
-            baseNeedHours: sleepBaseNeedHours)
+            nights: sleepHistory.nights)
     }
 
     /// "How we got <total>" ledger (design 6a, 2026-08-01 parity slice):

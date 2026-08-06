@@ -8627,7 +8627,6 @@ final class AtriaHomeModel {
         /// the score (it is still real), but never imply it belongs to today's
         /// sleep cycle.
         let recoveryIsFromPreviousSleep: Bool
-        let recoveryLiftedAfterNap: Bool
         let strain: Double
         let strainConfidence: String
         /// Fraction of the elapsed physiological day covered by accepted strap
@@ -8684,8 +8683,7 @@ final class AtriaHomeModel {
         var recoveryDetail: String {
             Self.recoveryDetailText(recoveryEstimate: recoveryEstimate,
                                     recoveryIsProvisional: recoveryIsProvisional,
-                                    recoveryIsFromPreviousSleep: recoveryIsFromPreviousSleep,
-                                    recoveryLiftedAfterNap: recoveryLiftedAfterNap)
+                                    recoveryIsFromPreviousSleep: recoveryIsFromPreviousSleep)
         }
 
         /// One shared, testable wording policy for the hero, Today, sharing,
@@ -8694,15 +8692,11 @@ final class AtriaHomeModel {
         static func recoveryDetailText(
             recoveryEstimate: Metrics.RecoveryEstimate,
             recoveryIsProvisional: Bool,
-            recoveryIsFromPreviousSleep: Bool,
-            recoveryLiftedAfterNap: Bool
+            recoveryIsFromPreviousSleep: Bool
         ) -> String {
-            // Compact fixed-vocabulary marker, not prose. These strings ran up to
-            // 49 characters ("Limited confidence · HRV unavailable · ↑ after
-            // nap"), which read as an error block beside a ring already showing a
-            // real score, and wrapped -- so one card ended up taller than its
-            // neighbour. The marker now states the same thing in <= 14
-            // characters; the full reason belongs in the expanded detail.
+            // Compact fixed-vocabulary marker, not prose. The marker stays
+            // short beside a ring already showing the score; the full reason
+            // belongs in the expanded detail.
             //
             // HRV availability now comes from the estimate's structured
             // `usesHRV` flag instead of sniffing its prose for the substring
@@ -8717,7 +8711,7 @@ final class AtriaHomeModel {
                 isFromPreviousSleep: recoveryIsFromPreviousSleep
             )
             let base = presentation.marker ?? presentation.level.shortLabel
-            return recoveryLiftedAfterNap ? "\(base) · ↑ after nap" : base
+            return base
         }
 
         var strainValue: String {
@@ -8740,7 +8734,6 @@ final class AtriaHomeModel {
                 && lhs.recoveryEstimate.detail == rhs.recoveryEstimate.detail
                 && lhs.recoveryIsProvisional == rhs.recoveryIsProvisional
                 && lhs.recoveryIsFromPreviousSleep == rhs.recoveryIsFromPreviousSleep
-                && lhs.recoveryLiftedAfterNap == rhs.recoveryLiftedAfterNap
                 && lhs.strainConfidence == rhs.strainConfidence
                 && lhs.dayWearCoverageFraction == rhs.dayWearCoverageFraction
                 && lhs.guidance == rhs.guidance
@@ -10520,7 +10513,6 @@ final class AtriaHomeModel {
         return HeroSnapshot(recoveryEstimate: recovery,
                             recoveryIsProvisional: recoveryIsProvisional,
                             recoveryIsFromPreviousSleep: recoveryIsFromPreviousSleep,
-                            recoveryLiftedAfterNap: false,
                             strain: strain,
                             strainConfidence: strainConfidence,
                             dayWearCoverageFraction: wearCoverage,
@@ -10618,7 +10610,6 @@ final class AtriaHomeModel {
         return HeroSnapshot(recoveryEstimate: recovery,
                             recoveryIsProvisional: !night.confirmed,
                             recoveryIsFromPreviousSleep: false,
-                            recoveryLiftedAfterNap: false,
                             strain: strain,
                             strainConfidence: "local",
                             // Night-scoped snapshot: day wear coverage is not
@@ -10815,7 +10806,6 @@ final class AtriaHomeModel {
                                                                        contributors: []),
                             recoveryIsProvisional: false,
                             recoveryIsFromPreviousSleep: false,
-                            recoveryLiftedAfterNap: false,
                             strain: 0,
                             strainConfidence: "standby",
                             // Standby/reconnecting snapshot: nothing has been

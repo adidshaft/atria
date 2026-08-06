@@ -263,14 +263,14 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                     legendTiles
                 }
             case .needsMotion:
-                honestState(title: "Stages need motion data",
-                            detail: "Heart rate alone can't separate sleep stages. Duration and overnight vitals remain available.")
+                honestState(title: "Stage analysis unavailable for this night",
+                            detail: "Your sleep duration is saved. Heart rate alone cannot separate stages; this night needs continuous motion evidence before Atria can show a timeline.")
             case .manualEntry:
                 honestState(title: "No stages — manual entry",
                             detail: "You entered this window by hand. Atria draws stage timelines only from sensor data. Duration and any overnight vitals for this window are kept.")
             case .building:
-                honestState(title: "Stages not ready",
-                            detail: "Stages need checked evidence. Duration and overnight vitals remain available while Atria learns.")
+                honestState(title: "Stage analysis unavailable for this night",
+                            detail: "Your sleep duration is saved. Stages require qualified motion evidence and a validated stage model — hours asleep alone do not create a hypnogram.")
             }
         }
         .padding(14)
@@ -382,11 +382,11 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                 .joined(separator: ", ")
             return "Sleep stages hypnogram. \(provenanceText). \(stages)."
         case .needsMotion:
-            return "\(provenanceText). Stages need motion data — heart rate alone can't separate sleep stages."
+            return "\(provenanceText). Stage analysis unavailable for this night. Your sleep duration is saved; heart rate alone cannot separate stages, so continuous motion evidence is required."
         case .manualEntry:
             return "\(provenanceText). No stages — this window was entered by hand; stage timelines come only from sensor data."
         case .building:
-            return "\(provenanceText). Stages not ready."
+            return "\(provenanceText). Stage analysis unavailable for this night. Sleep duration is saved; stages require qualified motion evidence and a validated stage model."
         }
     }
 

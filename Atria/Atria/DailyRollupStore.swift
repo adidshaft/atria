@@ -249,11 +249,6 @@ struct FrozenRecoverySummary: Codable, Equatable {
 }
 
 enum DailyRecoveryResolver {
-    struct DisplayResolution: Equatable {
-        let summary: FrozenRecoverySummary
-        let liftedAfterNap: Bool
-    }
-
     static func summary(rollups: [DailyRollupStoreEntry],
                         metrics: [SavedDailyMetric],
                         calendar: Calendar = .current,
@@ -518,24 +513,6 @@ enum DailyRecoveryResolver {
         )
     }
 
-    static func applyingNap(to summary: FrozenRecoverySummary,
-                            sleepHistory: SleepHistorySnapshot,
-                            latestSleep: SleepHistorySnapshot.Night?,
-                            calendar: Calendar = .current) -> DisplayResolution {
-        guard let latestSleep,
-              let scoredDay = summary.scoredDay,
-              calendar.isDate(scoredDay, inSameDayAs: latestSleep.day) else {
-            return DisplayResolution(summary: summary, liftedAfterNap: false)
-        }
-        let adjustment = sleepHistory.napAdjustedRecovery(morningRecovery: summary.score,
-                                                          for: latestSleep,
-                                                          calendar: calendar)
-        guard adjustment.lifted, let percent = adjustment.percent else {
-            return DisplayResolution(summary: summary, liftedAfterNap: false)
-        }
-        return DisplayResolution(summary: summary.replacingScore(percent, detailSuffix: "nap_lift"),
-                                 liftedAfterNap: true)
-    }
 }
 
 struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
@@ -558,6 +535,9 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
     var lnRMSSD: Double?
     var rhr: Int?
     var sleepSeconds: TimeInterval?
+    /// The frozen adaptive Sleep Need for this exact night. A missing value is
+    /// historical unknown, never an invitation to rebuild it from current data.
+    var sleepNeedSeconds: TimeInterval?
     var sleepPerformance: Int?
     var bedtimeMinutes: Int?
     var strain: Double?
@@ -586,6 +566,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         case lnRMSSD
         case rhr
         case sleepSeconds
+        case sleepNeedSeconds
         case sleepPerformance
         case bedtimeMinutes
         case strain
@@ -605,6 +586,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
          lnRMSSD: Double? = nil,
          rhr: Int? = nil,
          sleepSeconds: TimeInterval? = nil,
+         sleepNeedSeconds: TimeInterval? = nil,
          sleepPerformance: Int? = nil,
          bedtimeMinutes: Int? = nil,
          strain: Double? = nil,
@@ -625,6 +607,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         self.lnRMSSD = lnRMSSD
         self.rhr = rhr
         self.sleepSeconds = sleepSeconds
+        self.sleepNeedSeconds = sleepNeedSeconds.flatMap { $0 > 0 ? $0 : nil }
         self.sleepPerformance = sleepPerformance
         self.bedtimeMinutes = bedtimeMinutes
         self.strain = strain
@@ -656,6 +639,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         lnRMSSD = try container.decodeIfPresent(Double.self, forKey: .lnRMSSD)
         rhr = try container.decodeIfPresent(Int.self, forKey: .rhr)
         sleepSeconds = try container.decodeIfPresent(TimeInterval.self, forKey: .sleepSeconds)
+        sleepNeedSeconds = try container.decodeIfPresent(TimeInterval.self, forKey: .sleepNeedSeconds)
         sleepPerformance = try container.decodeIfPresent(Int.self, forKey: .sleepPerformance)
         bedtimeMinutes = try container.decodeIfPresent(Int.self, forKey: .bedtimeMinutes)
         strain = try container.decodeIfPresent(Double.self, forKey: .strain)
@@ -689,6 +673,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         try container.encodeIfPresent(lnRMSSD, forKey: .lnRMSSD)
         try container.encodeIfPresent(rhr, forKey: .rhr)
         try container.encodeIfPresent(sleepSeconds, forKey: .sleepSeconds)
+        try container.encodeIfPresent(sleepNeedSeconds, forKey: .sleepNeedSeconds)
         try container.encodeIfPresent(sleepPerformance, forKey: .sleepPerformance)
         try container.encodeIfPresent(bedtimeMinutes, forKey: .bedtimeMinutes)
         try container.encodeIfPresent(strain, forKey: .strain)
@@ -783,6 +768,7 @@ final class DailyRollupStore {
                                                    lnRMSSD: entry.lnRMSSD,
                                                    rhr: entry.rhr,
                                                    sleepSeconds: entry.sleepSeconds,
+                                                   sleepNeedSeconds: entry.sleepNeedSeconds,
                                                    sleepPerformance: entry.sleepPerformance,
                                                    bedtimeMinutes: entry.bedtimeMinutes,
                                                    strain: entry.strain,
@@ -966,6 +952,7 @@ final class DailyRollupStore {
                               lnRMSSD: rollup.lnRMSSD,
                               rhr: rollup.rhr,
                               sleepSeconds: rollup.sleepSeconds,
+                              sleepNeedSeconds: rollup.sleepNeedSeconds,
                               sleepPerformance: rollup.sleepPerformance,
                               bedtimeMinutes: rollup.bedtimeMinutes,
                               strain: rollup.strain,

@@ -71,6 +71,10 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         // `detailText` (shown when the user taps the metric) and in
         // `accessibilityText`.
         guard let count else { return "--" }
+        // A zero observed inside a small archive fragment is not a zero for
+        // the day. Showing it as one makes an absence of evidence look like a
+        // completed step total (for example "0 · 3% covered").
+        guard completeness != .partial || count > 0 else { return "--" }
         return "\(count)"
     }
 
@@ -85,7 +89,11 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             return "Verified complete day"
         case (.verifiedCanonical, .partial):
             if let coverageFraction {
-                return "Partial archive · \(Int((coverageFraction * 100).rounded()))% covered"
+                let coverage = Int((coverageFraction * 100).rounded())
+                if count == 0 {
+                    return "\(coverage)% of today verified · no usable step count yet"
+                }
+                return "Partial archive · \(coverage)% covered"
             }
             return "Partial archive coverage"
         case (.live, .partial):
@@ -127,7 +135,10 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     }
 
     var accessibilityText: String {
-        guard let count else { return "Step count unavailable. \(detailText)." }
+        guard let count,
+              !(completeness == .partial && count == 0) else {
+            return "Step count unavailable. \(detailText)."
+        }
         switch (source, completeness) {
         case (.verifiedCanonical, .complete):
             if isOpenCycle {

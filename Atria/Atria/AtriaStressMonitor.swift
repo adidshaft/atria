@@ -126,7 +126,7 @@ struct AtriaStressPresentation: Equatable {
     }
 }
 
-/// Pure, testable scoring core (mirrors the `AtriaSleepBudget` / `AtriaNapRecovery`
+/// Pure, testable scoring core (mirrors the `AtriaSleepBudget`
 /// style: static functions, no I/O, all thresholds are named constants).
 enum AtriaStressMonitor {
 

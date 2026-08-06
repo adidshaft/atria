@@ -1,6 +1,9 @@
 import Foundation
 
 enum AtriaSleepBudget {
+    /// Minimum independent five-minute RR windows required before a sleep
+    /// observation can contribute HRV evidence to any product surface.
+    static let minimumQualifiedHRVWindows = 3
     /// Itemized sleep-need math (2026-07-07 design-handoff ledger): the same
     /// four terms sleepNeed() always combined, exposed so UI can show its work.
     struct NeedComponents: Equatable {
@@ -63,39 +66,5 @@ enum AtriaSleepBudget {
     static func performancePercent(slept: Double, needed: Double) -> Int {
         guard needed > 0 else { return 0 }
         return min(max(Int(((slept / needed) * 100).rounded()), 0), 100)
-    }
-}
-
-enum AtriaNapRecovery {
-    static let minimumNapHours = 0.75
-    static let minimumQualifyingHRVWindows = 3
-
-    struct Result: Equatable {
-        let percent: Int?
-        let lifted: Bool
-    }
-
-    static func adjustedRecovery(morningRecovery: Int?,
-                                 morningLnRMSSD: Double?,
-                                 napLnRMSSD: Double?,
-                                 napDurationHours: Double,
-                                 qualifyingHRVWindows: Int) -> Result {
-        guard let morningRecovery else {
-            return Result(percent: nil, lifted: false)
-        }
-        guard napDurationHours >= minimumNapHours,
-              qualifyingHRVWindows >= minimumQualifyingHRVWindows,
-              let morningLnRMSSD,
-              let napLnRMSSD else {
-            return Result(percent: morningRecovery, lifted: false)
-        }
-
-        let delta = napLnRMSSD - morningLnRMSSD
-        guard delta > 0 else {
-            return Result(percent: morningRecovery, lifted: false)
-        }
-
-        let lifted = min(99, max(morningRecovery, morningRecovery + Int((delta * 25.0).rounded())))
-        return Result(percent: lifted, lifted: lifted > morningRecovery)
     }
 }
