@@ -276,8 +276,12 @@ final class AtriaStrengthProgressPresentationTests: XCTestCase {
             LoggedSet(exercise: "Bench press", weightKg: 80, reps: 6, rpe: 9, t: day(0),
                       supersetGroupID: "round-1", supersetOrder: 1, supersetTransitionSeconds: 45)
         ]
-        let lower = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: lowEffort).muscularInputScore)
-        let higher = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: highEffortSuperset).muscularInputScore)
+        let lower = try XCTUnwrap(try XCTUnwrap(
+            AtriaStrengthLog.muscularLoadReceipt(for: lowEffort)
+        ).muscularInputScore)
+        let higher = try XCTUnwrap(try XCTUnwrap(
+            AtriaStrengthLog.muscularLoadReceipt(for: highEffortSuperset)
+        ).muscularInputScore)
 
         XCTAssertGreaterThan(higher, lower)
         let density = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: highEffortSuperset)?.densityBonusFraction)

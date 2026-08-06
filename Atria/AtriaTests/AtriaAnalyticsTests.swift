@@ -315,7 +315,8 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                baseNeedHours: 8,
                                                yesterdayStrain: nil,
                                                calendar: calendar)
-        XCTAssertEqual(credited, 8 - 1 * 0.9, accuracy: 0.001)
+        XCTAssertNil(credited,
+                     "a confirmed legacy main sleep cannot be assigned a new need from a later nap")
     }
 
     func testManualSleepKeepsDurationButDoesNotFabricateEfficiencyOrRecoveryLift() throws {
@@ -440,20 +441,21 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertTrue(dismissed.nights.isEmpty)
     }
 
-    func testDailyRollupSleepPerformanceCreditsSameDayNap() {
-        let base = SessionStore.dailyRollupSleepPerformance(sleepDuration: 7 * 3_600,
-                                                            baseNeedHours: 8,
-                                                            yesterdayStrain: nil,
-                                                            priorNights: [])
-        let withNap = SessionStore.dailyRollupSleepPerformance(sleepDuration: 7 * 3_600,
-                                                               baseNeedHours: 8,
-                                                               yesterdayStrain: nil,
-                                                               priorNights: [],
-                                                               sameDayNapHours: 1)
-        XCTAssertNotNil(base)
-        XCTAssertNotNil(withNap)
-        XCTAssertGreaterThan(withNap ?? 0, base ?? 0,
-                             "a same-day nap should raise sleep performance vs. no nap credit")
+    func testNapCreditChangesOnlyTheNextFrozenSleepNeed() {
+        let withoutNap = AtriaSleepBudget.sleepNeedComponents(baseHours: 8,
+                                                              yesterdayStrain: nil,
+                                                              debtHours: 0,
+                                                              sameDayNapHours: 0)
+        let withNap = AtriaSleepBudget.sleepNeedComponents(baseHours: 8,
+                                                           yesterdayStrain: nil,
+                                                           debtHours: 0,
+                                                           sameDayNapHours: 1)
+        XCTAssertEqual(withoutNap.totalHours, 8, accuracy: 0.001)
+        XCTAssertEqual(withNap.totalHours, 7.1, accuracy: 0.001)
+        XCTAssertGreaterThan(
+            AtriaSleepBudget.performancePercent(slept: 7, needed: withNap.totalHours),
+            AtriaSleepBudget.performancePercent(slept: 7, needed: withoutNap.totalHours)
+        )
     }
 
     func testSleepClassifyAcceptsArchiveDerivedStillness() throws {
@@ -1736,98 +1738,6 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNil(Metrics.sleepPerformanceZone(nil))
     }
 
-    func testNapRecoveryLiftNeverLowersMorningRecovery() {
-        let lowerNap = AtriaNapRecovery.adjustedRecovery(morningRecovery: 70,
-                                                         morningLnRMSSD: log(60),
-                                                         napLnRMSSD: log(50),
-                                                         napDurationHours: 1.0,
-                                                         qualifyingHRVWindows: 3)
-        XCTAssertEqual(lowerNap.percent, 70)
-        XCTAssertFalse(lowerNap.lifted)
-
-        let thinNap = AtriaNapRecovery.adjustedRecovery(morningRecovery: 70,
-                                                        morningLnRMSSD: log(60),
-                                                        napLnRMSSD: log(80),
-                                                        napDurationHours: 0.5,
-                                                        qualifyingHRVWindows: 3)
-        XCTAssertEqual(thinNap.percent, 70)
-        XCTAssertFalse(thinNap.lifted)
-
-        let liftedNap = AtriaNapRecovery.adjustedRecovery(morningRecovery: 70,
-                                                          morningLnRMSSD: log(60),
-                                                          napLnRMSSD: log(90),
-                                                          napDurationHours: 1.0,
-                                                          qualifyingHRVWindows: 3)
-        XCTAssertGreaterThan(liftedNap.percent ?? 0, 70)
-        XCTAssertTrue(liftedNap.lifted)
-    }
-
-    func testSleepHistoryNapRecoveryRequiresQualifyingHRVWindows() {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let day = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
-        let main = SleepHistorySnapshot.Night(id: "main",
-                                              day: day,
-                                              start: day.addingTimeInterval(23 * 60 * 60),
-                                              end: day.addingTimeInterval(30 * 60 * 60),
-                                              duration: 7 * 3_600,
-                                              restingHR: 56,
-                                              hrv: 60,
-                                              hrvWindowCount: 4,
-                                              respiratoryRate: nil,
-                                              sleepEfficiency: nil,
-                                              confidence: "confirmed",
-                                              source: "manual_sleep",
-                                              confirmed: true,
-                                              stageSegments: [])
-        let undercountedNap = SleepHistorySnapshot.Night(id: "nap-low-windows",
-                                                         day: day,
-                                                         start: day.addingTimeInterval(13 * 60 * 60),
-                                                         end: day.addingTimeInterval(14 * 60 * 60),
-                                                         duration: 3_600,
-                                                         restingHR: nil,
-                                                         hrv: 90,
-                                                         hrvWindowCount: 2,
-                                                         respiratoryRate: nil,
-                                                         sleepEfficiency: nil,
-                                                         confidence: "confirmed",
-                                                         source: "manual_nap",
-                                                         confirmed: true,
-                                                         stageSegments: [])
-        let qualifiedNap = SleepHistorySnapshot.Night(id: "nap-qualified",
-                                                      day: day,
-                                                      start: day.addingTimeInterval(15 * 60 * 60),
-                                                      end: day.addingTimeInterval(16 * 60 * 60),
-                                                      duration: 3_600,
-                                                      restingHR: nil,
-                                                      hrv: 92,
-                                                      hrvWindowCount: 3,
-                                                      respiratoryRate: nil,
-                                                      sleepEfficiency: nil,
-                                                      confidence: "confirmed",
-                                                      source: "manual_nap",
-                                                      confirmed: true,
-                                                      stageSegments: [])
-
-        let lowWindowSnapshot = SleepHistorySnapshot(nights: [main, undercountedNap],
-                                                     confirmedCount: 2,
-                                                     candidateCount: 0)
-        let lowWindowResult = lowWindowSnapshot.napAdjustedRecovery(morningRecovery: 70,
-                                                                    for: main,
-                                                                    calendar: calendar)
-        XCTAssertEqual(lowWindowResult.percent, 70)
-        XCTAssertFalse(lowWindowResult.lifted)
-
-        let qualifiedSnapshot = SleepHistorySnapshot(nights: [main, undercountedNap, qualifiedNap],
-                                                     confirmedCount: 3,
-                                                     candidateCount: 0)
-        let qualifiedResult = qualifiedSnapshot.napAdjustedRecovery(morningRecovery: 70,
-                                                                    for: main,
-                                                                    calendar: calendar)
-        XCTAssertGreaterThan(qualifiedResult.percent ?? 0, 70)
-        XCTAssertTrue(qualifiedResult.lifted)
-    }
-
     func testBehaviorImpactReportsWelchGatedNextMorningRecovery() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -2228,22 +2138,19 @@ final class AtriaAnalyticsTests: XCTestCase {
                                             confirmedCount: 3,
                                             candidateCount: 0)
 
-        XCTAssertEqual(snapshot.sleepNeedHours(for: main,
-                                               baseNeedHours: 8,
-                                               yesterdayStrain: 14,
-                                               calendar: calendar),
-                       // 8 base + (14-8)*0.62/7 strain adder + 1.0 debt - 0.45 nap credit
-                       9.0814,
-                       accuracy: 0.001)
-        XCTAssertEqual(snapshot.sleepPerformancePercent(for: main,
-                                                        baseNeedHours: 8,
-                                                        yesterdayStrain: 14,
-                                                        calendar: calendar),
-                       85)
+        XCTAssertNil(snapshot.sleepNeedHours(for: main,
+                                             baseNeedHours: 8,
+                                             yesterdayStrain: 14,
+                                             calendar: calendar),
+                     "a confirmed night without its original frozen need must stay unknown")
+        XCTAssertNil(snapshot.sleepPerformancePercent(for: main,
+                                                      baseNeedHours: 8,
+                                                      yesterdayStrain: 14,
+                                                      calendar: calendar))
         XCTAssertTrue(snapshot.sleepPerformanceSummary(for: main,
                                                        baseNeedHours: 8,
                                                        yesterdayStrain: 14,
-                                                       calendar: calendar).contains("needed · 85%"))
+                                                       calendar: calendar).contains("unavailable for this legacy night"))
     }
 
     func testSleepHistorySnapshotSuggestsBedtimeAfterNineFromMedianWake() {
@@ -2316,20 +2223,16 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNotEqual(rollup?.tzOffsetMinutes, staleOffset)
     }
 
-    func testDailyRollupSleepPerformanceUsesNeedDebtAndYesterdayStrain() {
-        let performance = SessionStore.dailyRollupSleepPerformance(sleepDuration: 7.7 * 3_600,
-                                                                   baseNeedHours: 8,
-                                                                   yesterdayStrain: 14,
-                                                                   priorNights: [
-                                                                    (needed: 8, slept: 6),
-                                                                    (needed: 8, slept: 8)
-                                                                   ])
-
-        XCTAssertEqual(performance, 83)
-        XCTAssertNil(SessionStore.dailyRollupSleepPerformance(sleepDuration: nil,
-                                                              baseNeedHours: 8,
-                                                              yesterdayStrain: nil,
-                                                              priorNights: []))
+    func testFrozenSleepPerformanceUsesTheExactPersistedNeed() {
+        let components = AtriaSleepBudget.sleepNeedComponents(baseHours: 8,
+                                                              yesterdayStrain: 14,
+                                                              debtHours: AtriaSleepBudget.sleepDebt(
+                                                                nights: [(needed: 8, slept: 6), (needed: 8, slept: 8)]
+                                                              ),
+                                                              sameDayNapHours: 0)
+        let frozenNeed = components.totalHours
+        XCTAssertEqual(frozenNeed, 9.2814, accuracy: 0.001)
+        XCTAssertEqual(AtriaSleepBudget.performancePercent(slept: 7.7, needed: frozenNeed), 83)
     }
 
     func testWakeAlarmSmartWindowFiresOnLightStageWithNonnegativeSlope() {
@@ -2727,7 +2630,8 @@ final class AtriaAnalyticsTests: XCTestCase {
 
         XCTAssertEqual(report.recoveryAvg, 65)
         XCTAssertEqual(report.recoveryDeltaVsPriorWeek, 11)
-        XCTAssertEqual(report.sleepConsistencyPct, 93)
+        XCTAssertNil(report.sleepConsistencyPct,
+                     "bedtime-only rollups cannot stand in for the canonical bed-and-wake consistency engine")
         XCTAssertEqual(report.bestDay?.recovery, 80)
         XCTAssertEqual(report.hardestDay?.strain, 18)
         XCTAssertNil(report.strainRecoveryNote)
@@ -3690,8 +3594,7 @@ final class AtriaAnalyticsTests: XCTestCase {
             AtriaHomeModel.HeroSnapshot.recoveryDetailText(
                 recoveryEstimate: estimate,
                 recoveryIsProvisional: false,
-                recoveryIsFromPreviousSleep: true,
-                recoveryLiftedAfterNap: false
+                recoveryIsFromPreviousSleep: true
             ),
             // 2026-07-28 deterministic-presentation pass: the status line is now
             // a compact fixed-vocabulary marker rather than prose. The invariant
@@ -3705,8 +3608,7 @@ final class AtriaAnalyticsTests: XCTestCase {
             AtriaHomeModel.HeroSnapshot.recoveryDetailText(
                 recoveryEstimate: estimate,
                 recoveryIsProvisional: false,
-                recoveryIsFromPreviousSleep: false,
-                recoveryLiftedAfterNap: false
+                recoveryIsFromPreviousSleep: false
             ),
             // Same migration: the raw confidence name ("personal baseline") is
             // 17 characters and would wrap, so a confident score falls back to
@@ -3735,8 +3637,7 @@ final class AtriaAnalyticsTests: XCTestCase {
             AtriaHomeModel.HeroSnapshot.recoveryDetailText(
                 recoveryEstimate: estimate,
                 recoveryIsProvisional: true,
-                recoveryIsFromPreviousSleep: false,
-                recoveryLiftedAfterNap: false
+                recoveryIsFromPreviousSleep: false
             ),
             "HRV pending"
         )
