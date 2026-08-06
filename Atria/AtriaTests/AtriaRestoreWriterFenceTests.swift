@@ -100,6 +100,138 @@ final class AtriaRestoreWriterFenceTests: XCTestCase {
         XCTAssertEqual(completions.snapshot(), [1, 2])
     }
 
+    @MainActor
+    func testConfirmedRecordTransactionGateResumesWaitersFIFO() async {
+        let gate = AtriaConfirmedRecordTransactionGate()
+        await gate.acquire()
+        var order: [Int] = []
+
+        let second = Task { @MainActor in
+            await gate.acquire()
+            order.append(2)
+            gate.release()
+        }
+        await Task.yield()
+        let third = Task { @MainActor in
+            await gate.acquire()
+            order.append(3)
+            gate.release()
+        }
+        await Task.yield()
+
+        gate.release()
+        await second.value
+        await third.value
+        XCTAssertEqual(order, [2, 3])
+    }
+
+    func testRequiredConfirmedRecordWriteDoesNotBlockMainActor() async {
+        let started = expectation(description: "writer started")
+        let heartbeat = expectation(description: "main actor heartbeat")
+        let release = DispatchSemaphore(value: 0)
+        let worker = AtriaCoalescingSerialWorker<Int, Int>(
+            label: "com.adidshaft.atria.tests.confirmed-record-responsiveness"
+        ) { value in
+            started.fulfill()
+            release.wait()
+            return value
+        }
+
+        let write = Task { @MainActor in
+            await worker.performAsync(7)
+        }
+        await fulfillment(of: [started], timeout: 2)
+        Task { @MainActor in heartbeat.fulfill() }
+        await fulfillment(of: [heartbeat], timeout: 1)
+        release.signal()
+        let writtenValue = await write.value
+        XCTAssertEqual(writtenValue, 7)
+    }
+
+    func testConfirmedWorkoutRebasePreservesConcurrentIndependentMutations() {
+        let first = confirmedWorkout(id: "first", label: "First")
+        let second = confirmedWorkout(id: "second", label: "Second")
+        let editedFirst = confirmedWorkout(id: "first", label: "Edited")
+        let current = [first, second]
+
+        let rebased = SessionStore.rebasedConfirmedWorkouts(
+            base: [first],
+            desired: [editedFirst],
+            current: current
+        )
+
+        XCTAssertEqual(rebased.first(where: { $0.id == first.id })?.label, "Edited")
+        XCTAssertEqual(rebased.first(where: { $0.id == second.id })?.label, "Second")
+    }
+
+    func testConfirmedSleepRebaseDoesNotResurrectConcurrentRecord() {
+        let first = confirmedSleep(id: "first")
+        let second = confirmedSleep(id: "second")
+        let rebased = SessionStore.rebasedConfirmedSleeps(
+            base: [first],
+            desired: [],
+            current: [first, second]
+        )
+
+        XCTAssertEqual(rebased.map(\.id), ["second"])
+    }
+
+    func testConfirmedRecordRebaseUsesDeterministicLastDuplicateWithoutTrapping() {
+        let workout = confirmedWorkout(id: "duplicate", label: "Original")
+        let staleDuplicate = confirmedWorkout(id: "duplicate", label: "Stale")
+        let finalDuplicate = confirmedWorkout(id: "duplicate", label: "Final")
+        let workoutResult = SessionStore.rebasedConfirmedWorkouts(
+            base: [workout, staleDuplicate],
+            desired: [staleDuplicate, finalDuplicate],
+            current: [workout, staleDuplicate]
+        )
+        XCTAssertEqual(workoutResult.filter { $0.id == "duplicate" }.count, 1)
+        XCTAssertEqual(workoutResult.filter { $0.id == "duplicate" }.first?.label, "Final")
+
+        let sleep = confirmedSleep(id: "duplicate")
+        let sleepResult = SessionStore.rebasedConfirmedSleeps(
+            base: [sleep, sleep],
+            desired: [sleep, sleep],
+            current: [sleep, sleep]
+        )
+        XCTAssertEqual(sleepResult.filter { $0.id == "duplicate" }.count, 1)
+    }
+
+    func testRestoreFenceOwnsAndDrainsConfirmedRecordLaneBeforeOtherWriters() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/Sessions.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(of: "private func beginRestorePersistenceFence() async"))
+        let end = try XCTUnwrap(
+            source.range(of: "private func endRestorePersistenceFence()", range: start.upperBound..<source.endIndex)
+        )
+        let begin = String(source[start.lowerBound..<end.lowerBound])
+        let blocksProducers = try XCTUnwrap(begin.range(of: "restorePersistenceFenceActive = true"))
+        let ownsLane = try XCTUnwrap(begin.range(of: "await Self.confirmedRecordTransactionGate.acquire()"))
+        let drainsWriter = try XCTUnwrap(begin.range(of: "await Self.confirmedRecordWorker.fence()"))
+        XCTAssertLessThan(blocksProducers.lowerBound, ownsLane.lowerBound)
+        XCTAssertLessThan(ownsLane.lowerBound, drainsWriter.lowerBound)
+    }
+
+    func testConfirmedWorkoutWriterFailsClosedWhenAuthoritativeFileCannotWrite() {
+        let missingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-confirmed-writer-\(UUID().uuidString)")
+        let result = AtriaConfirmedRecordWriter.write(.workouts(
+            generation: 9,
+            records: [confirmedWorkout(id: "failure", label: "Failure")],
+            fileURL: missingDirectory.appendingPathComponent("confirmed-workouts.json"),
+            defaultsKey: "atria.tests.confirmed-workout-failure.\(UUID().uuidString)"
+        ))
+
+        guard case .failure(let generation, let domain, _) = result else {
+            return XCTFail("Expected authoritative write failure")
+        }
+        XCTAssertEqual(generation, 9)
+        XCTAssertEqual(domain, "workouts")
+    }
+
     func testDailyRollupFencePersistsOnlyNewestPausedCacheImage() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("atria-rollup-fence-tests-\(UUID().uuidString)")
@@ -155,6 +287,56 @@ final class AtriaRestoreWriterFenceTests: XCTestCase {
         try FileManager.default.contentsOfDirectory(at: directory,
                                                     includingPropertiesForKeys: nil)
             .filter { $0.lastPathComponent.contains("-pre-restore") }
+    }
+
+    private func confirmedWorkout(id: String, label: String) -> UserConfirmedWorkout {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        return UserConfirmedWorkout(
+            id: id,
+            createdAt: start,
+            start: start,
+            end: start.addingTimeInterval(1_800),
+            label: label,
+            source: "test",
+            confidence: "user_confirmed",
+            sessions: 1,
+            samples: 100,
+            avgHR: 120,
+            peakHR: 150,
+            p95HR: 145,
+            p99HR: 149,
+            thresholdHR: 110,
+            streamCoveragePercent: 95,
+            observedDuration: 1_800,
+            reason: "test"
+        )
+    }
+
+    private func confirmedSleep(id: String) -> UserConfirmedSleep {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        return UserConfirmedSleep(
+            id: id,
+            createdAt: start,
+            start: start,
+            end: start.addingTimeInterval(8 * 60 * 60),
+            source: "manual_sleep",
+            confidence: "manual_user_entered",
+            sessions: 1,
+            samples: 1_000,
+            avgHR: 60,
+            peakHR: 90,
+            restingHR: 52,
+            hrv: 48,
+            hrvWindowCount: 4,
+            respiratoryRate: 15.2,
+            duration: 8 * 60 * 60,
+            span: 8 * 60 * 60,
+            reason: "fixture",
+            motionSource: "manual",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "UTC"
+        )
     }
 }
 

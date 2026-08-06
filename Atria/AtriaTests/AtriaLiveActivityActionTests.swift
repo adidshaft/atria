@@ -51,12 +51,12 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(compactHeart.contains(".minimumScaleFactor(0.55)"))
         XCTAssertTrue(compactHeart.contains("Heart rate \\(heartRate) beats per minute"))
 
-        XCTAssertTrue(lockScreen.contains(".font(.system(size: 34, weight: .black, design: .rounded))"))
+        XCTAssertTrue(lockScreen.contains("? .system(size: 30, weight: .black, design: .rounded)"),
+                      "the reusable metric helper must fit a three-digit heart rate")
         XCTAssertTrue(lockScreen.contains(".minimumScaleFactor(0.58)"))
-        XCTAssertTrue(lockScreen.contains(".layoutPriority(3)"))
-        XCTAssertTrue(lockScreen.contains("Text(\"BPM\")"))
-        XCTAssertTrue(lockScreen.contains(".fixedSize()"),
-                      "the BPM suffix must stay separate so a three-digit reading cannot wrap it")
+        XCTAssertTrue(lockScreen.contains(".layoutPriority(emphasis ? 3 : 0)"))
+        XCTAssertTrue(lockScreen.contains("title: \"BPM\""),
+                      "the BPM suffix must remain a separate label in the reusable metric helper")
         XCTAssertTrue(lockScreen.contains(".lineLimit(1)"))
         XCTAssertTrue(lockScreen.contains(".minimumScaleFactor(0.68)"),
                       "the HR-zone, step, calorie, and strain row must shrink rather than wrap")
@@ -629,8 +629,9 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         let coordinator = try String(contentsOf: testsDirectory
             .deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaLiveActivityCoordinator.swift"), encoding: .utf8)
-        XCTAssertTrue(coordinator.contains("beginBackgroundTask(withName: \"Atria live workout snapshot\")"))
-        XCTAssertTrue(coordinator.contains("endBackgroundTask(backgroundTask)"))
+        XCTAssertTrue(coordinator.contains("withName: \"Atria live workout snapshot\""))
+        XCTAssertTrue(coordinator.contains("endActiveActivityWriteBackgroundTaskIfNeeded()"))
+        XCTAssertTrue(coordinator.contains("endQueuedActivityBackgroundTaskIfNeeded()"))
     }
 
     func testCanonicalTerminalTransitionUpdatesThenDismissesLiveActivityPromptly() throws {
@@ -803,7 +804,8 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(source.contains("case .reconnecting: return \"Reconnecting\""))
         XCTAssertTrue(source.contains("case .stale: return \"HR stale\""))
         XCTAssertTrue(source.contains("case .unavailable: return \"Unavailable\""))
-        XCTAssertTrue(source.contains("state.stepsAreEstimated ?? false"))
+        XCTAssertTrue(source.contains("state.stepsAreEstimated != false"),
+                      "missing workout-step provenance must fail closed as estimated")
         XCTAssertTrue(source.contains("let capturedAt = state.stepsCapturedAt"))
         XCTAssertTrue(source.contains("now.timeIntervalSince(capturedAt) <= atriaStepFreshness"))
         XCTAssertTrue(source.contains("labelText: \"Steps reconnecting\""))
@@ -826,9 +828,16 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                        "timer and HR writes must not renew battery evidence")
         XCTAssertTrue(source.contains("ProgressView(value: liveActivityStrainProgressFraction(for: context.state))"))
         XCTAssertTrue(source.contains("liveActivityDailyStepGoalPresentation(for: context.state)"))
-        XCTAssertTrue(source.contains("state.dailyStepsAreEstimated ?? false"))
-        XCTAssertTrue(source.contains("reached && !estimated"),
-                      "preliminary steps must never claim an exact goal completion")
+        XCTAssertTrue(source.contains("state.dailyStepsAreEstimated != false"),
+                      "missing daily-step provenance must fail closed as estimated")
+        XCTAssertTrue(source.contains("state.dailyStepsIsLowerBound != false"),
+                      "missing daily-step completeness must fail closed as a lower bound")
+        XCTAssertTrue(source.contains("let capturedAt = state.dailyStepsCapturedAt"),
+                      "daily goal freshness must use the durable daily receipt clock")
+        XCTAssertFalse(source.contains("let capturedAt = state.stepsCapturedAt,\n          capturedAt <= now"),
+                       "workout-local motion must not renew the daily step goal")
+        XCTAssertTrue(source.contains("reached && exact"),
+                      "estimated or lower-bound steps must never claim goal completion")
         XCTAssertTrue(source.contains("liveActivitySensorStatusText"))
         XCTAssertTrue(source.contains("return statuses.isEmpty ? nil"),
                       "healthy live sources must not waste Lock Screen space on a redundant status row")

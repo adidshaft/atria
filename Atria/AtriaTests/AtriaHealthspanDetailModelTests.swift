@@ -4,7 +4,7 @@ import XCTest
 final class AtriaHealthspanDetailModelTests: XCTestCase {
     func testNotReadyPreparedPaceDoesNotProduceDisplayValue() {
         let model = AtriaHealthspanDetailModel(
-            summary: .building(chronologicalAge: 35, blockers: ["28 days of heart data"]),
+            summary: .building(chronologicalAge: 35, blockers: ["14 days of heart data"]),
             paceOfAging: .init(isReady: false,
                               yearsPerCalendarYear: nil,
                               copyText: AtriaFitnessAge.paceCalibratingCopy)

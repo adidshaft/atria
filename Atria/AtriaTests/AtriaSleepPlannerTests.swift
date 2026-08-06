@@ -39,4 +39,12 @@ final class AtriaSleepPlannerTests: XCTestCase {
         let junk = AtriaSleepPlanner.assumedEfficiency(nightEfficiencies: [0.2, 1.4, 0.9, 0.9, 0.9])
         XCTAssertTrue(junk.isDefault)
     }
+
+    func testEvenEfficiencyHistoryUsesBothMiddleNights() {
+        let learned = AtriaSleepPlanner.assumedEfficiency(
+            nightEfficiencies: [0.70, 0.76, 0.82, 0.88, 0.94, 1.0]
+        )
+        XCTAssertEqual(learned.value, 0.85, accuracy: 0.000_001)
+        XCTAssertFalse(learned.isDefault)
+    }
 }

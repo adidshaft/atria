@@ -39,26 +39,29 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
 
     private func workout(samples: Int = 177,
                          avgHR: Int = 86,
+                         peakHR: Int = 100,
                          strain: Double? = 0.051,
-                         coverage: Int = 100) -> UserConfirmedWorkout {
-        let start = Date(timeIntervalSince1970: 1_800_000_000)
+                         coverage: Int = 100,
+                         reason: String = "test",
+                         start: Date = Date(timeIntervalSince1970: 1_800_000_000),
+                         duration: TimeInterval = 173) -> UserConfirmedWorkout {
         return UserConfirmedWorkout(id: "workout",
                                     createdAt: start,
                                     start: start,
-                                    end: start.addingTimeInterval(173),
+                                    end: start.addingTimeInterval(duration),
                                     label: "Workout",
                                     source: "test",
                                     confidence: "high",
                                     sessions: 1,
                                     samples: samples,
                                     avgHR: avgHR,
-                                    peakHR: 100,
+                                    peakHR: peakHR,
                                     p95HR: 96,
                                     p99HR: 99,
                                     thresholdHR: 124,
                                     streamCoveragePercent: coverage,
-                                    observedDuration: 173,
-                                    reason: "test",
+                                    observedDuration: duration,
+                                    reason: reason,
                                     strain: strain,
                                     zoneSeconds: [:])
     }
@@ -72,9 +75,9 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(avgHR: 0)), "No HR data")
     }
 
-    func testSparseHeartRateIsQualifiedInsteadOfDiscarded() {
+    func testSparseHeartRateRemainsVisibleButCannotClaimPreciseStrain() {
         XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(strain: 1.1, coverage: 40)),
-                       "Strain 1.1 · partial HR")
+                       "40% HR · Incomplete")
     }
 
     func testSeverelySparseWorkoutDoesNotShowPreciseDerivedMetrics() {
@@ -85,6 +88,9 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(AtriaWorkoutMetricPresentation.strainText(sparse), "Incomplete")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.averageHeartRateText(sparse), "Incomplete")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.energyText(sparse), "Incomplete")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateSummaryText(sparse),
+                       "3% HR · Incomplete")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(sparse), "Incomplete")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.shareMetrics(sparse),
                        .init(strain: "Incomplete",
                              peakHeartRate: "--",
@@ -92,6 +98,9 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                              includesZoneMinutes: false))
 
         let complete = workout(samples: 1_200, avgHR: 126, strain: 5.4, coverage: 92)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateSummaryText(complete),
+                       "126 avg · 100 peak")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(complete), "100")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.shareMetrics(complete),
                        .init(strain: "5.4",
                              peakHeartRate: "100",
@@ -99,19 +108,115 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                              includesZoneMinutes: true))
     }
 
-    func testTinyDayStrainIsIncompleteOnlyWhenAllSameDayWorkoutsAreSeverelySparse() {
+    func testWorkoutNumericMetricsRequireSeventyFivePercentCoverage() {
+        for coverage in [24, 25, 40, 74] {
+            let partial = workout(samples: 1_200,
+                                  avgHR: 126,
+                                  peakHR: 154,
+                                  strain: 5.4,
+                                  coverage: coverage)
+            XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(partial), .incomplete)
+            XCTAssertTrue(AtriaWorkoutMetricPresentation.metricsAreIncomplete(partial))
+            XCTAssertEqual(AtriaWorkoutMetricPresentation.strainText(partial), "Incomplete")
+            XCTAssertFalse(AtriaWorkoutMetricPresentation.shareMetrics(partial).includesZoneMinutes)
+        }
+
+        let qualified = workout(samples: 1_200,
+                                avgHR: 126,
+                                peakHR: 154,
+                                strain: 5.4,
+                                coverage: 75)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(qualified), .complete)
+        XCTAssertFalse(AtriaWorkoutMetricPresentation.metricsAreIncomplete(qualified))
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.strainText(qualified), "5.4")
+        XCTAssertTrue(AtriaWorkoutMetricPresentation.shareMetrics(qualified).includesZoneMinutes)
+    }
+
+    func testMaterialContinuousGapRemainsPartialAboveCoverageThreshold() {
+        let gymWorkout = workout(samples: 2_563,
+                                 avgHR: 120,
+                                 peakHR: 158,
+                                 strain: 4.246,
+                                 coverage: 78,
+                                 reason: "stream_gaps")
+
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(gymWorkout),
+                       .incomplete)
+        XCTAssertTrue(AtriaWorkoutMetricPresentation.metricsAreIncomplete(gymWorkout))
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.strainText(gymWorkout), "≥ 4.2")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.averageHeartRateText(gymWorkout),
+                       "120 observed")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(gymWorkout),
+                       "158 observed")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.compactStatus(gymWorkout),
+                       "78% HR · Partial")
+        XCTAssertFalse(AtriaWorkoutMetricPresentation.shareMetrics(gymWorkout)
+            .includesZoneMinutes)
+    }
+
+    func testUnavailableAndOneSampleHeartRateNeverExposeNumericPeak() {
+        let unavailable = workout(samples: 0, avgHR: 0, peakHR: 0)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(unavailable), .unavailable)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateSummaryText(unavailable), "No HR data")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(unavailable), "No HR data")
+
+        let oneSample = workout(samples: 1, avgHR: 126, peakHR: 150, coverage: 100)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(oneSample), .incomplete)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.averageHeartRateText(oneSample), "Incomplete")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(oneSample), "Incomplete")
+
+        let corruptPeak = workout(samples: 200, avgHR: 126, peakHR: 0, coverage: 92)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(corruptPeak), .incomplete)
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateSummaryText(corruptPeak),
+                       "92% HR · Incomplete")
+    }
+
+    func testDayStrainIsIncompleteWhenAnySameDayWorkoutIsSeverelySparse() {
         let sparse = workout(samples: 58, avgHR: 118, strain: 0.17, coverage: 3)
         let complete = workout(samples: 1_200, avgHR: 126, strain: 5.4, coverage: 92)
 
         XCTAssertTrue(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: sparse.start,
                                                                            strain: 0.17,
                                                                            workouts: [sparse]))
-        XCTAssertFalse(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: sparse.start,
+        XCTAssertTrue(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: sparse.start,
+                                                                           strain: 5.4,
+                                                                           workouts: [sparse]))
+        XCTAssertTrue(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: sparse.start,
+                                                                           strain: 0.17,
+                                                                           workouts: [sparse, complete]),
+                      "a dense workout cannot prove the load missing from a sparse workout")
+        XCTAssertFalse(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: complete.start,
                                                                             strain: 5.4,
-                                                                            workouts: [sparse]))
-        XCTAssertFalse(AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: sparse.start,
-                                                                            strain: 0.17,
-                                                                            workouts: [sparse, complete]))
+                                                                            workouts: [complete]))
+    }
+
+    func testCurrentCycleStrainKeepsPriorCivilDaySparseQualifierAfterMidnight() {
+        let cycleStart = Date(timeIntervalSince1970: 1_800_000_000)
+        let midnight = cycleStart.addingTimeInterval(12 * 60 * 60)
+        let now = midnight.addingTimeInterval(60 * 60)
+        let sparseBeforeMidnight = workout(
+            samples: 2_563,
+            avgHR: 120,
+            peakHR: 158,
+            strain: 4.246,
+            coverage: 78,
+            reason: "stream_gaps",
+            start: midnight.addingTimeInterval(-45 * 60),
+            duration: 35 * 60
+        )
+
+        XCTAssertTrue(AtriaWorkoutMetricPresentation.cycleStrainIsIncomplete(
+            start: cycleStart,
+            end: now,
+            strain: 14.0,
+            workouts: [sparseBeforeMidnight]
+        ))
+        XCTAssertFalse(AtriaWorkoutMetricPresentation.cycleStrainIsIncomplete(
+            start: midnight,
+            end: now,
+            strain: 1.0,
+            workouts: [sparseBeforeMidnight]
+        ))
     }
 
     func testActivityReviewProjectionShowsUnsavedDetectorWindow() {
@@ -376,6 +481,187 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(Set(visible.map(\.id)), [saved.id, pendingNap.id])
     }
 
+    func testNapReviewCandidateSurvivesAlongsideConfirmedMainSleep() throws {
+        // The exact 2026-08-01 gap: a real daytime nap must keep its own
+        // reviewable row even when the same day already has a confirmed main
+        // sleep (which owns the single main-sleep review card).
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
+                                                                   month: 8,
+                                                                   day: 1)))
+        let mainStart = day.addingTimeInterval(-1 * 3_600)
+        let mainEnd = day.addingTimeInterval(6 * 3_600)
+        let mainSleep = activitySleep(id: "confirmed-main",
+                                      day: day,
+                                      start: mainStart,
+                                      end: mainEnd,
+                                      confirmed: true)
+        let nap = napNight(id: "nap-1405",
+                           day: day,
+                           start: day.addingTimeInterval(14 * 3_600 + 5 * 60),
+                           end: day.addingTimeInterval(16 * 3_600 + 40 * 60))
+        let snapshot = SleepHistorySnapshot(nights: [mainSleep],
+                                            confirmedCount: 1,
+                                            candidateCount: 0)
+
+        let rows = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot,
+            pendingReview: nil,
+            napReviewCandidates: [nap],
+            selectedDay: day,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(Set(rows.map(\.id)), [mainSleep.id, nap.id],
+                       "the nap keeps its own row next to the confirmed main sleep")
+        let napRow = try XCTUnwrap(rows.first { $0.id == nap.id })
+        XCTAssertTrue(napRow.isNapEvidence)
+        XCTAssertFalse(napRow.confirmed)
+    }
+
+    func testNapReviewCandidateDoesNotDuplicateOverlappingPendingReview() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
+                                                                   month: 8,
+                                                                   day: 1)))
+        let start = day.addingTimeInterval(14 * 3_600)
+        let end = day.addingTimeInterval(15 * 3_600)
+        let pending = napNight(id: "pending-nap", day: day, start: start, end: end)
+        let duplicate = napNight(id: "duplicate-nap",
+                                 day: day,
+                                 start: start.addingTimeInterval(3 * 60),
+                                 end: end.addingTimeInterval(-3 * 60))
+        let snapshot = SleepHistorySnapshot(nights: [], confirmedCount: 0, candidateCount: 0)
+
+        let rows = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot,
+            pendingReview: pending,
+            napReviewCandidates: [duplicate],
+            selectedDay: day,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(rows.map(\.id), [pending.id],
+                       "an overlapping nap must not be drawn twice through both surfaces")
+    }
+
+    func testCurrentDayShowsTheAnchorSleepThatEndsExactlyAtItsWakeBoundary() throws {
+        // Repro of "confirm made my sleep vanish": the current physiological day
+        // starts at the anchoring sleep's WAKE, so that sleep ends exactly at
+        // interval.start. Once confirmed it leaves the review card; with a strict
+        // `end > interval.start` it is dropped from the day and disappears.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let wake = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
+                                                                    month: 8,
+                                                                    day: 3,
+                                                                    hour: 10,
+                                                                    minute: 50)))
+        let sleep = activitySleep(id: "anchor-sleep",
+                                  day: calendar.startOfDay(for: wake),
+                                  start: wake.addingTimeInterval(-4.8 * 3_600), // ~06:03
+                                  end: wake,                                    // ends AT the boundary
+                                  confirmed: true)
+        let snapshot = SleepHistorySnapshot(nights: [sleep],
+                                            confirmedCount: 1,
+                                            candidateCount: 0)
+        // Current physiological day: [wake, now].
+        let interval = DateInterval(start: wake, end: wake.addingTimeInterval(3 * 3_600))
+
+        // Strict (historical days): the boundary sleep is not part of this window.
+        let strict = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot, pendingReview: nil,
+            interval: interval, calendar: calendar,
+            includeStartBoundarySleep: false
+        )
+        XCTAssertTrue(strict.isEmpty,
+                      "a sleep ending exactly at the boundary is not in a historical civil-day window")
+
+        // Current physiological day: the anchoring sleep stays visible.
+        let current = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot, pendingReview: nil,
+            interval: interval, calendar: calendar,
+            includeStartBoundarySleep: true
+        )
+        XCTAssertEqual(current.map(\.id), [sleep.id],
+                       "the sleep you woke from must remain in today's Activity after confirming")
+
+        // A sleep that ends strictly BEFORE the boundary is still excluded — the
+        // relaxation only admits the exact anchor, never an unrelated prior sleep.
+        let earlier = activitySleep(id: "earlier",
+                                    day: calendar.startOfDay(for: wake),
+                                    start: wake.addingTimeInterval(-9 * 3_600),
+                                    end: wake.addingTimeInterval(-3 * 3_600),
+                                    confirmed: true)
+        let earlierSnapshot = SleepHistorySnapshot(nights: [earlier],
+                                                   confirmedCount: 1,
+                                                   candidateCount: 0)
+        let earlierRows = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: earlierSnapshot, pendingReview: nil,
+            interval: interval, calendar: calendar,
+            includeStartBoundarySleep: true
+        )
+        XCTAssertTrue(earlierRows.isEmpty,
+                      "only a sleep touching the day start is admitted, not one ending before it")
+    }
+
+    func testNapDedupHonoursTheSeventyPercentOverlapBoundary() throws {
+        // The nap-vs-confirmed-sleep dedup (substantiallyOverlaps) suppresses a
+        // nap row only at >= 0.70 overlap of the shorter window. Pin that edge so
+        // a refactor can't silently hide real naps (too aggressive) or double-draw
+        // them (too lax). Exercised through canonical, since the gate is private.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
+                                                                   month: 8,
+                                                                   day: 1)))
+        // Confirmed main sleep spans 100 minutes; the nap is 60 minutes (shorter).
+        let sleep = activitySleep(id: "confirmed-main",
+                                  day: day,
+                                  start: day,
+                                  end: day.addingTimeInterval(100 * 60),
+                                  confirmed: true)
+        let snapshot = SleepHistorySnapshot(nights: [sleep],
+                                            confirmedCount: 1,
+                                            candidateCount: 0)
+        func napIDsWithOverlap(minutes: Double) -> Set<String> {
+            // nap [100-overlap .. 160-overlap]; overlap with [0,100] = `minutes`.
+            let napStart = day.addingTimeInterval((100 - minutes) * 60)
+            let nap = napNight(id: "nap",
+                               day: day,
+                               start: napStart,
+                               end: napStart.addingTimeInterval(60 * 60))
+            return Set(AtriaActivitySelectedDaySleeps.canonical(
+                snapshot: snapshot, pendingReview: nil, napReviewCandidates: [nap]
+            ).map(\.id))
+        }
+        // 42/60 = 0.70 exactly → suppressed (dedup fires).
+        XCTAssertEqual(napIDsWithOverlap(minutes: 42), ["confirmed-main"])
+        // 41/60 ≈ 0.683 → kept as its own row.
+        XCTAssertEqual(napIDsWithOverlap(minutes: 41), ["confirmed-main", "nap"])
+    }
+
+    private func napNight(id: String,
+                          day: Date,
+                          start: Date,
+                          end: Date) -> SleepHistorySnapshot.Night {
+        SleepHistorySnapshot.Night(id: id,
+                                   day: day,
+                                   start: start,
+                                   end: end,
+                                   duration: max(0, end.timeIntervalSince(start)),
+                                   restingHR: 62,
+                                   hrv: nil,
+                                   respiratoryRate: nil,
+                                   sleepEfficiency: 1,
+                                   confidence: "review_needed",
+                                   source: "nap_candidate",
+                                   confirmed: false,
+                                   stageSegments: [])
+    }
+
     func testSleepStatusUsesCompactHumanCopyInsteadOfRawEnumText() {
         XCTAssertEqual(AtriaActivitySleepStatusPresentation.badge(
             confirmed: false,
@@ -467,6 +753,67 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         let crossing = try XCTUnwrap(spans.first { $0.id == "workout-cross-midnight" })
         XCTAssertEqual(crossing.start, day.addingTimeInterval(23.5 * 3_600))
         XCTAssertEqual(crossing.end, nextDay)
+    }
+
+    func testCurrentActivityWindowSpansMidnightFromConfirmedWakeToNow() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let wakeDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 12)))
+        let wake = wakeDay.addingTimeInterval(7 * 3_600)
+        let now = wakeDay.addingTimeInterval(26 * 3_600)
+        let night = activitySleep(id: "main",
+                                  day: wakeDay,
+                                  start: wake.addingTimeInterval(-8 * 3_600),
+                                  end: wake,
+                                  confirmed: true)
+        let snapshot = SleepHistorySnapshot(nights: [night], confirmedCount: 1, candidateCount: 0)
+
+        let window = AtriaActivityDisplayWindow.current(now: now,
+                                                        sleepHistory: snapshot,
+                                                        calendar: calendar)
+
+        XCTAssertEqual(window.interval.start, wake)
+        XCTAssertEqual(window.interval.end, now)
+        XCTAssertEqual(window.labelDay, wakeDay)
+        XCTAssertTrue(window.isCurrentPhysiologicalDay)
+    }
+
+    func testPhysiologicalTimelineIncludesBothSidesOfMidnightAndClipsAtWake() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 12)))
+        let interval = DateInterval(start: day.addingTimeInterval(7 * 3_600),
+                                    end: day.addingTimeInterval(26 * 3_600))
+        let beforeWake = timelineWorkout(id: "before-wake",
+                                         start: day.addingTimeInterval(6 * 3_600),
+                                         end: day.addingTimeInterval(6.5 * 3_600),
+                                         type: .walking)
+        let evening = timelineWorkout(id: "evening",
+                                      start: day.addingTimeInterval(20 * 3_600),
+                                      end: day.addingTimeInterval(21 * 3_600),
+                                      type: .running)
+        let afterMidnight = timelineWorkout(id: "after-midnight",
+                                            start: day.addingTimeInterval(25 * 3_600),
+                                            end: day.addingTimeInterval(25.5 * 3_600),
+                                            type: .cycling)
+
+        let spans = AtriaActivityTimelineBuilder.workoutSpans(
+            workouts: [beforeWake, evening, afterMidnight], interval: interval
+        )
+
+        XCTAssertEqual(Set(spans.map(\.id)), ["workout-evening", "workout-after-midnight"])
+    }
+
+    func testHistoricalActivityWindowRemainsCivilDay() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 12)))
+        let window = AtriaActivityDisplayWindow.historical(day: day.addingTimeInterval(15 * 3_600),
+                                                           calendar: calendar)
+
+        XCTAssertEqual(window.interval.start, day)
+        XCTAssertEqual(window.interval.end, day.addingTimeInterval(24 * 3_600))
+        XCTAssertFalse(window.isCurrentPhysiologicalDay)
     }
 
     func testTimelineLanePackingIsMinimalDeterministicAndReusesHalfOpenEnds() {

@@ -767,6 +767,109 @@ final class AtriaR10MotionTests: XCTestCase {
         XCTAssertTrue(repeatedRelease, "force release must be safe to repeat after recovery")
     }
 
+    func testGyroShadowExactFiveHundredStepCalibrationIsResearchOnlyAndRestStable() throws {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        for second in 0..<250 { // exact control truth: 250 s × 2 Hz = 500 steps
+            _ = try XCTUnwrap(pipeline.ingestSynchronouslyForTesting(
+                gyroCadenceFrame(timestamp: UInt32(90_000 + second),
+                                 sampleOffset: second * 100,
+                                 cadenceHz: 2)
+            ))
+        }
+        let calibrated = pipeline.gyroCadenceResearchStepsSynchronously()
+        let expected = Int(AtriaGyroCadenceResearchPedometer.steps(
+            contiguousRotationMagnitudes: gyroMagnitudes(sampleCount: 25_000,
+                                                         cadenceHz: 2)
+        ).rounded())
+        XCTAssertEqual(calibrated, expected,
+                       "pipeline shadow must replay the exact batch calibration")
+        XCTAssertGreaterThanOrEqual(calibrated, 485)
+        XCTAssertLessThanOrEqual(calibrated, 510)
+        XCTAssertEqual(pipeline.currentSnapshotSynchronously()?.steps, 0,
+                       "gyro challenger must not alter the production accelerator count")
+
+        for second in 250..<270 {
+            _ = try XCTUnwrap(pipeline.ingestSynchronouslyForTesting(
+                gyroRestFrame(timestamp: UInt32(90_000 + second))
+            ))
+        }
+        let afterRest = pipeline.gyroCadenceResearchStepsSynchronously()
+        let expectedAfterRest = Int(AtriaGyroCadenceResearchPedometer.steps(
+            contiguousRotationMagnitudes: gyroMagnitudes(sampleCount: 25_000,
+                                                         cadenceHz: 2)
+                + [Double](repeating: 5, count: 2_000)
+        ).rounded())
+        XCTAssertEqual(afterRest, expectedAfterRest,
+                       "rest may finalize walk-edge windows but cannot invent rest steps")
+        XCTAssertGreaterThanOrEqual(afterRest, calibrated)
+        XCTAssertLessThanOrEqual(afterRest, 500)
+    }
+
+    func testGyroShadowBoundaryRolloverConservesOpenSpanWithoutDoubleCount() async throws {
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        for second in 0..<125 {
+            pipeline.ingest(gyroCadenceFrame(timestamp: UInt32(91_000 + second),
+                                             sampleOffset: second * 100,
+                                             cadenceHz: 2),
+                            receivedAt: Date()) { _ in }
+        }
+        let token = await pipeline.prepareBoundary()
+        let firstSegment = try XCTUnwrap(token.markerGyroCadenceResearchSteps)
+        XCTAssertGreaterThan(firstSegment, 0)
+
+        for second in 125..<250 {
+            pipeline.ingest(gyroCadenceFrame(timestamp: UInt32(91_000 + second),
+                                             sampleOffset: second * 100,
+                                             cadenceHz: 2),
+                            receivedAt: Date()) { _ in }
+        }
+        let committedTransition = await pipeline.commitBoundary(
+            token,
+            handedOffRawSteps: token.markerRawSteps,
+            handedOffGyroCadenceResearchSteps: firstSegment,
+            nextGeneration: token.generation &+ 1
+        )
+        let transition = try XCTUnwrap(committedTransition)
+        XCTAssertEqual(transition.finalGyroCadenceResearchSteps, firstSegment)
+        XCTAssertNil(transition.carriedGyroCadenceResearchSteps)
+        let released = await pipeline.releaseCommittedBoundaryFrames(
+            token,
+            generation: transition.generation
+        )
+        XCTAssertTrue(released)
+
+        let secondSegment = pipeline.gyroCadenceResearchStepsSynchronously()
+        let uninterrupted = Int(AtriaGyroCadenceResearchPedometer.steps(
+            contiguousRotationMagnitudes: gyroMagnitudes(sampleCount: 25_000,
+                                                         cadenceHz: 2)
+        ).rounded())
+        XCTAssertEqual(firstSegment + secondSegment, uninterrupted,
+                       "the retained open span must contribute each step to exactly one side")
+    }
+
+    func testGyroShadowRestartSeedIsIdempotentAndDoesNotRegress() throws {
+        let restarted = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
+        XCTAssertEqual(restarted.seedSynchronously(
+            committedRawSteps: 0,
+            committedGyroCadenceResearchSteps: 500
+        ).rawSteps, 0)
+        XCTAssertEqual(restarted.gyroCadenceResearchStepsSynchronously(), 500)
+        _ = restarted.seedSynchronously(committedRawSteps: 0,
+                                        committedGyroCadenceResearchSteps: 500)
+        XCTAssertEqual(restarted.gyroCadenceResearchStepsSynchronously(), 500,
+                       "replaying the same journal/ledger prefix must not double count")
+        _ = restarted.seedSynchronously(committedRawSteps: 0,
+                                        committedGyroCadenceResearchSteps: 520)
+        XCTAssertEqual(restarted.gyroCadenceResearchStepsSynchronously(), 520)
+        for second in 0..<20 {
+            _ = try XCTUnwrap(restarted.ingestSynchronouslyForTesting(
+                gyroRestFrame(timestamp: UInt32(92_000 + second))
+            ))
+        }
+        XCTAssertEqual(restarted.gyroCadenceResearchStepsSynchronously(), 520)
+        XCTAssertEqual(restarted.currentSnapshotSynchronously()?.steps, 0)
+    }
+
     func testPipelineRestoreSeedKeepsPublishedStepsMonotonic() throws {
         let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1.11)
         let seeded = pipeline.seedSynchronously(committedRawSteps: 90)
@@ -1095,6 +1198,43 @@ final class AtriaR10MotionTests: XCTestCase {
             rotationRate: [AtriaR10MotionFrame.Vector3](
                 repeating: .init(x: 0, y: 0, z: 0),
                 count: 100
+            )
+        )
+    }
+
+    private func gyroMagnitudes(sampleCount: Int, cadenceHz: Double) -> [Double] {
+        (0..<sampleCount).map { sample in
+            let phase = 2 * Double.pi * cadenceHz * Double(sample) / 100
+            return max(0, 90 + 45 * sin(phase))
+        }
+    }
+
+    private func gyroCadenceFrame(timestamp: UInt32,
+                                  sampleOffset: Int,
+                                  cadenceHz: Double) -> AtriaR10MotionFrame {
+        let rotation = (sampleOffset..<(sampleOffset + 100)).map { sample in
+            let phase = 2 * Double.pi * cadenceHz * Double(sample) / 100
+            return max(0, 90 + 45 * sin(phase))
+        }
+        return AtriaR10MotionFrame(
+            deviceTimestamp: timestamp,
+            heartRate: 80,
+            acceleration: [AtriaR10MotionFrame.Vector3](
+                repeating: .init(x: 1, y: 0, z: 0), count: 100
+            ),
+            rotationRate: rotation.map { .init(x: $0, y: 0, z: 0) }
+        )
+    }
+
+    private func gyroRestFrame(timestamp: UInt32) -> AtriaR10MotionFrame {
+        AtriaR10MotionFrame(
+            deviceTimestamp: timestamp,
+            heartRate: 80,
+            acceleration: [AtriaR10MotionFrame.Vector3](
+                repeating: .init(x: 1, y: 0, z: 0), count: 100
+            ),
+            rotationRate: [AtriaR10MotionFrame.Vector3](
+                repeating: .init(x: 5, y: 0, z: 0), count: 100
             )
         )
     }

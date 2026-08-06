@@ -77,6 +77,7 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
                                      recoveryConfidence: "personal_baseline",
                                      recoveryDetail: "Saved morning recovery",
                                      strain: 4.2,
+                                     strainDetail: "Partial · sparse HR",
                                      strainCapturedAt: Date(timeIntervalSince1970: 900),
                                      strainCycleStart: Date(timeIntervalSince1970: 500),
                                      strainCycleExpiresAt: Date(timeIntervalSince1970: 86_900),
@@ -85,8 +86,14 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
                                      hrvState: "personal_baseline",
                                      maxHR: 190,
                                      sleepHours: 7.5,
+                                     sleepDetail: "Review sleep",
                                      steps: 1_000,
                                      stepsCapturedAt: Date(timeIntervalSince1970: 990),
+                                     stepsSource: "verifiedCanonical",
+                                     stepsCompleteness: "partial",
+                                     stepsCoverageFraction: 0.75,
+                                     stepsCycleStart: Date(timeIntervalSince1970: 500),
+                                     stepsCycleExpiresAt: Date(timeIntervalSince1970: 86_900),
                                      dailyStepGoal: 8_000,
                                      heartRate: 72,
                                      heartRateCapturedAt: Date(timeIntervalSince1970: 995),
@@ -112,6 +119,11 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             steps: 1_120,
             stepsAreEstimated: true,
             stepsCapturedAt: Date(timeIntervalSince1970: 1_998),
+            stepsSource: "verifiedCanonical",
+            stepsCompleteness: "partial",
+            stepsCoverageFraction: 0.8,
+            stepsAuthorityVersion:
+                WidgetSnapshotPublisher.qualifiedStepAuthorityVersion,
             strain: 6.8,
             batteryLevel: 43,
             batteryCapturedAt: Date(timeIntervalSince1970: 1_900),
@@ -129,6 +141,15 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(patched.steps, 1_120)
         XCTAssertEqual(patched.stepsAreEstimated, true)
         XCTAssertEqual(patched.stepsCapturedAt, Date(timeIntervalSince1970: 1_998))
+        XCTAssertEqual(patched.stepsSource, "verifiedCanonical")
+        XCTAssertEqual(patched.stepsCompleteness, "partial")
+        XCTAssertEqual(patched.stepsCoverageFraction, 0.8)
+        XCTAssertEqual(
+            patched.stepsAuthorityVersion,
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        )
+        XCTAssertEqual(patched.stepsCycleStart, current.stepsCycleStart)
+        XCTAssertEqual(patched.stepsCycleExpiresAt, current.stepsCycleExpiresAt)
         XCTAssertEqual(patched.dailyStepGoal, 8_000)
         XCTAssertEqual(patched.strain, 6.8)
         XCTAssertNil(patched.strainCapturedAt,
@@ -141,6 +162,8 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(patched.batteryChargeCapturedAt, Date(timeIntervalSince1970: 1_996))
         XCTAssertEqual(patched.recoveryPercent, current.recoveryPercent)
         XCTAssertEqual(patched.recoveryDetail, current.recoveryDetail)
+        XCTAssertEqual(patched.strainDetail, current.strainDetail)
+        XCTAssertEqual(patched.sleepDetail, current.sleepDetail)
         XCTAssertEqual(patched.hrvRMSSD, current.hrvRMSSD)
         XCTAssertEqual(patched.sleepHours, current.sleepHours)
         XCTAssertEqual(patched.layoutGlanceMetrics, current.layoutGlanceMetrics)
@@ -176,6 +199,15 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(decoded.heartRate, 72)
         XCTAssertNil(decoded.stepsCapturedAt)
         XCTAssertNil(decoded.stepsAreEstimated)
+        XCTAssertNil(decoded.stepsSource)
+        XCTAssertNil(decoded.stepsCompleteness)
+        XCTAssertNil(decoded.stepsCoverageFraction)
+        XCTAssertNil(
+            decoded.stepsAuthorityVersion,
+            "a pre-qualification widget payload must fail closed after update"
+        )
+        XCTAssertNil(decoded.stepsCycleStart)
+        XCTAssertNil(decoded.stepsCycleExpiresAt)
         XCTAssertNil(decoded.heartRateCapturedAt)
         XCTAssertNil(decoded.dailyStepGoal)
         XCTAssertNil(decoded.heartRateZoneIndex)
@@ -272,6 +304,15 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
 
         XCTAssertTrue(widgetSource.contains("let stepsCapturedAt: Date?"))
         XCTAssertTrue(widgetSource.contains("var stepsAreEstimated: Bool? = nil"))
+        XCTAssertTrue(widgetSource.contains(
+            "var stepsAuthorityVersion: String? = nil"
+        ))
+        XCTAssertTrue(widgetSource.contains(
+            "snapshot.stepsAuthorityVersion"
+        ))
+        XCTAssertTrue(widgetSource.contains(
+            "== atriaQualifiedStepAuthorityVersion"
+        ))
         XCTAssertTrue(widgetSource.contains("let heartRateCapturedAt: Date?"))
         XCTAssertTrue(widgetSource.contains("var dailyStepGoal: Int? = nil"))
         XCTAssertTrue(widgetSource.contains("var heartRateZoneIndex: Int? = nil"))
@@ -282,17 +323,21 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertFalse(widgetSource.contains("private let atriaStaticSensorFreshness"),
                        "A generic 90-second cap must not shorten 10-minute battery truth")
         XCTAssertTrue(widgetSource.contains("private let atriaBatteryFreshness: TimeInterval = 10 * 60"))
+        XCTAssertTrue(widgetSource.contains("private let atriaBatteryChargeFreshness: TimeInterval = 90"))
         XCTAssertTrue(widgetSource.contains("private let atriaHeartRateFreshness: TimeInterval = 90"))
         XCTAssertTrue(widgetSource.contains("private let atriaStaticStepFreshness: TimeInterval = 90"))
         XCTAssertTrue(widgetSource.contains("private let atriaLiveActivityStepFreshness: TimeInterval = 15"))
         XCTAssertTrue(widgetSource.contains("age <= freshness"))
-        XCTAssertTrue(widgetSource.contains("capturedAt: s.stepsCapturedAt"))
+        XCTAssertTrue(widgetSource.contains("atriaCurrentStepValue(s, now: now)"))
+        XCTAssertTrue(widgetSource.contains("snapshot.stepsSource == \"verifiedCanonical\""))
         XCTAssertTrue(widgetSource.contains("freshness: atriaStaticStepFreshness"))
         XCTAssertTrue(widgetSource.contains("capturedAt: s.heartRateCapturedAt"))
         XCTAssertTrue(widgetSource.contains("freshness: atriaHeartRateFreshness"))
         XCTAssertTrue(widgetSource.contains("(snapshot?.heartRateCapturedAt, atriaHeartRateFreshness)"))
-        XCTAssertTrue(widgetSource.contains("(snapshot?.stepsCapturedAt, atriaStaticStepFreshness)"))
-        XCTAssertTrue(widgetSource.contains("(snapshot?.batteryChargeCapturedAt, atriaBatteryFreshness)"))
+        XCTAssertTrue(widgetSource.contains(
+            "expirySources.append((snapshot?.stepsCapturedAt, atriaStaticStepFreshness))"
+        ))
+        XCTAssertTrue(widgetSource.contains("(snapshot?.batteryChargeCapturedAt, atriaBatteryChargeFreshness)"))
         XCTAssertTrue(widgetSource.contains("capturedAt.addingTimeInterval(freshness + 0.001)"),
                       "The timeline must clear each sensor at its exact expiry boundary")
         XCTAssertFalse(widgetSource.contains("case .bpm:\n            return s.heartRate.map(String.init)"))
@@ -316,8 +361,10 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             "guard atriaCumulativeDayStrainIsCurrent(s, now: now) else { return \"--\" }"
         ))
         XCTAssertTrue(widgetSource.contains(
-            "return String(format: \"%.1f\", max(0, s.strain))"
+            "let numeric = String(format: \"%.1f\", max(0, s.strain))"
         ))
+        XCTAssertTrue(widgetSource.contains("? \"≥ \\(numeric)\""),
+                      "partial cumulative strain must remain a visible lower bound")
         XCTAssertFalse(widgetSource.contains(
             "atriaFreshStaticSensorValue(s.strain"
         ), "an absent/stale live-HR clock must not blank cumulative day load")
@@ -383,14 +430,122 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertFalse(WidgetSnapshotPublisher.strapStepsArePublishable(state: "r10_live_calibrating"))
     }
 
+    func testWidgetDailyStepResolverUsesSameStrapOnlyPolicyAsHome() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let strapValue = WidgetSnapshotPublisher.resolvedDailySteps(
+            day: now,
+            now: now,
+            liveCount: 612,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now,
+            calendar: calendar
+        )
+        XCTAssertNil(strapValue.count)
+        XCTAssertEqual(strapValue.source, .none)
+        XCTAssertFalse(strapValue.isValidated)
+        XCTAssertEqual(strapValue.detailText, "Strap motion is still validating")
+
+        let strapWins = WidgetSnapshotPublisher.resolvedDailySteps(
+            day: now,
+            now: now,
+            liveCount: 4_000,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now,
+            calendar: calendar
+        )
+        XCTAssertNil(strapWins.count)
+        XCTAssertEqual(strapWins.source, .none)
+        XCTAssertFalse(strapWins.isValidated)
+    }
+
+    func testWidgetResolverUsesPartialCanonicalWhenLiveEvidenceIsStale() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let day = Date(timeIntervalSince1970: 2_000_000_000)
+        let now = day.addingTimeInterval(3_600)
+        let canonical = AtriaHistoricalDailyConsumerProjection.StepDay(
+            localDay: "2033-05-18",
+            dayStart: calendar.startOfDay(for: day),
+            dayEnd: now,
+            state: .missing,
+            stepCount: nil,
+            knownStepDeltaSum: 2_345,
+            knownEpochCount: 1,
+            rejectedOrUnknownEpochCount: 0,
+            knownCoverageSeconds: 2_700,
+            missingCoverageSeconds: 900
+        )
+
+        let value = WidgetSnapshotPublisher.resolvedDailySteps(
+            day: day,
+            now: now,
+            liveCount: 9_999,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now.addingTimeInterval(
+                -AtriaDailyStepPresentation.liveEvidenceMaximumAge - 1
+            ),
+            canonicalDays: [canonical],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(value.source, .verifiedCanonical)
+        XCTAssertEqual(value.completeness, .partial)
+        // Pin migrated 2026-08-05: clean number per the 26057206 decision;
+        // partiality is pinned by .partial + coverageFraction below.
+        XCTAssertEqual(value.valueText, "2345")
+        XCTAssertEqual(value.coverageFraction ?? -1, 0.75, accuracy: 0.001)
+    }
+
+    func testWidgetResolverPublishesCompleteCanonicalExactly() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let day = Date(timeIntervalSince1970: 2_000_000_000)
+        let dayStart = calendar.startOfDay(for: day)
+        let canonical = AtriaHistoricalDailyConsumerProjection.StepDay(
+            localDay: "2033-05-18",
+            dayStart: dayStart,
+            dayEnd: dayStart.addingTimeInterval(86_400),
+            state: .available,
+            stepCount: 8_412,
+            knownStepDeltaSum: 8_412,
+            knownEpochCount: 1,
+            rejectedOrUnknownEpochCount: 0,
+            knownCoverageSeconds: 86_400,
+            missingCoverageSeconds: 0
+        )
+
+        let value = WidgetSnapshotPublisher.resolvedDailySteps(
+            day: dayStart,
+            now: dayStart.addingTimeInterval(2 * 86_400),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [canonical],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(value.source, .verifiedCanonical)
+        XCTAssertEqual(value.completeness, .complete)
+        XCTAssertEqual(value.valueText, "8412")
+    }
+
     func testStaticStepsWidgetMarksPreliminaryCountsAsEstimated() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let widgetSource = try String(contentsOf: testsDirectory
             .deletingLastPathComponent()
             .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
 
-        XCTAssertTrue(widgetSource.contains("return s.stepsAreEstimated == true ? \"~\\(value)\" : value"))
-        XCTAssertTrue(widgetSource.contains("let accuracy = snapshot.stepsAreEstimated == true ? \"Estimated\" : \"Confirmed\""))
+        XCTAssertTrue(widgetSource.contains("snapshot.stepsSource == \"verifiedCanonical\""))
+        XCTAssertTrue(widgetSource.contains("return \"≥\\(value)\""))
+        XCTAssertTrue(widgetSource.contains("return \"Verified complete day\""))
+        XCTAssertTrue(widgetSource.contains(
+            ": \"Verified through \\(atriaCaptureTimeText(capturedAt))\""
+        ))
+        XCTAssertTrue(widgetSource.contains("\"Partial archive\""))
+        XCTAssertTrue(widgetSource.contains("snapshot.stepsAreEstimated == false"),
+                      "only explicit validated provenance may claim exact steps or goal completion")
         XCTAssertTrue(widgetSource.contains("return \"Goal ✓ · confirmed · \\(captured)\""))
         XCTAssertTrue(widgetSource.contains("return \"\\(accuracy) · \\(percent)% goal · \\(captured)\""))
     }
@@ -475,6 +630,75 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertNil(decoded.strainCapturedAt)
         XCTAssertNil(decoded.strainCycleStart)
         XCTAssertNil(decoded.strainCycleExpiresAt)
+        XCTAssertNil(decoded.strainDetail)
+        XCTAssertNil(decoded.sleepDetail)
+    }
+
+    func testEvidenceQualifierTransitionReloadsWidgetImmediately() {
+        let now = Date(timeIntervalSince1970: 70_000)
+        var previous = deliverySnapshot(steps: nil,
+                                        stepsCapturedAt: nil,
+                                        heartRate: nil,
+                                        heartRateCapturedAt: nil)
+        previous.strainDetail = "Current cycle"
+        previous.sleepDetail = "Confirmed sleep"
+        var partial = previous
+        partial.strainDetail = "Partial · sparse HR"
+        partial.sleepDetail = "Review sleep"
+
+        XCTAssertEqual(WidgetSnapshotPublisher.timelineReloadDelay(
+            previous: previous,
+            lastReloadAt: now,
+            snapshot: partial,
+            now: now.addingTimeInterval(1)
+        ), 0)
+    }
+
+    func testLiveStrainPatchCannotUpgradePartialCoverageFromValueAlone() {
+        let now = Date(timeIntervalSince1970: 80_000)
+        var current = deliverySnapshot(steps: nil,
+                                       stepsCapturedAt: nil,
+                                       heartRate: nil,
+                                       heartRateCapturedAt: nil,
+                                       strain: 0.4)
+        current.strainDetail = "Partial · sparse HR"
+
+        func patch(strain: Double) -> WidgetSnapshot {
+            WidgetSnapshotPublisher.liveWorkoutPatchedSnapshot(
+                current: current,
+                createdAt: now,
+                heartRate: 120,
+                heartRateCapturedAt: now,
+                steps: nil,
+                stepsAreEstimated: true,
+                stepsCapturedAt: nil,
+                strain: strain,
+                strainCapturedAt: now,
+                batteryLevel: nil,
+                batteryChargeStatus: "levelOnly",
+                batteryChargeText: "Unavailable"
+            )
+        }
+
+        XCTAssertEqual(patch(strain: 0.8).strainDetail, "Partial · sparse HR")
+        XCTAssertEqual(patch(strain: 1.2).strainDetail, "Partial · sparse HR",
+                       "a larger live value is not proof that sparse day coverage became complete")
+        XCTAssertEqual(
+            WidgetSnapshotPublisher.mergedLiveStrainDetail(
+                previous: "Partial · 21% wear",
+                next: "local"
+            ),
+            "Partial · 21% wear",
+            "a pulse patch cannot upgrade partial all-day authority even when its caller supplies an exact label"
+        )
+        XCTAssertEqual(
+            WidgetSnapshotPublisher.mergedLiveStrainDetail(
+                previous: "Current cycle",
+                next: "local · partial-day wear"
+            ),
+            "local · partial-day wear",
+            "a pulse patch may conservatively downgrade authority"
+        )
     }
 
     func testIndependentBatteryAndStrainClocksTriggerTrailingReload() {
@@ -514,6 +738,32 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             snapshot: goalReached,
             now: reloadedAt.addingTimeInterval(2)
         ), 0)
+    }
+
+    func testMissingStepProvenanceTransitionsIntoEstimatedLane() {
+        let reloadedAt = Date(timeIntervalSince1970: 45_000)
+        let validated = deliverySnapshot(steps: 2_400,
+                                         stepsCapturedAt: reloadedAt,
+                                         heartRate: 90,
+                                         heartRateCapturedAt: reloadedAt)
+        var missing = validated
+        missing.stepsAreEstimated = nil
+
+        XCTAssertEqual(WidgetSnapshotPublisher.timelineReloadDelay(
+            previous: validated,
+            lastReloadAt: reloadedAt,
+            snapshot: missing,
+            now: reloadedAt.addingTimeInterval(1)
+        ), 0, "losing explicit validation must immediately remove exact-step claims")
+
+        var estimated = missing
+        estimated.stepsAreEstimated = true
+        XCTAssertNil(WidgetSnapshotPublisher.timelineReloadDelay(
+            previous: missing,
+            lastReloadAt: reloadedAt,
+            snapshot: estimated,
+            now: reloadedAt.addingTimeInterval(1)
+        ), "nil and true both belong to the same fail-closed estimated lane")
     }
 
     private func deliverySnapshot(steps: Int?,
@@ -559,17 +809,111 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("Atria/WidgetSnapshot.swift")
         let source = try String(contentsOf: url, encoding: .utf8)
+        // 2026-07-31: 81eea260 renamed the raw label to baseStrainConfidence
+        // and routed it through the Metrics.StrainPresentation authority; the
+        // credibility gate reads the resolved confidence, not the raw one.
+        let confidence = try XCTUnwrap(source.range(
+            of: "let baseStrainConfidence = AtriaHomeModel.strainConfidence("
+        ))
+        let resolved = try XCTUnwrap(source.range(
+            of: "let strainPresentation = Metrics.StrainPresentation.resolve("
+        ))
         let gate = try XCTUnwrap(source.range(
-            of: "let strainIsCredible = rest != nil && store.profile.maxHR > (rest ?? 60)"
+            of: "let strainIsCredible =\n            !strainConfidence.localizedCaseInsensitiveContains(\"learning\")"
         ))
         let captured = try XCTUnwrap(source.range(
             of: "strainCapturedAt: strainIsCredible ? now : nil"
         ))
+        XCTAssertLessThan(confidence.lowerBound, resolved.lowerBound)
+        XCTAssertLessThan(resolved.lowerBound, gate.lowerBound)
         XCTAssertLessThan(gate.lowerBound, captured.lowerBound)
         // All three clock fields gate together: the widget's freshness guard
         // requires the full set, so a partial gate would leak a confident 0.0.
         XCTAssertTrue(source.contains("strainCycleStart: strainIsCredible ? physiologicalCycle.start : nil"))
         XCTAssertTrue(source.contains("strainCycleExpiresAt: strainIsCredible ? strainCycleExpiresAt : nil"))
+    }
+
+    func testWidgetPreservesDayOneRecoveryMissingHRVDisclosure() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+
+        XCTAssertTrue(source.contains(
+            "snapshot.recoveryDetail.localizedCaseInsensitiveContains(\"HRV unavailable\")"
+        ))
+        // 2026-07-27: the disclaimer keeps its SPECIFIC half only. Paired with
+        // the score, "Recovery 46% · Limited confidence · HRV unavailable" ran
+        // past the medium widget's secondary line and rendered as "Recovery
+        // 46% · Limited…", dropping the very evidence this assertion protects.
+        XCTAssertTrue(source.contains(
+            "return \"HRV unavailable\""
+        ))
+        XCTAssertTrue(source.contains(
+            "return \"Recovery \\(recovery)% · \\(recoveryEvidenceText(snapshot))\""
+        ), "a numeric day-one score and its missing-HRV disclosure must travel together")
+    }
+
+    func testWidgetShowsReviewSleepAndPartialStrainEvidenceNotes() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let widgetURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift")
+        let widget = try String(contentsOf: widgetURL, encoding: .utf8)
+        let publisherURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/WidgetSnapshot.swift")
+        let publisher = try String(contentsOf: publisherURL, encoding: .utf8)
+
+        XCTAssertTrue(publisher.contains("sleepHours: latestDisplaySleep?.durationHours"))
+        XCTAssertTrue(publisher.contains("? \"Review nap\" : \"Review sleep\""))
+        XCTAssertTrue(publisher.contains("strainConfidence.localizedCaseInsensitiveContains(\"partial\")"))
+        // 2026-07-31: 81eea260 moved the percent disclosure into the shared
+        // StrainPresentation.coverageText ("% covered", matching the step
+        // card's wording) with the sparse-HR fallback kept in the publisher.
+        XCTAssertTrue(publisher.contains("strainPresentation.coverageText ?? \"Partial · sparse HR\""))
+        let metricsURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/Metrics.swift")
+        let metrics = try String(contentsOf: metricsURL, encoding: .utf8)
+        XCTAssertTrue(metrics.contains(
+            "\"Partial · \\(Int((coverageFraction * 100).rounded()))% covered\""
+        ), "the partial percent disclosure must survive in the shared authority")
+        XCTAssertTrue(widget.contains("snapshot.strainDetail ?? \"Updated"))
+        XCTAssertTrue(widget.contains("? \"≥ \\(numeric)\""))
+        XCTAssertTrue(widget.contains("sleepDetail.localizedCaseInsensitiveContains(\"review\")"))
+        XCTAssertTrue(widget.contains("evidenceNote: metric.evidenceNote(entry.snapshot)"))
+    }
+
+    func testWidgetFrozenRecoveryAtomicallyOverridesProvisionalProjection() throws {
+        let provisional = Metrics.RecoveryEstimate(
+            percent: 42,
+            confidence: .unverified,
+            usesHRV: false,
+            detail: "provisional live recompute",
+            contributors: []
+        )
+        let frozen = try XCTUnwrap(FrozenRecoverySummary(
+            estimate: Metrics.RecoveryEstimate(
+                percent: 39,
+                confidence: .personalBaseline,
+                usesHRV: true,
+                detail: "frozen morning recovery",
+                contributors: []
+            ),
+            scoredDay: Date(timeIntervalSince1970: 1_722_096_000)
+        ))
+
+        let resolved = WidgetSnapshotPublisher.canonicalRecovery(
+            displayed: provisional,
+            frozen: frozen
+        )
+
+        XCTAssertEqual(resolved.percent, 39)
+        XCTAssertEqual(resolved.confidence, .personalBaseline)
+        XCTAssertEqual(resolved.detail, "frozen morning recovery")
+        XCTAssertTrue(resolved.usesHRV)
     }
 
 }

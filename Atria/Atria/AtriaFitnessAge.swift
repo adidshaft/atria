@@ -51,6 +51,13 @@ enum AtriaFitnessAge {
     static let footnoteText = "Estimate from heart data — not a medical measurement."
     static let paceMinimumEntries = 4
     static let paceCalibratingCopy = "Calibrating 28-day baseline"
+    /// Fewest days of heart history before any fitness-age estimate appears.
+    /// From here the estimate is shown as an explicitly early, low-confidence
+    /// read; it graduates to confident at `confidentBaselineDays`.
+    static let earlyEstimateMinimumDays = 14
+    /// Days of heart history at which the estimate becomes confident. The
+    /// pace-of-aging trend keeps its own four-weekly-check calibration.
+    static let confidentBaselineDays = 28
 
     /// Computes the pace-of-aging trend from persisted daily rollup copies.
     /// Requires four distinct weekly observations before leaving calibration.
@@ -132,8 +139,8 @@ enum AtriaFitnessAge {
 
     static func summary(inputs: Inputs) -> BiologicalAgeSummary {
         var blockers: [String] = []
-        if inputs.historyDays < 28 {
-            blockers.append("28 days of heart data")
+        if inputs.historyDays < earlyEstimateMinimumDays {
+            blockers.append("14 days of heart data")
         }
         if inputs.vo2Max == nil {
             blockers.append("VO2 max estimate")
@@ -160,7 +167,7 @@ enum AtriaFitnessAge {
                                         chronologicalAge: inputs.chronologicalAge,
                                         ageDelta: nil,
                                         agingPaceText: "Calibrating",
-                                        agingPaceDetail: "Needs 28 days before showing a fitness-age estimate.",
+                                        agingPaceDetail: "Needs 14 days before an early fitness-age estimate.",
                                         factors: [],
                                         blockers: blockers,
                                         footnote: footnoteText)
@@ -201,6 +208,9 @@ enum AtriaFitnessAge {
         let clampedDelta = min(max(rawDelta, -12), 12)
         let fitnessAge = inputs.chronologicalAge + clampedDelta
         let pace = contributorNarrative(factors: factors)
+        // 14–27 days: the full five-input estimate exists, but it is shown as
+        // explicitly early until the 28-day baseline makes it confident.
+        let earlyDayCount = inputs.historyDays < confidentBaselineDays ? inputs.historyDays : nil
         return BiologicalAgeSummary(biologicalAge: fitnessAge,
                                     chronologicalAge: inputs.chronologicalAge,
                                     ageDelta: clampedDelta,
@@ -208,7 +218,8 @@ enum AtriaFitnessAge {
                                     agingPaceDetail: pace,
                                     factors: factors,
                                     blockers: [],
-                                    footnote: footnoteText)
+                                    footnote: footnoteText,
+                                    earlyEstimateDayCount: earlyDayCount)
     }
 
     static func restingHeartRateOffset(age: Int, restingHeartRate: Int) -> Int {

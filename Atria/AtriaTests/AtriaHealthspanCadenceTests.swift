@@ -71,4 +71,47 @@ final class AtriaHealthspanCadenceTests: XCTestCase {
         XCTAssertTrue(builder.contains("projection?.weeklyObservations"))
         XCTAssertTrue(builder.contains("projection?.paceOfAging"))
     }
+
+    /// The 14–27 day early estimate must never render with confident
+    /// authority: both fitness-age surfaces pin the visible qualifier.
+    func testEarlyEstimateQualifierRendersOnBothFitnessAgeSurfaces() throws {
+        let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appURL = testsURL.deletingLastPathComponent().appendingPathComponent("Atria")
+
+        let card = try String(contentsOf: appURL.appendingPathComponent("AtriaHealthScreen.swift"),
+                              encoding: .utf8)
+        XCTAssertTrue(card.contains("if let qualifier = summary.earlyEstimateQualifierText"))
+        XCTAssertTrue(card.contains("guard !summary.isEarlyEstimate else { return .orange }"))
+
+        let detail = try String(contentsOf: appURL.appendingPathComponent("AtriaHealthspanDetailView.swift"),
+                                encoding: .utf8)
+        XCTAssertTrue(detail.contains("if let qualifier = model.summary.earlyEstimateQualifierText"))
+
+        let engine = try String(contentsOf: appURL.appendingPathComponent("AtriaFitnessAge.swift"),
+                                encoding: .utf8)
+        XCTAssertTrue(engine.contains("static let earlyEstimateMinimumDays = 14"))
+        XCTAssertTrue(engine.contains("static let confidentBaselineDays = 28"))
+    }
+
+    /// Cached summaries written before `earlyEstimateDayCount` existed must
+    /// keep decoding — and decode as confident, never as early.
+    func testSummaryCachedWithoutEarlyFieldDecodesAsConfident() throws {
+        let confident = BiologicalAgeSummary(biologicalAge: 34,
+                                             chronologicalAge: 38,
+                                             ageDelta: -4,
+                                             agingPaceText: "Fitness age",
+                                             agingPaceDetail: "Prepared detail",
+                                             factors: [],
+                                             blockers: [],
+                                             footnote: BiologicalAgeSummary.footnoteText)
+        let encoded = try JSONEncoder().encode(confident)
+        var legacyJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacyJSON.removeValue(forKey: "earlyEstimateDayCount")
+        let legacyData = try JSONSerialization.data(withJSONObject: legacyJSON)
+
+        let decoded = try JSONDecoder().decode(BiologicalAgeSummary.self, from: legacyData)
+        XCTAssertNil(decoded.earlyEstimateDayCount)
+        XCTAssertFalse(decoded.isEarlyEstimate)
+        XCTAssertEqual(decoded, confident)
+    }
 }

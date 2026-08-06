@@ -42,10 +42,16 @@ struct AtriaStrapScreen: View {
                 // state-differentiated hero above renders the identical
                 // value + detail strings; the row added nothing.
                 AtriaStrapStatusRow(title: "Battery",
+                                    // Was an em dash, which made Battery the last
+                                    // value line in the app using a different
+                                    // glyph for "no reading". The pending check
+                                    // accepts both, so nothing was broken -- it
+                                    // just looked like a different idea.
                                     value: coreLiveStore.state.batteryLevel >= 0
-                                        ? coreLiveStore.state.batteryText : "—",
+                                        ? coreLiveStore.state.batteryText
+                                        : AtriaCompactMetricPresentation.noValue,
                                     detail: coreLiveStore.state.batteryLevel >= 0
-                                        ? coreLiveStore.state.batteryChargeCompactText : "Unavailable",
+                                        ? coreLiveStore.state.batteryChargeCompactText : "Connect to read",
                                     systemImage: coreLiveStore.state.batterySymbol,
                                     tint: coreLiveStore.state.batteryShowsPowered ? .green : .cyan)
                 AtriaStrapStatusRow(title: "Mode",
@@ -55,12 +61,16 @@ struct AtriaStrapScreen: View {
                                     tint: Metrics.electricSleep)
                 AtriaStrapStatusRow(title: "Session",
                                     value: collectionLiveStore.state.recordingState,
-                                    detail: "\(collectionLiveStore.state.capturedRows) rows",
+                                    detail: capturedSamplesText,
                                     systemImage: collectionLiveStore.state.isRecording ? "record.circle.fill" : "tray.and.arrow.down.fill",
                                     tint: collectionLiveStore.state.isRecording ? .red : Metrics.electricGreen)
-                AtriaStrapStatusRow(title: "Ownership",
+                // Plain words (2026-08-04): "Ownership / Strap check / Local
+                // control" answered a question nobody could parse. The tile
+                // exists to say whether another app is competing for the
+                // strap connection.
+                AtriaStrapStatusRow(title: "Strap control",
                                     value: collectionLiveStore.state.coexistenceStatusText,
-                                    detail: officialAppInstalled ? "Official app installed" : "Local control",
+                                    detail: officialAppInstalled ? "WHOOP app also installed" : "Only Atria connects",
                                     systemImage: "checkmark.shield.fill",
                                     tint: collectionLiveStore.state.officialAppCoexistenceRisk == .suspected ? .red : Metrics.electricGreen)
             }
@@ -69,10 +79,20 @@ struct AtriaStrapScreen: View {
         }
         .padding(16)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .task {
             await prepareRawExportFixtureIfNeeded()
         }
+    }
+
+    /// "0 rows" was storage language on an end-user screen — rows of what?
+    /// `capturedRows` counts captured heart-rate samples, so it says samples,
+    /// and says the zero case in words rather than as a bare count, which is
+    /// how every other empty state on this screen reads.
+    private var capturedSamplesText: String {
+        let captured = collectionLiveStore.state.capturedRows
+        guard captured > 0 else { return "No samples yet" }
+        return captured == 1 ? "1 sample" : "\(captured) samples"
     }
 
     private var statusColumns: [GridItem] {
@@ -267,7 +287,7 @@ private struct AtriaStrapConnectionHero: View {
                     .font(.title2.weight(.bold))
                     .foregroundStyle(.secondary)
                     .frame(width: 48, height: 48)
-                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
                 Text("Not connected")
                     .font(.headline.weight(.bold))
                 Text(displayStatus == .poweredOff
@@ -305,7 +325,7 @@ private struct AtriaStrapConnectionHero: View {
             .font(.title3.weight(.bold))
             .foregroundStyle(tint)
             .frame(width: 44, height: 44)
-            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .background(tint.opacity(0.14), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
     }
 
     private var primaryState: String {
@@ -361,24 +381,36 @@ private struct AtriaStrapStatusRow: View, Equatable {
             && lhs.systemImage == rhs.systemImage
     }
 
+    // Reads icon, then what this is, then what it says — the order every
+    // other status surface in the app uses (AtriaTodayLivePill puts the
+    // caption above the value, so do the glance tiles and the Vitals stat
+    // header). This tile had the value alone on the top row and the title
+    // beneath it, so you read "All-day wear" before learning it was the
+    // Mode, and "Idle" before learning it was the Session. The tile's own
+    // accessibilityLabel is already "title, value, detail": VoiceOver has
+    // been reading it title-first the whole time, and only the visual order
+    // disagreed.
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Image(systemName: systemImage)
                     .font(.caption.weight(.bold))
                     .foregroundStyle(tint)
                     .frame(width: 26, height: 26)
                     .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                Spacer(minLength: 4)
-                Text(value)
-                    .font(.subheadline.weight(.bold))
-                    .multilineTextAlignment(.trailing)
+                Text(title)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 4)
             }
 
-            Text(title)
-                .font(.caption.weight(.bold))
+            Text(value)
+                .font(.subheadline.weight(.bold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Text(detail)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)

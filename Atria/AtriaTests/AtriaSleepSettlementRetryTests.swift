@@ -36,4 +36,27 @@ final class AtriaSleepSettlementRetryTests: XCTestCase {
             )
         )
     }
+
+    func testCompletionFencedSettlementJoinsPendingProposal() {
+        XCTAssertTrue(SessionStore.shouldJoinPendingForegroundSleepSettlement(
+            hasPendingWork: true,
+            hasPendingCompletionFence: false,
+            requestHasCompletionFence: true
+        ))
+        XCTAssertTrue(SessionStore.shouldJoinPendingForegroundSleepSettlement(
+            hasPendingWork: true,
+            hasPendingCompletionFence: true,
+            requestHasCompletionFence: false
+        ), "fire-and-forget work must not supersede a completion-fenced owner")
+        XCTAssertFalse(SessionStore.shouldJoinPendingForegroundSleepSettlement(
+            hasPendingWork: false,
+            hasPendingCompletionFence: true,
+            requestHasCompletionFence: true
+        ))
+        XCTAssertFalse(SessionStore.shouldJoinPendingForegroundSleepSettlement(
+            hasPendingWork: true,
+            hasPendingCompletionFence: false,
+            requestHasCompletionFence: false
+        ))
+    }
 }

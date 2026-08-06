@@ -222,6 +222,10 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
             AtriaBLEManager.validatedResearchAggregates(from: decoded)?.gyroCadenceResearchSteps,
             0
         )
+        XCTAssertFalse(
+            try XCTUnwrap(AtriaBLEManager.validatedResearchAggregates(from: decoded))
+                .hasGyroCadenceResearchEvidence
+        )
     }
 
     func testValidatedResearchAggregatesFailClosedForImplausibleGyroSteps() throws {
@@ -231,10 +235,9 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
         malformed.gyroCadenceResearchSteps = -1
         XCTAssertNil(AtriaBLEManager.validatedResearchAggregates(from: malformed))
         malformed.gyroCadenceResearchSteps = 4_321
-        XCTAssertEqual(
-            AtriaBLEManager.validatedResearchAggregates(from: malformed)?.gyroCadenceResearchSteps,
-            4_321
-        )
+        let restored = try XCTUnwrap(AtriaBLEManager.validatedResearchAggregates(from: malformed))
+        XCTAssertEqual(restored.gyroCadenceResearchSteps, 4_321)
+        XCTAssertTrue(restored.hasGyroCadenceResearchEvidence)
     }
 
     // MARK: - Research isolation source scans
@@ -248,13 +251,13 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
                           encoding: .utf8)
     }
 
-    func testGyroCadenceResearchShadowNeverReachesUserFacingSurfaces() throws {
-        // The shadow's names must not appear in any user-facing rendering or
-        // production step surface: it is validation evidence only.
+    func testGyroCadenceResearchShadowOnlyReachesScopedAmbulatoryWorkoutSurface() throws {
+        // The calibrated challenger is authorized only as an estimated source
+        // frozen by an explicit walking/running/hiking workout. It must remain
+        // absent from daily totals, saved-session production fields and every
+        // non-workout surface.
         let userFacingFiles = [
-            "AtriaHomeView.swift",
             "AtriaTodayScreen.swift",
-            "AtriaLiveWorkoutView.swift",
             "AtriaOverviewSections.swift",
             "AtriaShareCard.swift",
             "WidgetSnapshot.swift",
@@ -267,12 +270,17 @@ final class AtriaGyroCadenceResearchShadowTests: XCTestCase {
             XCTAssertFalse(source.lowercased().contains("gyrocadence"),
                            "\(fileName) must never reference the gyro-cadence research shadow")
         }
+        let home = try productionSource("AtriaHomeView.swift")
+        XCTAssertTrue(home.contains("strapGyroCadenceAmbulatoryV1"))
+        XCTAssertFalse(home.contains("liveStrapStepResearchTodayCount = gyro"))
+        let workout = try productionSource("AtriaLiveWorkoutView.swift")
+        XCTAssertTrue(workout.contains("stepSourceVersion"))
     }
 
-    func testGyroCadenceResearchShadowIsWiredReadOnlyInBLEManager() throws {
-        let source = try productionSource("AtriaBLEManager.swift")
-        XCTAssertTrue(source.contains("gyroCadenceResearchShadow.ingest("),
-                      "the shadow must consume the decoded R10 stream")
+    func testGyroCadenceResearchShadowIsWiredReadOnlyInAtomicR10Pipeline() throws {
+        let source = try productionSource("AtriaR10Motion.swift")
+        XCTAssertTrue(source.contains("gyroCadenceState.ingest("),
+                      "the shadow must consume accepted frames on the atomic R10 queue")
         for line in source.split(separator: "\n", omittingEmptySubsequences: false) {
             guard line.localizedCaseInsensitiveContains("gyroCadence") else { continue }
             for forbidden in ["dailySteps",

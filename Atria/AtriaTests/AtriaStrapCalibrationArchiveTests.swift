@@ -40,7 +40,8 @@ final class AtriaStrapCalibrationArchiveTests: XCTestCase {
         XCTAssertEqual(AtriaStrapCalibrationArchive.configuredCaptureUntil(
             arguments: [],
             defaults: defaults,
-            now: now.addingTimeInterval(60)
+            now: now.addingTimeInterval(60),
+            duration: 3_600
         ), enabledUntil)
         XCTAssertNil(AtriaStrapCalibrationArchive.configuredCaptureUntil(
             arguments: [],
@@ -57,6 +58,28 @@ final class AtriaStrapCalibrationArchiveTests: XCTestCase {
             arguments: [AtriaStrapCalibrationArchive.disableArgument],
             defaults: defaults,
             now: now
+        ))
+    }
+
+    func testLegacyOversizedCalibrationWindowIsCleared() throws {
+        let suiteName = "AtriaStrapCalibrationArchiveTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let now = Date(timeIntervalSince1970: 1_750_000_000)
+
+        defaults.set(
+            now.addingTimeInterval(AtriaStrapCalibrationArchive.defaultCaptureDuration)
+                .timeIntervalSince1970,
+            forKey: AtriaStrapCalibrationArchive.captureUntilDefaultsKey
+        )
+
+        XCTAssertNil(AtriaStrapCalibrationArchive.configuredCaptureUntil(
+            arguments: [],
+            defaults: defaults,
+            now: now
+        ))
+        XCTAssertNil(defaults.object(
+            forKey: AtriaStrapCalibrationArchive.captureUntilDefaultsKey
         ))
     }
 
@@ -188,6 +211,35 @@ final class AtriaStrapCalibrationArchiveTests: XCTestCase {
         XCTAssertFalse(sizes.isEmpty)
         XCTAssertLessThanOrEqual(sizes.max() ?? 0, cap)
         XCTAssertLessThanOrEqual(sizes.reduce(0, +), cap)
+    }
+
+    func testMaintenancePrunesExpiredCapturesWithoutAnyNewFrame() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-step-maintenance-tests-\(UUID().uuidString)",
+                                    isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        let now = Date(timeIntervalSince1970: 1_750_000_000)
+        let expired = directory.appendingPathComponent("strap-imu-20250601-expired.csv")
+        let current = directory.appendingPathComponent("strap-imu-20250608-current.csv")
+        try Data("old\n".utf8).write(to: expired)
+        try Data("new\n".utf8).write(to: current)
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-8 * 24 * 60 * 60)],
+            ofItemAtPath: expired.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-60)],
+            ofItemAtPath: current.path
+        )
+
+        let archive = AtriaStrapCalibrationArchive(directoryURL: directory,
+                                                   retentionInterval: 7 * 24 * 60 * 60)
+        archive.pruneSynchronouslyForTesting(now: now)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: expired.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: current.path))
     }
 
     private func r10Frame(deviceTimestamp: UInt32) -> Data {

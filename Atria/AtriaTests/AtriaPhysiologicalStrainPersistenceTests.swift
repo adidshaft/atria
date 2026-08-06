@@ -85,4 +85,31 @@ final class AtriaPhysiologicalStrainPersistenceTests: XCTestCase {
         XCTAssertEqual(aligned.first?.recoveryPercent, metric.recoveryPercent)
         XCTAssertEqual(aligned.first?.sleepEnd, metric.sleepEnd)
     }
+
+    func testDailyRollupPreparationExcludesConfirmedSleepLikeHome() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let sessionsFile = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+            .appendingPathComponent("Sessions.swift")
+        let source = try String(contentsOf: sessionsFile, encoding: .utf8)
+        let preparationStart = try XCTUnwrap(
+            source.range(of: "private nonisolated static func makeDailyMetricRollupPreparation")
+        )
+        let preparationEnd = try XCTUnwrap(
+            source.range(of: "nonisolated static func napHoursByMorningDay",
+                         range: preparationStart.upperBound..<source.endIndex)
+        )
+        let preparation = String(source[preparationStart.lowerBound..<preparationEnd.lowerBound])
+
+        XCTAssertTrue(
+            preparation.contains(
+                "excludedLoadIntervals: confirmedSleeps.map {\n" +
+                "                DateInterval(start: $0.start, end: $0.end)\n" +
+                "            }"
+            ),
+            "persisted daily strain must exclude the same confirmed sleep intervals as Home"
+        )
+    }
 }

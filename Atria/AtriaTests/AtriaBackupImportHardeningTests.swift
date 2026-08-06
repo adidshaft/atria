@@ -2,6 +2,16 @@ import XCTest
 @testable import Atria
 
 final class AtriaBackupImportHardeningTests: XCTestCase {
+    func testCompressedArchiveRoundTripsExactly() throws {
+        let original = Data((0..<96_000).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+        let compressed = try AtriaBackupCompression.compressedArchiveData(from: original)
+
+        XCTAssertEqual(try AtriaBackupCompression.archivePayloadData(
+            from: compressed,
+            fileExtension: "gz"
+        ), original)
+    }
+
     func testOversizedPlainArchiveIsRejectedBeforeDecode() {
         let plain = Data(repeating: 0x20, count: 1_025)
 
@@ -324,6 +334,117 @@ final class AtriaBackupImportHardeningTests: XCTestCase {
         }
     }
 
+    func testCalibrationEvidenceImportRequiresCanonicalDetectedReviewProvenance() throws {
+        let day = Date(timeIntervalSince1970: 1_700_100_000)
+        let end = day.addingTimeInterval(10 * 60)
+        let sourceID = UUID()
+        let profile = AthleteProfile(age: 30,
+                                     measuredMaxHR: 190,
+                                     maxHRSource: .measured,
+                                     updated: day,
+                                     hasCompletedOnboarding: true)
+        let canonicalBins = [0, 300].map { offset in
+            AtriaActivityCalibrationEvidence.Bin(
+                startOffsetSeconds: offset,
+                durationSeconds: 300,
+                hrSampleCount: 10,
+                averageHR: 100,
+                minimumHR: 90,
+                maximumHR: 110,
+                validatedMotionEpochs: 1,
+                validatedMotionCoverageFraction: 1,
+                meanStillnessRatio: 0.2,
+                meanMovementIntensity: 0.4,
+                meanP95VectorDelta: 0.3
+            )
+        }
+        func evidence(algorithm: String = AtriaActivityCalibrationEvidence.algorithmVersion,
+                      status: String = "ready",
+                      sourceIDs: [UUID]? = nil,
+                      sourceCount: Int = 1,
+                      truncated: Bool = false,
+                      bins: [AtriaActivityCalibrationEvidence.Bin]? = nil,
+                      provenance: String = AtriaRecoveredMotionEpoch.source)
+            -> AtriaActivityCalibrationEvidence {
+            AtriaActivityCalibrationEvidence(
+                schemaVersion: AtriaActivityCalibrationEvidence.schemaVersion,
+                algorithmVersion: algorithm,
+                windowStart: day,
+                windowEnd: end,
+                sourceSessionIDs: sourceIDs ?? [sourceID],
+                sourceSessionCount: sourceCount,
+                sourceSessionIDsTruncated: truncated,
+                status: status,
+                bins: bins ?? canonicalBins,
+                motion: .init(epochCount: 2,
+                              validatedEpochCount: 2,
+                              validatedCoverageFraction: 1,
+                              meanStillnessRatio: 0.2,
+                              meanMovementIntensity: 0.4,
+                              meanP95VectorDelta: 0.3,
+                              provenance: provenance)
+            )
+        }
+        func workout(reviewSource: String? = "detected_activity_review",
+                     candidateID: String? = "candidate-1",
+                     calibration: AtriaActivityCalibrationEvidence) -> UserConfirmedWorkout {
+            UserConfirmedWorkout(id: UUID().uuidString,
+                                 createdAt: day,
+                                 start: day,
+                                 end: end,
+                                 label: "Walking",
+                                 source: "manual_activity_add",
+                                 confidence: "live_window_user_confirmed",
+                                 sessions: 1,
+                                 samples: 10,
+                                 avgHR: 100,
+                                 peakHR: 110,
+                                 p95HR: 108,
+                                 p99HR: 109,
+                                 thresholdHR: 95,
+                                 streamCoveragePercent: 100,
+                                 observedDuration: 600,
+                                 reason: "test",
+                                 reviewSource: reviewSource,
+                                 reviewCandidateID: candidateID,
+                                 activityCalibrationEvidence: calibration)
+        }
+        func envelope(_ workout: UserConfirmedWorkout) -> SessionBackupEnvelope {
+            SessionBackupEnvelope(schema: 4,
+                                  createdAt: day,
+                                  app: "Atria.local",
+                                  sessions: [],
+                                  baseline: PersonalBaseline(),
+                                  profile: profile,
+                                  confirmedWorkouts: [workout])
+        }
+        func assertRejected(_ workout: UserConfirmedWorkout,
+                            file: StaticString = #filePath,
+                            line: UInt = #line) {
+            XCTAssertThrowsError(
+                try SessionStore.validateSessionBackupEnvelopeForImport(envelope(workout)),
+                file: file,
+                line: line
+            ) {
+                XCTAssertEqual($0 as? SessionStore.SessionBackupImportError,
+                               .invalidDomain,
+                               file: file,
+                               line: line)
+            }
+        }
+
+        XCTAssertNoThrow(try SessionStore.validateSessionBackupEnvelopeForImport(
+            envelope(workout(calibration: evidence()))
+        ))
+        assertRejected(workout(reviewSource: nil, calibration: evidence()))
+        assertRejected(workout(candidateID: "   ", calibration: evidence()))
+        assertRejected(workout(calibration: evidence(algorithm: "activity_calibration_unknown")))
+        assertRejected(workout(calibration: evidence(status: "maybe_ready")))
+        assertRejected(workout(calibration: evidence(sourceIDs: [sourceID, sourceID], sourceCount: 2)))
+        assertRejected(workout(calibration: evidence(bins: [canonicalBins[0], canonicalBins[0]])))
+        assertRejected(workout(calibration: evidence(provenance: "unverified_motion")))
+    }
+
     @MainActor
     func testLargeArchiveValidationLeavesMainActorResponsive() async throws {
         let day = Date(timeIntervalSince1970: 1_700_000_000)
@@ -369,7 +490,10 @@ final class AtriaBackupImportHardeningTests: XCTestCase {
         DispatchQueue.main.async { mainHeartbeat.fulfill() }
         releaseValidation.signal()
         await fulfillment(of: [mainHeartbeat], timeout: 1)
-        await fulfillment(of: [workerFinished], timeout: 5)
+        // This assertion validates actor isolation, not a performance SLA.
+        // Simulator full-suite contention can delay the utility worker even
+        // though the independently scheduled main heartbeat remains live.
+        await fulfillment(of: [workerFinished], timeout: 30)
 
         XCTAssertTrue(result.success)
         XCTAssertFalse(result.performedOnMain)

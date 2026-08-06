@@ -19,6 +19,32 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
         super.tearDown()
     }
 
+    func testCompletedStepSelectionIsStrapOnly() {
+        let strap = AtriaCompletedWorkoutStepEvidence(
+            count: 612,
+            isEstimated: false,
+            capturedAt: Date(timeIntervalSince1970: 100)
+        )
+        XCTAssertEqual(AtriaCompletedWorkoutStepEvidence.select(strap: strap), strap)
+        XCTAssertNil(AtriaCompletedWorkoutStepEvidence.select(strap: nil))
+    }
+
+    func testCompletedStepSelectionFailsClosedForPreliminaryOrUnstampedStrapData() {
+        let preliminary = AtriaCompletedWorkoutStepEvidence(
+            count: 612,
+            isEstimated: true,
+            capturedAt: Date(timeIntervalSince1970: 100)
+        )
+        let unstamped = AtriaCompletedWorkoutStepEvidence(
+            count: 0,
+            isEstimated: false,
+            capturedAt: nil
+        )
+
+        XCTAssertNil(AtriaCompletedWorkoutStepEvidence.select(strap: preliminary))
+        XCTAssertNil(AtriaCompletedWorkoutStepEvidence.select(strap: unstamped))
+    }
+
     func testHeadlessPausePersistsCanonicalPauseAndStepAnchor() throws {
         let start = Date(timeIntervalSince1970: 2_000_000_000)
         let original = makeIntent(startedAt: start)
@@ -252,6 +278,25 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
         ))
     }
 
+    func testFreshStepCoordinateIsNotCompletionReadyBeforeContinuousStrapMotion() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let coordinate = try XCTUnwrap(AtriaWorkoutStepCoordinate.makeCumulative(
+            savedPrefixHydrated: true,
+            cumulativeCount: 240,
+            hasEvidence: true,
+            capturedAt: now,
+            isConnected: true,
+            reconnectPending: false,
+            rangeLossBackfillPending: false,
+            hasContinuousValidatedMotion: false,
+            now: now
+        ))
+
+        XCTAssertTrue(coordinate.hasEvidence)
+        XCTAssertFalse(coordinate.isLiveForCompletion,
+                       "A lone fresh strap frame must not make workout steps ready")
+    }
+
     func testHeadlessEndOmitsStaleOrBackfillPendingStepTotals() throws {
         let start = Date(timeIntervalSince1970: 2_000_000_000)
         let endAt = start.addingTimeInterval(120)
@@ -386,7 +431,8 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
                                            range: start.upperBound..<home.endIndex))
         let body = String(home[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(body.contains("currentWorkoutStepCoordinate(now: now)"))
+        XCTAssertTrue(body.contains("sourceVersion: session.stepSourceVersion"))
+        XCTAssertTrue(body.contains("now: now"))
         XCTAssertTrue(body.contains("coordinate.isLiveForCompletion"))
         XCTAssertFalse(body.contains("AtriaLiveWorkoutStepProjection.make"),
                        "the 15-second HUD tolerance cannot authorize foreground End")
@@ -451,7 +497,7 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
                      "a later fresh total cannot repair an unknown pause boundary")
     }
 
-    func testForegroundStartAwaitsHydrationBeforeReadingMergedStepAnchor() throws {
+    func testForegroundStartUsesBoundedHydrationBeforeReadingMergedStepAnchor() throws {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -461,13 +507,21 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
         let end = try XCTUnwrap(home.range(of: "private func beginWorkoutSession(",
                                            range: start.upperBound..<home.endIndex))
         let body = String(home[start.lowerBound..<end.lowerBound])
-        let wait = try XCTUnwrap(body.range(of: "await store.waitForDeferredSessionLoadIfNeeded()"))
-        let guardLoaded = try XCTUnwrap(body.range(of: "guard store.hasLoadedSavedSessions"))
+        let authorityStart = try XCTUnwrap(home.range(of: "private func workoutStepLedgerIsReadyForStart("))
+        let authorityEnd = try XCTUnwrap(home.range(of: "private func makeWorkoutSession(",
+                                                     range: authorityStart.upperBound..<home.endIndex))
+        let authority = String(home[authorityStart.lowerBound..<authorityEnd.lowerBound])
+        XCTAssertTrue(authority.contains("await store.waitForDeferredSessionLoadIfNeeded(timeoutSeconds: timeoutSeconds)"))
+        XCTAssertTrue(authority.contains("timeoutSeconds: TimeInterval = 1"),
+                      "A cold ledger must fail fast instead of holding Start behind the old eight-second wait")
+        let guardLoaded = try XCTUnwrap(body.range(of: "guard await workoutStepLedgerIsReadyForStart()"))
         let clock = try XCTUnwrap(body.range(of: "let start = Date()"))
-        let coordinate = try XCTUnwrap(body.range(of: "currentWorkoutStepCoordinate(now: start)"))
+        let sourceFreeze = try XCTUnwrap(body.range(of: "AtriaWorkoutStepSourceVersion.frozen"))
+        let coordinate = try XCTUnwrap(body.range(of: "sourceVersion: stepSourceVersion"))
         let anchor = try XCTUnwrap(body.range(of: "startingStepCount: stepCoordinate.cumulativeCount"))
-        XCTAssertLessThan(wait.lowerBound, guardLoaded.lowerBound)
         XCTAssertLessThan(guardLoaded.lowerBound, clock.lowerBound)
+        XCTAssertLessThan(clock.lowerBound, sourceFreeze.lowerBound)
+        XCTAssertLessThan(sourceFreeze.lowerBound, coordinate.lowerBound)
         XCTAssertLessThan(clock.lowerBound, coordinate.lowerBound)
         XCTAssertLessThan(coordinate.lowerBound, anchor.lowerBound)
         XCTAssertFalse(body.contains("model.coreLiveStore.state.strapStepResearchCount"))

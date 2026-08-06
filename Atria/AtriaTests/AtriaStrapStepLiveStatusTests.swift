@@ -19,6 +19,21 @@ final class AtriaStrapStepLiveStatusTests: XCTestCase {
         XCTAssertEqual(status.lastMotionText, "motion 12s ago")
     }
 
+    func testFreshTransportCannotValidateAnUnqualifiedStepAuthority() {
+        let status = AtriaStrapStepLiveStatus.make(
+            count: 842,
+            validationState: "r10_live_validated",
+            capturedAt: now.addingTimeInterval(-12),
+            now: now,
+            authorityQualified: false
+        )
+
+        XCTAssertTrue(status.isLive)
+        XCTAssertFalse(status.isValidated)
+        XCTAssertEqual(status.tileValue, "~842")
+        XCTAssertEqual(status.tileDetail, "Live estimate")
+    }
+
     func testFreshUnvalidatedCountIsClearlyEstimated() {
         let status = AtriaStrapStepLiveStatus.make(
             count: 842,
@@ -81,6 +96,38 @@ final class AtriaStrapStepLiveStatusTests: XCTestCase {
         XCTAssertEqual(status.freshness, .unavailable)
         XCTAssertEqual(status.tileValue, "--")
         XCTAssertEqual(status.tileDetail, "Not live · no motion")
+    }
+
+    func testPureHRFallbackKeepsSavedCountStaleAndFreshR10RequalificationRestoresLive() {
+        let fallback = AtriaStrapStepLiveStatus.make(
+            count: 842,
+            validationState: "passive_r10_unavailable",
+            capturedAt: nil,
+            now: now
+        )
+        XCTAssertEqual(fallback.freshness, .stale)
+        XCTAssertEqual(fallback.tileValue, "--")
+        XCTAssertEqual(fallback.savedCountText, "~842")
+        XCTAssertEqual(fallback.tileDetail, "Not live · motion unavailable")
+
+        let noSavedPrefix = AtriaStrapStepLiveStatus.make(
+            count: 0,
+            validationState: "passive_r10_unavailable",
+            capturedAt: nil,
+            now: now
+        )
+        XCTAssertEqual(noSavedPrefix.freshness, .unavailable)
+
+        let requalified = AtriaStrapStepLiveStatus.make(
+            count: 842,
+            validationState: "r10_live_preliminary",
+            capturedAt: now,
+            now: now
+        )
+        XCTAssertEqual(requalified.freshness, .live)
+        XCTAssertEqual(requalified.count, fallback.count,
+                       "a fresh R10 frame restores freshness without resetting the monotonic prefix")
+        XCTAssertEqual(requalified.tileValue, "~842")
     }
 
     func testImplausibleFutureMotionDoesNotBecomeLive() {

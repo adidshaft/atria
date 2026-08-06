@@ -5,8 +5,14 @@ enum AtriaWorkoutPromptEvaluator {
     // presentation layer consumes them as an integer evidence duration.
     static let minimumSustainedSamples = 8 * 60
     static let minimumSustainedElevatedSamples = 5 * 60
-    static let minimumContinuousElevatedSamples = 90
-    static let minimumBPMOverRest = 25
+    // 5 minutes continuous at +30, was 90s at +25 (2026-08-05 user
+    // feedback): "even if the HR is slightly high for sometime, it detects
+    // it" — a stair climb or a stress spike kept promoting the interruptive
+    // "Review workout" prompt. Detection/candidate machinery is untouched;
+    // only the prompt's READY bar rises to a real sustained effort. Tests
+    // reference the constant, so they follow automatically.
+    static let minimumContinuousElevatedSamples = 5 * 60
+    static let minimumBPMOverRest = 30
     static let zoneLookbackSeconds: TimeInterval = 6 * 60
     static let zoneMinimumSamples = 4 * 60
     static let zoneMinimumContinuousSamples = 90
@@ -61,11 +67,13 @@ enum AtriaWorkoutPromptEvaluator {
         }
 
         var hasContinuityEvidence: Bool {
-            // A handful of RR values can corroborate HR rate, but they do not
-            // prove that an otherwise missing accepted-HR interval was covered.
-            // Never let sparse RR presence bridge a hard transport gap.
-            acceptedGapCount == 0
-                && maxAcceptedGap <= AtriaWorkoutPromptEvaluator.maximumPacketGap
+            // Continuity is proved by the timestamped accepted samples below,
+            // where every hard gap breaks the current bout. Do not veto the
+            // entire eight-minute window merely because it contains an older
+            // gap: after reconnect, a new five-minute continuous effort must be
+            // allowed to qualify. Repeated/large gaps and poor packet shares
+            // still fail through `contactCompromised`.
+            true
         }
     }
 

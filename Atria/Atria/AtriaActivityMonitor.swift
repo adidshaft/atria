@@ -9,6 +9,9 @@ struct AtriaActivitySectionsRequestKey: Equatable {
     let detectionsRevision: Int
     let reviewFingerprint: String
     let selectedDayStart: Date
+    let intervalStart: Date
+    let intervalEnd: Date
+    let isCurrentPhysiologicalDay: Bool
     let calendarIdentifier: String
     let timeZoneIdentifier: String
 
@@ -18,6 +21,8 @@ struct AtriaActivitySectionsRequestKey: Equatable {
          detectionsRevision: Int = 0,
          reviewFingerprint: String = "",
          selectedDay: Date,
+         interval: DateInterval? = nil,
+         isCurrentPhysiologicalDay: Bool = false,
          calendar: Calendar) {
         self.sleepRevision = sleepRevision
         self.workoutsRevision = workoutsRevision
@@ -25,8 +30,42 @@ struct AtriaActivitySectionsRequestKey: Equatable {
         self.detectionsRevision = detectionsRevision
         self.reviewFingerprint = reviewFingerprint
         selectedDayStart = calendar.startOfDay(for: selectedDay)
+        let civilEnd = calendar.date(byAdding: .day, value: 1, to: selectedDayStart) ?? selectedDayStart
+        intervalStart = interval?.start ?? selectedDayStart
+        intervalEnd = interval?.end ?? civilEnd
+        self.isCurrentPhysiologicalDay = isCurrentPhysiologicalDay
         calendarIdentifier = String(describing: calendar.identifier)
         timeZoneIdentifier = calendar.timeZone.identifier
+    }
+}
+
+struct AtriaActivityDisplayWindow: Equatable {
+    let interval: DateInterval
+    let labelDay: Date
+    let isCurrentPhysiologicalDay: Bool
+
+    static func current(now: Date,
+                        sleepHistory: SleepHistorySnapshot,
+                        calendar: Calendar = .current) -> Self {
+        // A second-level moving end would invalidate SwiftUI task/cache keys on
+        // every body evaluation. Activity presentation is minute-granular, so
+        // keep one stable live window per minute without changing attribution.
+        let minuteNow = calendar.dateInterval(of: .minute, for: now)?.start ?? now
+        let day = AtriaPhysiologicalDay.current(now: now,
+                                               sleepHistory: sleepHistory,
+                                               calendar: calendar)
+        let stableEnd = max(day.start, minuteNow)
+        return Self(interval: DateInterval(start: day.start, end: stableEnd),
+                    labelDay: day.displayDay,
+                    isCurrentPhysiologicalDay: true)
+    }
+
+    static func historical(day: Date, calendar: Calendar = .current) -> Self {
+        let start = calendar.startOfDay(for: day)
+        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
+        return Self(interval: DateInterval(start: start, end: end),
+                    labelDay: start,
+                    isCurrentPhysiologicalDay: false)
     }
 }
 
@@ -34,6 +73,27 @@ struct AtriaActivitySectionsRequestKey: Equatable {
 /// workout or showing the same physiological window twice through the general
 /// detector and the higher-quality workout-review cache.
 enum AtriaActivityReviewProjection {
+    static func visibleDetections(_ detections: [ActivityDetection],
+                                  workoutReview: WorkoutReviewCandidate?,
+                                  confirmedWorkouts: [UserConfirmedWorkout],
+                                  interval: DateInterval) -> [ActivityDetection] {
+        detections.filter { detection in
+            guard detection.kind == .activityCandidate || detection.kind == .workout,
+                  detection.end > interval.start,
+                  detection.start < interval.end,
+                  !overlapsConfirmedWorkout(start: detection.start,
+                                            end: detection.end,
+                                            confirmedWorkouts: confirmedWorkouts) else { return false }
+            if let workoutReview {
+                let overlap = min(workoutReview.end, detection.end)
+                    .timeIntervalSince(max(workoutReview.start, detection.start))
+                let shortest = min(workoutReview.duration, detection.duration)
+                if overlap >= 5 * 60 || (shortest > 0 && overlap / shortest >= 0.70) { return false }
+            }
+            return true
+        }.sorted { $0.start > $1.start }
+    }
+
     static func overlapsConfirmedWorkout(start: Date,
                                          end: Date,
                                          confirmedWorkouts: [UserConfirmedWorkout]) -> Bool {
@@ -52,24 +112,10 @@ enum AtriaActivityReviewProjection {
                                   calendar: Calendar) -> [ActivityDetection] {
         let dayStart = calendar.startOfDay(for: selectedDay)
         guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { return [] }
-        return detections.filter { detection in
-            guard detection.kind == .activityCandidate || detection.kind == .workout,
-                  detection.end > dayStart,
-                  detection.start < dayEnd,
-                  !overlapsConfirmedWorkout(start: detection.start,
-                                            end: detection.end,
-                                            confirmedWorkouts: confirmedWorkouts) else { return false }
-            if let workoutReview {
-                let overlap = min(workoutReview.end, detection.end)
-                    .timeIntervalSince(max(workoutReview.start, detection.start))
-                let shortest = min(workoutReview.duration, detection.duration)
-                if overlap >= 5 * 60 || (shortest > 0 && overlap / shortest >= 0.70) {
-                    return false
-                }
-            }
-            return true
-        }
-        .sorted { $0.start > $1.start }
+        return visibleDetections(detections,
+                                 workoutReview: workoutReview,
+                                 confirmedWorkouts: confirmedWorkouts,
+                                 interval: DateInterval(start: dayStart, end: dayEnd))
     }
 
     static func visibleWorkoutReview(_ candidate: WorkoutReviewCandidate?,
@@ -81,6 +127,18 @@ enum AtriaActivityReviewProjection {
         guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart),
               candidate.end > dayStart,
               candidate.start < dayEnd,
+              !overlapsConfirmedWorkout(start: candidate.start,
+                                        end: candidate.end,
+                                        confirmedWorkouts: confirmedWorkouts) else { return nil }
+        return candidate
+    }
+
+    static func visibleWorkoutReview(_ candidate: WorkoutReviewCandidate?,
+                                     confirmedWorkouts: [UserConfirmedWorkout],
+                                     interval: DateInterval) -> WorkoutReviewCandidate? {
+        guard let candidate,
+              candidate.end > interval.start,
+              candidate.start < interval.end,
               !overlapsConfirmedWorkout(start: candidate.start,
                                         end: candidate.end,
                                         confirmedWorkouts: confirmedWorkouts) else { return nil }
@@ -237,6 +295,35 @@ enum AtriaActivityTimelineAxis {
         return ticks
     }
 
+    static func ticks(interval: DateInterval,
+                      isCurrent: Bool,
+                      calendar: Calendar) -> [AtriaActivityTimelineAxisTick] {
+        guard interval.end > interval.start else { return [] }
+        var dates = [interval.start]
+        var cursor = calendar.nextDate(after: interval.start,
+                                       matching: DateComponents(minute: 0, second: 0),
+                                       matchingPolicy: .nextTime) ?? interval.end
+        while cursor < interval.end {
+            if cursor.timeIntervalSince(dates.last ?? interval.start) >= 4 * 3_600 {
+                dates.append(cursor)
+            }
+            guard let next = calendar.date(byAdding: .hour, value: 6, to: cursor), next > cursor else { break }
+            cursor = next
+        }
+        if interval.end.timeIntervalSince(dates.last ?? interval.start) >= 2 * 3_600 || dates.count == 1 {
+            dates.append(interval.end)
+        } else {
+            dates[dates.count - 1] = interval.end
+        }
+        return dates.enumerated().map { index, date in
+            let isEnd = index == dates.count - 1
+            let label = isEnd && isCurrent ? "Now" : date.formatted(.dateTime.hour(.defaultDigits(amPM: .abbreviated)))
+            return AtriaActivityTimelineAxisTick(date: date,
+                                                 label: label,
+                                                 accessibilityLabel: isEnd && isCurrent ? "Now" : date.formatted(date: .omitted, time: .shortened))
+        }
+    }
+
     static func tick(at date: Date,
                      in ticks: [AtriaActivityTimelineAxisTick]) -> AtriaActivityTimelineAxisTick? {
         ticks.first { abs($0.date.timeIntervalSince(date)) < 0.5 }
@@ -249,13 +336,20 @@ enum AtriaActivityTimelineAxis {
 /// without a matching detail row below it.
 enum AtriaActivitySelectedDayWorkouts {
     static func overlapping(_ workouts: [UserConfirmedWorkout],
+                            interval: DateInterval) -> [UserConfirmedWorkout] {
+        // Sub-minute accidental live fragments never render as Activity rows
+        // or timeline spans (2026-07-31 device review); the record stays saved.
+        AtriaWorkoutMetricPresentation.presentableWorkouts(workouts)
+            .filter { $0.end > $0.start && $0.end > interval.start && $0.start < interval.end }
+    }
+    static func overlapping(_ workouts: [UserConfirmedWorkout],
                             selectedDay: Date,
                             calendar: Calendar) -> [UserConfirmedWorkout] {
         let dayStart = calendar.startOfDay(for: selectedDay)
         guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else {
             return []
         }
-        return workouts.filter {
+        return AtriaWorkoutMetricPresentation.presentableWorkouts(workouts).filter {
             $0.end > $0.start && $0.end > dayStart && $0.start < dayEnd
         }
     }
@@ -267,7 +361,8 @@ enum AtriaActivitySelectedDayWorkouts {
 /// selectable on every day where its timeline marker is visible.
 enum AtriaActivitySelectedDaySleeps {
     static func canonical(snapshot: SleepHistorySnapshot,
-                          pendingReview: SleepHistorySnapshot.Night?) -> [SleepHistorySnapshot.Night] {
+                          pendingReview: SleepHistorySnapshot.Night?,
+                          napReviewCandidates: [SleepHistorySnapshot.Night] = []) -> [SleepHistorySnapshot.Night] {
         var byID = (snapshot.nights + snapshot.additionalMainNights + snapshot.napNights)
             .reduce(into: [String: SleepHistorySnapshot.Night]()) { result, night in
                 result[night.id] = night
@@ -276,6 +371,13 @@ enum AtriaActivitySelectedDaySleeps {
            !pendingReview.confirmed,
            !byID.values.contains(where: { substantiallyOverlaps($0, pendingReview) }) {
             byID[pendingReview.id] = pendingReview
+        }
+        // Review-worthy naps surface as their own detection rows. A nap that
+        // already maps to a confirmed/candidate night (or the main-sleep review
+        // card) is deduped so a single window is never shown twice.
+        for nap in napReviewCandidates where !nap.confirmed {
+            guard !byID.values.contains(where: { substantiallyOverlaps($0, nap) }) else { continue }
+            byID[nap.id] = nap
         }
         return byID.values.sorted {
             let lhs = $0.start ?? $0.day
@@ -287,17 +389,47 @@ enum AtriaActivitySelectedDaySleeps {
 
     static func overlapping(snapshot: SleepHistorySnapshot,
                             pendingReview: SleepHistorySnapshot.Night?,
+                            napReviewCandidates: [SleepHistorySnapshot.Night] = [],
                             selectedDay: Date,
                             calendar: Calendar) -> [SleepHistorySnapshot.Night] {
         let dayStart = calendar.startOfDay(for: selectedDay)
         guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { return [] }
-        return canonical(snapshot: snapshot, pendingReview: pendingReview).filter { night in
+        return canonical(snapshot: snapshot,
+                         pendingReview: pendingReview,
+                         napReviewCandidates: napReviewCandidates).filter { night in
             if let start = night.start, let end = night.end, end > start {
                 return end > dayStart && start < dayEnd
             }
             // Legacy summaries may not carry exact bounds. Their attributed
             // civil day remains the only truthful placement available.
             return calendar.isDate(night.day, inSameDayAs: dayStart)
+        }
+    }
+
+    static func overlapping(snapshot: SleepHistorySnapshot,
+                            pendingReview: SleepHistorySnapshot.Night?,
+                            napReviewCandidates: [SleepHistorySnapshot.Night] = [],
+                            interval: DateInterval,
+                            calendar: Calendar,
+                            includeStartBoundarySleep: Bool = false) -> [SleepHistorySnapshot.Night] {
+        canonical(snapshot: snapshot,
+                  pendingReview: pendingReview,
+                  napReviewCandidates: napReviewCandidates).filter { night in
+            if let start = night.start, let end = night.end, end > start {
+                // The CURRENT physiological day begins at the anchoring main
+                // sleep's WAKE, so that sleep ends exactly at `interval.start`.
+                // A strict `end > interval.start` therefore hides the very sleep
+                // that defines the day — the moment it is confirmed it leaves the
+                // review-card slot and, ending exactly on the boundary, is dropped
+                // from both the timeline and the row list, so it silently vanishes.
+                // For the current day, admit a sleep that ends exactly at the day
+                // start so "the sleep you woke from" stays visible in today.
+                let overlapsStart = includeStartBoundarySleep
+                    ? end >= interval.start
+                    : end > interval.start
+                return overlapsStart && start < interval.end
+            }
+            return calendar.isDate(night.day, inSameDayAs: interval.start)
         }
     }
 
@@ -384,6 +516,36 @@ struct AtriaDetectedActivityPresentation: Equatable {
 }
 
 enum AtriaActivityTimelineBuilder {
+    static func workoutSpans(workouts: [UserConfirmedWorkout],
+                             interval: DateInterval) -> [AtriaActivityTimelineWorkoutSpan] {
+        let projected = AtriaActivitySelectedDayWorkouts.overlapping(workouts, interval: interval).map { workout in
+            AtriaActivityTimelineWorkoutSpan(
+                id: "workout-\(workout.id)",
+                lane: "",
+                start: max(workout.start, interval.start),
+                end: min(workout.end, interval.end),
+                label: workout.activitySubtype ?? workout.activityType ?? workout.label,
+                icon: AtriaActivityDisplayIcon.icon(activityType: workout.activityType,
+                                                    subtype: workout.activitySubtype,
+                                                    label: workout.label)
+            )
+        }.sorted {
+            if $0.start == $1.start { return $0.id < $1.id }
+            return $0.start < $1.start
+        }
+        let assignments = AtriaActivityTimelineLanePacker.assignments(for: projected.map {
+            AtriaActivityTimelineLaneInterval(id: $0.id, start: $0.start, end: $0.end)
+        })
+        return projected.map {
+            AtriaActivityTimelineWorkoutSpan(id: $0.id,
+                                             lane: "workout-\(assignments[$0.id] ?? 0)",
+                                             start: $0.start,
+                                             end: $0.end,
+                                             label: $0.label,
+                                             icon: $0.icon)
+        }
+    }
+
     static func workoutSpans(workouts: [UserConfirmedWorkout],
                              selectedDay: Date,
                              calendar: Calendar) -> [AtriaActivityTimelineWorkoutSpan] {
@@ -485,6 +647,10 @@ private enum AtriaWorkoutRouteTransactionRecovery {
 /// when the underlying session actually recorded it.
 struct AtriaActivityMonitorTab: View {
     @ObservedObject var activityStore: AtriaHomeModel.ActivityStore
+    /// Live stress monitor for the intraday (past-24h) card at the top of the
+    /// Activity view — Activity is the intraday + log surface (heart/stress +
+    /// today's timeline + activities), not the weekly-trend surface.
+    @ObservedObject var stressMonitorStore: AtriaStressMonitorStore
     /// Retained without observation for action sheets, which observe it only
     /// while presented.
     let store: SessionStore
@@ -494,12 +660,14 @@ struct AtriaActivityMonitorTab: View {
     let onAddSleep: () -> Void
 
     @State private var workoutDetail: UserConfirmedWorkout?
+    @State private var sleepDetail: SleepHistorySnapshot.Night?
     @State private var showAddWorkout = false
     @State private var reviewWorkoutWindow: ReviewWorkoutWindow?
     /// Day shown in the header timeline (user feedback 2026-07-07: "the top
     /// of activity should have an entire graph with activities listed and
     /// days can be changed").
     @State private var timelineDay: Date = Calendar.current.startOfDay(for: Date())
+    @State private var viewingCurrentPhysiologicalDay = true
     @State private var activityMemo = AtriaActivityMonitorMemo()
     @State private var daySectionsCache = AtriaActivitySectionsCache<[DaySection]>()
 
@@ -546,11 +714,14 @@ struct AtriaActivityMonitorTab: View {
         let sleepSnapshot: SleepHistorySnapshot
         let workouts: [UserConfirmedWorkout]
         let pendingSleepReview: SleepHistorySnapshot.Night?
+        let napReviewCandidates: [SleepHistorySnapshot.Night]
         let workoutReview: WorkoutReviewCandidate?
         let detections: [ActivityDetection]
         let rollups: [DailyRollupStoreEntry]
         let selectedDayStart: Date
+        let interval: DateInterval
         let calendar: Calendar
+        let isCurrentPhysiologicalDay: Bool
     }
 
     private struct DaySectionsResult: @unchecked Sendable {
@@ -560,22 +731,43 @@ struct AtriaActivityMonitorTab: View {
     var body: some View {
         let calendar = Calendar.current
         let activity = activityStore.state
+        let displayWindow = viewingCurrentPhysiologicalDay
+            ? AtriaActivityDisplayWindow.current(now: Date(),
+                                                 sleepHistory: activity.sleepHistorySnapshot,
+                                                 calendar: calendar)
+            : AtriaActivityDisplayWindow.historical(day: timelineDay, calendar: calendar)
         let requestKey = AtriaActivitySectionsRequestKey(
             sleepRevision: activity.sleepHistorySnapshotRevision,
             workoutsRevision: activity.confirmedWorkoutsRevision,
             rollupsRevision: activity.dailyRollupHistoryRevision,
             detectionsRevision: activity.historySnapshotRevision,
             reviewFingerprint: activity.reviewFingerprint,
-            selectedDay: timelineDay,
+            selectedDay: displayWindow.labelDay,
+            interval: displayWindow.interval,
+            isCurrentPhysiologicalDay: displayWindow.isCurrentPhysiologicalDay,
             calendar: calendar
         )
 
         return LazyVStack(alignment: .leading, spacing: 14) {
             activityToolbar
 
-            dayTimelineCard
+            if viewingCurrentPhysiologicalDay {
+                stressMonitorCard
+            }
 
             let sections = daySectionsCache.value(for: requestKey) ?? []
+            // A fully-empty settled day used to stack three adjacent
+            // negatives (stress "waiting" + bare axis "nothing recorded" +
+            // the big empty card) and read as broken. The empty card 60pt
+            // below explains the day better than a bare axis; the strip
+            // still shows while loading and whenever anything is recorded
+            // (2026-08-04 WHOOP-alignment review, rank 7).
+            if !timelineSpans.isEmpty
+                || daySectionsCache.publishedKey != requestKey
+                || !sections.isEmpty {
+                dayTimelineCard
+            }
+
             if daySectionsCache.publishedKey != requestKey {
                 activityLoadingState
             } else if sections.isEmpty {
@@ -586,8 +778,20 @@ struct AtriaActivityMonitorTab: View {
                 }
             }
         }
+        .sheet(item: $sleepDetail) { night in
+            AtriaSleepActivityReviewSheet(night: night) {
+                sleepDetail = nil
+                onEditSleep(night)
+            }
+        }
         .sheet(item: $workoutDetail) { workout in
-            AtriaActivityWorkoutDetailSheet(store: store, workout: workout)
+            AtriaActivityWorkoutDetailSheet(
+                store: store,
+                workout: workout,
+                stressReadings: stressMonitorStore.history
+                    .filter { $0.t >= workout.start && $0.t <= workout.end }
+                    .map(AtriaStressDetailReading.init(historyPoint:))
+            )
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -600,6 +804,7 @@ struct AtriaActivityMonitorTab: View {
             AtriaAddWorkoutSheet(store: store,
                                  initialStart: window.start,
                                  initialEnd: window.end,
+                                 reviewCandidateID: window.id,
                                  settlingCandidateWindow: (start: window.start,
                                                            end: window.end),
                                  onDismissCandidate: {
@@ -619,6 +824,143 @@ struct AtriaActivityMonitorTab: View {
         }
     }
 
+    /// Intraday heart/stress monitor for the Activity view: the current stress
+    /// state plus a past-24h stress timeline. Honest — plots only observed
+    /// readings, breaks the line at collection gaps, and shows the state's own
+    /// explanation when there isn't yet a meaningful window (never a fabricated
+    /// flat line). Activity is the intraday surface; weekly trends live in the
+    /// metric details.
+    @ViewBuilder private var stressMonitorCard: some View {
+        let presentation = AtriaStressPresentation.make(state: stressMonitorStore.state)
+        let cutoff = Calendar.current.date(byAdding: .hour, value: -24, to: Date()) ?? Date.distantPast
+        let readings = stressMonitorStore.history
+            .filter { $0.t >= cutoff }
+            .map(AtriaStressDetailReading.init(historyPoint:))
+        let points = AtriaStressTimelinePoint.segment(readings)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                // The card's accessibility label already says "Stress
+                // monitor" — the visible title now matches it (and WHOOP's
+                // feature name) instead of contradicting it (2026-08-04).
+                // WHOOP monitor-tile grammar (2026-08-05): monitors are named
+                // in caps letterspaced micro-labels, values carry the weight.
+                Label {
+                    Text("STRESS MONITOR")
+                        .font(.caption.weight(.bold))
+                        .tracking(1.2)
+                } icon: {
+                    Image(systemName: "bolt.heart.fill")
+                        .font(.caption.weight(.bold))
+                }
+                .foregroundStyle(Metrics.electricStress)
+                Spacer()
+                // Live heart rate beside the stress band (user-directed:
+                // Activity's top card is the heart/stress monitor). Shown only
+                // while a contact-backed reading is fresh — no cached bpm.
+                if let heart = stressMonitorStore.liveHeartRate, heart.isFresh() {
+                    Label("\(heart.bpm)", systemImage: "heart.fill")
+                        .font(.subheadline.weight(.bold).monospacedDigit())
+                        .foregroundStyle(.red)
+                        .labelStyle(.titleAndIcon)
+                        .imageScale(.small)
+                        .contentTransition(.numericText())
+                        .accessibilityLabel("Heart rate \(heart.bpm) beats per minute")
+                }
+                Text(presentation.value)
+                    .font(.subheadline.weight(.bold).monospacedDigit())
+                    .contentTransition(.numericText())
+                    .foregroundStyle(stressMonitorStore.state.level?.tint ?? .secondary)
+            }
+
+            // Only measured readings earn a graph. Leaving an empty plot with
+            // Calm/Low/Med/High labels made the current device state look like
+            // data had been omitted rather than honestly not collected yet.
+            let stressLineGradient = LinearGradient(
+                colors: [Metrics.electricStrain, Metrics.electricGreen, Metrics.electricStress],
+                startPoint: .bottom, endPoint: .top)
+            let stressAreaFade = LinearGradient(
+                colors: [Color.primary.opacity(0.07), Color.primary.opacity(0.01)],
+                startPoint: .top, endPoint: .bottom)
+            let stressPointColor: (Double) -> Color = { score in
+                switch score {
+                case ..<1.0: return Metrics.electricStrain
+                case ..<2.0: return Metrics.electricGreen
+                default: return Metrics.electricStress
+                }
+            }
+            if points.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(Metrics.electricStress)
+                    Text("Collecting stress")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Keep the strap on for steady wear; your 0–3 timeline will appear here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, minHeight: 112)
+                .padding(.horizontal, 20)
+                .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
+            Chart {
+                ForEach(points) { point in
+                    AreaMark(x: .value("Time", point.reading.date),
+                             y: .value("Stress", point.reading.score),
+                             series: .value("Segment", point.segment))
+                        .interpolationMethod(.catmullRom)
+                        .foregroundStyle(stressAreaFade)
+                    LineMark(x: .value("Time", point.reading.date),
+                             y: .value("Stress", point.reading.score),
+                             series: .value("Segment", point.segment))
+                        .interpolationMethod(.catmullRom)
+                        .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                        .foregroundStyle(stressLineGradient)
+                }
+                // A lone/sparse reading still reads as a graph.
+                if let latest = points.last {
+                    PointMark(x: .value("Time", latest.reading.date),
+                              y: .value("Stress", latest.reading.score))
+                        .symbolSize(56)
+                        .foregroundStyle(stressPointColor(Double(latest.reading.score)))
+                }
+            }
+            .chartYScale(domain: 0...3)
+            .chartYAxis {
+                AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
+                    AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
+                    AxisValueLabel {
+                        if let raw = value.as(Int.self) {
+                            Text(["Calm", "Low", "Med", "High"][max(0, min(3, raw))])
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                    AxisValueLabel(format: .dateTime.hour())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(height: 112)
+            .clipped()
+            }
+
+            Text(points.isEmpty
+                 ? "Past 24 hours · no readings yet."
+                 : "Past 24 hours · observed readings only; blanks are collection gaps.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .atriaInsetCard(tint: Metrics.electricStress)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Stress monitor. \(presentation.value). \(presentation.detail)")
+    }
+
     /// The navigation title already says Activity. Keep day navigation and Add
     /// in one compact control row instead of stacking a duplicate section title
     /// above a second date row.
@@ -626,8 +968,10 @@ struct AtriaActivityMonitorTab: View {
         let calendar = Calendar.current
         return HStack(spacing: 4) {
             Button {
-                if let previous = calendar.date(byAdding: .day, value: -1, to: timelineDay) {
+                let base = currentDisplayWindow.labelDay
+                if let previous = calendar.date(byAdding: .day, value: -1, to: base) {
                     timelineDay = previous
+                    viewingCurrentPhysiologicalDay = false
                 }
             } label: {
                 Image(systemName: "chevron.left")
@@ -638,17 +982,40 @@ struct AtriaActivityMonitorTab: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Previous day")
 
-            Text(calendar.isDateInToday(timelineDay)
-                 ? "Today"
-                 : timelineDay.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
-                .font(.subheadline.weight(.bold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .accessibilityLabel(timelineDay.formatted(date: .complete, time: .omitted))
+            // WHOOP day-capsule grammar (2026-08-05 design-language pass):
+            // caps letterspaced label in a capsule, chevrons outside it.
+            // Tapping the capsule of a PAST day snaps back to today — the
+            // capsule is inert (plain label) when already on today.
+            Button {
+                timelineDay = currentDisplayWindow.labelDay
+                viewingCurrentPhysiologicalDay = true
+            } label: {
+                Text(viewingCurrentPhysiologicalDay
+                     ? "Today"
+                     : timelineDay.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
+                    .textCase(.uppercase)
+                    .font(.footnote.weight(.bold))
+                    .tracking(1.0)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 36)
+                    .background(.quaternary.opacity(0.5), in: Capsule(style: .continuous))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(viewingCurrentPhysiologicalDay)
+            .accessibilityLabel(timelineDay.formatted(date: .complete, time: .omitted))
+            .accessibilityHint(viewingCurrentPhysiologicalDay ? "" : "Returns to today")
 
             Button {
                 if let next = calendar.date(byAdding: .day, value: 1, to: timelineDay) {
-                    timelineDay = next
+                    if next >= currentDisplayWindow.labelDay {
+                        timelineDay = currentDisplayWindow.labelDay
+                        viewingCurrentPhysiologicalDay = true
+                    } else {
+                        timelineDay = next
+                    }
                 }
             } label: {
                 Image(systemName: "chevron.right")
@@ -678,22 +1045,39 @@ struct AtriaActivityMonitorTab: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// An empty day is the most common state on this tab, and it used to be a
+    /// thin pill reading "No saved or detected activity" above roughly a
+    /// thousand points of blank screen — a bare negative that never said what
+    /// the tab is for or what would eventually fill it. The one sentence that
+    /// did explain it was the VoiceOver hint, so sighted users were the ones
+    /// left without the explanation. Same statement of fact, now with the
+    /// answer to "then what goes here?" visible.
     private var activityEmptyState: some View {
-        HStack(spacing: 10) {
+        VStack(spacing: 10) {
             Image(systemName: "calendar.badge.plus")
-                .font(.callout.weight(.bold))
+                .font(.title.weight(.semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 34, height: 34)
+                .frame(width: 56, height: 56)
                 .background(.secondary.opacity(0.10), in: Circle())
+                .padding(.bottom, 2)
+
             Text("No saved or detected activity")
-                .font(.subheadline.weight(.semibold))
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.center)
+
+            Text("Workouts and sleep land here on their own once they are detected or confirmed. Use Add to log something yourself.")
+                .font(.subheadline)
                 .foregroundStyle(.secondary)
-            Spacer(minLength: 8)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: 320)
         }
-        .padding(10)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 32)
+        .padding(.horizontal, 16)
         .atriaCard(emphasis: .soft)
         .accessibilityElement(children: .combine)
-        .accessibilityHint("Use Add in the day toolbar to log an activity.")
     }
 
     private func refreshDaySections(for key: AtriaActivitySectionsRequestKey,
@@ -703,11 +1087,14 @@ struct AtriaActivityMonitorTab: View {
         let source = DaySectionsSourceSnapshot(sleepSnapshot: activity.sleepHistorySnapshot,
                                                workouts: activity.confirmedWorkouts,
                                                pendingSleepReview: activity.pendingSleepReview,
+                                               napReviewCandidates: activity.napReviewCandidates,
                                                workoutReview: activity.workoutReviewCandidate,
                                                detections: activity.activityDetections,
                                                rollups: activity.dailyRollupHistory,
                                                selectedDayStart: key.selectedDayStart,
-                                               calendar: calendar)
+                                               interval: DateInterval(start: key.intervalStart, end: key.intervalEnd),
+                                               calendar: calendar,
+                                               isCurrentPhysiologicalDay: key.isCurrentPhysiologicalDay)
         let preparation = Task.detached(priority: .utility) {
             Self.makeDaySections(from: source)
         }
@@ -727,7 +1114,9 @@ struct AtriaActivityMonitorTab: View {
             rollupsRevision: currentActivity.dailyRollupHistoryRevision,
             detectionsRevision: currentActivity.historySnapshotRevision,
             reviewFingerprint: currentActivity.reviewFingerprint,
-            selectedDay: timelineDay,
+            selectedDay: currentDisplayWindow.labelDay,
+            interval: currentDisplayWindow.interval,
+            isCurrentPhysiologicalDay: currentDisplayWindow.isCurrentPhysiologicalDay,
             calendar: .current
         )
         guard currentKey == request.key else {
@@ -743,28 +1132,27 @@ struct AtriaActivityMonitorTab: View {
         let sleeps = AtriaActivitySelectedDaySleeps.overlapping(
             snapshot: source.sleepSnapshot,
             pendingReview: source.pendingSleepReview,
-            selectedDay: source.selectedDayStart,
-            calendar: source.calendar
+            napReviewCandidates: source.napReviewCandidates,
+            interval: source.interval,
+            calendar: source.calendar,
+            includeStartBoundarySleep: source.isCurrentPhysiologicalDay
         )
             .map(Entry.sleep)
         let selectedWorkouts = AtriaActivitySelectedDayWorkouts.overlapping(
             source.workouts,
-            selectedDay: source.selectedDayStart,
-            calendar: source.calendar
+            interval: source.interval
         )
         let workouts = selectedWorkouts.map(Entry.workout)
         let workoutReview = AtriaActivityReviewProjection.visibleWorkoutReview(
             source.workoutReview,
             confirmedWorkouts: source.workouts,
-            selectedDay: source.selectedDayStart,
-            calendar: source.calendar
+            interval: source.interval
         ).map(Entry.workoutReview)
         let detections = AtriaActivityReviewProjection.visibleDetections(
             source.detections,
             workoutReview: source.workoutReview,
             confirmedWorkouts: source.workouts,
-            selectedDay: source.selectedDayStart,
-            calendar: source.calendar
+            interval: source.interval
         ).map(Entry.detection)
         let entries = (sleeps + workouts + [workoutReview].compactMap { $0 } + detections)
             .sorted { $0.date > $1.date }
@@ -812,13 +1200,15 @@ struct AtriaActivityMonitorTab: View {
 
     private var timelineSpans: [TimelineSpan] {
         let activity = activityStore.state
+        let window = currentDisplayWindow
         return activityMemo.timelineSpans(sleepRevision: activity.sleepHistorySnapshotRevision,
                                           workoutsRevision: activity.confirmedWorkoutsRevision,
                                           detectionsRevision: activity.historySnapshotRevision,
                                           reviewFingerprint: activity.reviewFingerprint,
-                                          timelineDay: timelineDay,
+                                          displayWindow: window,
                                           sleepSnapshot: activity.sleepHistorySnapshot,
                                           pendingSleepReview: activity.pendingSleepReview,
+                                          napReviewCandidates: activity.napReviewCandidates,
                                           workouts: activity.confirmedWorkouts,
                                           workoutReview: activity.workoutReviewCandidate,
                                           detections: activity.activityDetections,
@@ -826,15 +1216,26 @@ struct AtriaActivityMonitorTab: View {
     }
 
     private var canGoToNextDay: Bool {
-        Calendar.current.startOfDay(for: timelineDay) < Calendar.current.startOfDay(for: Date())
+        !viewingCurrentPhysiologicalDay
+    }
+
+    private var currentDisplayWindow: AtriaActivityDisplayWindow {
+        let calendar = Calendar.current
+        return viewingCurrentPhysiologicalDay
+            ? AtriaActivityDisplayWindow.current(now: Date(),
+                                                 sleepHistory: activityStore.state.sleepHistorySnapshot,
+                                                 calendar: calendar)
+            : AtriaActivityDisplayWindow.historical(day: timelineDay, calendar: calendar)
     }
 
     private var dayTimelineCard: some View {
         let calendar = Calendar.current
-        let dayStart = calendar.startOfDay(for: timelineDay)
-        let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart
+        let window = currentDisplayWindow
+        let dayStart = window.interval.start
+        let dayEnd = window.interval.end
         let spans = timelineSpans
-        let axisTicks = AtriaActivityTimelineAxis.ticks(selectedDay: timelineDay,
+        let axisTicks = AtriaActivityTimelineAxis.ticks(interval: window.interval,
+                                                        isCurrent: window.isCurrentPhysiologicalDay,
                                                         calendar: calendar)
 
         return VStack(alignment: .leading, spacing: 0) {
@@ -848,7 +1249,12 @@ struct AtriaActivityMonitorTab: View {
                 .chartXAxis {
                     AxisMarks(values: axisTicks.map(\.date)) { value in
                         AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
-                        AxisValueLabel(centered: true) {
+                        // Not `centered:` — that offsets each label half an
+                        // interval right, honest only for BAND axes; on this
+                        // continuous time axis it floated hour labels ~3.5h
+                        // from their gridlines and pushed "Now" off the edge
+                        // (2026-08-04 WHOOP-alignment review, rank 2).
+                        AxisValueLabel {
                             if let date = value.as(Date.self),
                                let tick = AtriaActivityTimelineAxis.tick(at: date, in: axisTicks) {
                                 Text(tick.label)
@@ -859,6 +1265,16 @@ struct AtriaActivityMonitorTab: View {
                     }
                 }
                 .frame(height: 44)
+                // Same pattern as the heart-rate timeline's empty state: say
+                // the strip is empty instead of presenting a bare axis that
+                // reads as broken (sighted users previously got only the
+                // VoiceOver label).
+                .chartOverlay { _ in
+                    Text("Nothing recorded yet this day")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
                 .accessibilityLabel("No recorded activity for this day")
             } else {
                 Chart(spans) { span in
@@ -883,12 +1299,23 @@ struct AtriaActivityMonitorTab: View {
                         }
                 }
                 .chartXScale(domain: dayStart...dayEnd)
+                // Four hours makes adjacent activities readable instead of
+                // compressing a whole physiological day into one tiny strip.
+                // The remaining day stays available via native horizontal
+                // scrolling; full-screen inspection also supports pinch zoom.
+                .chartScrollableAxes(.horizontal)
+                .chartXVisibleDomain(length: 4 * 60 * 60)
                 .chartYAxis(.hidden)
                 .chartXAxis {
                     AxisMarks(values: axisTicks.map(\.date)) { value in
                         AxisGridLine()
                             .foregroundStyle(.secondary.opacity(0.12))
-                        AxisValueLabel(centered: true) {
+                        // Not `centered:` — that offsets each label half an
+                        // interval right, honest only for BAND axes; on this
+                        // continuous time axis it floated hour labels ~3.5h
+                        // from their gridlines and pushed "Now" off the edge
+                        // (2026-08-04 WHOOP-alignment review, rank 2).
+                        AxisValueLabel {
                             if let date = value.as(Date.self),
                                let tick = AtriaActivityTimelineAxis.tick(at: date, in: axisTicks) {
                                 Text(tick.label)
@@ -909,6 +1336,21 @@ struct AtriaActivityMonitorTab: View {
         }
         .padding(8)
         .atriaCard(emphasis: .soft)
+        .atriaInspectableGraph(spans.isEmpty ? nil : AtriaInspectableGraph(
+            title: "Activity timeline",
+            subtitle: window.isCurrentPhysiologicalDay
+                ? "Since waking"
+                : window.labelDay.formatted(date: .long, time: .omitted),
+            content: .intervals(spans.map { span in
+                .init(id: span.id,
+                      lane: span.lane,
+                      label: span.label,
+                      start: span.start,
+                      end: span.end,
+                      tint: span.tint)
+            }, domain: dayStart...dayEnd),
+            preferredVisibleDuration: 4 * 60 * 60
+        ))
     }
 
     private var addActivityMenu: some View {
@@ -945,7 +1387,11 @@ struct AtriaActivityMonitorTab: View {
     private func entryRow(_ entry: Entry) -> some View {
         switch entry {
         case .sleep(let night):
-            Button { onEditSleep(night) } label: { sleepRow(night) }
+            // Review-first (user feedback 2026-08-06: tapping a sleep opened
+            // the bare time editor with no visualization). The review sheet
+            // hosts the shared hypnogram + stage breakdown; editing is a
+            // button inside it.
+            Button { sleepDetail = night } label: { sleepRow(night) }
                 .buttonStyle(.plain)
         case .workout(let workout):
             Button { workoutDetail = workout } label: {
@@ -1051,6 +1497,10 @@ struct AtriaActivityMonitorTab: View {
         let type = AtriaWorkoutActivityType.resolved(activityType: workout.activityType,
                                                      subtype: workout.activitySubtype,
                                                      label: workout.label)
+        // Category-driven for the 77-type catalog (2026-08-05): specific
+        // overrides stay for the original set; everything else tints by its
+        // catalog category so new types never fall through to a compile
+        // error or a mismatched color.
         switch type {
         case .walking, .hiking: return .mint
         case .running, .hiit, .jumpRope: return .orange
@@ -1061,22 +1511,32 @@ struct AtriaActivityMonitorTab: View {
              .badminton, .volleyball, .golf, .martialArts: return .pink
         case .cardio, .elliptical, .stairClimber: return .red
         case .other: return .secondary
+        default:
+            switch type.category {
+            case .training: return Metrics.electricStrain
+            case .cardio: return .red
+            case .sports: return .pink
+            case .outdoor: return .mint
+            case .winter: return .cyan
+            case .combat: return Metrics.electricStrain
+            case .mindBody: return .indigo
+            case .recovery: return .teal
+            case .daily: return .secondary
+            }
         }
     }
 
     /// Strain magnitude is not a proxy for whether HR exists. A short or gentle
     /// workout can legitimately have strain below 0.1 while still containing
     /// hundreds of samples. Only the recorded sample metadata may declare the
-    /// signal absent; sparse windows keep their explicit partial-HR qualifier.
+    /// signal absent; sparse windows keep their explicit incomplete qualifier.
     static func strainBadge(for workout: UserConfirmedWorkout) -> String {
         guard workout.samples > 0, workout.avgHR > 0 else { return "No HR data" }
         if AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout) {
             return AtriaWorkoutMetricPresentation.compactStatus(workout)
         }
         guard let strain = workout.strain else { return "\(workout.avgHR) bpm avg" }
-        return workout.streamCoveragePercent < 75
-            ? "Strain \(String(format: "%.1f", strain)) \u{00b7} partial HR"
-            : "Strain \(String(format: "%.1f", strain))"
+        return "Strain \(String(format: "%.1f", strain))"
     }
 
     private func activityRow(icon: String,
@@ -1182,7 +1642,8 @@ struct AtriaActivityMonitorTab: View {
 
         private struct TimelineKey: Equatable {
             let source: SourceKey
-            let selectedDayStart: Date
+            let interval: DateInterval
+            let isCurrent: Bool
         }
 
         private var timelineKey: TimelineKey?
@@ -1192,9 +1653,10 @@ struct AtriaActivityMonitorTab: View {
                            workoutsRevision: Int,
                            detectionsRevision: Int,
                            reviewFingerprint: String,
-                           timelineDay: Date,
+                           displayWindow: AtriaActivityDisplayWindow,
                            sleepSnapshot: SleepHistorySnapshot,
                            pendingSleepReview: SleepHistorySnapshot.Night?,
+                           napReviewCandidates: [SleepHistorySnapshot.Night],
                            workouts: [UserConfirmedWorkout],
                            workoutReview: WorkoutReviewCandidate?,
                            detections: [ActivityDetection],
@@ -1204,22 +1666,20 @@ struct AtriaActivityMonitorTab: View {
                                    detectionsRevision: detectionsRevision,
                                    reviewFingerprint: reviewFingerprint,
                                    calendar: calendar)
-            let dayStart = calendar.startOfDay(for: timelineDay)
-            let key = TimelineKey(source: source, selectedDayStart: dayStart)
+            let dayStart = displayWindow.interval.start
+            let dayEnd = displayWindow.interval.end
+            let key = TimelineKey(source: source,
+                                  interval: displayWindow.interval,
+                                  isCurrent: displayWindow.isCurrentPhysiologicalDay)
             if timelineKey == key {
                 return timelineValue
             }
-            guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else {
-                timelineKey = key
-                timelineValue = []
-                return []
-            }
-
             var spans: [TimelineSpan] = []
             let visibleSleeps = AtriaActivitySelectedDaySleeps.overlapping(
                 snapshot: sleepSnapshot,
                 pendingReview: pendingSleepReview,
-                selectedDay: timelineDay,
+                napReviewCandidates: napReviewCandidates,
+                interval: displayWindow.interval,
                 calendar: calendar
             ).compactMap { night -> (SleepHistorySnapshot.Night, Date, Date)? in
                 guard let start = night.start, let end = night.end,
@@ -1241,8 +1701,7 @@ struct AtriaActivityMonitorTab: View {
             }
             let workoutSpans = AtriaActivityTimelineBuilder.workoutSpans(
                 workouts: workouts,
-                selectedDay: timelineDay,
-                calendar: calendar
+                interval: displayWindow.interval
             )
             let workoutByID = Dictionary(uniqueKeysWithValues: workouts.map { ("workout-\($0.id)", $0) })
             for workoutSpan in workoutSpans {
@@ -1258,15 +1717,13 @@ struct AtriaActivityMonitorTab: View {
             let visibleReview = AtriaActivityReviewProjection.visibleWorkoutReview(
                 workoutReview,
                 confirmedWorkouts: workouts,
-                selectedDay: timelineDay,
-                calendar: calendar
+                interval: displayWindow.interval
             )
             let visibleDetections = AtriaActivityReviewProjection.visibleDetections(
                 detections,
                 workoutReview: workoutReview,
                 confirmedWorkouts: workouts,
-                selectedDay: timelineDay,
-                calendar: calendar
+                interval: displayWindow.interval
             )
             var reviewIntervals: [(id: String, start: Date, end: Date, label: String, icon: String)] = []
             if let candidate = visibleReview {
@@ -1353,6 +1810,10 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 
     let store: SessionStore
     let workout: UserConfirmedWorkout
+    /// Stress readings overlapping the workout window (empty when the
+    /// in-memory stress history no longer covers it — older workouts show
+    /// an honest empty state instead of a fabricated series).
+    let stressReadings: [AtriaStressDetailReading]
     private let recoveryEffect: AtriaActivityRecoveryEffect
     @Environment(\.dismiss) private var dismiss
 
@@ -1376,9 +1837,12 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     /// fabricated data — just labels for what the effort was).
     static let activityTypes = AtriaWorkoutActivityType.allCases.map(\.rawValue)
 
-    init(store: SessionStore, workout: UserConfirmedWorkout) {
+    init(store: SessionStore,
+         workout: UserConfirmedWorkout,
+         stressReadings: [AtriaStressDetailReading] = []) {
         self.store = store
         self.workout = workout
+        self.stressReadings = stressReadings
         recoveryEffect = AtriaActivityRecoveryEffect.make(workout: workout,
                                                           rollups: store.dailyRollupHistory,
                                                           calendar: .current)
@@ -1397,6 +1861,14 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     /// store publish while the sheet is open was a hang, and a completed workout's
     /// overlapping samples never change (2026-07-08).
     @State private var tracePoints: [AtriaHomeModel.HeartRateChartPoint] = []
+    /// WHOOP-style in-activity chart switcher (2026-08-05 user directive):
+    /// one card, segmented Heart rate / Stress.
+    private enum TraceChartMode: String, CaseIterable, Identifiable {
+        case heartRate = "Heart rate"
+        case stress = "Stress"
+        var id: String { rawValue }
+    }
+    @State private var traceChartMode: TraceChartMode = .heartRate
     @State private var isPreparingTrace = false
     @State private var hasPreparedTrace = false
 
@@ -1454,20 +1926,52 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 .controlSize(.small)
                 .frame(maxWidth: .infinity, minHeight: 36)
                 .accessibilityLabel("Preparing heart-rate trace")
-        } else if points.count >= 30 {
+        } else if points.count >= 30 || !stressReadings.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Heart-rate trace")
-                    .font(.subheadline.weight(.semibold))
-                AtriaHeartRateAxisChart(points: points,
-                                        yDomain: AtriaHeartRateChartSeries.yDomain(for: points),
-                                        selectedTime: .constant(nil))
-                    .frame(height: 150)
-                    .clipped()
+                // Native-clean (design 2026-08-05): plain-text selector replaces
+                // the boxed segmented control, matching the app-wide style.
+                AtriaTextSelector(items: TraceChartMode.allCases,
+                                  title: { $0.rawValue },
+                                  selection: $traceChartMode)
+                switch traceChartMode {
+                case .heartRate:
+                    if points.count >= 30 {
+                        AtriaHeartRateAxisChart(points: points,
+                                                yDomain: AtriaHeartRateChartSeries.yDomain(for: points),
+                                                selectedTime: .constant(nil))
+                            .frame(height: 150)
+                            .clipped()
+                            // Full-bleed plot (2026-08-05 width audit).
+                            .padding(.horizontal, -12)
+                    } else {
+                        Text("No heart-rate samples recorded during this window.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 120)
+                    }
+                case .stress:
+                    if stressReadings.count >= 2 {
+                        AtriaWorkoutStressTraceChart(readings: stressReadings)
+                            .frame(height: 150)
+                            // Full-bleed plot (2026-08-05 width audit).
+                            .padding(.horizontal, -12)
+                    } else {
+                        // The stress monitor scores from recent live wear;
+                        // its history is a bounded recent window. Say so
+                        // instead of drawing nothing silently.
+                        Text("No stress readings for this window — stress history covers the recent past only.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 120)
+                    }
+                }
             }
             .padding(12)
-            .atriaInsetCard(tint: .red)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Heart-rate trace, \(points.count) samples during this workout.")
+            .atriaInsetCard(tint: traceChartMode == .stress ? Metrics.electricStress : .red)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(traceChartMode == .heartRate
+                ? "Heart-rate trace, \(points.count) samples during this workout."
+                : "Stress trace, \(stressReadings.count) readings during this workout.")
         }
     }
 
@@ -1638,26 +2142,29 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                     }
 
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                        if let strain = workout.strain {
+                        if workout.strain != nil {
                             statTile("Strain",
-                                     AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout)
-                                         ? "Incomplete" : String(format: "%.1f", strain),
+                                     AtriaWorkoutMetricPresentation.strainText(workout),
                                      tint: Metrics.electricStrain)
                         }
                         statTile("Duration", durationText(workout.duration), tint: Metrics.electricStrain)
-                        if let steps = completedWorkoutStepsText {
-                            statTile("Steps", steps, tint: .mint)
+                        if let steps = completedWorkoutStepsPresentation {
+                            statTile("Steps",
+                                     steps.valueText,
+                                     detail: steps.detailText,
+                                     tint: .mint)
                         }
-                        if workout.samples > 0 {
+                        if AtriaWorkoutMetricPresentation.hasHeartRateData(workout) {
                             statTile("Avg HR",
                                      AtriaWorkoutMetricPresentation.averageHeartRateText(workout),
                                      tint: .pink)
-                            statTile("Peak HR", "\(workout.peakHR)", tint: .red)
+                            statTile("Peak HR",
+                                     AtriaWorkoutMetricPresentation.peakHeartRateText(workout),
+                                     tint: .red)
                         }
-                        if let calories = workout.activeEnergyKilocalories {
+                        if workout.activeEnergyKilocalories != nil {
                             statTile("Calories",
-                                     AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout)
-                                         ? "Incomplete" : "\(Int(calories.rounded()))",
+                                     AtriaWorkoutMetricPresentation.energyText(workout),
                                      tint: .orange)
                         }
                     }
@@ -1850,13 +2357,6 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     private func saveAllAsync() async {
         defer { isRouteTransactionInFlight = false }
         saveError = nil
-        let pendingRecovery = await AtriaWorkoutRouteTransactionRecovery.recover(
-            workouts: store.confirmedWorkouts
-        )
-        guard pendingRecovery != .failed, pendingRecovery != .deferred else {
-            saveError = "Atria is still recovering an earlier route update. Close and reopen Activity, then try Save again."
-            return
-        }
         let requestedType = AtriaWorkoutActivityType.resolved(
             activityType: activityType,
             subtype: activitySubtype,
@@ -1867,6 +2367,32 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             subtype: workout.activitySubtype,
             label: workout.label
         )
+        let routeIdentityChanged = requestedType != originalType
+            || startTime != workout.start
+            || endTime != workout.end
+        if !routeIdentityChanged {
+            switch await store.editConfirmedWorkout(id: workout.id,
+                                              label: label,
+                                              activityType: activityType,
+                                              activitySubtype: activitySubtype,
+                                              start: startTime,
+                                              end: endTime,
+                                              rest: store.baseline.restingInt ?? 60,
+                                              maxHR: store.profile.maxHR) {
+            case .success:
+                dismiss()
+            case .failure(let error):
+                saveError = error.userMessage
+            }
+            return
+        }
+        let pendingRecovery = await AtriaWorkoutRouteTransactionRecovery.recover(
+            workouts: store.confirmedWorkouts
+        )
+        guard pendingRecovery != .failed, pendingRecovery != .deferred else {
+            saveError = "Atria is still recovering an earlier route update. Close and reopen Activity, then try Save again."
+            return
+        }
         let expectedWorkoutID = expectedEditedWorkoutID(start: startTime, end: endTime)
         let originalState = AtriaWorkoutRouteStore.CanonicalWorkoutState(
             id: workout.id,
@@ -1884,7 +2410,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             saveError = "Atria couldn’t prepare this route update safely. Nothing was changed; try Save again."
             return
         }
-        let result = store.editConfirmedWorkout(id: workout.id,
+        let result = await store.editConfirmedWorkout(id: workout.id,
                                                 label: label,
                                                 activityType: activityType,
                                                 activitySubtype: activitySubtype,
@@ -1921,7 +2447,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 // workout list. Restore the original metadata before reporting
                 // failure so Save cannot silently leave the visible workout at
                 // a new ID while its route remains attached to the old one.
-                let rollback = store.editConfirmedWorkout(
+                let rollback = await store.editConfirmedWorkout(
                     id: savedWorkout.id,
                     label: workout.label,
                     activityType: workout.activityType ?? "",
@@ -1995,7 +2521,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             saveError = "Atria couldn’t prepare this deletion safely. Nothing was deleted; try again."
             return
         }
-        guard store.deleteConfirmedWorkout(id: workout.id) else {
+        guard await store.deleteConfirmedWorkout(id: workout.id) else {
             _ = await AtriaWorkoutRouteStore.clearPendingTransactionAsync()
             saveError = "Atria couldn’t remove this workout. Nothing was deleted; try again."
             return
@@ -2090,12 +2616,17 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     }
 
     private var completedWorkoutStepsText: String? {
+        guard completedWorkoutStepsPresentation?.isAvailable == true else { return nil }
+        return completedWorkoutStepsPresentation?.valueText
+    }
+
+    private var completedWorkoutStepsPresentation: AtriaWorkoutSharePresentation.CompletedSteps? {
         let resolvedActivity = AtriaWorkoutActivityType.resolved(
             activityType: workout.activityType,
             subtype: workout.activitySubtype,
             label: workout.label
         )
-        return AtriaWorkoutSharePresentation.completedStepsText(
+        return AtriaWorkoutSharePresentation.completedStepsPresentation(
             count: workout.workoutSteps,
             isEstimated: workout.workoutStepsAreEstimated,
             capturedAt: workout.workoutStepsCapturedAt,
@@ -2104,7 +2635,10 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         )
     }
 
-    private func statTile(_ title: String, _ value: String, tint: Color) -> some View {
+    private func statTile(_ title: String,
+                          _ value: String,
+                          detail: String? = nil,
+                          tint: Color) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title.uppercased())
                 .font(.caption2.weight(.bold))
@@ -2112,6 +2646,12 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             Text(value)
                 .font(.title2.weight(.black).monospacedDigit())
                 .foregroundStyle(tint)
+            if let detail {
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
@@ -2241,16 +2781,18 @@ struct AtriaActivityRecoveryEffect: Equatable {
 /// be saved, because Atria never invents heart rate or strain.
 struct AtriaAddWorkoutSheet: View {
     let store: SessionStore
+    private let reviewCandidateID: String?
     private let settlingCandidateWindow: (start: Date, end: Date)?
     private let onDismissCandidate: (() -> Bool)?
     @Environment(\.dismiss) private var dismiss
 
-    @State private var activityLabel = AtriaWorkoutActivityType.walking.rawValue
-    @State private var activityType = AtriaWorkoutActivityType.walking.rawValue
+    @State private var activityLabel: String
+    @State private var activityType: String
     @State private var activitySubtype: String?
     @State private var startTime: Date
     @State private var endTime: Date
     @State private var failed = false
+    @State private var isSaving = false
     @State private var showDismissConfirmation = false
     @State private var dismissFailed = false
 
@@ -2272,12 +2814,21 @@ struct AtriaAddWorkoutSheet: View {
     init(store: SessionStore,
          initialStart: Date? = nil,
          initialEnd: Date? = nil,
+         reviewCandidateID: String? = nil,
          settlingCandidateWindow: (start: Date, end: Date)? = nil,
          onDismissCandidate: (() -> Bool)? = nil) {
         self.store = store
+        self.reviewCandidateID = reviewCandidateID
         self.settlingCandidateWindow = settlingCandidateWindow
         self.onDismissCandidate = onDismissCandidate
         let now = Date()
+        let isDetectorReview = reviewCandidateID != nil || settlingCandidateWindow != nil
+        _activityLabel = State(initialValue: isDetectorReview
+            ? ""
+            : AtriaWorkoutActivityType.walking.rawValue)
+        _activityType = State(initialValue: isDetectorReview
+            ? ""
+            : AtriaWorkoutActivityType.walking.rawValue)
         _endTime = State(initialValue: initialEnd ?? now)
         _startTime = State(initialValue: initialStart ?? (initialEnd ?? now).addingTimeInterval(-45 * 60))
     }
@@ -2318,7 +2869,7 @@ struct AtriaAddWorkoutSheet: View {
                                 Image(systemName: AtriaWorkoutActivityType(rawValue: activityType)?.icon
                                       ?? AtriaWorkoutActivityType.other.icon)
                                     .foregroundStyle(.secondary)
-                                Text(activityType)
+                                Text(activityType.isEmpty ? "Choose" : activityType)
                                     .foregroundStyle(.secondary)
                                 Image(systemName: "chevron.up.chevron.down")
                                     .font(.caption.weight(.bold))
@@ -2373,6 +2924,13 @@ struct AtriaAddWorkoutSheet: View {
                             DatePicker("End", selection: $endTime, in: startTime..., displayedComponents: [.date, .hourAndMinute])
                         }
                         .font(.subheadline.weight(.semibold))
+
+                        if endTime > startTime {
+                            AtriaEventWindowTimeline(title: "Workout window",
+                                                     start: startTime,
+                                                     end: endTime,
+                                                     tint: Metrics.electricStrain)
+                        }
                     }
                     .padding(14)
                     .atriaCard(emphasis: .soft)
@@ -2385,14 +2943,22 @@ struct AtriaAddWorkoutSheet: View {
                     }
 
                     Button(action: add) {
-                        Text(commitTitle)
-                            .font(.subheadline.weight(.bold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 4)
+                        HStack(spacing: 8) {
+                            if isSaving {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                            Text(isSaving ? "Saving…" : commitTitle)
+                                .font(.subheadline.weight(.bold))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
                     }
                     .buttonStyle(.glassProminent)
                     .tint(Metrics.electricStrain)
-                    .disabled(endTime <= startTime
+                    .disabled(isSaving
+                              || endTime <= startTime
+                              || activityType.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || activityLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .padding(16)
@@ -2402,6 +2968,7 @@ struct AtriaAddWorkoutSheet: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Cancel") { dismiss() }
+                        .disabled(isSaving)
                 }
                 if onDismissCandidate != nil {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -2413,6 +2980,7 @@ struct AtriaAddWorkoutSheet: View {
                             Image(systemName: "ellipsis")
                         }
                         .accessibilityLabel("Suggestion actions")
+                        .disabled(isSaving)
                     }
                 }
             }
@@ -2436,31 +3004,257 @@ struct AtriaAddWorkoutSheet: View {
             } message: {
                 Text("The suggestion is still available. Please try again.")
             }
+            .interactiveDismissDisabled(isSaving)
         }
     }
 
     private func add() {
-        guard endTime > startTime else { return }
+        guard !isSaving, endTime > startTime else { return }
+        let requestedStart = startTime
+        let requestedEnd = endTime
+        let requestedLabel = activityLabel
+        let requestedType = activityType
+        let requestedSubtype = activitySubtype
+        let candidateID = reviewCandidateID
+        let candidateWindow = settlingCandidateWindow
         let rest = store.baseline.restingInt ?? 60
-        let result = store.confirmWorkoutWindowForUI(start: startTime,
-                                                     end: endTime,
-                                                     rest: rest,
-                                                     maxHR: store.profile.maxHR,
-                                                     source: "manual_activity_add",
-                                                     preserveUserDeclaredActivityWithoutHeartRate: true,
-                                                     activityLabel: activityLabel,
-                                                     activityType: activityType,
-                                                     activitySubtype: activitySubtype,
-                                                     settlingCandidateWindow: settlingCandidateWindow)
-        if result != nil {
-            // Candidate settlement is part of the canonical store operation
-            // above. Keep `onDismissCandidate` exclusively for the explicit
-            // destructive action so Save can never become a second UI-owned
-            // persistence sequence. A plain manual Add passes no candidate
-            // window and retains its existing re-add semantics.
-            dismiss()
-        } else {
-            failed = true
+        let maximumHeartRate = store.profile.maxHR
+        failed = false
+        isSaving = true
+        Task { @MainActor in
+            let result = await store.confirmWorkoutWindowForUIAsync(
+                start: requestedStart,
+                end: requestedEnd,
+                rest: rest,
+                maxHR: maximumHeartRate,
+                source: "manual_activity_add",
+                preserveUserDeclaredActivityWithoutHeartRate: true,
+                activityLabel: requestedLabel,
+                activityType: requestedType,
+                activitySubtype: requestedSubtype,
+                reviewSource: candidateID == nil ? nil : "detected_activity_review",
+                reviewCandidateID: candidateID,
+                settlingCandidateWindow: candidateWindow
+            )
+            isSaving = false
+            if result != nil {
+                // Candidate settlement is part of the canonical store operation
+                // above. Keep `onDismissCandidate` exclusively for the explicit
+                // destructive action so Save can never become a second UI-owned
+                // persistence sequence. A plain manual Add passes no candidate
+                // window and retains its existing re-add semantics.
+                dismiss()
+            } else {
+                failed = true
+            }
         }
+    }
+}
+
+/// WHOOP-style in-activity stress trace (2026-08-05 user directive, screenshot
+/// reference): 0–3 scale, min/max annotations, line colored by height so the
+/// band reads directly off the chart. Renders only real monitor readings —
+/// gaps split the line via the shared segmenting rule.
+struct AtriaWorkoutStressTraceChart: View {
+    let readings: [AtriaStressDetailReading]
+
+    private var points: [AtriaStressTimelinePoint] {
+        AtriaStressTimelinePoint.segment(readings)
+    }
+
+    private var low: Double { readings.map(\.score).min() ?? 0 }
+    private var high: Double { readings.map(\.score).max() ?? 0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(String(format: "%.1f low", low))
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.blue)
+                Spacer()
+                Text(String(format: "high %.1f", high))
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.orange)
+            }
+            Chart(points) { point in
+                LineMark(x: .value("Time", point.reading.date),
+                         y: .value("Stress", point.reading.score),
+                         series: .value("Segment", point.segment))
+                    .interpolationMethod(.monotone)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                    // Height-mapped color: the gradient spans the fixed 0–3
+                    // axis, so a point's color IS its band — low blue, mid
+                    // green, high amber (the WHOOP reading of the same axis).
+                    .foregroundStyle(
+                        .linearGradient(colors: [.blue, .green, .orange],
+                                        startPoint: .bottom,
+                                        endPoint: .top)
+                    )
+            }
+            .chartYScale(domain: 0...3)
+            .chartYAxis {
+                AxisMarks(values: [0, 1, 2, 3]) { _ in
+                    AxisGridLine().foregroundStyle(.secondary.opacity(0.15))
+                    AxisValueLabel()
+                        .font(.caption2)
+                }
+            }
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                    AxisValueLabel(format: .dateTime.hour().minute())
+                        .font(.caption2)
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(String(format: "Stress during this workout ranged from %.1f to %.1f on a 0 to 3 scale.", low, high))
+    }
+}
+
+/// Review-first sleep sheet for the Activity list (2026-08-06 user feedback:
+/// tapping a sleep opened only the bare time editor). Hosts the SHARED
+/// hypnogram card — which renders its own honest needs-motion / building /
+/// manual states — plus a WHOOP-style stage breakdown and the night's
+/// measured vitals. Every row is evidence-gated: stages render only when
+/// display segments exist, efficiency uses the honesty-gated display value,
+/// and absent vitals show the canonical "--" token.
+struct AtriaSleepActivityReviewSheet: View {
+    let night: SleepHistorySnapshot.Night
+    let onEditTimes: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private var spanSeconds: TimeInterval {
+        guard let start = night.start, let end = night.end, end > start else {
+            return night.duration
+        }
+        return end.timeIntervalSince(start)
+    }
+
+    private var stageRows: [(stage: SleepStageKind, seconds: TimeInterval)] {
+        guard !night.displayStageSegments.isEmpty else { return [] }
+        return SleepStageKind.displayOrder.compactMap { stage in
+            let seconds = night.stageDuration(stage)
+                + (stage == .deep ? night.stageDuration(.sws) : 0)
+            guard seconds > 0 else { return nil }
+            return (stage, seconds)
+        }
+    }
+
+    private static func hoursMinutes(_ seconds: TimeInterval) -> String {
+        let minutes = Int((seconds / 60).rounded())
+        return minutes >= 60 ? "\(minutes / 60) h \(minutes % 60) m" : "\(minutes) m"
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    header
+                    AtriaSleepHypnogramCard(night: night)
+                    if !stageRows.isEmpty {
+                        stageBreakdown
+                    }
+                    nightVitals
+                    Button(action: onEditTimes) {
+                        Label("Edit sleep times", systemImage: "pencil")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .atriaCardAction(prominent: false, tint: Metrics.electricSleep)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            .navigationTitle("Sleep")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(Self.hoursMinutes(night.duration))
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .monospacedDigit()
+            if let start = night.start, let end = night.end {
+                Text("\(start.formatted(date: .omitted, time: .shortened)) – \(end.formatted(date: .omitted, time: .shortened)) · \(night.stageEvidence.label)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(night.stageEvidence.label)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var stageBreakdown: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("STAGES")
+                .font(.caption2.weight(.black))
+                .foregroundStyle(.tertiary)
+                .kerning(0.8)
+            ForEach(stageRows, id: \.stage) { row in
+                let fraction = spanSeconds > 0 ? row.seconds / spanSeconds : 0
+                HStack(spacing: 10) {
+                    Text(row.stage.label)
+                        .font(.subheadline.weight(.semibold))
+                        .frame(width: 56, alignment: .leading)
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(AtriaSleepHypnogramCard.color(for: row.stage).opacity(0.18))
+                            Capsule()
+                                .fill(AtriaSleepHypnogramCard.color(for: row.stage))
+                                .frame(width: max(4, geo.size.width * fraction))
+                        }
+                    }
+                    .frame(height: 8)
+                    Text("\(Int((fraction * 100).rounded()))%")
+                        .font(.caption.weight(.bold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                    Text(Self.hoursMinutes(row.seconds))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 56, alignment: .trailing)
+                }
+            }
+        }
+        .padding(12)
+        .atriaInsetCard(tint: Metrics.electricSleep)
+    }
+
+    private var nightVitals: some View {
+        HStack(spacing: 0) {
+            vitalsCell("Efficiency",
+                       night.displaySleepEfficiency.map { "\(Int(($0 * 100).rounded()))%" } ?? "--",
+                       footnote: night.displaySleepEfficiency == nil ? night.sleepEfficiencyFootnote : nil)
+            vitalsCell("RHR", night.restingHR.map { "\($0)" } ?? "--")
+            vitalsCell("HRV", night.hrv.map { "\($0)" } ?? "--")
+            vitalsCell("Resp", night.respiratoryRate.map { String(format: "%.1f", $0) } ?? "--")
+        }
+        .padding(.vertical, 10)
+        .atriaInsetCard(tint: Metrics.electricSleep)
+    }
+
+    private func vitalsCell(_ title: String, _ value: String, footnote: String? = nil) -> some View {
+        VStack(spacing: 2) {
+            Text(title)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.subheadline.weight(.bold).monospacedDigit())
+            if let footnote {
+                Text(footnote)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 }

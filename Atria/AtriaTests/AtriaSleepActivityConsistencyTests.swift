@@ -42,6 +42,27 @@ final class AtriaSleepActivityConsistencyTests: XCTestCase {
                            eventTimeZoneIdentifier: "UTC")
     }
 
+    private func workout(start: Date, end: Date) -> UserConfirmedWorkout {
+        UserConfirmedWorkout(id: "confirmed-workout",
+                             createdAt: end,
+                             start: start,
+                             end: end,
+                             label: "Workout",
+                             source: "test",
+                             confidence: "high",
+                             sessions: 1,
+                             samples: 600,
+                             avgHR: 130,
+                             peakHR: 160,
+                             p95HR: 155,
+                             p99HR: 159,
+                             thresholdHR: 120,
+                             streamCoveragePercent: 100,
+                             observedDuration: end.timeIntervalSince(start),
+                             reason: "test",
+                             eventTimeZoneIdentifier: "UTC")
+    }
+
     func testConfirmedOvernightKeepsCandidateWakeDayIdentity() throws {
         let start = date(10, 23)
         let end = date(11, 7)
@@ -155,5 +176,44 @@ final class AtriaSleepActivityConsistencyTests: XCTestCase {
         XCTAssertEqual(model.days.count, 1)
         XCTAssertEqual(day.confirmedSleepCount, 2)
         XCTAssertEqual(day.sleepSeconds, main.duration + resumed.duration)
+    }
+
+    func testActivityCenterShowsGenuineCandidateOnlyDayAsReview() throws {
+        let candidateStart = date(12, 18)
+        let candidateDay = AtriaHistoryReviewCandidateDay(
+            day: Self.utcCalendar.startOfDay(for: candidateStart),
+            count: 2
+        )
+
+        let model = AtriaHistoryModel.make(rollups: [],
+                                           workouts: [],
+                                           sleeps: [],
+                                           reviewCandidateDays: [candidateDay],
+                                           calendar: Self.utcCalendar)
+        let day = try XCTUnwrap(model.days.first)
+
+        XCTAssertEqual(model.days.count, 1)
+        XCTAssertEqual(day.reviewPending, 2)
+        XCTAssertEqual(day.state, .review)
+    }
+
+    func testConfirmedWorkoutTakesStatePrecedenceWithoutHidingReviewCount() throws {
+        let start = date(13, 18)
+        let end = date(13, 19)
+        let candidateDay = AtriaHistoryReviewCandidateDay(
+            day: Self.utcCalendar.startOfDay(for: start),
+            count: 1
+        )
+
+        let model = AtriaHistoryModel.make(rollups: [],
+                                           workouts: [workout(start: start, end: end)],
+                                           sleeps: [],
+                                           reviewCandidateDays: [candidateDay],
+                                           calendar: Self.utcCalendar)
+        let day = try XCTUnwrap(model.days.first)
+
+        XCTAssertEqual(day.confirmedWorkoutCount, 1)
+        XCTAssertEqual(day.reviewPending, 1)
+        XCTAssertEqual(day.state, .confirmed)
     }
 }

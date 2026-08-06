@@ -48,6 +48,8 @@ final class AtriaMetricChartScrubbingPerformanceTests: XCTestCase {
         XCTAssertTrue(sheet.contains("@State private var metricChartPreparedDataCache"))
         XCTAssertTrue(sheet.contains("preparationInput: preparation.valueKey ?? preparationInput"))
         XCTAssertTrue(sheet.contains("metricChartPreparedDataCache.value(for: cacheKey)"))
+        XCTAssertTrue(sheet.contains("dynamicCompanionSignature:"))
+        XCTAssertTrue(sheet.contains("AtriaMetricChartDynamicCompanionSignature("))
         XCTAssertTrue(chart.contains("prepared: AtriaMetricChartPreparedData"))
         XCTAssertFalse(chart.contains("prepared = AtriaMetricChartPreparedData"))
         XCTAssertTrue(chart.contains(".chartYScale(domain: prepared.domain)"))

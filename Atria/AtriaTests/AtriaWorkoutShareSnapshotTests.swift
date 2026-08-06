@@ -231,11 +231,11 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
             isEstimated: false,
             activity: .walking
         ), "0")
-        XCTAssertEqual(AtriaWorkoutSharePresentation.stepsText(
+        XCTAssertNil(AtriaWorkoutSharePresentation.stepsText(
             count: 842,
             isEstimated: true,
             activity: .running
-        ), "~842")
+        ))
         XCTAssertNil(AtriaWorkoutSharePresentation.stepsText(
             count: 842,
             isEstimated: true,
@@ -245,13 +245,20 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
 
     func testCompletedWorkoutShareOmitsStaleOrMissingStepProvenance() {
         let end = Date(timeIntervalSince1970: 2_000_000_000)
-        XCTAssertEqual(AtriaWorkoutSharePresentation.completedStepsText(
+        XCTAssertNil(AtriaWorkoutSharePresentation.completedStepsText(
             count: 842,
             isEstimated: true,
             capturedAt: end.addingTimeInterval(-1),
             workoutEndedAt: end,
             activity: .walking
-        ), "~842")
+        ))
+        XCTAssertEqual(AtriaWorkoutSharePresentation.completedStepsText(
+            count: 842,
+            isEstimated: false,
+            capturedAt: end.addingTimeInterval(-1),
+            workoutEndedAt: end,
+            activity: .walking
+        ), "842")
         XCTAssertNil(AtriaWorkoutSharePresentation.completedStepsText(
             count: 842,
             isEstimated: true,
@@ -268,6 +275,79 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
             workoutEndedAt: end,
             activity: .walking
         ))
+    }
+
+    func testCompletedWalkingWorkoutExplainsEveryUnavailableStrapStepState() {
+        let end = Date(timeIntervalSince1970: 2_000_000_000)
+
+        XCTAssertEqual(
+            AtriaWorkoutSharePresentation.completedStepsPresentation(
+                count: 842,
+                isEstimated: true,
+                capturedAt: nil,
+                workoutEndedAt: end,
+                activity: .walking
+            ),
+            AtriaWorkoutSharePresentation.CompletedSteps(
+                valueText: "--",
+                detailText: "No verified strap motion for this workout",
+                isAvailable: false
+            )
+        )
+        XCTAssertEqual(
+            AtriaWorkoutSharePresentation.completedStepsPresentation(
+                count: 842,
+                isEstimated: true,
+                capturedAt: end.addingTimeInterval(
+                    -AtriaLiveWorkoutStepProjection.freshnessInterval - 1
+                ),
+                workoutEndedAt: end,
+                activity: .walking
+            ),
+            AtriaWorkoutSharePresentation.CompletedSteps(
+                valueText: "--",
+                detailText: "Strap motion was not verified at workout end",
+                isAvailable: false
+            )
+        )
+        XCTAssertEqual(
+            AtriaWorkoutSharePresentation.completedStepsPresentation(
+                count: nil,
+                isEstimated: nil,
+                capturedAt: end,
+                workoutEndedAt: end,
+                activity: .walking
+            ),
+            AtriaWorkoutSharePresentation.CompletedSteps(
+                valueText: "--",
+                detailText: "No verified strap step count for this workout",
+                isAvailable: false
+            )
+        )
+        XCTAssertEqual(
+            AtriaWorkoutSharePresentation.completedStepsPresentation(
+                count: 842,
+                isEstimated: true,
+                capturedAt: end,
+                workoutEndedAt: end,
+                activity: .walking
+            ),
+            AtriaWorkoutSharePresentation.CompletedSteps(
+                valueText: "--",
+                detailText: "No verified strap step count for this workout",
+                isAvailable: false
+            )
+        )
+        XCTAssertNil(
+            AtriaWorkoutSharePresentation.completedStepsPresentation(
+                count: nil,
+                isEstimated: nil,
+                capturedAt: nil,
+                workoutEndedAt: end,
+                activity: .strength
+            ),
+            "Steps are not a relevant workout stat for non-locomotion activities"
+        )
     }
 
     func testRoutePreviewBoundsGeometryAndPreservesEndpointsAndBreaks() {
@@ -655,6 +735,19 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
             strain: ring("Strain", "9.2"),
             stats: [.init(id: "hrv", title: "HRV", value: "55 ms", detail: "overnight")]
         )
+        let markerChangedDaily = AtriaShareSnapshot(
+            date: date,
+            recovery: ring("Recovery", "71%"),
+            sleep: ring("Sleep", "8h"),
+            strain: .init(title: "Strain",
+                          value: "9.2",
+                          detail: "measured",
+                          tintHex: "34c759",
+                          fill: 0.7,
+                          stateTintHex: "ff4f7b",
+                          targetFraction: 0.62),
+            stats: [.init(id: "hrv", title: "HRV", value: "55 ms", detail: "overnight")]
+        )
         XCTAssertNotEqual(
             AtriaShareCardRenderer.dailyCacheKey(snapshot: firstDaily,
                                                  format: .story,
@@ -665,6 +758,17 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
                                                  selectedStatIDs: ["recovery", "strain", "sleep"],
                                                  canvasStyle: .midnight),
             "A second same-day share must not reuse an image with older visible metrics"
+        )
+        XCTAssertNotEqual(
+            AtriaShareCardRenderer.dailyCacheKey(snapshot: firstDaily,
+                                                 format: .story,
+                                                 selectedStatIDs: ["recovery", "strain", "sleep"],
+                                                 canvasStyle: .midnight),
+            AtriaShareCardRenderer.dailyCacheKey(snapshot: markerChangedDaily,
+                                                 format: .story,
+                                                 selectedStatIDs: ["recovery", "strain", "sleep"],
+                                                 canvasStyle: .midnight),
+            "Target marker and configured state tint are visible share content"
         )
 
         let firstWeekly = AtriaWeeklyShareSnapshot(date: date,

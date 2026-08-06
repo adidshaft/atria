@@ -636,10 +636,12 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --standard-hr-only)
+      full_protocol_mode=0
       standard_hr_only=1
       shift
       ;;
     --long-wear-mode)
+      full_protocol_mode=0
       long_wear_mode=1
       standard_hr_only=1
       shift
@@ -1418,6 +1420,9 @@ project="Atria/Atria.xcodeproj"
 scheme="Atria"
 derived_data="build/DerivedData"
 app_path="${derived_data}/Build/Products/${build_configuration}-iphoneos/Atria.app"
+build_identity_path="${derived_data}/Build/Products/${build_configuration}-iphoneos/Atria.build-identity.json"
+installed_metadata_path="${derived_data}/Build/Products/${build_configuration}-iphoneos/Atria.installed-app-metadata.json"
+installed_provenance_path="${derived_data}/Build/Products/${build_configuration}-iphoneos/Atria.installed-app-provenance.json"
 xcode_build_destination="id=${xcode_device_id}"
 devicectl_destination_state="unchecked"
 
@@ -1585,6 +1590,18 @@ if [[ -z "$replay_log" && "$pull_only" -eq 0 ]]; then
       cat "$build_output"
     fi
     rm -f "$build_output"
+    python3 tools/app_build_provenance.py create \
+      --app "$app_path" \
+      --source-root . \
+      --source-path Atria/Atria \
+      --source-path Atria/AtriaShared \
+      --source-path Atria/AtriaWidget \
+      --source-path Atria/Atria.xcodeproj \
+      --source-path Atria/Info.plist \
+      --source-path Atria/AtriaWidgetInfo.plist \
+      --source-path Atria/AtriaWidget.entitlements \
+      --configuration "$build_configuration" \
+      --output "$build_identity_path"
   else
     if [[ ! -d "$app_path" ]]; then
       printf 'No built app at %s; rerun without --no-build.\n' "$app_path" >&2
@@ -1595,9 +1612,46 @@ if [[ -z "$replay_log" && "$pull_only" -eq 0 ]]; then
       printf 'Refusing stale --no-build: %s is newer than %s. Rerun without --no-build.\n' "$newest_source" "$app_path" >&2
       exit 66
     fi
+    if [[ ! -f "$build_identity_path" ]]; then
+      printf 'Refusing unproven --no-build: missing %s. Rerun without --no-build.\n' "$build_identity_path" >&2
+      exit 66
+    fi
+    python3 tools/app_build_provenance.py verify-build \
+      --identity "$build_identity_path" \
+      --app "$app_path" \
+      --source-root .
   fi
 
   xcrun devicectl device install app --device "$device_id" "$app_path"
+  installed_metadata_status=1
+  for installed_metadata_attempt in 1 2 3; do
+    if xcrun devicectl device info apps \
+      --device "$device_id" \
+      --bundle-id "$bundle_id" \
+      --require-container-access \
+      --include-container-paths \
+      --include-app-group-identifiers \
+      --json-output "$installed_metadata_path"; then
+      installed_metadata_status=0
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$installed_metadata_status" -ne 0 ]]; then
+    printf 'HARNESS_ERROR=installed_app_metadata_unavailable attempts=3\n' >&2
+    exit 69
+  fi
+  python3 tools/app_build_provenance.py bind-installed \
+    --identity "$build_identity_path" \
+    --installed-metadata "$installed_metadata_path" \
+    --output "$installed_provenance_path"
+  xcrun devicectl device copy to \
+    --device "$device_id" \
+    --domain-type appDataContainer \
+    --domain-identifier "$bundle_id" \
+    --source "$installed_provenance_path" \
+    --destination "Documents/atria-installed-app-provenance.json"
+  printf 'HARNESS_APP_PROVENANCE status=bound file=%s\n' "$installed_provenance_path"
 
   if [[ -n "$push_backup_path" ]]; then
     pushed_backup_name="atria-sessions-$(date -u +"%Y%m%dT%H%M%SZ")-pushed.json"
@@ -3067,9 +3121,15 @@ if not replay_log and not pull_only:
     if not launch_seen:
         launch_output = "\n".join(launch_output_lines)
         if (
+            "Unable to launch" in launch_output
+            and "because the device was not, or could not be, unlocked" in launch_output
+        ):
+            emit("HARNESS_ERROR=device_locked")
+            emit("HARNESS_NEXT_ACTION=unlock_device_leave_on_home_screen_then_retry")
+            sys.exit(2)
+        if (
             "invalid code signature" in launch_output
             or "profile has not been explicitly trusted" in launch_output
-            or "BSErrorCodeDescription = RequestDenied" in launch_output
         ):
             emit("HARNESS_ERROR=developer_profile_not_trusted")
             emit("HARNESS_NEXT_ACTION=trust_developer_profile_in_ios_settings_then_retry")

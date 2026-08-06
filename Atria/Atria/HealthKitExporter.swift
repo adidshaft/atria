@@ -692,11 +692,11 @@ final class HealthKitExporter {
         }
     }
 
-    static func diagnostics(for sessions: [SavedSession],
-                            rest: Int,
-                            maxHR: Int,
-                            confirmedWorkouts: [UserConfirmedWorkout] = [],
-                            confirmedSleeps: [UserConfirmedSleep] = []) -> Diagnostics {
+    nonisolated static func diagnostics(for sessions: [SavedSession],
+                                        rest: Int,
+                                        maxHR: Int,
+                                        confirmedWorkouts: [UserConfirmedWorkout] = [],
+                                        confirmedSleeps: [UserConfirmedSleep] = []) -> Diagnostics {
         Diagnostics(entitlementPresent: hasHealthKitEntitlement(),
                     healthDataAvailable: HKHealthStore.isHealthDataAvailable(),
                     planned: plannedCounts(for: sessions,
@@ -761,7 +761,7 @@ final class HealthKitExporter {
         defaults.set(validated, forKey: ReferenceAuditDefaults.ready)
     }
 
-    private static func referenceAuditDiagnostics() -> ReferenceAuditDiagnostics {
+    nonisolated private static func referenceAuditDiagnostics() -> ReferenceAuditDiagnostics {
         let defaults = UserDefaults.standard
         let pairs = defaults.integer(forKey: ReferenceAuditDefaults.pairs)
         let meanDelta = defaults.object(forKey: ReferenceAuditDefaults.meanDelta) as? Double
@@ -816,7 +816,7 @@ final class HealthKitExporter {
         defaults.set(dataAppears, forKey: ReadbackDefaults.dataAppears)
     }
 
-    private static func readbackDiagnostics() -> ReadbackDiagnostics {
+    nonisolated private static func readbackDiagnostics() -> ReadbackDiagnostics {
         let defaults = UserDefaults.standard
         return ReadbackDiagnostics(status: defaults.string(forKey: ReadbackDefaults.status) ?? "not_run",
                                    reason: defaults.string(forKey: ReadbackDefaults.reason) ?? "not_run",
@@ -827,11 +827,11 @@ final class HealthKitExporter {
                                    dataAppears: defaults.bool(forKey: ReadbackDefaults.dataAppears))
     }
 
-    private static func plannedCounts(for sessions: [SavedSession],
-                                      rest: Int,
-                                      maxHR: Int,
-                                      confirmedWorkouts: [UserConfirmedWorkout] = [],
-                                      confirmedSleeps: [UserConfirmedSleep] = []) -> PlannedCounts {
+    nonisolated private static func plannedCounts(for sessions: [SavedSession],
+                                                  rest: Int,
+                                                  maxHR: Int,
+                                                  confirmedWorkouts: [UserConfirmedWorkout] = [],
+                                                  confirmedSleeps: [UserConfirmedSleep] = []) -> PlannedCounts {
         var hrSamples = 0
         var restingHRSamples = 0
         var workouts = 0
@@ -2329,7 +2329,7 @@ final class HealthKitExporter {
         }
     }
 
-    private static func hasHealthKitEntitlement() -> Bool {
+    nonisolated private static func hasHealthKitEntitlement() -> Bool {
         guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
               let data = try? Data(contentsOf: url),
               let text = String(data: data, encoding: .isoLatin1) else {

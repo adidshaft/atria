@@ -132,16 +132,21 @@ final class AtriaActivityDetectionAccuracyTests: XCTestCase {
     }
 
     func testRRValuesCannotBridgeMultipleHardGapEffortBouts() {
-        let start = now.addingTimeInterval(-400)
-        let first = (0..<120).map {
+        // 2026-08-05 bar migration: continuous and sustained floors are both
+        // 5 min now, so a single bout clearing continuity legitimately
+        // prompts. The gap-bridging intent survives with SUB-bar bouts whose
+        // in-window SUM clears the sustained floor — RR corroboration must
+        // still not stitch them across hard transport gaps.
+        let start = now.addingTimeInterval(-640)
+        let first = (0..<200).map {
             HRSample(t: start.addingTimeInterval(TimeInterval($0)), bpm: 95)
         }
-        let secondStart = start.addingTimeInterval(140)
-        let second = (0..<120).map {
+        let secondStart = start.addingTimeInterval(220)
+        let second = (0..<200).map {
             HRSample(t: secondStart.addingTimeInterval(TimeInterval($0)), bpm: 95)
         }
-        let thirdStart = secondStart.addingTimeInterval(140)
-        let third = (0...120).map {
+        let thirdStart = secondStart.addingTimeInterval(220)
+        let third = (0...200).map {
             HRSample(t: thirdStart.addingTimeInterval(TimeInterval($0)), bpm: 95)
         }
         let samples = first + second + third
@@ -165,11 +170,48 @@ final class AtriaActivityDetectionAccuracyTests: XCTestCase {
                                                           now: now)
 
         XCTAssertGreaterThanOrEqual(result.elevatedSamples,
-                                    AtriaWorkoutPromptEvaluator.minimumSustainedElevatedSamples)
-        XCTAssertGreaterThanOrEqual(result.longestElevatedBout,
-                                    AtriaWorkoutPromptEvaluator.minimumContinuousElevatedSamples)
+                                    AtriaWorkoutPromptEvaluator.minimumSustainedElevatedSamples,
+                                    "the summed evidence must clear the floor so only bridging is under test")
+        XCTAssertLessThan(result.longestElevatedBout,
+                          AtriaWorkoutPromptEvaluator.minimumSustainedElevatedSamples,
+                          "no single bout may clear the floor on its own")
         XCTAssertFalse(result.shouldPrompt,
                        "sparse RR corroboration must not bridge hard accepted-HR transport gaps")
+    }
+
+    func testRecoveredStreamCanPromptAfterFreshContinuousEffort() {
+        let start = now.addingTimeInterval(-8 * 60)
+        let beforeDisconnect = (0..<60).map {
+            HRSample(t: start.addingTimeInterval(TimeInterval($0)), bpm: 95)
+        }
+        let recoveredStart = now.addingTimeInterval(-(5 * 60 + 1))
+        let recovered = (0...301).map {
+            HRSample(t: recoveredStart.addingTimeInterval(TimeInterval($0)), bpm: 95)
+        }
+        let samples = beforeDisconnect + recovered
+        let quality = AtriaWorkoutPromptEvaluator.SignalQuality(
+            rawSamples: samples.count,
+            acceptedSamples: samples.count,
+            zeroSamples: 0,
+            heldArtifacts: 0,
+            droppedArtifacts: 0,
+            acceptedGapCount: 1,
+            maxAcceptedGap: recoveredStart.timeIntervalSince(beforeDisconnect.last!.t),
+            rrImpliedMedianBPM: nil
+        )
+
+        let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
+                                                          currentHeartRate: 95,
+                                                          restingHeartRate: 60,
+                                                          maxHeartRate: 190,
+                                                          hasContact: true,
+                                                          signalQuality: quality,
+                                                          now: now)
+
+        XCTAssertTrue(result.shouldPrompt,
+                      "an older disconnect must not suppress a new five-minute continuous effort")
+        XCTAssertGreaterThanOrEqual(result.longestElevatedBout,
+                                    AtriaWorkoutPromptEvaluator.minimumSustainedElevatedSamples)
     }
 
     func testSeparatedElevatedBoutsCannotAggregateIntoOneWorkoutPrompt() {

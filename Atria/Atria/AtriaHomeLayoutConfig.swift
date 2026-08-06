@@ -84,7 +84,8 @@ struct AtriaHomeLayoutConfig: Codable, Equatable {
         glanceMetrics = keys
     }
 
-    /// VoiceOver counterpart to drag/drop. Boundaries are deliberate no-ops so
+    /// VoiceOver counterpart to drag/drop. Boundary moves deliberately leave
+    /// the order unchanged so
     /// repeated accessibility actions cannot corrupt or wrap the saved order.
     mutating func shiftGlanceMetric(_ key: String, direction: Int) {
         var keys = validated().glanceMetrics

@@ -17,7 +17,11 @@ struct AtriaTrendChartCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var metric: AtriaTrendMetric = .restingHR
-    @State private var range: AtriaTrendRange = .month
+    // This card plots ONE point per civil day (makeOverviewTrendPoints), so a
+    // one-day window can never reach the 2-point line gate — a "D" segment
+    // here was a permanently empty chart. Default to the shortest range that
+    // can actually draw (2026-07-31 audit item 1).
+    @State private var range: AtriaTrendRange = .week
     @State private var prepared = AtriaTrendPreparedSeries.empty
     // Tap-to-expand + drag-to-scrub (docs/24 §14 UI direction): the compact
     // card opens a large inspection sheet; both share native chartXSelection.
@@ -80,34 +84,36 @@ struct AtriaTrendChartCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Trends", subtitle: "\(range.headerLabel) · \(prepared.series.count) days")
+                // "N days" read as calendar coverage; the count is days WITH
+                // data in the window (2026-07-31 audit item 13).
+                AtriaPanelSectionHeader(title: "Trends", subtitle: "\(range.headerLabel) · \(prepared.series.count)d of data")
                 Spacer(minLength: 0)
-                Button {
-                    showExpandedChart = true
-                } label: {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                // Expanding an empty series rendered a full-screen chart with
+                // a fabricated 0…1 axis and "1 of 1 days visible". Mirror the
+                // metric-detail rule: no expand until a real line exists.
+                if prepared.series.count >= 2 {
+                    Button {
+                        showExpandedChart = true
+                    } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .accessibilityLabel("Expand chart")
                 }
-                .accessibilityLabel("Expand chart")
             }
 
-            VStack(spacing: 8) {
-                Picker("Range", selection: $range) {
-                    ForEach(AtriaTrendRange.primarySegments) { item in
-                        Text(item.segmentedLabel)
-                            .tag(item)
-                            .accessibilityLabel(item.menuLabel)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Picker("Metric", selection: $metric) {
-                    ForEach(AtriaTrendMetric.allCases) { item in
-                        Text(item.shortLabel).tag(item)
-                    }
-                }
-                .pickerStyle(.segmented)
+            // Native-clean (design 2026-08-05): replaced two stacked segmented
+            // pill bars with light plain-text selector rows (Apple-Stocks feel).
+            // The range stays a fully-visible tappable selector -- not a Menu --
+            // honoring the readability guard on AtriaTrendRange.
+            VStack(spacing: 10) {
+                AtriaTextSelector(items: AtriaTrendMetric.allCases,
+                                  title: { $0.shortLabel },
+                                  selection: $metric)
+                AtriaTextSelector(items: AtriaTrendRange.trendCardSegments,
+                                  title: { $0.segmentedLabel },
+                                  selection: $range)
             }
 
             // Chart-first (2026-07-06): the trend chart was buried at the BOTTOM of
@@ -194,7 +200,7 @@ struct AtriaTrendChartCard: View {
             }
         }
         .padding(16)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.28), value: showMoreInsights)
+        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: showMoreInsights)
         .atriaCard(cornerRadius: 24, emphasis: .soft)
         // Metric/range controls already animate their own selection chrome. A
         // broad implicit animation here also animated every Chart mark and the
@@ -224,10 +230,14 @@ struct AtriaTrendChartCard: View {
     }
 
     /// The focused metric's real daily values in the shared chart-point
-    /// shape. Days without a value are simply absent.
+    /// shape, limited to the range the compact card is showing — expanding a
+    /// "last week" chart must not silently widen it to the full 92-day
+    /// series. Days without a value are simply absent.
     private var expandedChartPoints: [AtriaDetailChartPoint] {
-        points.compactMap { point in
-            point.value(for: metric).map {
+        let cutoff = range.cutoffDate()
+        return points.compactMap { point in
+            guard point.date >= cutoff else { return nil }
+            return point.value(for: metric).map {
                 AtriaDetailChartPoint(day: point.date, value: $0, tint: metric.tint)
             }
         }
@@ -371,7 +381,54 @@ struct AtriaTrendChartCard: View {
         return values.reduce(0, +) / Double(values.count)
     }
 
+    /// Produces distinct, data-owned ticks instead of asking Charts to
+    /// interpolate several instants inside a one-day domain. The latter
+    /// rendered four identical "Jul 27" labels for a real Jul 27–28 series on
+    /// the physical phone.
+    nonisolated static func compactXAxisDates(
+        _ dates: [Date],
+        maximumCount: Int = 4
+    ) -> [Date] {
+        let ordered = Array(Set(dates)).sorted()
+        let limit = max(2, maximumCount)
+        guard ordered.count > limit else { return ordered }
+        let finalIndex = ordered.count - 1
+        let divisor = Double(limit - 1)
+        let indices = Set((0..<limit).map { slot in
+            Int((Double(slot) * Double(finalIndex) / divisor).rounded())
+        })
+        return indices.sorted().map { ordered[$0] }
+    }
+
+    private var chartXAxisDates: [Date] {
+        Self.compactXAxisDates(prepared.series.map(\.date))
+    }
+
+    /// Visible text for each compact tick, deduped so two ticks that format to
+    /// the same string can never render as side-by-side identical labels — the
+    /// duplicated-axis-label defect from the 2026-07-31 History audit. A date
+    /// absent from this map still draws its gridline, just without a label.
+    nonisolated static func compactXAxisLabelTexts(_ dates: [Date]) -> [Date: String] {
+        var output: [Date: String] = [:]
+        var previous: String?
+        for date in dates.sorted() {
+            let label = date.formatted(.dateTime.month(.abbreviated).day())
+            guard label != previous else { continue }
+            output[date] = label
+            previous = label
+        }
+        return output
+    }
+
+    private var chartXAxisLabels: [Date: String] {
+        Self.compactXAxisLabelTexts(chartXAxisDates)
+    }
+
     private var chart: some View {
+        coreChart
+    }
+
+    private var coreChart: some View {
         Chart {
             if let referenceValue = prepared.referenceValue {
                 RuleMark(y: .value("Baseline", referenceValue))
@@ -391,7 +448,7 @@ struct AtriaTrendChartCard: View {
                         y: .value("Prior \(metric.shortLabel)", ghostSample.value),
                         series: .value("Series", "prior")
                     )
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
                     // Prior-period line in neutral gray, not the metric tint: a
                     // faint-tint ghost overlapped the solid tinted current line
@@ -405,7 +462,7 @@ struct AtriaTrendChartCard: View {
                     x: .value("Date", sample.date),
                     y: .value(metric.shortLabel, sample.value)
                 )
-                .interpolationMethod(.monotone)
+                .interpolationMethod(.linear)
                 .foregroundStyle(
                     LinearGradient(
                         colors: [metric.tint.opacity(0.30), metric.tint.opacity(0.02)],
@@ -417,7 +474,7 @@ struct AtriaTrendChartCard: View {
                     x: .value("Date", sample.date),
                     y: .value(metric.shortLabel, sample.value)
                 )
-                .interpolationMethod(.monotone)
+                .interpolationMethod(.linear)
                 .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
                 .foregroundStyle(metric.tint)
             }
@@ -452,17 +509,40 @@ struct AtriaTrendChartCard: View {
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
-                    .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    // Real Liquid Glass, per the handoff's "Graph Interactions"
+                    // scrub callout. This is the one place glass genuinely pays
+                    // off on Atria: the callout FLOATS OVER the chart, so it
+                    // refracts the line and gridlines beneath it instead of the
+                    // flat near-black/near-white page backdrop. It is also cheap
+                    // — it exists only while a scrub is active, so this is not
+                    // the dense always-on glass that costs scroll performance.
+                    // Radius snapped off the stray 8 onto the chip token.
+                    .atriaGlassCard(cornerRadius: AtriaDesignTokens.Radius.chip)
                 }
             }
         }
         .chartXSelection(value: $scrubDate)
+        // Keep the first and last observed dates inside the plot instead of
+        // pinning their labels to its clipped edges. Swift Charts otherwise
+        // suppresses the trailing label on a real two-day series even when
+        // both distinct dates are supplied explicitly.
+        .chartXScale(range: .plotDimension(startPadding: 18, endPadding: 18))
         .chartYScale(domain: prepared.yDomain)
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+            // Labels ride the SAME axis marks as the gridlines (2026-08-01):
+            // the previous parallel Spacer-based HStack guessed a 34pt leading
+            // inset and spread labels evenly regardless of where the gridlines
+            // actually fell, so gappy/short series rendered duplicated or
+            // misaligned date labels under true-position gridlines.
+            AxisMarks(preset: .aligned, values: chartXAxisDates) { value in
                 AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
-                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
-                    .font(.caption2)
+                if let date = value.as(Date.self), let label = chartXAxisLabels[date] {
+                    AxisValueLabel(anchor: .top) {
+                        Text(label)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         .chartYAxis {
@@ -484,7 +564,8 @@ struct AtriaTrendChartCard: View {
     }
 
     private var chartAccessibilityLabel: String {
-        let base = "\(metric.shortLabel) trend, \(range.headerLabel.lowercased()), \(prepared.series.count) days in view."
+        let daysText = prepared.series.count == 1 ? "1 day of data" : "\(prepared.series.count) days of data"
+        let base = "\(metric.shortLabel) trend, \(range.headerLabel.lowercased()), \(daysText)."
         var combined = base
         if let summary = prepared.summary {
             combined += " Latest \(summary.latestText), average \(summary.averageText), range \(summary.rangeText), \(summary.comparisonAccessibilityText)."
@@ -1332,7 +1413,7 @@ private struct AtriaTrendRangeDock: View, Equatable {
             HStack(spacing: 7) {
                 ForEach(AtriaTrendRange.allCases) { range in
                     Button {
-                        withAnimation(.snappy(duration: 0.22)) {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
                             selectedRange = range
                         }
                     } label: {
@@ -1794,8 +1875,10 @@ private struct AtriaTrendRangeLens: View, Equatable {
     }
 
     private var coverageLabel: String {
+        // "in view" implied visible calendar days; the count is data samples
+        // (2026-07-31 audit item 13).
         if sampleCount >= range.confidenceTargetPoints {
-            return "\(sampleCount)d in view"
+            return "\(sampleCount)d of data"
         }
         if sampleCount >= max(2, range.confidenceTargetPoints / 2) {
             return "\(sampleCount)d forming"
@@ -2288,7 +2371,7 @@ private struct AtriaTrendSessionDotStrip: View, Equatable {
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 8)
-                Text("\(samples.count)d")
+                Text("\(samples.count)d of data")
                     .font(.caption2.monospacedDigit().weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -2313,7 +2396,7 @@ private struct AtriaTrendSessionDotStrip: View, Equatable {
                 .stroke(metric.tint.opacity(0.12), lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Day pattern for \(metric.shortLabel), \(samples.count) days in view.")
+        .accessibilityLabel("Day pattern for \(metric.shortLabel), \(samples.count) days of data.")
     }
 
     private static func normalized(_ value: Double, domain: ClosedRange<Double>) -> Double {
@@ -2507,6 +2590,12 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
     /// selector stays a segmented control, never a Menu, per the readability guard).
     static let primarySegments: [AtriaTrendRange] = [.day, .week, .month]
 
+    /// The Trends card aggregates to one point per civil day, so `.day` can
+    /// never form a line there (its chart requires ≥2 points). Day stays in
+    /// `primarySegments` for the calendar-period metric-detail surfaces,
+    /// where a single-day view is real and navigable (2026-07-31 audit).
+    static let trendCardSegments: [AtriaTrendRange] = [.week, .month]
+
     var days: Int {
         switch self {
         case .day: return 1
@@ -2607,6 +2696,94 @@ enum AtriaTrendRange: String, CaseIterable, Identifiable, Sendable {
             return .distantPast
         }
     }
+
+    /// Calendar-aligned period used by metric detail navigation. This is
+    /// deliberately separate from the legacy rolling `cutoffDate` contract:
+    /// choosing Week or Month in a navigable sheet means an inspectable
+    /// calendar week/month, not an unlabelled trailing number of seconds.
+    func periodInterval(
+        containing anchor: Date,
+        calendar: Calendar = .current
+    ) -> DateInterval {
+        switch self {
+        case .day:
+            let start = calendar.startOfDay(for: anchor)
+            return DateInterval(
+                start: start,
+                end: calendar.date(byAdding: .day, value: 1, to: start)
+                    ?? start.addingTimeInterval(86_400)
+            )
+        case .week:
+            return calendar.dateInterval(of: .weekOfYear, for: anchor)
+                ?? DateInterval(
+                    start: calendar.startOfDay(for: anchor),
+                    duration: 7 * 86_400
+                )
+        case .month:
+            return calendar.dateInterval(of: .month, for: anchor)
+                ?? DateInterval(
+                    start: calendar.startOfDay(for: anchor),
+                    duration: 30 * 86_400
+                )
+        case .quarter, .sixMonths, .year, .all:
+            let start = cutoffDate(now: anchor, calendar: calendar)
+            let end = calendar.date(byAdding: .day, value: 1,
+                                    to: calendar.startOfDay(for: anchor))
+                ?? anchor
+            return DateInterval(start: start, end: end)
+        }
+    }
+
+    func adjacentPeriodAnchor(
+        from anchor: Date,
+        offset: Int,
+        calendar: Calendar = .current
+    ) -> Date {
+        let component: Calendar.Component
+        switch self {
+        case .day: component = .day
+        case .week: component = .weekOfYear
+        case .month: component = .month
+        case .quarter: component = .quarter
+        case .sixMonths: component = .month
+        case .year: component = .year
+        case .all: return anchor
+        }
+        let amount = self == .sixMonths ? offset * 6 : offset
+        return calendar.date(byAdding: component, value: amount, to: anchor)
+            ?? anchor
+    }
+
+    func periodLabel(
+        containing anchor: Date,
+        calendar: Calendar = .current
+    ) -> String {
+        let interval = periodInterval(containing: anchor, calendar: calendar)
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        switch self {
+        case .day:
+            formatter.setLocalizedDateFormatFromTemplate("EEE d MMM")
+            return formatter.string(from: interval.start)
+        case .week:
+            let end = interval.end.addingTimeInterval(-1)
+            let startMonth = calendar.component(.month, from: interval.start)
+            let endMonth = calendar.component(.month, from: end)
+            formatter.setLocalizedDateFormatFromTemplate(
+                startMonth == endMonth ? "d" : "d MMM"
+            )
+            let startText = formatter.string(from: interval.start)
+            formatter.setLocalizedDateFormatFromTemplate("d MMM")
+            return "\(startText)–\(formatter.string(from: end))"
+        case .month:
+            formatter.setLocalizedDateFormatFromTemplate("MMMM yyyy")
+            return formatter.string(from: interval.start)
+        default:
+            formatter.setLocalizedDateFormatFromTemplate("d MMM yyyy")
+            return formatter.string(from: interval.start)
+        }
+    }
 }
 
 enum AtriaTrendMetric: String, CaseIterable, Identifiable {
@@ -2703,7 +2880,7 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
     }
 }
 
-/// One session's trend-relevant values, prepared on the main-actor store side so
+/// One day's trend-relevant values, prepared on the main-actor store side so
 /// the chart view stays cheap and Equatable.
 struct AtriaTrendPoint: Equatable, Identifiable {
     let id: UUID
@@ -2726,7 +2903,9 @@ struct AtriaTrendPoint: Equatable, Identifiable {
         var id: Date { date }
     }
 
+    #if DEBUG
     /// Deterministic sample series for previews and on-device visual checks.
+    /// DEBUG-only: demo series must have a compile-time barrier from Release.
     static func sampleData(now: Date) -> [AtriaTrendPoint] {
         let resting = [62, 61, 63, 60, 59, 60, 58, 59, 57, 58, 56, 57]
         let strain = [8.2, 11.4, 6.1, 14.0, 9.5, 12.8, 7.3, 15.1, 10.2, 13.6, 8.9, 11.0]
@@ -2741,8 +2920,6 @@ struct AtriaTrendPoint: Equatable, Identifiable {
             )
         }
     }
-
-    #if DEBUG
     /// Longer deterministic series for screenshotting current-vs-prior trend summaries.
     static func priorComparisonSampleData(now: Date) -> [AtriaTrendPoint] {
         (0..<70).map { index in
@@ -2775,6 +2952,7 @@ struct AtriaTrendPoint: Equatable, Identifiable {
     #endif
 }
 
+#if DEBUG
 #Preview("Trend chart") {
     AtriaTrendChartCard(points: AtriaTrendPoint.sampleData(now: Date()),
                         pointsRevision: nil,
@@ -2782,6 +2960,7 @@ struct AtriaTrendPoint: Equatable, Identifiable {
         .padding()
         .background(Color.black)
 }
+#endif
 
 extension AtriaTrendChartCard {
     /// Nearest prepared sample to the scrubbed x-position.

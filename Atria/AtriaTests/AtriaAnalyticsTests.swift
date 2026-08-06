@@ -83,6 +83,65 @@ final class AtriaAnalyticsTests: XCTestCase {
         }
     }
 
+    func testCurrentPhysicalBaselineVO2RemainsLearningUntilTrusted() {
+        let summary = AtriaAnalytics.VO2Max.summary(
+            rest: 59,
+            maxHR: 190,
+            restingSamples: 2,
+            maxHRMeasured: true,
+            restingTrend: [57, 58, 68, 70, 60, 62, 57]
+        )
+
+        XCTAssertNil(summary.value)
+        // 2026-07-28 deterministic-presentation pass: valueText is a DISPLAY
+        // string and now uses the app-wide no-value token. The invariant this
+        // test is named for is untouched and still asserted either side of this
+        // line -- no value, and confidence still reads "learning". VO2 max was
+        // the last value line saying "Learning" while Recovery, Stress,
+        // Respiration and Sleep beside it said "--".
+        XCTAssertEqual(summary.valueText, AtriaCompactMetricPresentation.noValue)
+        XCTAssertEqual(summary.confidence, "learning")
+        XCTAssertEqual(summary.detail, "2/14 RHR")
+        XCTAssertEqual(summary.compactStatusText, "2/14 RHR")
+        XCTAssertEqual(summary.trendDetail, "2/14 RHR days.")
+        XCTAssertTrue(summary.narrative.localizedCaseInsensitiveContains("7 qualified resting-HR days"))
+    }
+
+    func testVO2PublishesPreliminaryValueBeforeTrustedBaseline() throws {
+        let summary = AtriaAnalytics.VO2Max.summary(
+            rest: 57,
+            maxHR: 190,
+            restingSamples: 11,
+            maxHRMeasured: true,
+            restingTrend: [60, 59, 58, 57]
+        )
+
+        XCTAssertEqual(try XCTUnwrap(summary.value), 51.0, accuracy: 0.01)
+        XCTAssertEqual(summary.confidence, "preliminary")
+        XCTAssertEqual(summary.detail, "preliminary · RHR 57 · HRmax 190")
+        XCTAssertTrue(summary.narrative.contains("11/14 qualified RHR days"))
+    }
+
+    func testVO2KeepsTrustedLabelAtFourteenDays() throws {
+        let summary = AtriaAnalytics.VO2Max.summary(
+            rest: 57,
+            maxHR: 190,
+            restingSamples: 14,
+            maxHRMeasured: true,
+            restingTrend: [60, 59, 58, 57]
+        )
+
+        XCTAssertEqual(try XCTUnwrap(summary.value), 51.0, accuracy: 0.01)
+        XCTAssertEqual(summary.confidence, "rough estimate")
+    }
+
+    func testMeasuredSustainedStrengthLoadUsesModerateStrainRange() {
+        // Regression point from a real 64-minute strength window: 3,820 seconds
+        // of observed strap HR, mean 131 bpm, peak 170 bpm, rest 68, max 190.
+        // The input is the measured Banister integral, not a workout estimate.
+        XCTAssertEqual(Metrics.strain(fromTRIMP: 65.6037), 7.44, accuracy: 0.02)
+    }
+
     func testSleepStagesIncludeREMInUserFacingOrder() {
         XCTAssertTrue(SleepStageKind.allCases.contains(.rem))
         XCTAssertEqual(SleepStageKind.rem.label, "REM")
@@ -170,6 +229,10 @@ final class AtriaAnalyticsTests: XCTestCase {
             SleepStageSegment(id: "3", start: start.addingTimeInterval(2_400), end: start.addingTimeInterval(3_600), stage: .deep),
             SleepStageSegment(id: "4", start: start.addingTimeInterval(3_600), end: start.addingTimeInterval(4_200), stage: .rem)
         ]
+        // Fixture migrated 2026-08-05 (manual-sleep honesty): manual windows
+        // now honestly render NO stages, so this fold-mechanics test uses a
+        // validated sensor source instead — the folding under test is
+        // provenance-independent.
         let night = SleepHistorySnapshot.Night(id: "night",
                                                day: start,
                                                start: start,
@@ -180,7 +243,7 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                respiratoryRate: nil,
                                                sleepEfficiency: nil,
                                                confidence: "confirmed",
-                                               source: "manual_sleep",
+                                               source: "validated_sleep_stages",
                                                confirmed: true,
                                                stageSegments: segments)
 
@@ -397,13 +460,17 @@ final class AtriaAnalyticsTests: XCTestCase {
         try withCleanHistoricalArchive {
             let start = Date(timeIntervalSince1970: 1_800_000_000)
             for index in 0..<30 {
-                let payload = historicalPayloadWithGravity(x: 0, y: 0, z: 1)
                 let unix = UInt32(start.timeIntervalSince1970) + UInt32(index * 60)
+                let payload = historicalPayloadWithGravity(x: 0,
+                                                           y: 0,
+                                                           z: 1,
+                                                           counter: UInt32(index),
+                                                           timestamp: unix)
                 let record = HistoricalArchive.Record(schema: HistoricalArchive.schema,
                                                       capturedAt: start.addingTimeInterval(TimeInterval(index * 60)),
                                                       source: "0x2f",
                                                       layoutVersion: HistoricalArchive.layoutVersion,
-                                                      sequence: index,
+                                                      sequence: 24,
                                                       command: 0x16,
                                                       unix7: unix,
                                                       subsec11: 0,
@@ -424,7 +491,7 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                       clockWallRef: unix,
                                                       clockDriftSeconds: 0,
                                                       clockCorrectedUnix7: unix,
-                                                      clockCorrectionStatus: "corrected",
+                                                      clockCorrectionStatus: "clock_ref_present",
                                                       currentSessionUsable: false,
                                                       metricUsable: false,
                                                       usabilityReason: "test_archive_stillness")
@@ -441,6 +508,7 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                          imuStillnessRatio: summary.stillnessRatio,
                                                          imuMovementIntensity: summary.movementIntensity,
                                                          strapSteps: 0,
+                                                         strapStepEvidenceAvailable: true,
                                                          windowStart: start,
                                                          hrStandardDeviation: 2)
             XCTAssertEqual(result.state, "sleep_research")
@@ -461,6 +529,23 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                              reason: "fixture")
         XCTAssertFalse(summary.lowMotionReady,
                        "a few quiet rows cannot validate hours of sleep-like stillness")
+    }
+
+    /// A missing strap-step stream is not a zero-step stream.  Without this
+    /// guard, a short active-wear window could be labelled sleep simply because
+    /// the R10 channel had not supplied any frames yet.
+    func testSleepClassifyDoesNotTreatMissingStrapStepsAsStillness() {
+        let result = AtriaSleepWakeResearch.classify(duration: 60 * 60,
+                                                     averageHR: 58,
+                                                     restingHR: 52,
+                                                     imuStillnessRatio: 0.95,
+                                                     imuMovementIntensity: 0.03,
+                                                     strapSteps: nil,
+                                                     strapStepEvidenceAvailable: false)
+
+        XCTAssertEqual(result.state, "learning")
+        XCTAssertEqual(result.confidence, "none")
+        XCTAssertEqual(result.reason, "strap_steps_missing")
     }
 
     func testBoundedMotionSummaryRequiresDenseValidatedThirtyMinuteEvidence() {
@@ -501,18 +586,26 @@ final class AtriaAnalyticsTests: XCTestCase {
     func testHistoricalCurrentSessionReplayUsesCaptureAnchoredMotionWindow() throws {
         try withCleanHistoricalArchive {
             let start = Date(timeIntervalSince1970: 1_800_000_000)
-            let staleUnixBase: UInt32 = 1_781_000_000
+            // Keep the fixture drift on the production five-minute clock grid so
+            // all 300 rows land exactly inside the requested capture window.
+            let staleUnixBase: UInt32 = 1_781_000_100
             let step = 60
             let count = 300
             let batchCapturedAt = start.addingTimeInterval(TimeInterval((count - 1) * step))
+            let rawDrift = Int(start.timeIntervalSince1970) - Int(staleUnixBase)
+            let snappedDrift = ((rawDrift + 150) / 300) * 300
             for index in 0..<count {
-                let payload = historicalPayloadWithGravity(x: 0, y: 0, z: 1)
                 let unix = staleUnixBase + UInt32(index * step)
+                let payload = historicalPayloadWithGravity(x: 0,
+                                                           y: 0,
+                                                           z: 1,
+                                                           counter: UInt32(index),
+                                                           timestamp: unix)
                 let record = HistoricalArchive.Record(schema: HistoricalArchive.schema,
                                                       capturedAt: batchCapturedAt,
                                                       source: "0x2f",
                                                       layoutVersion: HistoricalArchive.layoutVersion,
-                                                      sequence: index,
+                                                      sequence: 24,
                                                       command: 0x16,
                                                       unix7: unix,
                                                       subsec11: 0,
@@ -530,9 +623,9 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                       candidateRR: ["k64"],
                                                       rawPayloadHex: HistoricalArchive.hex(payload),
                                                       clockDeviceRef: staleUnixBase,
-                                                      clockWallRef: UInt32(batchCapturedAt.timeIntervalSince1970),
-                                                      clockDriftSeconds: 9,
-                                                      clockCorrectedUnix7: unix,
+                                                      clockWallRef: UInt32(start.timeIntervalSince1970),
+                                                      clockDriftSeconds: rawDrift,
+                                                      clockCorrectedUnix7: UInt32(Int(unix) + snappedDrift),
                                                       clockCorrectionStatus: "clock_ref_present",
                                                       currentSessionUsable: true,
                                                       metricUsable: false,
@@ -545,7 +638,7 @@ final class AtriaAnalyticsTests: XCTestCase {
                 HistoricalArchive.motionWindowDiagnostics(start: start, end: end)
             }
             XCTAssertEqual(diagnostics.status, "ready")
-            XCTAssertEqual(diagnostics.reason, "timestamp_aligned_low_motion")
+            XCTAssertEqual(diagnostics.reason, "bounded_historical_gravity_validated")
             XCTAssertEqual(diagnostics.validatedRows, count)
             XCTAssertGreaterThanOrEqual(diagnostics.coverageSeconds, 30 * 60)
             XCTAssertEqual(diagnostics.nearestSeparationSeconds, 0)
@@ -1157,11 +1250,18 @@ final class AtriaAnalyticsTests: XCTestCase {
         )
         XCTAssertEqual(decoded.source, .standardHeartRateMeasurement2A37)
 
+        let qualifiedStandardPoints = (0...900).map { index in
+            SavedSession.RRPoint(
+                t: Double(index),
+                ms: index.isMultiple(of: 2) ? 980 : 1_020,
+                source: .standardHeartRateMeasurement2A37
+            )
+        }
         let standard = SavedSession(
             id: UUID(), start: start, end: start.addingTimeInterval(300), label: "Standard",
             points: [SavedSession.Point(t: 0, bpm: 60)], hrv: 42,
             respiratoryRate: 14,
-            rrPoints: [standardPoint]
+            rrPoints: qualifiedStandardPoints
         )
         let legacy = SavedSession(
             id: UUID(), start: start, end: start.addingTimeInterval(300), label: "Legacy",
@@ -1362,13 +1462,13 @@ final class AtriaAnalyticsTests: XCTestCase {
         func baseline(overnightCount: Int) -> PersonalBaseline {
             var samples: [PersonalBaseline.BaselineSample] = []
             for index in 0..<overnightCount {
-                samples.append(PersonalBaseline.BaselineSample(date: now.addingTimeInterval(-Double(index) * 3_600),
+                samples.append(PersonalBaseline.BaselineSample(date: now.addingTimeInterval(-Double(index) * 24 * 3_600),
                                                                restingHR: 55,
                                                                rmssd: 62,
                                                                overnight: true))
             }
             for index in 0..<6 {
-                samples.append(PersonalBaseline.BaselineSample(date: now.addingTimeInterval(-Double(index + overnightCount) * 3_600),
+                samples.append(PersonalBaseline.BaselineSample(date: now.addingTimeInterval(-Double(index + overnightCount) * 24 * 3_600),
                                                                restingHR: 58,
                                                                rmssd: 30,
                                                                overnight: false))
@@ -1411,7 +1511,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertTrue(estimate.detail.contains("lnRMSSD z"))
     }
 
-    func testRecoveryDoesNotPresentBaselineHRVAsTodaysMeasurement() {
+    func testRecoveryWithoutCurrentHRVUsesLimitedEvidenceAndNeverBaselineHRVAsMeasurement() {
         let now = Date()
         let baseline = PersonalBaseline(restingHR: 60,
                                         hrvEMA: 50,
@@ -1427,10 +1527,73 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                         sleepEfficiency: 0.91,
                                                         sleepDurationHours: 7.6)
 
-        XCTAssertNil(estimate.percent)
-        XCTAssertEqual(estimate.confidence, .learning)
+        XCTAssertNotNil(estimate.percent)
+        XCTAssertEqual(estimate.confidence, .unverified)
         XCTAssertFalse(estimate.usesHRV)
-        XCTAssertTrue(estimate.contributors.isEmpty)
+        XCTAssertTrue(estimate.detail.contains("HRV unavailable"))
+        let hrv = estimate.contributors.first { $0.kind == .hrv }
+        XCTAssertEqual(hrv?.weight, 0)
+        XCTAssertEqual(hrv?.displayValue, "HRV unavailable")
+        XCTAssertFalse(estimate.contributors.contains {
+            $0.kind == .hrv && $0.displayValue.contains("50")
+        }, "the saved baseline must never masquerade as today's HRV")
+    }
+
+    func testDayOneRecoveryCanUseMeasuredSleepBeforeAnyPersonalBaselineExists() {
+        let estimate = AtriaAnalytics.Recovery.estimate(
+            hrvSnapshot: nil,
+            fallbackRMSSD: nil,
+            restingNow: nil,
+            baseline: PersonalBaseline(),
+            sleepEfficiency: 0.88,
+            sleepDurationHours: 6.25
+        )
+
+        XCTAssertNotNil(estimate.percent)
+        XCTAssertEqual(estimate.confidence, .unverified)
+        XCTAssertFalse(estimate.usesHRV)
+        XCTAssertTrue(estimate.detail.contains("Limited confidence"))
+        XCTAssertEqual(estimate.contributors.first(where: { $0.kind == .sleep })?.weight,
+                       0.75)
+    }
+
+    func testRecoveryCanPublishRHRLimitedEstimateWhenSleepAndHRVAreUnavailable() {
+        let estimate = AtriaAnalytics.Recovery.estimate(
+            hrvSnapshot: nil,
+            fallbackRMSSD: nil,
+            restingNow: 58,
+            baseline: PersonalBaseline(restingHR: 60),
+            sleepEfficiency: nil,
+            sleepDurationHours: nil
+        )
+
+        XCTAssertNotNil(estimate.percent)
+        XCTAssertEqual(estimate.confidence, .unverified)
+        XCTAssertFalse(estimate.usesHRV)
+        // Migrated 2026-07-31 (device review): plain-language detail copy.
+        XCTAssertTrue(estimate.detail.contains("resting HR only"))
+        XCTAssertEqual(estimate.contributors.first(where: { $0.kind == .restingHeartRate })?.weight,
+                       0.20)
+        XCTAssertEqual(estimate.contributors.first(where: { $0.kind == .sleep })?.weight,
+                       0)
+    }
+
+    func testRHROnlyRecoveryCannotBecomeNearCertainWithoutSleepOrHRV() {
+        let estimate = AtriaAnalytics.Recovery.estimate(
+            hrvSnapshot: nil,
+            fallbackRMSSD: nil,
+            restingNow: 54,
+            baseline: PersonalBaseline(restingHR: 66),
+            sleepEfficiency: nil,
+            sleepDurationHours: nil
+        )
+
+        XCTAssertEqual(estimate.confidence, .unverified)
+        XCTAssertNotNil(estimate.percent)
+        XCTAssertLessThanOrEqual(estimate.percent ?? 100, 80,
+                                 "one secondary signal must not present near-certain recovery")
+        XCTAssertGreaterThan(estimate.percent ?? 0, 50,
+                             "a genuinely low resting HR should still move the day-one estimate")
     }
 
     func testRecoveryContributorsExposeHelpfulHRVAndRestingDirections() {
@@ -1458,6 +1621,75 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(resting?.direction, 1)
         XCTAssertEqual(hrv?.displayValue, "HRV \(String(format: "%+.1fσ", hrv?.zScore ?? 0))")
         XCTAssertEqual(resting?.displayValue, "Resting HR \(String(format: "%+.1fσ", resting?.zScore ?? 0))")
+    }
+
+    func testRecoveryExcludesUnavailableRespirationInsteadOfInjectingNeutralWeight() {
+        let now = Date()
+        let baseline = PersonalBaseline(
+            restingHR: 60,
+            hrvEMA: 50,
+            sessions: PersonalBaseline.trustedMinimumSamples,
+            updated: now,
+            samples: baselineSamples(
+                count: PersonalBaseline.trustedMinimumSamples,
+                now: now
+            )
+        )
+
+        let estimate = AtriaAnalytics.Recovery.estimate(
+            hrvSnapshot: nil,
+            fallbackRMSSD: 56,
+            restingNow: 58,
+            baseline: baseline,
+            sleepEfficiency: 0.91,
+            sleepDurationHours: 7.6,
+            respiratoryRate: nil,
+            respiratoryBaseline: nil
+        )
+
+        let respiration = estimate.contributors.first { $0.kind == .respiration }
+        XCTAssertEqual(respiration?.weight, 0)
+        XCTAssertEqual(respiration?.displayValue, "Respiration unavailable")
+        XCTAssertEqual(
+            estimate.contributors.reduce(0) { $0 + $1.weight },
+            1,
+            accuracy: 0.000_001
+        )
+    }
+
+    func testCurrentHRVWithoutComparatorDoesNotOwnSixtyPercentOfRecovery() {
+        let now = Date()
+        let restingOnlySamples = (0..<PersonalBaseline.trustedMinimumSamples).map { index in
+            PersonalBaseline.BaselineSample(
+                date: now.addingTimeInterval(Double(-index * 86_400)),
+                restingHR: [58.0, 60.0, 62.0][index % 3],
+                rmssd: nil,
+                overnight: true
+            )
+        }
+        let baseline = PersonalBaseline(
+            restingHR: 60,
+            hrvEMA: nil,
+            sessions: restingOnlySamples.count,
+            updated: now,
+            samples: restingOnlySamples
+        )
+
+        let estimate = AtriaAnalytics.Recovery.estimate(
+            hrvSnapshot: nil,
+            fallbackRMSSD: 56,
+            restingNow: 58,
+            baseline: baseline,
+            sleepEfficiency: 0.91,
+            sleepDurationHours: 7.6
+        )
+
+        XCTAssertFalse(estimate.usesHRV)
+        XCTAssertEqual(
+            estimate.contributors.first { $0.kind == .hrv }?.weight,
+            0
+        )
+        XCTAssertTrue(estimate.detail.contains("HRV unavailable"))
     }
 
     func testSleepBudgetNeedCapsFloorsStrainAndNapCredit() {
@@ -1491,6 +1723,17 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                   sameDayNapHours: 0.5),
                        8.55,
                        accuracy: 0.0001)
+    }
+
+    func testSleepPerformanceZoneUsesAdaptiveNeedBands() throws {
+        let low = try XCTUnwrap(Metrics.sleepPerformanceZone(69, neededHours: 10))
+        XCTAssertEqual(low.level, .red)
+        XCTAssertTrue(low.current.contains("10 h"))
+        XCTAssertEqual(Metrics.sleepPerformanceZone(70)?.level, .yellow)
+        XCTAssertEqual(Metrics.sleepPerformanceZone(84)?.level, .yellow)
+        XCTAssertEqual(Metrics.sleepPerformanceZone(85)?.level, .green)
+        XCTAssertEqual(Metrics.sleepPerformanceZone(100)?.level, .green)
+        XCTAssertNil(Metrics.sleepPerformanceZone(nil))
     }
 
     func testNapRecoveryLiftNeverLowersMorningRecovery() {
@@ -1814,7 +2057,8 @@ final class AtriaAnalyticsTests: XCTestCase {
 
         XCTAssertEqual(result.startingHR, 75)
         XCTAssertEqual(result.endingHR, 65)
-        XCTAssertEqual(result.hrText, "HR 75 -> 65 · -10 bpm")
+        // 2026-08-05: copy audit — "HR 75 -> 65" → "HR 75 → 65"
+        XCTAssertEqual(result.hrText, "HR 75 → 65 · -10 bpm")
         XCTAssertNil(result.rmssdText)
 
         let saved = try XCTUnwrap(AtriaBreathworkSession.savedSession(samples: samples, start: start, end: end))
@@ -2219,7 +2463,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNil(AtriaAnalytics.RespRateRsa.estimate(samples: samples, now: now, lookback: 600))
     }
 
-    func testSleepRespiratoryRateFallsBackForOvernightHROnlyEvidence() {
+    func testSleepRespiratoryRateRejectsClockTimeAloneAsSleepEvidence() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let start = DateComponents(calendar: calendar,
@@ -2250,8 +2494,179 @@ final class AtriaAnalyticsTests: XCTestCase {
 
         let rate = session.sleepRespiratoryRate(rest: 58, maxHR: 185, calendar: calendar)
 
-        XCTAssertNotNil(rate)
-        XCTAssertEqual(rate ?? 0, 15.0, accuracy: 1.0)
+        XCTAssertNil(rate)
+    }
+
+    func testDailyRollupRejectsRespiratoryFallbackWithoutQualifiedSleep() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let day = DateComponents(calendar: calendar,
+                                 timeZone: calendar.timeZone,
+                                 year: 2026,
+                                 month: 7,
+                                 day: 27).date!
+        let metric = SavedDailyMetric(day: day,
+                                      recoveryPercent: 46,
+                                      recoveryConfidence: "unverified",
+                                      hrv: nil,
+                                      restingHR: 73,
+                                      respiratoryRate: nil,
+                                      sleepDuration: nil,
+                                      sleepSpan: nil,
+                                      sleepStart: nil,
+                                      sleepEnd: nil,
+                                      sleepSource: nil,
+                                      sleepStageSegments: [],
+                                      sleepConsistencyPercent: nil,
+                                      strain: 11.4)
+
+        let rollup = try XCTUnwrap(SessionStore.makeDailyRollupStoreEntries(
+            metrics: [metric],
+            respiratoryRateByMorningDay: [day: 12.425],
+            calendar: calendar
+        ).first)
+
+        XCTAssertNil(rollup.respiratoryRate)
+        XCTAssertNil(rollup.vitals?.resp)
+    }
+
+    func testDailyRollupPreservesRespiratoryFallbackForQualifiedSleep() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let day = DateComponents(calendar: calendar,
+                                 timeZone: calendar.timeZone,
+                                 year: 2026,
+                                 month: 7,
+                                 day: 27).date!
+        let sleepEnd = day.addingTimeInterval(8 * 3_600)
+        let sleepStart = sleepEnd.addingTimeInterval(-7 * 3_600)
+        let metric = SavedDailyMetric(day: day,
+                                      recoveryPercent: 72,
+                                      recoveryConfidence: "confirmed",
+                                      hrv: 48,
+                                      restingHR: 58,
+                                      respiratoryRate: nil,
+                                      sleepDuration: 7 * 3_600,
+                                      sleepSpan: 7 * 3_600,
+                                      sleepStart: sleepStart,
+                                      sleepEnd: sleepEnd,
+                                      sleepSource: "manual_sleep",
+                                      sleepStageSegments: [],
+                                      sleepConsistencyPercent: 82,
+                                      strain: 4.2)
+
+        let rollup = try XCTUnwrap(SessionStore.makeDailyRollupStoreEntries(
+            metrics: [metric],
+            respiratoryRateByMorningDay: [day: 13.8],
+            calendar: calendar
+        ).first)
+
+        XCTAssertEqual(rollup.respiratoryRate ?? 0, 13.8, accuracy: 0.001)
+        XCTAssertNil(rollup.vitals?.resp,
+                     "a single qualified night is not yet a respiratory baseline")
+    }
+
+    func testHealthMetricEvidenceLabelsMatchNoSleepFallbackAuthority() {
+        let day = Date(timeIntervalSinceReferenceDate: 900_000)
+        let summary = FrozenRecoverySummary(
+            score: 46,
+            confidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+            source: FrozenRecoverySummary.recoveryV2Source,
+            model: "recovery_v2",
+            scoredDay: day,
+            usesHRV: false,
+            detail: "sleep and HRV unavailable",
+            contributors: []
+        )
+        let rollup = DailyRollupStoreEntry(day: day,
+                                          recoverySummary: summary,
+                                          lnRMSSD: nil,
+                                          rhr: 73,
+                                          sleepSeconds: nil)
+
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.recoveryDetail(
+            rollup: rollup,
+            liveRecoveryAvailable: true
+        ), "limited estimate")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.restingHeartRateDetail(
+            rollup: rollup,
+            liveValueAvailable: true
+        ), "wear estimate")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.hrvDetail(
+            rollup: rollup,
+            liveValueAvailable: false
+        ), "needs qualified sleep")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.respiratoryDetail(
+            valueAvailable: false
+        ), "needs qualified sleep")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledRestingHeartRateDetail(
+            rollup: rollup,
+            now: day
+        ), "wear estimate")
+    }
+
+    func testHealthMetricEvidenceLabelsPreserveQualifiedSleepClaims() {
+        let rollup = DailyRollupStoreEntry(day: Date(timeIntervalSinceReferenceDate: 900_000),
+                                          recovery: 72,
+                                          lnRMSSD: log(48),
+                                          rhr: 58,
+                                          sleepSeconds: 7 * 3_600,
+                                          respiratoryRate: 13.8)
+
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.recoveryDetail(
+            rollup: rollup,
+            liveRecoveryAvailable: true
+        ), "saved")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.restingHeartRateDetail(
+            rollup: rollup,
+            liveValueAvailable: true
+        ), "sleep-derived")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.hrvDetail(
+            rollup: rollup,
+            liveValueAvailable: true
+        ), "sleep signal")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.respiratoryDetail(
+            valueAvailable: true
+        ), "sleep average")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledRestingHeartRateDetail(
+            rollup: rollup,
+            now: rollup.day
+        ), "this morning")
+        let tomorrow = rollup.day.addingTimeInterval(24 * 60 * 60)
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledHRVDetail(
+            rollup: rollup,
+            now: tomorrow
+        ), "yesterday")
+    }
+
+    func testHealthMetricEvidenceDoesNotCallOlderSavedMorningYesterday() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let now = calendar.date(from: DateComponents(year: 2026,
+                                                     month: 7,
+                                                     day: 29,
+                                                     hour: 16))!
+        let saved = calendar.date(from: DateComponents(year: 2026,
+                                                       month: 7,
+                                                       day: 20))!
+        let rollup = DailyRollupStoreEntry(day: saved,
+                                          lnRMSSD: log(48),
+                                          rhr: 57,
+                                          sleepSeconds: 7.16 * 3_600,
+                                          calendar: calendar)
+
+        // Migrated 2026-07-31 (device review): a multi-day-old carried HRV now
+        // tells the user how to refresh it.
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledHRVDetail(
+            rollup: rollup,
+            now: now,
+            calendar: calendar
+        ), "9d ago · confirm a sleep to update")
+        XCTAssertEqual(AtriaHealthMetricEvidencePresentation.settledRestingHeartRateDetail(
+            rollup: rollup,
+            now: now,
+            calendar: calendar
+        ), "9d ago")
     }
 
     func testSleepRespiratoryRateUsesEarlierRRWindowsWhenTailIsSparse() {
@@ -2350,18 +2765,37 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(report.strainRecoveryNote, WeeklyReport.strainRecoveryNoteText)
     }
 
-    func testWorkoutPromptEvaluatorFiresForEightMinutesAtRestPlusTwentySeven() {
+    func testWorkoutPromptEvaluatorFiresForEightMinutesAtRestPlusThirtyFive() {
+        // 2026-08-05: the READY bar rose to +30bpm/5min (user feedback — a
+        // stair climb at +27 kept promoting the interruptive prompt), so the
+        // must-fire fixture is a real effort at +35.
         let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let samples = syntheticHeartSamples(start: start, count: 480, bpm: 87)
+        let samples = syntheticHeartSamples(start: start, count: 480, bpm: 95)
 
         let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
-                                                          currentHeartRate: 87,
+                                                          currentHeartRate: 95,
                                                           restingHeartRate: 60,
                                                           maxHeartRate: 190,
                                                           now: samples.last!.t)
 
         XCTAssertTrue(result.shouldPrompt)
         XCTAssertTrue(result.sustainedPath)
+    }
+
+    func testWorkoutPromptEvaluatorStaysQuietForMildlyElevatedWear() {
+        // The user's exact complaint, pinned: +27 over rest sustained for 8
+        // minutes is mildly-elevated wear (stairs, stress), not a workout
+        // prompt.
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let samples = syntheticHeartSamples(start: start, count: 480, bpm: 87)
+
+        let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
+                                                          currentHeartRate: 95,
+                                                          restingHeartRate: 60,
+                                                          maxHeartRate: 190,
+                                                          now: samples.last!.t)
+
+        XCTAssertFalse(result.shouldPrompt)
     }
 
     // Detection fix (2026-07-09): real BLE data drops packets, so a genuine
@@ -2371,10 +2805,10 @@ final class AtriaAnalyticsTests: XCTestCase {
     // effort (~5-6 min elevated, i.e. an 8-min bout with normal dropout) must fire.
     func testWorkoutPromptEvaluatorFiresForSustainedEffortWithPacketDropout() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let samples = syntheticHeartSamples(start: start, count: 360, bpm: 87)
+        let samples = syntheticHeartSamples(start: start, count: 360, bpm: 95)  // +35: real effort under the 2026-08-05 bar
 
         let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
-                                                          currentHeartRate: 87,
+                                                          currentHeartRate: 95,
                                                           restingHeartRate: 60,
                                                           maxHeartRate: 190,
                                                           now: samples.last!.t)
@@ -2389,7 +2823,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         let samples = syntheticHeartSamples(start: start, count: 180, bpm: 87)
 
         let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
-                                                          currentHeartRate: 87,
+                                                          currentHeartRate: 95,
                                                           restingHeartRate: 60,
                                                           maxHeartRate: 190,
                                                           now: samples.last!.t)
@@ -2435,11 +2869,11 @@ final class AtriaAnalyticsTests: XCTestCase {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         // ~4h of resting samples before the window, then 8 min elevated ending now.
         let leadIn = syntheticHeartSamples(start: start, count: 14_400, bpm: 62)
-        let tail = syntheticHeartSamples(start: start.addingTimeInterval(14_400), count: 480, bpm: 87)
+        let tail = syntheticHeartSamples(start: start.addingTimeInterval(14_400), count: 480, bpm: 95)  // +35 under the 2026-08-05 bar
         let samples = leadIn + tail
 
         let result = AtriaWorkoutPromptEvaluator.evaluate(samples: samples,
-                                                          currentHeartRate: 87,
+                                                          currentHeartRate: 95,
                                                           restingHeartRate: 60,
                                                           maxHeartRate: 190,
                                                           now: samples.last!.t)
@@ -3222,7 +3656,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNotNil(hero)
         XCTAssertNotNil(hero?.recoveryEstimate.percent)
         XCTAssertEqual(hero?.recoveryIsProvisional, true)
-        XCTAssertTrue(hero?.recoveryDetail.contains("provisional") == true)
+        XCTAssertEqual(hero?.recoveryEstimate.confidence, .unverified)
         XCTAssertNotEqual(hero?.recoveryValue, "Learning")
 
         let now = Date()
@@ -3242,6 +3676,70 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNotNil(confirmed.percent)
         XCTAssertFalse(confirmed.confidence.rawValue.contains("provisional"))
         #endif
+    }
+
+    @MainActor
+    func testCarriedRecoveryNamesItsPreviousSleepSource() {
+        let estimate = Metrics.RecoveryEstimate(percent: 75,
+                                                confidence: .personalBaseline,
+                                                usesHRV: true,
+                                                detail: "saved morning score",
+                                                contributors: [])
+
+        XCTAssertEqual(
+            AtriaHomeModel.HeroSnapshot.recoveryDetailText(
+                recoveryEstimate: estimate,
+                recoveryIsProvisional: false,
+                recoveryIsFromPreviousSleep: true,
+                recoveryLiftedAfterNap: false
+            ),
+            // 2026-07-28 deterministic-presentation pass: the status line is now
+            // a compact fixed-vocabulary marker rather than prose. The invariant
+            // this test names is unchanged -- a carried score still says it came
+            // from the previous sleep -- but it says so in 11 characters instead
+            // of 44, because at 44 it wrapped and made one compact card taller
+            // than the one beside it.
+            "prev. sleep"
+        )
+        XCTAssertEqual(
+            AtriaHomeModel.HeroSnapshot.recoveryDetailText(
+                recoveryEstimate: estimate,
+                recoveryIsProvisional: false,
+                recoveryIsFromPreviousSleep: false,
+                recoveryLiftedAfterNap: false
+            ),
+            // Same migration: the raw confidence name ("personal baseline") is
+            // 17 characters and would wrap, so a confident score falls back to
+            // the level's short label.
+            AtriaMetricConfidenceLevel.moderate.shortLabel
+        )
+    }
+
+    @MainActor
+    func testHeroRecoveryWithoutScoreUsesNoValueAndKeepsReasonInDetail() {
+        let estimate = Metrics.RecoveryEstimate(
+            percent: nil,
+            confidence: .learning,
+            usesHRV: false,
+            detail: "HRV unavailable",
+            contributors: []
+        )
+
+        XCTAssertEqual(
+            AtriaHomeModel.HeroSnapshot.recoveryValueText(
+                recoveryEstimate: estimate
+            ),
+            AtriaCompactMetricPresentation.noValue
+        )
+        XCTAssertEqual(
+            AtriaHomeModel.HeroSnapshot.recoveryDetailText(
+                recoveryEstimate: estimate,
+                recoveryIsProvisional: true,
+                recoveryIsFromPreviousSleep: false,
+                recoveryLiftedAfterNap: false
+            ),
+            "HRV pending"
+        )
     }
 
     func testSavedSleepUnlocksUnverifiedRecoveryBeforeHRVBaselineMatures() {
@@ -3404,6 +3902,67 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(zoneSeconds.anaerobic, 10)
         XCTAssertEqual(zoneSeconds.max, 10)
         XCTAssertEqual(zoneSeconds.droppedGapSeconds, 600)
+    }
+
+    func testMaxHeartRateZoneBoundariesAndBanisterCoefficientAreStable() {
+        // Zone edges are inclusive-lower: exactly 50/60/70/80/90% of maxHR steps
+        // up a zone; one bpm below stays in the lower zone. A silent boundary
+        // shift or coefficient swap would corrupt every strain/recovery score, so
+        // pin the contract these integrators depend on.
+        func zone(_ bpm: Int) -> Int {
+            AtriaAnalytics.Strain.maxHeartRateZoneRawValue(for: bpm, maxHR: 200)
+        }
+        XCTAssertEqual(zone(100), 1) // 0.50 → warmup
+        XCTAssertEqual(zone(99), 0)  // just below 0.50 → rest
+        XCTAssertEqual(zone(120), 2) // 0.60
+        XCTAssertEqual(zone(119), 1)
+        XCTAssertEqual(zone(140), 3) // 0.70
+        XCTAssertEqual(zone(139), 2)
+        XCTAssertEqual(zone(160), 4) // 0.80
+        XCTAssertEqual(zone(159), 3)
+        XCTAssertEqual(zone(180), 5) // 0.90
+        XCTAssertEqual(zone(179), 4)
+        XCTAssertEqual(zone(200), 5) // at max
+        // Degenerate inputs fail safe to zone 0 (never crash / negative).
+        XCTAssertEqual(zone(0), 0)
+        XCTAssertEqual(AtriaAnalytics.Strain.maxHeartRateZoneRawValue(for: 120, maxHR: 0), 0)
+
+        // Banister TRIMP sex weighting must not drift or swap.
+        XCTAssertEqual(AtriaAnalytics.Strain.banisterCoefficient(for: .female), 1.67, accuracy: 1e-9)
+        XCTAssertEqual(AtriaAnalytics.Strain.banisterCoefficient(for: .male), 1.92, accuracy: 1e-9)
+        XCTAssertEqual(AtriaAnalytics.Strain.banisterCoefficient(for: .unspecified), 1.92, accuracy: 1e-9)
+    }
+
+    func testZoneSummaryFailsSafeOnDegenerateInputAndPinsHRReserveBoundaries() {
+        typealias Strain = AtriaAnalytics.Strain
+        // Degenerate: <2 samples or max<=rest → empty (no strain from nothing).
+        XCTAssertEqual(Strain.zoneSummary([], rest: 60, max: 160), Strain.ZoneSummary.empty)
+        XCTAssertEqual(Strain.zoneSummary([(0, 120)], rest: 60, max: 160), Strain.ZoneSummary.empty)
+        XCTAssertEqual(Strain.zoneSummary([(0, 120), (1, 130)], rest: 160, max: 160),
+                       Strain.ZoneSummary.empty)
+
+        // All-gap input (dt > maximumLoadEvidenceGap = 15s): every step is dropped,
+        // so there are zero usable samples. The result must report minHRReserve 0,
+        // NOT the internal 1.0 seed leaking out (which would poison a later merge).
+        let allGap = Strain.zoneSummary([(0, 100), (20, 150)], rest: 60, max: 160)
+        XCTAssertEqual(allGap.samples, 0)
+        XCTAssertEqual(allGap.minHRReserve, 0, accuracy: 1e-9)
+        XCTAssertEqual(allGap.maxHRReserve, 0, accuracy: 1e-9)
+        XCTAssertEqual(allGap.droppedGapSeconds, 20, accuracy: 1e-9)
+        XCTAssertEqual(allGap.totalSeconds, 0, accuracy: 1e-9)
+
+        // HR-reserve zone edges are inclusive-lower at 0.30/0.50/0.70/0.85
+        // (rest 60, max 160 → span 100, so bpm = 60 + reserve*100). One bpm below
+        // an edge stays in the lower zone.
+        func zoneSeconds(bpm: Int) -> [TimeInterval] {
+            let s = Strain.zoneSummary([(0, bpm), (1, bpm)], rest: 60, max: 160)
+            return [s.secondsZ0, s.secondsZ1, s.secondsZ2, s.secondsZ3, s.secondsZ4]
+        }
+        XCTAssertEqual(zoneSeconds(bpm: 89), [1, 0, 0, 0, 0])  // reserve 0.29 → Z0
+        XCTAssertEqual(zoneSeconds(bpm: 90), [0, 1, 0, 0, 0])  // 0.30 → Z1
+        XCTAssertEqual(zoneSeconds(bpm: 110), [0, 0, 1, 0, 0]) // 0.50 → Z2
+        XCTAssertEqual(zoneSeconds(bpm: 130), [0, 0, 0, 1, 0]) // 0.70 → Z3
+        XCTAssertEqual(zoneSeconds(bpm: 145), [0, 0, 0, 0, 1]) // 0.85 → Z4
     }
 
     func testBodyAgeAndResearchZonesAreHonestEstimates() {
@@ -3672,7 +4231,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(merged.map(\.bpm), [61, 62, 91, 92])
     }
 
-    func testHistoricalArchiveMetricHeartRatePointsRejectLegacyDiagnosticTrueBit() throws {
+    func testHistoricalArchiveMetricHeartRatePointsRejectUnprovenRowDespiteValidatedLayout() throws {
         try withCleanHistoricalArchive {
             let anchor = Date(timeIntervalSince1970: 1_800_200_000)
             for index in 0..<5 {
@@ -3711,17 +4270,76 @@ final class AtriaAnalyticsTests: XCTestCase {
             let points = HistoricalArchive.metricHeartRatePoints(since: nil, limit: 3)
 
             XCTAssertTrue(points.isEmpty)
-            XCTAssertFalse(HistoricalArchive.metricLayoutValidated(HistoricalArchive.layoutVersion))
+            XCTAssertTrue(HistoricalArchive.metricLayoutValidated(HistoricalArchive.layoutVersion))
             XCTAssertEqual(HistoricalArchive.diagnostics().metricUsableRows, 0)
             XCTAssertFalse(HistoricalArchive.quickMetricReadinessProbe().ready)
         }
+    }
+
+    private func reducedRecoveryWearSession(now: Date,
+                                            bpm: Int,
+                                            rrSeconds: Int,
+                                            mixedProvenance: Bool) -> SavedSession {
+        let start = now.addingTimeInterval(-7 * 3_600)
+        let end = now.addingTimeInterval(-60 * 60)
+        let points = stride(from: 0.0,
+                            through: end.timeIntervalSince(start),
+                            by: 60.0).map {
+            SavedSession.Point(t: $0, bpm: bpm)
+        }
+        let rrPoints: [SavedSession.RRPoint]? = rrSeconds > 0
+            ? (0...rrSeconds).map { second in
+                let source: AtriaRRSourceProvenance = mixedProvenance && second == rrSeconds / 2
+                    ? .validatedProprietaryRealtime
+                    : .standardHeartRateMeasurement2A37
+                return SavedSession.RRPoint(t: Double(second),
+                                            ms: second.isMultiple(of: 2) ? 980 : 1_020,
+                                            source: source)
+            }
+            : nil
+        return SavedSession(id: UUID(),
+                            start: start,
+                            end: end,
+                            label: "Unconfirmed clean wear",
+                            points: points,
+                            rrPoints: rrPoints,
+                            eventTimeZoneIdentifier: utcCalendar.timeZone.identifier)
+    }
+
+    private func priorConfirmedSleepSnapshot(now: Date) -> SleepHistorySnapshot {
+        let end = now.addingTimeInterval(-30 * 3_600)
+        let start = end.addingTimeInterval(-8 * 3_600)
+        let sleep = UserConfirmedSleep(id: "prior-main-sleep",
+                                       createdAt: end,
+                                       start: start,
+                                       end: end,
+                                       source: "manual_sleep",
+                                       confidence: "manual_user_entered",
+                                       sessions: 0,
+                                       samples: 0,
+                                       avgHR: 58,
+                                       peakHR: 62,
+                                       restingHR: 56,
+                                       hrv: 52,
+                                       hrvWindowCount: 3,
+                                       duration: end.timeIntervalSince(start),
+                                       span: end.timeIntervalSince(start),
+                                       reason: "test prior boundary",
+                                       motionSource: "manual",
+                                       motionValidated: false,
+                                       stageSegments: nil,
+                                       eventTimeZoneIdentifier: utcCalendar.timeZone.identifier)
+        return SleepHistorySnapshot(rollups: [],
+                                    confirmedSleeps: [sleep],
+                                    calendar: utcCalendar)
     }
 
     private func baselineSamples(count: Int, now: Date) -> [PersonalBaseline.BaselineSample] {
         (0..<count).map { index in
             PersonalBaseline.BaselineSample(date: now.addingTimeInterval(Double(-index * 86_400)),
                                             restingHR: [58.0, 60.0, 62.0][index % 3],
-                                            rmssd: [48.0, 52.0, 56.0][index % 3])
+                                            rmssd: [48.0, 52.0, 56.0][index % 3],
+                                            overnight: true)
         }
     }
 
@@ -3847,21 +4465,62 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(ready.factors.map(\.id), ["vo2max", "rhr", "lnrmssd", "zone2", "sleep_consistency"])
         XCTAssertEqual(ready.footnote, AtriaFitnessAge.footnoteText)
         XCTAssertTrue(ready.agingPaceDetail.contains("helping"))
+        XCTAssertNil(ready.earlyEstimateDayCount)
+        XCTAssertFalse(ready.isEarlyEstimate)
+        XCTAssertNil(ready.earlyEstimateQualifierText)
     }
 
-    func testFitnessAgeStaysCalibratingUntilTwentyEightDays() {
-        let summary = AtriaFitnessAge.summary(inputs: AtriaFitnessAge.Inputs(chronologicalAge: 40,
-                                                                            biologicalSex: .female,
-                                                                            vo2Max: 36,
-                                                                            restingHeartRate: 58,
-                                                                            hrvRMSSD: 55,
-                                                                            weeklyZone2PlusMinutes: 180,
-                                                                            sleepConsistencyPercent: 88,
-                                                                            historyDays: 27))
+    private func fitnessAgeSummary(historyDays: Int) -> BiologicalAgeSummary {
+        AtriaFitnessAge.summary(inputs: AtriaFitnessAge.Inputs(chronologicalAge: 40,
+                                                               biologicalSex: .female,
+                                                               vo2Max: 36,
+                                                               restingHeartRate: 58,
+                                                               hrvRMSSD: 55,
+                                                               weeklyZone2PlusMinutes: 180,
+                                                               sleepConsistencyPercent: 88,
+                                                               historyDays: historyDays))
+    }
+
+    func testFitnessAgeStaysCalibratingUntilFourteenDays() {
+        let summary = fitnessAgeSummary(historyDays: 13)
 
         XCTAssertNil(summary.biologicalAge)
         XCTAssertEqual(summary.agingPaceText, "Calibrating")
-        XCTAssertTrue(summary.blockers.contains("28 days of heart data"))
+        XCTAssertTrue(summary.blockers.contains("14 days of heart data"))
+        XCTAssertFalse(summary.isEarlyEstimate)
+        XCTAssertNil(summary.earlyEstimateQualifierText)
+        XCTAssertEqual(summary.footnote, AtriaFitnessAge.footnoteText)
+    }
+
+    func testFitnessAgeShowsEarlyEstimateFromFourteenDays() {
+        let summary = fitnessAgeSummary(historyDays: 14)
+
+        XCTAssertNotNil(summary.biologicalAge)
+        XCTAssertTrue(summary.blockers.isEmpty)
+        XCTAssertTrue(summary.isEarlyEstimate)
+        XCTAssertEqual(summary.earlyEstimateDayCount, 14)
+        XCTAssertEqual(summary.earlyEstimateQualifierText, "Early estimate · day 14 of 28")
+        XCTAssertEqual(summary.footnote, AtriaFitnessAge.footnoteText)
+    }
+
+    func testFitnessAgeStaysEarlyThroughDayTwentySeven() {
+        let summary = fitnessAgeSummary(historyDays: 27)
+
+        XCTAssertNotNil(summary.biologicalAge)
+        XCTAssertTrue(summary.isEarlyEstimate)
+        XCTAssertEqual(summary.earlyEstimateDayCount, 27)
+        XCTAssertEqual(summary.earlyEstimateQualifierText, "Early estimate · day 27 of 28")
+    }
+
+    func testFitnessAgeBecomesConfidentAtTwentyEightDays() {
+        let summary = fitnessAgeSummary(historyDays: 28)
+
+        XCTAssertNotNil(summary.biologicalAge)
+        XCTAssertFalse(summary.isEarlyEstimate)
+        XCTAssertNil(summary.earlyEstimateDayCount)
+        XCTAssertNil(summary.earlyEstimateQualifierText)
+        // Same estimate as the early phase — only the confidence changed.
+        XCTAssertEqual(summary.biologicalAge, fitnessAgeSummary(historyDays: 14).biologicalAge)
     }
 
     func testFitnessAgePaceRequiresFourWeeklyChecks() {
@@ -4286,6 +4945,24 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(paused.timeInZone(maxHR: 190).values.reduce(0, +),
                        expectedZoneSeconds,
                        accuracy: 0.0001)
+
+        let sleep = SavedSession(id: UUID(),
+                                 start: start,
+                                 end: start.addingTimeInterval(9 * 60),
+                                 label: "Sleep",
+                                 points: points,
+                                 sleepWakeResearchState: "sleep_research")
+        let breathwork = SavedSession(id: UUID(),
+                                      start: start,
+                                      end: start.addingTimeInterval(9 * 60),
+                                      label: "Breathwork",
+                                      points: points,
+                                      kind: "breathwork")
+        let interval = DateInterval(start: start, end: start.addingTimeInterval(9 * 60))
+        XCTAssertNil(sleep.activeCalories(rest: 60, profile: profile))
+        XCTAssertNil(sleep.activeCalories(rest: 60, profile: profile, within: interval))
+        XCTAssertNil(breathwork.activeCalories(rest: 60, profile: profile))
+        XCTAssertNil(breathwork.activeCalories(rest: 60, profile: profile, within: interval))
     }
 
     func testStrainValidationSplitsCrossMidnightSessionByCivilDay() throws {
@@ -4744,6 +5421,47 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertTrue(classification.isHROnly)
     }
 
+    /// Physical regression (2026-07-23): the strap was worn while awake from
+    /// 02:11–05:19. Three otherwise contiguous all-day fragments produced a
+    /// 3-hour HR-only candidate because the old degraded-review gate accepted
+    /// median baseline+7 and P90 baseline+21. No motion evidence existed, so
+    /// this must remain invisible rather than asking the user to dismiss sleep.
+    func testAwakeThreeHourOvernightWindowDoesNotSurfaceWithoutMotion() {
+        let calendar = utcCalendar
+        let rest = 71
+        let first = flatHRSession(start: utcDate(2027, 3, 2, 2, 11),
+                                  end: utcDate(2027, 3, 2, 2, 37),
+                                  bpm: 87)
+        let middleStart = utcDate(2027, 3, 2, 2, 37)
+        let middleEnd = utcDate(2027, 3, 2, 4, 54)
+        // A bounded awake rise (P90 92) is enough to distinguish this from
+        // the low, stable fragmented-night fixture immediately above.
+        let middlePoints = (0..<137).map { index in
+            SavedSession.Point(t: Double(index) * 60,
+                               bpm: index < 30 ? 92 : 78)
+        }
+        let middle = SavedSession(id: UUID(),
+                                  start: middleStart,
+                                  end: middleEnd,
+                                  label: "Awake overnight regression",
+                                  points: middlePoints)
+        let last = flatHRSession(start: utcDate(2027, 3, 2, 5, 0),
+                                 end: utcDate(2027, 3, 2, 5, 19),
+                                 bpm: 80)
+
+        let candidates = SessionStore.aggregateSleepCandidates(in: [first, middle, last],
+                                                               rest: rest,
+                                                               maxHR: 190,
+                                                               calendar: calendar,
+                                                               historicalMotionPolicy: .boundedRecent)
+        let candidate = try! XCTUnwrap(candidates.first)
+        XCTAssertFalse(candidate.motionEvidenceValidated)
+        XCTAssertEqual(candidate.medianHR, 78)
+        XCTAssertEqual(candidate.hrP90, 92)
+        XCTAssertFalse(SessionStore.isDegradedHROnlyOvernightSleepCandidate(candidate))
+        XCTAssertFalse(SessionStore.isReviewWorthySleepCandidate(candidate))
+    }
+
     /// An evening couch session (not overnight) must never confirm through the
     /// degraded HR-only tier: near-zero overlap with the sleep-core window (00:00-06:00)
     /// is the primary guardrail against an active/awake evening masquerading as sleep.
@@ -4777,14 +5495,10 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                                maxHR: 190,
                                                                calendar: calendar,
                                                                historicalMotionPolicy: .boundedRecent)
-        XCTAssertEqual(candidates.count, 1)
-        guard let candidate = candidates.first else { return }
-
-        XCTAssertEqual(candidate.kind, "nap_candidate")
-        XCTAssertFalse(SessionStore.isUnambiguousHROnlyMainSleepCandidate(candidate))
-        XCTAssertFalse(SessionStore.isDegradedHROnlyOvernightSleepCandidate(candidate),
-                       "the degraded tier is main-sleep-only and must reject nap-shaped candidates outright")
-        XCTAssertFalse(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
+        XCTAssertTrue(
+            candidates.isEmpty,
+            "a short daytime HR-only window must not surface as a nap review or enter the degraded overnight tier"
+        )
     }
 
     /// Motion validation stays strictly preferred: a fragmented night with real
@@ -4813,13 +5527,17 @@ final class AtriaAnalyticsTests: XCTestCase {
             var unix = UInt32(frag1Start.timeIntervalSince1970)
             let endUnix = UInt32(frag3End.timeIntervalSince1970)
             while unix < endUnix {
-                let payload = self.historicalPayloadWithGravity(x: 0, y: 0, z: 1)
                 let capturedAt = Date(timeIntervalSince1970: TimeInterval(unix))
+                let payload = self.historicalPayloadWithGravity(x: 0,
+                                                                y: 0,
+                                                                z: 1,
+                                                                counter: UInt32(index),
+                                                                timestamp: unix)
                 let record = HistoricalArchive.Record(schema: HistoricalArchive.schema,
                                                       capturedAt: capturedAt,
                                                       source: "0x2f",
                                                       layoutVersion: HistoricalArchive.layoutVersion,
-                                                      sequence: index,
+                                                      sequence: 24,
                                                       command: 0x16,
                                                       unix7: unix,
                                                       subsec11: 0,
@@ -4840,7 +5558,7 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                       clockWallRef: unix,
                                                       clockDriftSeconds: 0,
                                                       clockCorrectedUnix7: unix,
-                                                      clockCorrectionStatus: "corrected",
+                                                      clockCorrectionStatus: "clock_ref_present",
                                                       currentSessionUsable: false,
                                                       metricUsable: false,
                                                       usabilityReason: "test_degraded_vs_motion_priority")
@@ -5052,6 +5770,82 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNotNil(result, "wear alone should be enough to settle today's morning row")
         XCTAssertNotNil(result?.restingHR)
         XCTAssertNil(result?.sleepDuration, "no confirmed sleep and no dailyRollup sleep evidence exists for today")
+        XCTAssertNil(
+            result?.strain,
+            "quiet overnight wear must not reappear as strain through the morning fallback"
+        )
+    }
+
+    func testCleanQualifiedUnconfirmedWearYieldsOnlyUnverifiedRecovery() throws {
+        let now = Date()
+        let session = reducedRecoveryWearSession(now: now,
+                                                 bpm: 58,
+                                                 rrSeconds: 1_800,
+                                                 mixedProvenance: false)
+        let baseline = PersonalBaseline(restingHR: 60,
+                                        hrvEMA: 52,
+                                        sessions: PersonalBaseline.trustedMinimumSamples,
+                                        updated: now,
+                                        samples: baselineSamples(count: PersonalBaseline.trustedMinimumSamples,
+                                                                 now: now))
+        let sleep = priorConfirmedSleepSnapshot(now: now)
+        let day = utcCalendar.startOfDay(for: session.end)
+
+        let metric = try XCTUnwrap(SessionStore.makeMorningFrozenDailyMetric(
+            for: day,
+            computed: [],
+            sessions: [session],
+            sleep: sleep,
+            baseline: baseline,
+            maxHR: 190,
+            now: now,
+            calendar: utcCalendar
+        ))
+
+        XCTAssertNotNil(metric.hrv)
+        XCTAssertNotNil(metric.recoveryPercent)
+        XCTAssertEqual(metric.recoveryConfidence,
+                       AtriaAnalytics.Recovery.Estimate.Confidence.unverified.rawValue)
+        XCTAssertNil(metric.sleepDuration, "reduced recovery must never fabricate a sleep record")
+        XCTAssertNil(metric.sleepStart)
+        XCTAssertNil(metric.sleepEnd)
+    }
+
+    func testUnconfirmedRecoveryRejectsBadHRVButKeepsConservativeRHROnlyValue() {
+        let now = Date()
+        let baseline = PersonalBaseline(restingHR: 60,
+                                        hrvEMA: 52,
+                                        sessions: PersonalBaseline.trustedMinimumSamples,
+                                        updated: now,
+                                        samples: baselineSamples(count: PersonalBaseline.trustedMinimumSamples,
+                                                                 now: now))
+        let sleep = priorConfirmedSleepSnapshot(now: now)
+        let fixtures = [
+            reducedRecoveryWearSession(now: now, bpm: 58, rrSeconds: 0, mixedProvenance: false),
+            reducedRecoveryWearSession(now: now, bpm: 58, rrSeconds: 1_800, mixedProvenance: true),
+            reducedRecoveryWearSession(now: now, bpm: 58, rrSeconds: 500, mixedProvenance: false),
+            reducedRecoveryWearSession(now: now, bpm: 82, rrSeconds: 1_800, mixedProvenance: false)
+        ]
+
+        for session in fixtures {
+            let day = utcCalendar.startOfDay(for: session.end)
+            let metric = SessionStore.makeMorningFrozenDailyMetric(for: day,
+                                                                   computed: [],
+                                                                   sessions: [session],
+                                                                   sleep: sleep,
+                                                                   baseline: baseline,
+                                                                   maxHR: 190,
+                                                                   now: now,
+                                                                   calendar: utcCalendar)
+            XCTAssertNil(metric?.hrv)
+            XCTAssertNotNil(metric?.recoveryPercent,
+                            "day-one RHR remains useful even when RR cannot qualify")
+            XCTAssertEqual(metric?.recoveryConfidence,
+                           AtriaAnalytics.Recovery.Estimate.Confidence.unverified.rawValue)
+            XCTAssertFalse(metric?.recoverySummary?.usesHRV ?? true)
+            XCTAssertNil(metric?.sleepDuration,
+                         "RHR-only recovery must not manufacture a sleep record")
+        }
     }
 
     /// Same-day wear fallback exercised specifically: a long overnight-shaped
@@ -5154,8 +5948,19 @@ final class AtriaAnalyticsTests: XCTestCase {
         return result!
     }
 
-    private func historicalPayloadWithGravity(x: Float, y: Float, z: Float) -> [UInt8] {
+    private func historicalPayloadWithGravity(x: Float,
+                                              y: Float,
+                                              z: Float,
+                                              counter: UInt32 = 0,
+                                              timestamp: UInt32 = 0,
+                                              subsecond: UInt16 = 0) -> [UInt8] {
         var payload = Array(repeating: UInt8(0), count: 80)
+        payload[0] = 0x2f
+        payload[1] = 24
+        writeUInt32LE(counter, into: &payload, at: 3)
+        writeUInt32LE(timestamp, into: &payload, at: 7)
+        payload[11] = UInt8(truncatingIfNeeded: subsecond)
+        payload[12] = UInt8(truncatingIfNeeded: subsecond >> 8)
         writeFloat32LE(x, into: &payload, at: 36)
         writeFloat32LE(y, into: &payload, at: 40)
         writeFloat32LE(z, into: &payload, at: 44)
@@ -5168,5 +5973,12 @@ final class AtriaAnalyticsTests: XCTestCase {
         payload[offset + 1] = UInt8((raw >> 8) & 0xff)
         payload[offset + 2] = UInt8((raw >> 16) & 0xff)
         payload[offset + 3] = UInt8((raw >> 24) & 0xff)
+    }
+
+    private func writeUInt32LE(_ value: UInt32, into payload: inout [UInt8], at offset: Int) {
+        payload[offset] = UInt8(truncatingIfNeeded: value)
+        payload[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+        payload[offset + 2] = UInt8(truncatingIfNeeded: value >> 16)
+        payload[offset + 3] = UInt8(truncatingIfNeeded: value >> 24)
     }
 }

@@ -185,14 +185,14 @@ final class AtriaEventCivilTimeTests: XCTestCase {
     }
 
     @MainActor
-    func testLiveRollupIncludesMetadataOnlyConfirmedWorkoutDayWithoutSession() {
+    func testLiveRollupIncludesMetadataOnlyConfirmedWorkoutDayWithoutSession() async {
         let store = SessionStore()
         let marker = "confirmed-only-rollup-\(UUID().uuidString)"
         // A future fixture cannot overlap any persisted test/session evidence,
         // so this exercises the confirmed-workout-only day path exactly.
         let start = Date(timeIntervalSince1970: 2_208_988_800)
         let end = start.addingTimeInterval(60 * 60)
-        let saved = store.confirmWorkoutWindowForUI(
+        let saved = await store.confirmWorkoutWindowForUI(
             start: start,
             end: end,
             rest: 60,
@@ -204,7 +204,7 @@ final class AtriaEventCivilTimeTests: XCTestCase {
         )
         defer {
             for workout in store.confirmedWorkouts where workout.reviewSource == marker {
-                _ = store.deleteConfirmedWorkout(id: workout.id)
+                Task { @MainActor in _ = await store.deleteConfirmedWorkout(id: workout.id) }
             }
         }
 

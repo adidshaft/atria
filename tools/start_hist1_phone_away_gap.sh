@@ -4,17 +4,15 @@ set -euo pipefail
 device_id=${ATRIA_DEVICE_ID:-}
 bundle_id=${ATRIA_BUNDLE_ID:-com.adidshaft.atria}
 label="hist1-phone-away-gap"
-preflight_pull=0
+preflight_pull=1
 
 usage() {
   cat <<'EOF'
 Usage:
-  tools/start_hist1_phone_away_gap.sh [--label NAME] [--device ID] [--bundle-id ID] [--preflight-pull]
+  tools/start_hist1_phone_away_gap.sh [--label NAME] [--device ID] [--bundle-id ID]
 
-Records the timestamp for the deliberate HIST-1 phone-away gap.
-
-Options:
-  --preflight-pull  Capture pull_atria_state.sh into the marker folder before the gap.
+Records the timestamp and a required provenance/analytics preflight pull for the
+deliberate HIST-1 phone-away gap.
 EOF
 }
 
@@ -33,7 +31,6 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --preflight-pull)
-      preflight_pull=1
       shift
       ;;
     -h|--help)
@@ -53,12 +50,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-evidence_dir="docs/evidence/24-product-audit/$label"
+evidence_dir="logs/live-device/$label"
 marker="$evidence_dir/gap-start.txt"
 start_pull_dir="$evidence_dir/start-state-pull"
 
 mkdir -p "$evidence_dir"
-gap_start=$(date -Iseconds)
 
 if (( preflight_pull == 1 )); then
   ./pull_atria_state.sh \
@@ -66,6 +62,10 @@ if (( preflight_pull == 1 )); then
     --bundle-id "$bundle_id" \
     --evidence-dir "$start_pull_dir"
 fi
+
+# The disconnected interval begins only after the pre-gap state is durable;
+# rows collected during the preflight pull must never be credited as recovery.
+gap_start=$(date -Iseconds)
 
 cat > "$marker" <<EOF
 gap_start=$gap_start

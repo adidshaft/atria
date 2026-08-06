@@ -107,10 +107,16 @@ final class AtriaRoutineTests: XCTestCase {
 @MainActor
 final class AtriaRoutineProjectionStoreTests: XCTestCase {
     private func summary(hasAnyHistory: Bool = false) -> AtriaRoutineSummary {
-        AtriaRoutineSummary(isoYear: 2026,
-                            isoWeek: 28,
-                            targets: [],
-                            hasAnyHistory: hasAnyHistory)
+        var calendar = Calendar(identifier: .iso8601)
+        calendar.timeZone = TimeZone(identifier: "UTC") ?? .current
+        let weekStart = calendar.date(
+            from: DateComponents(weekOfYear: 28, yearForWeekOfYear: 2026)
+        ) ?? Date(timeIntervalSince1970: 0)
+        return AtriaRoutineSummary(isoYear: 2026,
+                                   isoWeek: 28,
+                                   weekStart: weekStart,
+                                   targets: [],
+                                   hasAnyHistory: hasAnyHistory)
     }
 
     func testEqualSummaryRefreshDoesNotPublish() {

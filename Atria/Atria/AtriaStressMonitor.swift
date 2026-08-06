@@ -72,6 +72,60 @@ struct AtriaStressState: Equatable {
                                            rawActivation: 0, hrvAvailable: false)
 }
 
+/// One presentation policy shared by Home, Today, and Health. Keeping this
+/// projection beside the scorer prevents individual screens from inventing a
+/// second stress algorithm or presenting a numeric value while the canonical
+/// monitor is calibrating, warming up, asleep, active, or disconnected.
+struct AtriaStressPresentation: Equatable {
+    let level: AtriaStressLevel?
+    let value: String
+    let detail: String
+    let narrative: String
+
+    static func make(state: AtriaStressState) -> Self {
+        let detail: String
+        let narrative: String
+        switch state.kind {
+        case .scored:
+            detail = state.detail.isEmpty ? "Live strap reading" : state.detail
+            narrative = state.hrvAvailable
+                ? "Measured from live HR and HRV against your personal baseline."
+                : "Measured from live HR against your personal baseline; high stress requires HRV corroboration."
+        case .calibrating:
+            detail = state.detail.isEmpty ? "Building your personal HR baseline" : state.detail
+            // Real-time confusion fix (2026-08-05, user report): live HR was
+            // streaming beside a "--" stress value with no explanation of the
+            // gate. Name the mechanism: HR is live now; scoring needs a
+            // trusted baseline of qualified rest days (one per day, so this
+            // takes days by design, not by lag).
+            narrative = "Live heart rate is streaming now. Stress scoring turns on once \(PersonalBaseline.trustedMinimumSamples) qualified rest days (about two weeks of overnight wear) build your personal baseline."
+        case .warmingUp:
+            detail = "Collecting 2 min of live signal"
+            narrative = "Stress is waiting for enough continuous live signal to make a reliable reading."
+        case .active:
+            detail = "Paused during activity"
+            narrative = "Stress monitoring pauses during activity and the post-workout recovery window."
+        case .asleep:
+            detail = "Paused during detected sleep"
+            narrative = "Stress monitoring pauses while sleep is actively detected."
+        case .noSignal:
+            // No signal can mean a connected strap whose next qualified frame
+            // has not arrived yet. Do not prescribe reconnecting unless the
+            // connection authority independently proves a link failure.
+            detail = "Waiting for a fresh strap signal"
+            narrative = "Stress resumes after a fresh qualified strap reading."
+        }
+        return Self(level: state.level,
+                    // Value lines carry a real scored band or the one canonical
+                    // no-value token. The specific unscored state remains in
+                    // `detail`, where it cannot masquerade as a measurement.
+                    value: state.level?.title
+                        ?? AtriaCompactMetricPresentation.noValue,
+                    detail: detail,
+                    narrative: narrative)
+    }
+}
+
 /// Pure, testable scoring core (mirrors the `AtriaSleepBudget` / `AtriaNapRecovery`
 /// style: static functions, no I/O, all thresholds are named constants).
 enum AtriaStressMonitor {
@@ -148,9 +202,13 @@ enum AtriaStressMonitor {
 
         guard baseline.hasTrustedRestingBaseline(now: now) else {
             let n = min(baseline.freshRestingSampleCount(now: now), PersonalBaseline.trustedMinimumSamples)
+            // Progress in the detail line (2026-08-05): the card surfaces
+            // `detail`, not `label`, so the count was invisible — a user
+            // watching live HR stream had no way to tell how far calibration
+            // was or that it advances one qualified rest day at a time.
             return AtriaStressState(level: nil,
                                     label: "Calibrating (\(n)/\(PersonalBaseline.trustedMinimumSamples))",
-                                    detail: "Building your personal HR baseline",
+                                    detail: "Baseline \(n) of \(PersonalBaseline.trustedMinimumSamples) rest days",
                                     kind: .calibrating, confidence: 0,
                                     rawActivation: 0, hrvAvailable: false)
         }
@@ -357,6 +415,13 @@ struct AtriaStressDistributionArchive: Codable, Equatable {
                                                  comparisonDayCount: comparable.count)
     }
 
+    /// Days with enough measured samples to appear in the daily stress trend —
+    /// the same ≥10-sample floor the "typical" comparison uses, so a day can
+    /// never chart with less evidence than it needs to count as comparable.
+    func measuredTrendDays() -> [Day] {
+        days.filter { $0.distribution.sampleCount >= Self.minimumSamplesPerDay }
+    }
+
     static func load(defaults: UserDefaults = .standard) -> AtriaStressDistributionArchive {
         guard let data = defaults.data(forKey: defaultsKey),
               let archive = try? JSONDecoder().decode(AtriaStressDistributionArchive.self, from: data) else {
@@ -378,6 +443,25 @@ struct AtriaStressDistributionArchive: Codable, Equatable {
 @MainActor
 final class AtriaStressMonitorStore: ObservableObject {
     @Published private(set) var state: AtriaStressState = .noSignal
+    /// Most recent contact-backed live heart rate fed into the monitor, for
+    /// surfaces that pair a heart readout with the stress read (the Activity
+    /// "heart & stress" card). Publishes only on bpm change; cleared on lost
+    /// contact. Render-side must gate on `at` freshness — a stored reading is
+    /// not a claim the strap is still delivering.
+    @Published private(set) var liveHeartRate: LiveHeartRateReading?
+
+    struct LiveHeartRateReading: Equatable {
+        let bpm: Int
+        let at: Date
+
+        func isFresh(now: Date = Date(),
+                     window: TimeInterval = AtriaStressReadingFreshness.liveWindow) -> Bool {
+            now.timeIntervalSince(at) <= window
+        }
+    }
+    /// Clock of the most recent scored evaluation. Presentation surfaces use
+    /// this source clock; merely opening a screen must never renew freshness.
+    @Published private(set) var lastMeasuredAt: Date?
     /// Scored readings from this app session (thinned to ~1 per 30s, capped
     /// at 12h). In-memory only — the history chart shows real gaps for any
     /// stretch the strap wasn't read, never interpolation.
@@ -404,6 +488,10 @@ final class AtriaStressMonitorStore: ObservableObject {
 
     private var hrBuffer: [(t: Date, bpm: Int)] = []
     private var contactStartedAt: Date?
+    /// Clock of the last tick that carried live contact. Used to distinguish a
+    /// brief flicker (single zero-contact sample, one missed ~6s freshness
+    /// window) from a sustained loss of signal.
+    private var lastContactAt: Date?
     private var wasRecording = false
     private var lastWorkoutEndAt: Date?
 
@@ -415,6 +503,17 @@ final class AtriaStressMonitorStore: ObservableObject {
 
     private static let hrWindowSeconds: TimeInterval = 60
     private static let rrWindowSeconds: TimeInterval = 180
+    /// Warm-up continuity grace (2026-07-31 device review): the tile sat at
+    /// "collecting 2 min of live signal" indefinitely because ANY single tick
+    /// without contact — one zero-HR skin-contact flicker, or one HR sample
+    /// aging past the 6s live-freshness window between throttled updates —
+    /// nilled `contactStartedAt` and restarted the full 2-minute clock. Warm-up
+    /// is now anchored to accepted-HR continuity: only a sustained gap longer
+    /// than this restarts it. Must stay comfortably above
+    /// `unchangedInputEvaluationInterval` (30s): with unchanged inputs, ticks
+    /// legitimately arrive ~30s apart, and a grace at or below that cadence
+    /// would restart warm-up on every quiet tick — the exact stall this fixes.
+    private static let warmUpContactGraceSeconds: TimeInterval = 60
     private static let activationEMAAlpha = 0.2
     private static let hysteresisMargin = 0.05
     private static let hysteresisHoldTicks = 2
@@ -458,6 +557,12 @@ final class AtriaStressMonitorStore: ObservableObject {
         distributionArchive.comparison(at: now, calendar: calendar)
     }
 
+    /// Measured days for the daily stress trend (§3.3). Read-only projection of
+    /// the persisted distribution archive — no second sample stream exists.
+    func dailyTrendDays() -> [AtriaStressDistributionArchive.Day] {
+        distributionArchive.measuredTrendDays()
+    }
+
     /// Feed one pulse tick in. Safe to call as often as ~every 5s (or on every
     /// HR/RR update); the buffers + EMA absorb the exact cadence.
     func update(heartRate: Int,
@@ -468,12 +573,39 @@ final class AtriaStressMonitorStore: ObservableObject {
                 hrvSnapshot: HRVSnapshot?,
                 baseline: PersonalBaseline,
                 restingMaxHR: (rest: Int, max: Int),
+                hasActiveSleepEvidence: Bool = false,
                 now: Date = Date()) {
 
-        if !hasContact {
+        if hasContact, heartRate > 0 {
+            if liveHeartRate?.bpm != heartRate {
+                liveHeartRate = LiveHeartRateReading(bpm: heartRate, at: now)
+            } else if let current = liveHeartRate, now.timeIntervalSince(current.at) > 30 {
+                // Same bpm for a while: refresh the stamp so freshness gating
+                // doesn't hide a steadily-delivering strap.
+                liveHeartRate = LiveHeartRateReading(bpm: heartRate, at: now)
+            }
+        } else {
+            liveHeartRate = nil
+        }
+
+        if hasContact {
+            if let lastContactAt,
+               now.timeIntervalSince(lastContactAt) > Self.warmUpContactGraceSeconds {
+                // Sustained outage: this is genuinely fresh contact, so the
+                // warm-up clock restarts honestly from here.
+                contactStartedAt = now
+            } else if contactStartedAt == nil {
+                contactStartedAt = now
+            }
+            lastContactAt = now
+        } else if let lastContactAt,
+                  now.timeIntervalSince(lastContactAt) > Self.warmUpContactGraceSeconds {
+            // Only a sustained loss resets warm-up; brief flickers (single
+            // zero-contact sample, one missed freshness window) keep the
+            // accepted-HR continuity anchor. Scoring itself still suppresses
+            // to "No signal" on every tick without contact.
             contactStartedAt = nil
-        } else if contactStartedAt == nil {
-            contactStartedAt = now
+            self.lastContactAt = nil
         }
 
         if wasRecording, !isRecording {
@@ -521,7 +653,12 @@ final class AtriaStressMonitorStore: ObservableObject {
                                            restingMaxHR: restingMaxHR,
                                            workoutActive: isRecording || cooldownActive,
                                            zoneIndex: zoneIndex,
-                                           inSleepWindow: AtriaResearchUploadQueue.isWithinSleepWindow(now: now),
+                                           // The learned duty-cycle window is a
+                                           // radio/upload schedule, not proof that
+                                           // the wearer is asleep. Only an actual
+                                           // active-sleep authority may suppress
+                                           // the live stress reading.
+                                           inSleepWindow: hasActiveSleepEvidence,
                                            hasContact: hasContact,
                                            contactAgeSeconds: contactAge,
                                            now: now)
@@ -531,6 +668,7 @@ final class AtriaStressMonitorStore: ObservableObject {
             lastEmittedLevel = nil
             candidateLevel = nil
             candidateStreak = 0
+            lastMeasuredAt = nil
             if raw != state { state = raw }
             return
         }
@@ -577,6 +715,7 @@ final class AtriaStressMonitorStore: ObservableObject {
         if finalState != state {
             state = finalState
         }
+        lastMeasuredAt = now
         recordHistory(now: now)
     }
 }

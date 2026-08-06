@@ -153,10 +153,10 @@ struct AtriaManualSleepSheet: View {
     /// Returns whether the save actually persisted. false keeps the sheet
     /// open and shows an inline error instead of silently dismissing
     /// (2026-07-07: failed adjustments used to vanish without a trace).
-    let onSave: (Date, Date, Bool) -> Bool
+    let onSave: (Date, Date, Bool) async -> Bool
     /// Removes a saved item, or dismisses an unsaved detection. Keeping this
     /// optional means the plain Add flow has no destructive action.
-    private let onRemove: (() -> Bool)?
+    private let onRemove: (() async -> Bool)?
     private let mode: AtriaManualSleepMode
     private let reviewDetectedTypeText: String?
     /// Detected night backing this review, when one exists (2026-07-07 design
@@ -179,6 +179,7 @@ struct AtriaManualSleepSheet: View {
     @State private var removeFailed = false
     @State private var showsRemoveConfirmation = false
     @State private var showsStageMethodology = false
+    @State private var isSaving = false
 
     init(initialStart: Date? = nil,
          initialEnd: Date? = nil,
@@ -187,8 +188,8 @@ struct AtriaManualSleepSheet: View {
          evidenceNight: SleepHistorySnapshot.Night? = nil,
          evidencePerformancePercent: Int? = nil,
          mode: AtriaManualSleepMode? = nil,
-         onRemove: (() -> Bool)? = nil,
-         onSave: @escaping (Date, Date, Bool) -> Bool) {
+         onRemove: (() async -> Bool)? = nil,
+         onSave: @escaping (Date, Date, Bool) async -> Bool) {
         self.onSave = onSave
         self.onRemove = onRemove
         self.mode = mode ?? {
@@ -369,10 +370,14 @@ struct AtriaManualSleepSheet: View {
 
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Save") {
-                        saveFailed = !onSave(start, end, isNap)
+                        isSaving = true
+                        Task { @MainActor in
+                            saveFailed = !(await onSave(start, end, isNap))
+                            isSaving = false
+                        }
                     }
                     .fontWeight(.bold)
-                    .disabled(!canSave)
+                    .disabled(!canSave || isSaving)
                 }
             }
             .confirmationDialog(removeConfirmationTitle,
@@ -380,10 +385,14 @@ struct AtriaManualSleepSheet: View {
                                 titleVisibility: .visible) {
                 Button(removeButtonTitle, role: .destructive) {
                     guard let onRemove else { return }
-                    if onRemove() {
-                        dismiss()
-                    } else {
-                        removeFailed = true
+                    isSaving = true
+                    Task { @MainActor in
+                        if await onRemove() {
+                            dismiss()
+                        } else {
+                            removeFailed = true
+                        }
+                        isSaving = false
                     }
                 }
                 Button("Cancel", role: .cancel) {}
@@ -419,7 +428,15 @@ struct AtriaManualSleepSheet: View {
                                            tint: Metrics.electricSleep)
 
                 if night.displayStageSegments.isEmpty {
-                    Text("Stages are still building for this night \u{2014} heart-rate estimate only.")
+                    // HR-only honesty (2026-08-01): say what is actually
+                    // missing instead of implying stages will appear.
+                    // Manual honesty (2026-08-05): a hand-typed window never
+                    // grows stages, so "still building" was a false promise.
+                    Text(night.isManualEntry
+                         ? "No stages \u{2014} this window was entered by hand. Stage timelines come only from sensor data."
+                         : night.stageEvidence == .hrOnlyEstimate
+                         ? "Stages need motion data \u{2014} heart rate alone can't separate sleep stages."
+                         : "Stages are still building for this night \u{2014} heart-rate estimate only.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
@@ -448,8 +465,17 @@ struct AtriaManualSleepSheet: View {
                             evidenceStatTile(title: "Performance", value: "\(performance)%")
                         }
                         if night.sleepEfficiency != nil {
+                            // HR-only honesty (2026-08-01): without validated
+                            // motion the stored value is capture coverage,
+                            // not efficiency — the text renders "--".
                             evidenceStatTile(title: "Efficiency", value: night.sleepEfficiencyText)
                         }
+                    }
+                    if night.sleepEfficiency != nil, !night.hasValidatedMotionEvidence {
+                        Text("Efficiency needs motion data \u{2014} the captured span alone can't tell sleep from still wakefulness.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -534,6 +560,14 @@ struct AtriaManualSleepSheet: View {
             DatePicker("End", selection: $end, in: start..., displayedComponents: [.date, .hourAndMinute])
                 .datePickerStyle(.compact)
 
+            if end > start {
+                AtriaEventWindowTimeline(title: isNap ? "Nap window" : "Sleep window",
+                                         start: start,
+                                         end: end,
+                                         tint: isNap ? .indigo : .cyan)
+                    .padding(.top, 2)
+            }
+
             if !canSave {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.circle.fill")
@@ -586,7 +620,7 @@ struct AtriaManualSleepSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Sleep stages")
                         .font(.subheadline.weight(.semibold))
-                    Text(preservesSensorStages ? "Sensor-derived for this window" : "Not estimated from manual entry")
+                    Text(preservesSensorStages ? "Sensor-derived for this window" : "No stages — entered by hand")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -599,7 +633,7 @@ struct AtriaManualSleepSheet: View {
         .accessibilityLabel("Sleep stages")
         .accessibilityValue(preservesSensorStages
                             ? "Sensor-derived for this window"
-                            : "Not estimated from manual entry")
+                            : "No stages — entered by hand")
         .accessibilityHint(showsStageMethodology ? "Collapses stage methodology" : "Shows stage methodology")
     }
 
@@ -607,7 +641,10 @@ struct AtriaManualSleepSheet: View {
         if preservesSensorStages {
             return "Atria re-derives Awake, Light, REM, SWS, and Deep from sensor samples inside the edited window; changing its bounds does not fabricate stages."
         }
-        return "This manual \(isNap ? "nap" : "sleep") saves its window and duration only. Stage bars stay blank until sensor evidence is available."
+        // 2026-08-05: "until sensor evidence is available" was a false promise
+        // — backfill now deliberately skips manual_* windows, so a hand-typed
+        // window never grows stage bars.
+        return "This manual \(isNap ? "nap" : "sleep") saves its window and duration only. Stage timelines come only from sensor-detected sleep, so a hand-typed window never shows stage bars."
     }
 
     private func applyInferredTypeIfNeeded() {

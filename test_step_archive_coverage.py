@@ -573,6 +573,8 @@ class StepArchiveCoverageTests(unittest.TestCase):
         )
         self.assertEqual(help_result.returncode, 0, help_result.stderr)
         self.assertIn("atria-captures/ plus SHA-256 manifest", help_result.stdout)
+        self.assertIn("Runtime-only is the default", help_result.stdout)
+        self.assertIn("--full-archive", help_result.stdout)
 
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "occupied"
@@ -582,6 +584,7 @@ class StepArchiveCoverageTests(unittest.TestCase):
                 [
                     str(ROOT / "pull_atria_state.sh"),
                     "--device", "fake-device",
+                    "--full-archive",
                     "--evidence-dir", str(destination),
                 ],
                 cwd=ROOT,
@@ -759,6 +762,7 @@ exit 2
                 [
                     str(ROOT / "pull_atria_state.sh"),
                     "--device", "fake-device",
+                    "--full-archive",
                     "--evidence-dir", str(destination),
                 ],
                 cwd=ROOT,

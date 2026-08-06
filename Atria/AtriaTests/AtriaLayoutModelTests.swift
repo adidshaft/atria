@@ -50,6 +50,32 @@ final class AtriaLayoutModelTests: XCTestCase {
         XCTAssertEqual(AtriaTodayScreen.glanceMetrics(for: config), [.hrv, .sleepPerformance])
     }
 
+    func testTodayGlanceHostIdentityChangesWithRestoredPresentationLayout() {
+        var config = AtriaHomeLayoutConfig.default
+        let initial = AtriaTodayScreen.glanceHostIdentity(
+            for: config,
+            bars: true
+        )
+
+        config.glanceMetrics.append("strain")
+        let cardsChanged = AtriaTodayScreen.glanceHostIdentity(
+            for: config,
+            bars: true
+        )
+        XCTAssertNotEqual(cardsChanged, initial)
+
+        config.sizeOverrides["strain"] = "wide"
+        let sizeChanged = AtriaTodayScreen.glanceHostIdentity(
+            for: config,
+            bars: true
+        )
+        XCTAssertNotEqual(sizeChanged, cardsChanged)
+        XCTAssertNotEqual(
+            AtriaTodayScreen.glanceHostIdentity(for: config, bars: false),
+            sizeChanged
+        )
+    }
+
     func testHomeLayoutMovesGlanceCardsByStableMetricKey() {
         var config = AtriaHomeLayoutConfig.default
         let original = config.glanceMetrics

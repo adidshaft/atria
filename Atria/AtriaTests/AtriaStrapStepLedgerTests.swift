@@ -114,6 +114,120 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
         XCTAssertEqual(advanced.cumulativeRawSteps, 110)
     }
 
+    func testGyroResearchPrefixPersistsRotatesAndNeverDoubleCounts() throws {
+        let first = UUID()
+        let second = UUID()
+        let checkpoint = try AtriaStrapStepLedger.checkpoint(
+            segmentID: first,
+            segmentStartedAt: now.addingTimeInterval(-300),
+            segmentSteps: 0,
+            segmentRawSteps: 0,
+            deviceTimestamp: 5_000,
+            state: "r10_live_preliminary",
+            gyroCadenceResearchSteps: 500,
+            now: now,
+            at: target
+        )
+        XCTAssertEqual(checkpoint.segmentGyroCadenceResearchSteps, 500)
+        XCTAssertEqual(checkpoint.cumulativeGyroCadenceResearchSteps, 500)
+
+        let repeated = try AtriaStrapStepLedger.checkpoint(
+            segmentID: first,
+            segmentStartedAt: now.addingTimeInterval(-300),
+            segmentSteps: 0,
+            segmentRawSteps: 0,
+            deviceTimestamp: 5_000,
+            state: "r10_live_preliminary",
+            gyroCadenceResearchSteps: 500,
+            now: now.addingTimeInterval(1),
+            at: target
+        )
+        XCTAssertEqual(repeated.cumulativeGyroCadenceResearchSteps, 500)
+
+        let rotated = try AtriaStrapStepLedger.rotate(
+            from: first,
+            finalizedSteps: 0,
+            finalizedRawSteps: 0,
+            deviceTimestamp: 5_000,
+            finalizedGyroCadenceResearchSteps: 500,
+            to: second,
+            nextSegmentStartedAt: now.addingTimeInterval(2),
+            now: now.addingTimeInterval(2),
+            at: target
+        )
+        XCTAssertEqual(rotated.segmentGyroCadenceResearchSteps, 0)
+        XCTAssertEqual(rotated.cumulativeGyroCadenceResearchSteps, 500)
+
+        let advanced = try AtriaStrapStepLedger.checkpoint(
+            segmentID: second,
+            segmentStartedAt: now.addingTimeInterval(2),
+            segmentSteps: 0,
+            segmentRawSteps: 0,
+            deviceTimestamp: 5_001,
+            state: "r10_live_preliminary",
+            gyroCadenceResearchSteps: 20,
+            now: now.addingTimeInterval(3),
+            at: target
+        )
+        XCTAssertEqual(advanced.cumulativeGyroCadenceResearchSteps, 520)
+    }
+
+    func testLegacyLedgerWithoutGyroFieldsStillDecodes() throws {
+        let segment = UUID()
+        let object: [String: Any] = [
+            "schema": AtriaStrapStepLedger.schema,
+            "segmentID": segment.uuidString,
+            "segmentStartedAt": now.timeIntervalSinceReferenceDate,
+            "updatedAt": now.timeIntervalSinceReferenceDate,
+            "segmentSteps": 0,
+            "segmentRawSteps": 0,
+            "cumulativeSteps": 0,
+            "cumulativeRawSteps": 0,
+            "state": "r10_live_preliminary"
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object)
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(AtriaStrapStepLedger.Record.self, from: data)
+        XCTAssertNil(decoded.segmentGyroCadenceResearchSteps)
+        XCTAssertNil(decoded.cumulativeGyroCadenceResearchSteps)
+        XCTAssertTrue(AtriaStrapStepLedger.isValid(decoded, now: now))
+    }
+
+    func testLegacyGyroLedgerCanBePromotedWithoutReinterpretingPeakTotal() throws {
+        let segment = UUID()
+        // This is the shape written before the daily migration: the primary
+        // number is a peak-detector coordinate, while the gyro total is an
+        // independent, durable R10 coordinate. They must never be added.
+        let legacy = try AtriaStrapStepLedger.checkpoint(
+            segmentID: segment,
+            segmentStartedAt: now.addingTimeInterval(-120),
+            segmentSteps: 17,
+            segmentRawSteps: 15,
+            deviceTimestamp: 8_000,
+            state: "r10_live_preliminary",
+            gyroCadenceResearchSteps: 500,
+            now: now,
+            at: target
+        )
+        XCTAssertEqual(legacy.segmentSteps, 17)
+        XCTAssertEqual(legacy.segmentGyroCadenceResearchSteps, 500)
+
+        let migrated = try AtriaStrapStepLedger.checkpoint(
+            segmentID: segment,
+            segmentStartedAt: now.addingTimeInterval(-120),
+            segmentSteps: 512,
+            segmentRawSteps: 15,
+            deviceTimestamp: 8_001,
+            state: "r10_live_validated",
+            gyroCadenceResearchSteps: 512,
+            now: now.addingTimeInterval(1),
+            at: target
+        )
+        XCTAssertEqual(migrated.cumulativeSteps, 512)
+        XCTAssertEqual(migrated.cumulativeGyroCadenceResearchSteps, 512)
+        XCTAssertNotEqual(migrated.cumulativeSteps, 17 + 512)
+    }
+
     func testUnhandedBoundaryResegmentsPrefixAndFutureCheckpointAdvances() throws {
         let first = UUID()
         let second = UUID()
@@ -146,6 +260,101 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
         )
         XCTAssertEqual(advanced.cumulativeSteps, 133)
         XCTAssertEqual(advanced.cumulativeRawSteps, 120)
+    }
+
+    func testLaunchRestoreRebindsExactUnhandedSourceAndPreservesCumulativeCount() throws {
+        let previousSegment = UUID()
+        let restoredSegment = UUID()
+        let liveSegment = UUID()
+        _ = try checkpoint(segment: previousSegment,
+                           steps: 2_800,
+                           raw: 2_500,
+                           timestamp: 4_990)
+        _ = try AtriaStrapStepLedger.rotate(
+            from: previousSegment,
+            finalizedSteps: 2_800,
+            finalizedRawSteps: 2_500,
+            deviceTimestamp: 4_990,
+            to: restoredSegment,
+            nextSegmentStartedAt: now,
+            now: now,
+            at: target
+        )
+        _ = try AtriaStrapStepLedger.checkpoint(
+            segmentID: restoredSegment,
+            segmentStartedAt: now,
+            segmentSteps: 223,
+            segmentRawSteps: 201,
+            deviceTimestamp: 5_000,
+            state: "r10_live_preliminary",
+            now: now,
+            at: target
+        )
+
+        let rebound = try AtriaStrapStepLedger.checkpoint(
+            segmentID: liveSegment,
+            segmentStartedAt: now,
+            segmentSteps: 234,
+            segmentRawSteps: 211,
+            deviceTimestamp: 5_001,
+            state: "r10_live_preliminary",
+            now: now.addingTimeInterval(1),
+            at: target,
+            unhandedRebindingSourceSegmentID: restoredSegment
+        )
+
+        XCTAssertEqual(rebound.segmentID, liveSegment)
+        XCTAssertEqual(rebound.segmentRawSteps, 211)
+        XCTAssertEqual(rebound.cumulativeRawSteps, 2_711)
+        XCTAssertEqual(rebound.cumulativeSteps, 3_034)
+    }
+
+    func testRestoreRebindAuthorityCannotOverwriteAStillNewerSegment() throws {
+        let restoredSegment = UUID()
+        let liveSegment = UUID()
+        let nextSegment = UUID()
+        _ = try checkpoint(segment: restoredSegment,
+                           steps: 111,
+                           raw: 100,
+                           timestamp: 5_000)
+        _ = try AtriaStrapStepLedger.checkpoint(
+            segmentID: liveSegment,
+            segmentStartedAt: now,
+            segmentSteps: 122,
+            segmentRawSteps: 110,
+            deviceTimestamp: 5_001,
+            state: "r10_live_preliminary",
+            now: now.addingTimeInterval(1),
+            at: target,
+            unhandedRebindingSourceSegmentID: restoredSegment
+        )
+        _ = try AtriaStrapStepLedger.rotate(
+            from: liveSegment,
+            finalizedSteps: 122,
+            finalizedRawSteps: 110,
+            deviceTimestamp: 5_001,
+            to: nextSegment,
+            nextSegmentStartedAt: now.addingTimeInterval(2),
+            now: now.addingTimeInterval(2),
+            at: target
+        )
+
+        XCTAssertThrowsError(try AtriaStrapStepLedger.checkpoint(
+            segmentID: liveSegment,
+            segmentStartedAt: now,
+            segmentSteps: 133,
+            segmentRawSteps: 120,
+            deviceTimestamp: 5_002,
+            state: "r10_live_preliminary",
+            now: now.addingTimeInterval(3),
+            at: target,
+            unhandedRebindingSourceSegmentID: restoredSegment
+        )) {
+            XCTAssertEqual($0 as? AtriaStrapStepLedger.SaveError, .mismatchedSegment)
+        }
+        XCTAssertEqual(AtriaStrapStepLedger.load(now: now.addingTimeInterval(3),
+                                                 from: target)?.segmentID,
+                       nextSegment)
     }
 
     func testCorruptImplausibleAndStaleFilesFailClosed() throws {
@@ -182,6 +391,36 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
         XCTAssertEqual(resumed.segmentRawSteps, 100)
         XCTAssertNil(resumed.deviceTimestamp,
                      "an expired strap clock must not reject a genuine later clock reset")
+    }
+
+    func testMalformedLedgerIsQuarantinedBeforeFreshCheckpoint() throws {
+        let malformedBytes = Data("not-json-step-ledger".utf8)
+        try malformedBytes.write(to: target)
+        let segment = UUID()
+        let quarantineID = UUID()
+
+        let recovered = try AtriaStrapStepLedger
+            .recoverMalformedFileAndCheckpoint(
+                segmentID: segment,
+                segmentStartedAt: now.addingTimeInterval(-30),
+                segmentSteps: 16,
+                segmentRawSteps: 16,
+                deviceTimestamp: 5_016,
+                state: "r10_live_preliminary",
+                gyroCadenceResearchSteps: 16,
+                now: now,
+                at: target,
+                quarantineID: quarantineID
+            )
+
+        XCTAssertEqual(try Data(contentsOf: recovered.quarantinedMalformedURL),
+                       malformedBytes)
+        XCTAssertEqual(recovered.record.segmentID, segment)
+        XCTAssertEqual(recovered.record.segmentRawSteps, 16)
+        XCTAssertEqual(
+            AtriaStrapStepLedger.load(now: now, from: target),
+            recovered.record
+        )
     }
 
     func testConcurrentOutOfOrderWritersLeaveNewestCheckpoint() throws {
@@ -230,6 +469,44 @@ final class AtriaStrapStepLedgerTests: XCTestCase {
             now: now,
             minimumInterval: 15
         ), 10, accuracy: 0.001)
+        XCTAssertEqual(AtriaBLEManager.strapStepLedgerRetryDelay(
+            consecutiveFailureCount: 1
+        ), 1, accuracy: 0.001)
+        XCTAssertEqual(AtriaBLEManager.strapStepLedgerRetryDelay(
+            consecutiveFailureCount: 4
+        ), 8, accuracy: 0.001)
+        XCTAssertEqual(AtriaBLEManager.strapStepLedgerRetryDelay(
+            consecutiveFailureCount: 20
+        ), 30, accuracy: 0.001)
+        XCTAssertTrue(AtriaBLEManager.strapStepLedgerFailureIsTransient(
+            CocoaError(.fileWriteUnknown)
+        ))
+        XCTAssertFalse(AtriaBLEManager.strapStepLedgerFailureIsTransient(
+            AtriaStrapStepLedger.SaveError.mismatchedSegment
+        ))
+    }
+
+    func testRepeatedFailureLoggingIsThrottledAndSaveErrorsAreNamed() {
+        XCTAssertEqual(AtriaStrapStepLedger.SaveError.mismatchedSegment.localizedDescription,
+                       "mismatched_segment")
+        XCTAssertTrue(AtriaBLEManager.shouldLogStrapStepLedgerFailure(
+            previousDescription: nil,
+            lastLoggedAt: nil,
+            description: "mismatched_segment",
+            now: now
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldLogStrapStepLedgerFailure(
+            previousDescription: "mismatched_segment",
+            lastLoggedAt: now.addingTimeInterval(-1),
+            description: "mismatched_segment",
+            now: now
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldLogStrapStepLedgerFailure(
+            previousDescription: "mismatched_segment",
+            lastLoggedAt: now.addingTimeInterval(-31),
+            description: "mismatched_segment",
+            now: now
+        ))
     }
 
     func testLifecycleFlushForcesIndependentLedgerCheckpoint() throws {

@@ -79,11 +79,12 @@ struct FrozenRecoverySummary: Codable, Equatable {
         self.contributors = contributors
     }
 
-    init(estimate: Metrics.RecoveryEstimate,
+    init?(estimate: Metrics.RecoveryEstimate,
          scoredDay: Date,
          source: String = FrozenRecoverySummary.recoveryV2Source,
          model: String? = "recovery_v2") {
-        self.init(score: estimate.percent ?? 0,
+        guard let score = estimate.percent else { return nil }
+        self.init(score: score,
                   confidence: estimate.confidence.rawValue,
                   source: source,
                   model: model,
@@ -102,6 +103,11 @@ struct FrozenRecoverySummary: Codable, Equatable {
 
     init?(metric: SavedDailyMetric) {
         guard let score = metric.recoveryPercent else { return nil }
+        if let summary = metric.recoverySummary,
+           summary.score == score {
+            self = summary.replacingScoredDay(metric.day)
+            return
+        }
         var values: [Contributor] = []
         if let hrv = metric.hrv {
             values.append(Contributor(kind: "hrv", value: Double(hrv), unit: "ms"))
@@ -274,6 +280,33 @@ enum DailyRecoveryResolver {
                         physiologicalCycle: AtriaPhysiologicalCycle,
                         anchorSleep: SleepHistorySnapshot.Night? = nil,
                         calendar: Calendar = .current) -> FrozenRecoverySummary? {
+        if physiologicalCycle.boundaryKind == .initialFallback
+            || physiologicalCycle.boundaryKind == .noSleepFallback {
+            guard anchorSleep == nil,
+                  let rollup = rollups.first(where: {
+                      limitedFallbackCivilDayBelongsToCycle(
+                          $0.day,
+                          physiologicalCycle: physiologicalCycle,
+                          calendar: calendar
+                      )
+                          && $0.recovery != nil
+                  }),
+                  let metric = metrics.first(where: {
+                      calendar.isDate($0.day, inSameDayAs: rollup.day)
+                          && $0.recoveryPercent == rollup.recovery
+                  }),
+                  let summary = rollup.resolvedRecoverySummary(matching: metric,
+                                                               calendar: calendar),
+                  limitedFallbackSummaryIsAuthoritative(
+                      summary,
+                      metric: metric,
+                      physiologicalCycle: physiologicalCycle,
+                      calendar: calendar
+                  ) else {
+                return nil
+            }
+            return summary
+        }
         guard physiologicalCycle.boundaryKind == .mainSleep else { return nil }
         guard let rollup = rollups.first(where: {
             calendar.isDate($0.day, inSameDayAs: physiologicalCycle.start)
@@ -290,30 +323,131 @@ enum DailyRecoveryResolver {
         // Requiring the persisted overnight inputs to match lets consumers show
         // a freshly evaluated provisional result until the new freeze lands.
         if let anchorSleep {
-            guard anchorSleep.id == physiologicalCycle.anchorSleepID,
-                  anchorSleep.confirmed,
+            guard anchorSleep.confirmed,
                   !anchorSleep.isNapEvidence,
                   let metric,
-                  metricMatchesConfirmedNight(metric, night: anchorSleep) else {
+                  metricMatchesCurrentPhysiologicalNight(
+                    metric,
+                    night: anchorSleep,
+                    physiologicalCycle: physiologicalCycle
+                  ) else {
                 return nil
             }
         }
         return rollup.resolvedRecoverySummary(matching: metric, calendar: calendar)
     }
 
+    /// Durable metric history is civil-day keyed even when a no-sleep
+    /// physiological cycle begins in the afternoon. The midnight row inside
+    /// that still-active wake-to-wake interval belongs to the same cycle; if it
+    /// is rejected, Home recomputes from a later live RHR while detail/history
+    /// keep the persisted score. Never admit the following midnight or broaden
+    /// initial-wear authority beyond its own civil day.
+    private static func limitedFallbackCivilDayBelongsToCycle(
+        _ day: Date,
+        physiologicalCycle: AtriaPhysiologicalCycle,
+        calendar: Calendar
+    ) -> Bool {
+        if calendar.isDate(day, inSameDayAs: physiologicalCycle.start) {
+            return true
+        }
+        guard physiologicalCycle.boundaryKind == .noSleepFallback,
+              day > physiologicalCycle.start,
+              let nextBoundary = calendar.date(
+                  byAdding: .day,
+                  value: 1,
+                  to: physiologicalCycle.start
+              ) else {
+            return false
+        }
+        return day < nextBoundary
+    }
+
+    /// Initial wear and a later no-sleep rollover have no current confirmed wake
+    /// boundary, but production still mints one explicitly limited RHR-only
+    /// score for the fallback day. Once persisted, that score must be the
+    /// authority everywhere; recomputing from a later live RHR otherwise lets
+    /// Home/widget disagree with history.
+    ///
+    /// This deliberately admits only the exact recovery-v2 no-sleep/no-HRV
+    /// structure. Historical scores, sleep-bearing rows, HRV-bearing rows,
+    /// stronger confidence tiers, and a different fallback day all fail closed.
+    private static func limitedFallbackSummaryIsAuthoritative(
+        _ summary: FrozenRecoverySummary,
+        metric: SavedDailyMetric,
+        physiologicalCycle: AtriaPhysiologicalCycle,
+        calendar: Calendar
+    ) -> Bool {
+        guard physiologicalCycle.boundaryKind == .initialFallback
+                || physiologicalCycle.boundaryKind == .noSleepFallback,
+              limitedFallbackCivilDayBelongsToCycle(
+                  metric.day,
+                  physiologicalCycle: physiologicalCycle,
+                  calendar: calendar
+              ),
+              summary.scoredDay.map({
+                  calendar.isDate($0, inSameDayAs: metric.day)
+              }) == true else {
+            return false
+        }
+        return limitedFallbackMetricIsStructurallyAuthoritative(
+            metric,
+            summary: summary,
+            day: metric.day,
+            calendar: calendar
+        )
+    }
+
+    /// A persisted day-one/no-sleep score must not be reminted from a later
+    /// live RHR during an ordinary history refresh. This structural check is
+    /// shared with the merge path so the durable authority cannot briefly win
+    /// at launch and then drift after the next asynchronous rollup rebuild.
+    static func limitedFallbackMetricIsStructurallyAuthoritative(
+        _ metric: SavedDailyMetric,
+        summary: FrozenRecoverySummary? = nil,
+        day: Date,
+        calendar: Calendar = .current
+    ) -> Bool {
+        guard calendar.isDate(metric.day, inSameDayAs: day),
+              let summary = summary ?? metric.recoverySummary,
+              summary.scoredDay.map({
+                  calendar.isDate($0, inSameDayAs: day)
+              }) == true,
+              summary.source == FrozenRecoverySummary.recoveryV2Source,
+              summary.model == "recovery_v2",
+              summary.confidence == Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+              !summary.usesHRV,
+              metric.recoveryPercent == summary.score,
+              metric.recoveryConfidence == Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+              metric.hrv == nil,
+              metric.sleepDuration == nil,
+              metric.sleepSpan == nil,
+              metric.sleepStart == nil,
+              metric.sleepEnd == nil,
+              metric.sleepSource == nil,
+              metric.restingHR.map({ $0 > 0 }) == true else {
+            return false
+        }
+
+        let sleep = summary.contributors.first { $0.kind == "sleep" }
+        let hrv = summary.contributors.first { $0.kind == "hrv" }
+        let resting = summary.contributors.first { $0.kind == "restingHeartRate" }
+        return sleep?.weight == 0
+            && hrv?.weight == 0
+            && resting.map { ($0.weight ?? 0) > 0 } == true
+    }
+
     /// One source of truth for non-interactive consumers such as widgets and
-    /// notifications. Main-sleep cycles prefer the frozen morning result;
-    /// all-nighter fallback cycles fail closed to red rather than reusing a
-    /// live HRV estimate from the prior physiological day.
+    /// notifications. Main-sleep cycles prefer the frozen morning result.
+    /// Without a confirmed sleep, keep the current limited-evidence estimate
+    /// rather than blanking the product; its confidence/detail must disclose
+    /// that sleep is unavailable and it is never frozen as a morning score.
     static func currentEstimate(liveEstimate: Metrics.RecoveryEstimate,
                                 rollups: [DailyRollupStoreEntry],
                                 metrics: [SavedDailyMetric],
                                 physiologicalCycle: AtriaPhysiologicalCycle,
                                 anchorSleep: SleepHistorySnapshot.Night? = nil,
                                 calendar: Calendar = .current) -> Metrics.RecoveryEstimate {
-        if physiologicalCycle.boundaryKind == .noSleepFallback {
-            return noSleepEstimate
-        }
         return summary(rollups: rollups,
                        metrics: metrics,
                        physiologicalCycle: physiologicalCycle,
@@ -340,20 +474,47 @@ enum DailyRecoveryResolver {
             && metric.respiratoryRate == night.respiratoryRate
     }
 
+    /// A resumed-sleep segment extends the physiological wake boundary while
+    /// the durable main-sleep card can still temporarily expose only the
+    /// original fragment. Accept that one precise shape without weakening the
+    /// ordinary exact-input gate. An edited same-boundary night still fails:
+    /// the exception requires the snapshot's old end to precede the cycle's
+    /// final linked wake and the persisted span to end exactly at that wake.
+    static func metricMatchesCurrentPhysiologicalNight(
+        _ metric: SavedDailyMetric,
+        night: SleepHistorySnapshot.Night,
+        physiologicalCycle: AtriaPhysiologicalCycle
+    ) -> Bool {
+        guard physiologicalCycle.boundaryKind == .mainSleep,
+              night.confirmed,
+              !night.isNapEvidence else { return false }
+        if metricMatchesConfirmedNight(metric, night: night) {
+            return metric.sleepEnd == physiologicalCycle.start
+        }
+        guard let nightStart = night.start,
+              let nightEnd = night.end,
+              nightEnd < physiologicalCycle.start,
+              metric.sleepStart == nightStart,
+              metric.sleepEnd == physiologicalCycle.start,
+              metric.sleepSpan == physiologicalCycle.start.timeIntervalSince(nightStart),
+              let metricDuration = metric.sleepDuration,
+              metricDuration >= night.duration,
+              metricDuration <= physiologicalCycle.start.timeIntervalSince(nightStart),
+              metric.hrv == night.hrv,
+              metric.restingHR == night.restingHR,
+              metric.respiratoryRate == night.respiratoryRate else {
+            return false
+        }
+        return true
+    }
+
     static var noSleepEstimate: Metrics.RecoveryEstimate {
         Metrics.RecoveryEstimate(
-            percent: 1,
+            percent: nil,
             confidence: .unverified,
             usesHRV: false,
-            detail: "No main sleep was recorded for this physiological cycle. Recovery stays red until a main sleep is confirmed.",
-            contributors: [
-                Metrics.RecoveryEstimate.Contributor(kind: .sleep,
-                                                     zScore: -3,
-                                                     weight: 1,
-                                                     detail: "No main sleep recorded",
-                                                     displayValue: "0h",
-                                                     direction: -1)
-            ]
+            detail: "No confirmed main sleep was recorded for this physiological cycle, so recovery is unavailable.",
+            contributors: []
         )
     }
 
@@ -400,6 +561,8 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
     var sleepPerformance: Int?
     var bedtimeMinutes: Int?
     var strain: Double?
+    var strainCoverageFraction: Double?
+    var strainEvidenceQuality: Metrics.StrainEvidenceQuality?
     var respiratoryRate: Double?
     /// Relative sleep skin-temperature deviation in Celsius, finalized into the
     /// morning/day rollup so product surfaces do not drift with live sessions.
@@ -426,6 +589,8 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         case sleepPerformance
         case bedtimeMinutes
         case strain
+        case strainCoverageFraction
+        case strainEvidenceQuality
         case respiratoryRate
         case skinTemperatureDeviationCelsius
         case vitals
@@ -443,6 +608,8 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
          sleepPerformance: Int? = nil,
          bedtimeMinutes: Int? = nil,
          strain: Double? = nil,
+         strainCoverageFraction: Double? = nil,
+         strainEvidenceQuality: Metrics.StrainEvidenceQuality? = nil,
          respiratoryRate: Double? = nil,
          skinTemperatureDeviationCelsius: Double? = nil,
          vitals: DailyRollupVitals? = nil,
@@ -461,6 +628,8 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         self.sleepPerformance = sleepPerformance
         self.bedtimeMinutes = bedtimeMinutes
         self.strain = strain
+        self.strainCoverageFraction = strainCoverageFraction.map { min(1, max(0, $0)) }
+        self.strainEvidenceQuality = strainEvidenceQuality
         self.respiratoryRate = respiratoryRate
         self.skinTemperatureDeviationCelsius = skinTemperatureDeviationCelsius
         self.vitals = vitals
@@ -490,6 +659,14 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         sleepPerformance = try container.decodeIfPresent(Int.self, forKey: .sleepPerformance)
         bedtimeMinutes = try container.decodeIfPresent(Int.self, forKey: .bedtimeMinutes)
         strain = try container.decodeIfPresent(Double.self, forKey: .strain)
+        strainCoverageFraction = try container.decodeIfPresent(
+            Double.self,
+            forKey: .strainCoverageFraction
+        ).map { min(1, max(0, $0)) }
+        strainEvidenceQuality = try container.decodeIfPresent(
+            Metrics.StrainEvidenceQuality.self,
+            forKey: .strainEvidenceQuality
+        )
         respiratoryRate = try container.decodeIfPresent(Double.self, forKey: .respiratoryRate)
         skinTemperatureDeviationCelsius = try container.decodeIfPresent(Double.self, forKey: .skinTemperatureDeviationCelsius)
         vitals = try container.decodeIfPresent(DailyRollupVitals.self, forKey: .vitals)
@@ -515,6 +692,8 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         try container.encodeIfPresent(sleepPerformance, forKey: .sleepPerformance)
         try container.encodeIfPresent(bedtimeMinutes, forKey: .bedtimeMinutes)
         try container.encodeIfPresent(strain, forKey: .strain)
+        try container.encodeIfPresent(strainCoverageFraction, forKey: .strainCoverageFraction)
+        try container.encodeIfPresent(strainEvidenceQuality, forKey: .strainEvidenceQuality)
         try container.encodeIfPresent(respiratoryRate, forKey: .respiratoryRate)
         try container.encodeIfPresent(skinTemperatureDeviationCelsius, forKey: .skinTemperatureDeviationCelsius)
         try container.encodeIfPresent(vitals, forKey: .vitals)
@@ -567,7 +746,10 @@ final class DailyRollupStore {
     /// Restore spans this file and several other canonical destinations. While
     /// that transaction owns persistence, mutations may update the in-memory
     /// cache but cannot enqueue a stale file image behind the transaction.
-    private var persistencePaused = false
+    /// Restore and recovered-data publication may overlap briefly while their
+    /// main-actor coordinators supersede work. A depth counter prevents either
+    /// fence from resuming disk writes while the other still owns the file.
+    private var persistencePauseDepth = 0
 
     init(url: URL? = nil,
          recoveryMetricsURL: URL? = nil,
@@ -604,6 +786,8 @@ final class DailyRollupStore {
                                                    sleepPerformance: entry.sleepPerformance,
                                                    bedtimeMinutes: entry.bedtimeMinutes,
                                                    strain: entry.strain,
+                                                   strainCoverageFraction: entry.strainCoverageFraction,
+                                                   strainEvidenceQuality: entry.strainEvidenceQuality,
                                                    respiratoryRate: entry.respiratoryRate,
                                                    skinTemperatureDeviationCelsius: entry.skinTemperatureDeviationCelsius,
                                                    vitals: entry.vitals,
@@ -785,6 +969,8 @@ final class DailyRollupStore {
                               sleepPerformance: rollup.sleepPerformance,
                               bedtimeMinutes: rollup.bedtimeMinutes,
                               strain: rollup.strain,
+                              strainCoverageFraction: rollup.strainCoverageFraction,
+                              strainEvidenceQuality: rollup.strainEvidenceQuality,
                               respiratoryRate: rollup.respiratoryRate,
                               skinTemperatureDeviationCelsius: rollup.skinTemperatureDeviationCelsius,
                               vitals: rollup.vitals,
@@ -826,7 +1012,8 @@ final class DailyRollupStore {
         return calendar.dateComponents([.year, .month, .day], from: entry.day)
     }
 
-    private static func persist(_ rollups: [DailyRollupStoreEntry], to url: URL) {
+    @discardableResult
+    private static func persist(_ rollups: [DailyRollupStoreEntry], to url: URL) -> Bool {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -836,23 +1023,64 @@ final class DailyRollupStore {
                           rollups.count,
                           data.count,
                           url.lastPathComponent)
+            return true
         } catch {
             AtriaDebugLog("ATRIADBG daily_rollup_store_save status=failed error=%@",
                           error.localizedDescription)
+            return false
+        }
+    }
+
+    /// Flushes the newest in-memory authority after every previously queued
+    /// rollup image. Morning settlement uses this completion as its durability
+    /// fence before releasing Home/widget publication.
+    func persistCurrentSnapshot(completion: @escaping (Bool) -> Void) {
+        guard persistencePauseDepth == 0 else {
+            completion(false)
+            return
+        }
+        let snapshot = cache
+        let targetURL = url
+        queue.async {
+            let succeeded = Self.persist(snapshot, to: targetURL)
+            DispatchQueue.main.async {
+                completion(succeeded)
+            }
         }
     }
 
     func replaceAll(_ rollups: [DailyRollupStoreEntry]) {
+        // `replaceAll` is also a transaction rollback primitive. Rebuild the
+        // side provenance index from the replacement image instead of retaining
+        // recovery summaries introduced by the discarded image.
+        recoverySummariesByDay.removeAll(keepingCapacity: true)
         cache = rollups.map { normalizedEntry(from: $0) }.sorted { $0.day > $1.day }
         rebuildCacheIndex()
         schedulePersistence(of: cache)
+    }
+
+    /// Recovered analytics prepare several dependent projections before one
+    /// publication fence. Keep rollup writes in memory until that fence commits
+    /// so a later component failure cannot leave a partially advanced file.
+    func beginRecoveredDataPublicationFence() {
+        persistencePauseDepth &+= 1
+    }
+
+    /// Ends the recovered-data fence and persists exactly the selected final
+    /// image (the prepared image on commit, or the restored image on rollback).
+    func endRecoveredDataPublicationFence(persistCurrentSnapshot: Bool = true) {
+        let snapshot = persistCurrentSnapshot ? cache : nil
+        persistencePauseDepth = max(0, persistencePauseDepth - 1)
+        if let snapshot, persistencePauseDepth == 0 {
+            schedulePersistence(of: snapshot)
+        }
     }
 
     /// MainActor-owned transaction fence. Draining after pausing ensures every
     /// previously queued image is durable before restore captures its rollback
     /// image. Subsequent mutations remain in memory until the fence ends.
     func beginPersistenceFence() async {
-        persistencePaused = true
+        persistencePauseDepth &+= 1
         await withCheckedContinuation { continuation in
             queue.async { continuation.resume() }
         }
@@ -862,14 +1090,14 @@ final class DailyRollupStore {
     /// captured before or midway through restore.
     func endPersistenceFence(persistCurrentSnapshot: Bool = true) {
         let snapshot = persistCurrentSnapshot ? cache : nil
-        persistencePaused = false
-        if let snapshot {
+        persistencePauseDepth = max(0, persistencePauseDepth - 1)
+        if let snapshot, persistencePauseDepth == 0 {
             schedulePersistence(of: snapshot)
         }
     }
 
     private func schedulePersistence(of snapshot: [DailyRollupStoreEntry]) {
-        if persistencePaused {
+        if persistencePauseDepth > 0 {
             return
         }
         let targetURL = url

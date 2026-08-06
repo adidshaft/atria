@@ -56,6 +56,37 @@ final class AtriaWorkoutOnsetTests: XCTestCase {
         XCTAssertNil(AtriaWorkoutOnset.firstSustainedElevatedOnset(samples: s, rest: 66, maxHR: 190))
     }
 
+    // End-bound counterpart (2026-07-31 physical case): the last sustained
+    // elevated bout's end, so a mildly-elevated evening tail can never keep
+    // a candidate open until sleep-onset HR decay.
+    func testLastSustainedBoutEndIgnoresMildlyElevatedTail() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        // 45 min real effort (~140) then 3 h mild non-exertion (~95 < 128).
+        let s = samples([(2_700, 140), (3 * 3_600, 95)], start: start)
+        let boutEnd = AtriaWorkoutOnset.lastSustainedElevatedBoutEnd(samples: s, rest: 66, maxHR: 190)
+        XCTAssertNotNil(boutEnd)
+        XCTAssertEqual(boutEnd!.timeIntervalSince(start), 2_700, accuracy: 3)
+    }
+
+    func testLastSustainedBoutEndPicksTheLastQualifyingBout() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        // Two real bouts separated by a sub-threshold rest; a later 60 s spike
+        // (< 90 s minimum) must not extend the boundary.
+        let s = samples([(600, 140), (600, 100), (600, 141), (900, 100), (60, 150), (600, 100)],
+                        start: start)
+        let boutEnd = AtriaWorkoutOnset.lastSustainedElevatedBoutEnd(samples: s, rest: 66, maxHR: 190)
+        XCTAssertNotNil(boutEnd)
+        XCTAssertEqual(boutEnd!.timeIntervalSince(start), 1_800, accuracy: 3)
+    }
+
+    func testLastSustainedBoutEndFailsClosedWithoutASustainedBout() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertNil(AtriaWorkoutOnset.lastSustainedElevatedBoutEnd(
+            samples: samples([(3_600, 100), (60, 140), (600, 95)], start: start),
+            rest: 66,
+            maxHR: 190))
+    }
+
     // windowStats: the trimmed-window HR stats must reflect ONLY the given
     // (trimmed) samples — the honesty bug the self-review caught was avg being
     // computed over the untrimmed window.

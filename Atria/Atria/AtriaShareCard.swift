@@ -89,6 +89,24 @@ struct AtriaShareSnapshot: Equatable, Hashable {
         let detail: String
         let tintHex: String
         let fill: Double?
+        let stateTintHex: String?
+        let targetFraction: Double?
+
+        init(title: String,
+             value: String,
+             detail: String,
+             tintHex: String,
+             fill: Double?,
+             stateTintHex: String? = nil,
+             targetFraction: Double? = nil) {
+            self.title = title
+            self.value = value
+            self.detail = detail
+            self.tintHex = tintHex
+            self.fill = fill
+            self.stateTintHex = stateTintHex
+            self.targetFraction = targetFraction
+        }
     }
 
     struct Stat: Equatable, Hashable, Identifiable {
@@ -182,6 +200,12 @@ struct AtriaWorkoutShareSnapshot: Equatable, Hashable, Sendable {
 /// must not turn an unavailable metric into visible progress or make equal-size
 /// zone blocks imply equal time in every zone.
 enum AtriaWorkoutSharePresentation {
+    struct CompletedSteps: Equatable {
+        let valueText: String
+        let detailText: String
+        let isAvailable: Bool
+    }
+
     /// A social card should contain only measured values. Internal learning or
     /// sparse-evidence sentinels are useful inside Atria, but exporting them as
     /// a visible stat makes an unfinished calculation look like part of the
@@ -204,8 +228,11 @@ enum AtriaWorkoutSharePresentation {
         guard [.walking, .running, .hiking].contains(activity),
               let count,
               count >= 0 else { return nil }
-        guard !(isEstimated == true && count == 0) else { return nil }
-        return isEstimated == true ? "~\(count)" : "\(count)"
+        // The only current estimated workout source is the disproven sparse
+        // v24 cadence model. Sharing accepts detector-measured strap steps
+        // only; a research estimate must never look like a workout result.
+        guard isEstimated == false else { return nil }
+        return "\(count)"
     }
 
     /// A completed-workout card must never turn an in-flight/stale counter into
@@ -216,15 +243,61 @@ enum AtriaWorkoutSharePresentation {
                                    capturedAt: Date?,
                                    workoutEndedAt: Date,
                                    activity: AtriaWorkoutActivityType) -> String? {
-        guard let capturedAt,
-              capturedAt <= workoutEndedAt.addingTimeInterval(
-                AtriaLiveWorkoutStepProjection.futureTolerance
-              ),
-              workoutEndedAt.timeIntervalSince(capturedAt)
-                <= AtriaLiveWorkoutStepProjection.freshnessInterval else { return nil }
-        return stepsText(count: count,
-                         isEstimated: isEstimated,
-                         activity: activity)
+        guard let presentation = completedStepsPresentation(
+            count: count,
+            isEstimated: isEstimated,
+            capturedAt: capturedAt,
+            workoutEndedAt: workoutEndedAt,
+            activity: activity
+        ), presentation.isAvailable else { return nil }
+        return presentation.valueText
+    }
+
+    /// Saved walking workouts always explain their strap-step state. Sharing
+    /// remains measured-values-only, but the in-app workout detail must not
+    /// make missing/stale motion evidence disappear as if steps were
+    /// irrelevant.
+    static func completedStepsPresentation(
+        count: Int?,
+        isEstimated: Bool?,
+        capturedAt: Date?,
+        workoutEndedAt: Date,
+        activity: AtriaWorkoutActivityType
+    ) -> CompletedSteps? {
+        guard [.walking, .running, .hiking].contains(activity) else { return nil }
+        guard let capturedAt else {
+            return CompletedSteps(
+                valueText: "--",
+                detailText: "No verified strap motion for this workout",
+                isAvailable: false
+            )
+        }
+        guard capturedAt <= workoutEndedAt.addingTimeInterval(
+            AtriaLiveWorkoutStepProjection.futureTolerance
+        ), workoutEndedAt.timeIntervalSince(capturedAt)
+            <= AtriaLiveWorkoutStepProjection.freshnessInterval else {
+            return CompletedSteps(
+                valueText: "--",
+                detailText: "Strap motion was not verified at workout end",
+                isAvailable: false
+            )
+        }
+        guard let valueText = stepsText(
+            count: count,
+            isEstimated: isEstimated,
+            activity: activity
+        ) else {
+            return CompletedSteps(
+                valueText: "--",
+                detailText: "No verified strap step count for this workout",
+                isAvailable: false
+            )
+        }
+        return CompletedSteps(
+            valueText: valueText,
+            detailText: "WHOOP strap motion",
+            isAvailable: true
+        )
     }
 
     static func strainFraction(_ text: String) -> Double? {
@@ -513,6 +586,10 @@ struct AtriaShareCardView: View {
     let selectedStatIDs: Set<String>
     let canvasStyle: AtriaShareCanvasStyle
     let photoBackground: UIImage?
+    /// Honors the same Today-rings layout preference so a shared card matches
+    /// what the wearer sees in the app (concentric vs WHOOP-style separate).
+    @AtriaDefault(AtriaRingLayoutStyle.defaultsKey) private var ringLayoutRaw: String = "concentric"
+    private var ringLayout: AtriaRingLayoutStyle { AtriaRingLayoutStyle(rawValue: ringLayoutRaw) ?? .concentric }
 
     init(snapshot: AtriaShareSnapshot,
          format: AtriaShareFormat,
@@ -588,7 +665,6 @@ struct AtriaShareCardView: View {
                 Spacer(minLength: format == .story ? 20 : 24)
 
                 shareRings
-                    .frame(width: dailyHeroSize, height: dailyHeroSize)
 
                 Spacer(minLength: format == .story ? 14 : 18)
 
@@ -626,7 +702,64 @@ struct AtriaShareCardView: View {
             .blendMode(canvasStyle.blendMode)
     }
 
+    /// Concentric (default) vs WHOOP-style separate rings, honoring the same
+    /// AtriaRingLayoutStyle preference the Today rings use.
+    @ViewBuilder
     private var shareRings: some View {
+        switch ringLayout {
+        case .concentric:
+            shareRingsConcentric
+                .frame(width: dailyHeroSize, height: dailyHeroSize)
+        case .separate:
+            shareRingsSeparate
+                .frame(maxWidth: .infinity)
+                .frame(height: dailyHeroSize * 0.7)
+        }
+    }
+
+    /// WHOOP-style row of three labeled rings for the share card. Ring size
+    /// adapts to the available card width so all three fit every format.
+    private var shareRingsSeparate: some View {
+        GeometryReader { geo in
+            let spacing: CGFloat = format == .story ? 18 : 14
+            let diameter = min(format == .story ? 108 : 96,
+                               (geo.size.width - spacing * 2) / 3)
+            let lineWidth = max(8, diameter * 0.1)
+            HStack(spacing: spacing) {
+                shareSeparateRing(snapshot.sleep, label: "Sleep", diameter: diameter, lineWidth: lineWidth)
+                shareSeparateRing(snapshot.recovery, label: "Recovery", diameter: diameter, lineWidth: lineWidth)
+                shareSeparateRing(snapshot.strain, label: "Strain", diameter: diameter, lineWidth: lineWidth)
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
+        }
+    }
+
+    private func shareSeparateRing(_ ringData: AtriaShareSnapshot.Ring,
+                                   label: String,
+                                   diameter: CGFloat,
+                                   lineWidth: CGFloat) -> some View {
+        VStack(spacing: 9) {
+            ZStack {
+                ring(ringData, diameter: diameter, lineWidth: lineWidth)
+                Text(ringData.value)
+                    .font(.system(size: diameter * 0.26, weight: .light, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(foreground)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                    .frame(width: diameter * 0.72)
+            }
+            .frame(width: diameter, height: diameter)
+            Text(label)
+                .font(.system(size: format == .story ? 12 : 10, weight: .medium, design: .rounded))
+                .tracking(1.5)
+                .textCase(.uppercase)
+                .foregroundStyle(foreground.opacity(0.48))
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var shareRingsConcentric: some View {
         ZStack {
             ring(snapshot.sleep, diameter: format == .story ? 218 : 220, lineWidth: format == .story ? 14 : 14)
             ring(snapshot.recovery, diameter: format == .story ? 178 : 182, lineWidth: format == .story ? 11 : 12)
@@ -659,8 +792,29 @@ struct AtriaShareCardView: View {
                     .stroke(ring.tint, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))
             }
+            if let targetFraction = ring.targetFraction {
+                targetMarker(diameter: diameter,
+                             lineWidth: lineWidth,
+                             tint: ring.stateTint ?? ring.tint,
+                             fraction: targetFraction)
+            }
         }
         .frame(width: diameter, height: diameter)
+    }
+
+    private func targetMarker(diameter: CGFloat,
+                              lineWidth: CGFloat,
+                              tint: Color,
+                              fraction: Double) -> some View {
+        let clamped = min(max(fraction, 0), 1)
+        let theta = Angle.degrees(-90 + 360 * clamped)
+        let radius = diameter / 2
+        return Capsule()
+            .fill(tint)
+            .overlay(Capsule().strokeBorder(Color.black.opacity(0.45), lineWidth: 1))
+            .frame(width: 3, height: lineWidth + 5)
+            .rotationEffect(theta + .degrees(90))
+            .offset(x: radius * cos(theta.radians), y: radius * sin(theta.radians))
     }
 
     private var recoveryHeroValue: String {
@@ -2358,6 +2512,41 @@ enum AtriaShareCardRenderer {
     private static var cache: [String: URL] = [:]
     private static var cacheRecency: [String] = []
     private static let cacheCapacity = 24
+    private static var inFlightExportURLCounts: [URL: Int] = [:]
+    private static var currentExportURLCounts: [URL: Int] = [:]
+
+    private static func incrementReferenceCount(for url: URL,
+                                                in counts: inout [URL: Int]) {
+        counts[url, default: 0] += 1
+    }
+
+    @discardableResult
+    private static func decrementReferenceCount(for url: URL,
+                                                in counts: inout [URL: Int]) -> Int {
+        guard let count = counts[url] else { return 0 }
+        if count <= 1 {
+            counts.removeValue(forKey: url)
+            return 0
+        }
+        counts[url] = count - 1
+        return count - 1
+    }
+
+    private static func beginExport(to url: URL) {
+        incrementReferenceCount(for: url, in: &inFlightExportURLCounts)
+    }
+
+    private static func finishExport(to url: URL) {
+        decrementReferenceCount(for: url, in: &inFlightExportURLCounts)
+    }
+
+    private static func retainCurrentExport(at url: URL) {
+        incrementReferenceCount(for: url, in: &currentExportURLCounts)
+    }
+
+    private static var protectedExportURLs: Set<URL> {
+        Set(inFlightExportURLCounts.keys).union(currentExportURLCounts.keys)
+    }
 
     private static func cachedURL(for key: String) -> URL? {
         guard let url = cache[key] else { return nil }
@@ -2368,6 +2557,7 @@ enum AtriaShareCardRenderer {
         }
         cacheRecency.removeAll { $0 == key }
         cacheRecency.append(key)
+        retainCurrentExport(at: url)
         return url
     }
 
@@ -2378,14 +2568,22 @@ enum AtriaShareCardRenderer {
         while cacheRecency.count > cacheCapacity {
             let evictedKey = cacheRecency.removeFirst()
             guard let evictedURL = cache.removeValue(forKey: evictedKey), evictedURL != url else { continue }
+            guard currentExportURLCounts[evictedURL, default: 0] == 0,
+                  inFlightExportURLCounts[evictedURL, default: 0] == 0 else { continue }
             Task { await removeExportFile(evictedURL) }
         }
     }
 
     static func releaseTemporaryExport(at url: URL) async {
+        guard decrementReferenceCount(for: url, in: &currentExportURLCounts) == 0 else {
+            return
+        }
         let removedKeys = cache.compactMap { key, value in value == url ? key : nil }
         removedKeys.forEach { cache.removeValue(forKey: $0) }
         cacheRecency.removeAll { removedKeys.contains($0) }
+        // Two same-key renders can share a destination while their atomic
+        // writes complete. The last in-flight writer owns cleanup/publication.
+        guard inFlightExportURLCounts[url, default: 0] == 0 else { return }
         await removeExportFile(url)
     }
 
@@ -2420,10 +2618,19 @@ enum AtriaShareCardRenderer {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("atria-share-\(key)-\(photoBackground == nil ? "canvas" : UUID().uuidString)")
             .appendingPathExtension("png")
-        try await writeExportData(data, to: url)
+        beginExport(to: url)
+        do {
+            try await writeExportData(data, to: url)
+        } catch {
+            finishExport(to: url)
+            throw error
+        }
+        retainCurrentExport(at: url)
         if photoBackground == nil {
             storeCachedURL(url, for: key)
         }
+        await pruneDailyShareCards(preserving: protectedExportURLs)
+        finishExport(to: url)
         return url
     }
 
@@ -2453,8 +2660,20 @@ enum AtriaShareCardRenderer {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("atria-workout-share-\(key)-\(photoBackground == nil ? "canvas" : UUID().uuidString)")
             .appendingPathExtension("png")
-        try await writeExportData(data, to: url)
+        beginExport(to: url)
+        do {
+            try await writeExportData(data, to: url)
+        } catch {
+            finishExport(to: url)
+            throw error
+        }
+        retainCurrentExport(at: url)
         if photoBackground == nil { storeCachedURL(url, for: key) }
+        await pruneGeneratedArtifacts(
+            policy: AtriaGeneratedArtifactRetention.workoutShareCards,
+            preserving: protectedExportURLs
+        )
+        finishExport(to: url)
         return url
     }
 
@@ -2486,8 +2705,20 @@ enum AtriaShareCardRenderer {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("Atria-\(activity)-\(stableDigest(key))-\(cacheResult ? "canvas" : UUID().uuidString)")
             .appendingPathExtension("html")
-        try await writeExportData(Data(html.utf8), to: url)
+        beginExport(to: url)
+        do {
+            try await writeExportData(Data(html.utf8), to: url)
+        } catch {
+            finishExport(to: url)
+            throw error
+        }
+        retainCurrentExport(at: url)
         if cacheResult { storeCachedURL(url, for: cacheKey) }
+        await pruneGeneratedArtifacts(
+            policy: AtriaGeneratedArtifactRetention.portableWorkoutExports,
+            preserving: protectedExportURLs
+        )
+        finishExport(to: url)
         return url
     }
 
@@ -2780,6 +3011,26 @@ enum AtriaShareCardRenderer {
         }.value
     }
 
+    nonisolated private static func pruneDailyShareCards(preserving protectedURLs: Set<URL>) async {
+        await pruneGeneratedArtifacts(
+            policy: AtriaGeneratedArtifactRetention.shareCards,
+            preserving: protectedURLs
+        )
+    }
+
+    nonisolated private static func pruneGeneratedArtifacts(
+        policy: AtriaGeneratedArtifactRetention.Policy,
+        preserving protectedURLs: Set<URL>
+    ) async {
+        await Task.detached(priority: .utility) {
+            _ = AtriaGeneratedArtifactRetention.prune(
+                in: FileManager.default.temporaryDirectory,
+                policy: policy,
+                preserving: protectedURLs
+            )
+        }.value
+    }
+
     static func pngPixelSize(_ data: Data) -> CGSize? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -2840,7 +3091,8 @@ enum AtriaShareCardRenderer {
                               canvasStyle: AtriaShareCanvasStyle) -> String {
         let chips = selectedStatIDs.sorted().joined(separator: "-")
         let rings = [snapshot.recovery, snapshot.sleep, snapshot.strain].map {
-            "\($0.title):\($0.value):\($0.detail):\($0.tintHex):\($0.fill.map { String($0) } ?? "nil")"
+            "\($0.title):\($0.value):\($0.detail):\($0.tintHex):\($0.fill.map { String($0) } ?? "nil"):" +
+                "\($0.stateTintHex ?? "nil"):\($0.targetFraction.map { String($0) } ?? "nil")"
         }.joined(separator: "|")
         let stats = snapshot.stats.map {
             "\($0.id):\($0.title):\($0.value):\($0.detail)"
@@ -2918,6 +3170,7 @@ enum AtriaShareCardRenderer {
 
 private extension AtriaShareSnapshot.Ring {
     var tint: Color { Color(hex: tintHex) }
+    var stateTint: Color? { stateTintHex.map { Color(hex: $0) } }
 }
 
 private extension AtriaWorkoutShareSnapshot.ZoneMinute {

@@ -54,8 +54,14 @@ final class AtriaOverviewReadinessProjectionStoreTests: XCTestCase {
         XCTAssertTrue(host.contains("dailyRollupHistory: projection.dailyRollupHistory"))
         XCTAssertTrue(host.contains("confirmedWorkouts: projection.confirmedWorkouts"))
         XCTAssertTrue(host.contains("sleepHistory: debugSleepHistorySnapshot ?? projection.sleepHistory"))
+        XCTAssertTrue(host.contains("pendingSleepReview: debugSleepHistorySnapshot == nil"))
         XCTAssertFalse(host.contains("dailyRollupHistory: store.dailyRollupHistory"))
         XCTAssertFalse(host.contains("confirmedWorkouts: store.confirmedWorkouts"))
+
+        XCTAssertTrue(source.contains("store.$pendingSleepReviewNightForUI.dropFirst()"),
+                      "the retained readiness projection must refresh the ring when a review becomes available")
+        XCTAssertTrue(source.contains("pendingReview: pendingSleepReview"),
+                      "the ring and sleep glance must use the same pending review projection")
     }
 }
 

@@ -22,7 +22,17 @@ final class AtriaHealthDensityTests: XCTestCase {
                       "Compact presentation must keep meaningful warning context in VoiceOver")
         XCTAssertFalse(source.contains("Divider().opacity(0.55)"),
                        "An unconstrained Divider in an overlay can become vertical and cut through metric tiles")
-        XCTAssertTrue(source.contains(".frame(height: 0.5)"),
-                      "Metric tile separators must have an explicit horizontal hairline height")
+        // 2026-08-01 Vitals IA split migration: the shared-surface hairline
+        // separators (".frame(height: 0.5)") are gone — each compact tile is
+        // now its own flat card with a chevron press affordance, opening the
+        // metric's existing detail sheet. Pin that pattern instead.
+        XCTAssertFalse(source.contains(".frame(height: 0.5)"),
+                       "Tiles are distinct flat cards now; a hairline separator would mean the shared-surface layout regressed")
+        XCTAssertTrue(source.contains("private var pressableChevron: some View"),
+                      "Each metric family card must keep its visible press affordance")
+        XCTAssertTrue(source.contains("in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))"),
+                      "Tile cards take their radius from the design-token scale")
+        XCTAssertTrue(source.contains("onTap: { metricDetail = .recovery }"),
+                      "Family cards open the existing metric detail sheets, not the education sheet")
     }
 }

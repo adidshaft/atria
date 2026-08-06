@@ -119,14 +119,26 @@ final class AtriaHeartRateBroadcaster: NSObject, ObservableObject {
     }
 
     private func stop() {
-        peripheralManager.stopAdvertising()
-        peripheralManager.removeAllServices()
+        // CoreBluetooth rejects both commands unless the peripheral manager is
+        // powered on. Disabling the feature while Bluetooth is unavailable
+        // still clears all local ownership immediately; the system has already
+        // stopped advertising and discarded the usable service in that state.
+        if Self.canIssueStopCommands(peripheralState: peripheralManager.state) {
+            peripheralManager.stopAdvertising()
+            peripheralManager.removeAllServices()
+        }
         measurementCharacteristic = nil
         lastSentHeartRate = nil
         lastSentAt = nil
         isBroadcasting = false
         UserDefaults.standard.set("stopped", forKey: Self.debugStatusKey)
         AtriaDebugLog("ATRIADBG hr_broadcast status=stopped")
+    }
+
+    nonisolated static func canIssueStopCommands(
+        peripheralState: CBManagerState
+    ) -> Bool {
+        peripheralState == .poweredOn
     }
 
     private static func measurementPayload(heartRate: Int, rrIntervalsMS: [Int]) -> Data {

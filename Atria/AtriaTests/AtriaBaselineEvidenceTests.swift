@@ -58,4 +58,141 @@ final class AtriaBaselineEvidenceTests: XCTestCase {
         XCTAssertFalse(evidence.accepted)
         XCTAssertEqual(evidence.reason, "duration_below_5m")
     }
+
+    func testQualifiedRRCannotBypassElevatedRestingGate() {
+        let start = DateComponents(calendar: calendar, year: 2026, month: 7, day: 2,
+                                   hour: 1, minute: 0).date!
+        let duration = 16 * 60.0
+        let rr = stride(from: 1.0, through: duration, by: 1.0).map { offset in
+            SavedSession.RRPoint(t: offset,
+                                 ms: Int(offset).isMultiple(of: 2) ? 980 : 1_020,
+                                 source: .standardHeartRateMeasurement2A37)
+        }
+        let elevated = SavedSession(id: UUID(),
+                                    start: start,
+                                    end: start.addingTimeInterval(duration),
+                                    label: "Elevated RR window",
+                                    points: stride(from: 0.0, through: duration, by: 10).map {
+                                        SavedSession.Point(t: $0, bpm: 92)
+                                    },
+                                    hrv: 42,
+                                    rrPoints: rr)
+
+        XCTAssertNotNil(elevated.localRMSSD)
+        let evidence = elevated.baselineLearningEvidence(rest: 60,
+                                                         maxHR: 190,
+                                                         calendar: calendar)
+        XCTAssertFalse(evidence.accepted)
+        XCTAssertEqual(evidence.reason, "avg_hr_above_rest_window")
+    }
+
+    func testRestingBaselineMaturityQualifierShowsProgressFromDayOne() {
+        // A wearer must see a reading and how mature it is on day one, not a
+        // blank until the baseline is trusted. Mirrors AtriaFitnessAge's
+        // "Early estimate · day N of M" phrasing so the caveat reads the same
+        // wherever it is surfaced.
+        let now = Date(timeIntervalSince1970: 1_784_000_000)
+        func baseline(days: Int) -> PersonalBaseline {
+            var value = PersonalBaseline()
+            value.updated = now
+            value.samples = (0..<days).map { index in
+                PersonalBaseline.BaselineSample(
+                    date: now.addingTimeInterval(TimeInterval(-index) * 86_400),
+                    restingHR: 60,
+                    rmssd: nil,
+                    overnight: false
+                )
+            }
+            return value
+        }
+        // Resting evidence may come from a qualified daytime low-HR window, so
+        // its maturity unit is days. HRV remains sleep-window qualified.
+        XCTAssertEqual(
+            baseline(days: 1).restingBaselineMaturityQualifierText(now: now),
+            "Resting HR learning · 1 of 14 days"  // renamed 2026-08-04: named-subject calibration pattern
+        )
+        XCTAssertEqual(
+            baseline(days: 5).restingBaselineMaturityQualifierText(now: now),
+            "Resting HR learning · 5 of 14 days"
+        )
+        // Once trusted the qualifier disappears entirely — one caveat, and only
+        // while it is true.
+        XCTAssertNil(baseline(days: 14).restingBaselineMaturityQualifierText(now: now))
+    }
+
+    func testReconnectFragmentsReceiveOneBaselineObservationPerDay() {
+        let firstDay = Date(timeIntervalSince1970: 1_783_036_800)
+        var canonical = PersonalBaseline()
+        var fragmented = PersonalBaseline()
+
+        for day in 0..<14 {
+            let date = firstDay.addingTimeInterval(Double(day) * 86_400 + 12 * 3_600)
+            let resting = day == 7 ? 90 : 60
+            canonical.learn(fromResting: resting, hrv: 0, at: date)
+            let fragments = day == 7 ? 4 : 1
+            for fragment in 0..<fragments {
+                fragmented.learn(
+                    fromResting: resting,
+                    hrv: 0,
+                    at: date.addingTimeInterval(Double(fragment) * 600)
+                )
+            }
+        }
+
+        XCTAssertEqual(fragmented.restingSampleCount, 14)
+        XCTAssertEqual(try XCTUnwrap(fragmented.restingHR),
+                       try XCTUnwrap(canonical.restingHR),
+                       accuracy: 0.000_001)
+        XCTAssertEqual(
+            try XCTUnwrap(fragmented.restingStats(
+                now: firstDay.addingTimeInterval(15 * 86_400)
+            )).mean,
+            try XCTUnwrap(canonical.restingStats(
+                now: firstDay.addingTimeInterval(15 * 86_400)
+            )).mean,
+            accuracy: 0.000_001
+        )
+    }
+
+    func testNearTrustedFragmentedSleepBridgeNeedsThirteenTotalAndSevenFreshDays() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func baseline(total: Int, fresh: Int, updated: Date? = nil) -> PersonalBaseline {
+            let freshSamples = (0..<fresh).map { index in
+                PersonalBaseline.BaselineSample(
+                    date: now.addingTimeInterval(-Double(index) * 86_400),
+                    restingHR: 56,
+                    rmssd: nil,
+                    overnight: false
+                )
+            }
+            let olderSamples = (fresh..<total).map { index in
+                PersonalBaseline.BaselineSample(
+                    date: now.addingTimeInterval(-Double(22 + index - fresh) * 86_400),
+                    restingHR: 56,
+                    rmssd: nil,
+                    overnight: false
+                )
+            }
+            return PersonalBaseline(
+                restingHR: 56,
+                sessions: total,
+                updated: updated ?? now,
+                samples: freshSamples + olderSamples
+            )
+        }
+
+        let physicalShape = baseline(total: 13, fresh: 11)
+        XCTAssertFalse(physicalShape.hasTrustedRestingBaseline(now: now))
+        XCTAssertTrue(physicalShape.hasNearTrustedRestingBaselineForFragmentedSleep(now: now))
+        XCTAssertFalse(baseline(total: 12, fresh: 11)
+            .hasNearTrustedRestingBaselineForFragmentedSleep(now: now))
+        XCTAssertFalse(baseline(total: 13, fresh: 6)
+            .hasNearTrustedRestingBaselineForFragmentedSleep(now: now))
+        XCTAssertFalse(baseline(
+            total: 13,
+            fresh: 11,
+            updated: now.addingTimeInterval(-(PersonalBaseline.staleAfter + 1))
+        ).hasNearTrustedRestingBaselineForFragmentedSleep(now: now))
+    }
+
 }

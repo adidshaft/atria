@@ -27,6 +27,47 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         return try String(contentsOf: appURL.appendingPathComponent(relativePath), encoding: .utf8)
     }
 
+    func testHistoricalIngressCacheNeverSynchronizesOnMainActorHotPath() throws {
+        let spool = try appSource("AtriaWhoop4HistoricalIngressSpool.swift")
+        let appendStart = try XCTUnwrap(spool.range(of: "func append(_ event: Event) throws"))
+        let popStart = try XCTUnwrap(spool.range(
+            of: "func popFirst() throws",
+            range: appendStart.upperBound..<spool.endIndex
+        ))
+        let createStart = try XCTUnwrap(spool.range(of: "private func create() throws"))
+        let reopenStart = try XCTUnwrap(spool.range(
+            of: "private func reopen() throws",
+            range: createStart.upperBound..<spool.endIndex
+        ))
+        let encodeStart = try XCTUnwrap(spool.range(
+            of: "private func encode(_ event: Event) throws",
+            range: reopenStart.upperBound..<spool.endIndex
+        ))
+        for body in [
+            String(spool[appendStart.lowerBound..<popStart.lowerBound]),
+            String(spool[createStart.lowerBound..<reopenStart.lowerBound]),
+            String(spool[reopenStart.lowerBound..<encodeStart.lowerBound]),
+        ] {
+            XCTAssertFalse(
+                body.contains(".synchronize()"),
+                "Non-authoritative ingress cache I/O must not fsync on the BLE/MainActor path"
+            )
+        }
+
+        let manager = try appSource("AtriaBLEManager.swift")
+        let finishStart = try XCTUnwrap(manager.range(
+            of: "private func finishOfflineHistoricalSync("
+        ))
+        let finalizeStart = try XCTUnwrap(manager.range(
+            of: "private func finalizeOfflineHistoricalSyncAfterLiveRestoration(",
+            range: finishStart.upperBound..<manager.endIndex
+        ))
+        let finish = String(
+            manager[finishStart.lowerBound..<finalizeStart.lowerBound]
+        )
+        XCTAssertFalse(finish.contains("historicalIngressSpool?.synchronize()"))
+    }
+
     func testAutomaticSessionBackupUsesCoalescingOffMainWorker() throws {
         let sessions = try appSource("Sessions.swift")
         let start = try XCTUnwrap(sessions.range(of: "private func writeAutomaticSessionBackup("))
@@ -38,15 +79,22 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         XCTAssertFalse(automaticBackup.contains("writeSessionBackup(label:"),
                        "Automatic session/profile/workout saves must never encode a full backup on MainActor")
         XCTAssertTrue(sessions.contains("private enum SessionBackupWriter"))
-        XCTAssertTrue(sessions.contains("AtriaRawExport.hrRows(sessions: request.sessions)"),
-                      "Raw-row expansion belongs inside the serial worker")
+        XCTAssertTrue(sessions.contains("rawExport: nil"),
+                      "Schema 4 backups must regenerate raw rows from canonical sessions")
+        XCTAssertFalse(sessions.contains("AtriaRawExport.hrRows(sessions: request.sessions)"),
+                       "Backups must not duplicate every HR/RR sample as expanded strings")
     }
 
     func testBackgroundTaskWaitsForDurableBackupWorkerCompletion() throws {
         let app = try appSource("AtriaApp.swift")
+        let sessions = try appSource("Sessions.swift")
         XCTAssertTrue(app.contains("let backupSucceeded = await withCheckedContinuation"))
-        XCTAssertTrue(app.contains("store.performBackgroundMaintenance(reason: reason) { succeeded in"))
-        XCTAssertTrue(app.contains("completion.complete(task, success: backupSucceeded)"))
+        XCTAssertTrue(app.contains("store.performBackgroundMaintenanceAsynchronously(reason: reason) { succeeded in"))
+        XCTAssertTrue(sessions.contains("flushScheduledPersistenceAsync(reason: \"\\(reason)_persistence\")"))
+        XCTAssertTrue(sessions.contains("persistenceAlreadyFlushed: true"))
+        XCTAssertTrue(app.contains("success: backupSucceeded"))
+        XCTAssertTrue(app.contains("&& historicalRecoverySucceeded"))
+        XCTAssertTrue(app.contains("&& recoveredPublicationSucceeded"))
     }
 
     func testSettingsManualBackupUsesWorkerWithoutBlockingMainActor() throws {
@@ -208,6 +256,35 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         XCTAssertTrue(payload.contains("for session in input.sessions"))
         XCTAssertTrue(payload.contains("hrPoints.append"))
         XCTAssertTrue(payload.contains("rrPoints.append"))
+    }
+
+    func testResearchOutboxFilesystemWorkUsesSerialUtilityWorker() throws {
+        let source = try appSource("AtriaResearchBundle.swift")
+        let queueStart = try XCTUnwrap(source.range(of: "enum AtriaResearchUploadQueue"))
+        let consentStart = try XCTUnwrap(source.range(
+            of: "struct AtriaResearchConsentSheet",
+            range: queueStart.upperBound..<source.endIndex
+        ))
+        let queue = String(source[queueStart.lowerBound..<consentStart.lowerBound])
+
+        XCTAssertTrue(queue.contains(
+            "AtriaCoalescingSerialWorker<OutboxOperation, OutboxOperationResult>"
+        ))
+        XCTAssertTrue(queue.contains("label: \"com.adidshaft.atria.research-outbox\""))
+        XCTAssertTrue(queue.contains("qos: .utility"))
+        XCTAssertTrue(queue.contains("await outboxWorker.performAsync(.stats)"))
+        XCTAssertTrue(queue.contains("await outboxWorker.performAsync(.persist("))
+        XCTAssertTrue(queue.contains("await outboxWorker.performAsync(.clear("))
+        XCTAssertTrue(queue.contains("await outboxWorker.performAsync(.prune("))
+
+        let directoryStart = try XCTUnwrap(queue.range(of: "static var outboxDirectory: URL"))
+        let configuredStart = try XCTUnwrap(queue.range(
+            of: "static var configuredEndpoint",
+            range: directoryStart.upperBound..<queue.endIndex
+        ))
+        let directoryAccessor = String(queue[directoryStart.lowerBound..<configuredStart.lowerBound])
+        XCTAssertFalse(directoryAccessor.contains("createDirectory"),
+                       "Reading the outbox URL on MainActor must not perform filesystem work")
     }
 
     func testCoalescingSerialWorkerKeepsInFlightAndNewestPendingRequest() {
@@ -518,6 +595,34 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
                           "Sharing/recap must remain structurally downstream of canonical confirmation")
     }
 
+    func testWorkoutMotionBoundaryDeadlineResumesWithoutAwaitingCancelledMarkerTask() throws {
+        let home = try appSource("AtriaHomeView.swift")
+        let helperStart = try XCTUnwrap(
+            home.range(of: "private func synchronizedWorkoutMotionBoundary(")
+        )
+        let helperEnd = try XCTUnwrap(
+            home.range(of: "private func makeWorkoutSession(",
+                       range: helperStart.upperBound..<home.endIndex)
+        )
+        let helper = String(home[helperStart.lowerBound..<helperEnd.lowerBound])
+
+        XCTAssertTrue(helper.contains("deadline.finish(nil)"))
+        XCTAssertTrue(helper.contains("synchronization.cancel()"))
+        XCTAssertFalse(helper.contains("await synchronization.value"),
+                       "The UI deadline must not wait for the cancelled FIFO marker to unwind")
+
+        let completionStart = try XCTUnwrap(
+            home.range(of: "private func endWorkoutSession(startedAt: Date,")
+        )
+        let completionEnd = try XCTUnwrap(
+            home.range(of: "private func workoutShareSnapshot(",
+                       range: completionStart.upperBound..<home.endIndex)
+        )
+        let completion = String(home[completionStart.lowerBound..<completionEnd.lowerBound])
+        XCTAssertTrue(completion.contains("await synchronizedWorkoutMotionBoundary()"))
+        XCTAssertFalse(completion.contains("await syncTask.value"))
+    }
+
     func testOlderWorkoutCompletionCannotClearNewerPendingIntent() throws {
         let suite = "AtriaSwiftUIPerformanceAuditTests.pending.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -606,6 +711,7 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
             strengthSets: [],
             excludedIntervals: [],
             reviewSource: nil,
+            reviewCandidateID: nil,
             settlingCandidateWindow: nil,
             workoutSteps: nil,
             workoutStepsAreEstimated: nil,
