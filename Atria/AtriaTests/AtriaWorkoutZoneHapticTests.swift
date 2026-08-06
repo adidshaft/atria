@@ -105,6 +105,44 @@ final class AtriaWorkoutZoneHapticTests: XCTestCase {
         XCTAssertNil(lifecycle.accept(bpm: 180))
     }
 
+    func testTargetBoundariesUseHeartRateReserveMatchingTheDisplay() throws {
+        // GAP-03: the target haptic must fire at the same HR-reserve (Karvonen)
+        // boundaries the live zone bar shows, not percent-of-max. With rest = 50,
+        // max = 200 (reserve 150): Z2 fat burn (0.60) starts at 50 + 0.60*150 = 140,
+        // and the window's upper edge is one below Z4 anaerobic (0.80):
+        // 50 + 0.80*150 = 170, so upper = 169. Percent-of-max would give 120 / 159.
+        var lifecycle = AtriaWorkoutZoneHapticLifecycle()
+        lifecycle.configure(workoutStartedAt: Date(timeIntervalSince1970: 500),
+                            lowerTargetZone: HRZone.fatBurn.rawValue,
+                            upperTargetZone: HRZone.aerobic.rawValue,
+                            maxHR: 200,
+                            restingHR: 50,
+                            isPaused: false)
+        let configuration = try XCTUnwrap(lifecycle.configuration)
+        XCTAssertEqual(configuration.lowerBPM, 140, "lower target must be HR-reserve, not 0.60*max = 120")
+        XCTAssertEqual(configuration.upperBPM, 169, "upper target must be HR-reserve, not 0.80*max - 1 = 159")
+
+        // The haptic boundaries must equal the ones the display renders.
+        let displayed = try XCTUnwrap(AtriaHRRZoneBoundaries(restingHR: 50, maxHR: 200))
+        XCTAssertEqual(configuration.lowerBPM, displayed.lowerBPM(for: .fatBurn))
+        XCTAssertEqual(configuration.upperBPM, displayed.lowerBPM(for: .anaerobic) - 1)
+    }
+
+    func testTargetBoundariesFallBackToPercentOfMaxWithoutRestingBaseline() throws {
+        // With no valid resting baseline the boundaries degrade to percent-of-max
+        // so coaching still works; the existing behavior is preserved.
+        var lifecycle = AtriaWorkoutZoneHapticLifecycle()
+        lifecycle.configure(workoutStartedAt: Date(timeIntervalSince1970: 600),
+                            lowerTargetZone: HRZone.fatBurn.rawValue,
+                            upperTargetZone: HRZone.aerobic.rawValue,
+                            maxHR: 200,
+                            restingHR: 0,
+                            isPaused: false)
+        let configuration = try XCTUnwrap(lifecycle.configuration)
+        XCTAssertEqual(configuration.lowerBPM, 120)
+        XCTAssertEqual(configuration.upperBPM, 159)
+    }
+
     func testStartConfigurationNormalizesReversedZoneRange() {
         let configuration = AtriaWorkoutStartConfiguration(activityType: .running,
                                                             lowerTargetZone: 4,

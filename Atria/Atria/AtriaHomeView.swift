@@ -1268,6 +1268,7 @@ struct AtriaHomeView: View {
             lowerTargetZone: configuration?.lowerTargetZone,
             upperTargetZone: configuration?.upperTargetZone,
             maxHR: configuration?.maxHR ?? store.profile.maxHR,
+            restingHR: configuration?.restingHR ?? store.baseline.restingInt ?? 60,
             isPaused: configuration?.isPaused ?? false
         )
     }
@@ -1898,6 +1899,7 @@ struct AtriaHomeView: View {
         let lowerTargetZone: Int?
         let upperTargetZone: Int?
         let maxHR: Int
+        let restingHR: Int
         let isPaused: Bool
     }
 
@@ -1909,6 +1911,9 @@ struct AtriaHomeView: View {
             upperTargetZone: workoutSession.upperTargetZone,
             maxHR: workoutSession.calculationContext?.maximumHeartRate
                 ?? store.profile.maxHR,
+            // Same resting reference the live zone bar renders with, so the
+            // target haptic fires at the exact HR-reserve BPM the user sees.
+            restingHR: store.baseline.restingInt ?? 60,
             isPaused: liveWorkoutPauseStartedAt != nil
         )
     }
