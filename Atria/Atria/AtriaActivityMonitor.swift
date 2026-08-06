@@ -2169,6 +2169,8 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                         }
                     }
 
+                    workoutZoneDistributionCard
+
                     if workout.samples == 0 {
                         Label("Saved without strap metrics", systemImage: "heart.slash")
                             .font(.caption.weight(.semibold))
@@ -2656,6 +2658,94 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .atriaInsetCard(tint: tint)
+    }
+
+    private var workoutZoneRows: [(key: String, label: String, range: String, tint: Color, seconds: TimeInterval)] {
+        let zones = workout.zoneSeconds ?? [:]
+        return [
+            ("max", "Z5 · Max", "90–100%", Metrics.heartRateZoneTint(5), zones["max"] ?? 0),
+            ("anaerobic", "Z4 · Anaerobic", "80–90%", Metrics.heartRateZoneTint(4), zones["anaerobic"] ?? 0),
+            ("aerobic", "Z3 · Aerobic", "70–80%", Metrics.heartRateZoneTint(3), zones["aerobic"] ?? 0),
+            ("fatBurn", "Z2 · Fat burn", "60–70%", Metrics.heartRateZoneTint(2), zones["fatBurn"] ?? 0),
+            ("warmup", "Z1 · Warm-up", "50–60%", Metrics.heartRateZoneTint(1), zones["warmup"] ?? 0),
+            ("rest", "Z0 · Restorative", "<50%", Metrics.heartRateZoneTint(0), zones["rest"] ?? 0)
+        ]
+    }
+
+    private var recordedZoneSeconds: TimeInterval {
+        workoutZoneRows.reduce(0) { $0 + $1.seconds }
+    }
+
+    @ViewBuilder
+    private var workoutZoneDistributionCard: some View {
+        if !AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout), recordedZoneSeconds > 0 {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Time in heart-rate zones")
+                            .font(.headline.weight(.bold))
+                        Text("Share of recorded heart-rate time")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Text(durationText(recordedZoneSeconds))
+                        .font(.subheadline.weight(.black).monospacedDigit())
+                        .foregroundStyle(Metrics.electricStrain)
+                }
+
+                ForEach(workoutZoneRows, id: \.key) { zone in
+                    workoutZoneRow(zone)
+                }
+            }
+            .padding(14)
+            .atriaInsetCard(tint: Metrics.electricStrain)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(zoneDistributionAccessibilityLabel)
+        }
+    }
+
+    private func workoutZoneRow(_ zone: (key: String, label: String, range: String, tint: Color, seconds: TimeInterval)) -> some View {
+        let fraction = min(max(zone.seconds / recordedZoneSeconds, 0), 1)
+        let percent = Int((fraction * 100).rounded())
+        return VStack(spacing: 5) {
+            HStack(spacing: 8) {
+                Text(zone.label)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                Text(zone.range)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 4)
+                Text("\(percent)%")
+                    .font(.caption2.weight(.black).monospacedDigit())
+                    .foregroundStyle(zone.tint)
+                Text(durationText(zone.seconds))
+                    .font(.caption.weight(.bold).monospacedDigit())
+                    .frame(minWidth: 42, alignment: .trailing)
+            }
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(.primary.opacity(0.10))
+                    Capsule(style: .continuous)
+                        .fill(zone.tint)
+                        .frame(width: max(0, proxy.size.width * fraction))
+                }
+            }
+            .frame(height: 9)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(zone.label), \(zone.range), \(percent) percent, \(durationText(zone.seconds))")
+    }
+
+    private var zoneDistributionAccessibilityLabel: String {
+        let summary = workoutZoneRows
+            .filter { $0.seconds > 0 }
+            .map { "\($0.label) \(durationText($0.seconds))" }
+            .joined(separator: ", ")
+        return "Time in heart-rate zones. \(durationText(recordedZoneSeconds)) of recorded heart-rate time. \(summary)"
     }
 
     private func durationText(_ interval: TimeInterval) -> String {
