@@ -5,7 +5,15 @@ import Foundation
 /// durable ≥90% authority. Enabling admission does not claim success: every
 /// physical attempt still fails closed unless its own exact coverage proves it.
 enum AtriaHistoricalFullDrainCoverageIntegration {
-    static let automaticFullDrainRecoveryEnabled = true
+    // 2026-08-06: automatic arming re-disabled. Duty-cycle attribution
+    // measured the lane owning the transport 44-73% of wall time (73%
+    // overnight) while closing ZERO ledger seconds — starving motion-bank
+    // arming (the 48% steps-coverage ceiling) and deferring terminal
+    // consumer publication behind it all night. Same verdict as this
+    // enum's 5.27h/1.054x/309-day analysis below: without a physically
+    // proven seek, oldest-first replay cannot reach ledgered windows.
+    // Gaps remain honestly ledgered; user-initiated recovery unaffected.
+    static let automaticFullDrainRecoveryEnabled = false
     static let exactRangeTransportAuthorityAvailable = false
 
     /// The persisted-authority resume lane is paused because it is measurably

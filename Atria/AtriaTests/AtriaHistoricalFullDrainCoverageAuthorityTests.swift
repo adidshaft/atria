@@ -1190,7 +1190,11 @@ final class AtriaHistoricalFullDrainCoverageAuthorityTests: XCTestCase {
     }
 
     func testProductionAutomaticIntegrationUsesDurableFullDrainCoverage() {
-        XCTAssertTrue(AtriaHistoricalFullDrainCoverageIntegration
+        // 2026-08-06: automatic arming re-disabled — measured 44-73%
+        // transport occupancy closing zero ledger seconds (see the
+        // coordinator's dated comment). Pin the OFF state so re-enabling
+        // requires the physically proven seek the analysis demands.
+        XCTAssertFalse(AtriaHistoricalFullDrainCoverageIntegration
             .automaticFullDrainRecoveryEnabled)
         XCTAssertFalse(AtriaHistoricalFullDrainCoverageIntegration
             .exactRangeTransportAuthorityAvailable)
