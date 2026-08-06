@@ -16,6 +16,69 @@ struct DailyRollupVitals: Codable, Equatable {
 /// once-per-morning value, so every surface must carry these fields together
 /// instead of replacing only `score` on a newly computed live estimate.
 struct FrozenRecoverySummary: Codable, Equatable {
+    /// The observations and personal comparators that were present when a
+    /// morning Recovery result was minted. This is a receipt, not an input to a
+    /// later recalculation: completed cycles must remain inspectable without
+    /// being silently reinterpreted from today's rolling baseline.
+    struct InputSnapshot: Codable, Equatable {
+        struct Baseline: Codable, Equatable {
+            let mean: Double
+            let standardDeviation: Double?
+            let sampleCount: Int
+            let trusted: Bool
+        }
+
+        let hrvRMSSD: Double?
+        let restingHeartRateBPM: Double?
+        let sleepDurationSeconds: TimeInterval?
+        let sleepEfficiency: Double?
+        let respiratoryRate: Double?
+        let hrvBaseline: Baseline?
+        let restingHeartRateBaseline: Baseline?
+        let respiratoryRateBaseline: Baseline?
+        let baselineUpdatedAt: Date?
+
+        init(hrvRMSSD: Double?,
+             restingHeartRateBPM: Double?,
+             sleepDurationSeconds: TimeInterval?,
+             sleepEfficiency: Double?,
+             respiratoryRate: Double?,
+             baseline: PersonalBaseline,
+             respiratoryBaseline: (mean: Double, sd: Double, count: Int)?) {
+            self.hrvRMSSD = hrvRMSSD.flatMap { $0 > 0 ? $0 : nil }
+            self.restingHeartRateBPM = restingHeartRateBPM.flatMap { $0 > 0 ? $0 : nil }
+            self.sleepDurationSeconds = sleepDurationSeconds.flatMap { $0 > 0 ? $0 : nil }
+            self.sleepEfficiency = sleepEfficiency.flatMap { (0...1).contains($0) ? $0 : nil }
+            self.respiratoryRate = respiratoryRate.flatMap { $0 > 0 ? $0 : nil }
+
+            let hrvStats = baseline.lnRMSSDStats
+            let hrvMean = hrvStats?.mean ?? baseline.hrvEMA
+            hrvBaseline = hrvMean.map {
+                Baseline(mean: $0,
+                         standardDeviation: hrvStats?.sd,
+                         sampleCount: hrvStats?.count ?? baseline.freshHRVSampleCount(),
+                         trusted: baseline.hasTrustedHRVBaseline())
+            }
+
+            let restingStats = baseline.restingStats
+            let restingMean = restingStats?.mean ?? baseline.restingHR
+            restingHeartRateBaseline = restingMean.map {
+                Baseline(mean: $0,
+                         standardDeviation: restingStats?.sd,
+                         sampleCount: restingStats?.count ?? baseline.freshRestingSampleCount(),
+                         trusted: baseline.hasTrustedRestingBaseline())
+            }
+
+            respiratoryRateBaseline = respiratoryBaseline.map {
+                Baseline(mean: $0.mean,
+                         standardDeviation: $0.sd,
+                         sampleCount: $0.count,
+                         trusted: $0.count >= PersonalBaseline.trustedMinimumSamples && $0.sd > 0.1)
+            }
+            baselineUpdatedAt = baseline.updated
+        }
+    }
+
     struct Contributor: Codable, Equatable {
         let kind: String
         let value: Double?
@@ -46,6 +109,10 @@ struct FrozenRecoverySummary: Codable, Equatable {
     }
 
     static let recoveryV2Source = "recovery_v2"
+    /// This is intentionally separate from the storage schema. Bump it only
+    /// when Recovery v2's calculation semantics change, never for a UI-only
+    /// presentation adjustment.
+    static let recoveryV2ModelVersion = 2
     static let savedDailyMetricSource = "saved_daily_metric"
     static let legacyRollupSource = "legacy_rollup"
     static let legacyWidgetSource = "legacy_widget_snapshot"
@@ -54,40 +121,54 @@ struct FrozenRecoverySummary: Codable, Equatable {
     let confidence: String
     let source: String
     let model: String?
+    /// Nil means the record predates versioned Recovery receipts. Legacy rows
+    /// remain viewable, but they are never advertised as reproducible history.
+    let modelVersion: Int?
     /// Civil day whose morning inputs produced this score. This prevents an old
     /// score from being silently treated as a fresh result from today's model.
     let scoredDay: Date?
     let usesHRV: Bool
     let detail: String
     let contributors: [Contributor]
+    let inputSnapshot: InputSnapshot?
 
     init(score: Int,
          confidence: String,
          source: String,
          model: String? = nil,
+         modelVersion: Int? = nil,
          scoredDay: Date? = nil,
          usesHRV: Bool,
          detail: String,
-         contributors: [Contributor]) {
+         contributors: [Contributor],
+         inputSnapshot: InputSnapshot? = nil) {
         self.score = min(max(score, 0), 100)
         self.confidence = confidence
         self.source = source
         self.model = model
+        // A model version without the matching frozen inputs creates a false
+        // sense of replayability. Legacy/rebuilt summaries retain their score
+        // and contributors but remain deliberately unversioned.
+        self.modelVersion = inputSnapshot == nil ? nil : modelVersion
         self.scoredDay = scoredDay
         self.usesHRV = usesHRV
         self.detail = detail
         self.contributors = contributors
+        self.inputSnapshot = inputSnapshot
     }
 
     init?(estimate: Metrics.RecoveryEstimate,
          scoredDay: Date,
          source: String = FrozenRecoverySummary.recoveryV2Source,
-         model: String? = "recovery_v2") {
+         model: String? = "recovery_v2",
+         modelVersion: Int? = FrozenRecoverySummary.recoveryV2ModelVersion,
+         inputSnapshot: InputSnapshot? = nil) {
         guard let score = estimate.percent else { return nil }
         self.init(score: score,
                   confidence: estimate.confidence.rawValue,
                   source: source,
                   model: model,
+                  modelVersion: modelVersion,
                   scoredDay: scoredDay,
                   usesHRV: estimate.usesHRV,
                   detail: estimate.detail,
@@ -98,7 +179,8 @@ struct FrozenRecoverySummary: Codable, Equatable {
                                 detail: $0.detail,
                                 displayValue: $0.displayValue,
                                 direction: $0.direction)
-                  })
+                  },
+                  inputSnapshot: inputSnapshot)
     }
 
     init?(metric: SavedDailyMetric) {
@@ -125,10 +207,12 @@ struct FrozenRecoverySummary: Codable, Equatable {
                   confidence: metric.recoveryConfidence,
                   source: Self.savedDailyMetricSource,
                   model: "recovery_v2",
+                  modelVersion: nil,
                   scoredDay: metric.day,
                   usesHRV: metric.hrv != nil,
                   detail: "frozen daily recovery",
-                  contributors: values)
+                  contributors: values,
+                  inputSnapshot: nil)
     }
 
     static func legacy(score: Int,
@@ -153,10 +237,12 @@ struct FrozenRecoverySummary: Codable, Equatable {
         return FrozenRecoverySummary(score: score,
                                      confidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
                                      source: legacyRollupSource,
+                                     modelVersion: nil,
                                      scoredDay: scoredDay,
                                      usesHRV: lnRMSSD != nil,
                                      detail: "frozen daily recovery",
-                                     contributors: values)
+                                     contributors: values,
+                                     inputSnapshot: nil)
     }
 
     var recoveryEstimate: Metrics.RecoveryEstimate {
@@ -191,10 +277,12 @@ struct FrozenRecoverySummary: Codable, Equatable {
                                      confidence: confidence,
                                      source: source,
                                      model: model,
+                                     modelVersion: modelVersion,
                                      scoredDay: scoredDay,
                                      usesHRV: usesHRV,
                                      detail: nextDetail,
-                                     contributors: contributors)
+                                     contributors: contributors,
+                                     inputSnapshot: inputSnapshot)
     }
 
     func replacingScoredDay(_ day: Date) -> FrozenRecoverySummary {
@@ -202,10 +290,12 @@ struct FrozenRecoverySummary: Codable, Equatable {
                               confidence: confidence,
                               source: source,
                               model: model,
+                              modelVersion: modelVersion,
                               scoredDay: day,
                               usesHRV: usesHRV,
                               detail: detail,
-                              contributors: contributors)
+                              contributors: contributors,
+                              inputSnapshot: inputSnapshot)
     }
 
     static func preferred(score: Int,
