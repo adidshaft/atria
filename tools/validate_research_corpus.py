@@ -105,7 +105,7 @@ def validate_window(label: dict[str, Any], prefix: str) -> tuple[float, float]:
 
 
 def validate_gap10(label: dict[str, Any], prefix: str) -> None:
-    item = exact_object(label, {"gap", "start_rel", "end_rel", "source", "coverage_fraction", "qualified_rr", "motion_context", "hr_only"}, set(), prefix)
+    item = exact_object(label, {"gap", "start_rel", "end_rel", "source", "reference_level", "coverage_fraction", "qualified_rr", "motion_context", "hr_only"}, set(), prefix)
     validate_window(item, prefix)
     if text(item["source"], f"{prefix}.source") not in LOAD_SOURCES:
         raise CorpusError(f"{prefix} requires an external overnight-load source")
@@ -117,6 +117,9 @@ def validate_gap10(label: dict[str, Any], prefix: str) -> None:
         raise CorpusError(f"{prefix} lacks motion/wakefulness context")
     if boolean(item["hr_only"], f"{prefix}.hr_only"):
         raise CorpusError(f"{prefix} is HR-only and cannot be an overnight-load validation label")
+    reference_level = integer(item["reference_level"], f"{prefix}.reference_level")
+    if reference_level not in range(4):
+        raise CorpusError(f"{prefix}.reference_level must use the external protocol's 0–3 scale")
 
 
 def validate_gap11(label: dict[str, Any], prefix: str) -> None:
