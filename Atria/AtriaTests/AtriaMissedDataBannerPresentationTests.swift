@@ -181,3 +181,80 @@ final class AtriaMissedDataBannerPresentationTests: XCTestCase {
         XCTAssertFalse(c.offersRecovery)
     }
 }
+
+/// The Overview sync-progress footer must be honest (real frontier, real
+/// activity state) and quiet (hidden entirely when caught up).
+final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
+    private var calendar: Calendar {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        return c
+    }
+
+    // Fixed "now": 2026-08-07 ~05:00 IST.
+    private var now: Date { Date(timeIntervalSince1970: 1_786_059_000) }
+
+    private func footer(drainedAgo: TimeInterval? = 19 * 3600,
+                        backlogPending: Bool = true,
+                        debtRecords: Int? = nil,
+                        debtAge: TimeInterval? = nil,
+                        flushAgo: TimeInterval? = nil,
+                        lease: Bool = false) -> AtriaSyncProgressFooterPresentation.Footer? {
+        AtriaSyncProgressFooterPresentation.footer(
+            drainedThroughUnix: drainedAgo.map { now.timeIntervalSince1970 - $0 },
+            backlogPending: backlogPending,
+            debtRecords: debtRecords,
+            debtObservedAgeSeconds: debtAge,
+            secondsSinceLastFlush: flushAgo,
+            backgroundLeaseActive: lease,
+            now: now,
+            calendar: calendar)
+    }
+
+    func testHiddenWhenNothingToCatchUp() {
+        XCTAssertNil(footer(backlogPending: false))
+        // Fresh caught-up debt with no ticket → still hidden.
+        XCTAssertNil(footer(backlogPending: false, debtRecords: 60, debtAge: 30))
+    }
+
+    func testFreshDeepDebtShowsEvenWithoutTicket() {
+        XCTAssertNotNil(footer(backlogPending: false, debtRecords: 7_000, debtAge: 30))
+    }
+
+    func testBehindFrontierAndActivityAreHonest() {
+        let f = footer(flushAgo: 120)
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f!.active)
+        XCTAssertTrue(f!.detail.contains("19h 0m behind"))
+        XCTAssertTrue(f!.detail.contains("catching up now"))
+        XCTAssertTrue(f!.headline.contains("Synced through"))
+        XCTAssertTrue(f!.headline.contains("yesterday"),
+                      "a 19h-old frontier at 5 AM lands yesterday morning")
+    }
+
+    func testSilentDrainReadsPausedNotLying() {
+        let f = footer(flushAgo: 45 * 60)
+        XCTAssertNotNil(f)
+        XCTAssertFalse(f!.active)
+        XCTAssertTrue(f!.detail.contains("paused"))
+    }
+
+    func testLeaseCountsAsActiveWithoutFlushTimestamp() {
+        let f = footer(flushAgo: nil, lease: true)
+        XCTAssertTrue(f!.active)
+    }
+
+    func testMissingFrontierNeverInventsATime() {
+        let f = footer(drainedAgo: nil)
+        XCTAssertNotNil(f)
+        XCTAssertEqual(f!.headline, "Strap sync")
+        XCTAssertFalse(f!.detail.contains("behind"))
+    }
+
+    func testTodayFrontierOmitsDayLabel() {
+        let f = footer(drainedAgo: 30 * 60, flushAgo: 60)
+        XCTAssertNotNil(f)
+        XCTAssertFalse(f!.headline.contains("yesterday"))
+        XCTAssertTrue(f!.detail.contains("30m behind"))
+    }
+}

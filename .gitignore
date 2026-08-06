@@ -53,3 +53,4 @@ design-import/
 # Local screenshot/scratch drop folder
 /tmp/
 Atria/build-device/
+Atria/build-sim/

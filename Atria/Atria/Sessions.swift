@@ -9192,6 +9192,16 @@ final class SessionStore: ObservableObject {
                     return
                 }
                 self.historicalArchiveStatus = status
+                // Sync-progress footer frontier: display-only "synced through"
+                // marker; refreshed here because this path already computed
+                // the archive diagnostics off-main.
+                if let frontier = diagnostics.correctedUnixLast ?? diagnostics.unixLast,
+                   frontier > 0 {
+                    UserDefaults.standard.set(
+                        Double(frontier),
+                        forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+                    )
+                }
                 guard !diagnostics.exists || diagnostics.parseOK else {
                     completion?(false)
                     return

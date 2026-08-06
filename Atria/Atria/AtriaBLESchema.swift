@@ -371,6 +371,11 @@ extension AtriaBLEManager {
         // above is a last-ERROR value (froze while segments still landed → misleading
         // for triage); this is the success-path progress signal.
         static let lastDurableFlushBoundaryOKAt = "atria.offlineSync.lastDurableFlushBoundaryOKAt.v1"
+        // Drain frontier: the newest strap-history record durably in the local
+        // archive (corrected unix). Written by the archive-status refresh so
+        // the sync-progress footer can show "synced through …" without asking
+        // BLE anything. Display-only — never a drain decision input.
+        static let drainedThroughUnix = "atria.offlineSync.drainedThroughUnix.v1"
         // Drain-keeping P3: last time the HR-independent maintenance ticker
         // re-armed the range-loss drain because the normal (accepted-HR-driven)
         // re-arm loop had gone silent past its floor. A moving value here while a

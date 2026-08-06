@@ -5047,6 +5047,10 @@ struct AtriaHomeView: View {
             if !debugShowsNorthStarTodayFixture && !shouldLeadWithSystemBanners {
                 overviewSystemBanners
             }
+            // Live strap catch-up progress, always the last row of Overview.
+            if !debugShowsNorthStarTodayFixture {
+                AtriaSyncProgressFooter()
+            }
         }
     }
 
@@ -5596,6 +5600,165 @@ struct AtriaHomeView: View {
 /// (`strapPendingRecords`, ~1 record/sec); everything older was overwritten
 /// (finite buffer, no seek) and is gone. This maps the real signals to copy that
 /// never over-promises recovery. Pure + unit-tested; the view just renders it.
+/// Live strap catch-up progress for the very bottom of Overview. Honest and
+/// display-only: it renders the same persisted signals the drain itself
+/// writes (frontier, durable-flush recency, lease, backlog ticket) and hides
+/// entirely when there is nothing to catch up — a caught-up strap earns a
+/// quiet screen, not a badge.
+enum AtriaSyncProgressFooterPresentation {
+    struct Footer: Equatable {
+        let headline: String
+        let detail: String
+        let active: Bool
+    }
+
+    /// Mirrors the drain's own caught-up floor (~2 min at 1 Hz).
+    static let caughtUpRecordFloor = 120
+
+    static func behindText(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        let m = s / 60
+        if m < 1 { return "moments" }
+        if m < 60 { return "\(m)m" }
+        return "\(m / 60)h \(m % 60)m"
+    }
+
+    static func footer(drainedThroughUnix: Double?,
+                       backlogPending: Bool,
+                       debtRecords: Int?,
+                       debtObservedAgeSeconds: TimeInterval?,
+                       secondsSinceLastFlush: TimeInterval?,
+                       backgroundLeaseActive: Bool,
+                       now: Date,
+                       calendar: Calendar = .current) -> Footer? {
+        let debtFresh = debtObservedAgeSeconds.map {
+            $0.isFinite && $0 >= 0
+                && $0 <= AtriaMissedDataBannerPresentation.debtFreshnessWindow
+        } ?? false
+        let freshBacklogRecords = debtFresh ? (debtRecords ?? 0) : 0
+        // Show only while there is genuinely something to catch up on.
+        guard backlogPending || freshBacklogRecords > caughtUpRecordFloor else {
+            return nil
+        }
+        let active: Bool = {
+            if let age = secondsSinceLastFlush,
+               age <= AtriaMissedDataBannerPresentation.activeDrainRecencyWindow {
+                return true
+            }
+            return backgroundLeaseActive
+        }()
+        let stateText = active
+            ? "catching up now"
+            : "paused · resumes in the background"
+        guard let drainedThroughUnix, drainedThroughUnix > 0,
+              drainedThroughUnix <= now.timeIntervalSince1970 else {
+            // No trustworthy frontier yet — state only, never a made-up time.
+            return Footer(headline: "Strap sync",
+                          detail: stateText.prefix(1).uppercased() + stateText.dropFirst(),
+                          active: active)
+        }
+        let frontier = Date(timeIntervalSince1970: drainedThroughUnix)
+        let timeFormatter = DateFormatter()
+        timeFormatter.calendar = calendar
+        timeFormatter.timeZone = calendar.timeZone
+        timeFormatter.timeStyle = .short
+        timeFormatter.dateStyle = .none
+        let dayText: String
+        if calendar.isDate(frontier, inSameDayAs: now) {
+            dayText = ""
+        } else if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+                  calendar.isDate(frontier, inSameDayAs: yesterday) {
+            dayText = " yesterday"
+        } else {
+            let dayFormatter = DateFormatter()
+            dayFormatter.calendar = calendar
+            dayFormatter.timeZone = calendar.timeZone
+            dayFormatter.dateFormat = "EEE"
+            dayText = " \(dayFormatter.string(from: frontier))"
+        }
+        let behind = now.timeIntervalSince(frontier)
+        return Footer(
+            headline: "Synced through \(timeFormatter.string(from: frontier))\(dayText)",
+            detail: "\(behindText(behind)) behind · \(stateText)",
+            active: active
+        )
+    }
+}
+
+private struct AtriaSyncProgressFooter: View {
+    @State private var now = Date()
+    private let refresh = Timer.publish(every: 30, on: .main, in: .common)
+        .autoconnect()
+
+    var body: some View {
+        Group {
+            if let footer {
+                HStack(alignment: .center, spacing: 10) {
+                    Image(systemName: footer.active
+                          ? "arrow.triangle.2.circlepath"
+                          : "pause.circle")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(footer.active ? Color.cyan : Color.secondary)
+                        .frame(width: 30, height: 30)
+                        .background(AtriaIconTileBackground(
+                            cornerRadius: 9,
+                            tint: footer.active ? .cyan : .gray))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(footer.headline)
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+                        Text(footer.detail)
+                            .font(.caption2)
+                            .foregroundStyle(Color.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color(uiColor: .secondarySystemBackground),
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(footer.headline). \(footer.detail).")
+            }
+        }
+        .onReceive(refresh) { now = $0 }
+    }
+
+    private var footer: AtriaSyncProgressFooterPresentation.Footer? {
+        let defaults = UserDefaults.standard
+        let flushAt = defaults.object(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.lastDurableFlushBoundaryOKAt
+        ) as? Double
+        let debtObservedAt = defaults.object(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtObservedAt
+        ) as? Double
+        return AtriaSyncProgressFooterPresentation.footer(
+            drainedThroughUnix: defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+            ) as? Double,
+            backlogPending: defaults.bool(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
+            ),
+            debtRecords: defaults.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtPendingRecords
+            ) as? Int,
+            debtObservedAgeSeconds: debtObservedAt.map {
+                now.timeIntervalSince1970 - $0
+            },
+            secondsSinceLastFlush: flushAt.map {
+                max(0, now.timeIntervalSince1970 - $0)
+            },
+            backgroundLeaseActive: defaults.string(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.backgroundLeaseStatus
+            ) == "active",
+            now: now
+        )
+    }
+}
+
 enum AtriaMissedDataBannerPresentation {
     struct Copy: Equatable {
         let title: String
