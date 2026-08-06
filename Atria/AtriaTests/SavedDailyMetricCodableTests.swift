@@ -86,4 +86,45 @@ final class SavedDailyMetricCodableTests: XCTestCase {
 
         XCTAssertEqual(decoded, original)
     }
+
+    func testVersionedRecoveryReceiptRoundTripsFrozenInputsAndBaselines() throws {
+        let day = Date(timeIntervalSince1970: 1_800_000_000)
+        let baseline = PersonalBaseline(restingHR: 52,
+                                        hrvEMA: 63,
+                                        sessions: 14,
+                                        updated: day)
+        let receipt = FrozenRecoverySummary.InputSnapshot(
+            hrvRMSSD: 68,
+            restingHeartRateBPM: 49,
+            sleepDurationSeconds: 7.75 * 3_600,
+            sleepEfficiency: 0.91,
+            respiratoryRate: 13.2,
+            baseline: baseline,
+            respiratoryBaseline: (mean: 13.6, sd: 0.4, count: 14)
+        )
+        let original = FrozenRecoverySummary(
+            score: 74,
+            confidence: Metrics.RecoveryEstimate.Confidence.personalBaseline.rawValue,
+            source: FrozenRecoverySummary.recoveryV2Source,
+            model: "recovery_v2",
+            modelVersion: FrozenRecoverySummary.recoveryV2ModelVersion,
+            scoredDay: day,
+            usesHRV: true,
+            detail: "frozen recovery receipt",
+            contributors: [],
+            inputSnapshot: receipt
+        )
+
+        let restored = try JSONDecoder().decode(
+            FrozenRecoverySummary.self,
+            from: JSONEncoder().encode(original)
+        )
+
+        XCTAssertEqual(restored, original)
+        XCTAssertEqual(restored.modelVersion, 2)
+        XCTAssertEqual(restored.inputSnapshot?.hrvRMSSD, 68)
+        XCTAssertEqual(restored.inputSnapshot?.restingHeartRateBPM, 49)
+        XCTAssertEqual(restored.inputSnapshot?.sleepEfficiency, 0.91)
+        XCTAssertEqual(restored.inputSnapshot?.respiratoryRateBaseline?.mean, 13.6)
+    }
 }

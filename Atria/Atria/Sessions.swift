@@ -13113,6 +13113,11 @@ final class SessionStore: ObservableObject {
                                         strainCoverageFraction: rollup.strainCoverageFraction,
                                         strainEvidenceQuality: rollup.strainEvidenceQuality,
                                         skinTemperatureDeviationCelsius: resolvedSkinTemperatureDeviationByDay[day],
+                                        // This bulk historical rebuild may run
+                                        // after the personal baseline has
+                                        // changed. Keep its derived summary
+                                        // inspectable, but do not mint a new
+                                        // versioned receipt for an older night.
                                         recoverySummary: FrozenRecoverySummary(estimate: recovery, scoredDay: day))
             }
     }
@@ -13679,7 +13684,19 @@ final class SessionStore: ObservableObject {
                                 strainCoverageFraction: strainCoverage,
                                 strainEvidenceQuality: strainPresentation.quality,
                                 skinTemperatureDeviationCelsius: skinTemperatureDeviation,
-                                recoverySummary: FrozenRecoverySummary(estimate: recovery, scoredDay: day))
+                                recoverySummary: FrozenRecoverySummary(
+                                    estimate: recovery,
+                                    scoredDay: day,
+                                    inputSnapshot: FrozenRecoverySummary.InputSnapshot(
+                                        hrvRMSSD: hrv.map(Double.init),
+                                        restingHeartRateBPM: restingHR.map(Double.init),
+                                        sleepDurationSeconds: sleepDuration,
+                                        sleepEfficiency: confirmedMainSleep?.sleepEfficiency,
+                                        respiratoryRate: respiratoryRate,
+                                        baseline: baseline,
+                                        respiratoryBaseline: sleep.respiratoryBaselineStats
+                                    )
+                                ))
     }
 
     private nonisolated static func morningMetricDay(for night: SleepHistorySnapshot.Night,
