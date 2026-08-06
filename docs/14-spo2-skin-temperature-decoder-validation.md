@@ -80,6 +80,12 @@ Naive timestamps are compared as wall-clock values. The output provides ranges
 and exploratory correlations only and always emits `decoder_validated=0` and
 `metric_promotions=0`. A correlation is not a decoder validation.
 
+Before a paired reference set enters any offline analysis, admit its
+pseudonymous sidecar through `tools/validate_research_corpus.py`. GAP-14 rows
+require a named independent reference device, stable layout, negative control,
+and clock pairing within two seconds. The validator only creates a research-only
+artifact with zero production promotions; it cannot unlock a sensor decoder.
+
 ## Minimal return-to-device capture
 
 Record the hardware model/generation, firmware revision, hardware revision,
