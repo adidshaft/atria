@@ -21,8 +21,9 @@ enum AtriaResearchSharing {
     // made a future validation set impossible to align without guessing.
     // v4 adds explicit sleep-stage provenance so an Atria-generated
     // hypnogram cannot be mistaken for a PSG/reference label in a validation
-    // corpus.
-    static let schemaVersion = 4
+    // corpus. v5 adds only frozen, versioned Recovery receipts so a later
+    // calibration study cannot rebuild historical model inputs from live data.
+    static let schemaVersion = 5
 
     static var isOptedIn: Bool {
         UserDefaults.standard.bool(forKey: optInKey)
@@ -136,8 +137,30 @@ struct AtriaResearchBundlePayload: Codable {
     }
 
     struct Day: Codable {
+        /// The frozen inputs that actually produced a persisted Recovery score.
+        /// This deliberately excludes free-form contributor copy, raw dates,
+        /// and any later baseline recomputation. Nil means a legacy or
+        /// incomplete recovery record and is not a training/evaluation row.
+        struct RecoveryReceipt: Codable {
+            let score: Int
+            let confidence: String
+            let model: String
+            let modelVersion: Int
+            let usesHRV: Bool
+            let hrvRMSSD: Double?
+            let restingHeartRateBPM: Double?
+            let sleepDurationSeconds: Double?
+            let sleepEfficiency: Double?
+            let respiratoryRate: Double?
+            let comparisonHorizonDays: Int?
+            let recentQualificationHorizonDays: Int?
+            let recentQualifiedRestingDays: Int?
+            let recentQualifiedHRVNights: Int?
+        }
+
         let dayIndex: Int
         let recoveryPercent: Int?
+        let recoveryReceipt: RecoveryReceipt?
         let strain: Double?
         let sleepHours: Double?
         let restingHR: Int?
@@ -360,6 +383,7 @@ enum AtriaResearchBundleBuilder {
         let bundleDays = input.days.map { metric in
             AtriaResearchBundlePayload.Day(dayIndex: dayIndex(metric.day),
                                            recoveryPercent: metric.recoveryPercent,
+                                           recoveryReceipt: recoveryReceipt(for: metric.recoverySummary),
                                            strain: metric.strain,
                                            sleepHours: metric.sleepDuration.map { $0 / 3600 },
                                            restingHR: metric.restingHR,
@@ -387,6 +411,31 @@ enum AtriaResearchBundleBuilder {
                                           workouts: bundleWorkouts,
                                           days: bundleDays,
                                           journal: bundleJournal)
+    }
+
+    nonisolated private static func recoveryReceipt(
+        for summary: FrozenRecoverySummary?
+    ) -> AtriaResearchBundlePayload.Day.RecoveryReceipt? {
+        guard let summary,
+              let model = summary.model,
+              let modelVersion = summary.modelVersion,
+              let input = summary.inputSnapshot else {
+            return nil
+        }
+        return .init(score: summary.score,
+                     confidence: summary.confidence,
+                     model: model,
+                     modelVersion: modelVersion,
+                     usesHRV: summary.usesHRV,
+                     hrvRMSSD: input.hrvRMSSD,
+                     restingHeartRateBPM: input.restingHeartRateBPM,
+                     sleepDurationSeconds: input.sleepDurationSeconds,
+                     sleepEfficiency: input.sleepEfficiency,
+                     respiratoryRate: input.respiratoryRate,
+                     comparisonHorizonDays: input.recoveryComparison?.comparisonHorizonDays,
+                     recentQualificationHorizonDays: input.recoveryComparison?.recentQualificationHorizonDays,
+                     recentQualifiedRestingDays: input.recoveryComparison?.recentQualifiedRestingDays,
+                     recentQualifiedHRVNights: input.recoveryComparison?.recentQualifiedHRVNights)
     }
 
     private nonisolated static func finishBuild(payload: AtriaResearchBundlePayload,

@@ -265,6 +265,38 @@ final class AtriaResearchSharingTests: XCTestCase {
         XCTAssertTrue(payload.journal.allSatisfy { $0.dayIndex >= 0 })
     }
 
+    func testRecoveryReceiptRoundTripsAsFrozenVersionedEvidence() throws {
+        let receipt = AtriaResearchBundlePayload.Day.RecoveryReceipt(
+            score: 67,
+            confidence: "personalBaseline",
+            model: "recovery_v2",
+            modelVersion: 2,
+            usesHRV: true,
+            hrvRMSSD: 74,
+            restingHeartRateBPM: 56,
+            sleepDurationSeconds: 27_000,
+            sleepEfficiency: 0.91,
+            respiratoryRate: 14.2,
+            comparisonHorizonDays: 30,
+            recentQualificationHorizonDays: 14,
+            recentQualifiedRestingDays: 13,
+            recentQualifiedHRVNights: 12
+        )
+        let day = AtriaResearchBundlePayload.Day(dayIndex: 3,
+                                                  recoveryPercent: 67,
+                                                  recoveryReceipt: receipt,
+                                                  strain: 9,
+                                                  sleepHours: 7.5,
+                                                  restingHR: 56,
+                                                  hrv: 74)
+        let decoded = try JSONDecoder().decode(AtriaResearchBundlePayload.Day.self,
+                                                from: JSONEncoder().encode(day))
+        XCTAssertEqual(decoded.recoveryReceipt?.model, "recovery_v2")
+        XCTAssertEqual(decoded.recoveryReceipt?.modelVersion, 2)
+        XCTAssertEqual(decoded.recoveryReceipt?.comparisonHorizonDays, 30)
+        XCTAssertEqual(decoded.recoveryReceipt?.sleepDurationSeconds, 27_000)
+    }
+
     // MARK: - Fixtures
 
     private func fixturePayload() -> AtriaResearchBundlePayload {
@@ -309,6 +341,7 @@ final class AtriaResearchSharingTests: XCTestCase {
                              peakHR: 172)],
             days: [.init(dayIndex: 0,
                          recoveryPercent: 67,
+                         recoveryReceipt: nil,
                          strain: 12.4,
                          sleepHours: 7.5,
                          restingHR: 56,

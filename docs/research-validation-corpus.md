@@ -36,7 +36,7 @@ not add names, device serials, free text, locations, or absolute dates.
   "research_only": true,
   "model_validated": false,
   "production_promotions": 0,
-  "targets": ["GAP-10", "GAP-11", "GAP-12", "GAP-14"],
+  "targets": ["GAP-10", "GAP-11", "GAP-12", "GAP-13", "GAP-14"],
   "participants": [
     {
       "pseudonym": "participant-development-pseudonym",
@@ -130,6 +130,27 @@ workout; participant-separated precision and recall must be reviewed first.
 Only `polysomnography` or a named `defensible_reference` source is accepted.
 An Atria hypnogram is never ground truth for its own validation.
 
+### GAP-13 — Recovery outcome
+
+```json
+{
+  "gap": "GAP-13",
+  "start_rel": 86400,
+  "end_rel": 86460,
+  "outcome_kind": "reported_fatigue",
+  "outcome_score": 72,
+  "outcome_direction": "lower_is_better",
+  "source": "validated_questionnaire"
+}
+```
+
+`outcome_score` is a 0–100 score produced by the named, documented external
+protocol. It is not an Atria Recovery score. Allowed outcome kinds are
+`reported_fatigue`, `workout_performance`, `next_day_hrv`, and `next_day_rhr`;
+sources are `validated_questionnaire`, `standardized_workout`, or
+`external_protocol`. `outcome_direction` makes the protocol mapping explicit;
+the evaluator maps a lower-is-better score before comparing it with Recovery.
+
 ### GAP-14 — sensor decoder pair
 
 ```json
@@ -162,9 +183,10 @@ bias, MAE, p95, correlation, and three-day requirements in
 
 ## Review sequence
 
-1. Build an opt-in Atria schema-v4 bundle and record its digest. Schema v4 is
+1. Build an opt-in Atria schema-v5 bundle and record its digest. Schema v4 is
    required for GAP-12 because it declares that Atria's own stage totals are
-   not reference labels.
+   not reference labels; schema v5 is required for GAP-13 because it carries a
+   frozen versioned Recovery receipt rather than a reconstructed live score.
 2. Create one sidecar row per external label, on the same relative timeline.
 3. Admit the manifest with this tool; keep rejected data out of evaluation.
 4. Train and assess only on `development` participants.
@@ -223,6 +245,24 @@ level confusion, and level-3 precision/recall. It must remain
 `research_only: true`, `model_validated: false`, and
 `production_promotions: 0`; a passing command cannot turn on a production
 overnight physiological-load score or feed the Sleep Score.
+
+## GAP-13 held-out report
+
+Evaluate a versioned Recovery candidate against one pre-registered external
+outcome kind at a time:
+
+```sh
+python3 tools/evaluate_recovery_model.py \
+  corpus.manifest.json recovery.predictions.json \
+  --outcome-kind reported_fatigue \
+  --output recovery.held-out-report.json
+```
+
+The prediction sidecar supplies `model_id`, positive `model_version`, and one
+0–100 frozen `recovery_score` for each admitted outcome window. The report
+normalizes an explicitly lower-is-better external outcome, then reports
+held-out bias, MAE, correlation, pairwise concordance, and score bins for
+calibration review. It never rewrites history or approves a model.
 
 ## GAP-14 held-out report
 
