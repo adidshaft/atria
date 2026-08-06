@@ -247,7 +247,7 @@ final class AtriaResearchSharingTests: XCTestCase {
         let exportedWorkout = try XCTUnwrap(payload.workouts.first)
         let expectedSessionStart = 2 * 86_400.0 + 10 * 3_600.0
 
-        XCTAssertEqual(payload.manifest.schema, 3)
+        XCTAssertEqual(payload.manifest.schema, AtriaResearchSharing.schemaVersion)
         XCTAssertEqual(exportedSession.startRel, expectedSessionStart, accuracy: 0.001)
         XCTAssertEqual(exportedSession.hrPoints, [[expectedSessionStart + 10, 71],
                                                    [expectedSessionStart + 60, 73]])
@@ -298,6 +298,8 @@ final class AtriaResearchSharingTests: XCTestCase {
                            endRel: 111_600.0,
                            durationS: 28_800.0,
                            confidence: "high",
+                           stageProvenance: "atria_derived_research_only_not_reference",
+                           stageReferenceEligible: false,
                            stageSeconds: ["light": 14_400, "deep": 7200])],
             workouts: [.init(startRel: 36_000.0,
                              endRel: 39_600.0,

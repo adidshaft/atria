@@ -32,7 +32,7 @@ def participant(name: str, split: str) -> dict:
     return {
         "pseudonym": name,
         "split": split,
-        "bundle": {"digest_sha256": "a" * 64, "schema": 3},
+        "bundle": {"digest_sha256": "a" * 64, "schema": 4},
         "labels": [label(gap, index * 70) for index, gap in enumerate(["GAP-10", "GAP-11", "GAP-12", "GAP-14"])],
     }
 
@@ -72,6 +72,12 @@ class ResearchCorpusTests(unittest.TestCase):
         value = manifest()
         value["participants"][1]["labels"][2]["atria_derived"] = True
         with self.assertRaisesRegex(corpus.CorpusError, "Atria-derived"):
+            corpus.validate(value)
+
+    def test_rejects_pre_provenance_bundle_for_sleep_stage_validation(self) -> None:
+        value = manifest()
+        value["participants"][0]["bundle"]["schema"] = 3
+        with self.assertRaisesRegex(corpus.CorpusError, "schema 4 or newer"):
             corpus.validate(value)
 
     def test_rejects_any_attempt_to_promote_a_production_metric(self) -> None:

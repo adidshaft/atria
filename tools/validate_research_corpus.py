@@ -83,13 +83,16 @@ def boolean(value: Any, name: str) -> bool:
     return value
 
 
-def validate_bundle(bundle: Any, participant: str) -> None:
+def validate_bundle(bundle: Any, participant: str, targets: set[str]) -> None:
     item = exact_object(bundle, {"digest_sha256", "schema"}, set(), f"{participant}.bundle")
     digest = text(item["digest_sha256"], f"{participant}.bundle.digest_sha256")
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest.lower()):
         raise CorpusError(f"{participant}.bundle.digest_sha256 must be lowercase-compatible SHA-256")
-    if integer(item["schema"], f"{participant}.bundle.schema") < 3:
-        raise CorpusError(f"{participant}.bundle.schema must be Atria research schema 3 or newer")
+    minimum_schema = 4 if "GAP-12" in targets else 3
+    if integer(item["schema"], f"{participant}.bundle.schema") < minimum_schema:
+        raise CorpusError(
+            f"{participant}.bundle.schema must be Atria research schema {minimum_schema} or newer"
+        )
 
 
 def validate_window(label: dict[str, Any], prefix: str) -> tuple[float, float]:
@@ -188,7 +191,7 @@ def validate(document: dict[str, Any]) -> dict[str, Any]:
         split = text(item["split"], f"{prefix}.split")
         if split not in SPLITS:
             raise CorpusError(f"{prefix}.split must be development or held_out")
-        validate_bundle(item["bundle"], prefix)
+        validate_bundle(item["bundle"], prefix, set(targets))
         labels = item["labels"]
         if not isinstance(labels, list) or not labels:
             raise CorpusError(f"{prefix}.labels must be non-empty")
