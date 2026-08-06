@@ -100,7 +100,8 @@ final class SavedDailyMetricCodableTests: XCTestCase {
             sleepEfficiency: 0.91,
             respiratoryRate: 13.2,
             baseline: baseline,
-            respiratoryBaseline: (mean: 13.6, sd: 0.4, count: 14)
+            respiratoryBaseline: (mean: 13.6, sd: 0.4, count: 14),
+            now: day
         )
         let original = FrozenRecoverySummary(
             score: 74,
@@ -126,5 +127,7 @@ final class SavedDailyMetricCodableTests: XCTestCase {
         XCTAssertEqual(restored.inputSnapshot?.restingHeartRateBPM, 49)
         XCTAssertEqual(restored.inputSnapshot?.sleepEfficiency, 0.91)
         XCTAssertEqual(restored.inputSnapshot?.respiratoryRateBaseline?.mean, 13.6)
+        XCTAssertEqual(restored.inputSnapshot?.recoveryComparison?.comparisonHorizonDays, 30)
+        XCTAssertEqual(restored.inputSnapshot?.recoveryComparison?.asOf, day)
     }
 }

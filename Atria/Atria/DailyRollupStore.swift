@@ -28,6 +28,50 @@ struct FrozenRecoverySummary: Codable, Equatable {
             let trusted: Bool
         }
 
+        /// Shadow evidence for a future Recovery model. It is independent from
+        /// the v2 mean/SD inputs above, so historic v2 scores stay exactly
+        /// replayable while outcome validation evaluates a robust 30-day
+        /// candidate. Optional fields preserve decoding of existing receipts.
+        struct RecoveryComparison: Codable, Equatable {
+            struct Statistic: Codable, Equatable {
+                let location: Double
+                let scale: Double
+                let sampleCount: Int
+            }
+
+            let asOf: Date
+            let comparisonHorizonDays: Int
+            let recentQualificationHorizonDays: Int
+            let statistic: String
+            let restingHeartRate: Statistic?
+            let hrv: Statistic?
+            let recentQualifiedRestingDays: Int
+            let recentQualifiedHRVNights: Int
+            let restingTrusted: Bool
+            let hrvTrusted: Bool
+
+            init(_ comparison: PersonalBaseline.RecoveryComparison) {
+                asOf = comparison.asOf
+                comparisonHorizonDays = comparison.comparisonHorizonDays
+                recentQualificationHorizonDays = comparison.recentQualificationHorizonDays
+                statistic = comparison.statistic
+                restingHeartRate = comparison.restingHeartRate.map {
+                    Statistic(location: $0.location,
+                              scale: $0.scale,
+                              sampleCount: $0.sampleCount)
+                }
+                hrv = comparison.hrv.map {
+                    Statistic(location: $0.location,
+                              scale: $0.scale,
+                              sampleCount: $0.sampleCount)
+                }
+                recentQualifiedRestingDays = comparison.recentQualifiedRestingDays
+                recentQualifiedHRVNights = comparison.recentQualifiedHRVNights
+                restingTrusted = comparison.restingTrusted
+                hrvTrusted = comparison.hrvTrusted
+            }
+        }
+
         let hrvRMSSD: Double?
         let restingHeartRateBPM: Double?
         let sleepDurationSeconds: TimeInterval?
@@ -37,6 +81,7 @@ struct FrozenRecoverySummary: Codable, Equatable {
         let restingHeartRateBaseline: Baseline?
         let respiratoryRateBaseline: Baseline?
         let baselineUpdatedAt: Date?
+        let recoveryComparison: RecoveryComparison?
 
         init(hrvRMSSD: Double?,
              restingHeartRateBPM: Double?,
@@ -44,29 +89,31 @@ struct FrozenRecoverySummary: Codable, Equatable {
              sleepEfficiency: Double?,
              respiratoryRate: Double?,
              baseline: PersonalBaseline,
-             respiratoryBaseline: (mean: Double, sd: Double, count: Int)?) {
+             respiratoryBaseline: (mean: Double, sd: Double, count: Int)?,
+             now: Date = Date(),
+             calendar: Calendar = .current) {
             self.hrvRMSSD = hrvRMSSD.flatMap { $0 > 0 ? $0 : nil }
             self.restingHeartRateBPM = restingHeartRateBPM.flatMap { $0 > 0 ? $0 : nil }
             self.sleepDurationSeconds = sleepDurationSeconds.flatMap { $0 > 0 ? $0 : nil }
             self.sleepEfficiency = sleepEfficiency.flatMap { (0...1).contains($0) ? $0 : nil }
             self.respiratoryRate = respiratoryRate.flatMap { $0 > 0 ? $0 : nil }
 
-            let hrvStats = baseline.lnRMSSDStats
+            let hrvStats = baseline.lnRMSSDStats(now: now)
             let hrvMean = hrvStats?.mean ?? baseline.hrvEMA
             hrvBaseline = hrvMean.map {
                 Baseline(mean: $0,
                          standardDeviation: hrvStats?.sd,
-                         sampleCount: hrvStats?.count ?? baseline.freshHRVSampleCount(),
-                         trusted: baseline.hasTrustedHRVBaseline())
+                         sampleCount: hrvStats?.count ?? baseline.freshHRVSampleCount(now: now),
+                         trusted: baseline.hasTrustedHRVBaseline(now: now))
             }
 
-            let restingStats = baseline.restingStats
+            let restingStats = baseline.restingStats(now: now)
             let restingMean = restingStats?.mean ?? baseline.restingHR
             restingHeartRateBaseline = restingMean.map {
                 Baseline(mean: $0,
                          standardDeviation: restingStats?.sd,
-                         sampleCount: restingStats?.count ?? baseline.freshRestingSampleCount(),
-                         trusted: baseline.hasTrustedRestingBaseline())
+                         sampleCount: restingStats?.count ?? baseline.freshRestingSampleCount(now: now),
+                         trusted: baseline.hasTrustedRestingBaseline(now: now))
             }
 
             respiratoryRateBaseline = respiratoryBaseline.map {
@@ -76,6 +123,9 @@ struct FrozenRecoverySummary: Codable, Equatable {
                          trusted: $0.count >= PersonalBaseline.trustedMinimumSamples && $0.sd > 0.1)
             }
             baselineUpdatedAt = baseline.updated
+            recoveryComparison = RecoveryComparison(
+                baseline.recoveryComparison(now: now, calendar: calendar)
+            )
         }
     }
 
