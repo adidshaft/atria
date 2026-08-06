@@ -2431,10 +2431,28 @@ struct AtriaSleepStressCard: View {
         })
     }
 
-    private var heartRatePoints: [AtriaStressTimelinePoint] {
-        AtriaStressTimelinePoint.segment(projection.heartRateSamples.map {
-            AtriaStressDetailReading(date: $0.date, score: $0.bpm)
-        })
+    private struct HRTracePoint: Identifiable {
+        let date: Date
+        let bpm: Double
+        let segment: Int
+        var id: TimeInterval { date.timeIntervalSinceReferenceDate }
+    }
+
+    /// Raw overnight BPM, segmented around real gaps (the same 5-minute rule the
+    /// load trace uses). It must NOT go through AtriaStressDetailReading, whose
+    /// initializer clamps score to 0...3 — that silently collapsed every bpm to
+    /// 3 and rendered the heart-rate line far below the axis (invisible).
+    private var heartRatePoints: [HRTracePoint] {
+        let sorted = projection.heartRateSamples.sorted { $0.date < $1.date }
+        var segment = 0
+        var previousDate: Date?
+        return sorted.map { sample in
+            if let previousDate, sample.date.timeIntervalSince(previousDate) > 5 * 60 {
+                segment += 1
+            }
+            previousDate = sample.date
+            return HRTracePoint(date: sample.date, bpm: sample.bpm, segment: segment)
+        }
     }
 
     private var highPeriods: [HighPeriod] {
@@ -2504,36 +2522,68 @@ struct AtriaSleepStressCard: View {
                                   title: { $0.rawValue },
                                   selection: $mode)
                 Chart {
-                    if mode == .heartRate, let band = typicalRestingBand {
-                        RectangleMark(yStart: .value("Typical low", band.lowerBound),
-                                      yEnd: .value("Typical high", band.upperBound))
-                            .foregroundStyle(.secondary.opacity(0.12))
-                    }
-                    ForEach(mode == .load ? points : heartRatePoints) { point in
-                        AreaMark(x: .value("Time", point.reading.date),
-                                 y: .value(mode == .load ? "Load" : "BPM", point.reading.score),
-                                 series: .value("Segment", point.segment))
-                            .interpolationMethod(.linear)
-                            .foregroundStyle(.linearGradient(colors: mode == .load ? [.blue.opacity(0.14), .green.opacity(0.08), .orange.opacity(0.03)] : [.red.opacity(0.18), .red.opacity(0.02)],
-                                                              startPoint: .bottom,
-                                                              endPoint: .top))
-                        LineMark(x: .value("Time", point.reading.date),
-                                 y: .value(mode == .load ? "Load" : "BPM", point.reading.score),
-                                 series: .value("Segment", point.segment))
-                            .interpolationMethod(.linear)
-                            .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                            .foregroundStyle(.linearGradient(colors: mode == .load ? [.blue, .green, .orange] : [.red, .orange],
-                                                              startPoint: .bottom,
-                                                              endPoint: .top))
-                    }
-                    ForEach(mode == .load ? points.filter { $0.reading.score >= 2 } : []) { point in
-                        PointMark(x: .value("Time", point.reading.date),
-                                  y: .value("Stress", point.reading.score))
-                            .symbolSize(28)
-                            .foregroundStyle(.orange)
+                    if mode == .load {
+                        ForEach(points) { point in
+                            AreaMark(x: .value("Time", point.reading.date),
+                                     y: .value("Load", point.reading.score),
+                                     series: .value("Segment", point.segment))
+                                .interpolationMethod(.linear)
+                                .foregroundStyle(.linearGradient(colors: [.blue.opacity(0.14), .green.opacity(0.08), .orange.opacity(0.03)],
+                                                                  startPoint: .bottom,
+                                                                  endPoint: .top))
+                            LineMark(x: .value("Time", point.reading.date),
+                                     y: .value("Load", point.reading.score),
+                                     series: .value("Segment", point.segment))
+                                .interpolationMethod(.linear)
+                                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                                .foregroundStyle(.linearGradient(colors: [.blue, .green, .orange],
+                                                                  startPoint: .bottom,
+                                                                  endPoint: .top))
+                        }
+                        ForEach(points.filter { $0.reading.score >= 2 }) { point in
+                            PointMark(x: .value("Time", point.reading.date),
+                                      y: .value("Load", point.reading.score))
+                                .symbolSize(28)
+                                .foregroundStyle(.orange)
+                        }
+                    } else {
+                        ForEach(heartRatePoints) { point in
+                            AreaMark(x: .value("Time", point.date),
+                                     y: .value("BPM", point.bpm),
+                                     series: .value("Segment", point.segment))
+                                .interpolationMethod(.linear)
+                                .foregroundStyle(.linearGradient(colors: [.red.opacity(0.18), .red.opacity(0.02)],
+                                                                  startPoint: .bottom,
+                                                                  endPoint: .top))
+                            LineMark(x: .value("Time", point.date),
+                                     y: .value("BPM", point.bpm),
+                                     series: .value("Segment", point.segment))
+                                .interpolationMethod(.linear)
+                                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                                .foregroundStyle(.linearGradient(colors: [.red, .orange],
+                                                                  startPoint: .bottom,
+                                                                  endPoint: .top))
+                        }
                     }
                 }
                 .chartYScale(domain: mode == .load ? 0...3 : heartRateDomain)
+                .chartBackground { proxy in
+                    // Draw the typical band as a background layer, decoupled from
+                    // the marks: a band mark with no x collapses the x-domain and
+                    // drops the x-positioned HR line. This cannot.
+                    GeometryReader { geo in
+                        if mode == .heartRate, let band = typicalRestingBand,
+                           let plotFrame = proxy.plotFrame {
+                            let plot = geo[plotFrame]
+                            let topY = plot.minY + (proxy.position(forY: band.upperBound) ?? 0)
+                            let bottomY = plot.minY + (proxy.position(forY: band.lowerBound) ?? 0)
+                            Rectangle()
+                                .fill(Color.secondary.opacity(0.12))
+                                .frame(width: plot.width, height: max(1, bottomY - topY))
+                                .position(x: plot.midX, y: (topY + bottomY) / 2)
+                        }
+                    }
+                }
                 .chartYAxis {
                     AxisMarks(position: .leading) { value in
                         AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
