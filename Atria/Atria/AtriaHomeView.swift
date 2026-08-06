@@ -1452,6 +1452,7 @@ struct AtriaHomeView: View {
                                      metricStore: liveWorkoutMetricStore,
                                      routeRecorder: workoutRouteRecorder,
                                      maxHR: store.profile.maxHR,
+                                     restingHR: store.baseline.restingInt ?? 60,
                                      strainTarget: model.heroStore.state.guidance.target,
                                      startDate: session.start,
                                      lowerTargetZone: session.lowerTargetZone,
@@ -1811,6 +1812,7 @@ struct AtriaHomeView: View {
                                                                           isRecording: true,
                                                                           heartRate: 120,
                                                                           maxHR: 190,
+                                                                          restingHR: 60,
                                                                           batteryLevel: 85,
                                                                           recoveryPercent: 68,
                                                                           recoveryIsReadyForAlert: true,
@@ -3061,6 +3063,7 @@ struct AtriaHomeView: View {
             isRecording: model.collectionLiveStore.state.isRecording,
             heartRate: model.pulseLiveStore.state.heartRate,
             maxHR: model.profileStore.profile.maxHR,
+            restingHR: store.baseline.restingInt ?? 60,
             batteryLevel: model.coreLiveStore.state.batteryLevel,
             recoveryPercent: model.heroStore.state.recoveryEstimate.percent,
             recoveryIsReadyForAlert: model.heroStore.state.recoveryEstimate.confidence == .validated
@@ -3102,7 +3105,9 @@ struct AtriaHomeView: View {
     private func updateLiveActivity(forceActivityWrite: Bool = false) {
         let now = Date()
         let heartRate = model.pulseLiveStore.state.heartRate
-        let zone = HRZone.zone(for: heartRate, maxHR: store.profile.maxHR)
+        let zone = HRZone.zone(for: heartRate,
+                               maxHR: store.profile.maxHR,
+                               restingHR: store.baseline.restingInt ?? 60)
         let session = workoutSession
         let activityType = session?.activityType ?? .other
         let loadExclusions = AtriaLiveWorkoutTRIMPAccumulator.effectiveExcludedIntervals(

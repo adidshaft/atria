@@ -30,6 +30,7 @@ struct WeeklyReport: Codable, Equatable {
     static let strainRecoveryNoteText = "You trained hardest on your lowest-recovery day"
 
     init(rollups: [DailyRollupStoreEntry],
+         sleepNights: [SleepHistorySnapshot.Night] = [],
          now: Date = Date(),
          calendar: Calendar = WeeklyReportCalendar.iso) {
         let recent = Self.recentRollups(rollups, limit: 14)
@@ -48,7 +49,20 @@ struct WeeklyReport: Codable, Equatable {
         recoveryDeltaVsPriorWeek = currentAverage.flatMap { current in
             priorAverage.map { current - $0 }
         }
-        sleepConsistencyPct = Self.sleepConsistencyPercent(from: currentWeek.compactMap(\.bedtimeMinutes))
+        // Bedtime-only rollups cannot answer whether wake time was steady.
+        // Reuse the single night-window authority whenever the caller has the
+        // evidence; otherwise keep this field building rather than producing a
+        // second, incompatible schedule score.
+        let weekNights: [SleepHistorySnapshot.Night]
+        if let interval = calendar.dateInterval(of: .weekOfYear, for: now) {
+            weekNights = sleepNights.filter { night in
+                guard let start = night.start else { return false }
+                return interval.contains(start)
+            }
+        } else {
+            weekNights = sleepNights
+        }
+        sleepConsistencyPct = AtriaSleepConsistency.result(from: weekNights).combinedPercent
         bestDay = currentWeek
             .filter { $0.recovery != nil }
             .max { ($0.recovery ?? Int.min) < ($1.recovery ?? Int.min) }
@@ -96,21 +110,6 @@ struct WeeklyReport: Codable, Equatable {
         guard !values.isEmpty else { return nil }
         let total = values.reduce(0, +)
         return Int((Double(total) / Double(values.count)).rounded())
-    }
-
-    private static func sleepConsistencyPercent(from bedtimes: [Int]) -> Int? {
-        guard bedtimes.count >= 2 else { return nil }
-        let normalized = bedtimes.map { minute -> Double in
-            let wrapped = ((minute % 1_440) + 1_440) % 1_440
-            return Double(wrapped < 720 ? wrapped + 1_440 : wrapped)
-        }
-        let mean = normalized.reduce(0, +) / Double(normalized.count)
-        let variance = normalized.reduce(0) { partial, value in
-            let delta = value - mean
-            return partial + delta * delta
-        } / Double(normalized.count)
-        let sdMinutes = sqrt(variance)
-        return Int((100 - min(100, sdMinutes / 1.2)).rounded()).clamped(to: 0...100)
     }
 
     private static func strainRecoveryNote(for week: [DailyRollupStoreEntry]) -> String? {
@@ -182,10 +181,4 @@ private enum WeeklyReportCalendar {
         calendar.timeZone = .current
         return calendar
     }()
-}
-
-private extension Comparable {
-    func clamped(to range: ClosedRange<Self>) -> Self {
-        min(max(self, range.lowerBound), range.upperBound)
-    }
 }

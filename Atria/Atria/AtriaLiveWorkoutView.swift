@@ -2358,6 +2358,7 @@ struct AtriaLiveWorkoutView: View {
     // prevents GPS publishes from invalidating HR, zones, strain and set logging.
     let routeRecorder: AtriaWorkoutRouteRecorder
     let maxHR: Int
+    let restingHR: Int
     let strainTarget: Double?
     let startDate: Date
     let lowerTargetZone: Int?
@@ -2412,7 +2413,10 @@ struct AtriaLiveWorkoutView: View {
                 .preferredColorScheme(.dark)
         }
         .sheet(isPresented: $showTargetPicker) {
-            AtriaWorkoutTargetPicker(currentZone: HRZone.zone(for: pulseStore.state.heartRate, maxHR: maxHR),
+            AtriaWorkoutTargetPicker(currentZone: HRZone.zone(for: pulseStore.state.heartRate,
+                                                               maxHR: maxHR,
+                                                               restingHR: restingHR),
+                                     zoneBoundaries: AtriaHRRZoneBoundaries(restingHR: restingHR, maxHR: maxHR),
                                      guidanceTarget: strainTarget,
                                      choice: $targetChoice)
                 .presentationDetents([.medium, .large])
@@ -2459,6 +2463,7 @@ struct AtriaLiveWorkoutView: View {
                                                  pulseStore: pulseStore,
                                                  coreLiveStore: coreLiveStore,
                                                  maxHR: maxHR,
+                                                 restingHR: restingHR,
                                                  lowerTargetZone: lowerTargetZone,
                                                  upperTargetZone: upperTargetZone,
                                                  onEditTarget: { showTargetPicker = true })
@@ -2475,7 +2480,9 @@ struct AtriaLiveWorkoutView: View {
     /// coaching flow; the map-first composition is intentionally route-only.
     private var standardWorkoutContent: some View {
         ZStack {
-            AtriaLiveWorkoutBackdrop(pulseStore: pulseStore, maxHR: maxHR)
+            AtriaLiveWorkoutBackdrop(pulseStore: pulseStore,
+                                      maxHR: maxHR,
+                                      restingHR: restingHR)
 
             VStack(spacing: 0) {
                 ScrollView(showsIndicators: false) {
@@ -2485,6 +2492,7 @@ struct AtriaLiveWorkoutView: View {
                         AtriaLiveWorkoutHeartBlock(pulseStore: pulseStore,
                                                    coreLiveStore: coreLiveStore,
                                                    maxHR: maxHR,
+                                                   restingHR: restingHR,
                                                    lowerTargetZone: lowerTargetZone,
                                                    upperTargetZone: upperTargetZone)
                             .padding(.top, 2)
@@ -3244,10 +3252,13 @@ struct AtriaLiveWorkoutView: View {
 private struct AtriaLiveWorkoutBackdrop: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
     let maxHR: Int
+    let restingHR: Int
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        let zone = HRZone.zone(for: pulseStore.state.heartRate, maxHR: maxHR)
+        let zone = HRZone.zone(for: pulseStore.state.heartRate,
+                               maxHR: maxHR,
+                               restingHR: restingHR)
         LinearGradient(colors: [zone.color.opacity(0.45), .black],
                        startPoint: .top, endPoint: .bottom)
             .ignoresSafeArea()
@@ -3303,6 +3314,7 @@ private struct AtriaLiveWorkoutRouteMetricsHost: View {
     let pulseStore: AtriaHomeModel.PulseLiveStore
     let coreLiveStore: AtriaHomeModel.CoreLiveStore
     let maxHR: Int
+    let restingHR: Int
     let lowerTargetZone: Int?
     let upperTargetZone: Int?
     let onEditTarget: () -> Void
@@ -3312,6 +3324,7 @@ private struct AtriaLiveWorkoutRouteMetricsHost: View {
                                         coreLiveStore: coreLiveStore,
                                         metricProjection: metricStore.state,
                                         maxHR: maxHR,
+                                        restingHR: restingHR,
                                         lowerTargetZone: lowerTargetZone,
                                         upperTargetZone: upperTargetZone,
                                         onEditTarget: onEditTarget)
@@ -3323,12 +3336,15 @@ private struct AtriaLiveWorkoutRouteMetricsHUD: View {
     @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
     let metricProjection: AtriaLiveWorkoutMetricProjection
     let maxHR: Int
+    let restingHR: Int
     let lowerTargetZone: Int?
     let upperTargetZone: Int?
     let onEditTarget: () -> Void
 
     private var heartRate: Int { pulseStore.state.heartRate }
-    private var zone: HRZone { HRZone.zone(for: heartRate, maxHR: maxHR) }
+    private var zone: HRZone {
+        HRZone.zone(for: heartRate, maxHR: maxHR, restingHR: restingHR)
+    }
     private var zoneText: String {
         zone.rawValue == 0 ? "Below Z1" : "Z\(zone.rawValue) \(zone.name)"
     }
@@ -3465,13 +3481,14 @@ private struct AtriaLiveWorkoutHeartBlock: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
     @ObservedObject var coreLiveStore: AtriaHomeModel.CoreLiveStore
     let maxHR: Int
+    let restingHR: Int
     let lowerTargetZone: Int?
     let upperTargetZone: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let heartRate = pulseStore.state.heartRate
-        let zone = HRZone.zone(for: heartRate, maxHR: maxHR)
+        let zone = HRZone.zone(for: heartRate, maxHR: maxHR, restingHR: restingHR)
         VStack(spacing: 12) {
             HStack(alignment: .center, spacing: 12) {
                 pulsingHeartIcon
@@ -3561,10 +3578,8 @@ private struct AtriaLiveWorkoutHeartBlock: View {
     }
 
     private func zoneBandText(_ zone: HRZone) -> String {
-        let lower = Int((Double(maxHR) * zone.lowerFraction).rounded())
-        guard let upperZone = HRZone(rawValue: zone.rawValue + 1) else { return "\(lower)+" }
-        let upper = max(lower, Int((Double(maxHR) * upperZone.lowerFraction).rounded()) - 1)
-        return "\(lower)-\(upper)"
+        AtriaHRRZoneBoundaries(restingHR: restingHR, maxHR: maxHR)?.rangeText(for: zone)
+            ?? "Range unavailable"
     }
 
 }
@@ -3813,6 +3828,7 @@ private struct AtriaLiveWorkoutStrainGuidance: View {
 /// guidance default) -- never changes anything until the user confirms.
 private struct AtriaWorkoutTargetPicker: View {
     let currentZone: HRZone
+    let zoneBoundaries: AtriaHRRZoneBoundaries?
     let guidanceTarget: Double?
     @Binding var choice: AtriaWorkoutTargetChoice?
     @Environment(\.dismiss) private var dismiss
@@ -3828,8 +3844,12 @@ private struct AtriaWorkoutTargetPicker: View {
     @State private var selectedZone: HRZone
     @State private var strainGoal: Double
 
-    init(currentZone: HRZone, guidanceTarget: Double?, choice: Binding<AtriaWorkoutTargetChoice?>) {
+    init(currentZone: HRZone,
+         zoneBoundaries: AtriaHRRZoneBoundaries?,
+         guidanceTarget: Double?,
+         choice: Binding<AtriaWorkoutTargetChoice?>) {
         self.currentZone = currentZone
+        self.zoneBoundaries = zoneBoundaries
         self.guidanceTarget = guidanceTarget
         self._choice = choice
         let fallbackGoal = guidanceTarget ?? AtriaWorkoutTargetMath.strainTarget(for: currentZone)
@@ -3872,6 +3892,10 @@ private struct AtriaWorkoutTargetPicker: View {
                     case .zone: zoneContent
                     case .strain: strainContent
                     }
+                }
+
+                if mode == .zone {
+                    hapticBoundaryNote
                 }
 
                 Spacer(minLength: 0)
@@ -3931,7 +3955,7 @@ private struct AtriaWorkoutTargetPicker: View {
                 zoneRow(zoneOption)
             }
         }
-        .accessibilityHint("Choose a heart-rate zone; Atria maps it to the displayed strain band.")
+        .accessibilityHint("Choose a heart-rate zone using your current resting and maximum heart-rate settings.")
     }
 
     private func zoneRow(_ zoneOption: HRZone) -> some View {
@@ -3948,7 +3972,7 @@ private struct AtriaWorkoutTargetPicker: View {
                     Text("Z\(zoneOption.rawValue) \u{00B7} \(zoneOption.name)")
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(.white)
-                    Text(String(format: "%.1f\u{2013}%.1f strain", band.lowerBound, band.upperBound))
+                    Text("\(zoneRangeText(zoneOption)) · \(String(format: "%.1f\u{2013}%.1f strain", band.lowerBound, band.upperBound))")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.white.opacity(0.55))
                 }
@@ -3963,7 +3987,7 @@ private struct AtriaWorkoutTargetPicker: View {
         }
         .buttonStyle(.plain)
         .atriaWorkoutGlassSurface(cornerRadius: 16, tint: isSelected ? zoneOption.color : .white)
-        .accessibilityLabel("Zone \(zoneOption.rawValue), \(zoneOption.name), \(String(format: "%.1f to %.1f strain", band.lowerBound, band.upperBound))\(isSelected ? ", selected" : "").")
+        .accessibilityLabel("Zone \(zoneOption.rawValue), \(zoneOption.name), \(zoneRangeText(zoneOption)), \(String(format: "%.1f to %.1f strain", band.lowerBound, band.upperBound))\(isSelected ? ", selected" : "").")
     }
 
     private var strainContent: some View {
@@ -3998,6 +4022,19 @@ private struct AtriaWorkoutTargetPicker: View {
         }
         .padding(14)
         .atriaWorkoutContentSurface(cornerRadius: 18, tint: Metrics.electricStrain)
+    }
+
+    private var hapticBoundaryNote: some View {
+        Label("Atria vibrates once as you enter or leave the selected zone. Alerts use these same heart-rate-reserve boundaries.",
+              systemImage: "applewatch.radiowaves.left.and.right")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.white.opacity(0.62))
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 2)
+    }
+
+    private func zoneRangeText(_ zone: HRZone) -> String {
+        zoneBoundaries?.rangeText(for: zone) ?? "Range unavailable"
     }
 
     private func commitAndDismiss() {

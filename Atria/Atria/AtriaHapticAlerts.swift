@@ -144,6 +144,10 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
         let isRecording: Bool
         let heartRate: Int
         let maxHR: Int
+        /// This is the same personal baseline used to render the live workout
+        /// target. Entering or leaving a zone must never haptic at a different
+        /// max-HR-only boundary.
+        let restingHR: Int
         let batteryLevel: Int
         let recoveryPercent: Int?
         /// A numeric early estimate remains useful in the UI, but only a
@@ -174,6 +178,7 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
 
         updateHeartRateZone(heartRate: snapshot.heartRate,
                             maxHR: snapshot.maxHR,
+                            restingHR: snapshot.restingHR,
                             settings: snapshot.settings)
         updateLowBattery(level: snapshot.batteryLevel,
                          settings: snapshot.settings)
@@ -194,12 +199,15 @@ final class AtriaHapticAlertCoordinator: NSObject, CXCallObserverDelegate {
         }
     }
 
-    private func updateHeartRateZone(heartRate: Int, maxHR: Int, settings: AtriaHapticAlertSettings) {
+    private func updateHeartRateZone(heartRate: Int,
+                                     maxHR: Int,
+                                     restingHR: Int,
+                                     settings: AtriaHapticAlertSettings) {
         guard settings.heartRateZones, heartRate > 0, maxHR > 0, activeCollection else {
             lastZone = nil
             return
         }
-        let zone = HRZone.zone(for: heartRate, maxHR: maxHR)
+        let zone = HRZone.zone(for: heartRate, maxHR: maxHR, restingHR: restingHR)
         defer { lastZone = zone }
         guard let lastZone, lastZone != zone else { return }
         let now = Date()
