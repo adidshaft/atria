@@ -624,3 +624,62 @@ struct AtriaSleepDebtChartCard: View {
         return "Hours versus sleep need for \(weekTitle). \(realNightCount) of 7 mornings have confirmed sleep."
     }
 }
+
+/// GAP-06 — the provisional composite Sleep Score, presented with its
+/// components always visible and its provisional state stated outright. It never
+/// implies a validated four-component score, and never hides a missing
+/// component behind a filled number.
+struct AtriaSleepScoreCard: View {
+    let score: AtriaSleepScore
+
+    private func valueText(_ component: AtriaSleepScore.ComponentValue) -> String {
+        if let percent = component.percent { return "\(Int(percent.rounded()))%" }
+        return component.component == .overnightLoad ? "Not validated" : "Not yet"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sleep Score")
+                        .font(.subheadline.weight(.bold))
+                    Text("Provisional")
+                        .font(.caption2.weight(.black))
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("Provisional score")
+                }
+                Spacer(minLength: 8)
+                if let value = score.score {
+                    Text("\(value)")
+                        .font(.system(size: 34, weight: .black, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(Metrics.electricSleep)
+                }
+            }
+
+            VStack(spacing: 6) {
+                ForEach(score.components, id: \.component) { component in
+                    HStack(spacing: 8) {
+                        Text(component.component.label)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(component.isPresent ? .primary : .secondary)
+                        Spacer(minLength: 4)
+                        Text(valueText(component))
+                            .font(.caption.weight(.bold).monospacedDigit())
+                            .foregroundStyle(component.isPresent ? .primary : .secondary)
+                    }
+                }
+            }
+
+            Text(score.score == nil
+                 ? "Not enough qualified components yet — Sleep Sufficiency remains your primary measure."
+                 : "Provisional composite of the components above. The weights are not yet validated, and overnight load is excluded until its model is validated. Sleep Sufficiency stays the label for hours versus need.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .atriaInsetCard(tint: Metrics.electricSleep)
+        .accessibilityElement(children: .combine)
+    }
+}
