@@ -439,6 +439,48 @@ extension AtriaBLEManager {
         return true
     }
 
+    /// Drain-keeping continuity (2026-08-07 soak): a `.draining` authority
+    /// whose transport died (slice released for live HR, orphaned lease, BLE
+    /// drop) used to be resumable ONLY via the interrupted-full-drain
+    /// reacquisition reasons; every ordinary re-arm (bg_processing, the P3
+    /// tick, accepted-HR chains) answered `deferred_existing_drain_authority`,
+    /// so a 19 h backlog advanced in rare bursts tens of minutes apart. An
+    /// ordinary guarded re-arm may resume the SAME persisted authority once
+    /// the chain is provably silent and live capture has provably recovered on
+    /// a stable link — the documented 60 s-stable resume. Fresh accepted HR is
+    /// the safety precondition (the slice watchdog releases history again if
+    /// it goes stale), not a reason to defer forever; a healthy in-flight
+    /// chain is protected by the silence floor and `syncInProgress`.
+    nonisolated static func shouldResumeStrandedDrainingAuthority(
+        syncInProgress: Bool,
+        linkConnected: Bool,
+        connectedAt: Date?,
+        lastAcceptedHRAt: Date?,
+        lastAuthorityProgressAtUnix: TimeInterval?,
+        activeExplicitWorkout: Bool,
+        recentDisconnectStorm: Bool,
+        now: Date,
+        stableConnectionInterval: TimeInterval = 60,
+        acceptedFreshnessWindow: TimeInterval = 45,
+        progressSilenceFloor: TimeInterval = 90
+    ) -> Bool {
+        guard !syncInProgress,
+              linkConnected,
+              !activeExplicitWorkout,
+              !recentDisconnectStorm,
+              let connectedAt,
+              let lastAcceptedHRAt else { return false }
+        let connectionAge = now.timeIntervalSince(connectedAt)
+        let acceptedAge = now.timeIntervalSince(lastAcceptedHRAt)
+        guard connectionAge >= stableConnectionInterval,
+              acceptedAge >= 0,
+              acceptedAge <= acceptedFreshnessWindow else { return false }
+        // No durable progress marker at all → nothing to protect; resume.
+        guard let lastProgress = lastAuthorityProgressAtUnix,
+              lastProgress.isFinite else { return true }
+        return now.timeIntervalSince1970 - lastProgress >= progressSilenceFloor
+    }
+
     /// Coalesces a deferred transport request without erasing the authority
     /// which admitted it. This matters for debug/physical forced recovery:
     /// its evidence label is caller supplied and therefore cannot be recovered

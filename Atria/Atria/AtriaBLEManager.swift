@@ -4671,6 +4671,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             migrateFailedProprietaryBatteryRefreshIfNeeded()
             isolateRecentProtectedR10DisconnectStormIfNeeded()
             restoreInterruptedFullDrainLaunchIntentIfNeeded(defaults: defaults)
+            // Drain-keeping continuity (2026-08-07): a persisted backlog must
+            // restart the P3 maintenance backstop in THIS process too. After a
+            // jetsam kill mid-catch-up, no gap-detection or re-arm lane may run
+            // for tens of minutes, and the ticker used to stay down with it.
+            startRangeLossBackfillMaintenanceTickerIfNeeded(
+                reason: "launch_persisted_backlog"
+            )
             let launchNow = Date()
             // A user-started workout is an explicit request for the strap's
             // motion stream.  Pure-HR fallback is the right fail-safe for
@@ -8543,6 +8550,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // healthy live link, and create another gap while trying to settle the
         // previous one. Keep the radio with live HR and resume the fsynced
         // journal locally instead.
+        var strandedDrainingAuthorityResumeAdmitted = false
         if let authority = try? historicalFullDrainCoverageStore.load() {
             // P0: any fresh backlog (not just the range-loss ticket) admits
             // the raw-only catch-up lane past a parked terminal authority —
@@ -8603,7 +8611,36 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     )
                 }
             case .continueNormally where authority.status == .draining:
-                guard Self.isPersistedDrainAuthorityResumeReason(reason) else {
+                let stormForStrandedResume =
+                    defaults.integer(forKey: Self.protectedR10EarlyDisconnectsKey)
+                        >= Self.protectedR10EarlyDisconnectLimit
+                    || (defaults.object(forKey: Self.protectedR10DisconnectStormAtKey)
+                        as? Double).map {
+                            Date().timeIntervalSince1970 - $0 < 300
+                        } ?? false
+                let lastAuthorityProgressAtUnix = authority.boundaries
+                    .compactMap(\.ackCompletedAtUnix)
+                    .max() ?? authority.attempt.commandWriteCompletedAtUnix
+                let strandedResume = Self.shouldResumeStrandedDrainingAuthority(
+                    syncInProgress: offlineHistoricalSyncInProgress,
+                    linkConnected: connectedLink,
+                    connectedAt: connectedAt,
+                    lastAcceptedHRAt: lastAcceptedHRAt,
+                    lastAuthorityProgressAtUnix: lastAuthorityProgressAtUnix,
+                    activeExplicitWorkout: activeExplicitWorkout,
+                    recentDisconnectStorm: stormForStrandedResume,
+                    now: Date()
+                )
+                if strandedResume {
+                    strandedDrainingAuthorityResumeAdmitted = true
+                    AtriaDebugLog(
+                        "ATRIADBG offline_sync status=stranded_draining_authority_resume reason=%@ authority=%@ action=resume_silent_persisted_chain_from_stable_live",
+                        reason,
+                        authority.authorityIdentifier
+                    )
+                }
+                guard Self.isPersistedDrainAuthorityResumeReason(reason)
+                        || strandedResume else {
                     defaults.set(
                         "deferred_existing_drain_authority",
                         forKey: OfflineSyncDefaults.lastStatus
@@ -8658,10 +8695,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // and its exact-gap fingerprint is still pending. Refusing the resume
         // here is what stranded the authority behind this gate; it is not a
         // new full-flash decision.
-        let resumingPersistedDrainAuthority = Self
-            .isPersistedDrainAuthorityResumeReason(reason)
-            && (try? historicalFullDrainCoverageStore.load())
-                .map { $0.status == .draining && $0.gap.pending } == true
+        let resumingPersistedDrainAuthority = strandedDrainingAuthorityResumeAdmitted
+            || (Self.isPersistedDrainAuthorityResumeReason(reason)
+                && (try? historicalFullDrainCoverageStore.load())
+                    .map { $0.status == .draining && $0.gap.pending } == true)
         // Operator-supervised seek trial only. The exact-recovery fence exists
         // because a full-flash replay of old rows is not gap recovery — and
         // that fence is exactly what makes the seek question unanswerable:

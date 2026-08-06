@@ -10892,4 +10892,62 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(fenceRefuses(fullDrain: true))
     }
 
+    // MARK: - Stranded draining-authority resume (2026-08-07 continuity)
+
+    private func strandedResume(
+        syncInProgress: Bool = false,
+        linkConnected: Bool = true,
+        connectedAgo: TimeInterval? = 120,
+        acceptedHRAgo: TimeInterval? = 5,
+        progressAgo: TimeInterval? = 21 * 60,
+        workout: Bool = false,
+        storm: Bool = false
+    ) -> Bool {
+        let now = Date(timeIntervalSince1970: 1_786_060_000)
+        return AtriaBLEManager.shouldResumeStrandedDrainingAuthority(
+            syncInProgress: syncInProgress,
+            linkConnected: linkConnected,
+            connectedAt: connectedAgo.map { now.addingTimeInterval(-$0) },
+            lastAcceptedHRAt: acceptedHRAgo.map { now.addingTimeInterval(-$0) },
+            lastAuthorityProgressAtUnix: progressAgo.map {
+                now.timeIntervalSince1970 - $0
+            },
+            activeExplicitWorkout: workout,
+            recentDisconnectStorm: storm,
+            now: now
+        )
+    }
+
+    func testSilentDrainingAuthorityResumesFromStableLiveEpoch() {
+        // The 4:34 AM stall: chain silent 21 min, link reconnected, HR fresh —
+        // an ordinary bg_processing re-arm must resume the persisted chain
+        // instead of answering deferred_existing_drain_authority forever.
+        XCTAssertTrue(strandedResume())
+    }
+
+    func testHealthyInFlightChainIsNeverStomped() {
+        XCTAssertFalse(strandedResume(syncInProgress: true))
+        XCTAssertFalse(strandedResume(progressAgo: 30),
+                       "recent boundary ACKs mean the chain is alive; the floor must hold the ticker back")
+    }
+
+    func testResumeRequiresProvenLiveRecovery() {
+        XCTAssertFalse(strandedResume(linkConnected: false))
+        XCTAssertFalse(strandedResume(connectedAgo: 20),
+                       "a just-reconnected link is not yet a stable epoch")
+        XCTAssertFalse(strandedResume(acceptedHRAgo: 120),
+                       "stale accepted HR means live capture has not recovered; recover realtime first")
+        XCTAssertFalse(strandedResume(acceptedHRAgo: nil))
+        XCTAssertFalse(strandedResume(connectedAgo: nil))
+    }
+
+    func testResumeRespectsWorkoutAndStormGuards() {
+        XCTAssertFalse(strandedResume(workout: true))
+        XCTAssertFalse(strandedResume(storm: true))
+    }
+
+    func testMissingProgressMarkerResumesRatherThanStarves() {
+        XCTAssertTrue(strandedResume(progressAgo: nil))
+    }
+
 }
