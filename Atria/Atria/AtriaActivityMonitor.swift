@@ -872,12 +872,9 @@ struct AtriaActivityMonitorTab: View {
                     .foregroundStyle(stressMonitorStore.state.level?.tint ?? .secondary)
             }
 
-            // Always a graph (design 2026-08-05): start from whatever readings
-            // exist rather than a text "warming up" card. ONLY the line carries
-            // range color -- the WHOOP stress palette blue (calm) -> green
-            // (medium) -> orange (high); a point low on the axis reads blue and
-            // a spike reads orange. The area stays a single faint neutral tint,
-            // never colored horizontal bands.
+            // Only measured readings earn a graph. Leaving an empty plot with
+            // Calm/Low/Med/High labels made the current device state look like
+            // data had been omitted rather than honestly not collected yet.
             let stressLineGradient = LinearGradient(
                 colors: [Metrics.electricStrain, Metrics.electricGreen, Metrics.electricStress],
                 startPoint: .bottom, endPoint: .top)
@@ -891,6 +888,22 @@ struct AtriaActivityMonitorTab: View {
                 default: return Metrics.electricStress
                 }
             }
+            if points.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(Metrics.electricStress)
+                    Text("Collecting stress")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Keep the strap on for steady wear; your 0–3 timeline will appear here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, minHeight: 112)
+                .padding(.horizontal, 20)
+                .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
             Chart {
                 ForEach(points) { point in
                     AreaMark(x: .value("Time", point.reading.date),
@@ -905,8 +918,7 @@ struct AtriaActivityMonitorTab: View {
                         .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
                         .foregroundStyle(stressLineGradient)
                 }
-                // A lone/sparse reading still reads as a graph: mark the latest
-                // point so the monitor is never an empty rectangle.
+                // A lone/sparse reading still reads as a graph.
                 if let latest = points.last {
                     PointMark(x: .value("Time", latest.reading.date),
                               y: .value("Stress", latest.reading.score))
@@ -935,14 +947,6 @@ struct AtriaActivityMonitorTab: View {
             }
             .frame(height: 112)
             .clipped()
-            .overlay {
-                if points.isEmpty {
-                    Text("Collecting — your stress line appears as soon as there's steady wear.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 16)
-                }
             }
 
             Text(points.isEmpty
