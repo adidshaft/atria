@@ -284,6 +284,20 @@ final class AtriaStrengthProgressPresentationTests: XCTestCase {
         XCTAssertEqual(density, 0.06, accuracy: 0.0001)
     }
 
+    func testQualifiedMuscularReceiptRoundTripsWithItsCalculationVersion() throws {
+        let sets = [
+            LoggedSet(exercise: "Back squat", weightKg: 100, reps: 5, rpe: 8, t: day(0)),
+            LoggedSet(exercise: "Bench press", weightKg: 80, reps: 6, rpe: 8.5, t: day(0))
+        ]
+        let original = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: sets))
+        let restored = try JSONDecoder().decode(AtriaStrengthLog.MuscularLoadReceipt.self,
+                                                from: JSONEncoder().encode(original))
+
+        XCTAssertEqual(restored, original)
+        XCTAssertEqual(restored.calculationVersion, 1)
+        XCTAssertTrue(restored.hasCompleteEffortEvidence)
+    }
+
     // MARK: - Set table
 
     func testSetTableRowsBadgeOnlyRealRecordsAndKeepRPEBlankWhenUnset() {

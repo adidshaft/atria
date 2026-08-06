@@ -56,7 +56,11 @@ enum AtriaStrengthLog {
     /// cardiovascular Strain. The receipt carries its qualification state so
     /// an unlogged Strength activity is never inferred from HR or duration,
     /// and missing RPE is never silently converted into an average effort.
-    struct MuscularLoadReceipt: Equatable {
+    struct MuscularLoadReceipt: Codable, Equatable {
+        /// Bump only when the meaning of the persisted receipt changes. A
+        /// completed workout keeps its original version rather than opening
+        /// under silently revised muscular-input math.
+        let calculationVersion: Int
         let setCount: Int
         /// Sets carrying a frozen effective or directly entered external load
         /// and a positive repetition count.
@@ -175,7 +179,8 @@ enum AtriaStrengthLog {
         } else {
             inputScore = nil
         }
-        return MuscularLoadReceipt(setCount: sets.count,
+        return MuscularLoadReceipt(calculationVersion: 1,
+                                   setCount: sets.count,
                                    loadQualifiedSetCount: qualified.count,
                                    effortQualifiedSetCount: effortQualified.count,
                                    externalVolumeKg: externalVolume,

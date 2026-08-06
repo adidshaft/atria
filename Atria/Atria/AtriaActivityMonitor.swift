@@ -1914,7 +1914,12 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     }
 
     private var muscularLoadReceipt: AtriaStrengthLog.MuscularLoadReceipt? {
-        AtriaStrengthLog.muscularLoadReceipt(for: workout.strengthSets ?? [])
+        workout.muscularLoadReceipt
+            ?? AtriaStrengthLog.muscularLoadReceipt(for: workout.strengthSets ?? [])
+    }
+
+    private var muscularLoadReceiptIsFrozen: Bool {
+        workout.muscularLoadReceipt != nil
     }
 
     @ViewBuilder
@@ -1968,7 +1973,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                         }
                     }
                     Text(muscularLoadReceipt.hasCompleteEffortEvidence
-                         ? "Logged sets only · separate from cardiovascular Strain"
+                         ? "\(muscularLoadReceiptIsFrozen ? "Frozen with this workout" : "Legacy recomputation") · separate from cardiovascular Strain"
                          : "Add RPE to every loaded set for a relative input estimate. It never changes cardiovascular Strain.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
