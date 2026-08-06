@@ -79,6 +79,7 @@ normally describe the same sleep window.
   "start_rel": 28800,
   "end_rel": 29100,
   "source": "research_protocol",
+  "reference_level": 2,
   "coverage_fraction": 0.96,
   "qualified_rr": true,
   "motion_context": true,
@@ -87,7 +88,9 @@ normally describe the same sleep window.
 ```
 
 `source` must be `controlled_intervention`, `validated_questionnaire`, or
-`research_protocol`. HR-only observations cannot become a validation target.
+`research_protocol`. `reference_level` is the independently assigned 0–3
+level from that documented protocol, not an Atria score. HR-only observations
+cannot become a validation target.
 
 ### GAP-11 — activity type
 
@@ -195,3 +198,21 @@ and permits `unknown` as an explicit abstention. Atria-derived stage estimates
 cannot enter the corpus and cannot become the evaluator's ground truth. Its
 report has the same review-only status and cannot authorize a hypnogram, stage
 typical range, or stage-weighted Recovery contribution in the app.
+
+## GAP-10 held-out report
+
+After a documented external protocol assigns its 0–3 labels, evaluate an
+overnight-load candidate against the same complete windows:
+
+```sh
+python3 tools/evaluate_overnight_load_model.py \
+  corpus.manifest.json overnight-load.predictions.json \
+  --output overnight-load.held-out-report.json
+```
+
+The sidecar has a `prediction_level` (integer 0–3) for every admitted GAP-10
+window. The report includes held-out mean absolute error, exact-level agreement,
+level confusion, and level-3 precision/recall. It must remain
+`research_only: true`, `model_validated: false`, and
+`production_promotions: 0`; a passing command cannot turn on a production
+overnight physiological-load score or feed the Sleep Score.

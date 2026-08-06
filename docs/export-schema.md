@@ -219,6 +219,11 @@ per-class precision/recall and a confusion matrix under
 same rule to PSG/defensible-reference sleep-stage labels. It cannot validate or
 promote either model.
 
+For GAP-10, `tools/evaluate_overnight_load_model.py` requires a documented
+external `reference_level` and matching local 0–3 candidate predictions. It
+reports held-out calibration and level-3 classification metrics only; it cannot
+enable the physiological-load model or contribute to Atria Sleep Score.
+
 ## Days
 
 Daily metric rollups (aggregates used for charts and context).

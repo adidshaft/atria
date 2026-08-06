@@ -17,7 +17,7 @@ SPEC.loader.exec_module(corpus)
 def label(gap: str, start: float) -> dict:
     common = {"gap": gap, "start_rel": start, "end_rel": start + 60}
     if gap == "GAP-10":
-        return common | {"source": "research_protocol", "coverage_fraction": 0.95,
+        return common | {"source": "research_protocol", "reference_level": 2, "coverage_fraction": 0.95,
                          "qualified_rr": True, "motion_context": True, "hr_only": False}
     if gap == "GAP-11":
         return common | {"activity_type": "walking", "label_source": "user_confirmed",
@@ -66,6 +66,12 @@ class ResearchCorpusTests(unittest.TestCase):
         value = manifest()
         value["participants"][0]["labels"][0]["hr_only"] = True
         with self.assertRaisesRegex(corpus.CorpusError, "HR-only"):
+            corpus.validate(value)
+
+    def test_rejects_unscaled_overnight_load_reference(self) -> None:
+        value = manifest()
+        value["participants"][0]["labels"][0]["reference_level"] = 4
+        with self.assertRaisesRegex(corpus.CorpusError, "0–3 scale"):
             corpus.validate(value)
 
     def test_rejects_atria_generated_sleep_stage_target(self) -> None:
