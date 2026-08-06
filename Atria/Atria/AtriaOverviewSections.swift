@@ -9267,7 +9267,7 @@ struct AtriaMetricDetailSheet: View {
                 aboutDisclosure
             }
         case .sleep:
-            AtriaMetricDetailTemplate(heroValue: periodHeroText(summary: preparedHistory.sleepSummary[range], points: preparedHistory.sleep[range] ?? [], unit: "h"),
+            AtriaMetricDetailTemplate(heroValue: sleepHeroValue,
                                       heroState: sleepHeroState,
                                       tint: Metrics.electricSleep) {
                 if let latest = sleepHistory.latestMainSleep {
@@ -9295,6 +9295,8 @@ struct AtriaMetricDetailSheet: View {
                                 comparison: preparedHistory.sleepComparison[range],
                                 baselineBand: nil,
                                 accessibilitySummary: "Sleep duration over \(range.label).",
+                                emptyTitle: sleepTrendEmptyTitle,
+                                emptyExplanation: sleepTrendEmptyExplanation,
                                 priorPoints: preparedHistory.sleepPrior[range] ?? [],
                                 companions: [("That day's recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod),
                                              ("HRV", "ms", Metrics.electricHRV, preparedHistory.hrv[range] ?? [])],
@@ -10026,6 +10028,41 @@ struct AtriaMetricDetailSheet: View {
         return awakeShare <= 0.10 ? 1 : (awakeShare <= 0.18 ? 0 : -1)
     }
 
+    private var sleepHeroValue: String {
+        let trendPoints = preparedHistory.sleep[range] ?? []
+        // Do not erase a known night merely because this period does not yet
+        // contain saved trend observations. The hero remains truthful while
+        // the chart below explains what still has to be saved.
+        if trendPoints.isEmpty, let latest = sleepHistory.latestMainSleep {
+            return SleepHistorySnapshot.formatDuration(latest.duration)
+        }
+        return periodHeroText(summary: preparedHistory.sleepSummary[range],
+                              points: trendPoints,
+                              unit: "h")
+    }
+
+    private var sleepTrendEmptyTitle: String {
+        switch range {
+        case .day: "Today's sleep is ready"
+        case .week: "This week's trend is building"
+        case .month: "This month's trend is building"
+        default: "This trend is building"
+        }
+    }
+
+    private var sleepTrendEmptyExplanation: String {
+        switch range {
+        case .day:
+            "Your latest sleep is available above. A daily trend point appears after this night is saved to history."
+        case .week:
+            "Your latest sleep is available above. Save more nights this week to see a meaningful weekly trend."
+        case .month:
+            "Your latest sleep is available above. Save more nights this month to see a meaningful monthly trend."
+        default:
+            "Your latest sleep is available above. Save more nights to see a meaningful long-term trend."
+        }
+    }
+
     private var sleepHeroState: String {
         // canonical not-ready word (was "Building"), consistent with the other metric hero states
         guard let latest = sleepHistory.latestMainSleep, latest.confirmed else { return "Learning" }
@@ -10286,10 +10323,10 @@ struct AtriaMetricDetailSheet: View {
 
     private func fuelContributorRow(for nutrition: AtriaNutritionSummary) -> AtriaMetricContributorRow {
         AtriaMetricContributorRow(systemImage: "fork.knife.circle.fill",
-                                  name: "Fuel",
+                                  name: "Nutrition context",
                                   value: nutrition.fuelSummary ?? "Logged",
                                   comparison: fuelContributorComparison(for: nutrition),
-                                  direction: fuelContributorDirection(for: nutrition))
+                                  direction: 0)
     }
 
     private func fuelContributorComparison(for nutrition: AtriaNutritionSummary) -> String {
@@ -10304,14 +10341,8 @@ struct AtriaMetricDetailSheet: View {
             let rounded = Int(alcoholDrinks.rounded())
             parts.append("\(rounded) \(rounded == 1 ? "drink" : "drinks")")
         }
-        return parts.isEmpty ? "from Apple Health nutrition" : parts.joined(separator: " · ")
-    }
-
-    private func fuelContributorDirection(for nutrition: AtriaNutritionSummary) -> Int {
-        if (nutrition.alcoholDrinks ?? 0) >= 1 { return -1 }
-        if let lastCaffeineHour = nutrition.lastCaffeineHour, lastCaffeineHour >= 14 { return -1 }
-        if let proteinG = nutrition.proteinG, proteinG > 0 { return 1 }
-        return 0
+        let detail = parts.isEmpty ? "from Apple Health nutrition" : parts.joined(separator: " · ")
+        return "\(detail) · not included in today’s recovery score"
     }
 
     private var hrvBand: AtriaDetailBaselineBand? {
@@ -10381,6 +10412,7 @@ struct AtriaMetricDetailSheet: View {
                              comparison: AtriaDetailComparisonSummary?,
                              baselineBand: AtriaDetailBaselineBand?,
                              accessibilitySummary: String,
+                             emptyTitle: String = "No saved observations",
                              emptyExplanation: String? = nil,
                              priorPoints: [AtriaDetailChartPoint] = [],
                              companions: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = [],
@@ -10440,6 +10472,7 @@ struct AtriaMetricDetailSheet: View {
             comparison: comparison,
             baselineBand: baselineBand,
             accessibilitySummary: accessibilitySummary,
+            emptyTitle: emptyTitle,
             emptyExplanation: emptyExplanation,
             priorPoints: priorPoints,
             companions: companions.map {
@@ -10800,6 +10833,7 @@ private struct AtriaPreparedMetricChart: View {
     let comparison: AtriaDetailComparisonSummary?
     let baselineBand: AtriaDetailBaselineBand?
     let accessibilitySummary: String
+    let emptyTitle: String
     let emptyExplanation: String?
     let priorPoints: [AtriaDetailChartPoint]
     let companions: [Companion]
@@ -10816,6 +10850,7 @@ private struct AtriaPreparedMetricChart: View {
          comparison: AtriaDetailComparisonSummary?,
          baselineBand: AtriaDetailBaselineBand?,
          accessibilitySummary: String,
+         emptyTitle: String,
          emptyExplanation: String?,
          priorPoints: [AtriaDetailChartPoint],
          companions: [Companion],
@@ -10831,6 +10866,7 @@ private struct AtriaPreparedMetricChart: View {
         self.comparison = comparison
         self.baselineBand = baselineBand
         self.accessibilitySummary = accessibilitySummary
+        self.emptyTitle = emptyTitle
         self.emptyExplanation = emptyExplanation
         self.priorPoints = priorPoints
         self.companions = companions
@@ -10865,7 +10901,7 @@ private struct AtriaPreparedMetricChart: View {
 
             if points.isEmpty {
                 VStack(spacing: 6) {
-                    Text("No saved observations").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(emptyTitle).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     if let emptyExplanation {
                         Text(emptyExplanation).font(.caption2).foregroundStyle(.secondary)
                             .multilineTextAlignment(.center).padding(.horizontal, 18)
