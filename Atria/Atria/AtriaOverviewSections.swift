@@ -10913,7 +10913,7 @@ private struct AtriaPreparedMetricChart: View {
                 .frame(maxWidth: .infinity, minHeight: 150)
                 .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
             } else if points.count == 1 {
-                singleObservationChart
+                singleObservationState
             } else {
                 // Full-bleed plot (2026-08-05 width audit): only the chart
                 // escapes the card inset — header/legend/summary keep the 14pt.
@@ -11054,34 +11054,20 @@ private struct AtriaPreparedMetricChart: View {
         .accessibilityLabel(accessibilitySummary)
     }
 
-    private var singleObservationChart: some View {
-        Chart(points) { point in
-            RuleMark(y: .value(title, point.value))
-                .foregroundStyle(tint.opacity(0.16))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-            PointMark(x: .value("Day", point.day),
-                      y: .value(title, point.value))
-                .foregroundStyle(point.tint)
-                .symbolSize(130)
-                .annotation(position: .top, spacing: 6) {
-                    Text(valueText(point.value))
-                        .font(.caption.weight(.bold).monospacedDigit())
-                        .foregroundStyle(tint)
-                }
+    private var singleObservationState: some View {
+        VStack(spacing: 6) {
+            Text("One observation in this view")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text("A trend needs multiple days. Choose a longer period when more history is available.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 18)
         }
-        .chartYScale(domain: prepared.domain)
-        .chartXScale(domain: prepared.xDomain ?? fallbackXDomain)
-        .chartYAxis { AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) }
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine()
-                AxisTick()
-                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
-            }
-        }
-        .frame(height: 180)
-        .clipped()
-        .accessibilityLabel("\(accessibilitySummary) One saved observation.")
+        .frame(maxWidth: .infinity, minHeight: 150)
+        .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+        .accessibilityLabel("\(accessibilitySummary) One observation in this view. A trend needs multiple days.")
     }
 
     private var fallbackXDomain: ClosedRange<Date> {
