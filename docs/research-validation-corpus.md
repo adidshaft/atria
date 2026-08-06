@@ -66,7 +66,7 @@ appear exactly once, in exactly one split.
 
 ## Label contracts
 
-All `start_rel` and `end_rel` values use the bundle's schema-v5 day-zero axis.
+All `start_rel` and `end_rel` values use the bundle's schema-v6 day-zero axis.
 They must not overlap within the same target series. Different targets may share
 the same interval: for example, a PSG stage and an overnight-load reference
 normally describe the same sleep window.
@@ -183,10 +183,12 @@ bias, MAE, p95, correlation, and three-day requirements in
 
 ## Review sequence
 
-1. Build an opt-in Atria schema-v5 bundle and record its digest. Schema v4 is
+1. Build an opt-in Atria schema-v6 bundle and record its digest. Schema v4 is
    required for GAP-12 because it declares that Atria's own stage totals are
    not reference labels; schema v5 is required for GAP-13 because it carries a
-   frozen versioned Recovery receipt rather than a reconstructed live score.
+   frozen versioned Recovery receipt rather than a reconstructed live score;
+   schema v6 adds a non-fused qualified muscular-input receipt for later
+   GAP-09 fusion research.
 2. Create one sidecar row per external label, on the same relative timeline.
 3. Admit the manifest with this tool; keep rejected data out of evaluation.
 4. Train and assess only on `development` participants.

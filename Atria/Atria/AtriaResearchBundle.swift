@@ -23,7 +23,9 @@ enum AtriaResearchSharing {
     // hypnogram cannot be mistaken for a PSG/reference label in a validation
     // corpus. v5 adds only frozen, versioned Recovery receipts so a later
     // calibration study cannot rebuild historical model inputs from live data.
-    static let schemaVersion = 5
+    // v6 adds frozen qualified muscular-input receipts for a future fusion
+    // study; it never exports a fused strain or a raw exercise log.
+    static let schemaVersion = 6
 
     static var isOptedIn: Bool {
         UserDefaults.standard.bool(forKey: optInKey)
@@ -126,6 +128,21 @@ struct AtriaResearchBundlePayload: Codable {
     }
 
     struct Workout: Codable {
+        /// A compact frozen strength receipt. This is intentionally separate
+        /// from cardiovascular Strain: a future fusion model must be externally
+        /// calibrated rather than inferred from HR, duration, or this export.
+        struct MuscularInputReceipt: Codable {
+            let calculationVersion: Int
+            let setCount: Int
+            let loadQualifiedSetCount: Int
+            let effortQualifiedSetCount: Int
+            let effectiveVolumeKg: Double
+            let densityBonusFraction: Double
+            let muscularInputScore: Double?
+            let movementClasses: [String]
+            let fusedWithCardiovascularStrain: Bool
+        }
+
         let startRel: Double
         let endRel: Double
         /// Canonical picker value, never the free-form workout title. Every
@@ -134,6 +151,7 @@ struct AtriaResearchBundlePayload: Codable {
         let labelSource: String
         let avgHR: Int
         let peakHR: Int
+        let muscularInputReceipt: MuscularInputReceipt?
     }
 
     struct Day: Codable {
@@ -378,7 +396,8 @@ enum AtriaResearchBundleBuilder {
                                                       activityType: activityType.rawValue,
                                                       labelSource: "user_confirmed",
                                                       avgHR: workout.avgHR,
-                                                      peakHR: workout.peakHR)
+                                                      peakHR: workout.peakHR,
+                                                      muscularInputReceipt: muscularInputReceipt(for: workout.muscularLoadReceipt))
         }
         let bundleDays = input.days.map { metric in
             AtriaResearchBundlePayload.Day(dayIndex: dayIndex(metric.day),
@@ -436,6 +455,21 @@ enum AtriaResearchBundleBuilder {
                      recentQualificationHorizonDays: input.recoveryComparison?.recentQualificationHorizonDays,
                      recentQualifiedRestingDays: input.recoveryComparison?.recentQualifiedRestingDays,
                      recentQualifiedHRVNights: input.recoveryComparison?.recentQualifiedHRVNights)
+    }
+
+    nonisolated private static func muscularInputReceipt(
+        for receipt: AtriaStrengthLog.MuscularLoadReceipt?
+    ) -> AtriaResearchBundlePayload.Workout.MuscularInputReceipt? {
+        guard let receipt else { return nil }
+        return .init(calculationVersion: receipt.calculationVersion,
+                     setCount: receipt.setCount,
+                     loadQualifiedSetCount: receipt.loadQualifiedSetCount,
+                     effortQualifiedSetCount: receipt.effortQualifiedSetCount,
+                     effectiveVolumeKg: receipt.effectiveVolumeKg,
+                     densityBonusFraction: receipt.densityBonusFraction,
+                     muscularInputScore: receipt.muscularInputScore,
+                     movementClasses: receipt.movementClasses.map(\.rawValue).sorted(),
+                     fusedWithCardiovascularStrain: false)
     }
 
     private nonisolated static func finishBuild(payload: AtriaResearchBundlePayload,
