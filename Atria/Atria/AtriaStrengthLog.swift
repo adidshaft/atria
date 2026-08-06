@@ -7,6 +7,16 @@ struct LoggedSet: Codable, Equatable, Identifiable {
     var reps: Int?
     var rpe: Double?
     let t: Date
+    /// The resistance moved by this exact set, captured at logging time when
+    /// Atria can derive it from body mass (for example a pull-up).  This is
+    /// deliberately separate from `weightKg`: the latter is the external
+    /// load the wearer entered, while this value freezes the effective load
+    /// needed to reproduce a body-weight set after profile edits.
+    ///
+    /// Nil means Atria did not have a defensible effective-load estimate. Old
+    /// archives retain that nil rather than being reconstructed from today's
+    /// body mass.
+    var effectiveLoadKg: Double? = nil
     /// Optional ordered superset receipt. Nil means this set was logged as an
     /// ordinary set; legacy rows remain exactly that.
     var supersetGroupID: String? = nil
@@ -36,25 +46,112 @@ enum AtriaStrengthLog {
     static let customExercisesKey = "atria.exercises.custom.v1"
     static let restSecondsKey = "atria.strength.restSeconds.v1"
 
+    enum MovementClass: String, Codable, CaseIterable, Hashable {
+        case externalLoad = "External load"
+        case bodyweightEstimate = "Bodyweight estimate"
+        case unavailable = "Load unavailable"
+    }
+
     /// Reproducible logged-strength input, intentionally separate from
-    /// cardiovascular Strain. It only considers explicit sets with weight and
-    /// reps; unlogged Strength activities remain unavailable rather than being
-    /// inferred from heart rate or duration.
+    /// cardiovascular Strain. The receipt carries its qualification state so
+    /// an unlogged Strength activity is never inferred from HR or duration,
+    /// and missing RPE is never silently converted into an average effort.
     struct MuscularLoadReceipt: Equatable {
         let setCount: Int
-        let qualifiedSetCount: Int
-        let volumeKg: Double
+        /// Sets carrying a frozen effective or directly entered external load
+        /// and a positive repetition count.
+        let loadQualifiedSetCount: Int
+        /// Load-qualified sets with a user-entered RPE. A muscular-input score
+        /// is only available when this equals `loadQualifiedSetCount`.
+        let effortQualifiedSetCount: Int
+        let externalVolumeKg: Double
+        let effectiveVolumeKg: Double
         let densityBonusFraction: Double
-        let score: Double
+        /// A relative, logged muscular-input index (0...100). It is not
+        /// Strain and is intentionally nil until every load-qualified set has
+        /// an explicit RPE. It must not be fused with cardiovascular Strain
+        /// until that model is calibrated.
+        let muscularInputScore: Double?
+        let movementClasses: Set<MovementClass>
+
+        var qualifiedSetCount: Int { loadQualifiedSetCount }
+        var volumeKg: Double { effectiveVolumeKg }
+        var score: Double? { muscularInputScore }
+        var hasCompleteEffortEvidence: Bool {
+            loadQualifiedSetCount > 0 && effortQualifiedSetCount == loadQualifiedSetCount
+        }
+        var rpeCoverageText: String {
+            "\(effortQualifiedSetCount) of \(loadQualifiedSetCount) sets with RPE"
+        }
+    }
+
+    /// Returns a per-set effective resistance. External resistance is already
+    /// a useful measurement for barbell/dumbbell work. For a narrow list of
+    /// body-weight movements, the frozen profile mass is converted to an
+    /// *estimated* moved fraction; unknown movements remain unavailable rather
+    /// than pretending every repetition moved the full body mass.
+    static func effectiveLoadKg(exercise: String,
+                                externalWeightKg: Double?,
+                                bodyMassKg: Double?) -> (loadKg: Double, movementClass: MovementClass)? {
+        let external = externalWeightKg.map { max(0, $0) } ?? 0
+        let bodyweightFraction = estimatedBodyweightFraction(for: exercise)
+
+        guard let bodyweightFraction,
+              let bodyMassKg,
+              bodyMassKg.isFinite,
+              bodyMassKg > 0 else {
+            guard external > 0 else { return nil }
+            return (external, .externalLoad)
+        }
+        let effective = external + bodyMassKg * bodyweightFraction
+        return (effective, .bodyweightEstimate)
+    }
+
+    /// True only for movements for which Atria has a deliberately narrow
+    /// effective-body-mass estimate. The live logger uses this to label the
+    /// entered number as added weight instead of misleadingly pre-filling a
+    /// barbell-style load for a push-up or pull-up.
+    static func isEstimatedBodyweightExercise(_ exercise: String) -> Bool {
+        estimatedBodyweightFraction(for: exercise) != nil
+    }
+
+    private static func estimatedBodyweightFraction(for exercise: String) -> Double? {
+        let normalized = normalized(exercise)
+        if normalized.contains("pull-up") || normalized.contains("pullup")
+            || normalized.contains("chin-up") || normalized.contains("chinup") {
+            return 0.95
+        }
+        if normalized.contains("dip") { return 0.90 }
+        if normalized.contains("push-up") || normalized.contains("pushup") { return 0.65 }
+        if normalized.contains("air squat") || normalized.contains("walking lunge")
+            || normalized.contains("step-up") || normalized.contains("step up") {
+            return 0.75
+        }
+        if normalized.contains("burpee") || normalized.contains("jump squat") { return 0.60 }
+        return nil
     }
 
     static func muscularLoadReceipt(for sets: [LoggedSet]) -> MuscularLoadReceipt? {
         guard !sets.isEmpty else { return nil }
-        let qualified = sets.compactMap { set -> Double? in
-            guard let weight = set.weightKg, weight > 0,
-                  let reps = set.reps, reps > 0 else { return nil }
-            let effort = min(max((set.rpe ?? 7) / 7, 0.70), 1.25)
-            return weight * Double(reps) * effort
+        struct QualifiedSet {
+            let effectiveVolumeKg: Double
+            let externalVolumeKg: Double
+            let rpe: Double?
+            let movementClass: MovementClass
+        }
+        let qualified = sets.compactMap { set -> QualifiedSet? in
+            guard let reps = set.reps, reps > 0 else { return nil }
+            let effectiveLoad = set.effectiveLoadKg ?? set.weightKg
+            guard let effectiveLoad,
+                  effectiveLoad.isFinite,
+                  effectiveLoad > 0 else { return nil }
+            let movementClass: MovementClass = set.effectiveLoadKg == nil
+                ? .externalLoad
+                : .bodyweightEstimate
+            return QualifiedSet(effectiveVolumeKg: effectiveLoad * Double(reps),
+                                externalVolumeKg: max(0, set.weightKg ?? 0) * Double(reps),
+                                rpe: set.rpe.map { min(max($0, 0), 10) },
+                                movementClass: movementClass)
         }
         guard !qualified.isEmpty else { return nil }
         let quickTransitions = sets.filter {
@@ -63,15 +160,29 @@ enum AtriaStrengthLog {
             return seconds <= 90
         }.count
         let density = min(0.15, Double(quickTransitions) * 0.03)
-        let volume = qualified.reduce(0, +)
-        // Saturating presentation score for comparison within the user's own
-        // explicit logs, not a proprietary strain clone or a combined score.
-        let score = min(100, 100 * (1 - exp(-(volume * (1 + density)) / 5_000)))
+        let effectiveVolume = qualified.reduce(0) { $0 + $1.effectiveVolumeKg }
+        let externalVolume = qualified.reduce(0) { $0 + $1.externalVolumeKg }
+        let effortQualified = qualified.compactMap(\.rpe)
+        let inputScore: Double?
+        if effortQualified.count == qualified.count {
+            let effortAdjustedVolume = zip(qualified, effortQualified).reduce(0.0) { total, pair in
+                total + pair.0.effectiveVolumeKg * (0.55 + 0.45 * pair.1 / 10)
+            }
+            // This is a bounded *within-person logged-input* presentation
+            // scale. It is not a cardiovascular score or an authoritative
+            // muscular Strain model, and therefore never alters Strain.
+            inputScore = min(100, 100 * (1 - exp(-(effortAdjustedVolume * (1 + density)) / 5_000)))
+        } else {
+            inputScore = nil
+        }
         return MuscularLoadReceipt(setCount: sets.count,
-                                   qualifiedSetCount: qualified.count,
-                                   volumeKg: volume,
+                                   loadQualifiedSetCount: qualified.count,
+                                   effortQualifiedSetCount: effortQualified.count,
+                                   externalVolumeKg: externalVolume,
+                                   effectiveVolumeKg: effectiveVolume,
                                    densityBonusFraction: density,
-                                   score: score)
+                                   muscularInputScore: inputScore,
+                                   movementClasses: Set(qualified.map(\.movementClass)))
     }
 
     static func estimatedOneRepMax(weightKg: Double?, reps: Int?) -> Double? {

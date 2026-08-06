@@ -1453,6 +1453,12 @@ struct AtriaHomeView: View {
                                      routeRecorder: workoutRouteRecorder,
                                      maxHR: store.profile.maxHR,
                                      restingHR: store.baseline.restingInt ?? 60,
+                                     strengthBodyMassKg: {
+                                         let frozenWeight = session.calculationContext?.profile.weightKg
+                                         let currentWeight = store.profile.weightKg
+                                         let weight = frozenWeight ?? currentWeight
+                                         return weight > 0 ? weight : nil
+                                     }(),
                                      strainTarget: model.heroStore.state.guidance.target,
                                      startDate: session.start,
                                      lowerTargetZone: session.lowerTargetZone,
