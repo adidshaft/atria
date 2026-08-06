@@ -280,3 +280,67 @@ a handshake reset that does not depend on drain arming.
    connection-epoch boundaries instead.
 4. After recovery, re-run the coverage SLA measurement (§15.76 in
    HANDOFF_2026-08-03) on a clean day — today is invalid for it.
+
+## CORRECTION + fix spec (23:45 IST, post-relaunch verification)
+
+The relaunch test DISPROVED the "wedged handshake" framing above:
+link restored, HR flowing (raw notifications 23:36), battery reading
+live — but boundary/handshake/debt timestamps unchanged. Deep read
+of the writer settles it:
+
+`lastDurableFlushBoundaryOKAt` is written ONLY in the historical
+drain's durable-flush success path (AtriaBLEManager ~30653, guarded
+by offlineHistoricalSyncInProgress + drain generation). The boundary
+is not wedged — THE DRAIN LANE IS OFF. d8c0f441 (2026-08-06 ~09:15,
+automaticFullDrainRecoveryEnabled=false) was TOO BROAD: besides the
+doomed July gap-replay it also disabled the routine CONNECTED-SLICE
+drain (armed from the history first-frame handler, ~29852
+armConnectedHistoricalSliceIfNeeded) — which is the archive's
+primary ingestion path for CURRENT data. The 09:26:58 handshake is
+simply the LAST drain's footprint before the lane went dark.
+
+Consequences (matches all five symptoms): live capture + session
+checkpoints healthy all day (sleep/workout sessions intact), but the
+HISTORICAL ARCHIVE ingested nothing after 09:33 → archive-backed
+surfaces starve: strain "No saved observations", Vitals history,
+stress stores, steps verification (flushDebt 132 frozen; offload
+tickets 245 and climbing).
+
+### Fix (IMMEDIATE, one line — recommend first thing next session)
+
+Revert the flag: AtriaHistoricalFullDrainCoverageCoordinator.swift:8
+`automaticFullDrainRecoveryEnabled = true` (+ un-migrate the test pin
+in AtriaHistoricalFullDrainCoverageAuthorityTests ~1194). This
+restores yesterday's behavior: archive ingestion works; the cost is
+the known transport-occupancy problem (44-73%, §15.76 in
+HANDOFF_2026-08-03), which was the ORIGINAL target. Data flowing
+beats coverage optimization.
+
+### Fix (STRUCTURAL, the real one)
+
+Split the single flag into two:
+- `automaticGapRecoveryEnabled = false` — gates ONLY gap-ledger
+  window recovery arming (the July windows the 309-day analysis
+  proved unreachable). Stays off until a proven seek exists.
+- `connectedSliceDrainEnabled = true` — the routine
+  connected-chunked-backfill slice lane (current-data ingestion).
+  Always on; bound its continuous transport occupancy (e.g. slice
+  N minutes, yield M minutes when flushDebt is low) to solve the
+  §15.76 occupancy problem WITHOUT starving the archive.
+Trace both consumers of productionHistoricalFullDrainGapRecoveryEnabled
+(AtriaBLEManager 8666/8794/8821 + the slice-arm path at ~29852) and
+route each to the correct new flag. Verify afterwards: boundary
+advances within minutes of a connected link; the 245 tickets begin
+verifying; steps % climbs; strain/stress/history surfaces repopulate.
+Then re-run the §15.76 occupancy measurement with the bounded slice.
+
+### Verification protocol for the fix session
+
+1. Ship revert (or split) → within 5 min of connected link expect:
+   handshakeStatus advances past history_first_frame_received,
+   lastDurableFlushBoundaryOKAt goes current, flushDebt re-observes.
+2. Watch pendingOffloads fall from 245.
+3. Confirm on-screen: strain chart gains today's observations;
+   stress leaves "waiting"; Vitals history returns.
+4. Workout-window symptom (5) re-check AFTER a day of healthy
+   archive — the 19:06 anchor may self-correct once rows exist.
