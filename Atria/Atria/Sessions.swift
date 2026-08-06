@@ -28077,6 +28077,41 @@ final class SessionStore: ObservableObject {
                                       historicalMotionPolicy: historicalMotionPolicy)
     }
 
+    /// 2026-08-06 sleep-onset device-use clamp (user-caught): the detector
+    /// claimed a 12:53am onset while the wearer was demonstrably awake using
+    /// the unlocked phone until well after 2am — low-HR still time in bed
+    /// passes every HR gate. The device being unlocked and in use is
+    /// near-certain wakefulness, so a sustained-use interval overlapping the
+    /// candidate's LEADING edge moves onset to that use's end plus a settle
+    /// margin. Leading edge only: trailing/middle use is left to the existing
+    /// wake detection. Pure logic; the caller supplies journal intervals, and
+    /// an empty `sustainedUse` (no journal data / no coverage) is exact
+    /// identity — absence of journal data is never evidence of sleep.
+    nonisolated static let sleepOnsetClampSettleMargin: TimeInterval = 5 * 60
+    nonisolated static let sleepOnsetClampMinimumSustainedUse: TimeInterval = 180
+
+    nonisolated static func clampedSleepOnset(start: Date,
+                                              end: Date,
+                                              sustainedUse: [DateInterval],
+                                              minimumRetainedDuration: TimeInterval,
+                                              settleMargin: TimeInterval = SessionStore.sleepOnsetClampSettleMargin) -> Date {
+        guard end > start, !sustainedUse.isEmpty else { return start }
+        var clamped = start
+        for use in sustainedUse.sorted(by: { $0.start < $1.start }) {
+            // Leading-edge chain: an interval clamps only when it covers the
+            // current onset point (including the settle margin already applied
+            // by a previous interval). Use strictly after the settled onset is
+            // middle-of-night use and is deliberately left alone.
+            guard use.start <= clamped, use.end > clamped else { continue }
+            clamped = use.end.addingTimeInterval(settleMargin)
+        }
+        // Never clamp past (end - minimum sleep duration): the clamp bounds
+        // the claimed onset, it never erases an entire qualifying sleep.
+        let latestAllowed = end.addingTimeInterval(-minimumRetainedDuration)
+        clamped = min(clamped, latestAllowed)
+        return clamped > start ? clamped : start
+    }
+
     nonisolated static func aggregateSleepCandidates(in sourceSessions: [SavedSession],
                                                              rest: Int,
                                                              maxHR: Int,
@@ -28507,14 +28542,45 @@ final class SessionStore: ObservableObject {
                     .sustainedAwakeSeconds(epochs: recoveredEpochs,
                                            start: start,
                                            end: end)
+                // 2026-08-06 sleep-onset device-use clamp (user-caught 12:53am
+                // false onset while the phone was in active use past 2am; see
+                // `clampedSleepOnset`). Deterministic replay (`.sessionOnly`)
+                // excludes the journal exactly as it excludes the external
+                // motion archive; an empty journal or a window with no journal
+                // coverage is exact identity with today's behavior.
+                let clampedStart: Date
+                if historicalMotionPolicy == .sessionOnly {
+                    clampedStart = start
+                } else {
+                    clampedStart = Self.clampedSleepOnset(
+                        start: start,
+                        end: end,
+                        sustainedUse: AtriaDeviceUseJournal.intervalsOfSustainedUse(
+                            in: DateInterval(start: start, end: end),
+                            minimumDuration: Self.sleepOnsetClampMinimumSustainedUse
+                        ),
+                        minimumRetainedDuration: napCandidateReady
+                            ? AggregateSleepCandidate.napMinimumDuration
+                            : AggregateSleepCandidate.strictMinimumDuration
+                    )
+                }
+                let onsetClampSeconds = max(0, clampedStart.timeIntervalSince(start))
+                if onsetClampSeconds > 0 {
+                    // Field-verification breadcrumb: last applied onset clamp.
+                    let iso = ISO8601DateFormatter()
+                    UserDefaults.standard.set(
+                        "\(iso.string(from: start))→\(iso.string(from: clampedStart))",
+                        forKey: "atria.debug.sleepOnsetClamp.v1"
+                    )
+                }
                 return AggregateSleepCandidate(kind: kind,
                                                day: day,
                                                eventTimeZoneIdentifier: eventTimeZoneIdentifier,
                                                sessions: cluster.count,
-                                               start: start,
+                                               start: clampedStart,
                                                end: end,
-                                               duration: max(0, totalDuration - motionAwakeSeconds),
-                                               span: span,
+                                               duration: max(0, totalDuration - motionAwakeSeconds - onsetClampSeconds),
+                                               span: end.timeIntervalSince(clampedStart),
                                                maxGap: maxGap,
                                                samples: cluster.reduce(0) { $0 + $1.points.count },
                                                hrObservedCoverageFraction: hrObservedCoverageFraction,
