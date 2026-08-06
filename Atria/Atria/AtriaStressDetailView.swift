@@ -664,25 +664,40 @@ struct AtriaStressDailyTrendCard: View {
     var referenceDate: Date = Date()
     var calendar: Calendar = .current
 
-    private static let frameDays = 14
+    private static let frameDays = 7
     private static let minimumMeasuredDays = 3
+    @State private var weekOffset = 0
+
+    private var frameEnd: Date {
+        let today = calendar.startOfDay(for: referenceDate)
+        return calendar.date(byAdding: .day,
+                            value: -(weekOffset * Self.frameDays),
+                            to: today) ?? today
+    }
+
+    private var frameStart: Date {
+        calendar.date(byAdding: .day,
+                      value: -(Self.frameDays - 1),
+                      to: frameEnd) ?? frameEnd
+    }
+
+    private var canNavigateToPreviousWeek: Bool {
+        days.contains { calendar.startOfDay(for: $0.day) < frameStart }
+    }
 
     /// Measured days clipped to the fixed frame, oldest first.
     private var framedDays: [AtriaStressDistributionArchive.Day] {
-        let end = calendar.startOfDay(for: referenceDate)
-        guard let start = calendar.date(byAdding: .day,
-                                        value: -(Self.frameDays - 1),
-                                        to: end) else { return [] }
         return days
-            .filter { calendar.startOfDay(for: $0.day) >= start }
+            .filter {
+                let day = calendar.startOfDay(for: $0.day)
+                return day >= frameStart && day <= frameEnd
+            }
             .sorted { $0.day < $1.day }
     }
 
     private var xDomain: ClosedRange<Date> {
-        let end = calendar.startOfDay(for: referenceDate)
-        let start = calendar.date(byAdding: .day, value: -(Self.frameDays - 1), to: end) ?? end
-        let lo = calendar.date(byAdding: .hour, value: -12, to: start) ?? start
-        let hi = calendar.date(byAdding: .hour, value: 12, to: end) ?? end
+        let lo = calendar.date(byAdding: .hour, value: -12, to: frameStart) ?? frameStart
+        let hi = calendar.date(byAdding: .hour, value: 12, to: frameEnd) ?? frameEnd
         return lo...hi
     }
 
@@ -695,9 +710,37 @@ struct AtriaStressDailyTrendCard: View {
                     .textCase(.uppercase)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("Last \(Self.frameDays) days")
-                    .font(.caption)
+                Button {
+                    guard canNavigateToPreviousWeek else { return }
+                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
+                        weekOffset += 1
+                    }
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .disabled(!canNavigateToPreviousWeek)
+                .accessibilityLabel("Previous stress week")
+
+                Text(weekOffset == 0 ? "This week" : "\(weekOffset) week\(weekOffset == 1 ? "" : "s") ago")
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+
+                Button {
+                    guard weekOffset > 0 else { return }
+                    withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
+                        weekOffset -= 1
+                    }
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .disabled(weekOffset == 0)
+                .accessibilityLabel("Next stress week")
             }
 
             if framed.count >= Self.minimumMeasuredDays {
@@ -773,7 +816,7 @@ struct AtriaStressDailyTrendCard: View {
         guard framed.count >= Self.minimumMeasuredDays else {
             return "Stress by day: building history, \(framed.count) of \(Self.minimumMeasuredDays) measured days."
         }
-        return "Stress by day: \(framed.count) measured days in the last \(Self.frameDays)."
+        return "Stress by day: \(framed.count) measured days in the selected week."
     }
 }
 
