@@ -436,7 +436,7 @@ struct AtriaManualSleepSheet: View {
                          ? "No stages \u{2014} this window was entered by hand. Stage timelines come only from sensor data."
                          : night.stageEvidence == .hrOnlyEstimate
                          ? "Stages need motion data \u{2014} heart rate alone can't separate sleep stages."
-                         : "Stages are still building for this night \u{2014} heart-rate estimate only.")
+                         : "Sleep stages are unavailable for this night \u{2014} Atria needs checked sensor evidence before showing a timeline.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {

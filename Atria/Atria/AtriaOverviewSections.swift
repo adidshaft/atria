@@ -7456,7 +7456,7 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
         guard !latest.displayStageSegments.isEmpty else {
             let stageNote = latest.isManualEntry
                 ? "Manual entry — stage timelines come only from sensor data."
-                : "Stages building: Awake, Light, REM, and Deep are not ready yet."
+                : "Sleep stages unavailable: Atria has not qualified a stage timeline for this night."
             return "Sleep history \(valueText). \(latest.evidenceLabel). Morning status \(morningStatus.accessibilityText). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). \(stageNote)"
         }
         return "Sleep history \(valueText). \(latest.evidenceLabel). Morning status \(morningStatus.accessibilityText). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), REM \(latest.stageText(.rem)), Deep (SWS) \(latest.stageText(.deep))."
@@ -10037,7 +10037,7 @@ struct AtriaMetricDetailSheet: View {
 
     private var sleepDisturbanceComparisonText: String {
         guard let latest = sleepHistory.latestMainSleep, !latest.displayStageSegments.isEmpty else {
-            return "sleep stages building"
+            return "sleep stages unavailable"
         }
         return latest.stageEvidence == .validated ? "awake from validated stages" : "awake from estimated stages"
     }

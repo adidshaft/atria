@@ -6186,61 +6186,38 @@ struct AtriaSleepStageBuildingSummary: View, Equatable {
     let night: SleepHistorySnapshot.Night
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                // HR-only honesty (2026-08-01): a night without validated
-                // motion is not "building" toward stages — it needs motion.
-                // Manual honesty (2026-08-05): a hand-typed window will NEVER
-                // grow stages; "building" would be a false promise.
+        // Do not draw five colorful empty values. A blank hypnogram looks
+        // complete at a glance while conveying no decision. The full stage
+        // timeline appears only when this night has qualified segments.
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "moon.zzz.fill")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(.cyan)
+                .frame(width: 32, height: 32)
+                .background(.cyan.opacity(0.12), in: Circle())
+
+            VStack(alignment: .leading, spacing: 3) {
                 Text(headline)
-                    .font(.caption.weight(.semibold))
-                Spacer(minLength: 0)
-                Text(night.evidenceLabel)
-                    .font(.caption2.weight(.semibold))
+                    .font(.subheadline.weight(.bold))
+                Text(detail)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], spacing: 8) {
-                ForEach(SleepStageKind.allCases) { stage in
-                    HStack(spacing: 7) {
-                        Image(systemName: AtriaSleepStageSummary.symbol(for: stage))
-                            .font(.caption2.weight(.bold))
-                            .frame(width: 16, height: 16)
-
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(stage.label.uppercased())
-                                .font(.caption2.weight(.bold))
-                            Text("--")
-                                .font(.caption2.weight(.semibold).monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 8)
-                    .background(color(for: stage).opacity(0.10),
-                                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .foregroundStyle(color(for: stage))
-                }
-            }
-
-            Text(detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
         }
-        .padding(10)
-        .atriaInsetCard(tint: .cyan)
+        .padding(12)
+        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(night.evidenceLabel) \(headline). Awake, Light, REM, SWS, and Deep show no values.")
+        .accessibilityLabel("\(night.evidenceLabel). \(headline). \(detail)")
     }
 
     private var headline: String {
         if night.isManualEntry { return "No stages — manual entry" }
         return night.stageEvidence == .hrOnlyEstimate
             ? "Stages need motion data"
-            : "Stages building"
+            : "Sleep stages unavailable"
     }
 
     private var detail: String {
@@ -6252,15 +6229,6 @@ struct AtriaSleepStageBuildingSummary: View, Equatable {
             : "Stages need checked evidence. Duration and overnight vitals remain available while Atria learns."
     }
 
-    private func color(for stage: SleepStageKind) -> Color {
-        switch stage {
-        case .awake: return .orange
-        case .light: return .cyan
-        case .rem: return .indigo
-        case .sws: return .blue
-        case .deep: return .purple
-        }
-    }
 }
 
 // Internal (was private) so the broader-lane sizing is render-testable.
