@@ -4708,14 +4708,14 @@ struct AtriaHomeView: View {
                 guard live.rangeLossBackfillPending else {
                     return nil
                 }
-                return Status(title: "Strap data gap · recovery unverified",
+                return Status(title: "Strap data gap · history incomplete",
                               symbol: "exclamationmark.triangle.fill",
-                              accessibilityLabel: "Missed strap data needs review. It has not been verified as recovered.")
+                              accessibilityLabel: "Some strap history is missing. The gap has not been reconciled.")
             case .idle:
                 if live.rangeLossBackfillPending {
-                    return Status(title: "Strap data gap · recovery unverified",
+                    return Status(title: "Strap data gap · history incomplete",
                                   symbol: "exclamationmark.triangle.fill",
-                                  accessibilityLabel: "Missed strap data needs review. It has not been verified as recovered.")
+                                  accessibilityLabel: "Some strap history is missing. The gap has not been reconciled.")
                 }
                 return nil
             }
