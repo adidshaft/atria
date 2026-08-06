@@ -9850,7 +9850,7 @@ struct AtriaMetricDetailSheet: View {
         }
         switch percent {
         case 67...: return "Good"
-        case 34..<67: return "Typical"
+        case 34..<67: return "Moderate"
         default: return "Low"
         }
     }
@@ -11342,7 +11342,7 @@ private struct AtriaRecoveryScoreHero: View {
                     .padding(.horizontal, 11).padding(.vertical, 6)
                     .background(tint.opacity(0.12), in: Capsule(style: .continuous))
             } else {
-                Text("Your recovery comparison is still building")
+                Text("Today's score is ready · comparison is still building")
                     .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             }
         }
