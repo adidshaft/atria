@@ -907,14 +907,14 @@ struct AtriaHealthScreen: View {
                 Button {
                     metricDetail = .sleepPerformance
                 } label: {
-                    AtriaMetricTile(label: "Performance",
+                    AtriaMetricTile(label: "Sufficiency",
                                     value: sleepPerformanceValue,
                                     state: currentSleep == nil ? .learning : .local,
                                     tint: Metrics.electricSleep,
                                     footnote: "of nightly need")
                 }
                 .buttonStyle(.plain)
-                .accessibilityHint("Opens sleep performance detail")
+                .accessibilityHint("Opens sleep sufficiency detail")
                 Button {
                     metricDetail = .sleepEfficiency
                 } label: {
