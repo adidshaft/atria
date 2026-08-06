@@ -14,7 +14,7 @@ corpus = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(corpus)
 
 
-def label(gap: str, start: float) -> dict:
+def label(gap: str, start: float, signal: str = "spo2") -> dict:
     common = {"gap": gap, "start_rel": start, "end_rel": start + 60}
     if gap == "GAP-10":
         return common | {"source": "research_protocol", "reference_level": 2, "coverage_fraction": 0.95,
@@ -24,8 +24,9 @@ def label(gap: str, start: float) -> dict:
                          "features": {"cadence": True, "orientation": True, "gyroscope": True, "hr_response": True}}
     if gap == "GAP-12":
         return common | {"source": "polysomnography", "stage": "deep", "atria_derived": False}
-    return common | {"signal": "spo2", "reference_device": "reference oximeter", "pair_age_seconds": 1,
-                     "layout_stable": True, "negative_control": True}
+    return common | {"signal": signal, "reference_device": "reference instrument",
+                     "session_id": "session-1", "reference_value": 97.0 if signal == "spo2" else 33.0,
+                     "pair_age_seconds": 1, "layout_stable": True, "negative_control": False}
 
 
 def participant(name: str, split: str) -> dict:
@@ -33,7 +34,8 @@ def participant(name: str, split: str) -> dict:
         "pseudonym": name,
         "split": split,
         "bundle": {"digest_sha256": "a" * 64, "schema": 4},
-        "labels": [label(gap, index * 70) for index, gap in enumerate(["GAP-10", "GAP-11", "GAP-12", "GAP-14"])],
+        "labels": [label(gap, index * 70) for index, gap in enumerate(["GAP-10", "GAP-11", "GAP-12"])]
+            + [label("GAP-14", 210, "spo2"), label("GAP-14", 210, "skin_temperature")],
     }
 
 
@@ -54,7 +56,7 @@ class ResearchCorpusTests(unittest.TestCase):
         self.assertEqual(result["status"], "admitted_for_external_evaluation_only")
         self.assertFalse(result["model_validated"])
         self.assertEqual(result["production_promotions"], 0)
-        self.assertEqual(result["labels_by_target"], {"GAP-10": 2, "GAP-11": 2, "GAP-12": 2, "GAP-14": 2})
+        self.assertEqual(result["labels_by_target"], {"GAP-10": 2, "GAP-11": 2, "GAP-12": 2, "GAP-14": 4})
 
     def test_rejects_participant_leakage_between_splits(self) -> None:
         value = manifest()
@@ -117,12 +119,21 @@ class ResearchCorpusTests(unittest.TestCase):
 
     def test_admits_temperature_and_spo2_pairs_at_the_same_time(self) -> None:
         value = manifest()
-        for entry in value["participants"]:
-            pair = label("GAP-14", 210)
-            pair["signal"] = "skin_temperature"
-            entry["labels"].append(pair)
         result = corpus.validate(value)
         self.assertEqual(result["labels_by_target"]["GAP-14"], 4)
+
+    def test_rejects_numeric_metric_from_a_negative_control(self) -> None:
+        value = manifest()
+        value["participants"][0]["labels"][3]["negative_control"] = True
+        with self.assertRaisesRegex(corpus.CorpusError, "negative control"):
+            corpus.validate(value)
+
+    def test_requires_both_decoder_signals_in_each_split(self) -> None:
+        value = manifest()
+        value["participants"][1]["labels"] = [entry for entry in value["participants"][1]["labels"]
+                                                if entry.get("signal") != "skin_temperature"]
+        with self.assertRaisesRegex(corpus.CorpusError, "skin_temperature requires both"):
+            corpus.validate(value)
 
 
 if __name__ == "__main__":
