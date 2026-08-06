@@ -4,9 +4,12 @@ enum AtriaResearchProbe {
     // SpO2 candidate offsets are discovery evidence only. This stays false
     // until a generation-specific layout passes an external reference maneuver.
     static let validatedSpO2DecoderAvailable = false
-    static var validatedSkinTemperatureDecoderAvailable: Bool {
-        productionSkinTemperatureDecoder != nil
-    }
+    /// Neither sensor decoder is a production measurement until a
+    /// generation/firmware-specific external-reference validation artifact has
+    /// been reviewed. Keeping this explicit (rather than deriving it from a
+    /// candidate conversion helper) prevents a raw field hypothesis from
+    /// silently becoming a displayed vital.
+    static let validatedSkinTemperatureDecoderAvailable = false
 
     enum Source: String, Codable, Sendable {
         case metadata = "0x31"
@@ -105,16 +108,11 @@ enum AtriaResearchProbe {
         }
     }
 
-    /// WHOOP 4 v12/v24 payload-relative offset 68 is the raw skin-temperature
-    /// ADC (frame-absolute offset 72). Its per-device offset is removed by a
-    /// same-device median anchor; downstream code publishes only deviation from
-    /// the same strap's sleep baseline.
-    static let productionSkinTemperatureDecoder = SkinTemperatureDecoderIdentity(
-        modelGeneration: .strap4,
-        version: "whoop4-v24-relative-adc-v1",
-        source: .historical,
-        calibrationProvenance: .sameDeviceRelativeValidated
-    )
+    /// There is deliberately no production decoder at present. Offset 68 is a
+    /// research candidate retained for externally paired capture only; a
+    /// same-device anchor can make a stable-looking relative series, but it
+    /// cannot establish units, placement behavior, or held-out validity.
+    static let productionSkinTemperatureDecoder: SkinTemperatureDecoderIdentity? = nil
 
     static let whoop4SkinTemperatureRawOffset = 68
     static let whoop4SkinTemperatureWornRawRange = 550...2040

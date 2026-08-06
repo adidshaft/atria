@@ -587,7 +587,8 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
             for: projectedSleep,
             baseNeedHours: SessionStore.configuredSleepBaseNeedHours()
         )
-        XCTAssertGreaterThan(performance, 0)
+        XCTAssertGreaterThan(try XCTUnwrap(performance), 0,
+                             "a newly saved sleep owns its frozen adaptive need and can be scored")
 
         let recovery = store.recoveryProjection(now: now,
                                                 initialFallbackHRVSnapshot: nil,

@@ -1314,7 +1314,7 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertEqual(merged.strapStepResearchCount, 123)
         XCTAssertEqual(merged.strapStepResearchState, "r10_live_preliminary")
         XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
-        XCTAssertTrue(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
+        XCTAssertFalse(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
     }
 
     func testAuthoritativeDeletedHistoricalDayDoesNotRestoreStaleMetric() {

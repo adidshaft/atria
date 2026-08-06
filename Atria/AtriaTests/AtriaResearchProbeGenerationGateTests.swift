@@ -22,15 +22,15 @@ final class AtriaResearchProbeGenerationGateTests: XCTestCase {
         XCTAssertEqual(summary.temperatureWordCandidates,
                        [.init(offset: 68, value: 826)])
         XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
-        XCTAssertTrue(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
+        XCTAssertFalse(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
         let decoded = AtriaResearchProbe.decodeSkinTemperatureCelsius(
             payload: payload,
             source: .historical,
             modelGeneration: .strap4,
             sameDeviceAnchorRaw: 826
         )
-        XCTAssertEqual(try XCTUnwrap(decoded).celsius, 33, accuracy: 1e-9)
-        XCTAssertTrue(try XCTUnwrap(decoded).isAggregationEligible)
+        XCTAssertNil(decoded,
+                     "a raw offset hypothesis must not produce Celsius before external-reference validation")
     }
 
     func testOxygenCandidateValueCaptureAccumulatesPerOffsetMeanWithoutDisplayGating() throws {
@@ -109,7 +109,7 @@ final class AtriaResearchProbeGenerationGateTests: XCTestCase {
         XCTAssertEqual(decoded.decoder.source, .historical)
         XCTAssertEqual(decoded.decoder.calibrationProvenance, .calibratedFixture)
         XCTAssertTrue(decoded.isAggregationEligible)
-        XCTAssertNotNil(AtriaResearchProbe.productionSkinTemperatureDecoder)
+        XCTAssertNil(AtriaResearchProbe.productionSkinTemperatureDecoder)
     }
 
     func testUnknownHistoricalVersionDoesNotUseWhoop4FixedOffsets() {
@@ -207,7 +207,7 @@ final class AtriaResearchProbeGenerationGateTests: XCTestCase {
         )
         XCTAssertFalse(gate.acceptsForCandidateCounting(emptyBinary))
         XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
-        XCTAssertTrue(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
+        XCTAssertFalse(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
     }
 
     func testWhoop4RelativeTemperatureRequiresSameDeviceAnchor() {

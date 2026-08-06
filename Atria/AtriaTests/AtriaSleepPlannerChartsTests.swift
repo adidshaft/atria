@@ -93,6 +93,12 @@ final class AtriaSleepPlannerChartsTests: XCTestCase {
         calendar.date(byAdding: .day, value: offset, to: anchor)!
     }
 
+    private func frozenNeeds(_ nights: [SleepHistorySnapshot.Night], hours: Double) -> [Date: TimeInterval] {
+        Dictionary(uniqueKeysWithValues: nights.map {
+            (calendar.startOfDay(for: $0.day), hours * 3_600)
+        })
+    }
+
     func testDebtChartSlotsKeepEmptyMorningsEmpty() {
         let anchor = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_785_000_000))
         // Confirmed nights on days -6, -3, -1, 0; nothing on -5, -4, -2.
@@ -102,7 +108,10 @@ final class AtriaSleepPlannerChartsTests: XCTestCase {
             night(id: "c", day: day(-3, from: anchor), hours: 8.2),
             night(id: "d", day: day(-6, from: anchor), hours: 8.0)
         ]
-        let slots = AtriaSleepDebtChartPresentation.slots(nights: nights, baseNeedHours: 8)
+        let slots = AtriaSleepDebtChartPresentation.slots(
+            nights: nights,
+            frozenNeedSecondsByDay: frozenNeeds(nights, hours: 8)
+        )
         XCTAssertEqual(slots.count, 7)
         XCTAssertEqual(slots.last?.day, anchor)
         XCTAssertEqual(AtriaSleepDebtChartPresentation.realNightCount(slots), 4)
@@ -115,7 +124,8 @@ final class AtriaSleepPlannerChartsTests: XCTestCase {
         XCTAssertFalse(slots[1].shortfall)
         XCTAssertFalse(slots[3].shortfall)
         // Need per slot is the clamped base need the debt math scores against.
-        XCTAssertTrue(slots.allSatisfy { abs($0.needHours - 8) < 0.0001 })
+        XCTAssertEqual(slots.compactMap(\.needHours).count, 4)
+        XCTAssertTrue(slots.compactMap(\.needHours).allSatisfy { abs($0 - 8) < 0.0001 })
     }
 
     func testDebtChartSlotsIgnoreNapsAndUnconfirmedNights() {
@@ -125,7 +135,10 @@ final class AtriaSleepPlannerChartsTests: XCTestCase {
             night(id: "candidate", day: day(-1, from: anchor), hours: 6.0, confirmed: false),
             night(id: "nap", day: day(-2, from: anchor), hours: 1.0, source: "manual_nap")
         ]
-        let slots = AtriaSleepDebtChartPresentation.slots(nights: nights, baseNeedHours: 8)
+        let slots = AtriaSleepDebtChartPresentation.slots(
+            nights: nights,
+            frozenNeedSecondsByDay: frozenNeeds(nights, hours: 8)
+        )
         XCTAssertEqual(AtriaSleepDebtChartPresentation.realNightCount(slots), 1)
         XCTAssertNil(slots[5].sleptHours)
         XCTAssertNil(slots[4].sleptHours)
