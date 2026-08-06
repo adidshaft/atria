@@ -87,6 +87,24 @@ enum AtriaStrengthLog {
         var rpeCoverageText: String {
             "\(effortQualifiedSetCount) of \(loadQualifiedSetCount) sets with RPE"
         }
+
+        /// True when any qualified volume is a body-mass estimate rather than a
+        /// measured external load.
+        var includesBodyweightEstimate: Bool {
+            movementClasses.contains(.bodyweightEstimate)
+        }
+
+        /// Honest one-line basis for the logged volume (GAP-09: the results UI
+        /// must distinguish measured/logged load from body-mass-estimated load,
+        /// so an estimated pull-up session is never shown like measured barbell
+        /// work).
+        var loadBasisText: String {
+            switch (movementClasses.contains(.externalLoad), includesBodyweightEstimate) {
+            case (true, true): return "Measured + body-mass estimate"
+            case (false, true): return "Body-mass estimate"
+            default: return "Measured external load"
+            }
+        }
     }
 
     /// Returns a per-set effective resistance. External resistance is already

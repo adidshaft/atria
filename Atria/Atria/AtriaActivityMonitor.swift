@@ -1953,6 +1953,10 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                             Text("\(Int(muscularLoadReceipt.volumeKg.rounded())) kg volume · \(muscularLoadReceipt.qualifiedSetCount) loaded sets\(muscularLoadReceipt.densityBonusFraction > 0 ? " · observed superset density" : "")")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                            Label(muscularLoadReceipt.loadBasisText,
+                                  systemImage: muscularLoadReceipt.includesBodyweightEstimate ? "scalemass" : "dumbbell")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(muscularLoadReceipt.includesBodyweightEstimate ? Color.orange.opacity(0.85) : Color.secondary)
                             Text(muscularLoadReceipt.rpeCoverageText)
                                 .font(.caption2)
                                 .foregroundStyle(muscularLoadReceipt.hasCompleteEffortEvidence ? Color.secondary : Color.orange)

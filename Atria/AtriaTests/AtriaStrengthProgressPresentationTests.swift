@@ -251,6 +251,26 @@ final class AtriaStrengthProgressPresentationTests: XCTestCase {
         XCTAssertEqual(receipt.movementClasses, [.bodyweightEstimate])
     }
 
+    func testMuscularLoadBasisDistinguishesMeasuredFromBodyMassEstimate() throws {
+        // GAP-09: the results card must say whether the logged volume is a
+        // measured external load or a body-mass estimate, so a pull-up session
+        // is never presented like measured barbell work.
+        let barbell = LoggedSet(exercise: "Back squat", weightKg: 100, reps: 5, rpe: 8, t: day(0))
+        let measured = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: [barbell]))
+        XCTAssertFalse(measured.includesBodyweightEstimate)
+        XCTAssertEqual(measured.loadBasisText, "Measured external load")
+
+        let pushUp = LoggedSet(exercise: "Push-up", weightKg: 0, reps: 12, rpe: 8, t: day(0),
+                               effectiveLoadKg: 45.5)
+        let estimated = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: [pushUp]))
+        XCTAssertTrue(estimated.includesBodyweightEstimate)
+        XCTAssertEqual(estimated.loadBasisText, "Body-mass estimate")
+
+        let mixed = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: [barbell, pushUp]))
+        XCTAssertTrue(mixed.includesBodyweightEstimate)
+        XCTAssertEqual(mixed.loadBasisText, "Measured + body-mass estimate")
+    }
+
     func testMuscularInputNeverInventsAnRPEForAnOtherwiseLoadedSet() throws {
         let sets = [
             LoggedSet(exercise: "Back squat", weightKg: 100, reps: 5, rpe: 8, t: day(0)),
