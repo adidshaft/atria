@@ -60,8 +60,9 @@ enum Metrics {
 
     static func maxHeartRateZoneSeconds(_ series: [(t: Double, bpm: Int)],
                                         maxHR: Int,
+                                        restingHR: Int? = nil,
                                         maxGap: TimeInterval = AtriaAnalytics.Strain.maximumLoadEvidenceGap) -> MaxHeartRateZoneSeconds {
-        AtriaAnalytics.Strain.maxHeartRateZoneSeconds(series, maxHR: maxHR, maxGap: maxGap)
+        AtriaAnalytics.Strain.maxHeartRateZoneSeconds(series, maxHR: maxHR, restingHR: restingHR, maxGap: maxGap)
     }
 
     typealias StrainZoneSummary = AtriaAnalytics.Strain.ZoneSummary

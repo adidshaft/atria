@@ -2580,13 +2580,16 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 
     private var workoutZoneRows: [(key: String, label: String, range: String, tint: Color, seconds: TimeInterval)] {
         let zones = workout.zoneSeconds ?? [:]
+        func range(_ zone: HRZone) -> String {
+            workout.zoneBoundaries?.rangeText(for: zone) ?? "Legacy range"
+        }
         return [
-            ("max", "Z5 · Max", "90–100%", Metrics.heartRateZoneTint(5), zones["max"] ?? 0),
-            ("anaerobic", "Z4 · Anaerobic", "80–90%", Metrics.heartRateZoneTint(4), zones["anaerobic"] ?? 0),
-            ("aerobic", "Z3 · Aerobic", "70–80%", Metrics.heartRateZoneTint(3), zones["aerobic"] ?? 0),
-            ("fatBurn", "Z2 · Fat burn", "60–70%", Metrics.heartRateZoneTint(2), zones["fatBurn"] ?? 0),
-            ("warmup", "Z1 · Warm-up", "50–60%", Metrics.heartRateZoneTint(1), zones["warmup"] ?? 0),
-            ("rest", "Z0 · Restorative", "<50%", Metrics.heartRateZoneTint(0), zones["rest"] ?? 0)
+            ("max", "Z5 · Max", range(.max), Metrics.heartRateZoneTint(5), zones["max"] ?? 0),
+            ("anaerobic", "Z4 · Anaerobic", range(.anaerobic), Metrics.heartRateZoneTint(4), zones["anaerobic"] ?? 0),
+            ("aerobic", "Z3 · Aerobic", range(.aerobic), Metrics.heartRateZoneTint(3), zones["aerobic"] ?? 0),
+            ("fatBurn", "Z2 · Fat burn", range(.fatBurn), Metrics.heartRateZoneTint(2), zones["fatBurn"] ?? 0),
+            ("warmup", "Z1 · Warm-up", range(.warmup), Metrics.heartRateZoneTint(1), zones["warmup"] ?? 0),
+            ("rest", "Z0 · Restorative", range(.rest), Metrics.heartRateZoneTint(0), zones["rest"] ?? 0)
         ]
     }
 
@@ -2601,7 +2604,9 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Time in heart-rate zones")
                             .font(.headline.weight(.bold))
-                        Text("Share of recorded heart-rate time")
+                        Text(workout.zoneBoundaries == nil
+                             ? "Legacy ranges · recorded heart-rate time"
+                             : "Frozen HR-reserve ranges · recorded heart-rate time")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

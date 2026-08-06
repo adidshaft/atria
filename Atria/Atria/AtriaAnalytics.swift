@@ -830,6 +830,7 @@ enum AtriaAnalytics {
         /// aerobic 70-80%, anaerobic 80-90%, max >=90% of configured max HR.
         static func maxHeartRateZoneSeconds(_ series: [(t: Double, bpm: Int)],
                                             maxHR: Int,
+                                            restingHR: Int? = nil,
                                             maxGap: TimeInterval = maximumLoadEvidenceGap) -> MaxHeartRateZoneSeconds {
             guard series.count > 1, maxHR > 0 else { return .empty }
             var rest = 0.0
@@ -847,7 +848,7 @@ enum AtriaAnalytics {
                     dropped += dt
                     continue
                 }
-                switch maxHeartRateZoneRawValue(for: series[index].bpm, maxHR: maxHR) {
+                switch maxHeartRateZoneRawValue(for: series[index].bpm, maxHR: maxHR, restingHR: restingHR) {
                 case 0: rest += dt
                 case 1: warmup += dt
                 case 2: fatBurn += dt
@@ -866,9 +867,11 @@ enum AtriaAnalytics {
                                            droppedGapSeconds: dropped)
         }
 
-        static func maxHeartRateZoneRawValue(for bpm: Int, maxHR: Int) -> Int {
+        static func maxHeartRateZoneRawValue(for bpm: Int, maxHR: Int, restingHR: Int? = nil) -> Int {
             guard bpm > 0, maxHR > 0 else { return 0 }
-            let fraction = Double(bpm) / Double(maxHR)
+            let rest = restingHR ?? 0
+            guard maxHR > rest else { return 0 }
+            let fraction = Double(bpm - rest) / Double(maxHR - rest)
             switch fraction {
             case 0.90...: return 5
             case 0.80..<0.90: return 4
