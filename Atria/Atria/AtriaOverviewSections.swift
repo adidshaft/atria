@@ -5147,18 +5147,13 @@ private struct AtriaWeeklyReportHighlightRow: View, Equatable {
 
             Spacer(minLength: 8)
 
-            Text(consistencyText)
-                .font(.caption.weight(.bold).monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
             Image(systemName: "chevron.right")
                 .font(.caption.weight(.bold))
                 .foregroundStyle(.tertiary)
         }
         .padding(12)
         .atriaInsetCard(cornerRadius: 16, tint: .cyan)
-        .accessibilityLabel("Weekly report. \(heroText). \(consistencyText).")
+        .accessibilityLabel("Weekly report. \(heroText).")
     }
 
     private var heroText: String {
