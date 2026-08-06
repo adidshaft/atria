@@ -51,6 +51,15 @@ final class AtriaResearchSharingTests: XCTestCase {
                        accuracy: 0.001)
     }
 
+    func testGrantConsentAdoptsTheInspectedPreviewPseudonym() {
+        let previewPseudonym = "11111111-1111-4111-8111-111111111111"
+        AtriaResearchSharing.grantConsent(now: Date(timeIntervalSince1970: 1_780_000_000),
+                                          previewPseudonym: previewPseudonym)
+
+        XCTAssertTrue(AtriaResearchSharing.isOptedIn)
+        XCTAssertEqual(AtriaResearchSharing.pseudonym, previewPseudonym)
+    }
+
     func testRevokeConsentClearsStateAndReconsentIsUnlinkable() {
         AtriaResearchSharing.grantConsent(now: Date(timeIntervalSince1970: 1_780_000_000))
         let firstPseudonym = AtriaResearchSharing.pseudonym
@@ -103,6 +112,11 @@ final class AtriaResearchSharingTests: XCTestCase {
         for forbidden in ["deviceName", "displayName", "birthYear", "timezone"] {
             XCTAssertFalse(json.contains(forbidden), "payload must not contain \(forbidden)")
         }
+        XCTAssertFalse(json.contains("custom private workout title"),
+                       "payload must not include a free-form workout title")
+        XCTAssertFalse(json.contains("\"label\":"),
+                       "payload must not encode the legacy raw workout label field")
+        XCTAssertTrue(json.contains("\"activityType\":\"Running\""))
     }
 
     // MARK: - Receipts
@@ -133,6 +147,17 @@ final class AtriaResearchSharingTests: XCTestCase {
                                                          kind: "sleep",
                                                          hrPoints: [[0.1, 58], [60.2, 61]],
                                                          rrPoints: [[0.1, 1012.5]],
+                                                         motionEpochs: [.init(startRel: 30,
+                                                                              endRel: 60,
+                                                                              rows: 30,
+                                                                              validatedRows: 30,
+                                                                              stillnessRatio: 0.82,
+                                                                              movementIntensity: 0.08,
+                                                                              p95VectorDelta: 0.16,
+                                                                              maximumGapSeconds: 1,
+                                                                              measurementValidated: true,
+                                                                              lowMotionQualified: true,
+                                                                              source: AtriaRecoveredMotionEpoch.source)],
                                                          restingStable: 57,
                                                          hrv: 82)
         let data = try JSONEncoder().encode(session)
@@ -143,6 +168,10 @@ final class AtriaResearchSharingTests: XCTestCase {
         XCTAssertEqual(decoded.kind, "sleep")
         XCTAssertEqual(decoded.hrPoints, [[0.1, 58], [60.2, 61]])
         XCTAssertEqual(decoded.rrPoints, [[0.1, 1012.5]])
+        XCTAssertEqual(decoded.motionEpochs.count, 1)
+        XCTAssertEqual(decoded.motionEpochs[0].startRel, 30)
+        XCTAssertEqual(decoded.motionEpochs[0].movementIntensity, 0.08)
+        XCTAssertEqual(decoded.motionEpochs[0].source, AtriaRecoveredMotionEpoch.source)
         XCTAssertEqual(decoded.restingStable, 57)
         XCTAssertEqual(decoded.hrv, 82)
     }
@@ -163,6 +192,17 @@ final class AtriaResearchSharingTests: XCTestCase {
                              kind: "session",
                              hrPoints: [[0.0, 60], [10.0, 62]],
                              rrPoints: [[0.0, 1000]],
+                             motionEpochs: [.init(startRel: 0,
+                                                  endRel: 30,
+                                                  rows: 30,
+                                                  validatedRows: 30,
+                                                  stillnessRatio: 0.76,
+                                                  movementIntensity: 0.11,
+                                                  p95VectorDelta: 0.18,
+                                                  maximumGapSeconds: 1,
+                                                  measurementValidated: true,
+                                                  lowMotionQualified: true,
+                                                  source: AtriaRecoveredMotionEpoch.source)],
                              restingStable: 58,
                              hrv: 75)],
             sleeps: [.init(startRel: 82_800.0,
@@ -172,7 +212,8 @@ final class AtriaResearchSharingTests: XCTestCase {
                            stageSeconds: ["light": 14_400, "deep": 7200])],
             workouts: [.init(startRel: 36_000.0,
                              endRel: 39_600.0,
-                             label: "Run",
+                             activityType: "Running",
+                             labelSource: "user_confirmed",
                              avgHR: 140,
                              peakHR: 172)],
             days: [.init(dayIndex: 0,

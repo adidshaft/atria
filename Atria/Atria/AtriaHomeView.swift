@@ -1628,6 +1628,7 @@ struct AtriaHomeView: View {
                               },
                               onExportHealth: { store.exportToHealthKit() },
                               buildResearchBundle: { await AtriaResearchBundleBuilder.build(store: store) },
+                              buildResearchPreview: { await AtriaResearchBundleBuilder.preview(store: store) },
                               onSyncMissedData: {
                                   ble.requestOfflineHistoricalSyncIfNeeded(reason: "manual_user_request",
                                                                            force: true)

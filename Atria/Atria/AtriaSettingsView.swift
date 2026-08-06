@@ -203,7 +203,10 @@ struct AtriaSettingsView: View {
     let maxHRSuggestion: AtriaMaxHRSuggestion?
     let onDismissMaxHRSuggestion: (Int) -> Void
     let onExportHealth: (() -> Void)?
+    /// A consent-gated bundle for manual or queued sharing.
     var buildResearchBundle: () async -> AtriaResearchBundleBuilder.Built? = { nil }
+    /// A local-only bundle used to inspect the disclosure before consent.
+    var buildResearchPreview: () async -> AtriaResearchBundleBuilder.Built? = { nil }
     let onSyncMissedData: (() -> Bool)?
     let onNutritionHealthToggle: (() -> Void)?
     let backupStatusProvider: () -> SessionBackupStatus
@@ -301,6 +304,7 @@ struct AtriaSettingsView: View {
          onDismissMaxHRSuggestion: @escaping (Int) -> Void = { _ in },
          onExportHealth: (() -> Void)? = nil,
          buildResearchBundle: @escaping () async -> AtriaResearchBundleBuilder.Built? = { nil },
+         buildResearchPreview: @escaping () async -> AtriaResearchBundleBuilder.Built? = { nil },
          onSyncMissedData: (() -> Bool)? = nil,
          onNutritionHealthToggle: (() -> Void)? = nil,
          backupStatusProvider: @escaping () -> SessionBackupStatus = { .missing },
@@ -334,6 +338,7 @@ struct AtriaSettingsView: View {
         self.onDismissMaxHRSuggestion = onDismissMaxHRSuggestion
         self.onExportHealth = onExportHealth
         self.buildResearchBundle = buildResearchBundle
+        self.buildResearchPreview = buildResearchPreview
         self.onSyncMissedData = onSyncMissedData
         self.onNutritionHealthToggle = onNutritionHealthToggle
         self.backupStatusProvider = backupStatusProvider
@@ -713,7 +718,8 @@ struct AtriaSettingsView: View {
 
     private var privacySettingsPage: some View {
         compactSettingsForm(title: "Privacy & About") {
-            AtriaResearchSharingSection(buildBundle: buildResearchBundle)
+            AtriaResearchSharingSection(buildPreview: buildResearchPreview,
+                                        buildBundle: buildResearchBundle)
             aboutSection
         }
     }

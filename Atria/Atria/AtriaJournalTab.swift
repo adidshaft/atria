@@ -498,8 +498,10 @@ private struct AtriaJournalTypedInsightsSection: View {
                 }
             }
         }
-        .padding(16)
-        .atriaCard(emphasis: .soft)
+        // The dashed learning state already establishes its own boundary. A
+        // second full-width card made this section feel like a box inside a
+        // box and narrowed the only useful content.
+        .padding(.vertical, 4)
     }
 }
 
@@ -719,26 +721,6 @@ private struct AtriaJournalCheckInDeck: View {
 
     private var swipeDeck: some View {
         ZStack {
-            if deckIndex + 1 < cardCount {
-                // A plain hint, not the next card's real content: the deck's
-                // surfaces are translucent Liquid Glass, so stacking the actual
-                // (duplicate) text/buttons behind the front card would show
-                // through as illegible ghosting. A flat peeking shape avoids
-                // that while still reading as "there's another card back here."
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .fill(Color.cyan.opacity(0.10))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .stroke(Color.cyan.opacity(0.16), lineWidth: 1)
-                    }
-                    .frame(maxWidth: .infinity,
-                           minHeight: deckSizing.minimumHeight)
-                    .scaleEffect(0.94)
-                    .offset(y: 14)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-            }
-
             if deckIndex < cardCount {
                 Group {
                     if isCurrentCardSwipeable {
