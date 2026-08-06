@@ -931,6 +931,10 @@ struct AtriaHealthScreen: View {
                 .accessibilityHint("Opens sleep efficiency detail")
             }
 
+            if let provisionalSleepScore {
+                AtriaSleepScoreCard(score: provisionalSleepScore)
+            }
+
             if currentSleep == nil {
                 HStack(spacing: AtriaDesignTokens.Spacing.md) {
                     Image(systemName: "moon.zzz")
@@ -988,6 +992,27 @@ struct AtriaHealthScreen: View {
         return sleepHistory.sleepPerformancePercent(for: currentMainSleep,
                                                      baseNeedHours: sleepBaseNeedHours,
                                                      yesterdayStrain: yesterdayStrainForLatestNight)
+    }
+
+    /// GAP-06: the provisional composite, built only from components that are
+    /// independently displayable for this night — the same Sufficiency the tile
+    /// shows, the canonical Consistency, and Efficiency only when motion
+    /// qualified. Overnight load stays out until its model is validated.
+    private var provisionalSleepScore: AtriaSleepScore? {
+        guard let currentSleep = currentMainSleep else { return nil }
+        let sufficiency = sleepPerformancePercentUnified.map(Double.init)
+        let consistency = AtriaSleepConsistency
+            .result(from: vitalsStore.state.sleepHistorySnapshot.nights)
+            .combinedPercent
+            .map(Double.init)
+        let efficiency = currentSleep.displaySleepEfficiency.map { $0 * 100 }
+        let score = AtriaSleepScore.make(sufficiencyPercent: sufficiency,
+                                         consistencyPercent: consistency,
+                                         efficiencyPercent: efficiency,
+                                         validatedOvernightLoadPercent: nil)
+        // Below the minimum present components the composite is withheld and
+        // Sleep Sufficiency remains the primary measure — don't mount the card.
+        return score.score == nil ? nil : score
     }
 
     private var yesterdayStrainForLatestNight: Double? {
