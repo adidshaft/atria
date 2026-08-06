@@ -1942,18 +1942,34 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                     Divider()
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Logged strength load")
+                            Text("Logged muscular input")
                                 .font(.caption.weight(.bold))
-                            Text("\(Int(muscularLoadReceipt.volumeKg.rounded())) kg volume · \(muscularLoadReceipt.qualifiedSetCount) qualified sets\(muscularLoadReceipt.densityBonusFraction > 0 ? " · superset density included" : "")")
+                            Text("\(Int(muscularLoadReceipt.volumeKg.rounded())) kg volume · \(muscularLoadReceipt.qualifiedSetCount) loaded sets\(muscularLoadReceipt.densityBonusFraction > 0 ? " · observed superset density" : "")")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                            Text(muscularLoadReceipt.rpeCoverageText)
+                                .font(.caption2)
+                                .foregroundStyle(muscularLoadReceipt.hasCompleteEffortEvidence ? Color.secondary : Color.orange)
                         }
                         Spacer()
-                        Text("\(Int(muscularLoadReceipt.score.rounded()))")
-                            .font(.title3.weight(.black).monospacedDigit())
-                            .foregroundStyle(.orange)
+                        if let score = muscularLoadReceipt.score {
+                            VStack(alignment: .trailing, spacing: 1) {
+                                Text("\(Int(score.rounded()))")
+                                    .font(.title3.weight(.black).monospacedDigit())
+                                    .foregroundStyle(.orange)
+                                Text("relative input")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        } else {
+                            Text("Add RPE")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.orange)
+                        }
                     }
-                    Text("Logged sets only · separate from cardiovascular Strain")
+                    Text(muscularLoadReceipt.hasCompleteEffortEvidence
+                         ? "Logged sets only · separate from cardiovascular Strain"
+                         : "Add RPE to every loaded set for a relative input estimate. It never changes cardiovascular Strain.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

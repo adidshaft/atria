@@ -228,6 +228,62 @@ final class AtriaStrengthProgressPresentationTests: XCTestCase {
                        ["b"])
     }
 
+    // MARK: - Logged muscular-input receipt
+
+    func testBodyweightEffectiveLoadIsFrozenAndDoesNotNeedTodaysProfile() throws {
+        let effective = try XCTUnwrap(AtriaStrengthLog.effectiveLoadKg(exercise: "Push-up",
+                                                                        externalWeightKg: 10,
+                                                                        bodyMassKg: 70))
+        XCTAssertEqual(effective.movementClass, .bodyweightEstimate)
+        XCTAssertEqual(effective.loadKg, 55.5, accuracy: 0.001)
+
+        // The logged receipt takes the frozen effective load only. Reopening
+        // this workout after a profile/body-mass change cannot rewrite it.
+        let set = LoggedSet(exercise: "Push-up",
+                            weightKg: 10,
+                            reps: 12,
+                            rpe: 8,
+                            t: day(0),
+                            effectiveLoadKg: effective.loadKg)
+        let receipt = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: [set]))
+        XCTAssertEqual(receipt.effectiveVolumeKg, 666, accuracy: 0.001)
+        XCTAssertEqual(receipt.externalVolumeKg, 120, accuracy: 0.001)
+        XCTAssertEqual(receipt.movementClasses, [.bodyweightEstimate])
+    }
+
+    func testMuscularInputNeverInventsAnRPEForAnOtherwiseLoadedSet() throws {
+        let sets = [
+            LoggedSet(exercise: "Back squat", weightKg: 100, reps: 5, rpe: 8, t: day(0)),
+            LoggedSet(exercise: "Back squat", weightKg: 100, reps: 5, rpe: nil, t: day(0))
+        ]
+        let receipt = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: sets))
+
+        XCTAssertEqual(receipt.loadQualifiedSetCount, 2)
+        XCTAssertEqual(receipt.effortQualifiedSetCount, 1)
+        XCTAssertFalse(receipt.hasCompleteEffortEvidence)
+        XCTAssertNil(receipt.muscularInputScore,
+                     "a missing RPE must not silently become an average effort")
+    }
+
+    func testMuscularInputRisesWithLoggedRPEAndObservedSupersetDensity() throws {
+        let lowEffort = [
+            LoggedSet(exercise: "Back squat", weightKg: 100, reps: 5, rpe: 6, t: day(0)),
+            LoggedSet(exercise: "Bench press", weightKg: 80, reps: 6, rpe: 6, t: day(0))
+        ]
+        let highEffortSuperset = [
+            LoggedSet(exercise: "Back squat", weightKg: 100, reps: 5, rpe: 9, t: day(0),
+                      supersetGroupID: "round-1", supersetOrder: 0, supersetTransitionSeconds: 0),
+            LoggedSet(exercise: "Bench press", weightKg: 80, reps: 6, rpe: 9, t: day(0),
+                      supersetGroupID: "round-1", supersetOrder: 1, supersetTransitionSeconds: 45)
+        ]
+        let lower = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: lowEffort).muscularInputScore)
+        let higher = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: highEffortSuperset).muscularInputScore)
+
+        XCTAssertGreaterThan(higher, lower)
+        let density = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: highEffortSuperset)?.densityBonusFraction)
+        XCTAssertEqual(density, 0.06, accuracy: 0.0001)
+    }
+
     // MARK: - Set table
 
     func testSetTableRowsBadgeOnlyRealRecordsAndKeepRPEBlankWhenUnset() {

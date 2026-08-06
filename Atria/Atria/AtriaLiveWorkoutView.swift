@@ -2359,6 +2359,9 @@ struct AtriaLiveWorkoutView: View {
     let routeRecorder: AtriaWorkoutRouteRecorder
     let maxHR: Int
     let restingHR: Int
+    /// Frozen at workout start so body-weight set estimates do not change if
+    /// profile data is edited while the workout is open.
+    let strengthBodyMassKg: Double?
     let strainTarget: Double?
     let startDate: Date
     let lowerTargetZone: Int?
@@ -2408,7 +2411,10 @@ struct AtriaLiveWorkoutView: View {
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showSetLogger) {
             setLoggerSheet
-                .presentationDetents([.height(390), .large])
+                // A set log has four inputs plus a save action. Opening at
+                // the large detent keeps RPE and the receipt-driving controls
+                // reachable instead of hiding them below a compact card.
+                .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
                 .preferredColorScheme(.dark)
         }
@@ -2778,11 +2784,21 @@ struct AtriaLiveWorkoutView: View {
                     }
                 }
 
-                loggerStepperRow(title: "Weight",
+                loggerStepperRow(title: AtriaStrengthLog.isEstimatedBodyweightExercise(selectedExercise)
+                                     ? "Added weight" : "Weight",
                                  value: AtriaStrengthSetTablePresentation.weightCell(loggerWeightKg),
                                  unit: "kg",
                                  decrement: { loggerWeightKg = max(0, loggerWeightKg - 2.5) },
                                  increment: { loggerWeightKg += 2.5 })
+                if let effective = AtriaStrengthLog.effectiveLoadKg(
+                    exercise: selectedExercise,
+                    externalWeightKg: loggerWeightKg > 0 ? loggerWeightKg : nil,
+                    bodyMassKg: strengthBodyMassKg
+                ), effective.movementClass == .bodyweightEstimate {
+                    Text("Estimated moved load \(Int(effective.loadKg.rounded())) kg · based on your body mass at workout start")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 loggerStepperRow(title: "Reps",
                                  value: "\(loggerReps)",
                                  decrement: { loggerReps = max(1, loggerReps - 1) },
@@ -2799,19 +2815,19 @@ struct AtriaLiveWorkoutView: View {
                 exerciseHistoryPanel
                 strengthNavigationRow
 
-                Button {
-                    saveLoggedSet()
-                } label: {
-                    Label(editingSetID == nil ? "Log set \u{00B7} start rest" : "Update set",
-                          systemImage: "checkmark.circle.fill")
-                        .font(.headline.weight(.black))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 7)
-                }
-                .buttonStyle(.glassProminent)
-                .tint(AtriaStrengthPalette.amber)
             }
             .padding(18)
+        }
+        // The logger has enough real controls to scroll. Pinning its one
+        // primary commit action prevents it falling below the fold on an
+        // iPhone, while keeping the content itself free to grow for Dynamic
+        // Type and a long exercise name.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            logSetAction
+                .padding(.horizontal, 18)
+                .padding(.top, 10)
+                .padding(.bottom, 8)
+                .background(.ultraThinMaterial)
         }
         .sheet(isPresented: $showExerciseCatalog) {
             AtriaStrengthCatalogView(projection: strengthHistory) { exercise in
@@ -2841,6 +2857,20 @@ struct AtriaLiveWorkoutView: View {
                 .presentationDragIndicator(.visible)
                 .preferredColorScheme(.dark)
         }
+    }
+
+    private var logSetAction: some View {
+        Button {
+            saveLoggedSet()
+        } label: {
+            Label(editingSetID == nil ? "Log set \u{00B7} start rest" : "Update set",
+                  systemImage: "checkmark.circle.fill")
+                .font(.headline.weight(.black))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 7)
+        }
+        .buttonStyle(.glassProminent)
+        .tint(AtriaStrengthPalette.amber)
     }
 
     private var strengthNavigationRow: some View {
@@ -2960,6 +2990,9 @@ struct AtriaLiveWorkoutView: View {
         loggerRestSeconds = AtriaStrengthLog.restSeconds(for: exercise)
         guard let last = loggedSets.last(where: { $0.exercise.localizedCaseInsensitiveCompare(exercise) == .orderedSame }) else {
             selectedExercise = exercise
+            if AtriaStrengthLog.isEstimatedBodyweightExercise(exercise) {
+                loggerWeightKg = 0
+            }
             return
         }
         selectedExercise = exercise
@@ -2983,6 +3016,11 @@ struct AtriaLiveWorkoutView: View {
                             reps: loggerReps,
                             rpe: loggerRPE,
                             t: now,
+                            effectiveLoadKg: AtriaStrengthLog.effectiveLoadKg(
+                                exercise: selectedExercise,
+                                externalWeightKg: loggerWeightKg > 0 ? loggerWeightKg : nil,
+                                bodyMassKg: strengthBodyMassKg
+                            )?.loadKg,
                             supersetGroupID: superset?.id,
                             supersetOrder: order,
                             supersetTransitionSeconds: prior.map { max(0, now.timeIntervalSince($0.t)) })
