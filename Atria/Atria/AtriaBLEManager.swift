@@ -32663,6 +32663,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 let end = Date(timeIntervalSince1970: dependency.requiredEndUnix)
                 return end <= Date() && cachedAt < end
             }
+            // Retire the cached failure ENTIRELY when its window has since
+            // passed — otherwise the fingerprint-equality suppressions below
+            // would keep skipping the real attempt even after the daily
+            // bound yields (observed 2026-08-06 09:21: bound bypassed, then
+            // snapshot_unchanged from the equality site).
+            if let staleCachedAt = defaults.object(
+                forKey: Self.terminalConsumerCoverageFailureAtKey
+            ) as? Date,
+               dependencyWindowPassedSince(staleCachedAt) {
+                defaults.removeObject(
+                    forKey: Self.terminalConsumerCoverageFailureKey
+                )
+                defaults.removeObject(
+                    forKey: Self.terminalConsumerCoverageFailureAtKey
+                )
+                AtriaDebugLog(
+                    "ATRIADBG historical_full_drain_publish status=coverage_failure_cache_retired reason=dependency_window_passed generation=%llu",
+                    authority.attempt.transportGeneration
+                )
+            }
             if let freshCachedAt = defaults.object(
                 forKey: Self.terminalConsumerCoverageFailureAtKey
             ) as? Date,
