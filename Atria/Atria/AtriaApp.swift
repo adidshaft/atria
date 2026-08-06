@@ -37,6 +37,25 @@ final class AtriaAppDelegate: NSObject, UIApplicationDelegate {
         // response. Scheduling-time registration is too late and can leave the
         // app open on its launch surface without applying the requested route.
         LocalNotificationScheduler.configureForApplicationLaunch()
+        // 2026-08-06 sleep-onset device-use journal: lock/unlock observation
+        // must span the whole process lifetime, so register exactly once at
+        // launch. Protected-data notifications are the primary in-use signal
+        // (scenePhase refinement is recorded from the scene handler). No
+        // radio, no timers — each event is one bounded UserDefaults write.
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataWillBecomeUnavailableNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            AtriaDeviceUseJournal.note(.locked)
+        }
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            AtriaDeviceUseJournal.note(.unlocked)
+        }
         // Share-card PNGs are regenerable temp artifacts. A cold launch has no
         // handed-out or in-flight share URL, so it is a safe point to bound
         // leftovers from prior processes without delaying UIKit startup.
@@ -301,6 +320,18 @@ struct AtriaApp: App {
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = true
                     case .active:
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = false
+                    default:
+                        break
+                    }
+                    // 2026-08-06 sleep-onset device-use journal: scene
+                    // transitions refine the lock/unlock spans. Recorded
+                    // before the restore-blocked early return — device use is
+                    // a physical fact independent of restore state.
+                    switch phase {
+                    case .active:
+                        AtriaDeviceUseJournal.note(.sceneActive)
+                    case .background:
+                        AtriaDeviceUseJournal.note(.sceneBackground)
                     default:
                         break
                     }
