@@ -2510,6 +2510,10 @@ private struct AtriaSleepStressCard: View {
 private struct AtriaSleepConsistencyStrip: View {
     let nights: [SleepHistorySnapshot.Night]
 
+    private var consistency: AtriaSleepConsistency {
+        AtriaSleepConsistency.result(from: nights)
+    }
+
     // Night-centric axis: anchored at 18:00, spanning 18h to 12:00 next day.
     private static let anchorHour: Double = 18
     private static let spanHours: Double = 18
@@ -2551,19 +2555,18 @@ private struct AtriaSleepConsistencyStrip: View {
         }
     }
 
-    private var bedtimeSpreadMinutes: Int { spreadMinutes(rows.map(\.startHour)) }
-    private var wakeTimeSpreadMinutes: Int { spreadMinutes(rows.map(\.endHour)) }
-    private var typicalBedtime: String { clockText(averageHour(rows.map(\.startHour))) }
-    private var typicalWakeTime: String { clockText(averageHour(rows.map(\.endHour))) }
+    private var bedtimeSpreadMinutes: Int { consistency.bedtimeVariationMinutes ?? 0 }
+    private var wakeTimeSpreadMinutes: Int { consistency.wakeVariationMinutes ?? 0 }
+    private var typicalBedtime: String { consistency.typicalBedtimeText }
+    private var typicalWakeTime: String { consistency.typicalWakeTimeText }
 
     private var consistencyVerdict: (title: String, detail: String, tint: Color) {
-        let spread = max(bedtimeSpreadMinutes, wakeTimeSpreadMinutes)
-        switch spread {
-        case ...30:
+        switch consistency.combinedPercent ?? 0 {
+        case 85...:
             return ("Very consistent", "Your bed and wake times stayed within half an hour.", Metrics.electricGreen)
-        case ...60:
+        case 70...:
             return ("Consistent", "Your schedule moved less than an hour night to night.", .cyan)
-        case ...90:
+        case 50...:
             return ("Variable", "A steadier bedtime would make this week more regular.", .orange)
         default:
             return ("Irregular", "Bed and wake times moved by more than 90 minutes.", Metrics.electricRed)
@@ -2576,26 +2579,26 @@ private struct AtriaSleepConsistencyStrip: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Sleep schedule")
                         .font(.caption.weight(.semibold))
-                    if rows.count >= 2 {
+                    if consistency.isQualified {
                         Text("Usually \(typicalBedtime) – \(typicalWakeTime)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
                 Spacer(minLength: 0)
-                if !rows.isEmpty {
+                if consistency.isQualified {
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(consistencyVerdict.title)
+                        Text("\(consistency.displayText) · \(consistencyVerdict.title)")
                             .font(.caption2.weight(.bold))
                             .foregroundStyle(consistencyVerdict.tint)
-                        Text("\(rows.count) nights")
+                        Text("\(consistency.qualifiedNightCount) qualified nights")
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(.secondary)
                     }
                 }
             }
 
-            if rows.count >= 2 {
+            if consistency.isQualified {
                 Text("Bedtime varies \(minutesText(bedtimeSpreadMinutes)) · wake time varies \(minutesText(wakeTimeSpreadMinutes))")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -2651,7 +2654,7 @@ private struct AtriaSleepConsistencyStrip: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else {
-                Text("A few more nights will show your usual bedtime, wake time, and how much each one moves.")
+                Text(consistency.footnote)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2661,9 +2664,9 @@ private struct AtriaSleepConsistencyStrip: View {
         .padding(12)
         .atriaInsetCard(tint: .cyan)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(rows.count >= 2
-                            ? "Sleep schedule across \(rows.count) recent nights. Usually \(typicalBedtime) to \(typicalWakeTime). \(consistencyVerdict.title). Bedtime varies \(minutesText(bedtimeSpreadMinutes)); wake time varies \(minutesText(wakeTimeSpreadMinutes))."
-                            : "Sleep schedule, building.")
+        .accessibilityLabel(consistency.isQualified
+                            ? "Sleep schedule across \(consistency.qualifiedNightCount) qualified recent nights. Usually \(typicalBedtime) to \(typicalWakeTime). \(consistencyVerdict.title). Bedtime varies \(minutesText(bedtimeSpreadMinutes)); wake time varies \(minutesText(wakeTimeSpreadMinutes))."
+                            : "Sleep schedule, \(consistency.footnote)")
     }
 
     private func averageHour(_ values: [Double]) -> Double {
