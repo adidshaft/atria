@@ -590,9 +590,9 @@ struct AtriaTrendChartCard: View {
             Image(systemName: "chart.line.uptrend.xyaxis")
                 .font(.title2)
                 .foregroundStyle(metric.tint.opacity(0.7))
-            Text("Not enough \(metric.shortLabel.lowercased()) yet")
+            Text("Not enough \(metric.emptyStateName) yet")
                 .font(.subheadline.weight(.semibold))
-            Text("Wear the strap across a few sessions and your \(metric.shortLabel.lowercased()) trend fills in here.")
+            Text("Wear the strap across a few sessions and your \(metric.emptyStateName) trend fills in here.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -2797,6 +2797,17 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
         switch self {
         case .restingHR: return "Resting HR"
         case .strain: return "Strain"
+        case .hrv: return "HRV"
+        }
+    }
+
+    /// Sentence-case form for sparse-state guidance. `shortLabel` is a UI
+    /// heading, whereas this keeps the standard abbreviation “HR” uppercase
+    /// in running copy without shouting ordinary metric names.
+    var emptyStateName: String {
+        switch self {
+        case .restingHR: return "resting HR"
+        case .strain: return "strain"
         case .hrv: return "HRV"
         }
     }
