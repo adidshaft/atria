@@ -410,7 +410,9 @@ struct AtriaPhysiologicalCycle: Equatable {
                 motionSource: main.motionSource,
                 motionValidated: main.motionValidated,
                 stageSegments: stages.isEmpty ? nil : stages,
-                eventTimeZoneIdentifier: main.eventTimeZoneIdentifier
+                eventTimeZoneIdentifier: main.eventTimeZoneIdentifier,
+                sleepNeedSeconds: main.sleepNeedSeconds,
+                frozenSleepNeed: main.frozenSleepNeed
             )
         }
     }
@@ -491,7 +493,8 @@ struct AtriaPhysiologicalDay: Equatable {
                                           motionSource: "sleep_history_snapshot",
                                           motionValidated: false,
                                           stageSegments: night.stageSegments,
-                                          eventTimeZoneIdentifier: night.eventTimeZoneIdentifier)
+                                          eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
+                                          sleepNeedSeconds: night.sleepNeedSeconds)
             }
         return current(now: now, confirmedSleeps: boundarySleeps, calendar: calendar)
     }
@@ -2128,6 +2131,13 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
     let motionValidated: Bool
     let stageSegments: [SleepStageSegment]?
     var eventTimeZoneIdentifier: String? = nil
+    /// Exact adaptive Sleep Need frozen when this main sleep settles. Kept on
+    /// the physiological record so all later UI projections read the same
+    /// night-owned target instead of recalculating against current settings.
+    var sleepNeedSeconds: TimeInterval? = nil
+    /// The inputs that made the frozen target, retained so the Sleep Need
+    /// ledger can explain the settled value without reverse-engineering it.
+    var frozenSleepNeed: AtriaSleepBudget.FrozenNeed? = nil
 
     /// A resumed-sleep review starts from a broad low-HR capture window.
     /// Observed `duration` is sensor coverage, not necessarily time asleep.
@@ -2184,7 +2194,9 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
          motionSource: String,
          motionValidated: Bool,
          stageSegments: [SleepStageSegment]?,
-         eventTimeZoneIdentifier: String? = nil) {
+         eventTimeZoneIdentifier: String? = nil,
+         sleepNeedSeconds: TimeInterval? = nil,
+         frozenSleepNeed: AtriaSleepBudget.FrozenNeed? = nil) {
         self.id = id
         self.createdAt = createdAt
         self.start = start
@@ -2206,13 +2218,16 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
         self.motionValidated = motionValidated
         self.stageSegments = stageSegments
         self.eventTimeZoneIdentifier = eventTimeZoneIdentifier
+        self.frozenSleepNeed = frozenSleepNeed
+        self.sleepNeedSeconds = frozenSleepNeed?.seconds
+            ?? sleepNeedSeconds.flatMap { $0 > 0 ? $0 : nil }
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, createdAt, start, end, source, confidence, sessions, samples
         case avgHR, peakHR, restingHR, hrv, hrvWindowCount, respiratoryRate
         case duration, span, reason, motionSource, motionValidated, stageSegments
-        case eventTimeZoneIdentifier
+        case eventTimeZoneIdentifier, sleepNeedSeconds, frozenSleepNeed
     }
 
     init(from decoder: Decoder) throws {
@@ -2241,6 +2256,10 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
             String.self,
             forKey: .eventTimeZoneIdentifier
         )
+        frozenSleepNeed = try container.decodeIfPresent(AtriaSleepBudget.FrozenNeed.self,
+                                                         forKey: .frozenSleepNeed)
+        let legacyNeed = try container.decodeIfPresent(TimeInterval.self, forKey: .sleepNeedSeconds)
+        sleepNeedSeconds = frozenSleepNeed?.seconds ?? legacyNeed
     }
 
     func encode(to encoder: Encoder) throws {
@@ -2266,6 +2285,41 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
         try container.encode(motionValidated, forKey: .motionValidated)
         try container.encodeIfPresent(stageSegments, forKey: .stageSegments)
         try container.encodeIfPresent(eventTimeZoneIdentifier, forKey: .eventTimeZoneIdentifier)
+        try container.encodeIfPresent(sleepNeedSeconds, forKey: .sleepNeedSeconds)
+        try container.encodeIfPresent(frozenSleepNeed, forKey: .frozenSleepNeed)
+    }
+
+    func replacingSleepNeedSeconds(_ value: TimeInterval?) -> UserConfirmedSleep {
+        UserConfirmedSleep(id: id,
+                           createdAt: createdAt,
+                           start: start,
+                           end: end,
+                           source: source,
+                           confidence: confidence,
+                           sessions: sessions,
+                           samples: samples,
+                           avgHR: avgHR,
+                           peakHR: peakHR,
+                           restingHR: restingHR,
+                           hrv: hrv,
+                           hrvWindowCount: hrvWindowCount,
+                           respiratoryRate: respiratoryRate,
+                           duration: duration,
+                           span: span,
+                           reason: reason,
+                           motionSource: motionSource,
+                           motionValidated: motionValidated,
+                           stageSegments: stageSegments,
+                           eventTimeZoneIdentifier: eventTimeZoneIdentifier,
+                           sleepNeedSeconds: value,
+                           frozenSleepNeed: frozenSleepNeed)
+    }
+
+    func replacingFrozenSleepNeed(_ value: AtriaSleepBudget.FrozenNeed) -> UserConfirmedSleep {
+        var copy = replacingSleepNeedSeconds(value.seconds)
+        copy.frozenSleepNeed = value
+        copy.sleepNeedSeconds = value.seconds
+        return copy
     }
 }
 
@@ -25386,7 +25440,9 @@ final class SessionStore: ObservableObject {
                                   motionSource: sleep.motionSource,
                                   motionValidated: sleep.motionValidated,
                                   stageSegments: stageSegments,
-                                  eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier)
+                                  eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                                  sleepNeedSeconds: sleep.sleepNeedSeconds,
+                                  frozenSleepNeed: sleep.frozenSleepNeed)
     }
 
     private static func legacyConfirmedSleepStageCompatibility(start: Date,
@@ -25415,6 +25471,73 @@ final class SessionStore: ObservableObject {
         sleep.end > sleep.start
             && sleep.duration >= AtriaPhysiologicalCycle.minimumMainSleepDuration
             && !confirmedSleepSourceIsNap(source: sleep.source, duration: sleep.duration)
+    }
+
+    /// Mints the adaptive target once, at the persistence boundary for a new
+    /// main-sleep record.  It deliberately accepts an eligibility set rather
+    /// than filling every missing value: historical records that predate this
+    /// field are unknown, not invitations to recreate an old target using
+    /// today's profile or strain.
+    nonisolated static func freezingAdaptiveSleepNeed(
+        in sleeps: [UserConfirmedSleep],
+        freezableSleepIDs: Set<String>,
+        dailyMetrics: [SavedDailyMetric],
+        baseNeedHours: Double,
+        calendar: Calendar
+    ) -> [UserConfirmedSleep] {
+        let ordered = sleeps.sorted {
+            if $0.end != $1.end { return $0.end < $1.end }
+            return $0.start < $1.start
+        }
+        var settled: [UserConfirmedSleep] = []
+
+        for sleep in ordered {
+            guard freezableSleepIDs.contains(sleep.id),
+                  sleep.sleepNeedSeconds == nil,
+                  confirmedSleepIsPhysiologicalMainSleep(sleep) else {
+                settled.append(sleep)
+                continue
+            }
+
+            let sleepDay = EventCivilTime.day(
+                containing: sleep.end,
+                eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            )
+            let priorMetrics = dailyMetrics
+                .filter { calendar.startOfDay(for: $0.day) < calendar.startOfDay(for: sleepDay) }
+                .sorted { $0.day < $1.day }
+            let priorFrozenNights = settled
+                .filter(confirmedSleepIsPhysiologicalMainSleep)
+                .suffix(7)
+                .compactMap { prior -> (needed: Double, slept: Double)? in
+                    guard let need = prior.sleepNeedSeconds, need > 0,
+                          prior.effectiveSleepDuration > 0 else { return nil }
+                    return (needed: need / 3_600, slept: prior.effectiveSleepDuration / 3_600)
+                }
+            let previousMainWake = settled
+                .filter(confirmedSleepIsPhysiologicalMainSleep)
+                .compactMap(\.end)
+                .filter { $0 <= sleep.start }
+                .max()
+            let napSearchStart = previousMainWake
+                ?? sleep.start.addingTimeInterval(-24 * 60 * 60)
+            let napHours = ordered
+                .filter {
+                    confirmedSleepSourceIsNap(source: $0.source, duration: $0.duration)
+                        && $0.end > napSearchStart
+                        && $0.end <= sleep.start
+                }
+                .reduce(0) { $0 + $1.effectiveSleepDuration / 3_600 }
+            let components = AtriaSleepBudget.sleepNeedComponents(
+                baseHours: baseNeedHours,
+                yesterdayStrain: priorMetrics.last?.strain,
+                debtHours: AtriaSleepBudget.sleepDebt(nights: priorFrozenNights),
+                sameDayNapHours: napHours
+            )
+            settled.append(sleep.replacingFrozenSleepNeed(.init(components)))
+        }
+        return settled
     }
 
     struct ConfirmedMainSleepHRVEvidence: Equatable {
@@ -25502,7 +25625,9 @@ final class SessionStore: ObservableObject {
                                       motionSource: sleep.motionSource,
                                       motionValidated: sleep.motionValidated,
                                       stageSegments: sleep.stageSegments,
-                                      eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier)
+                                      eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                                      sleepNeedSeconds: sleep.sleepNeedSeconds,
+                                      frozenSleepNeed: sleep.frozenSleepNeed)
         }
     }
 
@@ -25617,11 +25742,31 @@ final class SessionStore: ObservableObject {
             desired: sleeps,
             current: authoritativeCurrent
         )
+        // An edit may rebuild the sleep record from its adjusted bounds. Carry
+        // its previously frozen need forward before calculating any new sleep
+        // targets; only a genuinely new main sleep is allowed to mint one.
+        let existingNeedByID = Dictionary(uniqueKeysWithValues: authoritativeCurrent.compactMap { sleep -> (String, TimeInterval)? in
+            guard let need = sleep.sleepNeedSeconds, need > 0 else { return nil }
+            return (sleep.id, need)
+        })
+        let needPreservingRebase = rebased.map { sleep in
+            guard sleep.sleepNeedSeconds == nil,
+                  let existingNeed = existingNeedByID[sleep.id] else { return sleep }
+            return sleep.replacingSleepNeedSeconds(existingNeed)
+        }
+        let existingSleepIDs = Set(authoritativeCurrent.map(\.id))
+        let settledSleeps = Self.freezingAdaptiveSleepNeed(
+            in: needPreservingRebase,
+            freezableSleepIDs: Set(needPreservingRebase.map(\.id)).subtracting(existingSleepIDs),
+            dailyMetrics: dailyMetricHistory,
+            baseNeedHours: Self.configuredSleepBaseNeedHours(),
+            calendar: .current
+        )
         confirmedRecordWriteGeneration &+= 1
         let generation = confirmedRecordWriteGeneration
         let result = await Self.confirmedRecordWorker.performAsync(.sleeps(
             generation: generation,
-            records: rebased,
+            records: settledSleeps,
             defaultsKey: ConfirmedSleepDefaults.key
         ))
         guard case .sleeps(let completedGeneration, let sorted, _) = result,
@@ -25810,7 +25955,9 @@ final class SessionStore: ObservableObject {
                                            motionSource: sleep.motionSource,
                                            motionValidated: sleep.motionValidated,
                                            stageSegments: stages.isEmpty ? nil : stages,
-                                           eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier)
+                                           eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                                           sleepNeedSeconds: sleep.sleepNeedSeconds,
+                                           frozenSleepNeed: sleep.frozenSleepNeed)
         // Never invent REM/deep/light from aggregate HR or clock position. A
         // recovered sleep keeps stages only when timestamped HR/motion evidence
         // produced a complete, integrity-valid segmentation.
@@ -25972,7 +26119,9 @@ final class SessionStore: ObservableObject {
                                       motionSource: motionSource,
                                       motionValidated: motionValidated,
                                       stageSegments: sleep.stageSegments,
-                                      eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier)
+                                      eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                                      sleepNeedSeconds: sleep.sleepNeedSeconds,
+                                      frozenSleepNeed: sleep.frozenSleepNeed)
         }
         guard changed > 0 else { return true }
         guard await saveConfirmedSleeps(updated,
@@ -35625,6 +35774,10 @@ struct SleepHistorySnapshot: Equatable {
         let displayStageSegments: [SleepStageSegment]
         let stageEvidence: SleepStageEvidence
         let eventTimeZoneIdentifier: String?
+        /// The original main-sleep target, if this night settled after Need
+        /// freezing shipped. `nil` is an intentional legacy-data gap.
+        let sleepNeedSeconds: TimeInterval?
+        let frozenSleepNeed: AtriaSleepBudget.FrozenNeed?
         /// Explicit motion-validation provenance where the builder knows it
         /// (confirmed records carry `UserConfirmedSleep.motionValidated`;
         /// review candidates carry `motionEvidenceValidated`). nil = unknown
@@ -35649,7 +35802,9 @@ struct SleepHistorySnapshot: Equatable {
              confirmed: Bool,
              stageSegments: [SleepStageSegment],
              eventTimeZoneIdentifier: String? = nil,
-             motionValidated: Bool? = nil) {
+             motionValidated: Bool? = nil,
+             sleepNeedSeconds: TimeInterval? = nil,
+             frozenSleepNeed: AtriaSleepBudget.FrozenNeed? = nil) {
             self.id = id
             self.day = day
             self.savedAt = savedAt
@@ -35667,6 +35822,9 @@ struct SleepHistorySnapshot: Equatable {
             self.stageSegments = stageSegments
             self.eventTimeZoneIdentifier = eventTimeZoneIdentifier
             self.motionValidated = motionValidated
+            self.frozenSleepNeed = frozenSleepNeed
+            self.sleepNeedSeconds = frozenSleepNeed?.seconds
+                ?? sleepNeedSeconds.flatMap { $0 > 0 ? $0 : nil }
 
             let stagesPassIntegrity: Bool
             if let start, let end, !stageSegments.isEmpty {
@@ -36062,7 +36220,9 @@ struct SleepHistorySnapshot: Equatable {
                               confirmed: true,
                               stageSegments: stageSegments,
                               eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
-                              motionValidated: sleep.motionValidated)
+                              motionValidated: sleep.motionValidated,
+                              sleepNeedSeconds: sleep.sleepNeedSeconds,
+                              frozenSleepNeed: sleep.frozenSleepNeed)
             // Route confirmed naps into their own list, bypassing the day-keyed dict.
             // A same-calendar-day main sleep would otherwise last-writer-wins evict the
             // nap (or vice versa), silently dropping the nap credit from sameDayNapHours.
@@ -36284,7 +36444,9 @@ struct SleepHistorySnapshot: Equatable {
             confirmed: true,
             stageSegments: stageSegments,
             eventTimeZoneIdentifier: main.eventTimeZoneIdentifier,
-            motionValidated: main.motionValidated
+            motionValidated: main.motionValidated,
+            sleepNeedSeconds: main.sleepNeedSeconds,
+            frozenSleepNeed: main.frozenSleepNeed
         )
     }
 
@@ -36306,7 +36468,9 @@ struct SleepHistorySnapshot: Equatable {
               confirmed: night.confirmed,
               stageSegments: night.stageSegments,
               eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
-              motionValidated: night.motionValidated)
+              motionValidated: night.motionValidated,
+              sleepNeedSeconds: night.sleepNeedSeconds,
+              frozenSleepNeed: night.frozenSleepNeed)
     }
 
     private static func legacyConfirmedSleepStageCompatibility(start: Date,
@@ -36492,45 +36656,57 @@ struct SleepHistorySnapshot: Equatable {
     func sleepNeedHours(for night: Night,
                         baseNeedHours: Double,
                         yesterdayStrain: Double? = nil,
-                        calendar: Calendar = .current) -> Double {
-        AtriaSleepBudget.sleepNeed(baseHours: baseNeedHours,
-                                   yesterdayStrain: yesterdayStrain,
-                                   debtHours: sleepBudgetDebtHours(baseNeedHours: baseNeedHours,
-                                                                   excluding: night.id),
-                                   sameDayNapHours: sameDayNapHours(for: night, calendar: calendar))
+                        calendar: Calendar = .current) -> Double? {
+        if let frozen = night.frozenSleepNeed {
+            return frozen.totalHours
+        }
+        // A confirmed legacy night has no trustworthy receipt. Do not make a
+        // historical target appear more precise by recalculating it now.
+        guard !night.confirmed else { return nil }
+        return AtriaSleepBudget.sleepNeed(baseHours: baseNeedHours,
+                                          yesterdayStrain: yesterdayStrain,
+                                          debtHours: sleepBudgetDebtHours(baseNeedHours: baseNeedHours,
+                                                                          excluding: night.id),
+                                          sameDayNapHours: sameDayNapHours(for: night, calendar: calendar))
     }
 
     /// Itemized version of sleepNeedHours (2026-07-07 design-handoff ledger).
     func sleepNeedComponents(for night: Night,
                              baseNeedHours: Double,
                              yesterdayStrain: Double? = nil,
-                             calendar: Calendar = .current) -> AtriaSleepBudget.NeedComponents {
-        AtriaSleepBudget.sleepNeedComponents(baseHours: baseNeedHours,
-                                             yesterdayStrain: yesterdayStrain,
-                                             debtHours: sleepBudgetDebtHours(baseNeedHours: baseNeedHours,
-                                                                             excluding: night.id),
-                                             sameDayNapHours: sameDayNapHours(for: night, calendar: calendar))
+                             calendar: Calendar = .current) -> AtriaSleepBudget.NeedComponents? {
+        if let frozen = night.frozenSleepNeed {
+            return frozen.components
+        }
+        guard !night.confirmed else { return nil }
+        return AtriaSleepBudget.sleepNeedComponents(baseHours: baseNeedHours,
+                                                    yesterdayStrain: yesterdayStrain,
+                                                    debtHours: sleepBudgetDebtHours(baseNeedHours: baseNeedHours,
+                                                                                    excluding: night.id),
+                                                    sameDayNapHours: sameDayNapHours(for: night, calendar: calendar))
     }
 
     func sleepPerformancePercent(for night: Night,
                                   baseNeedHours: Double,
                                   yesterdayStrain: Double? = nil,
-                                  calendar: Calendar = .current) -> Int {
-        AtriaSleepBudget.performancePercent(slept: night.durationHours,
-                                            needed: sleepNeedHours(for: night,
-                                                                   baseNeedHours: baseNeedHours,
-                                                                   yesterdayStrain: yesterdayStrain,
-                                                                   calendar: calendar))
+                                  calendar: Calendar = .current) -> Int? {
+        guard let need = sleepNeedHours(for: night,
+                                        baseNeedHours: baseNeedHours,
+                                        yesterdayStrain: yesterdayStrain,
+                                        calendar: calendar) else { return nil }
+        return AtriaSleepBudget.performancePercent(slept: night.durationHours, needed: need)
     }
 
     func sleepPerformanceSummary(for night: Night,
                                  baseNeedHours: Double,
                                  yesterdayStrain: Double? = nil,
                                  calendar: Calendar = .current) -> String {
-        let need = sleepNeedHours(for: night,
-                                  baseNeedHours: baseNeedHours,
-                                  yesterdayStrain: yesterdayStrain,
-                                  calendar: calendar)
+        guard let need = sleepNeedHours(for: night,
+                                        baseNeedHours: baseNeedHours,
+                                        yesterdayStrain: yesterdayStrain,
+                                        calendar: calendar) else {
+            return "Sleep Need unavailable for this legacy night"
+        }
         let performance = AtriaSleepBudget.performancePercent(slept: night.durationHours, needed: need)
         return "Slept \(night.durationText) of \(AtriaMetricFormat.sleepHours(need)) needed · \(performance)%"
     }

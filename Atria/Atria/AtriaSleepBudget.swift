@@ -19,6 +19,36 @@ enum AtriaSleepBudget {
         }
     }
 
+    /// Durable, Codable receipt for the Sleep Need that was shown when a
+    /// main-sleep record settled.  Keeping the inputs alongside the total lets
+    /// the ledger explain *that night's* target without recalculating with a
+    /// later baseline, strain, or debt history.
+    struct FrozenNeed: Codable, Equatable {
+        let baseHours: Double
+        let strainAdderHours: Double
+        let debtAdderHours: Double
+        let napCreditHours: Double
+        let totalHours: Double
+
+        init(_ components: NeedComponents) {
+            baseHours = components.baseHours
+            strainAdderHours = components.strainAdderHours
+            debtAdderHours = components.debtAdderHours
+            napCreditHours = components.napCreditHours
+            totalHours = components.totalHours
+        }
+
+        var seconds: TimeInterval { totalHours * 3_600 }
+
+        var components: NeedComponents {
+            NeedComponents(baseHours: baseHours,
+                           strainAdderHours: strainAdderHours,
+                           debtAdderHours: debtAdderHours,
+                           napCreditHours: napCreditHours,
+                           totalHours: totalHours)
+        }
+    }
+
     static func sleepNeedComponents(baseHours: Double,
                                     yesterdayStrain: Double?,
                                     debtHours: Double,
