@@ -10330,28 +10330,52 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var contributorCard: some View {
-        VStack(spacing: 12) {
-            if let nutrition = latestNutrition {
-                AtriaMetricContributorRows(rows: [fuelContributorRow(for: nutrition)],
-                                           tint: Metrics.electricGreen)
-                    .accessibilityIdentifier("recovery-fuel-contributor-row")
-            }
-
+        VStack(alignment: .leading, spacing: 14) {
             AtriaRecoveryContributorMap(contributors: recoveryEstimate.contributors,
                                         titleForContributor: contributorTitle(_:),
                                         noteForContributor: contributorNote(_:))
+
+            // Journal nutrition is useful context for the person's day, but it
+            // is not an input to Recovery V2. Keeping it above the score's
+            // contributor map made a neutral log row read like a scored factor.
+            // Put it after the real inputs, name it as context, and state the
+            // boundary in the row itself.
+            if let nutrition = latestNutrition {
+                recoveryContextRow(for: nutrition)
+                    .accessibilityIdentifier("recovery-journal-context-row")
+            }
         }
     }
 
-    private func fuelContributorRow(for nutrition: AtriaNutritionSummary) -> AtriaMetricContributorRow {
-        AtriaMetricContributorRow(systemImage: "fork.knife.circle.fill",
-                                  name: "Nutrition context",
-                                  value: nutrition.fuelSummary ?? "Logged",
-                                  comparison: fuelContributorComparison(for: nutrition),
-                                  direction: 0)
+    private func recoveryContextRow(for nutrition: AtriaNutritionSummary) -> some View {
+        let summary = nutrition.fuelSummary ?? "Nutrition logged"
+        let detail = fuelContextDetail(for: nutrition)
+        return HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "fork.knife.circle.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 20, alignment: .center)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Journal context")
+                    .font(.caption.weight(.bold))
+                Text(summary)
+                    .font(.subheadline.weight(.semibold))
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Journal context. \(summary). \(detail)")
     }
 
-    private func fuelContributorComparison(for nutrition: AtriaNutritionSummary) -> String {
+    private func fuelContextDetail(for nutrition: AtriaNutritionSummary) -> String {
         var parts: [String] = []
         if let waterMl = nutrition.waterMl, waterMl > 0 {
             parts.append("\(Int(waterMl.rounded())) ml water")
