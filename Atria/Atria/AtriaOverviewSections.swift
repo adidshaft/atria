@@ -5604,7 +5604,7 @@ private struct AtriaMonthlyReportHighlightRow: View, Equatable {
 
             Spacer(minLength: 8)
 
-            Text(consistencyText)
+            Text(routineText)
                 .font(.caption.weight(.bold).monospacedDigit())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -5615,7 +5615,7 @@ private struct AtriaMonthlyReportHighlightRow: View, Equatable {
         }
         .padding(12)
         .atriaInsetCard(cornerRadius: 16, tint: .cyan)
-        .accessibilityLabel("Monthly report. \(heroText). \(consistencyText).")
+        .accessibilityLabel("Monthly report. \(heroText). \(routineText).")
     }
 
     private var heroText: String {
@@ -5624,8 +5624,13 @@ private struct AtriaMonthlyReportHighlightRow: View, Equatable {
         return delta >= 0 ? "Recovery \(recovery)% up \(delta)" : "Recovery \(recovery)% down \(abs(delta))"
     }
 
-    private var consistencyText: String {
-        report.consistencyScore.map { "Routine \($0)%" } ?? "Routine building"
+    private var routineText: String {
+        guard let score = report.consistencyScore else { return "Schedule building" }
+        switch score {
+        case 85...: return "Bed/wake steady"
+        case 65..<85: return "Bed/wake varies"
+        default: return "Bed/wake shifting"
+        }
     }
 }
 
