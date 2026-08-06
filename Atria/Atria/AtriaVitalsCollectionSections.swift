@@ -341,7 +341,7 @@ struct AtriaVitalsTabContent: View {
                                    sleepGoalHours: sleepGoalHours,
                                    sleepBaseNeedHours: sleepBaseNeedHours,
                                    skinTemperatureDeviation: vitals.skinTemperatureDeviationSummary)
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
     }
@@ -1683,12 +1683,29 @@ private struct AtriaVitalsPulseCardHost: View {
         isActive ? pulseSparklineStore.state : sparkline
     }
 
+    #if DEBUG
+    private var isDisconnectedPresentationFixture: Bool {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        return arguments.indices.contains(valueIndex)
+            && arguments[valueIndex] == "vitals-disconnected"
+    }
+    #else
+    private var isDisconnectedPresentationFixture: Bool { false }
+    #endif
+
     var body: some View {
-        AtriaVitalsLiveSignalCard(isConnected: displayedLive.status == .connected,
+        AtriaVitalsLiveSignalCard(isConnected: !isDisconnectedPresentationFixture
+                                                && displayedLive.status == .connected,
                                   live: displayedPulse,
                                   miniTimelineSeries: miniTimelineSeries,
-                                  stressState: stressMonitorStore.state,
-                                  stressHistory: stressMonitorStore.history,
+                                  stressState: isDisconnectedPresentationFixture
+                                                ? .noSignal
+                                                : stressMonitorStore.state,
+                                  stressHistory: isDisconnectedPresentationFixture
+                                                ? []
+                                                : stressMonitorStore.history,
                                   restingHeartRate: displayedHomeStats.restingHeartRate,
                                   restingHeartRateText: displayedHomeStats.restingHeartRateText,
                                   restingBaseline: baselineSnapshot.restingBaseline,
@@ -3734,7 +3751,10 @@ private struct AtriaVitalsLiveSignalCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Continuous stress")
+                    // The selected segment already names the metric. Repeating
+                    // “stress” in every tier made the empty state feel like a
+                    // feature pitch rather than a useful live surface.
+                    Text("Current reading")
                         .font(.subheadline.weight(.bold))
                     Text(stressPresentation.detail)
                         .font(.caption)
@@ -3749,9 +3769,9 @@ private struct AtriaVitalsLiveSignalCard: View {
             }
 
             if stressPoints.isEmpty {
-                ContentUnavailableView("Collecting stress",
-                                       systemImage: "waveform.path.ecg",
-                                       description: Text("Wear the strap continuously; scored 0–3 readings will appear here when your personal baseline is ready."))
+                ContentUnavailableView(stressEmptyTitle,
+                                       systemImage: stressEmptySystemImage,
+                                       description: Text(stressEmptyDescription))
                     .frame(maxWidth: .infinity, minHeight: 154)
                     .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else {
@@ -3768,10 +3788,28 @@ private struct AtriaVitalsLiveSignalCard: View {
             }
             .accessibilityLabel("Stress scale: 0 calm, 1 low, 2 medium, 3 high")
 
-            Text("Observed readings only · gaps mean the strap was not collecting.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            // A gap note is valuable beside a real timeline, but repeats the
+            // empty-state explanation before there are any readings to inspect.
+            if !stressPoints.isEmpty {
+                Text("Observed readings only · gaps mean the strap was not collecting.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
+    }
+
+    private var stressEmptyTitle: String {
+        isConnected ? "Preparing your baseline" : "Strap disconnected"
+    }
+
+    private var stressEmptySystemImage: String {
+        isConnected ? "waveform.path.ecg" : "bolt.horizontal.circle"
+    }
+
+    private var stressEmptyDescription: String {
+        isConnected
+            ? "Keep wearing your strap. Your 0–3 score will appear once your baseline is ready."
+            : "Reconnect your strap to resume live readings. Your recent saved data stays available elsewhere in Vitals."
     }
 
     private func stressScaleItem(_ score: String, _ label: String, tint: Color) -> some View {
@@ -4046,11 +4084,11 @@ private struct AtriaPulseStatRail: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            stat("Now", now, tint: .red)
+            stat("Now", now, tint: heartRateTint(for: now))
             Divider().frame(height: 38)
-            stat("Average", average, tint: .pink)
+            stat("Average", average, tint: heartRateTint(for: average))
             Divider().frame(height: 38)
-            stat("Peak", peak, tint: .red)
+            stat("Peak", peak, tint: heartRateTint(for: peak))
             Divider().frame(height: 38)
             stat("Resting", resting, tint: restingTint)
         }
@@ -4058,6 +4096,20 @@ private struct AtriaPulseStatRail: View {
         .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Heart rate now \(now) beats per minute, average \(average), peak \(peak), resting \(resting)")
+    }
+
+    /// Live pulse values should use the same calm → working → high colour
+    /// language as the timeline. A fixed red/pink rail made an ordinary
+    /// mid-range reading look like an alert even while the chart said it was
+    /// merely elevated. These are display bands, not training zones.
+    private func heartRateTint(for value: String) -> Color {
+        guard let bpm = Int(value.filter(\.isNumber)) else { return .secondary }
+        switch bpm {
+        case ..<60: return .cyan
+        case ..<80: return .green
+        case ..<100: return .orange
+        default: return .red
+        }
     }
 
     private func stat(_ label: String, _ value: String, tint: Color) -> some View {
@@ -5025,6 +5077,27 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         (buckets ?? []).isEmpty && points.isEmpty
     }
 
+    /// The chart colour is a value scale, not a blanket danger signal. It
+    /// rises from calm/cool through working green and amber into red as the
+    /// visible heart-rate domain rises, matching the 0–3 stress treatment.
+    private var heartRateGradient: LinearGradient {
+        LinearGradient(stops: [
+            .init(color: .cyan, location: 0),
+            .init(color: .green, location: 0.38),
+            .init(color: .orange, location: 0.68),
+            .init(color: .red, location: 1)
+        ], startPoint: .bottom, endPoint: .top)
+    }
+
+    private var heartRateAreaGradient: LinearGradient {
+        LinearGradient(stops: [
+            .init(color: .cyan.opacity(0.12), location: 0),
+            .init(color: .green.opacity(0.10), location: 0.38),
+            .init(color: .orange.opacity(0.08), location: 0.68),
+            .init(color: .red.opacity(0.12), location: 1)
+        ], startPoint: .bottom, endPoint: .top)
+    }
+
     private var baseChart: some View {
         Chart {
             if let buckets {
@@ -5038,11 +5111,11 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                              yStart: .value("Floor", Double(yDomain.lowerBound)),
                              yEnd: .value("BPM", bucket.average))
                         .interpolationMethod(.linear)
-                        .foregroundStyle(.red.opacity(0.12).gradient)
+                        .foregroundStyle(heartRateAreaGradient)
                     LineMark(x: .value("Time", bucket.t),
                              y: .value("BPM", bucket.average))
                         .interpolationMethod(.linear)
-                        .foregroundStyle(.red.gradient)
+                        .foregroundStyle(heartRateGradient)
                         .lineStyle(StrokeStyle(lineWidth: 2))
                 }
             } else {
@@ -5051,10 +5124,10 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                              yStart: .value("Visible floor", yDomain.lowerBound),
                              yEnd: .value("BPM", point.bpm))
                         .interpolationMethod(.linear)
-                        .foregroundStyle(.red.opacity(0.12).gradient)
+                        .foregroundStyle(heartRateAreaGradient)
                     LineMark(x: .value("Time", point.t), y: .value("BPM", point.bpm))
                         .interpolationMethod(.linear)
-                        .foregroundStyle(.red.gradient)
+                        .foregroundStyle(heartRateGradient)
                 }
             }
             if let selectedTime {
@@ -5559,14 +5632,6 @@ private struct AtriaSleepHistoryCard: View, Equatable {
             && lhs.sleepEfficiencyYellowLower == rhs.sleepEfficiencyYellowLower
     }
 
-    private var chartNights: [SleepHistorySnapshot.Night] {
-        Array(snapshot.nights.prefix(7).reversed())
-    }
-
-    private var heatStripNights: [SleepHistorySnapshot.Night] {
-        Array(snapshot.nights.prefix(84).reversed())
-    }
-
     private var emptyEvidenceState: AtriaMetricState {
         if snapshot.confirmedCount > 0 { return .validated }
         if snapshot.candidateCount > 0 { return .research }
@@ -5790,46 +5855,18 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                                        subject: "Sleep efficiency")
                 }
 
-                if chartNights.count > 1 {
-                    Chart(chartNights) { night in
-                        BarMark(x: .value("Night", night.day, unit: .day),
-                                y: .value("Hours", night.durationHours))
-                            .foregroundStyle(night.confirmed ? Color.cyan.gradient : Color.teal.opacity(0.55).gradient)
-                    }
-                    .chartYAxis {
-                        AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { value in
-                            AxisGridLine()
-                            AxisTick()
-                            AxisValueLabel {
-                                if let hours = value.as(Double.self) {
-                                    Text("\(Int(hours.rounded()))h")
-                                }
-                            }
-                        }
-                    }
-                    .chartXAxis {
-                        AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                            AxisGridLine()
-                            AxisTick()
-                            AxisValueLabel(format: .dateTime.weekday(.narrow))
-                        }
-                    }
-                    .frame(height: 168)
-                    .clipped()
-                    .padding(12)
-                    .atriaInsetCard(tint: .cyan)
-                }
+                // A duration-only bar chart made people guess what “good”
+                // looked like. Keep one legible sleep trend instead: the
+                // weekly line-and-node comparison gives every night its
+                // personal need and makes missing observations explicit.
+                AtriaSleepDebtChartCard(nights: snapshot.nights,
+                                        baseNeedHours: sleepGoalHours)
 
                 // Collapsed by default (UX audit 2026-07-07): the card
-                // stacked ~15 card-like units; the heat strip, stage summary,
-                // and per-night rows disclose on demand while the lens, stat
-                // tiles, and chart stay glanceable.
+                // stacked ~15 card-like units; stage detail and per-night
+                // rows disclose on demand while the lens, useful tiles, and
+                // the actionable need comparison stay glanceable.
                 DisclosureGroup(isExpanded: $showNightDetails) {
-                    if heatStripNights.count > 7 {
-                        AtriaSleepYearHeatStrip(nights: heatStripNights,
-                                            goalHours: sleepGoalHours)
-                    }
-
                     if let latest = snapshot.latestMainSleep {
                         if !latest.displayStageSegments.isEmpty {
                             AtriaSleepStageSummary(night: latest)
@@ -5875,74 +5912,6 @@ private struct AtriaSleepHistoryCard: View, Equatable {
     }
 
     private static let statColumns = AtriaMetricTile.gridColumns
-}
-
-private struct AtriaSleepYearHeatStrip: View, Equatable {
-    let nights: [SleepHistorySnapshot.Night]
-    let goalHours: Double
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Sleep heat strip")
-                    .font(.caption.weight(.semibold))
-                Spacer(minLength: 0)
-                Text("\(nights.count) nights")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-
-            Canvas { context, size in
-                drawCells(in: &context, size: size)
-            }
-            .frame(height: 76)
-            .background(Color.primary.opacity(0.035),
-                        in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-            }
-            .accessibilityHidden(true)
-        }
-        .padding(10)
-        .atriaInsetCard(tint: .cyan)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(accessibilityText)
-    }
-
-    private func drawCells(in context: inout GraphicsContext, size: CGSize) {
-        guard !nights.isEmpty else { return }
-        let rows = 7
-        let gap: CGFloat = 3
-        let columns = max(1, Int(ceil(Double(nights.count) / Double(rows))))
-        let cell = max(3, min((size.width - gap * CGFloat(columns - 1)) / CGFloat(columns),
-                              (size.height - gap * CGFloat(rows - 1)) / CGFloat(rows)))
-        let totalWidth = CGFloat(columns) * cell + CGFloat(columns - 1) * gap
-        let xOffset = max(0, size.width - totalWidth)
-
-        for (index, night) in nights.enumerated() {
-            let column = index / rows
-            let row = index % rows
-            let rect = CGRect(x: xOffset + CGFloat(column) * (cell + gap),
-                              y: CGFloat(row) * (cell + gap),
-                              width: cell,
-                              height: cell)
-            context.fill(Path(roundedRect: rect, cornerRadius: min(3, cell / 3)),
-                         with: .color(color(for: night)))
-        }
-    }
-
-    private func color(for night: SleepHistorySnapshot.Night) -> Color {
-        let ratio = min(max(night.durationHours / max(goalHours, 0.1), 0), 1)
-        let opacity = 0.18 + 0.72 * ratio
-        let base: Color = night.confirmed ? .cyan : .teal
-        return base.opacity(opacity)
-    }
-
-    private var accessibilityText: String {
-        guard let latest = nights.last else { return "Sleep heat strip empty." }
-        return "Sleep heat strip, \(nights.count) nights, latest \(latest.durationText), \(latest.confirmationText)."
-    }
 }
 
 private struct AtriaSleepContextLens: View, Equatable {

@@ -100,7 +100,7 @@ struct AtriaStressPresentation: Equatable {
             // takes days by design, not by lag).
             narrative = "Live heart rate is streaming now. Stress scoring turns on once \(PersonalBaseline.trustedMinimumSamples) qualified rest days (about two weeks of overnight wear) build your personal baseline."
         case .warmingUp:
-            detail = "Collecting 2 min of live signal"
+            detail = "2 min of live signal"
             narrative = "Stress is waiting for enough continuous live signal to make a reliable reading."
         case .active:
             detail = "Paused during activity"

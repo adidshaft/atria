@@ -1317,7 +1317,11 @@ struct AtriaHomeView: View {
             // Let the shared Atria backdrop/content continue beneath the native
             // glass control instead.
             .toolbarBackground(.hidden, for: .tabBar)
-            .tabBarMinimizeBehavior(.onScrollDown)
+            // Keep the primary destinations visible on a real phone. On-device,
+            // the iOS 26 minimized treatment collapsed this to the selected
+            // Today bubble plus an opaque affordance, leaving Vitals, Journal,
+            // and Activity undiscoverable. These are core daily destinations,
+            // not secondary actions that can safely hide behind a control.
             .tabViewBottomAccessory(isEnabled: shouldShowLiveAccessory) {
                 AtriaLiveTabAccessoryHost(pulseStore: model.pulseLiveStore,
                                           heroStore: model.heroStore,
@@ -1400,7 +1404,8 @@ struct AtriaHomeView: View {
         .sheet(isPresented: $showWorkoutStartSheet) {
             AtriaWorkoutStartSheet(initial: AtriaWorkoutStartConfiguration(
                 activityType: .other,
-                targetStrain: model.heroStore.state.guidance.target
+                targetStrain: model.heroStore.state.guidance.target,
+                maxHeartRate: store.profile.maxHR
             ), onPrepare: {
                 // Warm the two authorities while the picker is on screen.
                 // This is strictly read-only: Start still requires both the
@@ -4703,14 +4708,14 @@ struct AtriaHomeView: View {
                 guard live.rangeLossBackfillPending else {
                     return nil
                 }
-                return Status(title: "Strap data gap · recovery unverified",
+                return Status(title: "Strap data gap · history incomplete",
                               symbol: "exclamationmark.triangle.fill",
-                              accessibilityLabel: "Missed strap data needs review. It has not been verified as recovered.")
+                              accessibilityLabel: "Some strap history is missing. The gap has not been reconciled.")
             case .idle:
                 if live.rangeLossBackfillPending {
-                    return Status(title: "Strap data gap · recovery unverified",
+                    return Status(title: "Strap data gap · history incomplete",
                                   symbol: "exclamationmark.triangle.fill",
-                                  accessibilityLabel: "Missed strap data needs review. It has not been verified as recovered.")
+                                  accessibilityLabel: "Some strap history is missing. The gap has not been reconciled.")
                 }
                 return nil
             }
