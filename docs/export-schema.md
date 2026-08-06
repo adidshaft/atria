@@ -229,6 +229,11 @@ as separate candidates against independent reference values and negative
 controls. It reports held-out error, correlation, span, session coverage, and
 false promotions, but does not enable a decoder.
 
+For GAP-13, schema-v5 research bundles carry only frozen, versioned Recovery
+receipts. `tools/evaluate_recovery_model.py` compares a candidate version with
+pre-registered external outcomes on held-out participants; it cannot rewrite
+stored scores or approve a Recovery model.
+
 ## Days
 
 Daily metric rollups (aggregates used for charts and context).

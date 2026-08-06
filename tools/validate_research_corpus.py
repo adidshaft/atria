@@ -20,12 +20,15 @@ from typing import Any
 
 
 SCHEMA = 1
-TARGETS = {"GAP-10", "GAP-11", "GAP-12", "GAP-14"}
+TARGETS = {"GAP-10", "GAP-11", "GAP-12", "GAP-13", "GAP-14"}
 SPLITS = {"development", "held_out"}
 LOAD_SOURCES = {"controlled_intervention", "validated_questionnaire", "research_protocol"}
 STAGE_SOURCES = {"polysomnography", "defensible_reference"}
 ACTIVITIES = {"walking", "running", "cycling", "strength_training", "other_workout"}
 DECODER_SIGNALS = {"skin_temperature", "spo2"}
+RECOVERY_OUTCOME_SOURCES = {"validated_questionnaire", "standardized_workout", "external_protocol"}
+RECOVERY_OUTCOME_KINDS = {"reported_fatigue", "workout_performance", "next_day_hrv", "next_day_rhr"}
+RECOVERY_OUTCOME_DIRECTIONS = {"higher_is_better", "lower_is_better"}
 
 
 class CorpusError(ValueError):
@@ -89,7 +92,7 @@ def validate_bundle(bundle: Any, participant: str, targets: set[str]) -> None:
     digest = text(item["digest_sha256"], f"{participant}.bundle.digest_sha256")
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest.lower()):
         raise CorpusError(f"{participant}.bundle.digest_sha256 must be lowercase-compatible SHA-256")
-    minimum_schema = 4 if "GAP-12" in targets else 3
+    minimum_schema = 5 if "GAP-13" in targets else (4 if "GAP-12" in targets else 3)
     if integer(item["schema"], f"{participant}.bundle.schema") < minimum_schema:
         raise CorpusError(
             f"{participant}.bundle.schema must be Atria research schema {minimum_schema} or newer"
@@ -148,6 +151,20 @@ def validate_gap12(label: dict[str, Any], prefix: str) -> None:
         raise CorpusError(f"{prefix} cannot use an Atria-derived stage as a validation target")
 
 
+def validate_gap13(label: dict[str, Any], prefix: str) -> None:
+    item = exact_object(label, {"gap", "start_rel", "end_rel", "outcome_kind", "outcome_score", "outcome_direction", "source"}, set(), prefix)
+    validate_window(item, prefix)
+    if text(item["outcome_kind"], f"{prefix}.outcome_kind") not in RECOVERY_OUTCOME_KINDS:
+        raise CorpusError(f"{prefix} has unsupported recovery outcome kind")
+    if text(item["source"], f"{prefix}.source") not in RECOVERY_OUTCOME_SOURCES:
+        raise CorpusError(f"{prefix} requires a documented external recovery outcome source")
+    if text(item["outcome_direction"], f"{prefix}.outcome_direction") not in RECOVERY_OUTCOME_DIRECTIONS:
+        raise CorpusError(f"{prefix}.outcome_direction must state whether larger is better")
+    score = integer(item["outcome_score"], f"{prefix}.outcome_score")
+    if not 0 <= score <= 100:
+        raise CorpusError(f"{prefix}.outcome_score must be a protocol-mapped 0–100 score")
+
+
 def validate_gap14(label: dict[str, Any], prefix: str) -> None:
     item = exact_object(label, {"gap", "start_rel", "end_rel", "signal", "reference_device", "session_id", "reference_value", "pair_age_seconds", "layout_stable", "negative_control"}, set(), prefix)
     validate_window(item, prefix)
@@ -172,7 +189,7 @@ def validate_gap14(label: dict[str, Any], prefix: str) -> None:
         raise CorpusError(f"{prefix}.reference_value must be a plausible skin temperature in C")
 
 
-VALIDATORS = {"GAP-10": validate_gap10, "GAP-11": validate_gap11, "GAP-12": validate_gap12, "GAP-14": validate_gap14}
+VALIDATORS = {"GAP-10": validate_gap10, "GAP-11": validate_gap11, "GAP-12": validate_gap12, "GAP-13": validate_gap13, "GAP-14": validate_gap14}
 
 
 def validate(document: dict[str, Any]) -> dict[str, Any]:

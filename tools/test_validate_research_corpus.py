@@ -24,6 +24,9 @@ def label(gap: str, start: float, signal: str = "spo2") -> dict:
                          "features": {"cadence": True, "orientation": True, "gyroscope": True, "hr_response": True}}
     if gap == "GAP-12":
         return common | {"source": "polysomnography", "stage": "deep", "atria_derived": False}
+    if gap == "GAP-13":
+        return common | {"outcome_kind": "reported_fatigue", "outcome_score": 68,
+                         "outcome_direction": "lower_is_better", "source": "validated_questionnaire"}
     return common | {"signal": signal, "reference_device": "reference instrument",
                      "session_id": "session-1", "reference_value": 97.0 if signal == "spo2" else 33.0,
                      "pair_age_seconds": 1, "layout_stable": True, "negative_control": False}
@@ -33,9 +36,9 @@ def participant(name: str, split: str) -> dict:
     return {
         "pseudonym": name,
         "split": split,
-        "bundle": {"digest_sha256": "a" * 64, "schema": 4},
-        "labels": [label(gap, index * 70) for index, gap in enumerate(["GAP-10", "GAP-11", "GAP-12"])]
-            + [label("GAP-14", 210, "spo2"), label("GAP-14", 210, "skin_temperature")],
+        "bundle": {"digest_sha256": "a" * 64, "schema": 5},
+        "labels": [label(gap, index * 70) for index, gap in enumerate(["GAP-10", "GAP-11", "GAP-12", "GAP-13"])]
+            + [label("GAP-14", 280, "spo2"), label("GAP-14", 280, "skin_temperature")],
     }
 
 
@@ -45,7 +48,7 @@ def manifest() -> dict:
         "research_only": True,
         "model_validated": False,
         "production_promotions": 0,
-        "targets": ["GAP-10", "GAP-11", "GAP-12", "GAP-14"],
+        "targets": ["GAP-10", "GAP-11", "GAP-12", "GAP-13", "GAP-14"],
         "participants": [participant("participant-development", "development"), participant("participant-held-out", "held_out")],
     }
 
@@ -56,7 +59,7 @@ class ResearchCorpusTests(unittest.TestCase):
         self.assertEqual(result["status"], "admitted_for_external_evaluation_only")
         self.assertFalse(result["model_validated"])
         self.assertEqual(result["production_promotions"], 0)
-        self.assertEqual(result["labels_by_target"], {"GAP-10": 2, "GAP-11": 2, "GAP-12": 2, "GAP-14": 4})
+        self.assertEqual(result["labels_by_target"], {"GAP-10": 2, "GAP-11": 2, "GAP-12": 2, "GAP-13": 2, "GAP-14": 4})
 
     def test_rejects_participant_leakage_between_splits(self) -> None:
         value = manifest()
@@ -76,6 +79,12 @@ class ResearchCorpusTests(unittest.TestCase):
         with self.assertRaisesRegex(corpus.CorpusError, "0–3 scale"):
             corpus.validate(value)
 
+    def test_rejects_out_of_range_recovery_outcome_score(self) -> None:
+        value = manifest()
+        value["participants"][0]["labels"][3]["outcome_score"] = 101
+        with self.assertRaisesRegex(corpus.CorpusError, "0–100 score"):
+            corpus.validate(value)
+
     def test_rejects_atria_generated_sleep_stage_target(self) -> None:
         value = manifest()
         value["participants"][1]["labels"][2]["atria_derived"] = True
@@ -85,7 +94,7 @@ class ResearchCorpusTests(unittest.TestCase):
     def test_rejects_pre_provenance_bundle_for_sleep_stage_validation(self) -> None:
         value = manifest()
         value["participants"][0]["bundle"]["schema"] = 3
-        with self.assertRaisesRegex(corpus.CorpusError, "schema 4 or newer"):
+        with self.assertRaisesRegex(corpus.CorpusError, "schema 5 or newer"):
             corpus.validate(value)
 
     def test_rejects_any_attempt_to_promote_a_production_metric(self) -> None:
@@ -124,7 +133,7 @@ class ResearchCorpusTests(unittest.TestCase):
 
     def test_rejects_numeric_metric_from_a_negative_control(self) -> None:
         value = manifest()
-        value["participants"][0]["labels"][3]["negative_control"] = True
+        value["participants"][0]["labels"][4]["negative_control"] = True
         with self.assertRaisesRegex(corpus.CorpusError, "negative control"):
             corpus.validate(value)
 
