@@ -5628,27 +5628,31 @@ enum AtriaMissedDataBannerPresentation {
         return "\(m / 60)h ago"
     }
 
+    /// A pending count older than this cannot prove anything about what is
+    /// still on the strap (matches the drain engine's own stale-debt window in
+    /// `currentFlushDebtLevel`).
+    static let debtFreshnessWindow: TimeInterval = 15 * 60
+
     /// - Parameters:
     ///   - secondsSinceLastFlush: age of the last durable flush boundary
     ///     (`lastDurableFlushBoundaryOKAt`) — the ground-truth "is it actually
     ///     draining" signal, independent of the stale pending count.
     ///   - backgroundLeaseActive: the app holds live background execution for the
     ///     drain (`backgroundLeaseStatus == "active"`).
+    ///   - debtObservedAgeSeconds: age of the pending-count observation itself
+    ///     (`flushDebtObservedAt`). `nil` means never observed.
+    ///   - backlogPending: the durable range-loss/backlog ticket
+    ///     (`rangeLossBackfillPending`) — proof of a real gap independent of
+    ///     the possibly-stale count.
     static func copy(strapPendingRecords: Int,
                      protectsLiveStream: Bool,
                      secondsSinceLastFlush: TimeInterval?,
-                     backgroundLeaseActive: Bool) -> Copy {
+                     backgroundLeaseActive: Bool,
+                     debtObservedAgeSeconds: TimeInterval? = 0,
+                     backlogPending: Bool = false) -> Copy {
         let pending = max(0, strapPendingRecords)
         let minutes = pending / 60
         let amount = minutes >= 1 ? "~\(minutes) min" : "under a minute"
-
-        // Little/nothing left on the strap → the gap is gone. Say so calmly and
-        // never dangle a futile sync, regardless of live-stream/drain state.
-        guard pending >= recoverableRecordFloor else {
-            return Copy(title: "Some earlier data wasn't recorded",
-                        subtitle: "New data is unaffected",
-                        offersRecovery: false)
-        }
 
         // Recoverable. Is the background drain actively making progress? A recent
         // durable flush is the strongest proof; an active background lease is the
@@ -5658,6 +5662,40 @@ enum AtriaMissedDataBannerPresentation {
             if let age = secondsSinceLastFlush, age <= activeDrainRecencyWindow { return true }
             return backgroundLeaseActive
         }()
+
+        // A stale pending count cannot prove the gap is gone. With a durable
+        // backlog ticket still pending, recoverability is unknown-but-likely:
+        // keep the Sync affordance and never claim an amount from the dead
+        // number. (2026-08-07 3 AM: an 18 h-old count of 132 hid the Sync
+        // button while ~7,300 records sat on the strap.)
+        let countIsFresh = debtObservedAgeSeconds.map {
+            $0.isFinite && $0 >= 0 && $0 <= debtFreshnessWindow
+        } ?? false
+        if !countIsFresh, backlogPending {
+            if activelyDraining {
+                let subtitle = secondsSinceLastFlush
+                    .map { "Catching up · synced \(relativeAgo($0))" } ?? "Catching up now"
+                return Copy(title: "Catching up history",
+                            subtitle: subtitle,
+                            offersRecovery: true)
+            }
+            if protectsLiveStream {
+                return Copy(title: "Live HR protected",
+                            subtitle: "Catching up when idle",
+                            offersRecovery: true)
+            }
+            return Copy(title: "Catching up history",
+                        subtitle: "Resumes shortly",
+                        offersRecovery: true)
+        }
+
+        // Little/nothing left on the strap → the gap is gone. Say so calmly and
+        // never dangle a futile sync, regardless of live-stream/drain state.
+        guard pending >= recoverableRecordFloor else {
+            return Copy(title: "Some earlier data wasn't recorded",
+                        subtitle: "New data is unaffected",
+                        offersRecovery: false)
+        }
         if activelyDraining {
             let subtitle = secondsSinceLastFlush
                 .map { "Catching up · synced \(relativeAgo($0))" } ?? "Catching up now"
@@ -5736,11 +5774,20 @@ private struct AtriaMissedDataBanner: View, Equatable {
         let leaseActive = defaults.string(
             forKey: AtriaBLEManager.OfflineSyncDefaults.backgroundLeaseStatus
         ) == "active"
+        let debtObservedAt = defaults.object(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtObservedAt
+        ) as? Double
         return AtriaMissedDataBannerPresentation.copy(
             strapPendingRecords: pending,
             protectsLiveStream: protectsLiveStream,
             secondsSinceLastFlush: secondsSinceLastFlush,
-            backgroundLeaseActive: leaseActive
+            backgroundLeaseActive: leaseActive,
+            debtObservedAgeSeconds: debtObservedAt.map {
+                max(0, Date().timeIntervalSince1970 - $0)
+            },
+            backlogPending: defaults.bool(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
+            )
         )
     }
 

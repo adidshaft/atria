@@ -404,6 +404,41 @@ extension AtriaBLEManager {
             || reason == "onboarding_initial_import"
     }
 
+    /// The exact-recovery fence refuses to START a history transport while the
+    /// non-convergent full-flash gap recovery stays retired. Its purpose is to
+    /// keep autonomous lanes from replaying old flash rows as fake "gap
+    /// recovery" — not to strand the user's own Sync tap. 2026-08-07 (3 AM
+    /// soak): with no authority draining, the fence refused even Settings →
+    /// "Sync missed data from strap" (`gap_retained_exact_recovery_unproven`)
+    /// while the identical cursor-anchored chunked catch-up was admitted from
+    /// the scene-background lane minutes later. An attended request with a
+    /// real strap backlog admits the same forward-from-cursor catch-up the
+    /// background lanes run; every downstream guard (workout, storm,
+    /// archive-warm, admission ledger) still applies.
+    nonisolated static func shouldRefuseUnprovenExactRecoveryStart(
+        fullDrainGapRecoveryEnabled: Bool,
+        syncInProgress: Bool,
+        resumingPersistedDrainAuthority: Bool,
+        attendedSelectorSeekTrial: Bool,
+        attendedGate2FullDrainProof: Bool,
+        explicitPostWorkoutBankRequest: Bool,
+        attendedUserRequest: Bool,
+        strapBacklogPending: Bool
+    ) -> Bool {
+        if fullDrainGapRecoveryEnabled
+            || syncInProgress
+            || resumingPersistedDrainAuthority
+            || attendedSelectorSeekTrial
+            || attendedGate2FullDrainProof
+            || explicitPostWorkoutBankRequest {
+            return false
+        }
+        if attendedUserRequest && strapBacklogPending {
+            return false
+        }
+        return true
+    }
+
     /// Coalesces a deferred transport request without erasing the authority
     /// which admitted it. This matters for debug/physical forced recovery:
     /// its evidence label is caller supplied and therefore cannot be recovered
