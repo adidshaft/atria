@@ -9,12 +9,14 @@ final class AtriaJournalProjectionStoreTests: XCTestCase {
     private func state(journalRevision: Int = 1,
                        answersRevision: Int = 1,
                        rollupRevision: Int = 1,
+                       metricRevision: Int = 1,
                        insights: [JournalInsight] = []) -> AtriaJournalProjectionState {
         AtriaJournalProjectionState(
             behaviorJournalRevision: journalRevision,
             journalAnswersRevision: answersRevision,
             typedInsights: insights,
             dailyRollupHistoryRevision: rollupRevision,
+            dailyMetricHistoryRevision: metricRevision,
             localDay: day
         )
     }
@@ -44,6 +46,13 @@ final class AtriaJournalProjectionStoreTests: XCTestCase {
                                                answersRevision: 2,
                                                rollupRevision: 2)))
         XCTAssertEqual(publications, 3)
+        // Daily-metric history feeds the Behavior Impact / Impact map cards, so
+        // it has to be able to move the projection on its own.
+        XCTAssertTrue(projection.refresh(state(journalRevision: 2,
+                                               answersRevision: 2,
+                                               rollupRevision: 2,
+                                               metricRevision: 2)))
+        XCTAssertEqual(publications, 4)
 
         withExtendedLifetime(cancellable) {}
     }
@@ -74,6 +83,7 @@ final class AtriaJournalProjectionStoreTests: XCTestCase {
                 journalAnswersRevision: 1,
                 typedInsights: [],
                 dailyRollupHistoryRevision: 1,
+                dailyMetricHistoryRevision: 1,
                 localDay: initialDay
             )
         )
@@ -104,6 +114,7 @@ final class AtriaJournalProjectionStoreTests: XCTestCase {
         XCTAssertTrue(source.contains("store.$journalAnswersRevision.dropFirst()"))
         XCTAssertTrue(source.contains("store.$journalInsightsCache.dropFirst()"))
         XCTAssertTrue(source.contains("store.$dailyRollupHistory.dropFirst()"))
+        XCTAssertTrue(source.contains("store.$dailyMetricHistory.dropFirst()"))
         XCTAssertTrue(source.contains("let localDay = projection.localDay"))
         XCTAssertTrue(source.contains("projectionStore.refreshDayIfNeeded()"))
         XCTAssertTrue(source.contains("revision: projection.behaviorJournalRevision"))

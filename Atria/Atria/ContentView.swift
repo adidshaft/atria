@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var showOnboarding = false
     @State private var onboardingStage: OnboardingStage = .flow
     @State private var showOnboardingConsentSheet = false
+    @StateObject private var onboardingHistoryBootstrap: AtriaOnboardingHistoryBootstrap
 
     /// Keep first launch bounded: the four core pages are followed only by the
     /// explicit research-sharing choice. Nickname, ring layout, and cycle
@@ -42,6 +43,9 @@ struct ContentView: View {
             && ProcessInfo.processInfo.arguments.contains("--atria-complete-onboarding")
         _onboardingStage = State(initialValue: Self.initialOnboardingStage(debugStepName: debugOnboardingStep, profile: store.profile))
         _showOnboarding = State(initialValue: debugOnboardingStep != nil || (!store.profile.hasCompletedOnboarding && !debugCompletesOnboarding))
+        _onboardingHistoryBootstrap = StateObject(
+            wrappedValue: AtriaOnboardingHistoryBootstrap(ble: ble, store: store)
+        )
     }
 
     var body: some View {
@@ -54,13 +58,21 @@ struct ContentView: View {
                 case .flow:
                     AtriaOnboardingFlow(profile: store.profile,
                                         ble: ble,
+                                        historyBootstrap: onboardingHistoryBootstrap,
                                         debugInitialStep: Self.debugOnboardingStepArgument(),
                                         onRestoreBackup: { url in
                                             guard await store.restoreSessionBackup(from: url) else { return false }
+                                            // A restored phone backup does not prove that this
+                                            // physical strap's pending flash history was safely
+                                            // imported and retired. Keep first-run setup visible
+                                            // until the strap-specific bootstrap fence completes.
                                             showOnboarding = !store.profile.hasCompletedOnboarding
+                                                || !onboardingHistoryBootstrap.isCompleteForCurrentStrap
                                             return true
                                         }) { profile in
-                        onboardingStage = .sharingChoice(profile)
+                        onboardingStage = .sharingChoice(
+                            store.profile.hasCompletedOnboarding ? store.profile : profile
+                        )
                     }
                     .interactiveDismissDisabled()
                 case .sharingChoice(let profile):
@@ -72,15 +84,23 @@ struct ContentView: View {
                             // sharing stays off — onboarding still completes.
                             showOnboardingConsentSheet = true
                         } else {
-                            store.completeOnboarding(with: profile)
-                            showOnboarding = false
+                            if onboardingHistoryBootstrap.isCompleteForCurrentStrap {
+                                store.completeOnboarding(with: profile)
+                                showOnboarding = false
+                            } else {
+                                onboardingStage = .flow
+                            }
                         }
                     }
                     .interactiveDismissDisabled()
                     .sheet(isPresented: $showOnboardingConsentSheet,
                            onDismiss: {
-                               store.completeOnboarding(with: profile)
-                               showOnboarding = false
+                               if onboardingHistoryBootstrap.isCompleteForCurrentStrap {
+                                   store.completeOnboarding(with: profile)
+                                   showOnboarding = false
+                               } else {
+                                   onboardingStage = .flow
+                               }
                            }) {
                         AtriaResearchConsentSheet(buildPreview: { await AtriaResearchBundleBuilder.build(store: store) },
                                                   onConsented: {
@@ -577,6 +597,8 @@ struct OnboardingConnectionStatusView: View {
 
     private var isHealthyContact: Bool { ble.hasContact || ble.heartRate > 0 }
 
+    private var hasFreshHeartRate: Bool { ble.currentConnectionHasFreshHeartRate }
+
     var body: some View {
         HStack(spacing: 14) {
             ZStack {
@@ -600,7 +622,7 @@ struct OnboardingConnectionStatusView: View {
 
             Spacer(minLength: 8)
 
-            if ble.status == .connected, ble.heartRate > 0 {
+            if hasFreshHeartRate {
                 HStack(alignment: .firstTextBaseline, spacing: 3) {
                     Text("\(ble.heartRate)")
                         .font(.system(size: 30, weight: .bold, design: .rounded))
@@ -615,8 +637,8 @@ struct OnboardingConnectionStatusView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .atriaCard(emphasis: .soft)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: ble.status)
-        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: ble.hasContact)
+        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: ble.status)
+        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: ble.hasContact)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title). \(subtitle)")
     }
@@ -630,7 +652,9 @@ struct OnboardingConnectionStatusView: View {
         case .poweredOff: return "Bluetooth is off"
         case .scanning, .disconnected: return "Searching for your strap…"
         case .connecting: return "Connecting…"
-        case .connected: return isHealthyContact ? "You’re connected" : "Adjust the strap"
+        case .connected:
+            if hasFreshHeartRate { return "Live" }
+            return isHealthyContact ? "Confirming live data…" : "Put the strap back on"
         }
     }
 
@@ -639,7 +663,11 @@ struct OnboardingConnectionStatusView: View {
         case .poweredOff: return "Turn on Bluetooth in Settings to connect."
         case .scanning, .disconnected: return "Make sure the strap is on your wrist."
         case .connecting: return "Linking to your strap."
-        case .connected: return isHealthyContact ? "Atria is reading your heart rate." : "Snug it up for a clean pulse signal."
+        case .connected:
+            if hasFreshHeartRate { return "Atria is reading fresh heart-rate data." }
+            return isHealthyContact
+                ? "The Bluetooth link is connected; Atria is waiting for a fresh strap sample."
+                : "Pairing can take up to 3 minutes. The blue light stops when it finishes; then wear the strap snugly."
         }
     }
 
@@ -647,7 +675,7 @@ struct OnboardingConnectionStatusView: View {
         switch ble.status {
         case .poweredOff: return "bolt.slash.fill"
         case .scanning, .disconnected, .connecting: return "dot.radiowaves.left.and.right"
-        case .connected: return isHealthyContact ? "checkmark.circle.fill" : "exclamationmark.circle.fill"
+        case .connected: return hasFreshHeartRate ? "checkmark.circle.fill" : "waveform.path.ecg"
         }
     }
 
@@ -656,7 +684,7 @@ struct OnboardingConnectionStatusView: View {
         case .poweredOff: return .red
         case .scanning, .disconnected: return .blue
         case .connecting: return .yellow
-        case .connected: return isHealthyContact ? .green : .orange
+        case .connected: return hasFreshHeartRate ? .green : .orange
         }
     }
 }

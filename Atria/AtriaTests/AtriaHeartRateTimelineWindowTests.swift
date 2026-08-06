@@ -21,6 +21,58 @@ final class AtriaHeartRateTimelineWindowTests: XCTestCase {
         XCTAssertEqual(AtriaVitalsHeartRateTimeline.Window.hour24.seconds, 24 * 3600, accuracy: 0.5)
     }
 
+    // 2026-08-01 axis-label fix: `.automatic(desiredCount: 4)` placed
+    // sub-hour ticks on short series while the label kept hour precision, so
+    // the Vitals timeline rendered duplicated "11a"-style labels. Ticks are
+    // now generated + labelled + deduped in one place.
+    func testHourAlignedAxisTicksNeverRepeatConsecutiveLabels() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let base = calendar.date(from: DateComponents(year: 2026, month: 7, day: 31, hour: 10, minute: 40))!
+
+        // The defect shape: a short (~80 min) live series around one hour.
+        let short = AtriaVitalsHeartRateTimeline.hourAlignedAxisTicks(
+            from: base,
+            to: base.addingTimeInterval(80 * 60),
+            calendar: calendar
+        )
+        XCTAssertFalse(short.isEmpty)
+        for (previous, next) in zip(short, short.dropFirst()) {
+            XCTAssertNotEqual(previous.label, next.label,
+                              "Adjacent ticks must never carry the same visible label")
+            XCTAssertLessThan(previous.date, next.date)
+        }
+
+        // A full six-hour window keeps whole-hour ticks with distinct labels.
+        let sixHours = AtriaVitalsHeartRateTimeline.hourAlignedAxisTicks(
+            from: base,
+            to: base.addingTimeInterval(6 * 3_600),
+            calendar: calendar
+        )
+        XCTAssertGreaterThanOrEqual(sixHours.count, 3)
+        XCTAssertEqual(Set(sixHours.map(\.label)).count, sixHours.count)
+        for tick in sixHours {
+            XCTAssertEqual(calendar.component(.minute, from: tick.date), 0,
+                           "Hour-labelled ticks must sit on whole-hour boundaries")
+        }
+
+        // Scrollable 24h series with a 1-minute visible window: the tick
+        // count stays bounded instead of emitting one mark per minute.
+        let scrollable = AtriaVitalsHeartRateTimeline.hourAlignedAxisTicks(
+            from: base,
+            to: base.addingTimeInterval(24 * 3_600),
+            visibleDomain: 60,
+            calendar: calendar
+        )
+        XCTAssertFalse(scrollable.isEmpty)
+        XCTAssertLessThanOrEqual(scrollable.count, 241)
+
+        // Degenerate inputs stay empty rather than fabricating ticks.
+        XCTAssertTrue(AtriaVitalsHeartRateTimeline.hourAlignedAxisTicks(
+            from: base, to: base, calendar: calendar
+        ).isEmpty)
+    }
+
     func testExpandedChartAnchorsLatestSampleAtRightEdge() {
         let latest = Date(timeIntervalSince1970: 1_800_000_000)
         XCTAssertEqual(AtriaHeartRateExplorer.leadingScrollPosition(latest: latest,

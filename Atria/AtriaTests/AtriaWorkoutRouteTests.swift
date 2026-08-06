@@ -60,7 +60,7 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertFalse(map.contains("MapPolyline(coordinates: routeCoordinates)"))
     }
 
-    func testRouteWorkoutIsMapFirstWithPinnedGlanceableMetricsAndActions() throws {
+    func testRouteWorkoutAvoidsColdMapKitAndKeepsPinnedMetricsAndActions() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaLiveWorkoutView.swift"), encoding: .utf8)
@@ -81,6 +81,10 @@ final class AtriaWorkoutRouteTests: XCTestCase {
 
         XCTAssertTrue(main.contains("if activityType.supportsRouteRecording"))
         XCTAssertTrue(route.contains("AtriaLiveWorkoutRouteCard(routeRecorder: routeRecorder)"))
+        XCTAssertFalse(main.contains("routeMapIsReady"))
+        XCTAssertFalse(main.contains("Task.sleep(for: .milliseconds(350))"))
+        XCTAssertFalse(source.contains("private struct AtriaLiveWorkoutRouteMap"))
+        XCTAssertFalse(source.contains("Map(position: $cameraPosition)"))
         XCTAssertTrue(route.contains("AtriaLiveWorkoutRouteMetricsHost(metricStore: metricStore,"))
         XCTAssertTrue(route.contains("routeWorkoutActions"))
         XCTAssertTrue(route.contains("Spacer(minLength: 24)"),
@@ -98,6 +102,47 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertTrue(standard.contains("workoutActionsCard"))
         XCTAssertTrue(standard.contains("stopButton"),
                       "Strength and non-route workout behavior must remain intact")
+    }
+
+    func testLiveRouteSnapshotHasBoundedPixelsAndRendersOffMainActor() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaLiveWorkoutView.swift"), encoding: .utf8)
+        let storeStart = try XCTUnwrap(
+            source.range(of: "private final class AtriaLiveWorkoutMapSnapshotStore")
+        )
+        let storeEnd = try XCTUnwrap(
+            source.range(of: "private struct AtriaLiveWorkoutRouteCard",
+                         range: storeStart.upperBound..<source.endIndex)
+        )
+        let store = String(source[storeStart.lowerBound..<storeEnd.lowerBound])
+
+        XCTAssertTrue(store.contains("liveSnapshotSize = CGSize(width: 390, height: 560)"))
+        XCTAssertTrue(store.contains("liveSnapshotScale: CGFloat = 2"))
+        XCTAssertTrue(store.contains("maximumLiveSnapshotPixelCount"))
+        XCTAssertTrue(store.contains("renderQueue.async"))
+        XCTAssertTrue(store.contains("await Self.renderOffMain("))
+        XCTAssertTrue(store.contains("snapshotter?.cancel()"))
+        XCTAssertTrue(store.contains("generation == renderGeneration"))
+        XCTAssertFalse(store.contains("CGSize(width: 780, height: 1_120)"))
+        XCTAssertFalse(store.contains("options.scale = 3"))
+    }
+
+    func testRouteCheckpointDiscardNeverSynchronouslyWaitsOnIOQueue() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaWorkoutRoute.swift"), encoding: .utf8)
+        let discardStart = try XCTUnwrap(
+            source.range(of: "func discardDurableCheckpoint()")
+        )
+        let discardEnd = try XCTUnwrap(
+            source.range(of: "func finalizedDraft(",
+                         range: discardStart.upperBound..<source.endIndex)
+        )
+        let discard = String(source[discardStart.lowerBound..<discardEnd.lowerBound])
+
+        XCTAssertTrue(discard.contains("checkpointQueue.async"))
+        XCTAssertFalse(discard.contains("checkpointQueue.sync"))
     }
 
     func testRouteHUDKeepsThreeDigitHeartRateOnOneLineAndExposesEveryLiveMetric() throws {
@@ -252,7 +297,7 @@ final class AtriaWorkoutRouteTests: XCTestCase {
                                                        range: lockStart.upperBound..<widgetSource.endIndex))
         let lock = String(widgetSource[lockStart.lowerBound..<lockEnd.lowerBound])
         XCTAssertTrue(lock.contains(".minimumScaleFactor(0.58)"))
-        XCTAssertTrue(lock.contains(".layoutPriority(3)"))
+        XCTAssertTrue(lock.contains(".layoutPriority(emphasis ? 3 : 0)"))
         XCTAssertTrue(lock.contains(".accessibilityElement(children: .ignore)"))
     }
 
@@ -399,7 +444,7 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         XCTAssertEqual(preview[1].last?.latitude, 159)
     }
 
-    func testLiveRouteMapConsumesPrecomputedBoundedCoordinates() throws {
+    func testLiveRouteStatusAvoidsMapWhileRecorderKeepsBoundedCoordinates() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
         let liveSource = try String(contentsOf: sourceDirectory.appendingPathComponent("AtriaLiveWorkoutView.swift"),
@@ -407,17 +452,15 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         let routeSource = try String(contentsOf: sourceDirectory.appendingPathComponent("AtriaWorkoutRoute.swift"),
                                      encoding: .utf8)
 
-        let mapStart = try XCTUnwrap(liveSource.range(of: "private struct AtriaLiveWorkoutRouteMap"))
-        let cardStart = try XCTUnwrap(liveSource.range(of: "private struct AtriaLiveWorkoutRouteCard",
-                                                      range: mapStart.upperBound..<liveSource.endIndex))
-        let mapSource = String(liveSource[mapStart.lowerBound..<cardStart.lowerBound])
-        XCTAssertTrue(mapSource.contains("MapPolyline(coordinates: coordinates)"))
-        XCTAssertTrue(mapSource.contains("Map(position: $cameraPosition)"))
-        XCTAssertTrue(mapSource.contains("UserAnnotation()"))
-        XCTAssertTrue(mapSource.contains(".userLocation("))
-        XCTAssertFalse(mapSource.contains("points.map"))
+        let cardStart = try XCTUnwrap(liveSource.range(of: "private struct AtriaLiveWorkoutRouteCard"))
+        let mainStart = try XCTUnwrap(liveSource.range(of: "struct AtriaLiveWorkoutView: View",
+                                                      range: cardStart.upperBound..<liveSource.endIndex))
+        let cardSource = String(liveSource[cardStart.lowerBound..<mainStart.lowerBound])
+        XCTAssertFalse(cardSource.contains("Map("))
+        XCTAssertFalse(cardSource.contains("MapPolyline"))
+        XCTAssertTrue(cardSource.contains("routeRecorder.snapshot"))
+        XCTAssertTrue(cardSource.contains("routeStatus(route)"))
         XCTAssertTrue(routeSource.contains("maximumLivePreviewPointCount = 512"))
-        XCTAssertTrue(mapSource.contains("ForEach(Array(segments.enumerated())"))
         XCTAssertTrue(routeSource.contains("snapshot.previewSegments = previewSegments"))
         XCTAssertFalse(routeSource.contains("snapshot.points = points"))
     }
@@ -646,6 +689,18 @@ final class AtriaWorkoutRouteTests: XCTestCase {
             currentAccuracy: 5,
             activityType: .cycling
         ))
+    }
+
+    func testLiveSpeedUsesAValidGPSFixEvenWhenItDoesNotAddRouteDistance() {
+        XCTAssertEqual(AtriaWorkoutRouteRecorder.usableGroundSpeed(0, accuracy: 0.8), 0,
+                       "A valid stationary fix must clear a prior moving speed rather than leaving it stale")
+        XCTAssertEqual(AtriaWorkoutRouteRecorder.usableGroundSpeed(3.4, accuracy: 1.2), 3.4)
+        XCTAssertNil(AtriaWorkoutRouteRecorder.usableGroundSpeed(-1, accuracy: 1),
+                     "Core Location uses a negative speed when velocity is unknown")
+        XCTAssertNil(AtriaWorkoutRouteRecorder.usableGroundSpeed(3.4, accuracy: -1),
+                     "Core Location uses a negative accuracy when speed is unknown")
+        XCTAssertNil(AtriaWorkoutRouteRecorder.usableGroundSpeed(3.4, accuracy: 5.1),
+                     "Do not display a falsely precise speed from a very noisy fix")
     }
 
     func testGPXUsesSeparateTrackSegmentsAcrossPauseBoundary() throws {
@@ -1086,18 +1141,28 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         let saveBody = String(source[saveStart.lowerBound..<deleteStart.lowerBound])
         let deleteBody = String(source[deleteStart.lowerBound..<routeCardStart.lowerBound])
 
-        let beginEdit = try XCTUnwrap(saveBody.range(of: "beginEditTransaction"))
-        let metadataEdit = try XCTUnwrap(saveBody.range(of: "store.editConfirmedWorkout"))
-        let routeEdit = try XCTUnwrap(saveBody.range(of: "AtriaWorkoutRouteStore.reconcile"))
+        let beginEdit = try XCTUnwrap(saveBody.range(of: "beginEditTransactionAsync"))
+        // The first edit call belongs to the metadata-only fast path. That path
+        // deliberately does not touch route identity or route storage and
+        // therefore needs no cross-file transaction. Scope this assertion to
+        // the identity-changing path: its named `result` mutation must remain
+        // after the durable transaction marker has been persisted.
+        let metadataEdit = try XCTUnwrap(saveBody.range(
+            of: "let result = await store.editConfirmedWorkout",
+            range: beginEdit.upperBound..<saveBody.endIndex
+        ))
+        let routeEdit = try XCTUnwrap(saveBody.range(of: "await AtriaWorkoutRouteStore.reconcileAsync"))
         XCTAssertLessThan(beginEdit.lowerBound, metadataEdit.lowerBound)
         XCTAssertLessThan(metadataEdit.lowerBound, routeEdit.lowerBound)
+        XCTAssertTrue(saveBody.contains("await AtriaWorkoutRouteStore.beginEditTransactionAsync("),
+                      "durable intent persistence must complete before canonical metadata mutates")
         XCTAssertTrue(saveBody.contains("AtriaWorkoutRouteStore.clearPendingTransactionAsync()"))
         XCTAssertTrue(saveBody.contains("recoverPendingTransactionAsync("),
                       "A failed route write must drive the durable rollback recovery path")
 
-        let beginDelete = try XCTUnwrap(deleteBody.range(of: "beginDeleteTransaction"))
-        let metadataDelete = try XCTUnwrap(deleteBody.range(of: "store.deleteConfirmedWorkout"))
-        let routeDelete = try XCTUnwrap(deleteBody.range(of: "AtriaWorkoutRouteStore.delete"))
+        let beginDelete = try XCTUnwrap(deleteBody.range(of: "beginDeleteTransactionAsync"))
+        let metadataDelete = try XCTUnwrap(deleteBody.range(of: "await store.deleteConfirmedWorkout"))
+        let routeDelete = try XCTUnwrap(deleteBody.range(of: "AtriaWorkoutRouteStore.deleteAsync"))
         XCTAssertLessThan(beginDelete.lowerBound, metadataDelete.lowerBound)
         XCTAssertLessThan(metadataDelete.lowerBound, routeDelete.lowerBound)
     }

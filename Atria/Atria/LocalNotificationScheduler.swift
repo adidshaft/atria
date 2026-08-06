@@ -3,6 +3,32 @@ import UserNotifications
 
 @MainActor
 enum LocalNotificationScheduler {
+    struct LaunchDecisionScope: Equatable {
+        let productionCadence: Bool
+        let includeSleepReviewDecisions: Bool
+        let includeWorkoutReviewDecisions: Bool
+    }
+
+    nonisolated static func launchDecisionScope(arguments: [String]) -> LaunchDecisionScope {
+        let debugMetricRequest = arguments.contains("--atria-schedule-notifications")
+        let debugDiagnosticRequest = arguments.contains("--atria-test-notification")
+        let debugHealthDeviationRequest = arguments.contains("--atria-test-health-deviation-notification")
+        let productionCadence = !debugMetricRequest && !debugDiagnosticRequest && !debugHealthDeviationRequest
+        return LaunchDecisionScope(productionCadence: productionCadence,
+                                   includeSleepReviewDecisions: productionCadence || debugMetricRequest,
+                                   includeWorkoutReviewDecisions: productionCadence || debugMetricRequest)
+    }
+
+    nonisolated static func workoutReviewDeliveryCanReserve(
+        candidateID: String,
+        lastNotifiedCandidateID: String?,
+        inFlightCandidateIDs: Set<String>
+    ) -> Bool {
+        !candidateID.isEmpty
+            && candidateID != lastNotifiedCandidateID
+            && !inFlightCandidateIDs.contains(candidateID)
+    }
+
     private nonisolated static let actionableBatteryThreshold = 25
     private static let actionableDiagnosisCooldown: TimeInterval = 6 * 60 * 60
     private static let actionableDiagnosisLastScheduledPrefix = "atria.notification.actionableDiagnosis.lastScheduled."
@@ -15,8 +41,20 @@ enum LocalNotificationScheduler {
     private static let sleepReviewReminderCooldown: TimeInterval = 4 * 60 * 60
     private static let sleepReviewMaximumSchedulesPerCandidate = 2
     private static let sleepReviewDismissedIDKey = "atria.sleepReview.dismissedID"
+    /// Window-start debounce (2026-08-01): [startKey: lastNotifiedEnd-unix].
+    /// A growing sleep candidate keeps its start while the end jitters by a
+    /// few minutes; each jitter used to mint a new candidate id and re-fire
+    /// (observed 04:50/04:56/04:57 triple). See
+    /// `AtriaSleepReviewNotificationDebounce`.
+    static let sleepReviewNotifiedEndByStartKey =
+        "atria.notification.sleepReview.notifiedEndByStart.v1"
     private static let workoutReviewLastCandidateIDKey = "atria.notification.workoutReview.lastCandidateID"
     private static let workoutReviewDismissedIDKey = "atria.workoutReview.dismissedID"
+    /// One process-wide reservation covers both launch maintenance and the
+    /// review-cache publication retry. Without it, two authorization tasks can
+    /// spend the attention budget for the same candidate before either write
+    /// records `workoutReviewLastCandidateIDKey`.
+    private static var workoutReviewCandidateIDsInFlight = Set<String>()
     private static let healthDeviationLastScheduledKey = "atria.notification.healthDeviation.lastScheduledAt"
     private static let healthDeviationCooldown: TimeInterval = 48 * 60 * 60
     private static let strapChargeReminderLastScheduledKey = "atria.notification.strapCharge.lastScheduled"
@@ -35,6 +73,7 @@ enum LocalNotificationScheduler {
         static let eveningJournalPrefix = "atria.eveningJournal."
         static let morningJournalPrefix = "atria.morningJournal."
         static let healthDeviation = "atria.health.deviation"
+        static let syncNudge = "atria.sync.nudge"
         static let recovery = "atria.recovery.ready"
         static let strain = "atria.strain.target"
         static let sleepReview = "atria.sleep.review"
@@ -58,6 +97,117 @@ enum LocalNotificationScheduler {
         static let diagnosticOnly = [diagnostic]
         static let legacy = [legacyRecovery, legacyStrain, legacySleepReview, legacyWorkoutReview, legacyBattery, legacyBluetoothOff, legacyDiagnostic]
         static let removable = active + diagnosticOnly + legacy
+    }
+
+    // MARK: - Sync nudge (2026-08-05 user directive: graceful measures when
+    // data is lagging — app closed a while, strap away, Low Power Mode, or
+    // background catch-up simply not progressing).
+
+    struct SyncNudgeContent: Equatable {
+        let title: String
+        let body: String
+    }
+
+    /// Pure decision. Nudge ONLY when opening the app would actually help:
+    /// - foregroundHelps: a fresh strap backlog is observed (strap reachable)
+    ///   but no durable flush progress for ≥2h — foreground drains fastest.
+    /// - strapAway: a deep backlog was last observed hours ago and the link
+    ///   has been down since — bringing the strap close is the fix.
+    /// - lowPower: Low Power Mode is throttling background sync.
+    /// Never fires while the app is active (the in-app banner owns that).
+    /// No time-of-day gate (2026-08-05 user decision: "sync should happen
+    /// whenever possible" — a significant miss is worth knowing at any hour;
+    /// iOS delivers it quietly under the user's own Focus/notification
+    /// settings). Threshold: ≥30 minutes of missed strap data
+    /// (pendingRecords at the ~1Hz banking cadence).
+    nonisolated static let syncNudgeMinimumPendingRecords = 30 * 60
+
+    nonisolated static func syncNudgeContent(
+        flushDebtPendingRecords: Int?,
+        debtObservedAgeSeconds: TimeInterval?,
+        lastDurableFlushAgeSeconds: TimeInterval?,
+        linkConnected: Bool,
+        lowPowerMode: Bool,
+        applicationIsActive: Bool
+    ) -> SyncNudgeContent? {
+        guard !applicationIsActive else { return nil }
+        guard let pending = flushDebtPendingRecords,
+              pending >= syncNudgeMinimumPendingRecords else { return nil }
+        let progressing = lastDurableFlushAgeSeconds.map { $0 < 2 * 3600 } ?? false
+        guard !progressing else { return nil }
+        let debtFresh = debtObservedAgeSeconds.map { $0 <= 2 * 3600 } ?? false
+        if !linkConnected, !debtFresh {
+            return SyncNudgeContent(
+                title: "Strap out of range",
+                body: "Hours of strap data are waiting. Bring your strap near your phone and open Atria to catch up."
+            )
+        }
+        if lowPowerMode {
+            return SyncNudgeContent(
+                title: "Sync limited by Low Power Mode",
+                body: "Strap data is waiting. Open Atria for a few minutes — foreground sync runs at full speed."
+            )
+        }
+        guard debtFresh else { return nil }
+        return SyncNudgeContent(
+            title: "Strap data waiting to sync",
+            body: "Background catch-up hasn't kept pace. Open Atria for a few minutes — sync runs fastest in the foreground."
+        )
+    }
+
+    static let syncNudgeCooldown: TimeInterval = 6 * 3600
+    private static let syncNudgeLastScheduledKey = "atria.notification.syncNudge.lastAt"
+
+    static func scheduleSyncNudgeIfNeeded(
+        flushDebtPendingRecords: Int?,
+        debtObservedAgeSeconds: TimeInterval?,
+        lastDurableFlushAgeSeconds: TimeInterval?,
+        linkConnected: Bool,
+        applicationIsActive: Bool,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) {
+        guard AtriaNotificationSettings.load().allows(kind: "sync_nudge") else { return }
+        guard let content = syncNudgeContent(
+            flushDebtPendingRecords: flushDebtPendingRecords,
+            debtObservedAgeSeconds: debtObservedAgeSeconds,
+            lastDurableFlushAgeSeconds: lastDurableFlushAgeSeconds,
+            linkConnected: linkConnected,
+            lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            applicationIsActive: applicationIsActive
+        ) else { return }
+        let defaults = UserDefaults.standard
+        let last = defaults.double(forKey: syncNudgeLastScheduledKey)
+        if last > 0,
+           now.timeIntervalSince(Date(timeIntervalSince1970: last)) < syncNudgeCooldown {
+            return
+        }
+        configureDeliveryLogger()
+        Task {
+            let center = UNUserNotificationCenter.current()
+            _ = await requestProvisionalAuthorization(center: center)
+            let settings = await notificationSettings(center: center)
+            guard settings.authorizationStatus == .authorized ||
+                    settings.authorizationStatus == .provisional ||
+                    settings.authorizationStatus == .ephemeral else { return }
+            let notification = UNMutableNotificationContent()
+            notification.title = content.title
+            notification.body = content.body
+            notification.sound = nil
+            center.removePendingNotificationRequests(withIdentifiers: [Identifier.syncNudge])
+            do {
+                try await center.add(UNNotificationRequest(
+                    identifier: Identifier.syncNudge,
+                    content: notification,
+                    trigger: nil
+                ))
+                defaults.set(now.timeIntervalSince1970, forKey: syncNudgeLastScheduledKey)
+                AtriaDebugLog("ATRIADBG notification_schedule kind=sync_nudge title=%@", content.title)
+            } catch {
+                AtriaDebugLog("ATRIADBG notification_error kind=sync_nudge error=%@",
+                              String(describing: error))
+            }
+        }
     }
 
     static func scheduleHealthDeviationIfNeeded(rollups: [DailyRollupStoreEntry],
@@ -262,6 +412,25 @@ enum LocalNotificationScheduler {
     /// (the duty-cycle window end is median wake + 1 h, so `windowEnd - 60` is
     /// wake), or 08:00 until the window is learned. Pure + wraps across midnight,
     /// so it's unit-testable.
+    /// Attempt-store key for the morning journal nudge. Named once so the
+    /// scheduler and the in-app fallback cannot disagree about which record
+    /// they are reading.
+    static let morningCheckInKind = "morning_checkin"
+
+    /// Attempt-store key for the RICH morning summary -- the one that asserts
+    /// recovery, HRV and sleep numbers.
+    ///
+    /// The two morning notifications are split by what they CLAIM, and the split
+    /// is deliberate. The rich summary requires a persisted, sleep-derived daily
+    /// metric before it will fire, because it states measurements. The plain
+    /// check-in claims nothing and carries no metrics, so it stays unconditional
+    /// -- gating it too would reproduce the silent morning reported 2026-07-08,
+    /// on exactly the mornings where confirmation is late or never arrives.
+    ///
+    /// Kept as separate attempt records so "no rich summary" and "no nudge at
+    /// all" are answerable independently rather than collapsing into one silence.
+    static let morningSummaryKind = "morning_summary"
+
     nonisolated static func morningNudgeMinutes(windowEnd: Int) -> Int {
         windowEnd > 0 ? ((((windowEnd + 1440 - 60) % 1440) + 15) % 1440) : 8 * 60
     }
@@ -279,8 +448,15 @@ enum LocalNotificationScheduler {
     static func scheduleMorningJournalCheckIn(lastJournalActivity: Date?,
                                               now: Date = Date(),
                                               calendar: Calendar = .current) {
+        // Every exit below now leaves a durable record as well as a log line.
+        // Logs are not readable by the UI, so a morning with no notification
+        // could not say why -- toggle off, journal inactive, authorization
+        // denied and outright failure all looked identical to silence.
         guard AtriaNotificationSettings.load().allows(kind: "morning_summary") else {
             AtriaDebugLog("ATRIADBG notification_schedule status=skipped_toggle kind=morning_checkin")
+            AtriaNotificationAttemptStore.record(kind: Self.morningCheckInKind,
+                                                 outcome: .blockedByToggle,
+                                                 reason: "toggle_off")
             return
         }
         // 14-day (not 7-day) re-engage window: a journal reminder must survive a
@@ -289,6 +465,10 @@ enum LocalNotificationScheduler {
         guard let lastJournalActivity,
               now.timeIntervalSince(lastJournalActivity) <= 14 * 24 * 60 * 60 else {
             AtriaDebugLog("ATRIADBG notification_skip kind=morning_checkin reason=journal_inactive")
+            AtriaNotificationAttemptStore.record(kind: Self.morningCheckInKind,
+                                                 outcome: .skippedInactive,
+                                                 reason: "journal_inactive",
+                                                 at: now)
             return
         }
         // Scene foregrounds fire this many times a day; schedule at most once per
@@ -322,6 +502,11 @@ enum LocalNotificationScheduler {
                     settings.authorizationStatus == .ephemeral else {
                 AtriaDebugLog("ATRIADBG notification_schedule status=blocked reason=authorization_%@ kind=morning_checkin",
                               status)
+                // The one outcome that obliges an in-app equivalent: the system
+                // route cannot deliver, and the user did not choose that.
+                AtriaNotificationAttemptStore.record(kind: Self.morningCheckInKind,
+                                                     outcome: .blockedByAuthorization,
+                                                     reason: "authorization_\(status)")
                 return
             }
 
@@ -341,9 +526,15 @@ enum LocalNotificationScheduler {
                 UserDefaults.standard.set(targetDay, forKey: scheduledDayKey)
                 AtriaDebugLog("ATRIADBG notification_schedule status=scheduled kind=morning_checkin target_day=%@ delay_s=%.0f",
                               targetDay, delay)
+                AtriaNotificationAttemptStore.record(kind: Self.morningCheckInKind,
+                                                     outcome: .scheduled,
+                                                     reason: "target_day_\(targetDay)")
             } catch {
                 AtriaDebugLog("ATRIADBG notification_error kind=morning_checkin error=%@",
                               String(describing: error))
+                AtriaNotificationAttemptStore.record(kind: Self.morningCheckInKind,
+                                                     outcome: .failed,
+                                                     reason: String(describing: error))
             }
         }
     }
@@ -404,9 +595,10 @@ enum LocalNotificationScheduler {
         let debugMetricRequest = arguments.contains("--atria-schedule-notifications")
         let debugDiagnosticRequest = arguments.contains("--atria-test-notification")
         let debugHealthDeviationRequest = arguments.contains("--atria-test-health-deviation-notification")
-        let productionCadence = !debugMetricRequest && !debugDiagnosticRequest && !debugHealthDeviationRequest
-        let includeSleepReviewDecisions = productionCadence || debugMetricRequest
-        let includeWorkoutReviewDecisions = productionCadence || debugMetricRequest
+        let scope = launchDecisionScope(arguments: arguments)
+        let productionCadence = scope.productionCadence
+        let includeSleepReviewDecisions = scope.includeSleepReviewDecisions
+        let includeWorkoutReviewDecisions = scope.includeWorkoutReviewDecisions
         let delay = launchDelay(arguments: arguments)
         AtriaDebugLog("ATRIADBG notification_schedule requested=1 mode=%@ delay_s=%.1f",
               productionCadence ? "production" : "debug",
@@ -684,6 +876,64 @@ enum LocalNotificationScheduler {
         }
     }
 
+    /// The first launch/foreground workout-review lookup intentionally returns
+    /// nil while SessionStore builds its review cache off-main. Dashboard
+    /// publication is the completion signal for that build; retry this one
+    /// notification only after Home has read the now-cached candidate.
+    ///
+    /// This path never clears unrelated pending requests. Candidate identity is
+    /// reserved again inside `add`, shared with ordinary launch maintenance, so
+    /// repeated dashboard publications cannot schedule or charge attention for
+    /// the same physical effort twice.
+    static func scheduleWorkoutReviewAfterCachePublicationIfNeeded(
+        _ candidate: WorkoutReviewCandidate,
+        ble: AtriaBLEManager
+    ) {
+        guard !reviewNotificationsProtectedByLiveCapture(ble: ble),
+              candidate.isReviewPromptWorthy else { return }
+        let defaults = UserDefaults.standard
+        guard candidate.id != defaults.string(forKey: workoutReviewDismissedIDKey),
+              candidate.id != defaults.string(forKey: workoutReviewLastCandidateIDKey),
+              AtriaNotificationSettings.load().allows(kind: "workout_review") else {
+            return
+        }
+
+        configureDeliveryLogger()
+        let decision = NotificationDecision(
+            kind: "workout_review",
+            identifier: Identifier.workoutReview,
+            title: workoutReviewNotificationTitle(for: candidate),
+            body: workoutReviewNotificationBody(for: candidate),
+            reason: "candidate_\(candidate.id)",
+            shouldSchedule: true,
+            delay: 6,
+            userInfo: ["deepLink": "atria://overview"]
+        )
+        Task {
+            let center = UNUserNotificationCenter.current()
+            _ = await requestProvisionalAuthorization(center: center)
+            let settings = await notificationSettings(center: center)
+            let status = statusName(settings.authorizationStatus)
+            guard settings.authorizationStatus == .authorized ||
+                    settings.authorizationStatus == .provisional ||
+                    settings.authorizationStatus == .ephemeral else {
+                AtriaDebugLog(
+                    "ATRIADBG notification_schedule status=blocked reason=authorization_%@ kind=workout_review source=cache_publication",
+                    status
+                )
+                return
+            }
+            do {
+                try await add(decision: decision, center: center)
+            } catch {
+                AtriaDebugLog(
+                    "ATRIADBG notification_error kind=workout_review source=cache_publication error=%@",
+                    String(describing: error)
+                )
+            }
+        }
+    }
+
     /// Charge-pattern nudge (docs/24 §14.2 deferred item): once Atria has
     /// learned at least `strapChargeReminderMinLearnedHours` charge-start hours
     /// from AtriaBLEManager's rolling history, remind the user near their usual
@@ -861,7 +1111,7 @@ enum LocalNotificationScheduler {
             decisions.append(contentsOf: makeMetricDecisions(store: store, ble: ble))
         }
         if includeSleepReviewDecisions {
-            decisions.append(makeSleepReviewDecision(store: store))
+            decisions.append(await makeSleepReviewDecision(store: store))
         }
         if includeWorkoutReviewDecisions {
             decisions.append(makeWorkoutReviewDecision(store: store, ble: ble))
@@ -986,7 +1236,7 @@ enum LocalNotificationScheduler {
         }?.recovery
         let attributedRecovery: Int?
         if physiologicalCycle.boundaryKind == .noSleepFallback {
-            attributedRecovery = 1
+            attributedRecovery = nil
         } else {
             attributedRecovery = storedCycleRecovery
                 ?? (latestSleep.map { ($0.end ?? $0.day) == physiologicalCycle.start } == true
@@ -997,6 +1247,7 @@ enum LocalNotificationScheduler {
                                                                load: store.trainingLoadSummarySnapshot,
                                                                recoveryIsAttributedToCurrentDay: attributedRecovery != nil,
                                                                loadIsPrepared: store.hasLoadedSavedSessions && store.trainingLoadSummaryIsPrepared,
+                                                               cycleStart: physiologicalCycle.start,
                                                                now: now,
                                                                calendar: calendar)
         let guideRecovery = attributedRecovery ?? frozenTarget?.recovery
@@ -1177,11 +1428,25 @@ enum LocalNotificationScheduler {
         return [batteryDecision, bluetoothDecision]
     }
 
-    private static func makeSleepReviewDecision(store: SessionStore) -> NotificationDecision {
+    private static func makeSleepReviewDecision(store: SessionStore) async -> NotificationDecision {
         let snapshot = store.sleepHistorySnapshot
         let defaults = UserDefaults.standard
-        let latestReviewNight = store.latestSleepReviewNightForUI(rest: store.baseline.restingInt ?? 60,
-                                                                  source: "notification_sleep_review")
+        let rest = store.baseline.restingInt ?? 60
+        var latestReviewNight: SleepHistorySnapshot.Night?
+        for attempt in 0..<250 {
+            switch store.sleepReviewResolutionForUI(rest: rest,
+                                                    source: "notification_sleep_review") {
+            case .ready(let night):
+                latestReviewNight = night
+                break
+            case .loading:
+                if attempt < 249 {
+                    try? await Task.sleep(for: .milliseconds(20))
+                }
+                continue
+            }
+            break
+        }
 
         let reviewableSnapshotNight = snapshot.latestReviewable?.confirmed == false ? snapshot.latestReviewable : nil
         guard let latest = latestReviewNight ?? reviewableSnapshotNight,
@@ -1199,6 +1464,13 @@ enum LocalNotificationScheduler {
             )
         }
 
+        // The notification scheduler can legitimately see a reviewable daily
+        // snapshot while the heavier foreground cache is still rebuilding.
+        // Persist the exact candidate before scheduling/deduplication so a
+        // relaunch, projection refresh, or reminder cooldown cannot erase the
+        // review the user was just told about.
+        AtriaPendingSleepReviewStore.save(latest)
+
         guard latest.id != defaults.string(forKey: sleepReviewDismissedIDKey) else {
             return NotificationDecision(
                 kind: "sleep_review",
@@ -1209,6 +1481,35 @@ enum LocalNotificationScheduler {
                 shouldSchedule: false,
                 delay: 0
             )
+        }
+
+        // Window-start debounce (2026-08-01): a NEW candidate id whose start
+        // matches an already-notified window is the same physical episode
+        // with a jittering end — never re-fire unless the end grew >= 30 min
+        // beyond what the user was already told. Same-id reminders below keep
+        // their existing count/cooldown gates unchanged; a different start is
+        // a separate episode and stays independent.
+        if latest.id != defaults.string(forKey: sleepReviewLastCandidateIDKey),
+           let candidateStart = latest.start,
+           let candidateEnd = latest.end {
+            let notifiedEnds = (defaults.dictionary(
+                forKey: sleepReviewNotifiedEndByStartKey
+            ) as? [String: Double]) ?? [:]
+            guard AtriaSleepReviewNotificationDebounce.shouldNotify(
+                start: candidateStart,
+                end: candidateEnd,
+                lastNotifiedEndByStart: notifiedEnds
+            ) else {
+                return NotificationDecision(
+                    kind: "sleep_review",
+                    identifier: Identifier.sleepReview,
+                    title: "",
+                    body: "",
+                    reason: "window_end_jitter_debounced",
+                    shouldSchedule: false,
+                    delay: 0
+                )
+            }
         }
 
         if latest.id == defaults.string(forKey: sleepReviewLastCandidateIDKey) {
@@ -1250,7 +1551,9 @@ enum LocalNotificationScheduler {
             reason: "candidate_\(latest.id)",
             shouldSchedule: true,
             delay: 6,
-            userInfo: ["deepLink": "atria://sleep-review"]
+            userInfo: ["deepLink": "atria://sleep-review"],
+            sleepReviewWindowStart: latest.start,
+            sleepReviewWindowEnd: latest.end
         )
     }
 
@@ -1640,6 +1943,30 @@ enum LocalNotificationScheduler {
 
     private static func add(decision: NotificationDecision,
                             center: UNUserNotificationCenter) async throws {
+        let workoutCandidateID = decision.kind == "workout_review"
+            ? decision.reason.split(separator: "_", maxSplits: 1).dropFirst().first.map(String.init)
+            : nil
+        if let workoutCandidateID {
+            guard workoutReviewDeliveryCanReserve(
+                candidateID: workoutCandidateID,
+                lastNotifiedCandidateID: UserDefaults.standard.string(
+                    forKey: workoutReviewLastCandidateIDKey
+                ),
+                inFlightCandidateIDs: workoutReviewCandidateIDsInFlight
+            ),
+                  workoutReviewCandidateIDsInFlight.insert(workoutCandidateID).inserted else {
+                AtriaDebugLog(
+                    "ATRIADBG notification_skip kind=workout_review reason=candidate_already_scheduled_or_inflight candidate=%@",
+                    workoutCandidateID
+                )
+                return
+            }
+        }
+        defer {
+            if let workoutCandidateID {
+                workoutReviewCandidateIDsInFlight.remove(workoutCandidateID)
+            }
+        }
         if decision.kind == "fit_check", !fitCheckAllowed() { return }
         guard consumeAttentionBudget(kind: decision.kind) else { return }
         var decision = decision
@@ -1651,7 +1978,9 @@ enum LocalNotificationScheduler {
                                         shouldSchedule: decision.shouldSchedule,
                                         delay: quietHoursAdjustedDelay(kind: decision.kind, delay: decision.delay),
                                         categoryIdentifier: decision.categoryIdentifier,
-                                        userInfo: decision.userInfo)
+                                        userInfo: decision.userInfo,
+                                        sleepReviewWindowStart: decision.sleepReviewWindowStart,
+                                        sleepReviewWindowEnd: decision.sleepReviewWindowEnd)
         recordLedgerEntry(kind: decision.kind, action: "scheduled", detail: decision.identifier)
         let content = UNMutableNotificationContent()
         content.title = decision.title
@@ -1677,6 +2006,23 @@ enum LocalNotificationScheduler {
             defaults.set(Date().timeIntervalSince1970, forKey: sleepReviewCandidateScheduledAtPrefix + id)
             let countKey = sleepReviewCandidateScheduleCountPrefix + id
             defaults.set(defaults.integer(forKey: countKey) + 1, forKey: countKey)
+            // Window-start debounce ledger (2026-08-01): record the end the
+            // user was actually notified about, keyed by the window START,
+            // bounded to the newest eight windows.
+            if let windowStart = decision.sleepReviewWindowStart,
+               let windowEnd = decision.sleepReviewWindowEnd {
+                let stored = (defaults.dictionary(
+                    forKey: sleepReviewNotifiedEndByStartKey
+                ) as? [String: Double]) ?? [:]
+                defaults.set(
+                    AtriaSleepReviewNotificationDebounce.recordingNotifiedEnd(
+                        start: windowStart,
+                        end: windowEnd,
+                        in: stored
+                    ),
+                    forKey: sleepReviewNotifiedEndByStartKey
+                )
+            }
         }
         if decision.kind == "workout_review",
            let candidateID = decision.reason.split(separator: "_", maxSplits: 1).dropFirst().first {
@@ -1794,6 +2140,60 @@ enum LocalNotificationScheduler {
         let delay: TimeInterval
         var categoryIdentifier: String?
         var userInfo: [String: String] = [:]
+        /// Sleep-review only (2026-08-01): the candidate window carried to the
+        /// actual delivery site so the start-keyed debounce ledger records the
+        /// end the user was genuinely told about — never a decision that a
+        /// later budget/quiet-hours gate dropped.
+        var sleepReviewWindowStart: Date?
+        var sleepReviewWindowEnd: Date?
+    }
+}
+
+/// User-specified sleep-review dedupe semantics (2026-08-01): the durable key
+/// is the candidate WINDOW START, not the start-end candidate id. A growing
+/// sleep episode keeps its start while the detector's end jitters by a few
+/// minutes; each jitter minted a fresh start-end id and re-fired the review
+/// notification (observed 04:50/04:56/04:57 triple-fire). Policy:
+///  - first offer for a start always notifies;
+///  - afterwards only a material end extension (>= 30 min beyond the end the
+///    user was last notified about) re-notifies;
+///  - end jitter below that stays silent;
+///  - a separate later episode has a different start and is fully independent.
+/// Pure and persisted as a bounded [startKey: lastNotifiedEnd-unix] ledger.
+enum AtriaSleepReviewNotificationDebounce {
+    static let minimumEndGrowth: TimeInterval = 30 * 60
+    static let maximumTrackedStarts = 8
+
+    /// Starts are keyed to the minute so sub-minute detector float noise
+    /// cannot mint a fresh key for the same physical window.
+    static func startKey(for start: Date) -> String {
+        String(Int((start.timeIntervalSince1970 / 60).rounded(.down)))
+    }
+
+    static func shouldNotify(start: Date,
+                             end: Date,
+                             lastNotifiedEndByStart: [String: Double],
+                             minimumGrowth: TimeInterval = minimumEndGrowth) -> Bool {
+        guard let lastNotifiedEnd = lastNotifiedEndByStart[startKey(for: start)] else {
+            return true
+        }
+        return end.timeIntervalSince1970 - lastNotifiedEnd >= minimumGrowth
+    }
+
+    /// Bounded ledger update after a real delivery: keeps the newest
+    /// `maximumTrackedStarts` windows by start, and never lets a stale
+    /// shorter end overwrite a longer one already notified for this start.
+    static func recordingNotifiedEnd(start: Date,
+                                     end: Date,
+                                     in lastNotifiedEndByStart: [String: Double]) -> [String: Double] {
+        var updated = lastNotifiedEndByStart
+        let key = startKey(for: start)
+        updated[key] = max(updated[key] ?? 0, end.timeIntervalSince1970)
+        guard updated.count > maximumTrackedStarts else { return updated }
+        let keep = Set(updated.keys
+            .sorted { (Double($0) ?? 0) > (Double($1) ?? 0) }
+            .prefix(maximumTrackedStarts))
+        return updated.filter { keep.contains($0.key) }
     }
 }
 

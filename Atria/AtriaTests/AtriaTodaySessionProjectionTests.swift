@@ -79,8 +79,7 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
     func testDayStrainIncompleteCacheReusesOnlyExactSourceWindow() {
         let day = Date(timeIntervalSince1970: 1_720_000_000)
         let key = AtriaTodayDayStrainIncompleteKey(confirmedWorkoutsRevision: 7,
-                                                   day: day,
-                                                   isLowStrain: true)
+                                                   day: day)
         var cache = AtriaTodayDayStrainIncompleteCache()
         var computations = 0
 
@@ -95,8 +94,7 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
         XCTAssertEqual(computations, 1)
 
         let newRevision = AtriaTodayDayStrainIncompleteKey(confirmedWorkoutsRevision: 8,
-                                                           day: day,
-                                                           isLowStrain: true)
+                                                           day: day)
         XCTAssertFalse(cache.resolve(key: newRevision) {
             computations += 1
             return false
@@ -104,13 +102,12 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
         XCTAssertEqual(computations, 2)
 
         let noLongerLow = AtriaTodayDayStrainIncompleteKey(confirmedWorkoutsRevision: 8,
-                                                           day: day,
-                                                           isLowStrain: false)
+                                                           day: day)
         XCTAssertFalse(cache.resolve(key: noLongerLow) {
             computations += 1
             return false
         })
-        XCTAssertEqual(computations, 3)
+        XCTAssertEqual(computations, 2)
     }
 
     func testBroadDashboardSignalIsRevisionGatedBeforeTodaySnapshotRebuild() throws {

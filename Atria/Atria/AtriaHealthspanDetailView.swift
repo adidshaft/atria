@@ -110,6 +110,9 @@ struct AtriaHealthspanDetailView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @State private var orbExpanded = false
+    // Knowledge slice 5 (2026-08-01): ⓘ presents the spec §20 "About Body Age
+    // & VO₂max" education sheet.
+    @State private var showAbout = false
     @ScaledMetric(relativeTo: .largeTitle) private var orbSize: CGFloat = 190
 
     init(model: AtriaHealthspanDetailModel,
@@ -136,6 +139,7 @@ struct AtriaHealthspanDetailView: View {
                     }
                     if !model.trendPoints.isEmpty {
                         trendCard
+                        weeklyBreakdownCard
                     }
                     if let confidence = model.confidence {
                         confidenceRow(confidence)
@@ -158,6 +162,9 @@ struct AtriaHealthspanDetailView: View {
             .scrollIndicators(.hidden)
         }
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showAbout) {
+            AtriaAboutMetricSheet(metric: .vo2max)
+        }
         .onAppear(perform: startOrbAnimation)
         .onChange(of: reduceMotion) { _, _ in
             startOrbAnimation()
@@ -189,6 +196,13 @@ struct AtriaHealthspanDetailView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
+            Button { showAbout = true } label: {
+                Image(systemName: "info.circle")
+                    .font(.subheadline.weight(.semibold))
+                    .frame(width: 34, height: 34)
+            }
+            .atriaGlassIconAction(tint: .primary, size: 34)
+            .accessibilityLabel("About Body Age and VO2max")
             Image(systemName: "heart.text.clipboard")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Metrics.electricStrain)
@@ -223,6 +237,15 @@ struct AtriaHealthspanDetailView: View {
                     .foregroundStyle(Metrics.electricStrain)
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
+                if let qualifier = model.summary.earlyEstimateQualifierText {
+                    // 14–27 days of history: the estimate is real but not yet
+                    // confident. The qualifier stays visibly attached to the
+                    // hero so an early value never reads as a confident one.
+                    Text(qualifier)
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.orange)
+                        .padding(.top, 2)
+                }
             }
             .padding(.horizontal, AtriaDesignTokens.Spacing.xl)
         }
@@ -309,7 +332,10 @@ struct AtriaHealthspanDetailView: View {
 
     private var ageComparisonText: String {
         guard let delta = model.summary.ageDelta else {
-            return model.summary.isRefreshing ? "Updating weekly estimate" : "Building your baseline"
+            // Calibration progress (2026-07-31 device review): show the real
+            // blocker ("Building resting HR baseline", "3 sleep nights
+            // required") instead of a generic "Building your baseline".
+            return model.summary.isRefreshing ? "Updating weekly estimate" : model.summary.compactStatusText
         }
         guard delta != 0 else { return "Matches age \(model.summary.chronologicalAge)" }
         return "\(abs(delta)) yr\(abs(delta) == 1 ? "" : "s") \(delta < 0 ? "younger" : "older") than \(model.summary.chronologicalAge)"
@@ -317,7 +343,8 @@ struct AtriaHealthspanDetailView: View {
 
     private var ageAccessibilityLabel: String {
         if model.summary.isReady {
-            return "Body age \(model.summary.valueText). \(ageComparisonText)."
+            let qualifier = model.summary.earlyEstimateQualifierText.map { " \($0)." } ?? ""
+            return "Body age \(model.summary.valueText). \(ageComparisonText).\(qualifier)"
         }
         return "Body age unavailable. \(ageComparisonText)."
     }
@@ -392,6 +419,101 @@ struct AtriaHealthspanDetailView: View {
         .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile)
     }
 
+    /// The fitness-age change across the trailing week, read from the persisted
+    /// trend series (latest value vs the last point at least 7 days earlier).
+    /// nil until the series spans enough days — never inferred.
+    private var weeklyAgeDelta: Double? {
+        let points = model.trendPoints
+        guard let latest = points.last else { return nil }
+        let weekAgo = latest.day.addingTimeInterval(-7 * 24 * 3600)
+        let baseline = points.last(where: { $0.day <= weekAgo }) ?? points.first
+        guard let baseline, baseline.day < latest.day else { return nil }
+        return latest.value - baseline.value
+    }
+
+    /// "This week" breakdown: the weekly fitness-age delta plus the contributors
+    /// grouped by tone (helping vs needs-attention). Pure re-presentation of the
+    /// same persisted contributors + trend — no fabricated weekly attribution.
+    private var weeklyBreakdownCard: some View {
+        let helping = model.contributors.filter { $0.tone == .positive }
+        let attention = model.contributors.filter { $0.tone == .attention }
+        return VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
+            HStack(alignment: .firstTextBaseline) {
+                sectionLabel("THIS WEEK")
+                Spacer(minLength: AtriaDesignTokens.Spacing.sm)
+                weeklyDeltaBadge
+            }
+
+            if helping.isEmpty && attention.isEmpty {
+                Text("Keep wearing — about a week of readings reveals what's moving your fitness age.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                if !helping.isEmpty {
+                    weeklyContributorGroup(title: "HELPING",
+                                           tint: contributorTint(.positive),
+                                           symbol: "arrow.down.right.circle.fill",
+                                           contributors: helping)
+                }
+                if !attention.isEmpty {
+                    weeklyContributorGroup(title: "NEEDS ATTENTION",
+                                           tint: contributorTint(.attention),
+                                           symbol: "arrow.up.right.circle.fill",
+                                           contributors: attention)
+                }
+            }
+        }
+        .padding(AtriaDesignTokens.Spacing.lg)
+        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder
+    private var weeklyDeltaBadge: some View {
+        if let delta = weeklyAgeDelta {
+            let younger = delta < -0.05
+            let older = delta > 0.05
+            let tint: Color = younger ? contributorTint(.positive)
+                : (older ? contributorTint(.attention) : .secondary)
+            let magnitude = String(format: "%.1f", abs(delta))
+            Label(younger ? "\(magnitude) yr younger"
+                          : (older ? "\(magnitude) yr older" : "Held steady"),
+                  systemImage: younger ? "arrow.down.right" : (older ? "arrow.up.right" : "equal"))
+                .font(.caption.weight(.bold))
+                .foregroundStyle(tint)
+                .labelStyle(.titleAndIcon)
+        }
+    }
+
+    private func weeklyContributorGroup(title: String,
+                                        tint: Color,
+                                        symbol: String,
+                                        contributors: [AtriaHealthspanDetailModel.Contributor]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption2.weight(.black))
+                .foregroundStyle(tint)
+                .kerning(0.6)
+            ForEach(contributors) { contributor in
+                HStack(spacing: AtriaDesignTokens.Spacing.sm) {
+                    Image(systemName: symbol)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(tint)
+                    Text(contributor.label)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                    Spacer(minLength: AtriaDesignTokens.Spacing.sm)
+                    Text(contributor.valueText)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(tint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+            }
+        }
+    }
+
     private func contributorRow(_ contributor: AtriaHealthspanDetailModel.Contributor) -> some View {
         let tint = contributorTint(contributor.tone)
         return VStack(alignment: .leading, spacing: 6) {
@@ -440,7 +562,7 @@ struct AtriaHealthspanDetailView: View {
             Chart(model.trendPoints) { point in
                 LineMark(x: .value("Date", point.day),
                          y: .value("Fitness age", point.value))
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
                     .foregroundStyle(Metrics.electricStrain)
 
@@ -453,6 +575,20 @@ struct AtriaHealthspanDetailView: View {
             .chartYAxis(.hidden)
             .frame(height: 82)
             .accessibilityLabel(trendAccessibilityLabel)
+            .atriaInspectableGraph(
+                AtriaInspectableGraph(
+                    title: model.trendTitle,
+                    subtitle: "Recorded fitness-age estimates",
+                    content: .timeSeries([
+                        .init(title: "Fitness age",
+                              unit: " yr",
+                              tint: Metrics.electricStrain,
+                              points: model.trendPoints.map {
+                                  .init(date: $0.day, value: $0.value)
+                              })
+                    ])
+                )
+            )
         }
         .padding(AtriaDesignTokens.Spacing.lg)
         .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile)

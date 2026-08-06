@@ -61,7 +61,14 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
     func testSettingsDestinationsPreserveEveryFunctionalSection() throws {
         let source = try source("AtriaSettingsView.swift")
         let start = try XCTUnwrap(source.range(of: "private var personalSettingsPage"))
-        let end = try XCTUnwrap(source.range(of: "/// Entry to the leaderboard demo",
+        // 2026-08-01: the old end anchor "/// Entry to the leaderboard demo" and
+        // the leaderboardRow/sparringRow destinations were removed when the
+        // leaderboard/sparring demo screens were deleted earlier on this branch.
+        // Re-anchor the destinations region to the compactSettingsForm helper
+        // (which follows every settings page) and drop the two deleted rows from
+        // the expected set. This corrects a stale pin to match the deliberate
+        // deletion — the remaining functional sections are still all asserted.
+        let end = try XCTUnwrap(source.range(of: "private func compactSettingsForm<Content: View>(",
                                               range: start.upperBound..<source.endIndex))
         let destinations = String(source[start.lowerBound..<end.lowerBound])
 
@@ -70,7 +77,7 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
             "AtriaAdvancedTargetsSettingsView()",
             "radioModeSection", "heartRateBroadcastSection", "deviceSection",
             "sensorAvailabilitySection", "alertsSection", "dataSection",
-            "AtriaResearchSharingSection", "leaderboardRow", "sparringRow", "aboutSection",
+            "AtriaResearchSharingSection", "aboutSection",
             "researchValidationSection"
         ] {
             XCTAssertTrue(destinations.contains(section), "Missing settings section: \(section)")
@@ -85,8 +92,10 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
         let settingsRoot = String(source[..<advancedStart.lowerBound])
         let advancedTargets = String(source[advancedStart.lowerBound...])
 
-        XCTAssertFalse(settingsRoot.contains("@AtriaDefault(\"atria.target."),
-                       "Opening Settings must not construct advanced target observers")
+        XCTAssertFalse(settingsRoot.contains("@AtriaDefault(\"atria.target.recovery.greenLower\""),
+                       "Opening Settings must not construct advanced recovery target observers")
+        XCTAssertFalse(settingsRoot.contains("@AtriaDefault(\"atria.target.vo2.redDelta\""),
+                       "Opening Settings must not construct advanced VO2 target observers")
         XCTAssertFalse(settingsRoot.contains("@AtriaDefault(\"atria.sleep.baseNeedHours\""))
         XCTAssertTrue(settingsRoot.contains("AtriaAdvancedTargetsSettingsView()"))
         XCTAssertFalse(settingsRoot.contains(".onChange(of: recoveryTargetSignature)"))
@@ -261,7 +270,10 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
 
         XCTAssertTrue(flow.contains(".frame(maxWidth: 260)"))
         XCTAssertTrue(flow.contains(".font(.system(size: 28, weight: .bold, design: .rounded))"))
-        XCTAssertTrue(flow.contains(".frame(maxWidth: .infinity, minHeight: 58)"))
+        // 2026-07-30: the fixed-height expectation pills were replaced by a compact
+        // vertical "what to expect" timeline; the ring maxWidth + title font above
+        // still assert the compact visual hierarchy this test guards.
+        XCTAssertTrue(flow.contains("private func expectationStep"))
         XCTAssertTrue(sharing.contains("Anonymous data only. No identity or location. Review the bundle before sharing."))
         XCTAssertFalse(sharing.contains("Share anonymized heart-rate, sleep and workout series"))
         XCTAssertTrue(sharing.contains("DisclosureGroup(\"Privacy details\")"),

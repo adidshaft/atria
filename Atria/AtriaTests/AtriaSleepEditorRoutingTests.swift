@@ -156,11 +156,11 @@ final class AtriaSleepEditorRoutingTests: XCTestCase {
         XCTAssertTrue(source.contains("store.confirmSleepHistoryNightForUI("))
         XCTAssertTrue(source.contains(") != nil"),
                       "History must propagate durable confirmation success")
-        XCTAssertTrue(cta.contains("let onConfirm: () -> Bool"))
-        XCTAssertTrue(cta.contains("confirmationFailed = !onConfirm()"))
+        XCTAssertTrue(cta.contains("let onConfirm: () async -> Bool"))
+        XCTAssertTrue(cta.contains("confirmationFailed = !(await onConfirm())"))
         XCTAssertTrue(cta.contains("This suggestion is still available"),
                       "A failed History save must explain that the candidate was retained")
-        XCTAssertFalse(cta.contains("onConfirm: () -> Void"))
+        XCTAssertFalse(cta.contains("onConfirm: () async -> Void"))
         XCTAssertTrue(cta.contains(".accessibilityElement(children: .contain)"))
         XCTAssertFalse(cta.contains(".accessibilityElement(children: .combine)"),
                        "Interactive sleep review actions must remain individually reachable")

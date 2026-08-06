@@ -82,16 +82,21 @@ final class AtriaVitalsHistoryProjectionStoreTests: XCTestCase {
         XCTAssertNotEqual(key(), key(workouts: 2))
         XCTAssertNotEqual(key(), key(sleep: 2))
         XCTAssertNotEqual(key(), key(detections: 2))
+        XCTAssertNotEqual(key(), key(reviewCandidateDays: [
+            AtriaHistoryReviewCandidateDay(day: Date(timeIntervalSince1970: 1_800_000_000), count: 1)
+        ]))
     }
 
     private func key(rollup: Int = 1,
                      workouts: Int = 1,
                      sleep: Int = 1,
-                     detections: Int = 1) -> AtriaHistoryRevisionKey {
+                     detections: Int = 1,
+                     reviewCandidateDays: [AtriaHistoryReviewCandidateDay] = []) -> AtriaHistoryRevisionKey {
         AtriaHistoryRevisionKey(rollup: rollup,
                                 workouts: workouts,
                                 sleep: sleep,
-                                detections: detections)
+                                detections: detections,
+                                reviewCandidateDays: reviewCandidateDays)
     }
 
     private func model(sessionsCount: Int) -> AtriaHistoryModel {

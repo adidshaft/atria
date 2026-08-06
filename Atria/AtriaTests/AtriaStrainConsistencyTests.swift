@@ -17,6 +17,101 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                             biologicalSex: biologicalSex)
     }
 
+    func testDailyMetricPersistenceCannotBeStarvedByRapidArchiveRefreshes() {
+        XCTAssertTrue(SessionStore.shouldKeepPendingDailyMetricPersist(
+            pendingIsCancelled: false,
+            requestedDelay: 0.35
+        ))
+        XCTAssertFalse(SessionStore.shouldKeepPendingDailyMetricPersist(
+            pendingIsCancelled: true,
+            requestedDelay: 0.35
+        ))
+        XCTAssertFalse(SessionStore.shouldKeepPendingDailyMetricPersist(
+            pendingIsCancelled: false,
+            requestedDelay: 0
+        ))
+
+        XCTAssertTrue(SessionStore.dailyMetricPersistNeedsCatchUp(
+            completedRevision: 41,
+            currentRevision: 42,
+            writeSucceeded: true
+        ))
+        XCTAssertFalse(SessionStore.dailyMetricPersistNeedsCatchUp(
+            completedRevision: 42,
+            currentRevision: 42,
+            writeSucceeded: true
+        ))
+        XCTAssertFalse(SessionStore.dailyMetricPersistNeedsCatchUp(
+            completedRevision: 41,
+            currentRevision: 42,
+            writeSucceeded: false
+        ))
+    }
+
+    func testQuietAllDayWearDoesNotBecomeTrainingLoad() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let quiet = workout(start: start, bpm: 84, minutes: 12 * 60)
+        let aggregate = SessionStore.homeSavedAggregate(
+            from: [quiet],
+            rest: 56,
+            maxHR: 190,
+            biologicalSex: .male,
+            now: start.addingTimeInterval(12 * 60 * 60),
+            cycleStart: start
+        )
+
+        XCTAssertEqual(aggregate.savedTodayTRIMP, 0, accuracy: 0.000_001)
+        XCTAssertGreaterThan(
+            quiet.trimp(rest: 56, max: 190),
+            100,
+            "workout-window TRIMP must remain unchanged"
+        )
+        let historicalStrains = SessionStore.perDayStrains(
+            [quiet],
+            rest: 56,
+            maxHR: 190
+        )
+        XCTAssertFalse(historicalStrains.isEmpty)
+        XCTAssertTrue(
+            historicalStrains.allSatisfy { $0 == 0 },
+            "historical strain must share Today's quiet-wear exclusion"
+        )
+        XCTAssertEqual(
+            AtriaAnalytics.TrainingLoad.summary(
+                sessions: [quiet],
+                rest: 56,
+                maxHR: 190
+            ).acuteLoad,
+            0,
+            "fitness-age training load must not count ordinary all-day wear"
+        )
+        XCTAssertEqual(
+            SessionStore.makeOverviewTrendPoints(
+                sessions: [quiet],
+                rest: 56,
+                maxHR: 190,
+                now: start.addingTimeInterval(12 * 60 * 60)
+            ).first?.strain,
+            0,
+            "D/W/M Overview strain must match the daily-load authority"
+        )
+    }
+
+    func testDailyLoadRetainsMeasuredExerciseAboveRestZone() {
+        let start = Date(timeIntervalSince1970: 1_800_100_000)
+        let exercise = workout(start: start, bpm: 130, minutes: 60)
+        let interval = DateInterval(
+            start: start,
+            end: start.addingTimeInterval(60 * 60)
+        )
+
+        XCTAssertEqual(
+            exercise.dailyLoadTRIMP(rest: 56, max: 190, within: interval),
+            exercise.trimp(rest: 56, max: 190, within: interval),
+            accuracy: 0.000_001
+        )
+    }
+
     func testPerDayStrainSumsWithinDayAndBeatsPerSessionAverage() {
         let day = Calendar.current.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000)).addingTimeInterval(10 * 3600)
         let s1 = workout(start: day, bpm: 150, minutes: 25)
@@ -131,6 +226,53 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                        saved.trimp(rest: 60, max: 190),
                        accuracy: 0.000_001,
                        "1 Hz archive rows beneath a 10-second saved stream must add zero load")
+    }
+
+    func testConfirmedSleepIntervalContributesNoDailyLoadOrCalories() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let day = calendar.date(from: DateComponents(
+            year: 2026, month: 7, day: 12
+        ))!
+        let sleepStart = day.addingTimeInterval(1 * 3_600)
+        let sleepEnd = sleepStart.addingTimeInterval(6 * 3_600)
+        let sleepLike = workout(start: sleepStart,
+                                bpm: 145,
+                                minutes: 6 * 60)
+        let awake = workout(start: day.addingTimeInterval(9 * 3_600),
+                            bpm: 145,
+                            minutes: 20)
+        let profile = AthleteProfile(
+            age: 30,
+            measuredMaxHR: 190,
+            maxHRSource: .measured,
+            biologicalSex: .male,
+            weightKg: 75,
+            heightCm: 175,
+            updated: day,
+            hasCompletedOnboarding: true
+        )
+
+        let aggregate = SessionStore.homeSavedAggregate(
+            from: [sleepLike, awake],
+            rest: 60,
+            maxHR: 190,
+            biologicalSex: .male,
+            profile: profile,
+            calendar: calendar,
+            now: day.addingTimeInterval(12 * 3_600),
+            excludedLoadIntervals: [
+                DateInterval(start: sleepStart, end: sleepEnd)
+            ]
+        )
+        XCTAssertEqual(aggregate.savedTodayTRIMP,
+                       awake.trimp(rest: 60, max: 190),
+                       accuracy: 0.000_001)
+        XCTAssertEqual(
+            aggregate.savedTodayActiveCalories ?? -1,
+            awake.activeCalories(rest: 60, profile: profile) ?? -2,
+            accuracy: 0.000_001
+        )
     }
 
     func testArchiveOverlapDoesNotDoubleCountHistoryRollup() throws {
@@ -835,6 +977,15 @@ final class AtriaStrainConsistencyTests: XCTestCase {
         XCTAssertEqual(live.availability, .live)
         XCTAssertEqual(live.compactLabel, "Motion live")
         XCTAssertEqual(live.ageSeconds, 3)
+
+        let qualifying = AtriaLiveWorkoutMotionProjection.make(
+            capturedAt: now.addingTimeInterval(-3),
+            hasContinuousValidatedMotion: false,
+            isReconnecting: false,
+            now: now
+        )
+        XCTAssertEqual(qualifying.availability, .unavailable)
+        XCTAssertEqual(qualifying.compactLabel, "Motion qualifying")
 
         let gap = AtriaLiveWorkoutMotionProjection.make(
             capturedAt: now.addingTimeInterval(-19),

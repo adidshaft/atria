@@ -147,7 +147,7 @@ struct AtriaBreathworkSession: View {
         var hrText: String {
             guard let startingHR, let endingHR else { return "HR learning" }
             let delta = endingHR - startingHR
-            return "HR \(startingHR) -> \(endingHR) · \(delta >= 0 ? "+" : "")\(delta) bpm"
+            return "HR \(startingHR) → \(endingHR) · \(delta >= 0 ? "+" : "")\(delta) bpm"
         }
 
         var rmssdText: String? {
@@ -268,13 +268,12 @@ struct AtriaBreathworkSession: View {
                 .font(.title.weight(.black))
                 .foregroundStyle(.white)
 
-            Picker("Duration", selection: $selectedDuration) {
-                Text("1 min").tag(TimeInterval(60))
-                Text("3 min").tag(TimeInterval(180))
-                Text("5 min").tag(TimeInterval(300))
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 320)
+            // Native-clean (design 2026-08-05): plain-text duration selector in
+            // place of the boxed segmented control, matching the app-wide style.
+            AtriaTextSelector(items: [TimeInterval(60), TimeInterval(180), TimeInterval(300)],
+                              title: { "\(Int($0 / 60)) min" },
+                              selection: $selectedDuration)
+                .frame(maxWidth: 320)
 
             Button {
                 startedAt = Date()
@@ -375,7 +374,7 @@ struct AtriaBreathworkSession: View {
                     .font(.caption.weight(.semibold).monospacedDigit())
                     .foregroundStyle(feedback.direction.map(stressDirectionTint) ?? .white.opacity(0.52))
             } else {
-                Text("—")
+                Text("--")
                     .font(.system(size: 38, weight: .bold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.56))
                 Text("Measured stress unavailable")

@@ -26,6 +26,11 @@ enum AtriaResearchProbe {
         /// Reserved for a decoder calibrated and checked against an external
         /// temperature reference on its declared strap generation.
         case externalReferenceValidated = "external_reference_validated"
+        /// WHOOP 4 v12/v24 raw ADC position and wear response are independently
+        /// reproduced, but the absolute transfer function is not public.
+        /// Production may use this only for deviation from the same strap's own
+        /// learned nightly baseline, never as an absolute thermometer.
+        case sameDeviceRelativeValidated = "same_device_relative_validated"
         /// Test-only evidence supplied after conversion, never derived from a
         /// raw candidate word inside production aggregation.
         case calibratedFixture = "calibrated_fixture"
@@ -64,7 +69,7 @@ enum AtriaResearchProbe {
                 return false
             }
             switch decoder.calibrationProvenance {
-            case .externalReferenceValidated:
+            case .externalReferenceValidated, .sameDeviceRelativeValidated:
                 // A decodable identity stored on disk is not proof by itself.
                 // Production aggregation requires the exact decoder identity
                 // compiled into this build after external-reference validation.
@@ -100,19 +105,68 @@ enum AtriaResearchProbe {
         }
     }
 
-    /// No production conversion is available yet. Promotion requires adding a
-    /// concrete generation/version identity and a decoder that returns the
-    /// typed Celsius value above after external-reference validation.
-    static let productionSkinTemperatureDecoder: SkinTemperatureDecoderIdentity? = nil
+    /// WHOOP 4 v12/v24 payload-relative offset 68 is the raw skin-temperature
+    /// ADC (frame-absolute offset 72). Its per-device offset is removed by a
+    /// same-device median anchor; downstream code publishes only deviation from
+    /// the same strap's sleep baseline.
+    static let productionSkinTemperatureDecoder = SkinTemperatureDecoderIdentity(
+        modelGeneration: .strap4,
+        version: "whoop4-v24-relative-adc-v1",
+        source: .historical,
+        calibrationProvenance: .sameDeviceRelativeValidated
+    )
+
+    static let whoop4SkinTemperatureRawOffset = 68
+    static let whoop4SkinTemperatureWornRawRange = 550...2040
+    static let whoop4SkinTemperatureMinimumAnchorSamples = 100
+    static let whoop4SkinTemperatureAnchorCelsius = 33.0
+    static let whoop4SkinTemperatureRelativeSlopeCelsiusPerRaw = 0.05
 
     static func decodeSkinTemperatureCelsius(payload: [UInt8],
                                              source: Source,
-                                             modelGeneration: ModelGeneration)
+                                             modelGeneration: ModelGeneration,
+                                             sameDeviceAnchorRaw: Double?)
         -> DecodedSkinTemperatureCelsius? {
-        _ = payload
-        _ = source
-        _ = modelGeneration
-        return nil
+        guard source == .historical,
+              modelGeneration == .strap4,
+              payload.count > whoop4SkinTemperatureRawOffset + 1,
+              payload[0] == 0x2f,
+              payload[1] == 12 || payload[1] == 24,
+              let sameDeviceAnchorRaw,
+              sameDeviceAnchorRaw.isFinite else { return nil }
+        let raw = u16LE(payload, offset: whoop4SkinTemperatureRawOffset)
+        return decodeWhoop4SkinTemperatureRaw(
+            raw,
+            sameDeviceAnchorRaw: sameDeviceAnchorRaw
+        )
+    }
+
+    static func decodeWhoop4SkinTemperatureRaw(
+        _ raw: Int,
+        sameDeviceAnchorRaw: Double
+    ) -> DecodedSkinTemperatureCelsius? {
+        guard let decoder = productionSkinTemperatureDecoder,
+              whoop4SkinTemperatureWornRawRange.contains(raw),
+              sameDeviceAnchorRaw.isFinite else { return nil }
+        let celsius = whoop4SkinTemperatureAnchorCelsius
+            + (Double(raw) - sameDeviceAnchorRaw)
+                * whoop4SkinTemperatureRelativeSlopeCelsiusPerRaw
+        // This gate rejects doff/saturation transients after per-device
+        // centering. It does not certify an absolute temperature.
+        guard (28...42).contains(celsius) else { return nil }
+        return DecodedSkinTemperatureCelsius(celsius: celsius, decoder: decoder)
+    }
+
+    static func whoop4SkinTemperatureAnchorRaw(_ rawValues: [Int]) -> Double? {
+        let sorted = rawValues
+            .filter(whoop4SkinTemperatureWornRawRange.contains)
+            .sorted()
+        guard sorted.count >= whoop4SkinTemperatureMinimumAnchorSamples else { return nil }
+        let middle = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return Double(sorted[middle - 1] + sorted[middle]) / 2
+        }
+        return Double(sorted[middle])
     }
 
     struct Candidate: Equatable {
@@ -147,6 +201,14 @@ enum AtriaResearchProbe {
 
         var oxygenOffsetSummary: String {
             Self.offsetSummary(oxygenByteCandidates)
+        }
+
+        /// RESEARCH-ONLY: the observed candidate byte value at a hypothesized
+        /// offset (64/66 for historical 0x2f records). This is a raw capture for
+        /// later cross-checking against a reference app; it is never an SpO2
+        /// percentage and never drives display.
+        func oxygenValue(atOffset offset: Int) -> Int? {
+            oxygenByteCandidates.first { $0.offset == offset }?.value
         }
 
         var temperatureOffsetSummary: String {

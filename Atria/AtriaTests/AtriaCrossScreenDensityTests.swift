@@ -31,7 +31,12 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(source.contains("Text(\"Skipped questions stay unanswered.\")"))
         XCTAssertTrue(source.contains(".accessibilityLabel(\"Check-in done. Skipped questions stay unanswered.\")"))
         XCTAssertFalse(source.contains("Log today to start your pattern — the full 90-day view builds as history grows."))
-        XCTAssertTrue(source.contains("The full 90-day pattern appears as logging history grows."))
+        // 2026-08-04: the "full 90-day pattern appears..." empty-state line was
+        // retired with the 7x13 heat-strip redesign (ed4cdac8) — sparse days
+        // read directly from the calendar cells now. Pin the surviving 90-day
+        // honesty copy instead.
+        XCTAssertFalse(source.contains("The full 90-day pattern appears as logging history grows."))
+        XCTAssertTrue(source.contains("90-day association from logged dates; not a prediction."))
     }
 
     func testWorkoutTargetControlsUseSaveSemanticsAndCompactGuidance() throws {
@@ -58,23 +63,14 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(source.contains("Text(\"Pulls data your strap stored while disconnected"))
     }
 
+    // 2026-08-04: RETIRED — `AtriaVitalsEducationSheet` was removed by
+    // b1509b30 (metric info buttons wired to the spec-§20 About sheets). The
+    // successor content contracts live in AtriaAboutMetricSheetTests; this
+    // density pin had been failing on a nonexistent anchor since then.
     func testVitalsEducationLeadsWithActionsInsteadOfThreeParagraphCards() throws {
         let source = try source("AtriaVitalsCollectionSections.swift")
-        let start = try XCTUnwrap(source.range(of: "struct AtriaVitalsEducationSheet"))
-        let end = try XCTUnwrap(source.range(of: "/// Small inline hint chip",
-                                              range: start.upperBound..<source.endIndex))
-        let sheet = String(source[start.lowerBound..<end.lowerBound])
-
-        XCTAssertTrue(sheet.contains("Text(topic.compactSummary)"))
-        XCTAssertTrue(sheet.contains("LabeledContent(\"Typical\")"))
-        XCTAssertTrue(sheet.contains("Text(\"Try next\")"))
-        XCTAssertTrue(sheet.contains("DisclosureGroup"))
-        XCTAssertTrue(sheet.contains("Label(\"How it works\", systemImage: \"checkmark.shield.fill\")"))
-        XCTAssertTrue(sheet.contains(".accessibilityHint(topic.whatItIs)"))
-        XCTAssertTrue(sheet.contains(".accessibilityHint(topic.howToImprove[index])"))
-        XCTAssertFalse(sheet.contains("detailBlock(title: \"What it is\""))
-        XCTAssertFalse(sheet.contains("detailBlock(title: \"How Atria computes it\""))
-        XCTAssertFalse(sheet.contains("detailBlock(title: \"Your typical range\""))
+        XCTAssertFalse(source.contains("struct AtriaVitalsEducationSheet"),
+                       "education sheet was replaced by AtriaAboutMetricSheet (b1509b30); if it returns, restore the retired density pins from git history")
     }
 
     func testDeveloperReferenceChecksUseFlatReadableLiquidGlassHierarchy() throws {
@@ -267,7 +263,8 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(section.contains("ForEach(Array(selectedMetrics.enumerated())"),
                        "Metric identity must not depend on mutable array offsets")
         XCTAssertTrue(todaySource.contains("private var glanceKicker"))
-        XCTAssertTrue(todaySource.contains("accessibilityLabel(\"Reorder At a glance\")"),
+        XCTAssertTrue(todaySource.contains("accessibilityLabel(isEditingGlance ? \"Finish editing At a glance\" : \"Edit At a glance\")"))
+        XCTAssertTrue(todaySource.contains("accessibilityHint(\"Lets you drag cards to reorder and remove cards.\")"),
                       "The live grid needs a visible compact path into drag-and-drop ordering")
     }
 
@@ -310,6 +307,37 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(collapse.contains("Text(slot.metric.value)"))
         XCTAssertFalse(collapse.contains("Text(slot.metric.title)"), "Collapsed rail should contain only icons and values")
         XCTAssertTrue(collapse.contains(".glassEffect(.regular"))
+    }
+
+    func testDashboardHasOnlyOneLazyVerticalContentOwner() throws {
+        let home = try source("AtriaHomeView.swift")
+        let navigationStart = try XCTUnwrap(
+            home.range(of: "private func tabNavigation<Content: View>")
+        )
+        let navigationEnd = try XCTUnwrap(
+            home.range(
+                of: "private var scrollBottomClearance",
+                range: navigationStart.upperBound..<home.endIndex
+            )
+        )
+        let navigation = String(
+            home[navigationStart.lowerBound..<navigationEnd.lowerBound]
+        )
+        let today = try source("AtriaTodayScreen.swift")
+
+        XCTAssertTrue(navigation.contains("VStack(spacing: 18)"))
+        XCTAssertFalse(
+            navigation.contains("LazyVStack(spacing: 18)"),
+            "The scroll shell must not wrap screen-owned lazy content in a second LazyVStack; nested lazy layout made below-fold Strap steps unreachable on a physical iPhone."
+        )
+        XCTAssertTrue(
+            today.contains("VStack(spacing: 16)"),
+            "Today's bounded section list must publish its full content height so the physical scroll reaches Strap steps."
+        )
+        XCTAssertFalse(
+            today.contains("LazyVStack(spacing: 16)"),
+            "A lazy Today root can truncate the device scroll surface before below-fold cards."
+        )
     }
 
     func testCompactRingUsesRequestedEmojiAndNumberVocabulary() throws {
@@ -397,6 +425,38 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(share.contains("case .story: return CGSize(width: 1080, height: 1920)"))
     }
 
+    func testRingTargetsStayConfiguredAcrossTodayOverviewAndShare() throws {
+        let today = try source("AtriaTodayScreen.swift")
+        for key in [
+            "atria.target.recovery.greenLower",
+            "atria.target.recovery.yellowLower",
+            "atria.target.strain.greenBand",
+            "atria.target.strain.yellowBand",
+        ] {
+            XCTAssertTrue(today.contains(key))
+        }
+        XCTAssertTrue(today.contains("tint: ringRecoveryZone?.tint ?? .secondary"))
+        XCTAssertTrue(today.contains("stateTint: incomplete || pending ? nil : ringStrainZone(target: target)?.tint"))
+        XCTAssertFalse(today.contains("AtriaTriRing.zoneTint(.recovery"))
+        XCTAssertFalse(today.contains("AtriaTriRing.zoneTint(.strain"))
+
+        let overview = try source("AtriaOverviewSections.swift")
+        XCTAssertTrue(overview.contains("switch recoveryZone?.level"))
+        XCTAssertTrue(overview.contains("let unqualified = pending || strainIsPartial"))
+        XCTAssertTrue(overview.contains("stateTint: unqualified ? nil : qualifiedStrainZone?.tint"),
+                      "pending or partial strain must not receive a confident target-zone tint")
+        XCTAssertFalse(overview.contains("hero.guidance.target ?? 21"))
+
+        let home = try source("AtriaHomeView.swift")
+        XCTAssertFalse(home.contains("switch recoveryPercent ?? 50"))
+        XCTAssertTrue(home.contains("AtriaRingMetricProjection.strainFill(strain: hero.strain"))
+
+        let share = try source("AtriaShareCard.swift")
+        XCTAssertTrue(share.contains("let stateTintHex: String?"))
+        XCTAssertTrue(share.contains("let targetFraction: Double?"))
+        XCTAssertTrue(share.contains("if let targetFraction = ring.targetFraction"))
+    }
+
     func testShareExportRunsOnlyFromAnActionAndRejectsStaleResults() throws {
         let share = try source("AtriaShareCard.swift")
 
@@ -451,6 +511,30 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(share.contains("route-present"))
     }
 
+    func testSyncNoticeUsesNativeGlassPagingWithCompactHeight() throws {
+        let home = try source("AtriaHomeView.swift")
+        let start = try XCTUnwrap(home.range(
+            of: "private struct AtriaHomeRecoveryStatusHost: View {"
+        ))
+        let end = try XCTUnwrap(home.range(
+            of: "static func rotationIndex(", range: start.upperBound..<home.endIndex
+        ))
+        let host = String(home[start.lowerBound..<end.lowerBound])
+
+        // Native Liquid Glass surface with a horizontally paged card for each
+        // currently relevant notice.
+        XCTAssertTrue(host.contains("GlassEffectContainer(spacing: 10)"))
+        XCTAssertTrue(host.contains("ScrollView(.horizontal, showsIndicators: false)"))
+        XCTAssertTrue(host.contains(".scrollTargetBehavior(.paging)"))
+        XCTAssertTrue(host.contains(".glassEffect(.regular, in: .rect(cornerRadius: 18))"))
+        XCTAssertTrue(host.contains(".frame(height: 40)"))
+        XCTAssertTrue(host.contains(".foregroundStyle(.primary)"))
+
+        // The negative bottom padding existed only to close the void the
+        // floating card opened above the greeting; edge-to-edge ends flush.
+        XCTAssertFalse(host.contains(".padding(.bottom, -12)"))
+    }
+
     func testCustomizeCommitsOnceWithSaveAndDoesNotInventUnavailableVitals() throws {
         let source = try source("AtriaCustomizeSheet.swift")
 
@@ -459,5 +543,18 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(source.contains("case .bloodOxygen, .bodyTemp: return \"--\""))
         XCTAssertFalse(source.contains("case .bloodOxygen: return \"98%\""))
         XCTAssertFalse(source.contains("case .bodyTemp: return \"+0.1\""))
+    }
+
+    func testTodayDistinguishesSettledMorningHRVFromLivePersonalHRV() throws {
+        let source = try source("AtriaTodayScreen.swift")
+        let start = try XCTUnwrap(source.range(of: "case .hrv:"))
+        let end = try XCTUnwrap(
+            source.range(of: "case .stress:", range: start.upperBound..<source.endIndex)
+        )
+        let hrvCard = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(hrvCard.contains("title: \"Morning HRV\""))
+        XCTAssertTrue(hrvCard.contains("value: displaySettledHRV.value"))
+        XCTAssertTrue(hrvCard.contains("detail: legendDetail(displaySettledHRV.detail)"))
     }
 }

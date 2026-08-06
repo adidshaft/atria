@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 struct ActiveSessionJournalRecord: Codable {
@@ -30,6 +31,13 @@ struct ActiveSessionJournalRecord: Codable {
     var skinTempResearchCandidateFrames: Int? = nil
     var skinTempResearchCandidateValueSum: Int? = nil
     var skinTempResearchCandidateValueCount: Int? = nil
+    /// RESEARCH-ONLY SpO2 candidate byte-value capture at the two historical
+    /// hypotheses (offsets 64/66). Optional so journals written before the
+    /// capture existed remain decodable. Never rendered as an SpO2 value.
+    var spo2ResearchCandidateOffset64ValueSum: Int? = nil
+    var spo2ResearchCandidateOffset64ValueCount: Int? = nil
+    var spo2ResearchCandidateOffset66ValueSum: Int? = nil
+    var spo2ResearchCandidateOffset66ValueCount: Int? = nil
     /// Cumulative, calibration-gated R10 detector state for this live segment.
     /// Optional so journals written before step capture remain decodable.
     var strapStepResearchCount: Int? = nil
@@ -106,6 +114,10 @@ private struct ActiveSessionJournalSegment: Codable {
     var skinTempResearchCandidateFrames: Int? = nil
     var skinTempResearchCandidateValueSum: Int? = nil
     var skinTempResearchCandidateValueCount: Int? = nil
+    var spo2ResearchCandidateOffset64ValueSum: Int? = nil
+    var spo2ResearchCandidateOffset64ValueCount: Int? = nil
+    var spo2ResearchCandidateOffset66ValueSum: Int? = nil
+    var spo2ResearchCandidateOffset66ValueCount: Int? = nil
     var strapStepResearchCount: Int? = nil
     var strapStepResearchRawCount: Int? = nil
     var strapStepResearchDeviceTimestamp: UInt32? = nil
@@ -232,6 +244,11 @@ enum ActiveSessionJournal {
     private static let fileName = "atria-active-session.json"
     private static let legacyFileName = "whoop-active-session.json"
     private static let segmentDirectoryName = "atria-active-session.segments"
+    /// The journal is a hot crash-recovery cache, not an unbounded event log.
+    /// A complete replacement base preserves every value still admitted by
+    /// the caller's age/sample policy while retiring delta-chain overhead.
+    static let maximumSegmentChainCount = 64
+    static let maximumSegmentChainBytes: UInt64 = 24 * 1_024 * 1_024
     private static let ioLock = NSLock()
     private static let strengthMirrorIOQueue = DispatchQueue(
         label: "com.atria.active-session-journal.strength-mirror",
@@ -264,6 +281,7 @@ enum ActiveSessionJournal {
     private static var persistedStrengthMirrorGeneration: UInt64 = 0
     private static var lastStrengthMirrorPersistenceWasOnMainThread = false
     private static var segmentedReconstructionCount = 0
+    private static var compactionReplacementDurableCheckpointForTesting: (() throws -> Void)?
     private enum LastCloseDefaults {
         static let status = "atria.activeJournal.lastClose.status"
         static let reason = "atria.activeJournal.lastClose.reason"
@@ -369,6 +387,20 @@ enum ActiveSessionJournal {
         var latest = latestSequence.flatMap { loadSegment(sequence: $0) }
         var existing = loadSegmentedRecordLocked()
         if latest?.id != record.id {
+            // A different (or absent) durable generation may only be replaced
+            // by a complete base. Previously this branch deleted the durable
+            // chain before cursor validation, so a stale non-zero manager
+            // cursor could erase the last crash-recovery checkpoint and then
+            // fail with `expected_0_actual_N`. Keep the old generation durable
+            // until the caller returns with its verified full rebase.
+            guard sampleStartIndex == 0 else {
+                throw IncrementalSaveError.discontinuousSampleCursor(expected: 0,
+                                                                      actual: sampleStartIndex)
+            }
+            guard rrSampleStartIndex == 0 else {
+                throw IncrementalSaveError.discontinuousRRCursor(expected: 0,
+                                                                  actual: rrSampleStartIndex)
+            }
             clearSegmentFiles()
             segmentedLoadCache = nil
             mirroredStrengthCache = nil
@@ -376,13 +408,43 @@ enum ActiveSessionJournal {
             latest = nil
             existing = nil
         }
-        let expectedSamples = existing?.samples.count ?? 0
-        let expectedRR = existing?.rrSamples?.count ?? 0
-        guard sampleStartIndex == expectedSamples else {
+        let existingSamples = existing?.samples ?? []
+        let existingRRSamples = existing?.rrSamples ?? []
+        let expectedSamples = existingSamples.count
+        let expectedRR = existingRRSamples.count
+        let samples: [ActiveSessionJournalRecord.Sample]
+        if sampleStartIndex == expectedSamples {
+            samples = record.samples
+        } else if sampleStartIndex < expectedSamples,
+                  let rebased = exactReplaySafeNovelSuffix(
+                    existing: existingSamples,
+                    incoming: record.samples,
+                    timestamp: \.t,
+                    matches: { $0.t == $1.t && $0.bpm == $1.bpm }
+                  ) {
+            // A process relaunch resets the manager's source cursors even when
+            // the durable journal still owns the same live session ID. Accept
+            // only a provable exact replay plus a strictly newer suffix; never
+            // discard or duplicate the durable prefix to repair the cursor.
+            samples = rebased
+        } else {
             throw IncrementalSaveError.discontinuousSampleCursor(expected: expectedSamples,
                                                                   actual: sampleStartIndex)
         }
-        guard rrSampleStartIndex == expectedRR else {
+        let rrSamples: [ActiveSessionJournalRecord.RRSample]
+        if rrSampleStartIndex == expectedRR {
+            rrSamples = record.rrSamples ?? []
+        } else if rrSampleStartIndex < expectedRR,
+                  let rebased = exactReplaySafeNovelSuffix(
+                    existing: existingRRSamples,
+                    incoming: record.rrSamples ?? [],
+                    timestamp: \.t,
+                    matches: {
+                        $0.t == $1.t && $0.ms == $1.ms && $0.source == $1.source
+                    }
+                  ) {
+            rrSamples = rebased
+        } else {
             throw IncrementalSaveError.discontinuousRRCursor(expected: expectedRR,
                                                               actual: rrSampleStartIndex)
         }
@@ -391,9 +453,9 @@ enum ActiveSessionJournal {
         let segment = ActiveSessionJournalSegment(
             schema: Self.segmentSchema, sequence: nextSequence,
             id: record.id, label: record.label, startedAt: record.startedAt, updatedAt: record.updatedAt,
-            sampleStartIndex: sampleStartIndex, samples: record.samples,
+            sampleStartIndex: expectedSamples, samples: samples,
             recoverySampleStartIndex: latest?.sampleStartIndex, recoverySamples: latest?.samples,
-            rrSampleStartIndex: rrSampleStartIndex, rrSamples: record.rrSamples ?? [],
+            rrSampleStartIndex: expectedRR, rrSamples: rrSamples,
             recoveryRRSampleStartIndex: latest?.rrSampleStartIndex, recoveryRRSamples: latest?.rrSamples,
             rawHRNotifications: record.rawHRNotifications, acceptedHRSamples: record.acceptedHRSamples,
             zeroHRSamples: record.zeroHRSamples, heldArtifacts: record.heldArtifacts,
@@ -409,30 +471,71 @@ enum ActiveSessionJournal {
             skinTempResearchCandidateFrames: record.skinTempResearchCandidateFrames,
             skinTempResearchCandidateValueSum: record.skinTempResearchCandidateValueSum,
             skinTempResearchCandidateValueCount: record.skinTempResearchCandidateValueCount,
+            spo2ResearchCandidateOffset64ValueSum: record.spo2ResearchCandidateOffset64ValueSum,
+            spo2ResearchCandidateOffset64ValueCount: record.spo2ResearchCandidateOffset64ValueCount,
+            spo2ResearchCandidateOffset66ValueSum: record.spo2ResearchCandidateOffset66ValueSum,
+            spo2ResearchCandidateOffset66ValueCount: record.spo2ResearchCandidateOffset66ValueCount,
             strapStepResearchCount: record.strapStepResearchCount,
             strapStepResearchRawCount: record.strapStepResearchRawCount,
             strapStepResearchDeviceTimestamp: record.strapStepResearchDeviceTimestamp,
             strapStepResearchState: record.strapStepResearchState,
             gyroCadenceResearchSteps: record.gyroCadenceResearchSteps
         )
-        try JSONEncoder().encode(segment).write(to: segmentURL(sequence: nextSequence), options: [.atomic])
+        try writeDurable(JSONEncoder().encode(segment),
+                         to: segmentURL(sequence: nextSequence))
         clearLegacySnapshotFileIfPresent()
         loadCache = nil
         var updated = applying(segment, to: existing)
         if let complete = updated {
             let bounded = boundedRecord(complete, now: record.updatedAt, maxAge: maxAge, maxSamples: maxSamples)
-            if bounded.samples.count != complete.samples.count
-                || (bounded.rrSamples?.count ?? 0) != (complete.rrSamples?.count ?? 0) {
-                clearSegmentFiles()
-                segmentedLoadCache = nil
-                mirroredStrengthCache = nil
+            let valueWindowWasTrimmed = bounded.samples.count != complete.samples.count
+                || (bounded.rrSamples?.count ?? 0) != (complete.rrSamples?.count ?? 0)
+            let chainBudgetWasExceeded = segmentChainStorageLocked().exceedsBudget
+            if valueWindowWasTrimmed || chainBudgetWasExceeded {
+                // Publish a complete replacement base before removing any old
+                // segment. A crash after this write can replay the old chain
+                // followed by the replacement reset; a crash after cleanup can
+                // replay the replacement alone. There is never a no-journal gap.
                 try saveLocked(bounded,
                                previousSampleCount: 0,
                                previousRRCount: 0,
                                segmentDirectoryURL: segmentDirectoryURL)
-                updated = bounded
-                return IncrementalSaveResult(sampleCount: bounded.samples.count,
-                                             rrSampleCount: bounded.rrSamples?.count ?? 0,
+                try compactionReplacementDurableCheckpointForTesting?()
+                guard let replacementSequence = currentLatestSegmentSequenceLocked() else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                clearSegmentFiles(preservingSequence: replacementSequence)
+                try synchronizeDirectory(segmentDirectoryURL)
+                // Re-open the survivor after destructive cleanup and publish a
+                // cache fingerprint from the post-cleanup directory state.
+                // The previous implementation deliberately nulled both caches;
+                // on device, the next five-second append sometimes observed no
+                // reconstructible base (`expected_0_actual_N`) even though this
+                // compaction had just reported success. A compaction is not
+                // successful until its sole survivor replays exactly.
+                guard let replacement = loadSegment(sequence: replacementSequence),
+                      replacement.id == record.id,
+                      let verified = applying(replacement, to: nil),
+                      verified.samples.count == bounded.samples.count,
+                      (verified.rrSamples?.count ?? 0) == (bounded.rrSamples?.count ?? 0),
+                      let fingerprint = segmentFingerprintLocked(
+                        latestSequence: replacementSequence
+                      ) else {
+                    segmentedLoadCache = nil
+                    mirroredStrengthCache = nil
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                segmentedLoadCache = SegmentedLoadCache(
+                    fingerprint: fingerprint,
+                    record: verified
+                )
+                mirroredStrengthCache = MirroredStrengthCache(
+                    fingerprint: fingerprint,
+                    state: mirroredStrengthState(from: verified)
+                )
+                updated = verified
+                return IncrementalSaveResult(sampleCount: verified.samples.count,
+                                             rrSampleCount: verified.rrSamples?.count ?? 0,
                                              compacted: true)
             }
         }
@@ -447,6 +550,57 @@ enum ActiveSessionJournal {
         return IncrementalSaveResult(sampleCount: updated?.samples.count ?? 0,
                                      rrSampleCount: updated?.rrSamples?.count ?? 0,
                                      compacted: false)
+    }
+
+    /// Returns only values not already present in an existing durable prefix.
+    /// Overlap must be byte-for-byte equivalent at the same timestamp and all
+    /// novel values must follow the durable tail. A conflicting or out-of-order
+    /// overlap fails closed so callers cannot turn cursor recovery into data
+    /// replacement.
+    private static func exactReplaySafeNovelSuffix<Value>(
+        existing: [Value],
+        incoming: [Value],
+        timestamp: (Value) -> Date,
+        matches: (Value, Value) -> Bool
+    ) -> [Value]? {
+        guard let durableTail = existing.last.map(timestamp) else {
+            return incoming
+        }
+        var previousIncomingTimestamp: Date?
+        var existingIndex = 0
+        var novel: [Value] = []
+        novel.reserveCapacity(incoming.count)
+
+        for value in incoming {
+            let valueTimestamp = timestamp(value)
+            if let previousIncomingTimestamp,
+               valueTimestamp < previousIncomingTimestamp {
+                return nil
+            }
+            previousIncomingTimestamp = valueTimestamp
+
+            while existingIndex < existing.count,
+                  timestamp(existing[existingIndex]) < valueTimestamp {
+                existingIndex += 1
+            }
+            if valueTimestamp <= durableTail {
+                var candidateIndex = existingIndex
+                var foundExactReplay = false
+                while candidateIndex < existing.count,
+                      timestamp(existing[candidateIndex]) == valueTimestamp {
+                    if matches(existing[candidateIndex], value) {
+                        existingIndex = candidateIndex + 1
+                        foundExactReplay = true
+                        break
+                    }
+                    candidateIndex += 1
+                }
+                guard foundExactReplay else { return nil }
+            } else {
+                novel.append(value)
+            }
+        }
+        return novel
     }
 
     private static func boundedRecord(_ record: ActiveSessionJournalRecord,
@@ -547,6 +701,10 @@ enum ActiveSessionJournal {
             skinTempResearchCandidateFrames: record.skinTempResearchCandidateFrames,
             skinTempResearchCandidateValueSum: record.skinTempResearchCandidateValueSum,
             skinTempResearchCandidateValueCount: record.skinTempResearchCandidateValueCount,
+            spo2ResearchCandidateOffset64ValueSum: record.spo2ResearchCandidateOffset64ValueSum,
+            spo2ResearchCandidateOffset64ValueCount: record.spo2ResearchCandidateOffset64ValueCount,
+            spo2ResearchCandidateOffset66ValueSum: record.spo2ResearchCandidateOffset66ValueSum,
+            spo2ResearchCandidateOffset66ValueCount: record.spo2ResearchCandidateOffset66ValueCount,
             strapStepResearchCount: record.strapStepResearchCount,
             strapStepResearchRawCount: record.strapStepResearchRawCount,
             strapStepResearchDeviceTimestamp: record.strapStepResearchDeviceTimestamp,
@@ -554,7 +712,7 @@ enum ActiveSessionJournal {
             gyroCadenceResearchSteps: record.gyroCadenceResearchSteps
         )
         let data = try JSONEncoder().encode(segment)
-        try data.write(to: segmentURL(sequence: nextSequence), options: [.atomic])
+        try writeDurable(data, to: segmentURL(sequence: nextSequence))
         clearLegacySnapshotFileIfPresent()
         loadCache = nil
         let updatedRecord: ActiveSessionJournalRecord?
@@ -657,7 +815,14 @@ enum ActiveSessionJournal {
     private static func applying(_ segment: ActiveSessionJournalSegment,
                                  to existing: ActiveSessionJournalRecord?) -> ActiveSessionJournalRecord? {
         guard existing == nil || existing?.id == segment.id else { return existing }
-        var record = existing ?? ActiveSessionJournalRecord(
+        // A later complete base is a generation boundary. It intentionally
+        // supersedes an older unbounded chain while coexisting with it during
+        // crash-safe compaction.
+        let replacesExistingBase = segment.sampleStartIndex == 0
+            && segment.rrSampleStartIndex == 0
+            && ((existing?.samples.isEmpty == false)
+                || ((existing?.rrSamples?.isEmpty == false)))
+        var record = (replacesExistingBase ? nil : existing) ?? ActiveSessionJournalRecord(
             schema: Self.schema,
             id: segment.id,
             label: segment.label,
@@ -687,6 +852,10 @@ enum ActiveSessionJournal {
             skinTempResearchCandidateFrames: segment.skinTempResearchCandidateFrames,
             skinTempResearchCandidateValueSum: segment.skinTempResearchCandidateValueSum,
             skinTempResearchCandidateValueCount: segment.skinTempResearchCandidateValueCount,
+            spo2ResearchCandidateOffset64ValueSum: segment.spo2ResearchCandidateOffset64ValueSum,
+            spo2ResearchCandidateOffset64ValueCount: segment.spo2ResearchCandidateOffset64ValueCount,
+            spo2ResearchCandidateOffset66ValueSum: segment.spo2ResearchCandidateOffset66ValueSum,
+            spo2ResearchCandidateOffset66ValueCount: segment.spo2ResearchCandidateOffset66ValueCount,
             strapStepResearchCount: segment.strapStepResearchCount,
             strapStepResearchRawCount: segment.strapStepResearchRawCount,
             strapStepResearchDeviceTimestamp: segment.strapStepResearchDeviceTimestamp,
@@ -745,6 +914,10 @@ enum ActiveSessionJournal {
         record.skinTempResearchCandidateFrames = segment.skinTempResearchCandidateFrames
         record.skinTempResearchCandidateValueSum = segment.skinTempResearchCandidateValueSum
         record.skinTempResearchCandidateValueCount = segment.skinTempResearchCandidateValueCount
+        record.spo2ResearchCandidateOffset64ValueSum = segment.spo2ResearchCandidateOffset64ValueSum
+        record.spo2ResearchCandidateOffset64ValueCount = segment.spo2ResearchCandidateOffset64ValueCount
+        record.spo2ResearchCandidateOffset66ValueSum = segment.spo2ResearchCandidateOffset66ValueSum
+        record.spo2ResearchCandidateOffset66ValueCount = segment.spo2ResearchCandidateOffset66ValueCount
         let previousStepCount = record.strapStepResearchCount
         let incomingStepCount = segment.strapStepResearchCount
         let previousStepState = record.strapStepResearchState
@@ -1067,7 +1240,31 @@ enum ActiveSessionJournal {
         segmentDirectoryURL!.appendingPathComponent(String(format: "segment-%08d.json", sequence))
     }
 
-    private static func clearSegmentFiles() {
+    /// Completes the checkpoint's storage durability boundary before callers
+    /// advance their in-memory cursors or report success. Atomic replacement
+    /// protects readers from torn JSON; synchronizing the resulting file keeps
+    /// a process termination immediately after `saveIncremental` from losing a
+    /// checkpoint that the app already described as saved.
+    private static func writeDurable(_ data: Data, to target: URL) throws {
+        try data.write(to: target, options: [.atomic])
+        let handle = try FileHandle(forWritingTo: target)
+        defer { try? handle.close() }
+        try handle.synchronize()
+        try synchronizeDirectory(target.deletingLastPathComponent())
+    }
+
+    private static func synchronizeDirectory(_ url: URL) throws {
+        let descriptor = open(url.path, O_RDONLY | O_DIRECTORY)
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { close(descriptor) }
+        guard fsync(descriptor) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    private static func clearSegmentFiles(preservingSequence: Int? = nil) {
         segmentedLoadCache = nil
         mirroredStrengthCache = nil
         guard let segmentDirectoryURL,
@@ -1077,12 +1274,41 @@ enum ActiveSessionJournal {
         do {
             let files = try FileManager.default.contentsOfDirectory(at: segmentDirectoryURL,
                                                                     includingPropertiesForKeys: nil)
+            let preservedName = preservingSequence.map {
+                segmentURL(sequence: $0).lastPathComponent
+            }
             for file in files where file.pathExtension == "json" {
+                if file.lastPathComponent == preservedName {
+                    continue
+                }
                 try FileManager.default.removeItem(at: file)
             }
         } catch {
             AtriaDebugLog("ATRIADBG active_session_journal status=clear_segments_failed error=%@", error.localizedDescription)
         }
+    }
+
+    private static func segmentChainStorageLocked() -> (count: Int, bytes: UInt64, exceedsBudget: Bool) {
+        guard let segmentDirectoryURL,
+              let files = try? FileManager.default.contentsOfDirectory(
+                at: segmentDirectoryURL,
+                includingPropertiesForKeys: [.fileSizeKey],
+                options: [.skipsHiddenFiles]
+              ) else {
+            return (0, 0, false)
+        }
+        var count = 0
+        var bytes: UInt64 = 0
+        for file in files where file.pathExtension == "json" && file.lastPathComponent.hasPrefix("segment-") {
+            count += 1
+            if let size = try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+               size > 0 {
+                bytes += UInt64(size)
+            }
+        }
+        return (count,
+                bytes,
+                count > maximumSegmentChainCount || bytes > maximumSegmentChainBytes)
     }
 
     static func resetCachesForTesting() {
@@ -1097,6 +1323,7 @@ enum ActiveSessionJournal {
         persistedStrengthMirrorGeneration = 0
         lastStrengthMirrorPersistenceWasOnMainThread = false
         segmentedReconstructionCount = 0
+        compactionReplacementDurableCheckpointForTesting = nil
     }
 
     static func drainStrengthMirrorWrites() {
@@ -1115,10 +1342,25 @@ enum ActiveSessionJournal {
         return lastStrengthMirrorPersistenceWasOnMainThread
     }
 
+    static func setCompactionReplacementDurableCheckpointForTesting(
+        _ checkpoint: (() throws -> Void)?
+    ) {
+        ioLock.lock()
+        defer { ioLock.unlock() }
+        compactionReplacementDurableCheckpointForTesting = checkpoint
+    }
+
     static var segmentedReconstructionCountForTesting: Int {
         ioLock.lock()
         defer { ioLock.unlock() }
         return segmentedReconstructionCount
+    }
+
+    static var segmentChainStorageForTesting: (count: Int, bytes: UInt64) {
+        ioLock.lock()
+        defer { ioLock.unlock() }
+        let storage = segmentChainStorageLocked()
+        return (storage.count, storage.bytes)
     }
 
     private static func clearLegacySnapshotFileIfPresent() {

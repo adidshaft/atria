@@ -46,6 +46,9 @@ struct AtriaRoutineTarget: Equatable, Identifiable {
 struct AtriaRoutineSummary: Equatable {
     let isoYear: Int
     let isoWeek: Int
+    /// Monday of the ISO week `isoWeek` names -- carried so the header can show a
+    /// human date range ("Aug 4 - 10") instead of the "W32" ISO-week jargon.
+    let weekStart: Date
     let targets: [AtriaRoutineTarget]
     /// False only when there is truly nothing to show yet (no rollups, no
     /// journal entries at all) -- gates the honest empty state.
@@ -126,6 +129,7 @@ enum AtriaRoutineComputer {
 
         return AtriaRoutineSummary(isoYear: components.yearForWeekOfYear ?? components.year ?? 0,
                                    isoWeek: components.weekOfYear ?? 0,
+                                   weekStart: weekStart,
                                    targets: targets,
                                    hasAnyHistory: !rollups.isEmpty || !journalEntries.isEmpty)
     }
@@ -289,7 +293,7 @@ struct AtriaRoutineCard: View {
         let summary = projectionStore.summary
         VStack(alignment: .leading, spacing: 14) {
             AtriaPanelSectionHeader(title: "Routine",
-                                    subtitle: "This week \u{00B7} W\(summary.isoWeek)")
+                                    subtitle: "This week \u{00B7} \(Self.weekRangeText(summary))")
 
             if summary.hasAnyHistory {
                 VStack(spacing: 14) {
@@ -301,8 +305,24 @@ struct AtriaRoutineCard: View {
                 emptyState
             }
         }
-        .padding(16)
+        .padding(AtriaDesignTokens.Spacing.lg)
         .atriaCard(emphasis: .soft)
+    }
+
+    /// Human "Aug 4 - 10" range for the header, replacing the "W32" ISO-week
+    /// jargon. Uses the SAME iso calendar the summary's week was computed with,
+    /// so the range can never disagree with the day dots below it.
+    private static let weekRangeFormatter: DateIntervalFormatter = {
+        let formatter = DateIntervalFormatter()
+        formatter.calendar = AtriaRoutineComputer.isoCalendar
+        formatter.dateTemplate = "MMMd"
+        return formatter
+    }()
+
+    private static func weekRangeText(_ summary: AtriaRoutineSummary) -> String {
+        let calendar = AtriaRoutineComputer.isoCalendar
+        let end = calendar.date(byAdding: .day, value: 6, to: summary.weekStart) ?? summary.weekStart
+        return weekRangeFormatter.string(from: summary.weekStart, to: end)
     }
 
     private var emptyState: some View {

@@ -4,6 +4,40 @@ import XCTest
 
 @MainActor
 final class AtriaTrendProjectionStoreTests: XCTestCase {
+    private var utcCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        return calendar
+    }
+
+    private func date(_ year: Int,
+                      _ month: Int,
+                      _ day: Int,
+                      _ hour: Int = 0) -> Date {
+        utcCalendar.date(from: DateComponents(year: year,
+                                              month: month,
+                                              day: day,
+                                              hour: hour))!
+    }
+
+    private func trendSession(id: String,
+                              start: Date,
+                              bpm: Int,
+                              persistedHRV: Int? = nil) -> SavedSession {
+        let end = start.addingTimeInterval(10 * 60)
+        return SavedSession(
+            id: UUID(uuidString: id)!,
+            start: start,
+            end: end,
+            label: "Trend fixture",
+            points: (0...10).map {
+                SavedSession.Point(t: Double($0 * 60), bpm: bpm)
+            },
+            hrv: persistedHRV,
+            eventTimeZoneIdentifier: "UTC"
+        )
+    }
+
     private func state(points: [AtriaTrendPoint] = [],
                        revision: Int = 0,
                        restingHR: Int? = nil,
@@ -38,6 +72,136 @@ final class AtriaTrendProjectionStoreTests: XCTestCase {
         XCTAssertTrue(projection.refresh(state(points: points, revision: 1, restingHR: 58)))
         XCTAssertEqual(publications, 1)
         withExtendedLifetime(cancellable) {}
+    }
+
+    func testOverviewTrendPointsAggregateSessionsIntoDeterministicCivilDays() throws {
+        let firstDayMorning = trendSession(
+            id: "00000000-0000-4000-8000-000000000001",
+            start: date(2026, 7, 27, 8),
+            bpm: 62
+        )
+        let firstDayEvening = trendSession(
+            id: "00000000-0000-4000-8000-000000000002",
+            start: date(2026, 7, 27, 18),
+            bpm: 64,
+            persistedHRV: 88
+        )
+        let secondDay = trendSession(
+            id: "00000000-0000-4000-8000-000000000003",
+            start: date(2026, 7, 28, 9),
+            bpm: 66
+        )
+        let sessions = [secondDay, firstDayEvening, firstDayMorning]
+
+        let points = SessionStore.makeOverviewTrendPoints(
+            sessions: sessions,
+            rest: 60,
+            maxHR: 190,
+            now: date(2026, 7, 29, 12),
+            calendar: utcCalendar
+        )
+        let reversed = SessionStore.makeOverviewTrendPoints(
+            sessions: Array(sessions.reversed()),
+            rest: 60,
+            maxHR: 190,
+            now: date(2026, 7, 29, 12),
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(points, reversed)
+        XCTAssertEqual(points.count, 2)
+        XCTAssertEqual(points.map(\.date), [
+            date(2026, 7, 27),
+            date(2026, 7, 28),
+        ])
+        XCTAssertEqual(points[0].id, firstDayMorning.id)
+        XCTAssertEqual(points[0].restingHR, 62)
+        XCTAssertNil(points[0].hrv)
+        XCTAssertEqual(
+            try XCTUnwrap(points[0].strain),
+            Metrics.strain(
+                fromTRIMP:
+                    firstDayMorning.trimp(rest: 60, max: 190)
+                    + firstDayEvening.trimp(rest: 60, max: 190)
+            ),
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(points[1].restingHR, 66)
+    }
+
+    func testCompactTrendXAxisUsesDistinctObservedDays() {
+        let twoDays = [
+            date(2026, 7, 27),
+            date(2026, 7, 28),
+        ]
+        XCTAssertEqual(
+            AtriaTrendChartCard.compactXAxisDates(twoDays),
+            twoDays
+        )
+
+        let month = (0..<30).map {
+            utcCalendar.date(
+                byAdding: .day,
+                value: $0,
+                to: date(2026, 7, 1)
+            )!
+        }
+        let compact = AtriaTrendChartCard.compactXAxisDates(month)
+        XCTAssertEqual(compact.count, 4)
+        XCTAssertEqual(compact.first, month.first)
+        XCTAssertEqual(compact.last, month.last)
+        XCTAssertEqual(Set(compact).count, compact.count)
+    }
+
+    // 2026-08-01 migration: the parallel Spacer-based label HStack (guessed
+    // 34pt inset, equal spacing) is gone — it rendered duplicated/misaligned
+    // date labels under true-position gridlines on gappy series (History
+    // audit, 2026-07-31). Labels now ride the SAME AxisMarks values as the
+    // gridlines, so this pin asserts the axis-attached pattern instead.
+    func testCompactTrendXAxisKeepsEdgeLabelsInsideClippedChart() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaTrendChart.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(
+            source.contains(
+                ".chartXScale(range: .plotDimension(startPadding: 18, endPadding: 18))"
+            )
+        )
+        XCTAssertTrue(source.contains("AxisMarks(preset: .aligned, values: chartXAxisDates)"))
+        XCTAssertTrue(source.contains("chartXAxisLabels[date]"))
+        XCTAssertFalse(source.contains("private var compactXAxisLabelRow"))
+        XCTAssertFalse(
+            source.contains(
+                "AxisValueLabel(format: .dateTime.month(.abbreviated).day())"
+            )
+        )
+    }
+
+    func testCompactTrendXAxisLabelTextsDedupSameLabelTicks() {
+        // Four real instants inside one civil day format to one visible label:
+        // the map keeps the first tick's label and drops the repeats, so the
+        // chart can never render "Jul 27 Jul 27 Jul 27" (nor the Vitals
+        // timeline's duplicated "11a"-style variant of the same defect).
+        // Midday-UTC instants so every zone within UTC-10...UTC+10 keeps all
+        // four on the same civil day (the formatter runs in device-local time).
+        let sameDay = [
+            date(2026, 7, 27, 10),
+            date(2026, 7, 27, 11),
+            date(2026, 7, 27, 12),
+            date(2026, 7, 27, 13),
+        ]
+        let deduped = AtriaTrendChartCard.compactXAxisLabelTexts(sameDay)
+        XCTAssertEqual(deduped.count, 1)
+        XCTAssertEqual(deduped.keys.first, sameDay.first)
+
+        // Distinct days keep one label per tick, all distinct.
+        let distinct = [date(2026, 7, 27, 12), date(2026, 7, 28, 12), date(2026, 7, 30, 12)]
+        let labels = AtriaTrendChartCard.compactXAxisLabelTexts(distinct)
+        XCTAssertEqual(labels.count, distinct.count)
+        XCTAssertEqual(Set(labels.values).count, distinct.count)
     }
 
     func testTrendHostUsesNarrowProjectionInsteadOfWholeSessionStoreObservation() throws {

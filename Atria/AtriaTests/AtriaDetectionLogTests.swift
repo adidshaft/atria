@@ -85,6 +85,63 @@ final class AtriaDetectionLogTests: XCTestCase {
         XCTAssertEqual(store.integer(forKey: DetectionEventLog.revisionKey), 2)
     }
 
+    func testRepeatedSleepSkipRetryIsCoalescedWithoutEvictingWorkoutDetection() {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        DetectionEventLog.append(
+            DetectionEvent(kind: "workoutDetected", date: base, detail: "real activity"),
+            store: store
+        )
+        DetectionEventLog.append(
+            DetectionEvent(kind: "sleepCandidateSkipped",
+                           reason: "no_strong_candidate",
+                           date: base.addingTimeInterval(1),
+                           detail: "first deferred pass"),
+            store: store
+        )
+        DetectionEventLog.append(
+            DetectionEvent(kind: "sleepCandidateSkipped",
+                           reason: "no_strong_candidate",
+                           date: base.addingTimeInterval(10 * 60),
+                           detail: "retry deferred pass"),
+            store: store
+        )
+
+        let loaded = DetectionEventLog.load(store: store)
+        XCTAssertEqual(loaded.count, 2)
+        XCTAssertEqual(loaded.filter { $0.kind == "sleepCandidateSkipped" }.count, 1)
+        XCTAssertEqual(loaded.last?.kind, "workoutDetected")
+        XCTAssertEqual(store.integer(forKey: DetectionEventLog.revisionKey), 2)
+    }
+
+    func testSleepSkipWithDifferentReasonOrOutsideRetryWindowIsRetained() {
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        DetectionEventLog.append(
+            DetectionEvent(kind: "sleepCandidateSkipped",
+                           reason: "no_strong_candidate",
+                           date: base,
+                           detail: "first"),
+            store: store
+        )
+        DetectionEventLog.append(
+            DetectionEvent(kind: "sleepCandidateSkipped",
+                           reason: "wake_boundary_no_wake_detected",
+                           date: base.addingTimeInterval(1),
+                           detail: "separate decision"),
+            store: store
+        )
+        DetectionEventLog.append(
+            DetectionEvent(kind: "sleepCandidateSkipped",
+                           reason: "no_strong_candidate",
+                           date: base.addingTimeInterval(
+                               DetectionEventLog.sleepSkipRetryCoalescingInterval + 1
+                           ),
+                           detail: "later state"),
+            store: store
+        )
+
+        XCTAssertEqual(DetectionEventLog.load(store: store).count, 3)
+    }
+
     func testLoadWithNoDataReturnsEmpty() {
         XCTAssertEqual(DetectionEventLog.load(store: store), [])
     }

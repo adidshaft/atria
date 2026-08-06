@@ -1,0 +1,2036 @@
+{
+  "accepted" : true,
+  "algorithmVersion" : "whoop4-impact-gait-ensemble-v17",
+  "boundaryShiftRangeSeconds" : [
+    -2,
+    2
+  ],
+  "checks" : [
+    {
+      "aliasFrequencyHz" : 0.49216115175496816,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        89.401611328125
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785091860.0427246,
+          "start" : 1785091770.6411133
+        }
+      ],
+      "autonomousSteps" : 130,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 137,
+      "classifiedDurationSeconds" : 89.401611328125,
+      "decodedRows" : 94,
+      "expectedSteps" : 132,
+      "label" : "W132",
+      "motionTicks" : 150,
+      "motionVolumeSteps" : 117,
+      "observedSteps" : 130,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-prearmed-walk\/training-walk-drain.jsonl",
+      "relativeError" : 0.015151515151515152
+    },
+    {
+      "aliasFrequencyHz" : 0.49799123003725748,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        90.363037109375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785091861.965332,
+          "start" : 1785091771.6022949
+        }
+      ],
+      "autonomousSteps" : 131,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 139,
+      "classifiedDurationSeconds" : 90.363037109375,
+      "decodedRows" : 95,
+      "expectedSteps" : 132,
+      "label" : "W132",
+      "motionTicks" : 154,
+      "motionVolumeSteps" : 114,
+      "observedSteps" : 131,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-prearmed-walk\/training-walk-drain.jsonl",
+      "relativeError" : 0.007575757575757576
+    },
+    {
+      "aliasFrequencyHz" : 0.49799257550131576,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        90.36279296875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785091862.9265137,
+          "start" : 1785091772.5637207
+        }
+      ],
+      "autonomousSteps" : 128,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 139,
+      "classifiedDurationSeconds" : 90.36279296875,
+      "decodedRows" : 95,
+      "expectedSteps" : 132,
+      "label" : "W132",
+      "motionTicks" : 155,
+      "motionVolumeSteps" : 106,
+      "observedSteps" : 128,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-prearmed-walk\/training-walk-drain.jsonl",
+      "relativeError" : 0.030303030303030304
+    },
+    {
+      "aliasFrequencyHz" : 0.43159239936562316,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        87.479248046875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785091863.8879395,
+          "start" : 1785091776.4086914
+        }
+      ],
+      "autonomousSteps" : 134,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 133,
+      "classifiedDurationSeconds" : 90.363037109375,
+      "decodedRows" : 95,
+      "expectedSteps" : 132,
+      "label" : "W132",
+      "motionTicks" : 155,
+      "motionVolumeSteps" : 107,
+      "observedSteps" : 133,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-prearmed-walk\/training-walk-drain.jsonl",
+      "relativeError" : 0.007575757575757576
+    },
+    {
+      "aliasFrequencyHz" : 0.43159239936562316,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        88.4404296875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785091864.8491211,
+          "start" : 1785091776.4086914
+        }
+      ],
+      "autonomousSteps" : 134,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 133,
+      "classifiedDurationSeconds" : 90.363037109375,
+      "decodedRows" : 95,
+      "expectedSteps" : 132,
+      "label" : "W132",
+      "motionTicks" : 157,
+      "motionVolumeSteps" : 109,
+      "observedSteps" : 133,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-prearmed-walk\/training-walk-drain.jsonl",
+      "relativeError" : 0.007575757575757576
+    },
+    {
+      "aliasFrequencyHz" : 0.086686684038570924,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        89.40234375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785092910.7897949,
+          "start" : 1785092821.3874512
+        }
+      ],
+      "autonomousSteps" : 133,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 104,
+      "classifiedDurationSeconds" : 92.286376953125,
+      "decodedRows" : 97,
+      "expectedSteps" : 136,
+      "label" : "W136",
+      "motionTicks" : 156,
+      "motionVolumeSteps" : 135,
+      "observedSteps" : 133,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-prearmed-walk\/heldout-walk-drain.jsonl",
+      "relativeError" : 0.022058823529411766
+    },
+    {
+      "aliasFrequencyHz" : 0.086686913365996141,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        90.363525390625
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785092911.7509766,
+          "start" : 1785092821.3874512
+        }
+      ],
+      "autonomousSteps" : 135,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 104,
+      "classifiedDurationSeconds" : 92.2861328125,
+      "decodedRows" : 97,
+      "expectedSteps" : 136,
+      "label" : "W136",
+      "motionTicks" : 159,
+      "motionVolumeSteps" : 137,
+      "observedSteps" : 135,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-prearmed-walk\/heldout-walk-drain.jsonl",
+      "relativeError" : 0.0073529411764705881
+    },
+    {
+      "aliasFrequencyHz" : 0.086686684038570924,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        91.324951171875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785092912.7124023,
+          "start" : 1785092821.3874512
+        }
+      ],
+      "autonomousSteps" : 133,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 104,
+      "classifiedDurationSeconds" : 92.286376953125,
+      "decodedRows" : 97,
+      "expectedSteps" : 136,
+      "label" : "W136",
+      "motionTicks" : 160,
+      "motionVolumeSteps" : 144,
+      "observedSteps" : 136,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-prearmed-walk\/heldout-walk-drain.jsonl",
+      "relativeError" : 0
+    },
+    {
+      "aliasFrequencyHz" : 0.086686684038570924,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        92.286376953125
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785092913.6738281,
+          "start" : 1785092821.3874512
+        }
+      ],
+      "autonomousSteps" : 136,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 104,
+      "classifiedDurationSeconds" : 92.286376953125,
+      "decodedRows" : 97,
+      "expectedSteps" : 136,
+      "label" : "W136",
+      "motionTicks" : 160,
+      "motionVolumeSteps" : 147,
+      "observedSteps" : 136,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-prearmed-walk\/heldout-walk-drain.jsonl",
+      "relativeError" : 0
+    },
+    {
+      "aliasFrequencyHz" : 0.086687601355551966,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        92.285400390625
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785092914.6350098,
+          "start" : 1785092822.3496094
+        }
+      ],
+      "autonomousSteps" : 136,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 104,
+      "classifiedDurationSeconds" : 92.285400390625,
+      "decodedRows" : 97,
+      "expectedSteps" : 136,
+      "label" : "W136",
+      "motionTicks" : 160,
+      "motionVolumeSteps" : 146,
+      "observedSteps" : 136,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-prearmed-walk\/heldout-walk-drain.jsonl",
+      "relativeError" : 0
+    },
+    {
+      "aliasFrequencyHz" : 0.4531782372658032,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        96.130615234375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785096816.1442871,
+          "start" : 1785096720.0136719
+        }
+      ],
+      "autonomousSteps" : 147,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 145,
+      "classifiedDurationSeconds" : 97.092041015625,
+      "decodedRows" : 102,
+      "expectedSteps" : 150,
+      "label" : "W150",
+      "motionTicks" : 183,
+      "motionVolumeSteps" : 152,
+      "observedSteps" : 147,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-unannounced-150\/README.md",
+      "relativeError" : 0.02
+    },
+    {
+      "aliasFrequencyHz" : 0.45317937679789172,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        95.169189453125
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785096817.1054688,
+          "start" : 1785096721.9362793
+        }
+      ],
+      "autonomousSteps" : 158,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 145,
+      "classifiedDurationSeconds" : 97.091796875,
+      "decodedRows" : 102,
+      "expectedSteps" : 150,
+      "label" : "W150",
+      "motionTicks" : 185,
+      "motionVolumeSteps" : 152,
+      "observedSteps" : 147,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-unannounced-150\/README.md",
+      "relativeError" : 0.02
+    },
+    {
+      "aliasFrequencyHz" : 0.46811309685562713,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        96.130615234375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785096818.0668945,
+          "start" : 1785096721.9362793
+        }
+      ],
+      "autonomousSteps" : 147,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 145,
+      "classifiedDurationSeconds" : 96.130615234375,
+      "decodedRows" : 101,
+      "expectedSteps" : 150,
+      "label" : "W150",
+      "motionTicks" : 188,
+      "motionVolumeSteps" : 152,
+      "observedSteps" : 147,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-unannounced-150\/README.md",
+      "relativeError" : 0.02
+    },
+    {
+      "aliasFrequencyHz" : 0.1132945593164508,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        97.092041015625
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785096819.989502,
+          "start" : 1785096722.8974609
+        }
+      ],
+      "autonomousSteps" : 153,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 112,
+      "classifiedDurationSeconds" : 97.092041015625,
+      "decodedRows" : 102,
+      "expectedSteps" : 150,
+      "label" : "W150",
+      "motionTicks" : 180,
+      "motionVolumeSteps" : 151,
+      "observedSteps" : 153,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-unannounced-150\/README.md",
+      "relativeError" : 0.02
+    },
+    {
+      "aliasFrequencyHz" : 0.12359437549033413,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        97.091796875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785096820.9506836,
+          "start" : 1785096723.8588867
+        }
+      ],
+      "autonomousSteps" : 152,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 113,
+      "classifiedDurationSeconds" : 97.091796875,
+      "decodedRows" : 102,
+      "expectedSteps" : 150,
+      "label" : "W150",
+      "motionTicks" : 179,
+      "motionVolumeSteps" : 160,
+      "observedSteps" : 152,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-unannounced-150\/README.md",
+      "relativeError" : 0.013333333333333334
+    },
+    {
+      "aliasFrequencyHz" : 0.43527935885871877,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        84.594970703125
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785101196.7236328,
+          "start" : 1785101112.1286621
+        }
+      ],
+      "autonomousSteps" : 117,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 139,
+      "classifiedDurationSeconds" : 94.1923828125,
+      "decodedRows" : 99,
+      "expectedSteps" : 129,
+      "label" : "W129",
+      "motionTicks" : 128,
+      "motionVolumeSteps" : 102,
+      "observedSteps" : 127,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-untouched-129\/receipt.json",
+      "relativeError" : 0.015503875968992248
+    },
+    {
+      "aliasFrequencyHz" : 0.43527823064541632,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        85.556396484375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785101197.6850586,
+          "start" : 1785101112.1286621
+        }
+      ],
+      "autonomousSteps" : 118,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 139,
+      "classifiedDurationSeconds" : 94.192626953125,
+      "decodedRows" : 99,
+      "expectedSteps" : 129,
+      "label" : "W129",
+      "motionTicks" : 130,
+      "motionVolumeSteps" : 103,
+      "observedSteps" : 127,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-untouched-129\/receipt.json",
+      "relativeError" : 0.015503875968992248
+    },
+    {
+      "aliasFrequencyHz" : 0.43520716499600909,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        86.517578125
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785101198.6462402,
+          "start" : 1785101112.1286621
+        }
+      ],
+      "autonomousSteps" : 120,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 139,
+      "classifiedDurationSeconds" : 94.2080078125,
+      "decodedRows" : 99,
+      "expectedSteps" : 129,
+      "label" : "W129",
+      "motionTicks" : 132,
+      "motionVolumeSteps" : 104,
+      "observedSteps" : 127,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-untouched-129\/receipt.json",
+      "relativeError" : 0.015503875968992248
+    },
+    {
+      "aliasFrequencyHz" : 0.43520716499600909,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        87.47900390625
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785101199.607666,
+          "start" : 1785101112.1286621
+        }
+      ],
+      "autonomousSteps" : 121,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 139,
+      "classifiedDurationSeconds" : 94.2080078125,
+      "decodedRows" : 99,
+      "expectedSteps" : 129,
+      "label" : "W129",
+      "motionTicks" : 134,
+      "motionVolumeSteps" : 105,
+      "observedSteps" : 128,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-untouched-129\/receipt.json",
+      "relativeError" : 0.0077519379844961239
+    },
+    {
+      "aliasFrequencyHz" : 0.43520716499600909,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        88.440185546875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785101200.5688477,
+          "start" : 1785101112.1286621
+        }
+      ],
+      "autonomousSteps" : 124,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 139,
+      "classifiedDurationSeconds" : 94.2080078125,
+      "decodedRows" : 99,
+      "expectedSteps" : 129,
+      "label" : "W129",
+      "motionTicks" : 135,
+      "motionVolumeSteps" : 106,
+      "observedSteps" : 128,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-untouched-129\/receipt.json",
+      "relativeError" : 0.0077519379844961239
+    },
+    {
+      "aliasFrequencyHz" : 0.43664912929785726,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        96.130615234375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785105034.3066406,
+          "start" : 1785104938.1760254
+        }
+      ],
+      "autonomousSteps" : 135,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 115,
+      "classifiedDurationSeconds" : 77.86572265625,
+      "decodedRows" : 101,
+      "expectedSteps" : 106,
+      "label" : "W106",
+      "motionTicks" : 122,
+      "motionVolumeSteps" : 79,
+      "observedSteps" : 103,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v6-slow-walk-failure\/receipt.json",
+      "relativeError" : 0.028301886792452831
+    },
+    {
+      "aliasFrequencyHz" : 0.44400946493390642,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        96.130615234375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785105035.2680664,
+          "start" : 1785104939.1374512
+        }
+      ],
+      "autonomousSteps" : 135,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 117,
+      "classifiedDurationSeconds" : 78.8271484375,
+      "decodedRows" : 101,
+      "expectedSteps" : 106,
+      "label" : "W106",
+      "motionTicks" : 124,
+      "motionVolumeSteps" : 81,
+      "observedSteps" : 105,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v6-slow-walk-failure\/receipt.json",
+      "relativeError" : 0.009433962264150943
+    },
+    {
+      "aliasFrequencyHz" : 0.43866064079458295,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        95.169189453125
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785105036.229248,
+          "start" : 1785104941.0600586
+        }
+      ],
+      "autonomousSteps" : 135,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 118,
+      "classifiedDurationSeconds" : 79.788330078125,
+      "decodedRows" : 101,
+      "expectedSteps" : 106,
+      "label" : "W106",
+      "motionTicks" : 125,
+      "motionVolumeSteps" : 82,
+      "observedSteps" : 106,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v6-slow-walk-failure\/receipt.json",
+      "relativeError" : 0
+    },
+    {
+      "aliasFrequencyHz" : 0.45820571971059798,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        96.130615234375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785105037.1906738,
+          "start" : 1785104941.0600586
+        }
+      ],
+      "autonomousSteps" : 134,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 121,
+      "classifiedDurationSeconds" : 80.749755859375,
+      "decodedRows" : 101,
+      "expectedSteps" : 106,
+      "label" : "W106",
+      "motionTicks" : 127,
+      "motionVolumeSteps" : 83,
+      "observedSteps" : 108,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v6-slow-walk-failure\/receipt.json",
+      "relativeError" : 0.018867924528301886
+    },
+    {
+      "aliasFrequencyHz" : 0.44057749306817107,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        96.130615234375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785105038.1518555,
+          "start" : 1785104942.0212402
+        }
+      ],
+      "autonomousSteps" : 132,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 121,
+      "classifiedDurationSeconds" : 81.7109375,
+      "decodedRows" : 101,
+      "expectedSteps" : 106,
+      "label" : "W106",
+      "motionTicks" : 129,
+      "motionVolumeSteps" : 84,
+      "observedSteps" : 109,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v6-slow-walk-failure\/receipt.json",
+      "relativeError" : 0.028301886792452831
+    },
+    {
+      "aliasFrequencyHz" : 0.11796648155857349,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        93.246826171875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785105818.6555176,
+          "start" : 1785105725.4086914
+        }
+      ],
+      "autonomousSteps" : 108,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 108,
+      "classifiedDurationSeconds" : 93.246826171875,
+      "decodedRows" : 98,
+      "expectedSteps" : 108,
+      "label" : "W108",
+      "motionTicks" : 134,
+      "motionVolumeSteps" : 251,
+      "observedSteps" : 108,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v7-high-impact-failure\/receipt.json",
+      "relativeError" : 0
+    },
+    {
+      "aliasFrequencyHz" : 0.11796648155857349,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        93.246826171875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785105819.6166992,
+          "start" : 1785105726.369873
+        }
+      ],
+      "autonomousSteps" : 108,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 108,
+      "classifiedDurationSeconds" : 93.246826171875,
+      "decodedRows" : 98,
+      "expectedSteps" : 108,
+      "label" : "W108",
+      "motionTicks" : 136,
+      "motionVolumeSteps" : 250,
+      "observedSteps" : 108,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v7-high-impact-failure\/receipt.json",
+      "relativeError" : 0
+    },
+    {
+      "aliasFrequencyHz" : 0.16086338394350932,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        92.285400390625
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785105820.578125,
+          "start" : 1785105728.2927246
+        }
+      ],
+      "autonomousSteps" : 111,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 112,
+      "classifiedDurationSeconds" : 93.246826171875,
+      "decodedRows" : 98,
+      "expectedSteps" : 108,
+      "label" : "W108",
+      "motionTicks" : 138,
+      "motionVolumeSteps" : 248,
+      "observedSteps" : 112,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v7-high-impact-failure\/receipt.json",
+      "relativeError" : 0.037037037037037035
+    },
+    {
+      "aliasFrequencyHz" : 0.16086380512020276,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        93.24658203125
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785105821.5393066,
+          "start" : 1785105728.2927246
+        }
+      ],
+      "autonomousSteps" : 112,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 112,
+      "classifiedDurationSeconds" : 93.24658203125,
+      "decodedRows" : 98,
+      "expectedSteps" : 108,
+      "label" : "W108",
+      "motionTicks" : 140,
+      "motionVolumeSteps" : 248,
+      "observedSteps" : 112,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v7-high-impact-failure\/receipt.json",
+      "relativeError" : 0.037037037037037035
+    },
+    {
+      "aliasFrequencyHz" : 0.16086338394350932,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        93.246826171875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785105822.5007324,
+          "start" : 1785105729.2539062
+        }
+      ],
+      "autonomousSteps" : 112,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 112,
+      "classifiedDurationSeconds" : 93.246826171875,
+      "decodedRows" : 98,
+      "expectedSteps" : 108,
+      "label" : "W108",
+      "motionTicks" : 142,
+      "motionVolumeSteps" : 247,
+      "observedSteps" : 112,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v7-high-impact-failure\/receipt.json",
+      "relativeError" : 0.037037037037037035
+    },
+    {
+      "aliasFrequencyHz" : 0.13003137076083474,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        84.594970703125
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785106605.0808105,
+          "start" : 1785106520.4858398
+        }
+      ],
+      "autonomousSteps" : 96,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 99,
+      "classifiedDurationSeconds" : 84.594970703125,
+      "decodedRows" : 97,
+      "expectedSteps" : 100,
+      "label" : "W100",
+      "motionTicks" : 106,
+      "motionVolumeSteps" : 169,
+      "observedSteps" : 96,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v8-low-alias-failure\/receipt.json",
+      "relativeError" : 0.040000000000000001
+    },
+    {
+      "aliasFrequencyHz" : 0.12857053173457217,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        85.55615234375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785106606.0419922,
+          "start" : 1785106520.4858398
+        }
+      ],
+      "autonomousSteps" : 97,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 100,
+      "classifiedDurationSeconds" : 85.55615234375,
+      "decodedRows" : 97,
+      "expectedSteps" : 100,
+      "label" : "W100",
+      "motionTicks" : 107,
+      "motionVolumeSteps" : 169,
+      "observedSteps" : 97,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v8-low-alias-failure\/receipt.json",
+      "relativeError" : 0.029999999999999999
+    },
+    {
+      "aliasFrequencyHz" : 0.12868969634132932,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        87.479736328125
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785106607.9655762,
+          "start" : 1785106520.4858398
+        }
+      ],
+      "autonomousSteps" : 100,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 109,
+      "classifiedDurationSeconds" : 93.24755859375,
+      "decodedRows" : 98,
+      "expectedSteps" : 100,
+      "label" : "W100",
+      "motionTicks" : 111,
+      "motionVolumeSteps" : 173,
+      "observedSteps" : 104,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v8-low-alias-failure\/receipt.json",
+      "relativeError" : 0.040000000000000001
+    },
+    {
+      "aliasFrequencyHz" : 0.12868969634132932,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        88.44091796875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785106608.9267578,
+          "start" : 1785106520.4858398
+        }
+      ],
+      "autonomousSteps" : 101,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 109,
+      "classifiedDurationSeconds" : 93.24755859375,
+      "decodedRows" : 98,
+      "expectedSteps" : 100,
+      "label" : "W100",
+      "motionTicks" : 113,
+      "motionVolumeSteps" : 174,
+      "observedSteps" : 105,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v8-low-alias-failure\/receipt.json",
+      "relativeError" : 0.050000000000000003
+    },
+    {
+      "aliasFrequencyHz" : 0.12868969634132932,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        89.40234375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785106609.8881836,
+          "start" : 1785106520.4858398
+        }
+      ],
+      "autonomousSteps" : 103,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 109,
+      "classifiedDurationSeconds" : 93.24755859375,
+      "decodedRows" : 98,
+      "expectedSteps" : 100,
+      "label" : "W100",
+      "motionTicks" : 115,
+      "motionVolumeSteps" : 175,
+      "observedSteps" : 105,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v8-low-alias-failure\/receipt.json",
+      "relativeError" : 0.050000000000000003
+    },
+    {
+      "aliasFrequencyHz" : 0.11919450587824469,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        81.7119140625
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785107883.7353516,
+          "start" : 1785107802.0234375
+        }
+      ],
+      "autonomousSteps" : 94,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 107,
+      "classifiedDurationSeconds" : 92.2861328125,
+      "decodedRows" : 97,
+      "expectedSteps" : 110,
+      "label" : "W110",
+      "motionTicks" : 109,
+      "motionVolumeSteps" : 125,
+      "observedSteps" : 107,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v9-motion-ownership-failure\/receipt.json",
+      "relativeError" : 0.027272727272727271
+    },
+    {
+      "aliasFrequencyHz" : 0.11919419055303503,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        82.67333984375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785107884.6967773,
+          "start" : 1785107802.0234375
+        }
+      ],
+      "autonomousSteps" : 95,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 107,
+      "classifiedDurationSeconds" : 92.286376953125,
+      "decodedRows" : 97,
+      "expectedSteps" : 110,
+      "label" : "W110",
+      "motionTicks" : 111,
+      "motionVolumeSteps" : 125,
+      "observedSteps" : 107,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v9-motion-ownership-failure\/receipt.json",
+      "relativeError" : 0.027272727272727271
+    },
+    {
+      "aliasFrequencyHz" : 0.11919450587824469,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        83.634521484375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785107885.657959,
+          "start" : 1785107802.0234375
+        }
+      ],
+      "autonomousSteps" : 97,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 107,
+      "classifiedDurationSeconds" : 92.2861328125,
+      "decodedRows" : 97,
+      "expectedSteps" : 110,
+      "label" : "W110",
+      "motionTicks" : 113,
+      "motionVolumeSteps" : 125,
+      "observedSteps" : 107,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v9-motion-ownership-failure\/receipt.json",
+      "relativeError" : 0.027272727272727271
+    },
+    {
+      "aliasFrequencyHz" : 0.11919419055303503,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        84.595947265625
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785107886.6193848,
+          "start" : 1785107802.0234375
+        }
+      ],
+      "autonomousSteps" : 98,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 107,
+      "classifiedDurationSeconds" : 92.286376953125,
+      "decodedRows" : 97,
+      "expectedSteps" : 110,
+      "label" : "W110",
+      "motionTicks" : 115,
+      "motionVolumeSteps" : 126,
+      "observedSteps" : 107,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v9-motion-ownership-failure\/receipt.json",
+      "relativeError" : 0.027272727272727271
+    },
+    {
+      "aliasFrequencyHz" : 0.11919450587824469,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        85.55712890625
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785107887.5805664,
+          "start" : 1785107802.0234375
+        }
+      ],
+      "autonomousSteps" : 99,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 107,
+      "classifiedDurationSeconds" : 92.2861328125,
+      "decodedRows" : 97,
+      "expectedSteps" : 110,
+      "label" : "W110",
+      "motionTicks" : 117,
+      "motionVolumeSteps" : 128,
+      "observedSteps" : 107,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v9-motion-ownership-failure\/receipt.json",
+      "relativeError" : 0.027272727272727271
+    },
+    {
+      "aliasFrequencyHz" : 0.15170330237221594,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        90.36279296875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785108592.8701172,
+          "start" : 1785108502.5073242
+        }
+      ],
+      "autonomousSteps" : 94,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 110,
+      "classifiedDurationSeconds" : 92.285400390625,
+      "decodedRows" : 97,
+      "expectedSteps" : 109,
+      "label" : "W109",
+      "motionTicks" : 128,
+      "motionVolumeSteps" : 215,
+      "observedSteps" : 110,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v10-fresh-slow-walk-109\/README.md",
+      "relativeError" : 0.0091743119266055051
+    },
+    {
+      "aliasFrequencyHz" : 0.15170330237221594,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        91.323974609375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785108593.8312988,
+          "start" : 1785108502.5073242
+        }
+      ],
+      "autonomousSteps" : 109,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 110,
+      "classifiedDurationSeconds" : 92.285400390625,
+      "decodedRows" : 97,
+      "expectedSteps" : 109,
+      "label" : "W109",
+      "motionTicks" : 128,
+      "motionVolumeSteps" : 216,
+      "observedSteps" : 110,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v10-fresh-slow-walk-109\/README.md",
+      "relativeError" : 0.0091743119266055051
+    },
+    {
+      "aliasFrequencyHz" : 0.15170330237221594,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        92.285400390625
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785108594.7927246,
+          "start" : 1785108502.5073242
+        }
+      ],
+      "autonomousSteps" : 110,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 110,
+      "classifiedDurationSeconds" : 92.285400390625,
+      "decodedRows" : 97,
+      "expectedSteps" : 109,
+      "label" : "W109",
+      "motionTicks" : 130,
+      "motionVolumeSteps" : 215,
+      "observedSteps" : 110,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v10-fresh-slow-walk-109\/README.md",
+      "relativeError" : 0.0091743119266055051
+    },
+    {
+      "aliasFrequencyHz" : 0.15170330237221594,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        92.285400390625
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785108595.7539062,
+          "start" : 1785108503.4685059
+        }
+      ],
+      "autonomousSteps" : 111,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 110,
+      "classifiedDurationSeconds" : 92.285400390625,
+      "decodedRows" : 97,
+      "expectedSteps" : 109,
+      "label" : "W109",
+      "motionTicks" : 132,
+      "motionVolumeSteps" : 215,
+      "observedSteps" : 111,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v10-fresh-slow-walk-109\/README.md",
+      "relativeError" : 0.01834862385321101
+    },
+    {
+      "aliasFrequencyHz" : 0.15170330237221594,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        92.285400390625
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785108596.715332,
+          "start" : 1785108504.4299316
+        }
+      ],
+      "autonomousSteps" : 111,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 110,
+      "classifiedDurationSeconds" : 92.285400390625,
+      "decodedRows" : 97,
+      "expectedSteps" : 109,
+      "label" : "W109",
+      "motionTicks" : 133,
+      "motionVolumeSteps" : 212,
+      "observedSteps" : 111,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v10-fresh-slow-walk-109\/README.md",
+      "relativeError" : 0.01834862385321101
+    },
+    {
+      "aliasFrequencyHz" : 0.16599573122956801,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        86.5185546875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785111734.6606445,
+          "start" : 1785111648.1420898
+        }
+      ],
+      "autonomousSteps" : 121,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 109,
+      "classifiedDurationSeconds" : 90.36376953125,
+      "decodedRows" : 95,
+      "expectedSteps" : 109,
+      "label" : "W109b",
+      "motionTicks" : 120,
+      "motionVolumeSteps" : 115,
+      "observedSteps" : 107,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v10-fresh-slow-walk-109\/historical-active-chunk.jsonl",
+      "relativeError" : 0.01834862385321101
+    },
+    {
+      "aliasFrequencyHz" : 0.16599617971031722,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        87.479736328125
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785111735.6218262,
+          "start" : 1785111648.1420898
+        }
+      ],
+      "autonomousSteps" : 122,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 109,
+      "classifiedDurationSeconds" : 90.363525390625,
+      "decodedRows" : 95,
+      "expectedSteps" : 109,
+      "label" : "W109b",
+      "motionTicks" : 120,
+      "motionVolumeSteps" : 116,
+      "observedSteps" : 107,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v10-fresh-slow-walk-109\/historical-active-chunk.jsonl",
+      "relativeError" : 0.01834862385321101
+    },
+    {
+      "aliasFrequencyHz" : 0.16599573122956801,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        88.441162109375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785111736.583252,
+          "start" : 1785111648.1420898
+        }
+      ],
+      "autonomousSteps" : 123,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 109,
+      "classifiedDurationSeconds" : 90.36376953125,
+      "decodedRows" : 95,
+      "expectedSteps" : 109,
+      "label" : "W109b",
+      "motionTicks" : 121,
+      "motionVolumeSteps" : 117,
+      "observedSteps" : 109,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v10-fresh-slow-walk-109\/historical-active-chunk.jsonl",
+      "relativeError" : 0
+    },
+    {
+      "aliasFrequencyHz" : 0.14386335574894157,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        89.40234375
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785111737.5444336,
+          "start" : 1785111648.1420898
+        }
+      ],
+      "autonomousSteps" : 124,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 107,
+      "classifiedDurationSeconds" : 90.363525390625,
+      "decodedRows" : 95,
+      "expectedSteps" : 109,
+      "label" : "W109b",
+      "motionTicks" : 124,
+      "motionVolumeSteps" : 117,
+      "observedSteps" : 107,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v10-fresh-slow-walk-109\/historical-active-chunk.jsonl",
+      "relativeError" : 0.01834862385321101
+    },
+    {
+      "aliasFrequencyHz" : 0.16599573122956801,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        81.71142578125
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785111738.5058594,
+          "start" : 1785111656.7944336
+        }
+      ],
+      "autonomousSteps" : 116,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 109,
+      "classifiedDurationSeconds" : 90.36376953125,
+      "decodedRows" : 95,
+      "expectedSteps" : 109,
+      "label" : "W109b",
+      "motionTicks" : 125,
+      "motionVolumeSteps" : 118,
+      "observedSteps" : 109,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v10-fresh-slow-walk-109\/historical-active-chunk.jsonl",
+      "relativeError" : 0
+    },
+    {
+      "aliasFrequencyHz" : 0.17706259169100502,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        90.363525390625
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785112629.5300293,
+          "start" : 1785112539.1665039
+        }
+      ],
+      "autonomousSteps" : 143,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 110,
+      "classifiedDurationSeconds" : 90.363525390625,
+      "decodedRows" : 95,
+      "expectedSteps" : 115,
+      "label" : "W115",
+      "motionTicks" : 143,
+      "motionVolumeSteps" : 160,
+      "observedSteps" : 114,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v11-fresh-slow-walk-115\/README.md",
+      "relativeError" : 0.0086956521739130436
+    },
+    {
+      "aliasFrequencyHz" : 0.17706211331153918,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        90.36376953125
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785112630.4914551,
+          "start" : 1785112540.1276855
+        }
+      ],
+      "autonomousSteps" : 143,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 110,
+      "classifiedDurationSeconds" : 90.36376953125,
+      "decodedRows" : 95,
+      "expectedSteps" : 115,
+      "label" : "W115",
+      "motionTicks" : 144,
+      "motionVolumeSteps" : 158,
+      "observedSteps" : 114,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v11-fresh-slow-walk-115\/README.md",
+      "relativeError" : 0.0086956521739130436
+    },
+    {
+      "aliasFrequencyHz" : 0.17706259169100502,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        90.363525390625
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785112631.4526367,
+          "start" : 1785112541.0891113
+        }
+      ],
+      "autonomousSteps" : 126,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 110,
+      "classifiedDurationSeconds" : 90.363525390625,
+      "decodedRows" : 95,
+      "expectedSteps" : 115,
+      "label" : "W115",
+      "motionTicks" : 146,
+      "motionVolumeSteps" : 144,
+      "observedSteps" : 115,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v11-fresh-slow-walk-115\/README.md",
+      "relativeError" : 0
+    },
+    {
+      "aliasFrequencyHz" : 0.17706211331153918,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        90.36376953125
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785112632.4140625,
+          "start" : 1785112542.050293
+        }
+      ],
+      "autonomousSteps" : 126,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 110,
+      "classifiedDurationSeconds" : 90.36376953125,
+      "decodedRows" : 95,
+      "expectedSteps" : 115,
+      "label" : "W115",
+      "motionTicks" : 148,
+      "motionVolumeSteps" : 140,
+      "observedSteps" : 115,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v11-fresh-slow-walk-115\/README.md",
+      "relativeError" : 0
+    },
+    {
+      "aliasFrequencyHz" : 0.15492976772962938,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        88.44091796875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785112633.3752441,
+          "start" : 1785112544.9343262
+        }
+      ],
+      "autonomousSteps" : 124,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 108,
+      "classifiedDurationSeconds" : 90.363525390625,
+      "decodedRows" : 95,
+      "expectedSteps" : 115,
+      "label" : "W115",
+      "motionTicks" : 151,
+      "motionVolumeSteps" : 134,
+      "observedSteps" : 115,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v11-fresh-slow-walk-115\/README.md",
+      "relativeError" : 0
+    },
+    {
+      "aliasFrequencyHz" : 0.13422576866044583,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        89.401611328125
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785417638.7856445,
+          "start" : 1785417549.3840332
+        }
+      ],
+      "autonomousSteps" : 93,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 105,
+      "classifiedDurationSeconds" : 89.401611328125,
+      "decodedRows" : 94,
+      "expectedSteps" : 90,
+      "label" : "W90",
+      "motionTicks" : 136,
+      "motionVolumeSteps" : 193,
+      "observedSteps" : 93,
+      "passed" : true,
+      "provenance" : "Atria\/AtriaTests\/Fixtures\/whoop4-v15-physical-gait-corpus.jsonl#compact-e49a6a6-1785417551-1785417641",
+      "relativeError" : 0.033333333333333333
+    },
+    {
+      "aliasFrequencyHz" : 0.13422613520923679,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        89.4013671875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785417639.7468262,
+          "start" : 1785417550.345459
+        }
+      ],
+      "autonomousSteps" : 93,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 105,
+      "classifiedDurationSeconds" : 89.4013671875,
+      "decodedRows" : 94,
+      "expectedSteps" : 90,
+      "label" : "W90",
+      "motionTicks" : 134,
+      "motionVolumeSteps" : 194,
+      "observedSteps" : 93,
+      "passed" : true,
+      "provenance" : "Atria\/AtriaTests\/Fixtures\/whoop4-v15-physical-gait-corpus.jsonl#compact-e49a6a6-1785417551-1785417641",
+      "relativeError" : 0.033333333333333333
+    },
+    {
+      "aliasFrequencyHz" : 0.1017636942341084,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        88.440185546875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785417640.708252,
+          "start" : 1785417552.2680664
+        }
+      ],
+      "autonomousSteps" : 92,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 101,
+      "classifiedDurationSeconds" : 88.440185546875,
+      "decodedRows" : 94,
+      "expectedSteps" : 90,
+      "label" : "W90",
+      "motionTicks" : 133,
+      "motionVolumeSteps" : 194,
+      "observedSteps" : 92,
+      "passed" : true,
+      "provenance" : "Atria\/AtriaTests\/Fixtures\/whoop4-v15-physical-gait-corpus.jsonl#compact-e49a6a6-1785417551-1785417641",
+      "relativeError" : 0.022222222222222223
+    },
+    {
+      "aliasFrequencyHz" : 0.13422613520923679,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        89.4013671875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785417641.6694336,
+          "start" : 1785417552.2680664
+        }
+      ],
+      "autonomousSteps" : 93,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 105,
+      "classifiedDurationSeconds" : 89.4013671875,
+      "decodedRows" : 94,
+      "expectedSteps" : 90,
+      "label" : "W90",
+      "motionTicks" : 133,
+      "motionVolumeSteps" : 194,
+      "observedSteps" : 93,
+      "passed" : true,
+      "provenance" : "Atria\/AtriaTests\/Fixtures\/whoop4-v15-physical-gait-corpus.jsonl#compact-e49a6a6-1785417551-1785417641",
+      "relativeError" : 0.033333333333333333
+    },
+    {
+      "aliasFrequencyHz" : 0.13422613520923679,
+      "autonomousBoutCount" : 1,
+      "autonomousDurationsSeconds" : [
+        89.4013671875
+      ],
+      "autonomousRanges" : [
+        {
+          "end" : 1785417642.6308594,
+          "start" : 1785417553.2294922
+        }
+      ],
+      "autonomousSteps" : 93,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 105,
+      "classifiedDurationSeconds" : 89.4013671875,
+      "decodedRows" : 94,
+      "expectedSteps" : 90,
+      "label" : "W90",
+      "motionTicks" : 131,
+      "motionVolumeSteps" : 194,
+      "observedSteps" : 93,
+      "passed" : true,
+      "provenance" : "Atria\/AtriaTests\/Fixtures\/whoop4-v15-physical-gait-corpus.jsonl#compact-e49a6a6-1785417551-1785417641",
+      "relativeError" : 0.033333333333333333
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 119.2021484375,
+      "decodedRows" : 125,
+      "expectedSteps" : 0,
+      "label" : "C1",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-arm-control-failure\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 118.240478515625,
+      "decodedRows" : 124,
+      "expectedSteps" : 0,
+      "label" : "C1",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-arm-control-failure\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 118.24072265625,
+      "decodedRows" : 124,
+      "expectedSteps" : 0,
+      "label" : "C1",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-arm-control-failure\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 118.240478515625,
+      "decodedRows" : 124,
+      "expectedSteps" : 0,
+      "label" : "C1",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-arm-control-failure\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 118.24072265625,
+      "decodedRows" : 124,
+      "expectedSteps" : 0,
+      "label" : "C1",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-arm-control-failure\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 104.782470703125,
+      "decodedRows" : 110,
+      "expectedSteps" : 0,
+      "label" : "C2",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v5-arm-control-failure\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 104.782470703125,
+      "decodedRows" : 110,
+      "expectedSteps" : 0,
+      "label" : "C2",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v5-arm-control-failure\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 104.782470703125,
+      "decodedRows" : 110,
+      "expectedSteps" : 0,
+      "label" : "C2",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v5-arm-control-failure\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 104.782470703125,
+      "decodedRows" : 110,
+      "expectedSteps" : 0,
+      "label" : "C2",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v5-arm-control-failure\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 104.782470703125,
+      "decodedRows" : 110,
+      "expectedSteps" : 0,
+      "label" : "C2",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v5-arm-control-failure\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 104.782470703125,
+      "decodedRows" : 110,
+      "expectedSteps" : 0,
+      "label" : "C3",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v6-arm-control-pass\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 104.782470703125,
+      "decodedRows" : 110,
+      "expectedSteps" : 0,
+      "label" : "C3",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v6-arm-control-pass\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 104.782470703125,
+      "decodedRows" : 110,
+      "expectedSteps" : 0,
+      "label" : "C3",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v6-arm-control-pass\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 104.782470703125,
+      "decodedRows" : 110,
+      "expectedSteps" : 0,
+      "label" : "C3",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v6-arm-control-pass\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 104.782470703125,
+      "decodedRows" : 110,
+      "expectedSteps" : 0,
+      "label" : "C3",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v6-arm-control-pass\/receipt.json",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : -2,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 90.36279296875,
+      "decodedRows" : 95,
+      "expectedSteps" : 0,
+      "label" : "C4",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v12-fresh-arm-control\/README.md",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : -1,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 90.36279296875,
+      "decodedRows" : 95,
+      "expectedSteps" : 0,
+      "label" : "C4",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v12-fresh-arm-control\/README.md",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : 0,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 90.36279296875,
+      "decodedRows" : 95,
+      "expectedSteps" : 0,
+      "label" : "C4",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v12-fresh-arm-control\/README.md",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : 1,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 90.36279296875,
+      "decodedRows" : 95,
+      "expectedSteps" : 0,
+      "label" : "C4",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v12-fresh-arm-control\/README.md",
+      "relativeError" : null
+    },
+    {
+      "aliasFrequencyHz" : 0,
+      "autonomousBoutCount" : 0,
+      "autonomousDurationsSeconds" : [
+
+      ],
+      "autonomousRanges" : [
+
+      ],
+      "autonomousSteps" : 0,
+      "boundaryShiftSeconds" : 2,
+      "cadenceSteps" : 0,
+      "classifiedDurationSeconds" : 90.36279296875,
+      "decodedRows" : 95,
+      "expectedSteps" : 0,
+      "label" : "C4",
+      "motionTicks" : 0,
+      "motionVolumeSteps" : 0,
+      "observedSteps" : 0,
+      "passed" : true,
+      "provenance" : "evidence\/2026-07-27-gate4-v12-fresh-arm-control\/README.md",
+      "relativeError" : null
+    }
+  ],
+  "decodedUniqueRows" : 193503,
+  "failedChecks" : 0,
+  "maximumWalkRelativeError" : 0.050000000000000003,
+  "passedChecks" : 80,
+  "phoneMotionUsed" : false,
+  "source" : "\/Users\/amanpandey\/projects\/atria\/evidence\/2026-07-29-autonomous-day-model\/raw-v2"
+}

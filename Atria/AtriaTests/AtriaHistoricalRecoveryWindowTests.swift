@@ -37,19 +37,20 @@ final class AtriaHistoricalRecoveryWindowTests: XCTestCase {
         XCTAssertEqual(window.coveragePercent, 3)
     }
 
-    func testCoveredOrHighCoverageWorkoutDoesNotArmRecovery() {
+    func testArchiveCoveredWorkoutDoesNotArmAndNinetyPercentStillRepairs() throws {
         let sparse = workout(start: 1_783_768_620, end: 1_783_771_620, coverage: 3)
         XCTAssertNil(SessionStore.historicalRecoveryWindow(
             confirmedWorkouts: [sparse],
             archiveLastUnix: 1_783_771_620,
             now: Date(timeIntervalSince1970: 1_783_820_000)
         ))
-        XCTAssertNil(SessionStore.historicalRecoveryWindow(
+        let incomplete = try XCTUnwrap(SessionStore.historicalRecoveryWindow(
             confirmedWorkouts: [workout(start: 1_783_768_620,
                                         end: 1_783_771_620,
                                         coverage: 90)],
             archiveLastUnix: 1_783_755_889,
             now: Date(timeIntervalSince1970: 1_783_820_000)
         ))
+        XCTAssertEqual(incomplete.coveragePercent, 90)
     }
 }

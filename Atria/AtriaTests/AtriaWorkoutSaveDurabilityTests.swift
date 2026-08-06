@@ -3,13 +3,247 @@ import XCTest
 
 @MainActor
 final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
-    func testCandidateBackedSaveSettlesOriginalWindowWhileManualAddKeepsReAddSemantics() throws {
+    private func unwrap<T>(_ value: T?, file: StaticString = #filePath, line: UInt = #line) throws -> T {
+        try XCTUnwrap(value, file: file, line: line)
+    }
+
+    private func assertTrue(_ value: Bool,
+                            _ message: @autoclosure () -> String = "",
+                            file: StaticString = #filePath,
+                            line: UInt = #line) {
+        XCTAssertTrue(value, message(), file: file, line: line)
+    }
+
+    func testWorkoutStepNegativeCacheInvalidatesForArchiveWindowAndStrap() {
+        XCTAssertFalse(SessionStore.shouldScanWorkoutStepEvidence(
+            cachedFingerprint: "archive-v1",
+            currentFingerprint: "archive-v1"
+        ))
+        XCTAssertTrue(SessionStore.shouldScanWorkoutStepEvidence(
+            cachedFingerprint: "archive-v1",
+            currentFingerprint: "archive-v2"
+        ))
+        XCTAssertTrue(SessionStore.shouldScanWorkoutStepEvidence(
+            cachedFingerprint: nil,
+            currentFingerprint: "archive-v1"
+        ))
+        XCTAssertTrue(SessionStore.shouldScanWorkoutStepEvidence(
+            cachedFingerprint: "archive-v1",
+            currentFingerprint: nil
+        ), "an unavailable source token must fail open and never suppress a scan")
+
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let base = SessionStore.workoutStepNegativeAttemptKey(
+            workoutID: "walk",
+            start: start,
+            end: start.addingTimeInterval(90),
+            strapIdentifier: "strap-a"
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.workoutStepNegativeAttemptKey(
+                workoutID: "walk",
+                start: start.addingTimeInterval(1),
+                end: start.addingTimeInterval(90),
+                strapIdentifier: "strap-a"
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.workoutStepNegativeAttemptKey(
+                workoutID: "walk",
+                start: start,
+                end: start.addingTimeInterval(91),
+                strapIdentifier: "strap-a"
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.workoutStepNegativeAttemptKey(
+                workoutID: "walk",
+                start: start,
+                end: start.addingTimeInterval(90),
+                strapIdentifier: "strap-b"
+            )
+        )
+        XCTAssertTrue(base.contains(
+            AtriaWhoop4GravityCadenceStepModel.algorithmVersion
+        ))
+
+        let fingerprint = HistoricalArchive.makeConsumerSourceFingerprint(
+            catalogGeneration: 1,
+            descriptors: []
+        )
+        let advanced = HistoricalArchive.makeConsumerSourceFingerprint(
+            catalogGeneration: 2,
+            descriptors: []
+        )
+        XCTAssertTrue(SessionStore.shouldCacheWorkoutStepNegative(
+            read: .completeNoQualifiedEvidence,
+            fingerprintBefore: fingerprint,
+            fingerprintAfter: fingerprint
+        ))
+        XCTAssertFalse(SessionStore.shouldCacheWorkoutStepNegative(
+            read: .incomplete,
+            fingerprintBefore: fingerprint,
+            fingerprintAfter: fingerprint
+        ), "an interrupted or concurrently growing scan is never conclusive")
+        XCTAssertFalse(SessionStore.shouldCacheWorkoutStepNegative(
+            read: .completeNoQualifiedEvidence,
+            fingerprintBefore: fingerprint,
+            fingerprintAfter: advanced
+        ), "archive advancement during the scan invalidates its negative result")
+    }
+
+    func testWorkoutHRRehydrationAttemptSignatureInvalidatesForEveryInput() throws {
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let workout = sparseConfirmedWorkout(
+            start: start,
+            end: start.addingTimeInterval(900),
+            samples: 30,
+            coverage: 20
+        )
+        let sessionID = try XCTUnwrap(
+            UUID(uuidString: "00000000-0000-0000-0000-000000000123")
+        )
+        let session = SavedSession(
+            id: sessionID,
+            start: start,
+            end: start.addingTimeInterval(900),
+            label: "Walk",
+            points: [
+                .init(t: 0, bpm: 90),
+                .init(t: 10, bpm: 100),
+            ]
+        )
+        let fingerprint = HistoricalArchive.makeConsumerSourceFingerprint(
+            catalogGeneration: 1,
+            descriptors: []
+        )
+        let base = try XCTUnwrap(
+            SessionStore.confirmedWorkoutHRRehydrationAttemptSignature(
+                workouts: [workout],
+                sessions: [session],
+                rest: 60,
+                maxHR: 190,
+                profile: testAthleteProfile,
+                sourceFingerprint: fingerprint
+            )
+        )
+        XCTAssertEqual(
+            base,
+            SessionStore.confirmedWorkoutHRRehydrationAttemptSignature(
+                workouts: [workout],
+                sessions: [session],
+                rest: 60,
+                maxHR: 190,
+                profile: testAthleteProfile,
+                sourceFingerprint: fingerprint
+            )
+        )
+
+        let changedSession = SavedSession(
+            id: sessionID,
+            start: session.start,
+            end: session.end,
+            label: session.label,
+            points: [
+                .init(t: 0, bpm: 90),
+                .init(t: 10, bpm: 101),
+            ]
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.confirmedWorkoutHRRehydrationAttemptSignature(
+                workouts: [workout],
+                sessions: [changedSession],
+                rest: 60,
+                maxHR: 190,
+                profile: testAthleteProfile,
+                sourceFingerprint: fingerprint
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.confirmedWorkoutHRRehydrationAttemptSignature(
+                workouts: [sparseConfirmedWorkout(
+                    start: start,
+                    end: start.addingTimeInterval(901),
+                    samples: 30,
+                    coverage: 20
+                )],
+                sessions: [session],
+                rest: 60,
+                maxHR: 190,
+                profile: testAthleteProfile,
+                sourceFingerprint: fingerprint
+            )
+        )
+        var changedProfile = testAthleteProfile
+        changedProfile.weightKg += 1
+        XCTAssertNotEqual(
+            base,
+            SessionStore.confirmedWorkoutHRRehydrationAttemptSignature(
+                workouts: [workout],
+                sessions: [session],
+                rest: 60,
+                maxHR: 190,
+                profile: changedProfile,
+                sourceFingerprint: fingerprint
+            )
+        )
+        XCTAssertNotEqual(
+            base,
+            SessionStore.confirmedWorkoutHRRehydrationAttemptSignature(
+                workouts: [workout],
+                sessions: [session],
+                rest: 60,
+                maxHR: 190,
+                profile: testAthleteProfile,
+                sourceFingerprint:
+                    HistoricalArchive.makeConsumerSourceFingerprint(
+                        catalogGeneration: 2,
+                        descriptors: []
+                    )
+            )
+        )
+    }
+
+    func testRecoveredWorkoutEvidenceCanFillDerivedMetricsWithoutMoreSamples() {
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let complete = sparseConfirmedWorkout(
+            start: start,
+            end: start.addingTimeInterval(900),
+            samples: 900,
+            coverage: 100
+        )
+        var missing = complete
+        missing.strain = nil
+        missing.zoneSeconds = nil
+        missing.activeEnergyKilocalories = nil
+
+        XCTAssertTrue(
+            SessionStore.recoveredWorkoutEvidenceIsStronger(
+                complete,
+                than: missing
+            ),
+            "equal HR evidence must still be allowed to repair missing strain, zones, and energy"
+        )
+        XCTAssertFalse(
+            SessionStore.recoveredWorkoutEvidenceIsStronger(
+                missing,
+                than: complete
+            )
+        )
+    }
+
+    func testCandidateBackedSaveSettlesOriginalWindowWhileManualAddKeepsReAddSemantics() async throws {
         let originalDismissals = AtriaDismissedWorkoutCandidateStore.load()
         let store = SessionStore()
         var createdWorkoutIDs: [String] = []
         defer {
             for id in createdWorkoutIDs {
-                _ = store.deleteConfirmedWorkout(id: id)
+                Task { @MainActor in _ = await store.deleteConfirmedWorkout(id: id) }
             }
             AtriaDismissedWorkoutCandidateStore.save(originalDismissals)
         }
@@ -25,7 +259,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         let adjustedStart = candidateEnd.addingTimeInterval(2 * 60 * 60)
         let adjustedEnd = adjustedStart.addingTimeInterval(45 * 60)
 
-        let candidateBacked = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let candidateBacked = try unwrap(await store.confirmWorkoutWindowForUI(
             start: adjustedStart,
             end: adjustedEnd,
             rest: 60,
@@ -48,7 +282,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
             $0.overlaps(start: manualStart, end: manualEnd)
         })
 
-        let manual = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let manual = try unwrap(await store.confirmWorkoutWindowForUI(
             start: manualStart,
             end: manualEnd,
             rest: 60,
@@ -133,13 +367,13 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertNil(decoded.workoutStepsCapturedAt)
     }
 
-    func testPendingRecoveryEnrichesExistingWorkoutWithExactStepEvidence() throws {
+    func testPendingRecoveryEnrichesExistingWorkoutWithExactStepEvidence() async throws {
         let store = SessionStore()
         let marker = "step-recovery-\(UUID().uuidString)"
         let start = Date(timeIntervalSince1970: 2_050_000_000)
         let end = start.addingTimeInterval(10 * 60)
         let capturedAt = end.addingTimeInterval(-1)
-        let original = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let original = try unwrap(await store.confirmWorkoutWindowForUI(
             start: start,
             end: end,
             rest: 60,
@@ -151,11 +385,11 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         ))
         defer {
             for workout in store.confirmedWorkouts where workout.reviewSource == marker {
-                _ = store.deleteConfirmedWorkout(id: workout.id)
+                Task { @MainActor in _ = await store.deleteConfirmedWorkout(id: workout.id) }
             }
         }
 
-        let recovered = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let recovered = try unwrap(await store.confirmWorkoutWindowForUI(
             start: start,
             end: end,
             rest: 60,
@@ -175,13 +409,13 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertEqual(recovered.workoutStepsCapturedAt, capturedAt)
         XCTAssertEqual(store.confirmedWorkouts.filter { $0.id == original.id }.count, 1)
 
-        XCTAssertTrue(store.renameConfirmedWorkout(id: recovered.id, label: "Morning walk"))
+        assertTrue(await store.renameConfirmedWorkout(id: recovered.id, label: "Morning walk"))
         let renamed = try XCTUnwrap(store.confirmedWorkouts.first { $0.id == recovered.id })
         XCTAssertEqual(renamed.workoutSteps, 842)
         XCTAssertEqual(renamed.workoutStepsAreEstimated, false)
         XCTAssertEqual(renamed.workoutStepsCapturedAt, capturedAt)
 
-        let metadataEdited = try store.editConfirmedWorkout(
+        let metadataEdited = try await store.editConfirmedWorkout(
             id: renamed.id,
             label: "Outdoor walk",
             activityType: AtriaWorkoutActivityType.walking.rawValue,
@@ -192,7 +426,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         ).get()
         XCTAssertEqual(metadataEdited.workoutSteps, 842)
 
-        let windowEdited = try store.editConfirmedWorkout(
+        let windowEdited = try await store.editConfirmedWorkout(
             id: metadataEdited.id,
             label: metadataEdited.label,
             activityType: AtriaWorkoutActivityType.walking.rawValue,
@@ -346,6 +580,19 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         ))
     }
 
+    func testBalancedModeStillPersistsAcceptedLiveSession() {
+        XCTAssertTrue(AtriaBLEManager.shouldPersistActiveSessionJournal(
+            hasLiveSamples: true,
+            longWearEnabled: false,
+            activeExplicitWorkout: false
+        ), "Collection mode must not discard already accepted samples")
+        XCTAssertFalse(AtriaBLEManager.shouldPersistActiveSessionJournal(
+            hasLiveSamples: false,
+            longWearEnabled: true,
+            activeExplicitWorkout: true
+        ))
+    }
+
     func testBackgroundEdgeCheckpointsExplicitWorkoutMetadataAndJournal() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let source = try String(
@@ -369,7 +616,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(branch.contains("flushWorkoutRouteAtBackgroundBoundary()"))
         XCTAssertTrue(source.contains("beginBackgroundTask("))
         XCTAssertTrue(source.contains("workoutRouteRecorder.flushCheckpoint(reason: \"scene_background\")"))
-        XCTAssertTrue(source.contains("endWorkoutRouteBackgroundTaskIfNeeded()"))
+        XCTAssertTrue(source.contains("workoutRouteBackgroundLease.end()"))
 
         let activeWorkoutStart = try XCTUnwrap(branch.range(of: "if workoutSession != nil"))
         let idleStart = try XCTUnwrap(
@@ -430,7 +677,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                                                                      requestedDuration: 0))
     }
 
-    func testExplicitUserActivityCanPersistWithoutInventingSensorMetrics() throws {
+    func testExplicitUserActivityCanPersistWithoutInventingSensorMetrics() async throws {
         XCTAssertTrue(SessionStore.metadataOnlyWorkoutSaveIsConfirmable(
             isExplicitUserActivity: true,
             requestedDuration: 30 * 60
@@ -451,7 +698,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         let store = SessionStore()
         let marker = "metadata-only-" + UUID().uuidString
         let start = Date(timeIntervalSince1970: 2_100_000_000 + Double.random(in: 0..<100_000))
-        let workout = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let workout = try unwrap(await store.confirmWorkoutWindowForUI(
             start: start,
             end: start.addingTimeInterval(30 * 60),
             rest: 60,
@@ -461,7 +708,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
             activityType: "Strength",
             reviewSource: marker
         ))
-        defer { _ = store.deleteConfirmedWorkout(id: workout.id) }
+        defer { Task { @MainActor in _ = await store.deleteConfirmedWorkout(id: workout.id) } }
 
         XCTAssertEqual(workout.confidence, "user_confirmed_no_hr")
         XCTAssertEqual(workout.samples, 0)
@@ -473,11 +720,11 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertEqual(workout.activityType, "Strength")
     }
 
-    func testMetadataOnlyActivityEditorSavesWindowNameAndTypeAtomically() throws {
+    func testMetadataOnlyActivityEditorSavesWindowNameAndTypeAtomically() async throws {
         let store = SessionStore()
         let marker = "metadata-only-edit-" + UUID().uuidString
         let start = Date(timeIntervalSince1970: 2_110_000_000 + Double.random(in: 0..<100_000))
-        let original = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let original = try unwrap(await store.confirmWorkoutWindowForUI(
             start: start,
             end: start.addingTimeInterval(30 * 60),
             rest: 60,
@@ -489,14 +736,14 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         ))
         defer {
             for workout in store.confirmedWorkouts where workout.reviewSource == marker {
-                _ = store.deleteConfirmedWorkout(id: workout.id)
+                Task { @MainActor in _ = await store.deleteConfirmedWorkout(id: workout.id) }
             }
         }
 
         let editedStart = start.addingTimeInterval(-5 * 60)
         let editedEnd = start.addingTimeInterval(42 * 60)
         let revisionBeforeSave = store.confirmedWorkoutsRevision
-        let saved = try XCTUnwrap(store.editConfirmedWorkout(
+        let saved = try unwrap(try await store.editConfirmedWorkout(
             id: original.id,
             label: "  Chest & Triceps  ",
             activityType: "  Weightlifting  ",
@@ -522,11 +769,11 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertEqual(store.confirmedWorkoutsRevision, revisionBeforeSave + 1)
     }
 
-    func testActivitySubtypeCommitsAtomicallyAndCannotLeakAcrossTypeChanges() throws {
+    func testActivitySubtypeCommitsAtomicallyAndCannotLeakAcrossTypeChanges() async throws {
         let store = SessionStore()
         let marker = "subtype-atomicity-" + UUID().uuidString
         let start = Date(timeIntervalSince1970: 2_115_000_000 + Double.random(in: 0..<100_000))
-        let original = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let original = try unwrap(await store.confirmWorkoutWindowForUI(
             start: start,
             end: start.addingTimeInterval(30 * 60),
             rest: 60,
@@ -538,12 +785,12 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         ))
         defer {
             for workout in store.confirmedWorkouts where workout.reviewSource == marker {
-                _ = store.deleteConfirmedWorkout(id: workout.id)
+                Task { @MainActor in _ = await store.deleteConfirmedWorkout(id: workout.id) }
             }
         }
 
         let revisionBeforeStyle = store.confirmedWorkoutsRevision
-        let styled = try store.editConfirmedWorkout(id: original.id,
+        let styled = try await store.editConfirmedWorkout(id: original.id,
                                                     label: "Upper body",
                                                     activityType: "Strength",
                                                     activitySubtype: "  Push  ",
@@ -555,7 +802,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertEqual(store.confirmedWorkoutsRevision, revisionBeforeStyle + 1,
                        "Subtype and other metadata must persist in one revision")
 
-        let changedType = try store.editConfirmedWorkout(id: styled.id,
+        let changedType = try await store.editConfirmedWorkout(id: styled.id,
                                                          label: styled.label,
                                                          activityType: "Dance",
                                                          activitySubtype: styled.activitySubtype,
@@ -568,7 +815,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                      "A strength-only subtype must not survive a change to Dance")
     }
 
-    func testExplicitWorkoutPersistsStrengthLogAndPausedIntervals() throws {
+    func testExplicitWorkoutPersistsStrengthLogAndPausedIntervals() async throws {
         let store = SessionStore()
         let marker = "strength-state-" + UUID().uuidString
         let start = Date(timeIntervalSince1970: 2_120_000_000 + Double.random(in: 0..<100_000))
@@ -579,7 +826,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                             t: start.addingTimeInterval(8 * 60))
         let pause = ExcludedInterval(start: start.addingTimeInterval(12 * 60),
                                      end: start.addingTimeInterval(14 * 60))
-        let workout = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let workout = try unwrap(await store.confirmWorkoutWindowForUI(
             start: start,
             end: start.addingTimeInterval(30 * 60),
             rest: 60,
@@ -591,7 +838,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
             excludedIntervals: [pause],
             reviewSource: marker
         ))
-        defer { _ = store.deleteConfirmedWorkout(id: workout.id) }
+        defer { Task { @MainActor in _ = await store.deleteConfirmedWorkout(id: workout.id) } }
 
         XCTAssertEqual(workout.strengthSets, [set])
         XCTAssertEqual(workout.excludedIntervals, [pause])
@@ -604,7 +851,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertEqual(decoded.excludedIntervals, [pause])
     }
 
-    func testActivityEditorPreservesStrengthLogAndPausedIntervals() throws {
+    func testActivityEditorPreservesStrengthLogAndPausedIntervals() async throws {
         let store = SessionStore()
         let marker = "strength-edit-" + UUID().uuidString
         let start = Date(timeIntervalSince1970: 2_130_000_000 + Double.random(in: 0..<100_000))
@@ -615,7 +862,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                             t: start.addingTimeInterval(10 * 60))
         let pause = ExcludedInterval(start: start.addingTimeInterval(15 * 60),
                                      end: start.addingTimeInterval(17 * 60))
-        let original = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let original = try unwrap(await store.confirmWorkoutWindowForUI(
             start: start,
             end: start.addingTimeInterval(35 * 60),
             rest: 60,
@@ -629,12 +876,12 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         ))
         defer {
             for workout in store.confirmedWorkouts where workout.reviewSource == marker {
-                _ = store.deleteConfirmedWorkout(id: workout.id)
+                Task { @MainActor in _ = await store.deleteConfirmedWorkout(id: workout.id) }
             }
         }
 
         let revisionBeforeSave = store.confirmedWorkoutsRevision
-        let saved = try XCTUnwrap(store.editConfirmedWorkout(
+        let saved = try unwrap(try await store.editConfirmedWorkout(
             id: original.id,
             label: "Chest & Triceps",
             activityType: "Weightlifting",
@@ -646,8 +893,14 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
 
         XCTAssertEqual(saved.strengthSets, [set])
         XCTAssertEqual(saved.excludedIntervals, [pause])
-        XCTAssertEqual(store.confirmedWorkoutsRevision, revisionBeforeSave + 1,
-                       "Name, type, time, sets and pause state must commit in one durable revision")
+        let persisted = try XCTUnwrap(store.confirmedWorkouts.first(where: { $0.id == saved.id }))
+        XCTAssertEqual(persisted.strengthSets, [set])
+        XCTAssertEqual(persisted.excludedIntervals, [pause])
+        XCTAssertGreaterThanOrEqual(
+            store.confirmedWorkoutsRevision,
+            revisionBeforeSave + 1,
+            "The editor must publish its durable revision; independent launch-time strain maintenance may also publish"
+        )
     }
 
     func testActivityEditorRederivesMetricsWithoutCountingPreservedPauseIntervals() async throws {
@@ -687,14 +940,14 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                                eventTimeZoneIdentifier: "UTC"))
         defer {
             for workout in store.confirmedWorkouts where workout.reviewSource == marker {
-                _ = store.deleteConfirmedWorkout(id: workout.id)
+                Task { @MainActor in _ = await store.deleteConfirmedWorkout(id: workout.id) }
             }
             store.deleteSession(id: sessionID)
             // Cancel the delayed fixture write and durably persist the cleaned
             // session set before a repeated test process opens this container.
             store.flushScheduledPersistence(reason: "pause_aware_edit_test_cleanup")
         }
-        let original = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let original = try unwrap(await store.confirmWorkoutWindowForUI(
             start: start,
             end: end,
             rest: 60,
@@ -706,7 +959,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         ))
 
         XCTAssertEqual(original.zoneSeconds?["max"] ?? 0, 0, accuracy: 0.001)
-        let saved = try XCTUnwrap(store.editConfirmedWorkout(
+        let saved = try unwrap(try await store.editConfirmedWorkout(
             id: original.id,
             label: "Strength edited",
             activityType: "Strength",
@@ -847,6 +1100,41 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         let lateSaved = await store.persistProgress(lateProgress)
         XCTAssertFalse(lateSaved)
         XCTAssertEqual(store.snapshot, terminal)
+    }
+
+    func testPendingWorkoutQueuedProgressCannotOverwriteTerminalAuthority() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pending-terminal-queued-progress-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let start = Date(timeIntervalSince1970: 2_000_125_000)
+        let original = pendingAtomicIntent(start: start)
+        let store = AtriaPendingWorkoutIntentStore(directoryURL: directory,
+                                                   legacyDefaults: nil)
+        let created = await store.createIfAbsent(original)
+        XCTAssertTrue(created)
+
+        // Exercise the coalesced UI path, rather than calling persistProgress
+        // after End has already returned. Depending on which serial operation
+        // begins first, this checkpoint is either cancelled or completes just
+        // before End; in both cases it must never survive the terminal write.
+        var queuedProgress = original
+        queuedProgress.targetStrain = 12
+        queuedProgress.persistenceRevision = 1
+        let progressCompletion = expectation(description: "queued progress completed")
+        store.enqueueProgress(queuedProgress) { _ in
+            progressCompletion.fulfill()
+        }
+
+        var terminal = original
+        terminal.endedAt = start.addingTimeInterval(600)
+        terminal.activityType = AtriaWorkoutActivityType.walking.rawValue
+        terminal.persistenceRevision = .max
+        let savedTerminal = await store.persistTerminal(terminal)
+        XCTAssertEqual(savedTerminal, terminal)
+
+        await fulfillment(of: [progressCompletion], timeout: 1)
+        XCTAssertEqual(store.snapshot, terminal,
+                       "a queued checkpoint must not reopen or overwrite a saved terminal workout")
     }
 
     func testPendingWorkoutAtomicStoreTerminalRebasesOnNewestCanonicalProgress() async throws {
@@ -1075,11 +1363,18 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertEqual(decoded.startedAt, start)
     }
 
-    func testActivityEditorCommitIsAtomicAcrossWindowNameAndType() throws {
+    func testActivityEditorCommitIsAtomicAcrossWindowNameAndType() async throws {
         let store = SessionStore()
         let sessionID = UUID()
         let marker = "atomic-edit-" + UUID().uuidString
-        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        // The confirmed-workout ledger is shared by every SessionStore. Keep
+        // this edited window distinct from durable fixtures left by earlier
+        // tests instead of depending on an eventually scheduled cleanup task.
+        let start = max(
+            Date(timeIntervalSince1970: 2_000_000_000),
+            store.confirmedWorkouts.map(\.end).max()?.addingTimeInterval(24 * 60 * 60)
+                ?? .distantPast
+        )
         let end = start.addingTimeInterval(12 * 60)
         let points = stride(from: 0.0, through: 12 * 60, by: 10).map {
             SavedSession.Point(t: $0, bpm: 118 + (Int($0) / 10) % 18)
@@ -1093,7 +1388,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                                    eventTimeZoneIdentifier: "UTC")
         store.add(session)
 
-        let original = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let original = try unwrap(await store.confirmWorkoutWindowForUI(
             start: start,
             end: end,
             rest: 60,
@@ -1102,16 +1397,16 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
             activityType: "Cardio",
             reviewSource: marker
         ))
-        defer {
+        addTeardownBlock { @MainActor in
             for workout in store.confirmedWorkouts where workout.reviewSource == marker {
-                _ = store.deleteConfirmedWorkout(id: workout.id)
+                _ = await store.deleteConfirmedWorkout(id: workout.id)
             }
             store.deleteSession(id: sessionID)
         }
 
         let beforeFailure = store.confirmedWorkouts
         let missingDataStart = end.addingTimeInterval(24 * 60 * 60)
-        let failed = store.editConfirmedWorkout(id: original.id,
+        let failed = await store.editConfirmedWorkout(id: original.id,
                                                 label: "Should not partially save",
                                                 activityType: "Strength",
                                                 start: missingDataStart,
@@ -1125,7 +1420,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         let revisionBeforeCommit = store.confirmedWorkoutsRevision
         let editedStart = start.addingTimeInterval(60)
         let editedEnd = end.addingTimeInterval(-60)
-        let saved = try XCTUnwrap(store.editConfirmedWorkout(
+        let saved = try unwrap(try await store.editConfirmedWorkout(
             id: original.id,
             label: "  Chest & Triceps  ",
             activityType: "  Strength  ",
@@ -1209,6 +1504,161 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertNotNil(result.strain)
     }
 
+    func testRecoveredWorkoutEvidenceAcceptsMoreExactSamplesAtSameRoundedCoverage() {
+        let start = Date(timeIntervalSince1970: 1_783_767_620)
+        let end = start.addingTimeInterval(50 * 60)
+        let current = sparseConfirmedWorkout(start: start,
+                                             end: end,
+                                             samples: 100,
+                                             coverage: 42)
+        let stronger = sparseConfirmedWorkout(start: start,
+                                              end: end,
+                                              samples: 101,
+                                              coverage: 42)
+
+        XCTAssertTrue(SessionStore.recoveredWorkoutEvidenceIsStronger(stronger,
+                                                                       than: current),
+                      "Rounded coverage must not discard an additional exact recovered sample")
+        XCTAssertFalse(SessionStore.recoveredWorkoutEvidenceIsStronger(current,
+                                                                        than: stronger),
+                       "A replay of weaker evidence must remain idempotent")
+    }
+
+    func testArchiveRehydrationRepairsNoHRConfidenceWhenRealHRBecomesAvailable() throws {
+        let start = Date(timeIntervalSince1970: 1_783_767_620)
+        let end = start.addingTimeInterval(20 * 60)
+        var old = sparseConfirmedWorkout(start: start,
+                                         end: end,
+                                         samples: 0,
+                                         coverage: 0)
+        old = UserConfirmedWorkout(id: old.id,
+                                   createdAt: old.createdAt,
+                                   start: old.start,
+                                   end: old.end,
+                                   label: old.label,
+                                   source: old.source,
+                                   confidence: "user_confirmed_no_hr",
+                                   sessions: old.sessions,
+                                   samples: 0,
+                                   avgHR: 0,
+                                   peakHR: 0,
+                                   p95HR: 0,
+                                   p99HR: 0,
+                                   thresholdHR: old.thresholdHR,
+                                   streamCoveragePercent: 0,
+                                   observedDuration: 0,
+                                   reason: "no_strap_hr_samples",
+                                   activityType: old.activityType,
+                                   activitySubtype: old.activitySubtype,
+                                   exerciseNames: old.exerciseNames,
+                                   strengthSets: old.strengthSets,
+                                   excludedIntervals: old.excludedIntervals,
+                                   reviewSource: old.reviewSource,
+                                   strain: nil,
+                                   activeEnergyKilocalories: nil,
+                                   activeEnergyConfidence: nil,
+                                   zoneSeconds: nil,
+                                   eventTimeZoneIdentifier: old.eventTimeZoneIdentifier)
+        let archive = stride(from: 0.0, through: 20 * 60, by: 10).map {
+            HistoricalArchive.HeartRatePoint(t: start.addingTimeInterval($0), bpm: 118)
+        }
+
+        let result = try XCTUnwrap(SessionStore.rehydratedConfirmedWorkout(
+            old,
+            existingPoints: [],
+            archivePoints: archive,
+            rest: 60,
+            maxHR: 190,
+            profile: testAthleteProfile
+        ))
+
+        XCTAssertEqual(result.confidence, "user_confirmed_recovered_hr")
+        XCTAssertGreaterThan(result.samples, 0)
+        XCTAssertGreaterThan(result.avgHR, 0)
+        XCTAssertNotNil(result.strain)
+    }
+
+    func testHistoricalRehydrationEligibilityRepairsIncompleteLegacyRows() {
+        let start = Date(timeIntervalSince1970: 1_783_767_620)
+        let complete = sparseConfirmedWorkout(start: start,
+                                              end: start.addingTimeInterval(50 * 60),
+                                              samples: 3_000,
+                                              coverage: 100)
+        let missingMetrics = UserConfirmedWorkout(id: complete.id,
+                                                  createdAt: complete.createdAt,
+                                                  start: complete.start,
+                                                  end: complete.end,
+                                                  label: complete.label,
+                                                  source: complete.source,
+                                                  confidence: complete.confidence,
+                                                  sessions: complete.sessions,
+                                                  samples: complete.samples,
+                                                  avgHR: complete.avgHR,
+                                                  peakHR: complete.peakHR,
+                                                  p95HR: complete.p95HR,
+                                                  p99HR: complete.p99HR,
+                                                  thresholdHR: complete.thresholdHR,
+                                                  streamCoveragePercent: 100,
+                                                  observedDuration: complete.observedDuration,
+                                                  reason: complete.reason,
+                                                  activityType: complete.activityType,
+                                                  activitySubtype: complete.activitySubtype,
+                                                  exerciseNames: complete.exerciseNames,
+                                                  strengthSets: complete.strengthSets,
+                                                  excludedIntervals: complete.excludedIntervals,
+                                                  reviewSource: complete.reviewSource,
+                                                  strain: nil,
+                                                  activeEnergyKilocalories: complete.activeEnergyKilocalories,
+                                                  activeEnergyConfidence: complete.activeEnergyConfidence,
+                                                  zoneSeconds: nil,
+                                                  eventTimeZoneIdentifier: complete.eventTimeZoneIdentifier)
+
+        XCTAssertFalse(SessionStore.confirmedWorkoutNeedsArchiveRehydration(complete))
+        XCTAssertTrue(SessionStore.confirmedWorkoutNeedsArchiveRehydration(missingMetrics))
+    }
+
+    func testHistoricalRehydrationDoesNotWaitForWalkingStepEvidence() {
+        var completeWalking = sparseConfirmedWorkout(
+            start: Date(timeIntervalSince1970: 1_785_000_000),
+            end: Date(timeIntervalSince1970: 1_785_000_900),
+            samples: 900,
+            coverage: 100
+        )
+        completeWalking.activityType = AtriaWorkoutActivityType.walking.rawValue
+        completeWalking.workoutSteps = nil
+        completeWalking.workoutStepsAreEstimated = nil
+
+        XCTAssertFalse(
+            SessionStore.confirmedWorkoutNeedsArchiveRehydration(completeWalking),
+            "Gate 2 HR publication must not wait for the independent Gate 4 motion lane"
+        )
+    }
+
+    func testArchiveRehydrationUsesOneUnionWindowForEligibleWorkouts() throws {
+        let firstStart = Date(timeIntervalSince1970: 1_783_767_620)
+        let first = sparseConfirmedWorkout(
+            start: firstStart,
+            end: firstStart.addingTimeInterval(50 * 60),
+            samples: 100,
+            coverage: 50
+        )
+        let secondStart = firstStart.addingTimeInterval(24 * 60 * 60)
+        let second = sparseConfirmedWorkout(
+            start: secondStart,
+            end: secondStart.addingTimeInterval(75 * 60),
+            samples: 100,
+            coverage: 50
+        )
+
+        let union = try XCTUnwrap(
+            SessionStore.confirmedWorkoutArchiveUnionWindow([second, first])
+        )
+
+        XCTAssertEqual(union.start, first.start)
+        XCTAssertEqual(union.end, second.end)
+        XCTAssertNil(SessionStore.confirmedWorkoutArchiveUnionWindow([]))
+    }
+
     func testArchiveRehydrationNeverReplacesWithEqualOrLowerCoverage() {
         let start = Date(timeIntervalSince1970: 1_783_767_620)
         let old = sparseConfirmedWorkout(start: start,
@@ -1242,18 +1692,18 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         let subThreshold = sparseConfirmedWorkout(start: start,
                                                   end: end,
                                                   samples: 1_000,
-                                                  coverage: 74)
+                                                  coverage: 99)
         let complete = sparseConfirmedWorkout(start: start,
                                               end: end,
                                               samples: 1_100,
-                                              coverage: 75)
+                                              coverage: 100)
 
         XCTAssertFalse(SessionStore.historicalRecoveryRequestIsSatisfied(
             original: original,
             replacement: subThreshold,
             requestedStart: start,
             requestedEnd: end
-        ), "Improvement below 75% must remain pending")
+        ), "Improvement below complete coverage must remain pending")
         XCTAssertTrue(SessionStore.historicalRecoveryRequestIsSatisfied(
             original: original,
             replacement: complete,
@@ -1361,7 +1811,10 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
 
         XCTAssertLessThan(intent.lowerBound, dismiss.lowerBound)
         XCTAssertLessThan(dismiss.lowerBound, delayedWork.lowerBound)
-        XCTAssertTrue(tail.contains("requestPersistenceFlush(reason: \"live_workout_end_checkpoint\")"))
+        // The terminal intent remains the recovery authority until the single
+        // completion-aware session flush succeeds. An eager flush here would
+        // duplicate serialization when its write has already begun.
+        XCTAssertFalse(tail.contains("requestPersistenceFlush(reason: \"live_workout_end_checkpoint\")"))
         XCTAssertTrue(tail.contains("flushScheduledPersistenceAsync(reason: \"live_workout_end_confirmed\")"))
         XCTAssertFalse(tail.contains("flushScheduledPersistence(reason: \"live_workout_end\")"))
     }
@@ -1416,7 +1869,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                       "The original detector window must be settled by the same canonical store transaction")
     }
 
-    func testGuidedAdjustedWorkoutSettlesNonOverlappingCandidateOnlyAfterCanonicalSave() throws {
+    func testGuidedAdjustedWorkoutSettlesNonOverlappingCandidateOnlyAfterCanonicalSave() async throws {
         let marker = "guided-candidate-settlement-\(UUID().uuidString)"
         let originalStart = Date(timeIntervalSince1970: 2_320_000_000 + Double.random(in: 0..<100_000))
         let originalEnd = originalStart.addingTimeInterval(35 * 60)
@@ -1432,7 +1885,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         let store = SessionStore()
         defer {
             for workout in store.confirmedWorkouts where workout.reviewSource == marker {
-                _ = store.deleteConfirmedWorkout(id: workout.id)
+                Task { @MainActor in _ = await store.deleteConfirmedWorkout(id: workout.id) }
             }
             AtriaDismissedWorkoutCandidateStore.save(
                 AtriaDismissedWorkoutCandidateStore.load().filter {
@@ -1442,7 +1895,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
             )
         }
 
-        let rejected = store.confirmWorkoutWindowForUI(
+        let rejected = await store.confirmWorkoutWindowForUI(
             start: adjustedStart,
             end: adjustedStart,
             rest: 60,
@@ -1458,7 +1911,7 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
             $0.overlaps(start: originalStart, end: originalEnd)
         }, "A failed canonical Save must leave the detector candidate actionable")
 
-        let saved = try XCTUnwrap(store.confirmWorkoutWindowForUI(
+        let saved = try unwrap(await store.confirmWorkoutWindowForUI(
             start: adjustedStart,
             end: adjustedEnd,
             rest: 60,

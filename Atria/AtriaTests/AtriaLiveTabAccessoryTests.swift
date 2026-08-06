@@ -29,6 +29,16 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertFalse(source.contains("AtriaLiveStatusTabAccessory"))
     }
 
+    func testNativeGlassTabBarHasNoOpaqueOrEmptyBottomShelf() throws {
+        let source = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaHomeView.swift"),
+                                encoding: .utf8)
+
+        XCTAssertTrue(source.contains(".toolbarBackground(.hidden, for: .tabBar)"))
+        XCTAssertFalse(source.contains("scrollBottomSafeAreaInset"))
+        XCTAssertFalse(source.contains(".safeAreaInset(edge: .bottom, spacing: 0)"),
+                       "the native tab bar already owns its safe area; an extra clear inset becomes a black shelf")
+    }
+
     func testHomeChromeDefersWorkoutStatusToActivityKitAndStacksForLargeType() {
         XCTAssertTrue(AtriaHomeChromeLayout.showsHomeStatusChip(workoutIsActive: false))
         XCTAssertFalse(AtriaHomeChromeLayout.showsHomeStatusChip(workoutIsActive: true))
@@ -183,6 +193,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                       batteryLevel: 43,
                                       batteryShowsPowered: true,
                                       batteryChargeStatus: .charging,
+                                      batteryChargeLastVerifiedAt: now,
                                       hasEverConnected: true)
         let low = topStatusInput(status: .connected,
                                  hasRecentHeartRateSample: true,
@@ -210,7 +221,11 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                             hasEverConnected: true)
 
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: normal, now: now).label,
-                       "43% · Live")
+                       "43%")
+        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: normal, now: now).tone,
+                       .green)
+        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: normal, now: now).accessibilityLabel,
+                       "Live strap, 43%, charger status unavailable")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: normal, now: now).symbol,
                        "battery.50percent")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: charging, now: now).label,
@@ -220,24 +235,27 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: charging, now: now).accessorySymbol,
                        "bolt.fill")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: charging, now: now).accessibilityLabel,
-                       "43%, Charging")
+                       "Live strap, 43%, Charging")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: low, now: now).label,
                        "10% · Low")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: pending, now: now).label,
                        "Live · Battery pending")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: recent, now: now),
-                       AtriaTopStatusPresentation(label: "30% · 1h ago",
+                       AtriaTopStatusPresentation(label: "30%",
                                                   symbol: "battery.25percent",
-                                                  tone: .cyan,
-                                                  isConnected: true))
+                                                  tone: .green,
+                                                  isConnected: true,
+                                                  accessibilityLabel: "Live strap, 30%, charger status unavailable"))
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: freshCachedLow, now: now),
                        AtriaTopStatusPresentation(label: "14% · Low",
                                                   symbol: "battery.25percent",
                                                   tone: .orange,
-                                                  isConnected: true))
+                                                  isConnected: true,
+                                                  accessibilityLabel: "Live strap, 14%, charger status unavailable"))
     }
 
-    func testFreshExplicitChargerEventRestoresCompactChargingPresentation() {
+    func testPersistedChargerEventCannotRestoreChargingAfterLiveStateIsUnknown() {
+        let now = Date()
         let projection = AtriaHomeModel.resolvedBatteryChargeProjection(
             liveStatus: .levelOnly,
             liveIsCharging: false,
@@ -251,19 +269,19 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                    batteryLevel: 17,
                                    batteryShowsPowered: projection.isCharging,
                                    batteryChargeStatus: projection.status,
+                                   batteryChargeLastVerifiedAt: now,
                                    hasEverConnected: true)
 
         XCTAssertEqual(projection,
-                       AtriaHomeModel.BatteryChargeProjection(status: .charging,
-                                                              isCharging: true))
-        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: input, now: Date()).label,
-                       "17%")
-        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: input, now: Date()).symbol,
+                       AtriaHomeModel.BatteryChargeProjection(status: .levelOnly,
+                                                              isCharging: false))
+        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: input, now: now).label,
+                       "17% · Low")
+        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: input, now: now).symbol,
                        "battery.25percent")
-        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: input, now: Date()).accessorySymbol,
-                       "bolt.fill")
-        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: input, now: Date()).accessibilityLabel,
-                       "17%, Charging")
+        XCTAssertNil(AtriaTopStatusProjection.presentation(input: input, now: now).accessorySymbol)
+        XCTAssertEqual(AtriaTopStatusProjection.presentation(input: input, now: now).accessibilityLabel,
+                       "Live strap, 17%, charger status unavailable")
     }
 
     func testRestoredChargingBoltExpiresWithoutAnotherCoreEvent() {
@@ -291,7 +309,28 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         let presentation = AtriaTopStatusProjection.presentation(input: input, now: expired)
         XCTAssertNil(presentation.accessorySymbol)
         XCTAssertEqual(presentation.label, "17% · Low")
-        XCTAssertNotEqual(presentation.accessibilityLabel, "17%, Charging")
+        XCTAssertEqual(presentation.accessibilityLabel,
+                       "Live strap, 17%, charger status unavailable")
+    }
+
+    func testChargerRemovedWithoutFollowUpPacketCannotShowChargingAtTwoMinutes() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let input = topStatusInput(
+            status: .connected,
+            hasRecentHeartRateSample: true,
+            lastReadingAt: now,
+            batteryLevel: 35,
+            batteryShowsPowered: true,
+            batteryChargeStatus: .charging,
+            batteryChargeLastVerifiedAt: now.addingTimeInterval(-120),
+            hasEverConnected: true
+        )
+
+        let presentation = AtriaTopStatusProjection.presentation(input: input, now: now)
+        XCTAssertNil(presentation.accessorySymbol)
+        XCTAssertEqual(presentation.label, "35%")
+        XCTAssertEqual(presentation.accessibilityLabel,
+                       "Live strap, 35%, charger status unavailable")
     }
 
     func testFullBatteryDoesNotInventExternalPower() {
@@ -306,7 +345,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertEqual(presentation.label, "100% · Full")
         XCTAssertEqual(presentation.symbol, "battery.100percent")
         XCTAssertNil(presentation.accessorySymbol)
-        XCTAssertEqual(presentation.accessibilityLabel, "100%, Full")
+        XCTAssertEqual(presentation.accessibilityLabel, "Live strap, 100%, Full")
     }
 
     func testHeaderBatterySnapshotFailsClosedOnContradictoryChargingFields() {
@@ -319,7 +358,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         )
 
         XCTAssertEqual(snapshot.level, 43)
-        XCTAssertEqual(snapshot.powerState, .none)
+        XCTAssertEqual(snapshot.powerState, .unknown)
 
         let input = topStatusInput(status: .connected,
                                    hasRecentHeartRateSample: true,
@@ -329,7 +368,9 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                    batteryChargeStatus: .charging,
                                    hasEverConnected: true)
         let presentation = AtriaTopStatusProjection.presentation(input: input, now: Date())
-        XCTAssertEqual(presentation.label, "43% · Live")
+        XCTAssertEqual(presentation.label, "43%")
+        XCTAssertEqual(presentation.accessibilityLabel,
+                       "Live strap, 43%, charger status unavailable")
         XCTAssertNil(presentation.accessorySymbol)
     }
 
@@ -362,7 +403,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertTrue(feedback.contains("Refreshing strap…"))
     }
 
-    func testAtAGlanceBatteryCardKeepsPoweredValueCompactAndAccessible() throws {
+    func testAtAGlanceStatusDefersBatteryToTheHeader() throws {
         let source = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaTodayScreen.swift"),
                                 encoding: .utf8)
         let start = try XCTUnwrap(source.range(of: "private struct AtriaTodayLiveStatusStrip"))
@@ -370,15 +411,11 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                              range: start.upperBound..<source.endIndex))
         let strip = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(strip.contains("systemImage: live.batterySymbol"))
-        XCTAssertTrue(strip.contains("if live.batteryShowsPowered || live.batteryChargeStatus == .full"))
-        XCTAssertTrue(strip.contains("return live.batteryText"))
-        XCTAssertFalse(strip.contains("· Charging"))
-        XCTAssertTrue(strip.contains("live.batteryAccessibilityText"),
-                      "VoiceOver must retain the detailed charging state")
+        XCTAssertFalse(strip.contains("Battery"),
+                       "The top-left connection pill is the single battery source on Today.")
 
         let home = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaHomeView.swift"),
-                              encoding: .utf8)
+                                encoding: .utf8)
         XCTAssertTrue(home.contains("if batteryShowsPowered || batteryChargeStatus == .full"))
         XCTAssertTrue(home.contains("return \"battery.100percent.bolt\""))
     }
@@ -395,6 +432,92 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertEqual(projection,
                        AtriaHomeModel.BatteryChargeProjection(status: .levelOnly,
                                                               isCharging: false))
+    }
+
+    func testRepeatedSameStateChargerEventRenewsTheHeaderEvidenceClock() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let projection = AtriaHomeModel.BatteryChargeProjection(status: .charging,
+                                                                isCharging: true)
+        let repeatedLiveEvent = now.addingTimeInterval(-2)
+
+        XCTAssertEqual(
+            AtriaHomeModel.resolvedBatteryChargeVerifiedAt(
+                projection: projection,
+                liveVerifiedAt: repeatedLiveEvent,
+                persistedStatus: .charging,
+                persistedAge: AtriaHomeModel.freshChargerEvidenceInterval - 1,
+                now: now
+            ),
+            repeatedLiveEvent,
+            "the latest autonomous charger event must renew the pill even when the enum stays charging"
+        )
+    }
+
+    func testChargingPresentationFailsClosedWhenEveryEvidenceClockIsStale() {
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let projection = AtriaHomeModel.BatteryChargeProjection(status: .charging,
+                                                                isCharging: true)
+
+        XCTAssertNil(AtriaHomeModel.resolvedBatteryChargeVerifiedAt(
+            projection: projection,
+            liveVerifiedAt: now.addingTimeInterval(
+                -(AtriaHomeModel.freshChargerEvidenceInterval + 1)
+            ),
+            persistedStatus: .charging,
+            persistedAge: AtriaHomeModel.freshChargerEvidenceInterval + 1,
+            now: now
+        ))
+
+        let input = topStatusInput(
+            status: .connected,
+            hasRecentHeartRateSample: true,
+            lastReadingAt: now,
+            batteryLevel: 43,
+            batteryShowsPowered: true,
+            batteryChargeStatus: .charging,
+            batteryChargeLastVerifiedAt: nil,
+            hasEverConnected: true
+        )
+        let presentation = AtriaTopStatusProjection.presentation(input: input, now: now)
+        XCTAssertEqual(presentation.label, "43%")
+        XCTAssertNil(presentation.accessorySymbol)
+        XCTAssertEqual(presentation.accessibilityLabel,
+                       "Live strap, 43%, charger status unavailable")
+    }
+
+    @MainActor
+    func testPostUnplugPercentageTrajectoryCannotAuthorizePersistedCharging() throws {
+        let suiteName = "AtriaLiveTabAccessoryTests.charge-source.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        defaults.set(35, forKey: "atria.battery.level")
+        defaults.set(now.timeIntervalSince1970, forKey: "atria.battery.at")
+        defaults.set("live_2A19", forKey: "atria.battery.source")
+        defaults.set(AtriaBLEManager.BatteryChargeStatus.charging.rawValue,
+                     forKey: "atria.battery.chargeStatus")
+        defaults.set(now.timeIntervalSince1970, forKey: "atria.battery.chargeAt")
+        defaults.set("live_2A19_charge_trajectory",
+                     forKey: "atria.battery.chargeSource")
+
+        let cached = AtriaBLEManager.cachedBattery(defaults: defaults, now: now)
+        XCTAssertTrue(cached.usable)
+        XCTAssertEqual(cached.level, 35)
+        XCTAssertEqual(cached.chargeStatus, .levelOnly,
+                       "continued SOC rise after unplug is level evidence only")
+        XCTAssertFalse(AtriaBLEManager.batteryChargeSourceCanAuthorizeCharging(
+            "live_2A19_charge_trajectory"
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryChargeSourceCanAuthorizeCharging(
+            "live_battery_event"
+        ))
+        XCTAssertFalse(AtriaBLEManager.batteryChargeSourceCanAuthorizeCharging(
+            "live_2A1B"
+        ))
+        XCTAssertEqual(AtriaBLEManager.acceptedBatteryEventChargeStatus(
+            reportedIsCharging: true,
+            batteryLevel: 41
+        ), .levelOnly)
     }
 
     func testPercentageOnlyEvidenceCannotOriginateCharging() {
@@ -443,6 +566,16 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                 encoding: .utf8)
         XCTAssertTrue(source.contains("ble.$batteryProjectionRevision.removeDuplicates().map { _ in () }"))
         XCTAssertTrue(source.contains("ble.$batteryReadingIsRecentBaseline.removeDuplicates().map { _ in () }"))
+        XCTAssertTrue(source.contains("ble.$batteryChargeLastVerifiedAt.removeDuplicates().map { _ in () }"),
+                      "same-state charge events must invalidate the header and widget projections")
+
+        let manager = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaBLEManager.swift"),
+                                 encoding: .utf8)
+        XCTAssertTrue(manager.contains("@Published private(set) var batteryChargeLastVerifiedAt: Date?"))
+        XCTAssertTrue(manager.contains("assignIfChanged(\\.batteryChargeLastVerifiedAt, observedAt)"),
+                      "every accepted charger event must publish its own evidence time")
+        XCTAssertTrue(manager.contains("source: \"live_2A19_charge_trajectory\""),
+                      "only the bounded live trajectory proof may persist the short charging lease")
     }
 
     func testTopStatusPillOwnsStrapNavigationWithoutRedundantHeaderButton() throws {

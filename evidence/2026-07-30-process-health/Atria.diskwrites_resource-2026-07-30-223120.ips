@@ -1,0 +1,281 @@
+{"app_name":"Atria","timestamp":"2026-07-30 22:31:20.00 +0530","app_version":"1.0","slice_uuid":"06DFC290-290F-36D4-96EB-07DAA0010875","build_version":"3","bundleID":"com.adidshaft.atria","duration_ms":"14451719","share_with_app_devs":1,"is_first_party":0,"bug_type":"145","os_version":"iPhone OS 27.0 (24A5380h)","roots_installed":0,"name":"Atria","incident_id":"ACCB15EC-1238-4BC0-8596-61F9E8D04CCF"}
+Date/Time:        2026-07-30 18:30:25.693 +0530
+End time:         2026-07-30 22:31:17.412 +0530
+OS Version:       iPhone OS 27.0 (Build 24A5380h)
+Architecture:     arm64e
+Report Version:   73
+Incident Identifier: ACCB15EC-1238-4BC0-8596-61F9E8D04CCF
+Share With Devs:  Yes
+
+Data Source:      Microstackshots
+Shared Cache:     B9BADE17-3E7F-34F7-B87E-4351C24D30E8 slid base address 0x182b10000
+
+Command:          Atria
+Path:             /private/var/containers/Bundle/Application/6C36FE6A-4BAF-4567-800B-B80519E80D0F/Atria.app/Atria
+Identifier:       com.adidshaft.atria
+Version:          1.0 (3)
+Is First Party:   No
+Beta Identifier:  ACCBCE97-C25C-4937-BC56-111C4C350195
+Resource Coalition: "com.adidshaft.atria"(1095)
+On Behalf Of:     22 samples UNKNOWN [101] (22 samples originated by UNKNOWN [101])
+Architecture:     arm64
+Parent:           UNKNOWN [1]
+PID:              4037
+
+Event:            disk writes
+Action taken:     none
+Writes:           4294.97 MB of file backed memory dirtied over 14452 seconds (297.19 KB per second average), exceeding limit of 49.71 KB per second over 86400 seconds
+Writes limit:     4294.97 MB
+Limit duration:   86400s
+Writes caused:    4294.97 MB
+Writes duration:  14452s
+Duration:         14451.72s
+Duration Sampled: 405.68s (event starts 14046.01s before samples)
+Steps:            22 (35 samples lost, 10.49 MB/step)
+
+Hardware model:   iPhone16,1
+Active cpus:      6
+Memory size:      7.50 GB
+HW page size:     16384
+VM page size:     16384
+Shared cache residency: 10.69% (728.36 MB / 6812.02 MB)
+
+Time Since Boot:  21243s
+Time Awake Since Boot: 21243s
+Time Since Wake:  n/a (machine hasn't slept)
+
+Total CPU Time:   664.261s
+Advisory levels:  Battery -> 3, User -> 3, ThermalPressure -> 10, Combined -> 1
+Free disk space:  22.99 GB/237.97 GB, low space threshold 150 MB
+Vnodes Available: 68.04% (19052/28000, 14000 allocated, 14000 soft limit)
+Model:            com.apple.fm.language.instruct_3b.tokenizer
+  Loaded:         ??? - N/A, requested by UNKNOWN
+Model:            com.apple.fm.language.instruct_3b.urgency_classification
+  Loaded:         14000s - N/A, requested by token-generation-inference
+Model:            com.apple.fm.language.instruct_3b.base
+  Loaded:         ??? - 14000s, requested by UNKNOWN
+  Loaded:         14000s - N/A, requested by token-generation-inference
+Model:            com.apple.gm.overrides.model_config.all
+  Loaded:         ??? - 14000s, requested by UNKNOWN
+  Loaded:         14000s - 14000s, requested by generative-experiences-safety-inference-provider
+Model:            com.apple.defaultoverrides
+  Executing:      14000s - 14000s, requested by [2969] use case textUnderstanding.TextPersonExtraction
+  Executing:      14000s - 14000s, requested by [2969] use case textUnderstanding.TextPersonExtraction
+  Executing:      14000s - 14000s, requested by [2969] use case textUnderstanding.TextPersonExtraction
+  Executing:      14000s - 14000s, requested by [2969] use case textUnderstanding.TextPersonExtraction
+Model:            com.apple.fm.language.instruct_3b.text_person_extraction?language=en
+  Executing:      14000s - 14000s, requested by [2969] use case textUnderstanding.TextPersonExtraction
+  Executing:      14000s - 14000s, requested by [2969] use case textUnderstanding.TextPersonExtraction
+Model:            com.apple.fm.language.instruct_3b.text_person_extraction
+  Loaded:         ??? - 14000s, requested by UNKNOWN
+Model:            com.apple.fm.language.instruct_3b.image_encoder
+  Loaded:         ??? - 14000s, requested by UNKNOWN
+Model:            com.apple.fm.language.instruct_3b.text_person_extraction.draft
+  Loaded:         ??? - 14000s, requested by UNKNOWN
+Model:            com.apple.fm.language.instruct_3b.urgency_classification?language=en
+  Executing:      14000s - 14000s, requested by [261] use case classification.classifyMailMessage
+  Executing:      14000s - 14000s, requested by [261] use case classification.classifyUserNotification
+  Executing:      14000s - 14000s, requested by [261] use case classification.classifyMailMessage
+  Executing:      14000s - 14000s, requested by [261] use case classification.classifyUserNotification
+  Executing:      14000s - 14000s, requested by [261] use case classification.classifyUserNotification
+  Executing:      14000s - 14000s, requested by [261] use case classification.classifyUserNotification
+  Executing:      14000s - 14000s, requested by [261] use case classification.classifyUserNotification
+  Executing:      14000s - 14000s, requested by [261] use case classification.classifyUserNotification
+
+Preferred User Language: en-US
+Country Code:     US
+Keyboards:        en_IN QWERTY, en_US ABC-India
+OS Cryptex File Extents: 17495
+GPU Restart Count: 1
+Time Since GPU Restart: 20778s
+
+Heaviest stack for the target process:
+  20  ??? (libsystem_pthread.dylib + 2320) [0x18304a910]
+  20  ??? (libsystem_pthread.dylib + 4664) [0x18304b238]
+  20  ??? (libdispatch.dylib + 87740) [0x1b159c6bc]
+  20  ??? (libdispatch.dylib + 89240) [0x1b159cc98]
+  20  ??? (libdispatch.dylib + 46192) [0x1b1592470]
+  16  ??? (libdispatch.dylib + 43132) [0x1b159187c]
+  16  ??? (libdispatch.dylib + 114644) [0x1b15a2fd4]
+  16  ??? (libdispatch.dylib + 7372) [0x1b1588ccc]
+  16  ??? (Atria + 842336) [0x104599a60]
+  11  ??? (Atria + 3081320) [0x1047bc468]
+  6   ??? (Atria + 2538172) [0x104737abc]
+  4   ??? (Atria + 12464168) [0x1050af028]
+  4   ??? (Atria + 12473908) [0x1050b1634]
+  2   ??? (libsqlite3.dylib + 190996) [0x1a0ed3a14]
+  2   ??? (libsqlite3.dylib + 333052) [0x1a0ef64fc]
+  2   ??? (libsqlite3.dylib + 571620) [0x1a0f308e4]
+  2   ??? (libsqlite3.dylib + 1232572) [0x1a0fd1ebc]
+  2   ??? (libsqlite3.dylib + 412348) [0x1a0f09abc]
+  2   ??? (libsqlite3.dylib + 332032) [0x1a0ef6100]
+  2   ??? (libsystem_kernel.dylib + 27740) [0x239e83c5c]
+
+
+Powerstats for:   Atria [4037]
+UUID:             06DFC290-290F-36D4-96EB-07DAA0010875
+Path:             /private/var/containers/Bundle/Application/6C36FE6A-4BAF-4567-800B-B80519E80D0F/Atria.app/Atria
+Identifier:       com.adidshaft.atria
+Version:          1.0 (3)
+Is First Party:   No
+Beta Identifier:  ACCBCE97-C25C-4937-BC56-111C4C350195
+Resource Coalition: 22 samples "com.adidshaft.atria"(1095)
+On Behalf Of:     22 samples UNKNOWN [101] (22 samples originated by UNKNOWN [101])
+Architecture:     arm64
+Parent:           UNKNOWN [1]
+UID:              501
+Footprint:        330.36 MB -> 941.05 MB (+610.69 MB) (max 1057.56 MB )
+Pageins:          34 pages
+Start time:       2026-07-30 22:24:31.704 +0530
+End time:         2026-07-30 22:31:17.381 +0530
+Num samples:      22 (100%)
+Energy:           24.77 mWh
+Num threads:      8
+Primary state:    20 samples Frontmost App, Non-Suppressed, Kernel mode, Effective Thread QoS Utility, Requested Thread QoS Utility, Override Thread QoS Unspecified, e-core
+User Activity:    0 samples Idle, 22 samples Active
+Power Source:     0 samples on Battery, 22 samples on AC
+  20  ??? (libsystem_pthread.dylib + 2320) [0x18304a910]
+    20  ??? (libsystem_pthread.dylib + 4664) [0x18304b238]
+      20  ??? (libdispatch.dylib + 87740) [0x1b159c6bc]
+        20  ??? (libdispatch.dylib + 89240) [0x1b159cc98]
+          20  ??? (libdispatch.dylib + 46192) [0x1b1592470]
+            16  ??? (libdispatch.dylib + 43132) [0x1b159187c]
+              16  ??? (libdispatch.dylib + 114644) [0x1b15a2fd4]
+                16  ??? (libdispatch.dylib + 7372) [0x1b1588ccc]
+                  16  ??? (Atria + 842336) [0x104599a60]
+                    11  ??? (Atria + 3081320) [0x1047bc468]
+                      6   ??? (Atria + 2538172) [0x104737abc]
+                        4   ??? (Atria + 12464168) [0x1050af028]
+                          4   ??? (Atria + 12473908) [0x1050b1634]
+                            2   ??? (libsqlite3.dylib + 190996) [0x1a0ed3a14]
+                              2   ??? (libsqlite3.dylib + 333052) [0x1a0ef64fc]
+                                2   ??? (libsqlite3.dylib + 571620) [0x1a0f308e4]
+                                  2   ??? (libsqlite3.dylib + 1232572) [0x1a0fd1ebc]
+                                    2   ??? (libsqlite3.dylib + 412348) [0x1a0f09abc]
+                                      2   ??? (libsqlite3.dylib + 332032) [0x1a0ef6100]
+                                        2   ??? (libsystem_kernel.dylib + 27740) [0x239e83c5c]
+                                          2   <on behalf of UNKNOWN [101] (originated by UNKNOWN [101])>
+                            2   ??? (libsqlite3.dylib + 190232) [0x1a0ed3718]
+                              2   ??? (libsqlite3.dylib + 235288) [0x1a0ede718]
+                                2   ??? (libsqlite3.dylib + 93984) [0x1a0ebbf20]
+                                  2   ??? (libsqlite3.dylib + 261752) [0x1a0ee4e78]
+                                    2   ??? (libsqlite3.dylib + 262852) [0x1a0ee52c4]
+                                      2   ??? (libsqlite3.dylib + 331128) [0x1a0ef5d78]
+                                        2   ??? (libsqlite3.dylib + 719868) [0x1a0f54bfc]
+                                          2   ??? (libsqlite3.dylib + 332032) [0x1a0ef6100]
+                                            2   ??? (libsystem_kernel.dylib + 27740) [0x239e83c5c]
+                                              2   <on behalf of UNKNOWN [101] (originated by UNKNOWN [101])>
+                        2   ??? (Atria + 12464124) [0x1050aeffc]
+                          2   ??? (Atria + 12478724) [0x1050b2904]
+                            2   ??? (Atria + 12473908) [0x1050b1634]
+                              2   ??? (libsqlite3.dylib + 190232) [0x1a0ed3718]
+                                2   ??? (libsqlite3.dylib + 209172) [0x1a0ed8114]
+                                  2   ??? (libsqlite3.dylib + 327216) [0x1a0ef4e30]
+                                    2   ??? (libsqlite3.dylib + 780372) [0x1a0f63854]
+                                      2   ??? (libsqlite3.dylib + 315476) [0x1a0ef2054]
+                                        2   ??? (libsqlite3.dylib + 715736) [0x1a0f53bd8]
+                                          2   ??? (libsqlite3.dylib + 332032) [0x1a0ef6100]
+                                            2   ??? (libsystem_kernel.dylib + 27740) [0x239e83c5c]
+                                              2   <on behalf of UNKNOWN [101] (originated by UNKNOWN [101])>
+                      4   ??? (Atria + 2536636) [0x1047374bc]
+                        4   ??? (Atria + 13350836) [0x1051877b4]
+                          4   ??? (Atria + 4774752) [0x104959b60]
+                            4   ??? (Atria + 4747224) [0x104952fd8]
+                              4   ??? (Atria + 5741028) [0x104a459e4]
+                                4   ??? (Atria + 5745424) [0x104a46b10]
+                                  3   ??? (libsqlite3.dylib + 190996) [0x1a0ed3a14]
+                                    3   ??? (libsqlite3.dylib + 333052) [0x1a0ef64fc]
+                                      3   ??? (libsqlite3.dylib + 571620) [0x1a0f308e4]
+                                        3   ??? (libsqlite3.dylib + 1232572) [0x1a0fd1ebc]
+                                          3   ??? (libsqlite3.dylib + 412348) [0x1a0f09abc]
+                                            3   ??? (libsqlite3.dylib + 332032) [0x1a0ef6100]
+                                              3   ??? (libsystem_kernel.dylib + 27740) [0x239e83c5c]
+                                                2   <on behalf of UNKNOWN [101] (originated by UNKNOWN [101])>
+                                                1   <on behalf of UNKNOWN [101] (originated by UNKNOWN [101]), p-core>
+                                  1   ??? (libsqlite3.dylib + 190232) [0x1a0ed3718]
+                                    1   ??? (libsqlite3.dylib + 235288) [0x1a0ede718]
+                                      1   ??? (libsqlite3.dylib + 93984) [0x1a0ebbf20]
+                                        1   ??? (libsqlite3.dylib + 261752) [0x1a0ee4e78]
+                                          1   ??? (libsqlite3.dylib + 262852) [0x1a0ee52c4]
+                                            1   ??? (libsqlite3.dylib + 331128) [0x1a0ef5d78]
+                                              1   ??? (libsqlite3.dylib + 719868) [0x1a0f54bfc]
+                                                1   ??? (libsqlite3.dylib + 332032) [0x1a0ef6100]
+                                                  1   ??? (libsystem_kernel.dylib + 27740) [0x239e83c5c]
+                                                    1   <on behalf of UNKNOWN [101] (originated by UNKNOWN [101])>
+                      1   ??? (Atria + 2538940) [0x104737dbc]
+                        1   ??? (Atria + 5245932) [0x1049ccbec]
+                          1   ??? (Atria + 5324720) [0x1049dffb0]
+                            1   ??? (Foundation + 2221900) [0x18380b74c]
+                              1   ??? (Foundation + 1019296) [0x1836e5da0]
+                                1   ??? (Foundation + 1018984) [0x1836e5c68]
+                                  1   ??? (Foundation + 2574856) [0x183861a08]
+                                    1   ??? (libsystem_kernel.dylib + 20528) [0x239e82030]
+                                      1   <on behalf of UNKNOWN [101] (originated by UNKNOWN [101])>
+                    5   ??? (Atria + 2524904) [0x1047346e8]
+                      5   ??? (Atria + 12463776) [0x1050aeea0]
+                        5   ??? (Atria + 12473908) [0x1050b1634]
+                          4   ??? (libsqlite3.dylib + 190996) [0x1a0ed3a14]
+                            4   ??? (libsqlite3.dylib + 333052) [0x1a0ef64fc]
+                              4   ??? (libsqlite3.dylib + 571620) [0x1a0f308e4]
+                                4   ??? (libsqlite3.dylib + 1232572) [0x1a0fd1ebc]
+                                  4   ??? (libsqlite3.dylib + 412348) [0x1a0f09abc]
+                                    4   ??? (libsqlite3.dylib + 332032) [0x1a0ef6100]
+                                      4   ??? (libsystem_kernel.dylib + 27740) [0x239e83c5c]
+                                        4   <on behalf of UNKNOWN [101] (originated by UNKNOWN [101])>
+                          1   ??? (libsqlite3.dylib + 190232) [0x1a0ed3718]
+                            1   ??? (libsqlite3.dylib + 235288) [0x1a0ede718]
+                              1   ??? (libsqlite3.dylib + 93984) [0x1a0ebbf20]
+                                1   ??? (libsqlite3.dylib + 261752) [0x1a0ee4e78]
+                                  1   ??? (libsqlite3.dylib + 262852) [0x1a0ee52c4]
+                                    1   ??? (libsqlite3.dylib + 331128) [0x1a0ef5d78]
+                                      1   ??? (libsqlite3.dylib + 719868) [0x1a0f54bfc]
+                                        1   ??? (libsqlite3.dylib + 332032) [0x1a0ef6100]
+                                          1   ??? (libsystem_kernel.dylib + 27740) [0x239e83c5c]
+                                            1   <on behalf of UNKNOWN [101] (originated by UNKNOWN [101])>
+            4   ??? (libdispatch.dylib + 42768) [0x1b1591710]
+              4   ??? (libdispatch.dylib + 101012) [0x1b159fa94]
+                4   ??? (libdispatch.dylib + 105424) [0x1b15a0bd0]
+                  4   ??? (libdispatch.dylib + 26368) [0x1b158d700]
+                    4   ??? (libdispatch.dylib + 114644) [0x1b15a2fd4]
+                      4   ??? (Atria + 842336) [0x104599a60]
+                        4   ??? (Atria + 2555900) [0x10473bffc]
+                          4   ??? (Atria + 12473908) [0x1050b1634]
+                            4   ??? (libsqlite3.dylib + 190996) [0x1a0ed3a14]
+                              4   ??? (libsqlite3.dylib + 333052) [0x1a0ef64fc]
+                                4   ??? (libsqlite3.dylib + 571620) [0x1a0f308e4]
+                                  4   ??? (libsqlite3.dylib + 1232572) [0x1a0fd1ebc]
+                                    4   ??? (libsqlite3.dylib + 412348) [0x1a0f09abc]
+                                      4   ??? (libsqlite3.dylib + 332032) [0x1a0ef6100]
+                                        4   ??? (libsystem_kernel.dylib + 27740) [0x239e83c5c]
+                                          4   <on behalf of UNKNOWN [101] (originated by UNKNOWN [101])>
+  2   ??? (libswift_Concurrency.dylib + 30860) [0x18463788c]
+    2   ??? (Atria + 646328) [0x104569cb8]
+      2   ??? (Atria + 525100) [0x10454c32c]
+        2   ??? (Atria + 646328) [0x104569cb8]
+          2   ??? (Atria + 2718452) [0x104763af4]
+            2   ??? (Atria + 2720740) [0x1047643e4]
+              2   ??? (Atria + 2715616) [0x104762fe0]
+                2   ??? (Atria + 2074392) [0x1046c6718]
+                  2   ??? (Atria + 2031924) [0x1046bc134]
+                    2   ??? (Atria + 2036424) [0x1046bd2c8]
+                      2   ??? (Atria + 2023712) [0x1046ba120]
+                        2   ??? (Atria + 5476800) [0x104a051c0]
+                          2   ??? (Foundation + 2221900) [0x18380b74c]
+                            2   ??? (Foundation + 1019296) [0x1836e5da0]
+                              2   ??? (Foundation + 1018984) [0x1836e5c68]
+                                2   ??? (Foundation + 2574856) [0x183861a08]
+                                  1   ??? (libsystem_kernel.dylib + 20528) [0x239e82030]
+                                    1   <on behalf of UNKNOWN [101] (originated by UNKNOWN [101]), Effective Thread QoS User Interactive, Requested Thread QoS User Interactive, p-core>
+                                  1   ??? (Foundation + 2075120) [0x1837e79f0]
+                                    1   ??? (Foundation + 555520) [0x183674a00]
+                                      1   ??? (libsystem_kernel.dylib + 26516) [0x239e83794]
+                                        1   <on behalf of UNKNOWN [101] (originated by UNKNOWN [101]), Effective Thread QoS User Interactive, Requested Thread QoS User Interactive, p-core>
+
+  Binary Images:
+           0x1044cc000 -                ???  com.adidshaft.atria 1.0 (3) <06DFC290-290F-36D4-96EB-07DAA0010875>  /private/var/containers/Bundle/Application/6C36FE6A-4BAF-4567-800B-B80519E80D0F/Atria.app/Atria
+           0x18304a000 -        0x183056247  libsystem_pthread.dylib     <E4289190-AF23-386D-A453-4B6FB1A2F5AC>  /usr/lib/system/libsystem_pthread.dylib
+           0x1835ed000 -        0x18462f18f  Foundation                  <E642F95D-61DA-3E8C-A2D2-CFEB7F7B688B>  /System/Library/Frameworks/Foundation.framework/Foundation
+           0x184630000 -        0x1846bc29f  libswift_Concurrency.dylib  <47803CA2-E463-308A-B39B-331A979EA579>  /usr/lib/swift/libswift_Concurrency.dylib
+           0x1a0ea5000 -        0x1a105d367  libsqlite3.dylib            <26C3AB5D-8410-33FB-925A-8DFCDC881F64>  /usr/lib/libsqlite3.dylib
+           0x1b1587000 -        0x1b15cdd5f  libdispatch.dylib           <6DE5DC49-F6C5-3FAD-AB47-9835C63C50B9>  /usr/lib/system/libdispatch.dylib
+           0x239e7d000 -        0x239eba1c3  libsystem_kernel.dylib      <E3AE0279-A7DA-32A6-9273-E5180EFB94A7>  /usr/lib/system/libsystem_kernel.dylib

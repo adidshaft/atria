@@ -45,12 +45,22 @@ enum DetectionEventLog {
     static let storageKey = "atria.detections.ring.v1"
     static let revisionKey = "atria.detections.revision"
     static let capacity = 20
+    /// A deferred session load can re-evaluate the same absent-sleep state a
+    /// number of times while its source is still settling. Those retries are
+    /// useful as one audit record, but retaining every retry can evict an
+    /// actionable workout detection from this deliberately small user-facing
+    /// ring. This affects logging only; it never suppresses or changes a
+    /// detection decision.
+    static let sleepSkipRetryCoalescingInterval: TimeInterval = 60 * 60
 
     /// Inserts `event` newest-first, trims to `capacity`, and bumps the
     /// revision counter so a memoized History subtree can detect the write
     /// without wiring a `@Published` through the whole tree. Never throws.
     static func append(_ event: DetectionEvent, store: UserDefaults = .standard) {
         var events = load(store: store)
+        if shouldCoalesceSleepSkipRetry(event, with: events) {
+            return
+        }
         events.insert(event, at: 0)
         if events.count > capacity {
             events.removeLast(events.count - capacity)
@@ -60,12 +70,67 @@ enum DetectionEventLog {
         store.set(store.integer(forKey: revisionKey) + 1, forKey: revisionKey)
     }
 
+    private static func shouldCoalesceSleepSkipRetry(_ event: DetectionEvent,
+                                                      with events: [DetectionEvent]) -> Bool {
+        guard event.kind == "sleepCandidateSkipped" else { return false }
+        return events.contains { prior in
+            guard prior.kind == event.kind,
+                  prior.reason == event.reason else { return false }
+            let elapsed = event.date.timeIntervalSince(prior.date)
+            return elapsed >= 0 && elapsed < sleepSkipRetryCoalescingInterval
+        }
+    }
+
     static func load(store: UserDefaults = .standard) -> [DetectionEvent] {
         guard let data = store.data(forKey: storageKey),
               let events = try? JSONDecoder().decode([DetectionEvent].self, from: data) else {
             return []
         }
         return events
+    }
+}
+
+/// A private, bounded audit trail for the exact strain inputs present when a
+/// workout becomes canonical. This is intentionally separate from
+/// `DetectionEventLog`: it must not create a new user-facing History item or
+/// influence any score, eligibility gate, or presentation.
+struct AtriaStrainConfirmationAuditRecord: Codable, Equatable {
+    let workoutID: String
+    let recordedAt: Date
+    let rawTRIMP: Double
+    let integratedObservedSeconds: TimeInterval
+    let droppedGapSeconds: TimeInterval
+    let restingHR: Int
+    let maxHR: Int
+    let strainScore: Double?
+    let result: String
+    let coveragePercent: Int
+}
+
+enum AtriaStrainConfirmationAuditLog {
+    static let storageKey = "atria.strain.confirmation.audit.v1"
+    static let capacity = 40
+
+    /// Best-effort diagnostics only. A failure to write the audit trail must
+    /// never interrupt a confirmed-workout save.
+    static func append(_ record: AtriaStrainConfirmationAuditRecord,
+                       store: UserDefaults = .standard) {
+        var records = load(store: store)
+        records.insert(record, at: 0)
+        if records.count > capacity {
+            records.removeLast(records.count - capacity)
+        }
+        guard let data = try? JSONEncoder().encode(records) else { return }
+        store.set(data, forKey: storageKey)
+    }
+
+    static func load(store: UserDefaults = .standard) -> [AtriaStrainConfirmationAuditRecord] {
+        guard let data = store.data(forKey: storageKey),
+              let records = try? JSONDecoder().decode([AtriaStrainConfirmationAuditRecord].self,
+                                                       from: data) else {
+            return []
+        }
+        return records
     }
 }
 

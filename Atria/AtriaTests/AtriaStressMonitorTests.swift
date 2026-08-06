@@ -2,6 +2,115 @@ import XCTest
 @testable import Atria
 
 final class AtriaStressMonitorTests: XCTestCase {
+    @MainActor
+    func testLiveStoreRequiresExplicitActiveSleepEvidenceBeforeShowingAsleep() {
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4)
+
+        let awakeStore = AtriaStressMonitorStore()
+        awakeStore.update(
+            heartRate: 64,
+            hasContact: true,
+            recentRRSamples: [],
+            isRecording: false,
+            zoneIndex: 0,
+            hrvSnapshot: nil,
+            baseline: baseline,
+            restingMaxHR: restingMaxHR,
+            hasActiveSleepEvidence: false,
+            now: now
+        )
+        XCTAssertNotEqual(awakeStore.state.kind, .asleep)
+
+        let sleepingStore = AtriaStressMonitorStore()
+        sleepingStore.update(
+            heartRate: 64,
+            hasContact: true,
+            recentRRSamples: [],
+            isRecording: false,
+            zoneIndex: 0,
+            hrvSnapshot: nil,
+            baseline: baseline,
+            restingMaxHR: restingMaxHR,
+            hasActiveSleepEvidence: true,
+            now: now
+        )
+        XCTAssertEqual(sleepingStore.state.kind, .asleep)
+    }
+
+    // Added 2026-07-31 (device review: stress tile stuck at "collecting 2 min
+    // of live signal"): warm-up is anchored to accepted-HR continuity. A brief
+    // contact flicker must not restart the 2-minute clock; a sustained loss
+    // (longer than the 30s grace) must.
+    @MainActor
+    func testWarmUpSurvivesBriefContactFlicker() {
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4)
+        let store = AtriaStressMonitorStore()
+
+        func tick(atOffset offset: TimeInterval, hasContact: Bool) {
+            store.update(heartRate: hasContact ? 62 : 0,
+                         hasContact: hasContact,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 0,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: now.addingTimeInterval(offset))
+        }
+
+        tick(atOffset: 0, hasContact: true)
+        XCTAssertEqual(store.state.kind, .warmingUp)
+        tick(atOffset: 50, hasContact: true)
+        XCTAssertEqual(store.state.kind, .warmingUp)
+
+        // 100s in, one flicker (single zero-contact tick), contact resumes.
+        tick(atOffset: 100, hasContact: false)
+        XCTAssertEqual(store.state.kind, .noSignal)
+        tick(atOffset: 106, hasContact: true)
+
+        // 125s after first contact: warm-up completes because the flicker did
+        // not restart the clock.
+        tick(atOffset: 125, hasContact: true)
+        XCTAssertEqual(store.state.kind, .scored)
+    }
+
+    @MainActor
+    func testWarmUpRestartsAfterSustainedContactLoss() {
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4)
+        let store = AtriaStressMonitorStore()
+
+        func tick(atOffset offset: TimeInterval, hasContact: Bool) {
+            store.update(heartRate: hasContact ? 62 : 0,
+                         hasContact: hasContact,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 0,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: now.addingTimeInterval(offset))
+        }
+
+        tick(atOffset: 0, hasContact: true)
+        tick(atOffset: 50, hasContact: true)
+        tick(atOffset: 100, hasContact: true)
+        // A 75s outage — past the 60s continuity grace.
+        tick(atOffset: 130, hasContact: false)
+        tick(atOffset: 175, hasContact: false)
+        // Contact returns: this is fresh contact and warm-up restarts, so at
+        // +40s of the new epoch the tile is still honestly warming up.
+        tick(atOffset: 180, hasContact: true)
+        tick(atOffset: 220, hasContact: true)
+        XCTAssertEqual(store.state.kind, .warmingUp)
+        // ...and completes 120s after the new contact epoch (ticks stay inside
+        // the production <=30s evaluation cadence).
+        tick(atOffset: 260, hasContact: true)
+        tick(atOffset: 301, hasContact: true)
+        XCTAssertEqual(store.state.kind, .scored)
+    }
+
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
     private let restingMaxHR: (rest: Int, max: Int) = (rest: 60, max: 190)
 
@@ -133,6 +242,13 @@ final class AtriaStressMonitorTests: XCTestCase {
 
         XCTAssertEqual(state.kind, .active)
         XCTAssertNil(state.level)
+        let presentation = AtriaStressPresentation.make(state: state)
+        XCTAssertEqual(
+            presentation.value,
+            AtriaCompactMetricPresentation.noValue
+        )
+        XCTAssertEqual(presentation.detail, "Paused during activity")
+        XCTAssertTrue(presentation.narrative.contains("pauses during activity"))
     }
 
     func testSuppressedAtZoneTwoOrAbove() {
@@ -193,6 +309,65 @@ final class AtriaStressMonitorTests: XCTestCase {
 
         XCTAssertEqual(state.kind, .noSignal)
         XCTAssertNil(state.level)
+        let presentation = AtriaStressPresentation.make(state: state)
+        XCTAssertEqual(
+            presentation.value,
+            AtriaCompactMetricPresentation.noValue
+        )
+        XCTAssertEqual(presentation.detail, "Waiting for a fresh strap signal")
+    }
+
+    func testImmatureBaselinePresentationNeverLeaksNumericStress() {
+        let baseline = makeBaseline(restingMean: 60,
+                                    restingSD: 4,
+                                    dayCount: PersonalBaseline.trustedMinimumSamples - 1)
+        let state = AtriaStressMonitor.score(hrNow: 72,
+                                             hrWindow: [72, 72, 72],
+                                             rrWindowMs: [],
+                                             hrvFallbackRMSSD: nil,
+                                             baseline: baseline,
+                                             restingMaxHR: restingMaxHR,
+                                             workoutActive: false,
+                                             zoneIndex: 0,
+                                             inSleepWindow: false,
+                                             hasContact: true,
+                                             contactAgeSeconds: 300,
+                                             now: now)
+
+        let presentation = AtriaStressPresentation.make(state: state)
+        XCTAssertEqual(state.kind, .calibrating)
+        XCTAssertEqual(
+            presentation.value,
+            AtriaCompactMetricPresentation.noValue
+        )
+        // Migrated 2026-08-05: the scorer's calibrating detail now carries the
+        // visible progress count (the card shows detail, not label, so the
+        // count was invisible to users watching live HR stream beside "--").
+        XCTAssertEqual(presentation.detail, "Baseline 13 of 14 rest days")
+        XCTAssertFalse(presentation.value.contains("/3"))
+    }
+
+    func testMatureRestPresentationIsIdenticalForEverySurfaceConsumer() {
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4)
+        let state = AtriaStressMonitor.score(hrNow: 60,
+                                             hrWindow: [60, 60, 60],
+                                             rrWindowMs: [],
+                                             hrvFallbackRMSSD: nil,
+                                             baseline: baseline,
+                                             restingMaxHR: restingMaxHR,
+                                             workoutActive: false,
+                                             zoneIndex: 0,
+                                             inSleepWindow: false,
+                                             hasContact: true,
+                                             contactAgeSeconds: 300,
+                                             now: now)
+
+        let homeProjection = AtriaStressPresentation.make(state: state)
+        let healthProjection = AtriaStressPresentation.make(state: state)
+        XCTAssertEqual(homeProjection, healthProjection)
+        XCTAssertEqual(homeProjection.value, "Calm")
+        XCTAssertEqual(homeProjection.detail, "HR-only")
+        XCTAssertTrue(homeProjection.narrative.contains("personal baseline"))
     }
 
     func testWarmingUpDuringFirst120SecondsOfContact() {
@@ -213,6 +388,8 @@ final class AtriaStressMonitorTests: XCTestCase {
 
         XCTAssertEqual(state.kind, .warmingUp)
         XCTAssertNil(state.level)
+        XCTAssertEqual(AtriaStressPresentation.make(state: state).detail,
+                       "Collecting 2 min of live signal")
     }
 
     // MARK: Honesty gating
@@ -300,5 +477,48 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertFalse(archive.record(level: .high, at: date, calendar: calendar))
         XCTAssertEqual(archive.comparison(at: date, calendar: calendar)?.today.mediumSamples, 1)
         XCTAssertEqual(archive.comparison(at: date, calendar: calendar)?.today.highSamples, 0)
+    }
+
+    // Activity "heart & stress" card (2026-08-04): the store republishes the
+    // contact-backed live HR it is already fed. Contract: set on contact,
+    // cleared on lost contact, stamp refreshed on steady bpm so freshness
+    // gating never hides a delivering strap.
+    @MainActor
+    func testLiveHeartRatePublishesOnContactAndClearsOnLoss() {
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4)
+        let store = AtriaStressMonitorStore()
+
+        func tick(atOffset offset: TimeInterval, bpm: Int, hasContact: Bool) {
+            store.update(heartRate: bpm,
+                         hasContact: hasContact,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 0,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: now.addingTimeInterval(offset))
+        }
+
+        tick(atOffset: 0, bpm: 64, hasContact: true)
+        XCTAssertEqual(store.liveHeartRate?.bpm, 64)
+        XCTAssertEqual(store.liveHeartRate?.at, now)
+
+        // Steady bpm: the stamp refreshes once the old one ages past 30s.
+        tick(atOffset: 10, bpm: 64, hasContact: true)
+        XCTAssertEqual(store.liveHeartRate?.at, now, "stamp must not churn under 30s")
+        tick(atOffset: 40, bpm: 64, hasContact: true)
+        XCTAssertEqual(store.liveHeartRate?.at, now.addingTimeInterval(40))
+
+        tick(atOffset: 45, bpm: 71, hasContact: true)
+        XCTAssertEqual(store.liveHeartRate?.bpm, 71)
+
+        tick(atOffset: 50, bpm: 0, hasContact: false)
+        XCTAssertNil(store.liveHeartRate, "lost contact must clear the readout, not cache it")
+
+        let reading = AtriaStressMonitorStore.LiveHeartRateReading(bpm: 70, at: now)
+        XCTAssertTrue(reading.isFresh(now: now.addingTimeInterval(60)))
+        XCTAssertFalse(reading.isFresh(now: now.addingTimeInterval(120)))
     }
 }

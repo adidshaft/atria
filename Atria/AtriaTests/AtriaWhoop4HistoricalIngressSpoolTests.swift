@@ -1,0 +1,173 @@
+import XCTest
+@testable import Atria
+
+final class AtriaWhoop4HistoricalIngressSpoolTests: XCTestCase {
+    private var directory: URL!
+
+    override func setUpWithError() throws {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AtriaIngressSpoolTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
+    override func tearDownWithError() throws {
+        try? FileManager.default.removeItem(at: directory)
+        directory = nil
+    }
+
+    func testRoundTripPreservesFrameMetadataFrameOrderAcrossReopen() throws {
+        let url = directory.appendingPathComponent("ingress.bin")
+        let first = try AtriaWhoop4HistoricalIngressSpool(url: url, generation: 44)
+        try first.append(.frame(payload: [0x2f, 1, 2],
+                                clock: .init(device: 10, wall: 17),
+                                clockAuthorityEnabled: true))
+        try first.append(.metadata(payload: [0x31, 9], phaseGeneration: 44))
+        try first.append(.frame(payload: [0x2f, 3],
+                                clock: nil,
+                                clockAuthorityEnabled: false))
+        try first.synchronize()
+
+        let reopened = try AtriaWhoop4HistoricalIngressSpool(url: url, generation: 44)
+        XCTAssertEqual(reopened.pendingCount, 3)
+        XCTAssertEqual(try reopened.popFirst(), .frame(
+            payload: [0x2f, 1, 2], clock: .init(device: 10, wall: 17), clockAuthorityEnabled: true))
+        XCTAssertEqual(try reopened.popFirst(), .metadata(payload: [0x31, 9], phaseGeneration: 44))
+        XCTAssertEqual(try reopened.popFirst(), .frame(
+            payload: [0x2f, 3], clock: nil, clockAuthorityEnabled: false))
+        XCTAssertNil(try reopened.popFirst())
+    }
+
+    func testMoreThanLegacySyncBatchPreservesExactOrderAfterExplicitWorkerDurability() throws {
+        let url = directory.appendingPathComponent("large-ingress.bin")
+        let spool = try AtriaWhoop4HistoricalIngressSpool(
+            url: url,
+            generation: 45
+        )
+        let events: [AtriaWhoop4HistoricalIngressSpool.Event] =
+            (0..<513).map { index in
+                if index.isMultiple(of: 2) {
+                    return .frame(
+                        payload: [0x2f, UInt8(truncatingIfNeeded: index)],
+                        clock: .init(
+                            device: UInt32(index),
+                            wall: UInt32(index + 7)
+                        ),
+                        clockAuthorityEnabled: true
+                    )
+                }
+                return .metadata(
+                    payload: [0x31, UInt8(truncatingIfNeeded: index)],
+                    phaseGeneration: 45
+                )
+            }
+        for event in events {
+            try spool.append(event)
+        }
+        // Explicit durability is permitted for an off-main archival boundary;
+        // the hot BLE/MainActor append path must not fsync every 256 events.
+        try spool.synchronize()
+
+        let reopened = try AtriaWhoop4HistoricalIngressSpool(
+            url: url,
+            generation: 45
+        )
+        XCTAssertEqual(reopened.pendingCount, events.count)
+        for expected in events {
+            XCTAssertEqual(try reopened.popFirst(), expected)
+        }
+        XCTAssertNil(try reopened.popFirst())
+    }
+
+    func testOrphanHeaderGenerationCanBeReadWithoutRemovingJournal() throws {
+        let url = directory.appendingPathComponent("orphan.bin")
+        let spool = try AtriaWhoop4HistoricalIngressSpool(url: url, generation: 91)
+        try spool.append(.frame(payload: [0x2f, 9], clock: nil,
+                                clockAuthorityEnabled: false))
+        try spool.synchronize()
+
+        XCTAssertEqual(try AtriaWhoop4HistoricalIngressSpool.generation(at: url), 91)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(try AtriaWhoop4HistoricalIngressSpool(
+            url: url, generation: 91
+        ).pendingCount, 1)
+    }
+
+    func testReopenDropsOnlyTornFinalRecord() throws {
+        let url = directory.appendingPathComponent("torn.bin")
+        let spool = try AtriaWhoop4HistoricalIngressSpool(url: url, generation: 6)
+        try spool.append(.metadata(payload: [0x31], phaseGeneration: 6))
+        try spool.synchronize()
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data([0x20, 0, 0]))
+        try handle.close()
+
+        let firstReopen = try AtriaWhoop4HistoricalIngressSpool(
+            url: url,
+            generation: 6
+        )
+        XCTAssertEqual(firstReopen.pendingCount, 1)
+        let secondReopen = try AtriaWhoop4HistoricalIngressSpool(
+            url: url,
+            generation: 6
+        )
+        XCTAssertEqual(secondReopen.pendingCount, 1)
+        XCTAssertEqual(
+            try secondReopen.popFirst(),
+            .metadata(payload: [0x31], phaseGeneration: 6)
+        )
+    }
+
+    func testHardByteCapFailsClosedBeforeAppendingOverflow() throws {
+        let url = directory.appendingPathComponent("cap.bin")
+        // Header (16) + one clocked 96-byte frame record (124).
+        let spool = try AtriaWhoop4HistoricalIngressSpool(url: url, generation: 1, maximumBytes: 140)
+        try spool.append(.frame(payload: Array(repeating: 7, count: 96),
+                                clock: .init(device: 1, wall: 2),
+                                clockAuthorityEnabled: true))
+        XCTAssertThrowsError(try spool.append(.metadata(payload: [0x31], phaseGeneration: 1))) { error in
+            XCTAssertEqual(error as? AtriaWhoop4HistoricalIngressSpool.SpoolError, .capacityExceeded)
+        }
+        XCTAssertEqual(spool.pendingCount, 1)
+    }
+
+    func testOrphanRetentionPreservesFreshJournal() throws {
+        let url = directory.appendingPathComponent("fresh.bin")
+        _ = try AtriaWhoop4HistoricalIngressSpool(url: url, generation: 3)
+
+        XCTAssertFalse(AtriaWhoop4HistoricalIngressSpool.removeExpiredOrphan(
+            at: url,
+            now: Date(),
+            retention: 60
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testOrphanRetentionRemovesOnlyExpiredRegularJournal() throws {
+        let url = directory.appendingPathComponent("expired.bin")
+        _ = try AtriaWhoop4HistoricalIngressSpool(url: url, generation: 3)
+        let stale = Date(timeIntervalSinceNow: -61)
+        try FileManager.default.setAttributes([.modificationDate: stale], ofItemAtPath: url.path)
+
+        XCTAssertTrue(AtriaWhoop4HistoricalIngressSpool.removeExpiredOrphan(
+            at: url,
+            now: Date(),
+            retention: 60
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testOrphanRetentionFailsClosedForDirectory() throws {
+        let url = directory.appendingPathComponent("not-a-journal", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        let stale = Date(timeIntervalSinceNow: -61)
+        try FileManager.default.setAttributes([.modificationDate: stale], ofItemAtPath: url.path)
+
+        XCTAssertFalse(AtriaWhoop4HistoricalIngressSpool.removeExpiredOrphan(
+            at: url,
+            now: Date(),
+            retention: 60
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+    }
+}

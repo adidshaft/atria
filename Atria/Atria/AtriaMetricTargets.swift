@@ -107,7 +107,7 @@ struct AtriaMetricTarget: Equatable, Codable {
     }
 
     var summaryText: String {
-        let base = "\(source.label) · Green >= \(Int(greenLower.rounded()))%, yellow \(Int(yellowLower.rounded()))-\(Int(greenLower.rounded()) - 1)%, red < \(Int(yellowLower.rounded()))%"
+        let base = "\(source.label) · Green \(Int(greenLower.rounded()))%+, yellow \(Int(yellowLower.rounded()))-\(Int(greenLower.rounded()) - 1)%, red < \(Int(yellowLower.rounded()))%"
         let details = [
             optimalRange.map { "optimal \(Int($0.lowerBound.rounded()))-\(Int($0.upperBound.rounded()))" },
             yellowBuffer.map { "yellow buffer \(Int($0.rounded()))" },
@@ -260,6 +260,12 @@ extension Metrics {
 
     static func sleepDurationZone(_ hours: Double?, goalHours: Double = 8.0) -> AtriaMetricZone? {
         AtriaAnalytics.TargetZones.sleepDuration(hours, goalHours: goalHours)
+    }
+
+    static func sleepPerformanceZone(_ percent: Int?,
+                                     neededHours: Double? = nil) -> AtriaMetricZone? {
+        AtriaAnalytics.TargetZones.sleepPerformance(percent,
+                                                    neededHours: neededHours)
     }
 
     static func stepsZone(_ steps: Int?, goal: Int = 8_000) -> AtriaMetricZone? {

@@ -73,6 +73,30 @@ final class AtriaProfileDraftPersistenceCoordinator {
     }
 }
 
+/// Honest acknowledgement for the manual history button. The BLE request API
+/// reports whether a transfer actually started; Settings must not replace a
+/// rejected/deferred request with a timed, fabricated "Syncing…" spinner.
+enum AtriaManualHistorySyncFeedback: Equatable {
+    case started
+    case notStarted
+
+    var title: String {
+        switch self {
+        case .started: return "Strap history sync started"
+        case .notStarted: return "No history sync started"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .started:
+            return "Atria accepted the transfer request. The data-gap status will update from durable rows."
+        case .notStarted:
+            return "The strap did not start a compatible recovery transfer. Live tracking continues."
+        }
+    }
+}
+
 /// Native iOS 26 settings hub. Uses a grouped Form and folds in the
 /// community-requested differentiators (no subscription, data ownership/export,
 /// custom HR-zone & strain alerts).
@@ -144,7 +168,7 @@ struct AtriaSettingsView: View {
 
         var accessibilityHint: String {
             switch self {
-            case .personal: "Profile, appearance, Today layout, and goals"
+            case .personal: "Daily goals, profile, appearance, and Today layout"
             case .strap: "Device, radio mode, broadcast, and sensor support"
             case .alerts: "Haptic and notification preferences"
             case .data: "Backup, Apple Health, strap sync, and storage"
@@ -158,7 +182,6 @@ struct AtriaSettingsView: View {
     let restingBaseline: Int?
     /// Real weekly recovery average for the leaderboard "You" row (nil while
     /// still learning). Demo social feature (2026-07-08).
-    var myWeeklyRecovery: Int? = nil
     let strapName: String
     let strapModel: String
     let strapGenerationDetail: String
@@ -181,7 +204,7 @@ struct AtriaSettingsView: View {
     let onDismissMaxHRSuggestion: (Int) -> Void
     let onExportHealth: (() -> Void)?
     var buildResearchBundle: () async -> AtriaResearchBundleBuilder.Built? = { nil }
-    let onSyncMissedData: (() -> Void)?
+    let onSyncMissedData: (() -> Bool)?
     let onNutritionHealthToggle: (() -> Void)?
     let backupStatusProvider: () -> SessionBackupStatus
     /// Starts a required backup on the store's serial utility worker. The
@@ -195,11 +218,10 @@ struct AtriaSettingsView: View {
     /// its large observation graph while the Settings sheet is animating can
     /// miss the scene watchdog on a device with a live strap stream.
     let researchValidationContent: (() -> AnyView)?
+    let onExitDeveloperMode: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var showForgetConfirm = false
-    @State private var showLeaderboard = false
-    @State private var showSparring = false
     @State private var draft: AthleteProfile
     @State private var haptics: AtriaHapticAlertSettings
     @State private var nameDraft: String
@@ -209,7 +231,7 @@ struct AtriaSettingsView: View {
     @State private var coachHasAPIKey: Bool
     @State private var coachAPIKeyDraft = ""
     @State private var exportTapped = false
-    @State private var syncTapped = false
+    @State private var historySyncFeedback: AtriaManualHistorySyncFeedback?
     @State private var backupStatus: SessionBackupStatus
     @State private var backupImportPresented = false
     @State private var backupActionMessage: String?
@@ -217,7 +239,37 @@ struct AtriaSettingsView: View {
     @State private var backupOperationInProgress = false
     @State private var didLoadBackupStatus = false
     @State private var storageFootprintTotal: String?
-    @State private var navigationPath = NavigationPath()
+    /// Seeded from a launch argument in DEBUG so each settings subpage can be
+    /// screenshot-verified. Every destination is otherwise reachable only by
+    /// tapping a hub row, and simctl can capture but not tap -- so with the
+    /// simulator panel unavailable the six subpages were the last surfaces in
+    /// the app that could not be looked at.
+    ///
+    /// This only pushes onto the EXISTING path; it adds no new NavigationLink
+    /// specialisation. That matters here: this hub deliberately uses one
+    /// concrete row type in a single ForEach, because several specialised
+    /// NavigationLink expressions previously caused an on-device
+    /// swift_getTypeByMangledName metadata stack overflow.
+    @State private var navigationPath: NavigationPath = {
+        #if DEBUG
+        if let destination = Self.debugInitialDestination(
+            arguments: ProcessInfo.processInfo.arguments
+        ) {
+            var path = NavigationPath()
+            path.append(destination)
+            return path
+        }
+        #endif
+        return NavigationPath()
+    }()
+
+    #if DEBUG
+    private static func debugInitialDestination(arguments: [String]) -> Destination? {
+        guard let index = arguments.firstIndex(of: "--atria-settings-destination"),
+              arguments.indices.contains(arguments.index(after: index)) else { return nil }
+        return Destination(rawValue: arguments[arguments.index(after: index)])
+    }
+    #endif
     @State private var profilePersistence: AtriaProfileDraftPersistenceCoordinator
 
     /// Support destinations are shown as text only. Atria's core stays local-first
@@ -227,7 +279,6 @@ struct AtriaSettingsView: View {
 
     init(profile: AthleteProfile,
          restingBaseline: Int?,
-         myWeeklyRecovery: Int? = nil,
          strapName: String = "",
          strapModel: String = "",
          strapGenerationDetail: String = "",
@@ -250,17 +301,17 @@ struct AtriaSettingsView: View {
          onDismissMaxHRSuggestion: @escaping (Int) -> Void = { _ in },
          onExportHealth: (() -> Void)? = nil,
          buildResearchBundle: @escaping () async -> AtriaResearchBundleBuilder.Built? = { nil },
-         onSyncMissedData: (() -> Void)? = nil,
+         onSyncMissedData: (() -> Bool)? = nil,
          onNutritionHealthToggle: (() -> Void)? = nil,
          backupStatusProvider: @escaping () -> SessionBackupStatus = { .missing },
          onWriteBackup: ((@escaping @MainActor (SessionBackupStatus) -> Void) -> Void)? = nil,
          onVerifyBackup: (() async -> SessionBackupStatus)? = nil,
          onRestoreBackup: ((URL) async -> SessionBackupStatus?)? = nil,
          onForgetStrap: (() -> Void)? = nil,
-         researchValidationContent: (() -> AnyView)? = nil) {
+         researchValidationContent: (() -> AnyView)? = nil,
+         onExitDeveloperMode: @escaping () -> Void = {}) {
         self.profile = profile
         self.restingBaseline = restingBaseline
-        self.myWeeklyRecovery = myWeeklyRecovery
         self.strapName = strapName
         self.strapModel = strapModel
         self.strapGenerationDetail = strapGenerationDetail
@@ -291,6 +342,7 @@ struct AtriaSettingsView: View {
         self.onRestoreBackup = onRestoreBackup
         self.onForgetStrap = onForgetStrap
         self.researchValidationContent = researchValidationContent
+        self.onExitDeveloperMode = onExitDeveloperMode
         _draft = State(initialValue: profile)
         _haptics = State(initialValue: hapticSettings)
         _nameDraft = State(initialValue: strapName)
@@ -386,6 +438,13 @@ struct AtriaSettingsView: View {
     // a native grouped Form, so opening Strap or Data no longer expands several
     // nested sections into one long, spatially unstable settings wall.
 
+    /// The hub used to be five bare titles stacked in the top third of a full
+    /// sheet, leaving most of the screen blank and giving no clue what any row
+    /// held. The plain-language summary that already existed as a VoiceOver
+    /// hint is now visible text, so the row earns its height and the screen
+    /// carries information instead of whitespace. Sighted and VoiceOver users
+    /// read the same sentence — `.combine` merges title + summary into one
+    /// element, which is why the separate hint modifier is gone.
     private func settingsGroupLabel(_ destination: Destination) -> some View {
         HStack(spacing: 10) {
             Image(systemName: destination.systemImage)
@@ -393,10 +452,20 @@ struct AtriaSettingsView: View {
                 .foregroundStyle(destination.tint)
                 .frame(width: 26, height: 26)
                 .background(AtriaIconTileBackground(cornerRadius: 8, tint: destination.tint))
-            Text(destination.title)
-                .font(.subheadline.weight(.semibold))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(destination.title)
+                    .font(.subheadline.weight(.semibold))
+                Text(destination.accessibilityHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minHeight: 44)
+        .accessibilityElement(children: .combine)
     }
 
     /// A single concrete row type is deliberate here. Six independently
@@ -410,7 +479,6 @@ struct AtriaSettingsView: View {
                 NavigationLink(value: destination) {
                     settingsGroupLabel(destination)
                 }
-                .accessibilityHint(destination.accessibilityHint)
             }
         }
     }
@@ -449,11 +517,13 @@ struct AtriaSettingsView: View {
                                              todayOrderCSV,
                                              todaySizeCSV in
             compactSettingsForm(title: "Personal") {
+                AtriaDailyGoalsSection()
                 todayLayoutSection(todayHiddenCSV: todayHiddenCSV,
                                    todayOrderCSV: todayOrderCSV,
                                    todaySizeCSV: todaySizeCSV)
                 profileSection(faceOffDisplayName: faceOffDisplayName)
                 appearanceSection(appearanceMode: appearanceMode)
+                AtriaRingLayoutSection()
                 Section {
                     NavigationLink {
                         coachSettingsPage
@@ -644,12 +714,6 @@ struct AtriaSettingsView: View {
     private var privacySettingsPage: some View {
         compactSettingsForm(title: "Privacy & About") {
             AtriaResearchSharingSection(buildBundle: buildResearchBundle)
-            Section {
-                leaderboardRow
-                sparringRow
-            } header: {
-                Text("Community")
-            }
             aboutSection
         }
     }
@@ -658,6 +722,14 @@ struct AtriaSettingsView: View {
     private var developerSettingsPage: some View {
         compactSettingsForm(title: "Developer") {
             researchValidationSection
+            Section {
+                Button("Exit developer mode", role: .destructive) {
+                    onExitDeveloperMode()
+                    navigationPath = NavigationPath()
+                }
+            } footer: {
+                Text("Developer mode also expires automatically seven days after its most recent developer launch.")
+            }
         }
     }
 
@@ -672,57 +744,6 @@ struct AtriaSettingsView: View {
         .listSectionSpacing(.compact)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-    }
-
-    /// Entry to the leaderboard demo (2026-07-08). Self-contained button +
-    /// sheet so it needs no Form-level plumbing.
-    private var leaderboardRow: some View {
-        Button {
-            showLeaderboard = true
-        } label: {
-            HStack {
-                Label("Leaderboard", systemImage: "trophy.fill")
-                Spacer(minLength: 8)
-                Text("Preview")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(.orange.opacity(0.16), in: Capsule())
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .font(.subheadline)
-        .foregroundStyle(.primary)
-        .sheet(isPresented: $showLeaderboard) {
-            AtriaLeaderboardScreen(myWeeklyRecovery: myWeeklyRecovery)
-        }
-    }
-
-    /// Entry to the sparring demo (2026-07-08), sibling of the leaderboard.
-    private var sparringRow: some View {
-        Button {
-            showSparring = true
-        } label: {
-            HStack {
-                Label("Sparring", systemImage: "figure.fencing")
-                Spacer(minLength: 8)
-                Text("Preview")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.purple)
-                    .padding(.horizontal, 7).padding(.vertical, 2)
-                    .background(.purple.opacity(0.16), in: Capsule())
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .font(.subheadline)
-        .foregroundStyle(.primary)
-        .sheet(isPresented: $showSparring) {
-            AtriaSparringScreen(myWeeklyRecovery: myWeeklyRecovery)
-        }
     }
 
 
@@ -880,22 +901,41 @@ struct AtriaSettingsView: View {
 
             if let onSyncMissedData {
                 Button {
-                    onSyncMissedData()
-                    syncTapped = true
+                    historySyncFeedback = onSyncMissedData() ? .started : .notStarted
                     Task { @MainActor in
                         try? await Task.sleep(for: .seconds(6))
-                        syncTapped = false
+                        historySyncFeedback = nil
                     }
                 } label: {
-                    Label(syncTapped ? "Syncing from strap…" : "Sync missed data from strap",
-                          systemImage: syncTapped ? "arrow.triangle.2.circlepath" : "arrow.down.circle")
+                    Label("Sync missed data from strap",
+                          systemImage: "arrow.down.circle")
                 }
-                .disabled(syncTapped)
-                .accessibilityHint("Pulls data stored by the strap while disconnected or closed. Briefly pauses live tracking.")
+                .disabled(historySyncFeedback != nil)
+                .accessibilityHint(historySyncFeedback?.detail
+                    ?? "Requests data stored by the strap while disconnected or closed. Atria reports whether a transfer actually starts.")
+
+                if let historySyncFeedback {
+                    settingsInfoRow(
+                        icon: historySyncFeedback == .started
+                            ? "checkmark.circle.fill" : "exclamationmark.circle.fill",
+                        tint: historySyncFeedback == .started ? .green : .orange,
+                        title: historySyncFeedback.title,
+                        detail: historySyncFeedback.detail
+                    )
+                }
             }
             storageFootprintRow
         } header: {
             Text("Your data")
+        } footer: {
+            // Two facts about this section were written only into VoiceOver
+            // hints. One is a reassurance that decides whether anyone enables
+            // nutrition at all; the other is a CONSEQUENCE of tapping Sync,
+            // which a wearer needs before the tap rather than after it. A
+            // Section footer is where a Form states this — putting the text
+            // inside the rows themselves broke the native icon column on the
+            // toggle and inherited the button's tint on the sync row.
+            Text("Nutrition is read-only — Atria never asks you to log meals. Missed-data sync asks the strap for stored rows and reports whether a transfer actually starts.")
         }
     }
 
@@ -915,9 +955,10 @@ struct AtriaSettingsView: View {
         let archiveBaseBytes: Int64
         let segmentsBytes: Int64
         let rollupsBytes: Int64
+        let allDocumentsBytes: Int64
 
         var totalBytes: Int64 {
-            sessionsBytes + coldSessionsBytes + archiveBaseBytes + segmentsBytes + rollupsBytes
+            allDocumentsBytes
         }
     }
 
@@ -935,25 +976,34 @@ struct AtriaSettingsView: View {
         func directorySize(_ url: URL) -> Int64 {
             guard let enumerator = fileManager.enumerator(
                 at: url,
-                includingPropertiesForKeys: [.fileSizeKey],
+                includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
                 options: [.skipsHiddenFiles]
             ) else { return 0 }
             var total: Int64 = 0
             for case let fileURL as URL in enumerator {
-                let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey])
-                total += Int64(values?.fileSize ?? 0)
+                let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                if values?.isRegularFile == true {
+                    total += Int64(values?.fileSize ?? 0)
+                }
             }
             return total
         }
 
         let sessionsBytes = size(of: documents.appendingPathComponent("sessions.json"))
         let coldSessionsBytes = size(of: documents.appendingPathComponent("sessions-cold.json"))
+            + directorySize(documents.appendingPathComponent(
+                AtriaFullFidelityColdSessionStore.directoryName,
+                isDirectory: true
+            ))
         let archiveDirectory = documents.appendingPathComponent("atria-historical", isDirectory: true)
         let archiveBaseBytes = size(of: archiveDirectory.appendingPathComponent("historical-archive.jsonl"))
         let segmentsBytes = directorySize(archiveDirectory.appendingPathComponent("segments", isDirectory: true))
         let rollupsBytes = size(of: documents.appendingPathComponent("daily-rollups.json"))
 
-        let totalBytes = sessionsBytes + coldSessionsBytes + archiveBaseBytes + segmentsBytes + rollupsBytes
+        // The headline is the whole app Documents tree, not a hand-picked
+        // subtotal. This includes compact facts, replay SQLite/WAL files,
+        // backups, calibration captures, receipts and future managed tiers.
+        let totalBytes = directorySize(documents)
 
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
@@ -963,7 +1013,8 @@ struct AtriaSettingsView: View {
                                 coldSessionsBytes: coldSessionsBytes,
                                 archiveBaseBytes: archiveBaseBytes,
                                 segmentsBytes: segmentsBytes,
-                                rollupsBytes: rollupsBytes)
+                                rollupsBytes: rollupsBytes,
+                                allDocumentsBytes: totalBytes)
     }
 
     private func refreshStorageFootprint() async {
@@ -1087,7 +1138,8 @@ struct AtriaSettingsView: View {
         }
         let state = backupStatus.current ? "Current" : "Needs review"
         let size = ByteCountFormatter.string(fromByteCount: Int64(backupStatus.bytes), countStyle: .file)
-        return "\(state) · \(backupStatus.sessions) sessions · \(size)"
+        let sessionsText = backupStatus.sessions == 1 ? "1 session" : "\(backupStatus.sessions) sessions"
+        return "\(state) · \(sessionsText) · \(size)"
     }
 
     private var backupPathAccessibilityHint: String {
@@ -1353,7 +1405,7 @@ struct AtriaSettingsView: View {
                             tint: batterySaver ? .green : .orange,
                             title: batterySaver ? "Heart rate + strap motion" : "Diagnostic full protocol",
                             detail: batterySaver
-                                ? "Recommended. Keeps live heart rate and strap-native steps on the physically verified minimal connection. Atria never substitutes phone motion."
+                                ? "Recommended. Keeps live heart rate and verified strap motion on the stable connection. When strap steps are unavailable, Atria marks them unavailable rather than substituting phone steps."
                                 : "Enables additional proprietary streams for diagnostics. This may be less stable and use more strap battery.")
             // Static handoff compatibility marker for the old detail:
             // Keeps richer strap streams available for beat-to-beat, HRV, Recovery and sleep research.
@@ -1391,10 +1443,12 @@ struct AtriaSettingsView: View {
                             tint: .secondary,
                             title: "Blood pressure not supported",
                             detail: "WHOOP 4.0 is not cuff-calibrated, so Atria does not estimate BP.")
+                // SpO2 copy consolidation (2026-08-01): canonical hardware
+                // limitation copy, matching the About sheet and vitals surfaces.
                 settingsInfoRow(icon: "drop.degreesign",
                             tint: .cyan,
                             title: "Blood oxygen signal",
-                            detail: "Sleep-only evidence; no SpO2 percentage or Health export yet.")
+                            detail: "\(AtriaSpO2Copy.notAvailableOnStrap) \(AtriaSpO2Copy.wontFakeAPercentage)")
                 settingsInfoRow(icon: "thermometer.variable",
                             tint: .teal,
                             title: "Wrist temperature signal",
@@ -1522,6 +1576,97 @@ private struct AtriaStrapMotionDefaultsScope<Content: View>: View {
 
     var body: some View {
         content($allDayMotionEnabled)
+    }
+}
+
+/// The three goals a user actually changes — nightly sleep, daily steps, daily
+/// active calories — surfaced one tap into Personal instead of four taps deep
+/// inside Advanced targets, where they sat between ACWR watch bands and HRV
+/// ratio thresholds. Same `atria.target.*` keys, so the advanced editor and
+/// this section stay in lockstep (`AtriaDefault` boxes observe the shared
+/// change center). The defaults boxes live on this struct rather than on
+/// `AtriaSettingsView` so they register when Personal appears, never on the
+/// Settings hub presentation frame.
+/// Today vitals-ring layout picker (Settings -> Personal): concentric
+/// Activity-style rings vs WHOOP-style separate side-by-side rings. Writes the
+/// shared `AtriaRingLayoutStyle.defaultsKey` that `AtriaTriRing` and the share
+/// card read live, so the whole app switches at once.
+private struct AtriaRingLayoutSection: View {
+    @AtriaDefault(AtriaRingLayoutStyle.defaultsKey) private var ringLayoutRaw: String = "concentric"
+
+    var body: some View {
+        Section {
+            Picker("Ring style", selection: $ringLayoutRaw) {
+                ForEach(AtriaRingLayoutStyle.allCases, id: \.self) { style in
+                    Text(style.label).tag(style.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+        } header: {
+            Text("Today rings")
+        } footer: {
+            Text("Concentric stacks the three rings; Separate shows them side by side, WHOOP-style.")
+        }
+    }
+}
+
+private struct AtriaDailyGoalsSection: View {
+    @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
+    @AtriaDefault("atria.target.steps.goal") private var stepsGoal: Int = 8_000
+    @AtriaDefault("atria.target.calories.goal") private var caloriesGoal: Int = 500
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Section {
+            Stepper(value: $sleepGoalHours, in: 4.0...12.0, step: 0.25) {
+                LabeledContent {
+                    Text(AtriaMetricFormat.sleepHours(sleepGoalHours))
+                        .monospacedDigit()
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: sleepGoalHours)
+                } label: {
+                    Label("Sleep each night", systemImage: "bed.double.fill")
+                }
+            }
+            .accessibilityHint("Sets the sleep goal used by the Today ring and sleep cards")
+
+            Stepper(value: $stepsGoal, in: 1_000...30_000, step: 500) {
+                LabeledContent {
+                    Text("\(stepsGoal)")
+                        .monospacedDigit()
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: stepsGoal)
+                } label: {
+                    Label("Steps each day", systemImage: "figure.walk.motion")
+                }
+            }
+            .accessibilityHint("Sets the daily step goal used by the Today step card and widget")
+
+            Stepper(value: $caloriesGoal, in: 100...3_000, step: 50) {
+                LabeledContent {
+                    Text("\(caloriesGoal) kcal")
+                        .monospacedDigit()
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .animation(reduceMotion ? nil : .snappy(duration: 0.22), value: caloriesGoal)
+                } label: {
+                    Label("Active calories", systemImage: "flame.fill")
+                }
+            }
+            .accessibilityHint("Sets the daily active-calorie goal used by the Today calorie card")
+        } header: {
+            Text("Daily goals")
+        } footer: {
+            Text("These set the goals Today measures you against. Zone thresholds for recovery, strain, and training load live in Advanced targets.")
+        }
+        .onChange(of: sleepGoalHours) { _, _ in
+            sleepGoalHours = min(max(sleepGoalHours, 4.0), 12.0)
+        }
+        .onChange(of: stepsGoal) { _, _ in
+            stepsGoal = min(max(stepsGoal, 1_000), 30_000)
+        }
+        .onChange(of: caloriesGoal) { _, _ in
+            caloriesGoal = min(max(caloriesGoal, 100), 3_000)
+        }
     }
 }
 
@@ -2212,9 +2357,9 @@ struct AtriaTrackedBehaviorsSettingsView: View {
 
     private var groups: [(title: String, tags: [BehaviorJournalEntry.Tag])] {
         [
-            ("Sleep & recovery", [.sleep, .consistentBedtime, .nap, .melatonin, .sharedBed,
-                                  .warmRoom, .screenInBed, .readBeforeBed, .sauna, .coldExposure,
-                                  .massage, .stretching, .soreness]),
+            ("Sleep & recovery", [.sleep, .consistentBedtime, .nap, .melatonin, .magnesium,
+                                  .sharedBed, .warmRoom, .screenInBed, .readBeforeBed, .sauna,
+                                  .coldExposure, .massage, .stretching, .soreness]),
             ("Activity & nutrition", [.training, .activeDay, .protein, .hydration, .vegetables,
                                       .bigMeal, .addedSugar, .lateMeal, .fasted, .caffeine,
                                       .supplements, .medication]),

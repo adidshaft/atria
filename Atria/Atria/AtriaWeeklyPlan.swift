@@ -116,7 +116,7 @@ struct WeeklyPlan: Codable, Equatable {
         }.count)
         return WeeklyPlanTarget(id: WeeklyPlanTarget.Kind.bedtimeConsistency.rawValue,
                                 kind: .bedtimeConsistency,
-                                title: "Lights out by \(formatClockMinute(target)) x4",
+                                title: "Lights out by \(formatClockMinute(target)) · 4 nights",
                                 detail: "Based on your recent bedtime rhythm",
                                 goal: 4,
                                 current: current)
@@ -129,7 +129,7 @@ struct WeeklyPlan: Codable, Equatable {
         let current = Double(currentWeek.filter { ($0.strain ?? 0) >= 10 }.count)
         return WeeklyPlanTarget(id: WeeklyPlanTarget.Kind.workoutCount.rawValue,
                                 kind: .workoutCount,
-                                title: "\(Int(goal)) workouts >= 10 strain",
+                                title: "\(Int(goal)) \(Int(goal) == 1 ? "workout" : "workouts") of 10+ strain",
                                 detail: "Auto-counted from saved strain days",
                                 goal: goal,
                                 current: current)

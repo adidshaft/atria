@@ -46,8 +46,17 @@ final class AtriaWorkoutStartDensityTests: XCTestCase {
         XCTAssertTrue(source.contains("static let key = \"atria.workout.recentActivityTypes\""))
         XCTAssertTrue(sheet.contains("resolvedInitial.activityType = recent ?? .walking"),
                       "The visible recent/default activity must also be the value that starts")
-        XCTAssertTrue(sheet.contains("([configuration.activityType] + recent + preferred)"),
-                      "The actual selection must remain visible at the front of the compact rail")
+        // Pin migrated 2026-08-01 (gym-session review): the rail order is
+        // frozen at sheet open — tapping a chip marks the selection in place
+        // and must never reorder the rail under the user's finger. The initial
+        // selection still leads the frozen order, and a catalog pick not on
+        // the rail is appended without reshuffling.
+        XCTAssertTrue(sheet.contains("([initial] + recent + preferred)"),
+                      "The initial selection must lead the frozen compact rail")
+        XCTAssertFalse(sheet.contains("([configuration.activityType] + recent + preferred)"),
+                       "The rail must not re-derive its order from the live selection (reorder-on-tap)")
+        XCTAssertTrue(sheet.contains("if !compactActivityTypes.contains(type) {"),
+                      "A catalog pick that is not on the rail is appended, keeping existing chips in place")
         XCTAssertTrue(sheet.contains("Label(\"Start \\(configuration.activityType.rawValue)\""),
                       "The primary action should name the activity it will start")
         XCTAssertFalse(sheet.contains("ForEach(AtriaWorkoutActivityType.allCases) { type in"),
@@ -64,8 +73,14 @@ final class AtriaWorkoutStartDensityTests: XCTestCase {
         XCTAssertTrue(sheet.contains(".buttonBorderShape(.capsule)"))
         XCTAssertTrue(sheet.contains("transaction.animation = nil"),
                       "Reduce Motion must suppress optional selector transitions")
-        XCTAssertTrue(sheet.contains(".accessibilityValue(configuration.activityType == type ? \"Selected\" : \"Not selected\")"))
+        // Pin migrated 2026-08-01: the chip split into prominent/glass
+        // branches (selected white-on-white contrast fix), so the a11y value
+        // is a literal per branch rather than one ternary.
+        XCTAssertTrue(sheet.contains(".accessibilityValue(\"Selected\")"))
+        XCTAssertTrue(sheet.contains(".accessibilityValue(\"Not selected\")"))
         XCTAssertTrue(sheet.contains("AtriaWorkoutRecentActivityStore.recordStarted(value.activityType)"))
+        XCTAssertTrue(sheet.contains("await onPrepare()"),
+                      "Opening the picker should warm read-only workout authority before the Start tap")
         XCTAssertTrue(sheet.contains("if isStarting"))
         XCTAssertTrue(sheet.contains("ProgressView()"),
                       "The real authority wait needs visible native progress instead of a frozen button")

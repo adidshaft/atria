@@ -44,7 +44,11 @@ enum AtriaHighlights {
         guard Double(latest) <= average - 2 else { return nil }
         return AtriaHighlight(id: "lower-rhr",
                               systemImage: "heart.fill",
-                              valuePhrase: "↓ RHR",
+                              // Spelled out (2026-08-04): "↓ RHR" read as
+                              // jargon on a first-open row; the arrow glyph
+                              // also spoke poorly. WHOOP writes the metric
+                              // name in prose on equivalent rows.
+                              valuePhrase: "Resting HR",
                               sentence: "lower than usual",
                               tint: Metrics.electricGreen,
                               metric: .restingHeartRate)

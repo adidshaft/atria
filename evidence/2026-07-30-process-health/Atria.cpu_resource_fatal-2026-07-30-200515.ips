@@ -1,0 +1,185 @@
+{"app_name":"Atria","timestamp":"2026-07-30 20:05:15.00 +0530","app_version":"1.0","slice_uuid":"A3832503-9B75-3F74-A79E-44CEF8EA5AF8","build_version":"3","bundleID":"com.adidshaft.atria","duration_ms":"57090","share_with_app_devs":1,"is_first_party":0,"bug_type":"206","os_version":"iPhone OS 27.0 (24A5380h)","roots_installed":0,"name":"Atria","incident_id":"892E134E-530B-4D06-90EB-44E8C86E087F"}
+Date/Time:        2026-07-30 20:04:16.974 +0530
+End time:         2026-07-30 20:05:14.063 +0530
+OS Version:       iPhone OS 27.0 (Build 24A5380h)
+Architecture:     arm64e
+Report Version:   73
+Incident Identifier: 892E134E-530B-4D06-90EB-44E8C86E087F
+Share With Devs:  Yes
+
+Data Source:      Microstackshots
+Shared Cache:     B9BADE17-3E7F-34F7-B87E-4351C24D30E8 slid base address 0x182b10000
+
+Command:          Atria
+Path:             /private/var/containers/Bundle/Application/2368D2B3-F73E-4CBB-9400-42EBEADA7239/Atria.app/Atria
+Identifier:       com.adidshaft.atria
+Version:          1.0 (3)
+Is First Party:   No
+Beta Identifier:  ACCBCE97-C25C-4937-BC56-111C4C350195
+Resource Coalition: 1095
+On Behalf Of:     4 samples UNKNOWN [101] (4 samples originated by UNKNOWN [101])
+Architecture:     arm64
+PID:              2761
+
+Event:            cpu usage
+Action taken:     Process killed
+CPU:              48 seconds cpu time over 57 seconds (84% cpu average), exceeding limit of 80% cpu over 60 seconds
+CPU limit:        48s
+Limit duration:   60s
+CPU used:         48s
+CPU duration:     57s
+Duration:         57.09s
+Duration Sampled: 45.61s (event starts 11.05s before samples, event ends 0.43s after samples)
+Steps:            5 (10 gigacycles/step, 4 samples lost)
+
+Hardware model:   iPhone16,1
+Active cpus:      6
+Memory size:      7.50 GB
+HW page size:     16384
+VM page size:     16384
+
+Models:           UNKNOWN
+
+OS Cryptex File Extents: 17495
+
+Heaviest stack for the target process:
+  5  ??? (libsystem_pthread.dylib + 2320) [0x18304a910]
+  4  ??? (libsystem_pthread.dylib + 4664) [0x18304b238]
+  4  ??? (libdispatch.dylib + 87740) [0x1b159c6bc]
+  4  ??? (libdispatch.dylib + 89240) [0x1b159cc98]
+  4  ??? (libdispatch.dylib + 46192) [0x1b1592470]
+  4  ??? (libdispatch.dylib + 43132) [0x1b159187c]
+  4  ??? (libdispatch.dylib + 114644) [0x1b15a2fd4]
+  4  ??? (libdispatch.dylib + 7372) [0x1b1588ccc]
+  4  ??? (Atria + 842336) [0x100dd9a60]
+  4  ??? (Atria + 1587472) [0x100e8f910]
+  2  ??? (Atria + 12498740) [0x1018f7734]
+  2  ??? (Atria + 12493060) [0x1018f6104]
+  2  ??? (Foundation + 1083696) [0x1836f5930]
+  2  ??? (Foundation + 1100308) [0x1836f9a14]
+  2  ??? (Foundation + 3698884) [0x1839740c4]
+  2  ??? (Foundation + 3699772) [0x18397443c]
+  2  ??? (Foundation + 677532) [0x18369269c]
+  2  ??? (Foundation + 159432) [0x183613ec8]
+  2  ??? (libsystem_kernel.dylib + 26692) [0x239e83844]
+
+
+Powerstats for:   Atria [2761]
+UUID:             A3832503-9B75-3F74-A79E-44CEF8EA5AF8
+Path:             /private/var/containers/Bundle/Application/2368D2B3-F73E-4CBB-9400-42EBEADA7239/Atria.app/Atria
+Identifier:       com.adidshaft.atria
+Version:          1.0 (3)
+Is First Party:   No
+Beta Identifier:  ACCBCE97-C25C-4937-BC56-111C4C350195
+Resource Coalition: 5 samples 1095
+On Behalf Of:     4 samples UNKNOWN [101] (4 samples originated by UNKNOWN [101])
+Architecture:     arm64
+Footprint:        402.22 MB -> 434.75 MB (+32.53 MB)
+Pageins:          50 pages
+Start time:       2026-07-30 20:04:28.023 +0530
+End time:         2026-07-30 20:05:13.636 +0530
+Num samples:      5 (100%)
+Energy:           1208.21 uWh
+Num threads:      2
+Primary state:    4 samples Non-Frontmost App, Non-Suppressed, Kernel mode, Effective Thread QoS Background, Requested Thread QoS Utility, Override Thread QoS Unspecified, e-core
+User Activity:    5 samples Idle, 0 samples Active
+Power Source:     0 samples on Battery, 5 samples on AC
+  5  ??? (libsystem_pthread.dylib + 2320) [0x18304a910]
+    4  ??? (libsystem_pthread.dylib + 4664) [0x18304b238]
+      4  ??? (libdispatch.dylib + 87740) [0x1b159c6bc]
+        4  ??? (libdispatch.dylib + 89240) [0x1b159cc98]
+          4  ??? (libdispatch.dylib + 46192) [0x1b1592470]
+            4  ??? (libdispatch.dylib + 43132) [0x1b159187c]
+              4  ??? (libdispatch.dylib + 114644) [0x1b15a2fd4]
+                4  ??? (libdispatch.dylib + 7372) [0x1b1588ccc]
+                  4  ??? (Atria + 842336) [0x100dd9a60]
+                    4  ??? (Atria + 1587472) [0x100e8f910]
+                      2  ??? (Atria + 12498740) [0x1018f7734]
+                        2  ??? (Atria + 12493060) [0x1018f6104]
+                          2  ??? (Foundation + 1083696) [0x1836f5930]
+                            2  ??? (Foundation + 1100308) [0x1836f9a14]
+                              2  ??? (Foundation + 3698884) [0x1839740c4]
+                                2  ??? (Foundation + 3699772) [0x18397443c]
+                                  2  ??? (Foundation + 677532) [0x18369269c]
+                                    2  ??? (Foundation + 159432) [0x183613ec8]
+                                      2  ??? (libsystem_kernel.dylib + 26692) [0x239e83844]
+                                        2  <on behalf of UNKNOWN [101] (originated by UNKNOWN [101])>
+                      1  ??? (Atria + 12496316) [0x1018f6dbc]
+                        1  ??? (Atria + 13604132) [0x101a05524]
+                          1  ??? (Foundation + 1259796) [0x183720914]
+                            1  ??? (Foundation + 914640) [0x1836cc4d0]
+                              1  ??? (Foundation + 3691900) [0x18397257c]
+                                1  ??? (Foundation + 1625316) [0x183779ce4]
+                                  1  ??? (Foundation + 1269556) [0x183722f34]
+                                    1  ??? (libsystem_kernel.dylib + 34304) [0x239e85600]
+                                      1  <on behalf of UNKNOWN [101] (originated by UNKNOWN [101])>
+                      1  ??? (Atria + 12495708) [0x1018f6b5c]
+                        1  ??? (Atria + 4680072) [0x101182988]
+                          1  ??? (Foundation + 1259796) [0x183720914]
+                            1  ??? (Foundation + 914640) [0x1836cc4d0]
+                              1  ??? (Foundation + 3691900) [0x18397257c]
+                                1  ??? (Foundation + 1625316) [0x183779ce4]
+                                  1  ??? (Foundation + 1269088) [0x183722d60]
+                                    1  ??? (CoreFoundation + 797192) [0x1831cda08]
+                                      1  ??? (CoreFoundation + 798024) [0x1831cdd48]
+                                        1  ??? (CoreServicesInternal + 16308) [0x192aacfb4]
+                                          1  ??? (CoreServicesInternal + 5032) [0x192aaa3a8]
+                                            1  ??? (libsystem_kernel.dylib + 26280) [0x239e836a8]
+                                              1  <on behalf of UNKNOWN [101] (originated by UNKNOWN [101])>
+    1  ??? (libsystem_pthread.dylib + 4604) [0x18304b1fc]
+      1  ??? (libdispatch.dylib + 86256) [0x1b159c0f0]
+        1  ??? (libdispatch.dylib + 84332) [0x1b159b96c]
+          1  ??? (libdispatch.dylib + 114644) [0x1b15a2fd4]
+            1  ??? (libdispatch.dylib + 72908) [0x1b1598ccc]
+              1  ??? (Atria + 842336) [0x100dd9a60]
+                1  ??? (Atria + 7061296) [0x1013c7f30]
+                  1  ??? (Atria + 7356112) [0x10140fed0]
+                    1  ??? (Atria + 14096120) [0x101a7d6f8]
+                      1  ??? (Atria + 14475912) [0x101ada288]
+                        1  ??? (Atria + 14128200) [0x101a85448]
+                          1  ??? (Atria + 14552560) [0x101aecdf0]
+                            1  ??? (Atria + 15129020) [0x101b799bc]
+                              1  ??? (Atria + 15118512) [0x101b770b0]
+                                1  ??? (Atria + 13496452) [0x1019eb084]
+                                  1  ??? (Atria + 13384820) [0x1019cfc74]
+                                    1  ??? (Atria + 13496268) [0x1019eafcc]
+                                      1  ??? (Atria + 13517368) [0x1019f0238]
+                                        1  ??? (Atria + 13600352) [0x101a04660]
+                                          1  ??? (Foundation + 384956) [0x18364afbc]
+                                            1  ??? (Foundation + 381636) [0x18364a2c4]
+                                              1  ??? (Foundation + 355444) [0x183643c74]
+                                                1  ??? (Foundation + 384988) [0x18364afdc]
+                                                  1  ??? (Foundation + 376160) [0x183648d60]
+                                                    1  ??? (Foundation + 376536) [0x183648ed8]
+                                                      1  ??? (Foundation + 378716) [0x18364975c]
+                                                        1  ??? (Foundation + 392564) [0x18364cd74]
+                                                          1  ??? (Foundation + 394096) [0x18364d370]
+                                                            1  ??? (libswiftCore.dylib + 197092) [0x1846ed1e4]
+                                                              1  ??? (Atria + 13406444) [0x1019d50ec]
+                                                                1  ??? (Atria + 13403932) [0x1019d471c]
+                                                                  1  ??? (libswiftCore.dylib + 512308) [0x18473a134]
+                                                                    1  ??? (libswiftCore.dylib + 390284) [0x18471c48c]
+                                                                      1  ??? (Foundation + 392708) [0x18364ce04]
+                                                                        1  ??? (Foundation + 405248) [0x18364ff00]
+                                                                          1  ??? (Foundation + 400520) [0x18364ec88]
+                                                                            1  ??? (Foundation + 402412) [0x18364f3ec]
+                                                                              1  ??? (libswiftCore.dylib + 197092) [0x1846ed1e4]
+                                                                                1  ??? (libswiftCore.dylib + 519992) [0x18473bf38]
+                                                                                  1  ??? (libswiftCore.dylib + 519832) [0x18473be98]
+                                                                                    1  ??? (libswiftCore.dylib + 256724) [0x1846fbad4]
+                                                                                      1  ??? (libswiftCore.dylib + 193656) [0x1846ec478]
+                                                                                        1  ??? (libswiftCore.dylib + 192996) [0x1846ec1e4]
+                                                                                          1  ??? (libswiftCore.dylib + 31408) [0x1846c4ab0]
+                                                                                            1  ??? (libsystem_malloc.dylib + 235296) [0x183090720]
+                                                                                              1  <User mode>
+
+  Binary Images:
+           0x100d0c000 -                ???  com.adidshaft.atria 1.0 (3) <A3832503-9B75-3F74-A79E-44CEF8EA5AF8>  /private/var/containers/Bundle/Application/2368D2B3-F73E-4CBB-9400-42EBEADA7239/Atria.app/Atria
+           0x18304a000 -        0x183056247  libsystem_pthread.dylib     <E4289190-AF23-386D-A453-4B6FB1A2F5AC>  /usr/lib/system/libsystem_pthread.dylib
+           0x183057000 -        0x1830a871f  libsystem_malloc.dylib      <242CE1FD-470F-362A-861A-5874C8592396>  /usr/lib/system/libsystem_malloc.dylib
+           0x18310b000 -        0x1835ec8b7  CoreFoundation              <43092235-E272-3CAF-B9AE-76669EC5AE46>  /System/Library/Frameworks/CoreFoundation.framework/CoreFoundation
+           0x1835ed000 -        0x18462f18f  Foundation                  <E642F95D-61DA-3E8C-A2D2-CFEB7F7B688B>  /System/Library/Frameworks/Foundation.framework/Foundation
+           0x1846bd000 -        0x184c7a0ef  libswiftCore.dylib          <60273855-48F3-3491-9940-420BD8F74176>  /usr/lib/swift/libswiftCore.dylib
+           0x192aa9000 -        0x192add33b  CoreServicesInternal        <0D87E703-68E4-3F50-A25C-0C7B920A81E5>  /System/Library/PrivateFrameworks/CoreServicesInternal.framework/CoreServicesInternal
+           0x1b1587000 -        0x1b15cdd5f  libdispatch.dylib           <6DE5DC49-F6C5-3FAD-AB47-9835C63C50B9>  /usr/lib/system/libdispatch.dylib
+           0x239e7d000 -        0x239eba1c3  libsystem_kernel.dylib      <E3AE0279-A7DA-32A6-9273-E5180EFB94A7>  /usr/lib/system/libsystem_kernel.dylib

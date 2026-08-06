@@ -1,5 +1,6 @@
 import Compression
 import Foundation
+import zlib
 
 enum AtriaBackupCompression {
     /// Imports are user-selected files and therefore untrusted. Keep both
@@ -63,6 +64,9 @@ enum AtriaBackupCompression {
                                   operation: compression_stream_operation,
                                   outputLimit: Int) throws -> Data {
         guard !data.isEmpty else { return Data() }
+        if operation == COMPRESSION_STREAM_DECODE {
+            return try decodeRawDeflate(data, outputLimit: outputLimit)
+        }
         return try data.withUnsafeBytes { sourceBuffer in
             guard let sourceBaseAddress = sourceBuffer.bindMemory(to: UInt8.self).baseAddress else {
                 return Data()
@@ -82,6 +86,14 @@ enum AtriaBackupCompression {
             }
             defer { compression_stream_destroy(&stream) }
 
+            // compression_stream_init resets the stream structure, including
+            // its source and destination pointers. Install the buffers only
+            // after initialization or the decoder sees an empty input stream.
+            stream.dst_ptr = destination
+            stream.dst_size = pageSize
+            stream.src_ptr = sourceBaseAddress
+            stream.src_size = data.count
+
             var output = Data()
             repeat {
                 // Encoding finalizes only after all source is consumed.
@@ -98,7 +110,8 @@ enum AtriaBackupCompression {
                 case COMPRESSION_STATUS_OK, COMPRESSION_STATUS_END:
                     let produced = pageSize - stream.dst_size
                     if produced > 0 {
-                        guard output.count <= outputLimit - produced else {
+                        guard produced <= outputLimit,
+                              output.count <= outputLimit - produced else {
                             throw operation == COMPRESSION_STREAM_DECODE
                                 ? ArchiveError.decodedArchiveTooLarge
                                 : ArchiveError.compressedArchiveTooLarge
@@ -127,6 +140,59 @@ enum AtriaBackupCompression {
             }
 
             return output
+        }
+    }
+
+    /// Apple's `COMPRESSION_ZLIB` encoder emits raw DEFLATE. The Compression
+    /// streaming decoder consumes bytes following the end marker, so it cannot
+    /// prove that an archive contains exactly one member. zlib exposes
+    /// `avail_in`, allowing imports to reject concatenated or trailing content.
+    private static func decodeRawDeflate(_ data: Data, outputLimit: Int) throws -> Data {
+        guard outputLimit >= 0 else { throw ArchiveError.decodedArchiveTooLarge }
+        guard data.count <= Int(uInt.max) else { throw ArchiveError.compressedArchiveTooLarge }
+
+        return try data.withUnsafeBytes { sourceBuffer in
+            guard let sourceBaseAddress = sourceBuffer.bindMemory(to: UInt8.self).baseAddress else {
+                return Data()
+            }
+            var stream = z_stream()
+            stream.next_in = UnsafeMutablePointer<Bytef>(mutating: sourceBaseAddress)
+            stream.avail_in = uInt(data.count)
+            guard inflateInit2_(&stream,
+                                -MAX_WBITS,
+                                ZLIB_VERSION,
+                                Int32(MemoryLayout<z_stream>.size)) == Z_OK else {
+                throw ArchiveError.corruptArchive
+            }
+            defer { inflateEnd(&stream) }
+
+            let pageSize = 16 * 1024
+            let destination = UnsafeMutablePointer<UInt8>.allocate(capacity: pageSize)
+            defer { destination.deallocate() }
+            var output = Data()
+
+            while true {
+                stream.next_out = destination
+                stream.avail_out = uInt(pageSize)
+                let status = inflate(&stream, Z_NO_FLUSH)
+                let produced = pageSize - Int(stream.avail_out)
+                if produced > 0 {
+                    guard produced <= outputLimit,
+                          output.count <= outputLimit - produced else {
+                        throw ArchiveError.decodedArchiveTooLarge
+                    }
+                    output.append(destination, count: produced)
+                }
+
+                if status == Z_STREAM_END {
+                    guard stream.avail_in == 0 else { throw ArchiveError.corruptArchive }
+                    return output
+                }
+                guard status == Z_OK,
+                      stream.avail_in > 0 || produced > 0 else {
+                    throw ArchiveError.corruptArchive
+                }
+            }
         }
     }
 }

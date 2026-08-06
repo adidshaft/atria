@@ -1,8 +1,8 @@
 import XCTest
 @testable import Atria
 
-/// Deterministic coverage for the 2026-07-08 "Stop the bleeding" perf fixes
-/// (docs/PERF_HANDOFF_2026-07-08.md). These exercise the shipped logic at
+/// Deterministic coverage for the 2026-07-08 performance fixes (the original
+/// point-in-time handoff remains in Git history). These exercise shipped logic at
 /// realistic volumes WITHOUT a live strap session — the crash/jank only
 /// manifest during continuous streaming, which unit tests can stand in for by
 /// driving the pure functions directly.
@@ -261,6 +261,48 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertTrue(source.contains("snapshotGeneration: snapshot.generation"))
     }
 
+    func testLaunchStepLedgerRestorePrecedesActiveJournalR10Boundary() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        let restoreStart = try XCTUnwrap(
+            source.range(of: "private func restoreActiveSessionJournalIfNeeded(reason: String)")
+        )
+        let restoreEnd = try XCTUnwrap(
+            source.range(of: "private func resumeActiveSessionRestoreAfterStrapStepLedger()",
+                         range: restoreStart.upperBound..<source.endIndex)
+        )
+        let restoreBody = String(source[restoreStart.lowerBound..<restoreEnd.lowerBound])
+        XCTAssertTrue(restoreBody.contains("guard !strapStepLedgerRestoreInFlight"),
+                      "journal recovery must not prepare an R10 boundary before the durable step prefix is seeded")
+
+        let ledgerStart = try XCTUnwrap(
+            source.range(of: "private func restoreStrapStepLedgerAtLaunch()")
+        )
+        let ledgerEnd = try XCTUnwrap(
+            source.range(of: "private func scheduleStrapStepLedgerCheckpoint(",
+                         range: ledgerStart.upperBound..<source.endIndex)
+        )
+        let ledgerBody = String(source[ledgerStart.lowerBound..<ledgerEnd.lowerBound])
+        let seed = try XCTUnwrap(ledgerBody.range(of: "await self.r10MotionPipeline.seed"))
+        let resume = try XCTUnwrap(
+            ledgerBody.range(of: "self.resumeActiveSessionRestoreAfterStrapStepLedger()",
+                             range: seed.upperBound..<ledgerBody.endIndex)
+        )
+        XCTAssertLessThan(seed.lowerBound, resume.lowerBound)
+        XCTAssertGreaterThanOrEqual(
+            ledgerBody.components(separatedBy: "resumeActiveSessionRestoreAfterStrapStepLedger()").count - 1,
+            2,
+            "both absent-ledger and successful-ledger completion must release deferred journal recovery"
+        )
+
+        XCTAssertTrue(source.contains(
+            "activeSessionRestoreInFlightGeneration != nil ||\n            strapStepLedgerRestoreInFlight"
+        ), "HR and realtime inputs must remain buffered across the launch ordering fence")
+    }
+
     func testSessionBoundarySettlesOldJournalWriterBeforeSuccessOrFailureOutcome() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory.deletingLastPathComponent()
@@ -283,24 +325,41 @@ final class AtriaPerfFixesTests: XCTestCase {
                       "an old completion must not schedule another write through the boundary fence")
     }
 
-    func testLongWearSessionRollsAtRecordedCivilMidnight() {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let beforeMidnightIST = Date(timeIntervalSince1970: 1_783_708_140) // 2026-07-10 23:59 IST
-        let midnightIST = beforeMidnightIST.addingTimeInterval(60)
+    func testCommittedSessionBoundaryRestartsNewJournalAfterBufferedReplay() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let boundaryStart = try XCTUnwrap(source.range(of: "private func completeSessionBoundary("))
+        let boundaryEnd = try XCTUnwrap(source.range(
+            of: "private func waitForSessionInputBatchesToDrain(",
+            range: boundaryStart.upperBound..<source.endIndex
+        ))
+        let body = String(source[boundaryStart.lowerBound..<boundaryEnd.lowerBound])
 
-        XCTAssertFalse(AtriaBLEManager.crossesEventCivilDay(
-            sessionStart: beforeMidnightIST.addingTimeInterval(-60),
-            nextSampleTime: beforeMidnightIST,
-            eventTimeZoneIdentifier: "Asia/Kolkata",
-            calendar: calendar
+        let clearManagerFence = try XCTUnwrap(body.range(of: "r10SessionBoundaryID = nil"))
+        let replay = try XCTUnwrap(body.range(
+            of: "replayBufferedSessionInputs()",
+            range: clearManagerFence.upperBound..<body.endIndex
         ))
-        XCTAssertTrue(AtriaBLEManager.crossesEventCivilDay(
-            sessionStart: beforeMidnightIST,
-            nextSampleTime: midnightIST,
-            eventTimeZoneIdentifier: "Asia/Kolkata",
-            calendar: calendar
+        let checkpoint = try XCTUnwrap(body.range(
+            of: #"\(persistenceReason)_post_boundary_replay"#,
+            range: replay.upperBound..<body.endIndex
         ))
+        let committedLog = try XCTUnwrap(body.range(
+            of: "ATRIADBG session_boundary status=committed",
+            range: checkpoint.upperBound..<body.endIndex
+        ))
+
+        XCTAssertLessThan(clearManagerFence.lowerBound, replay.lowerBound)
+        XCTAssertLessThan(replay.lowerBound, checkpoint.lowerBound)
+        XCTAssertLessThan(checkpoint.lowerBound, committedLog.lowerBound)
+        XCTAssertTrue(body.contains("if !session.isEmpty"),
+                      "an empty new segment must not manufacture a journal")
+        let postReplay = String(body[replay.lowerBound..<committedLog.lowerBound])
+        XCTAssertTrue(postReplay.contains("persistActiveSessionJournalIfNeeded("))
+        XCTAssertTrue(postReplay.contains("force: true"),
+                      "the committed boundary must not leave restart durability to a later live callback")
     }
 
     func testBLEBacklogTrimKeepsFreshestUnconsumedEntries() {
@@ -320,6 +379,29 @@ final class AtriaPerfFixesTests: XCTestCase {
                                                         limit: 4), 0)
         XCTAssertEqual(healthyQueue, Array(0..<6))
         XCTAssertEqual(healthyConsumed, 2)
+    }
+
+    func testHeartRateIngressOverflowIsDurableMissingDataRatherThanSilentDrop() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let enqueueStart = try XCTUnwrap(source.range(of: "private nonisolated func enqueueHeartRateUpdate"))
+        let dequeueStart = try XCTUnwrap(source.range(of: "private nonisolated func dequeuePendingHeartRateUpdateBatch",
+                                                       range: enqueueStart.upperBound..<source.endIndex))
+        let enqueue = String(source[enqueueStart.lowerBound..<dequeueStart.lowerBound])
+        XCTAssertTrue(enqueue.contains("pendingHeartRateIngressOverflow"))
+        XCTAssertTrue(enqueue.contains("firstDroppedAt"))
+        XCTAssertTrue(enqueue.contains("lastDroppedAt"))
+
+        let markerStart = try XCTUnwrap(source.range(of: "private func recordHeartRateIngressOverflow"))
+        let markerEnd = try XCTUnwrap(source.range(of: "private func handleParsedRealtimePacket",
+                                                    range: markerStart.upperBound..<source.endIndex))
+        let marker = String(source[markerStart.lowerBound..<markerEnd.lowerBound])
+        XCTAssertTrue(marker.contains("AtriaHistoricalGapLedger.recordObservedGap"))
+        XCTAssertTrue(marker.contains("markRangeLossBackfillRequired"))
+        XCTAssertTrue(marker.contains("persistActiveSessionJournalIfNeeded"))
+        XCTAssertTrue(marker.contains("no_interpolation"))
     }
 
     func testLiveStrapStepResearchPublishesEveryChangedPipelineSnapshot() {
@@ -538,6 +620,20 @@ final class AtriaPerfFixesTests: XCTestCase {
                        accuracy: 0.000_001)
     }
 
+    func testWorkoutStepPrefixUsesOnlyCanonicalStrapStepAnchors() {
+        let active = savedAggregateSession(start: t0, stepCount: 42)
+        let completed = savedAggregateSession(start: t0.addingTimeInterval(60), stepCount: 100)
+        let prefix = SessionStore.workoutSavedStepPrefix(
+            from: [active, completed],
+            activeSessionID: active.id,
+            now: completed.end.addingTimeInterval(1)
+        )
+
+        XCTAssertEqual(prefix.savedTodayStrapSteps, 142)
+        XCTAssertEqual(prefix.savedActiveSessionStrapSteps, 42)
+        XCTAssertEqual(prefix.savedActiveSessionTotalStrapSteps, 42)
+    }
+
     func testLiveTRIMPMergeReplacesCheckpointedActivePrefix() {
         XCTAssertEqual(SessionStore.mergedTodayTRIMP(savedToday: 32,
                                                       savedActiveSession: 12,
@@ -637,6 +733,38 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertFalse(learning.hasEvidence)
     }
 
+    func testPresentationRestingHeartRateUsesSleepCycleAuthoritiesOnly() {
+        // 2026-08-04 provenance decision: "Resting" only ever shows a
+        // sleep-derived value (main sleep, daily metric, rollup). The old
+        // daytime fallbacks (live low-HR window, saved-wear restingStable)
+        // surfaced awake-day estimates as "Resting" with no source label.
+        XCTAssertEqual(SessionStore.presentationRestingHeartRate(
+            sleepRestingHeartRate: 52,
+            metricRestingHeartRate: 73,
+            rollupRestingHeartRate: 72
+        ), 52)
+        XCTAssertEqual(SessionStore.presentationRestingHeartRate(
+            sleepRestingHeartRate: nil,
+            metricRestingHeartRate: 73,
+            rollupRestingHeartRate: 72
+        ), 73)
+        XCTAssertEqual(SessionStore.presentationRestingHeartRate(
+            sleepRestingHeartRate: nil,
+            metricRestingHeartRate: nil,
+            rollupRestingHeartRate: 72
+        ), 72)
+        XCTAssertNil(SessionStore.presentationRestingHeartRate(
+            sleepRestingHeartRate: nil,
+            metricRestingHeartRate: nil,
+            rollupRestingHeartRate: nil
+        ), "no sleep evidence must render the honest no-value token, never a daytime estimate")
+        XCTAssertNil(SessionStore.presentationRestingHeartRate(
+            sleepRestingHeartRate: 0,
+            metricRestingHeartRate: 0,
+            rollupRestingHeartRate: nil
+        ), "zero readings are not evidence")
+    }
+
     func testHealthMonitorUsesTheCurrentPhysiologicalCycleRecoveryEstimate() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory
@@ -724,6 +852,31 @@ final class AtriaPerfFixesTests: XCTestCase {
                                                                              learnedWindowEndMinute: nil,
                                                                              lastAttemptAt: nil,
                                                                              calendar: calendar))
+    }
+
+    // 2026-08-01: a daytime nap was invisible until foreground because both
+    // settlement triggers miss it (auto-confirm is main-sleep only; morning
+    // settlement is wake-window gated). The background review refresh must fire
+    // at any hour on a throttled cadence so a settled nap surfaces on its own.
+    func testResidentSleepReviewRefreshFiresAtAnyHourOnFifteenMinuteCadence() {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        // First attempt (no prior) is always allowed.
+        XCTAssertTrue(SessionStore.shouldAttemptResidentSleepReviewRefresh(
+            now: base, lastAttemptAt: nil))
+        // Within the 15-minute throttle: suppressed.
+        XCTAssertFalse(SessionStore.shouldAttemptResidentSleepReviewRefresh(
+            now: base.addingTimeInterval(14 * 60), lastAttemptAt: base))
+        // At/after the throttle: allowed again.
+        XCTAssertTrue(SessionStore.shouldAttemptResidentSleepReviewRefresh(
+            now: base.addingTimeInterval(15 * 60), lastAttemptAt: base))
+        // Unlike the morning settlement, it is NOT hour-gated — an afternoon nap
+        // (e.g. woke ~16:40) must be able to settle in the background.
+        let afternoon = base.addingTimeInterval(16 * 60 * 60 + 45 * 60)
+        XCTAssertTrue(SessionStore.shouldAttemptResidentSleepReviewRefresh(
+            now: afternoon, lastAttemptAt: nil))
+        XCTAssertTrue(SessionStore.shouldAttemptResidentSleepReviewRefresh(
+            now: afternoon.addingTimeInterval(20 * 60),
+            lastAttemptAt: afternoon))
     }
 
     func testFailedConnectRecoveryRetainsSavedStrapAndBackoff() {
@@ -1049,6 +1202,7 @@ final class AtriaPerfFixesTests: XCTestCase {
                                                                 maxHR: 190,
                                                                 now: now,
                                                                 skinTemperatureDeviationByDay: [day: preparedDeviation],
+                                                                skinTemperatureSourceValidated: false,
                                                                 calendar: calendar)
 
         XCTAssertNil(settled)
@@ -1061,6 +1215,7 @@ final class AtriaPerfFixesTests: XCTestCase {
                                                           maxHR: 190,
                                                           now: now,
                                                           skinTemperatureDeviationByDay: [day: preparedDeviation],
+                                                          skinTemperatureSourceValidated: false,
                                                           calendar: calendar)
 
         XCTAssertTrue(merged.isEmpty)
@@ -1071,16 +1226,20 @@ final class AtriaPerfFixesTests: XCTestCase {
             reason: "checkpoint",
             hasCompletedDeferredSessionLoad: true
         ))
-        XCTAssertTrue(SessionStore.shouldReconcileSessionsBeforeLiveUpsert(
+        XCTAssertFalse(SessionStore.shouldReconcileSessionsBeforeLiveUpsert(
             reason: "checkpoint",
             hasCompletedDeferredSessionLoad: false
         ))
-        XCTAssertTrue(SessionStore.shouldReconcileSessionsBeforeLiveUpsert(
+        XCTAssertFalse(SessionStore.shouldReconcileSessionsBeforeLiveUpsert(
             reason: "add",
             hasCompletedDeferredSessionLoad: true
         ))
-        XCTAssertTrue(SessionStore.shouldReconcileSessionsBeforeLiveUpsert(
+        XCTAssertFalse(SessionStore.shouldReconcileSessionsBeforeLiveUpsert(
             reason: "fast_launch",
+            hasCompletedDeferredSessionLoad: true
+        ))
+        XCTAssertTrue(SessionStore.shouldReconcileSessionsBeforeLiveUpsert(
+            reason: "explicit_backup_restore",
             hasCompletedDeferredSessionLoad: true
         ))
     }
@@ -1155,7 +1314,7 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertEqual(merged.strapStepResearchCount, 123)
         XCTAssertEqual(merged.strapStepResearchState, "r10_live_preliminary")
         XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
-        XCTAssertFalse(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
+        XCTAssertTrue(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
     }
 
     func testAuthoritativeDeletedHistoricalDayDoesNotRestoreStaleMetric() {
@@ -1224,6 +1383,37 @@ final class AtriaPerfFixesTests: XCTestCase {
                                                           calendar: calendar)
 
         XCTAssertTrue(merged.isEmpty)
+    }
+
+    func testRecoveredSkinTemperatureRequiresDenseSameDeviceAnchorAndStoresMinuteMeans() throws {
+        let session = canonicalCacheSession(startOffset: 0, pointCount: 4)
+        let points = (0..<120).map { index in
+            HistoricalArchive.SkinTemperatureRawPoint(
+                t: session.start.addingTimeInterval(TimeInterval(index)),
+                raw: index < 60 ? 900 : 920,
+                strapIdentifier: "strap-a"
+            )
+        }
+
+        let attached = SessionStore.attachRecoveredSkinTemperature(points, to: [session])
+
+        XCTAssertEqual(attached.first?.skinTempResearchCandidateValueCount, 120)
+        XCTAssertEqual(attached.first?.decodedSkinTemperatureCelsius?.count, 2)
+        let decoded = try XCTUnwrap(attached.first?.decodedSkinTemperatureCelsius)
+        XCTAssertEqual(try XCTUnwrap(decoded.first).celsius,
+                       32.5,
+                       accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(decoded.last).celsius,
+                       33.5,
+                       accuracy: 1e-9)
+        XCTAssertTrue(attached.first?.decodedSkinTemperatureCelsius?
+            .allSatisfy(\.isAggregationEligible) == true)
+
+        let sparse = SessionStore.attachRecoveredSkinTemperature(
+            Array(points.prefix(99)),
+            to: [session]
+        )
+        XCTAssertNil(sparse.first?.decodedSkinTemperatureCelsius)
     }
 
     private func canonicalCacheSession(id: UUID = UUID(),
@@ -1491,6 +1681,76 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertEqual(rows[2].sleepRespiratoryRate ?? 0, 14, accuracy: 1e-9)
     }
 
+    func testDailyMetricTrendDoesNotWeightSessionFragments() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let dayTwo = calendar.startOfDay(for: t0)
+        let dayOne = calendar.date(byAdding: .day, value: -1, to: dayTwo)!
+        let metrics = [
+            dailyMetric(day: dayOne, recovery: 40, hrv: 30, restingHR: 70),
+            dailyMetric(day: dayTwo, recovery: 80, hrv: 50, restingHR: 60)
+        ]
+
+        let sixFragmentSummary = SessionStore.dailyMetricTrendSummary(
+            metrics: metrics,
+            rollups: [],
+            days: 7,
+            now: dayTwo.addingTimeInterval(12 * 3_600),
+            diagnosticSessionCount: 6,
+            calendar: calendar
+        )
+        let twoSessionSummary = SessionStore.dailyMetricTrendSummary(
+            metrics: metrics,
+            rollups: [],
+            days: 7,
+            now: dayTwo.addingTimeInterval(12 * 3_600),
+            diagnosticSessionCount: 2,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(sixFragmentSummary.avgRecovery, 60)
+        XCTAssertEqual(sixFragmentSummary.avgRecovery, twoSessionSummary.avgRecovery)
+        XCTAssertEqual(sixFragmentSummary.avgHRV, twoSessionSummary.avgHRV)
+        XCTAssertEqual(sixFragmentSummary.avgRHR, twoSessionSummary.avgRHR)
+        XCTAssertEqual(sixFragmentSummary.coverageDays, 2)
+        XCTAssertEqual(sixFragmentSummary.sessions, 6,
+                       "Session fragments remain diagnostics-only")
+    }
+
+    func testCrossMidnightDailyTrendBelongsToWakeDay() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let wakeDay = calendar.startOfDay(for: t0)
+        let sleep = hrvSession(
+            start: wakeDay.addingTimeInterval(-2 * 3_600),
+            duration: 8 * 3_600,
+            hrv: 48
+        )
+        let attributedDay = SessionStore.morningMetricDay(for: sleep,
+                                                          calendar: calendar)
+        XCTAssertEqual(attributedDay, wakeDay)
+        XCTAssertNotEqual(attributedDay,
+                          calendar.startOfDay(for: sleep.start))
+
+        let summary = SessionStore.dailyMetricTrendSummary(
+            metrics: [
+                dailyMetric(day: attributedDay,
+                            recovery: 72,
+                            hrv: 48,
+                            restingHR: 58)
+            ],
+            rollups: [],
+            days: 1,
+            now: wakeDay.addingTimeInterval(12 * 3_600),
+            diagnosticSessionCount: 1,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(summary.coverageDays, 1)
+        XCTAssertEqual(summary.avgRecovery, 72)
+        XCTAssertEqual(summary.avgHRV, 48)
+    }
+
     func testExerciseCatalogCustomCacheTracksStoredDataChanges() throws {
         let suiteName = "AtriaPerfFixesTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -1530,19 +1790,42 @@ final class AtriaPerfFixesTests: XCTestCase {
                             duration: TimeInterval,
                             hrv: Int?,
                             hrvReferenceValidated: Bool? = nil) -> SavedSession {
-        SavedSession(id: id,
+        let qualifiedStandardPoints = (0...900).map { index in
+            SavedSession.RRPoint(
+                t: Double(index),
+                ms: index.isMultiple(of: 2) ? 980 : 1_020,
+                source: .standardHeartRateMeasurement2A37
+            )
+        }
+        return SavedSession(id: id,
                      start: start,
                      end: start.addingTimeInterval(duration),
                      label: "HRV",
                      points: [SavedSession.Point(t: 0, bpm: 58),
                               SavedSession.Point(t: 60, bpm: 59)],
                      hrv: hrv,
-                     rrPoints: [SavedSession.RRPoint(
-                        t: 1,
-                        ms: 1_000,
-                        source: .standardHeartRateMeasurement2A37
-                     )],
+                     rrPoints: hrv == nil ? nil : qualifiedStandardPoints,
                      hrvReferenceValidated: hrvReferenceValidated)
+    }
+
+    private func dailyMetric(day: Date,
+                             recovery: Int,
+                             hrv: Int,
+                             restingHR: Int) -> SavedDailyMetric {
+        SavedDailyMetric(day: day,
+                         recoveryPercent: recovery,
+                         recoveryConfidence: "local",
+                         hrv: hrv,
+                         restingHR: restingHR,
+                         respiratoryRate: 14,
+                         sleepDuration: 7 * 3_600,
+                         sleepSpan: 8 * 3_600,
+                         sleepStart: day.addingTimeInterval(-8 * 3_600),
+                         sleepEnd: day,
+                         sleepSource: "confirmed",
+                         sleepStageSegments: [],
+                         sleepConsistencyPercent: 85,
+                         strain: 6)
     }
 
     private func localRRSession(hrv: Int?) -> SavedSession {
@@ -1716,14 +1999,18 @@ final class AtriaPerfFixesTests: XCTestCase {
     }
 
     func testStrainConfidenceDisclosesPartialDayWear() {
-        // Half-worn day keeps the base label; below half discloses.
+        // 2026-07-31: 81eea260 routed the label through the single
+        // Metrics.StrainPresentation authority. Strain is an integral over
+        // observed HR, so anything below the strong-coverage tier (95%) now
+        // discloses `· partial` — including a half-worn day that the old
+        // 50% threshold silently presented as complete.
         XCTAssertEqual(AtriaHomeModel.strainConfidence(
             hasRestingHeartRateEvidence: true,
             maxHRSource: .measured,
             hasLoadEvidence: true,
             resolvedRest: 58,
             maxHR: 192,
-            wearCoverageFraction: 0.5
+            wearCoverageFraction: 0.96
         ), "local")
         XCTAssertEqual(AtriaHomeModel.strainConfidence(
             hasRestingHeartRateEvidence: true,
@@ -1731,8 +2018,16 @@ final class AtriaPerfFixesTests: XCTestCase {
             hasLoadEvidence: true,
             resolvedRest: 58,
             maxHR: 192,
+            wearCoverageFraction: 0.5
+        ), "local · partial")
+        XCTAssertEqual(AtriaHomeModel.strainConfidence(
+            hasRestingHeartRateEvidence: true,
+            maxHRSource: .measured,
+            hasLoadEvidence: true,
+            resolvedRest: 58,
+            maxHR: 192,
             wearCoverageFraction: 0.2
-        ), "local · partial-day wear")
+        ), "local · partial")
         XCTAssertEqual(AtriaHomeModel.strainConfidence(
             hasRestingHeartRateEvidence: true,
             maxHRSource: .ageEstimate,
@@ -1740,7 +2035,7 @@ final class AtriaPerfFixesTests: XCTestCase {
             resolvedRest: 58,
             maxHR: 187,
             wearCoverageFraction: 0.1
-        ), "provisional · age-estimated max HR · partial-day wear")
+        ), "provisional · age-estimated max HR · partial")
         // Unknown coverage and learning states are unchanged.
         XCTAssertEqual(AtriaHomeModel.strainConfidence(
             hasRestingHeartRateEvidence: true,
@@ -1782,6 +2077,45 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertEqual(union, 6 * 3600, accuracy: 1)
     }
 
+    func testObservedHeartRateWearDoesNotPromoteSparseSessionEnvelope() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let end = start.addingTimeInterval(12 * 3_600)
+        let sparse = SavedSession(
+            id: UUID(),
+            start: start,
+            end: end,
+            label: "Sparse journal",
+            points: stride(from: 0.0, through: 600.0, by: 1.0).map {
+                SavedSession.Point(t: $0, bpm: 80)
+            }
+        )
+        let dense = SavedSession(
+            id: UUID(),
+            start: start,
+            end: end,
+            label: "Dense journal",
+            points: stride(from: 0.0, through: 12 * 3_600.0, by: 10.0).map {
+                SavedSession.Point(t: $0, bpm: 80)
+            }
+        )
+
+        let sparseWear = AtriaHomeModel.observedHeartRateUnionSeconds(
+            sessions: [sparse],
+            windowStart: start,
+            windowEnd: end
+        )
+        let denseWear = AtriaHomeModel.observedHeartRateUnionSeconds(
+            sessions: [dense],
+            windowStart: start,
+            windowEnd: end
+        )
+        XCTAssertLessThan(sparseWear, 11 * 60)
+        // The window is half-open, so the point exactly at `end` is excluded.
+        // Dense ten-second evidence should therefore be within one cadence of
+        // full wear, without fabricating coverage past the final accepted row.
+        XCTAssertEqual(denseWear, 12 * 3_600, accuracy: 10)
+    }
+
     func testDayWearCoverageWithholdsJudgementOnAYoungDay() {
         XCTAssertNil(AtriaHomeModel.dayWearCoverageFraction(
             observedSeconds: 600,
@@ -1796,6 +2130,48 @@ final class AtriaPerfFixesTests: XCTestCase {
             observedSeconds: 12 * 3600,
             dayElapsedSeconds: 8 * 3600
         ) ?? -1, 1.0, accuracy: 0.001)
+    }
+
+    func testRRQualityUsesNonPersistedContinuousBufferAcrossStorageRollover() {
+        let rollover = t0.addingTimeInterval(3 * 60 * 60)
+        let qualityWindowStart = rollover.addingTimeInterval(-300)
+
+        XCTAssertTrue(AtriaBLEManager.shouldUseContinuousRRBuffer(
+            continuityStart: qualityWindowStart,
+            firstBufferedBeat: qualityWindowStart.addingTimeInterval(-0.8)
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldUseContinuousRRBuffer(
+            continuityStart: qualityWindowStart,
+            firstBufferedBeat: rollover.addingTimeInterval(0.8)
+        ), "a new post-roll session buffer cannot claim coverage of the prior window")
+
+        // The session-local archive may be empty immediately after the exact 3h
+        // persistence rollover, while the non-persisted HRV buffer remains a
+        // continuous physiological timeline. Its measured gap remains ~1s, not
+        // the ~300s distance from the old quality-window start.
+        let continuousBeats = stride(from: -300.0, through: 1.0, by: 1.0).map {
+            rollover.addingTimeInterval($0)
+        }
+        let gap = AtriaBLEManager.maxRRBeatGap(
+            inOrderedBeatTimes: continuousBeats,
+            since: qualityWindowStart,
+            now: rollover.addingTimeInterval(1.2)
+        )
+        XCTAssertEqual(gap ?? -1, 1.0, accuracy: 0.001)
+    }
+
+    func testRRQualityTimelineIncludesLeadingAndTrailingSilence() {
+        let start = t0
+        let beats = [
+            start.addingTimeInterval(1.5),
+            start.addingTimeInterval(2.5),
+            start.addingTimeInterval(3.5),
+        ]
+        XCTAssertEqual(AtriaBLEManager.maxRRBeatGap(
+            inOrderedBeatTimes: beats,
+            since: start,
+            now: start.addingTimeInterval(5.5)
+        ) ?? -1, 2.0, accuracy: 0.001)
     }
 
 }

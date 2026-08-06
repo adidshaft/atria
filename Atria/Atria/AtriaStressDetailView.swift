@@ -34,6 +34,10 @@ struct AtriaStressDetailInput: Equatable {
     /// as an untimed state rather than being replaced with `Date()`.
     let updatedAt: Date?
     let distributionComparison: AtriaStressDistributionComparison?
+    /// Measured days from the persisted distribution archive, for the daily
+    /// stress trend (§3.3). Only days that cleared the archive's per-day sample
+    /// floor arrive here; the card additionally hides below 3 such days.
+    let trendDays: [AtriaStressDistributionArchive.Day]
     /// Explicitly logged context for the current day. These are displayed as
     /// context—not inferred causes—because daily journal tags have no timestamp
     /// precise enough to attribute a stress peak.
@@ -43,6 +47,7 @@ struct AtriaStressDetailInput: Equatable {
          readings: [AtriaStressDetailReading],
          updatedAt: Date?,
          distributionComparison: AtriaStressDistributionComparison? = nil,
+         trendDays: [AtriaStressDistributionArchive.Day] = [],
          loggedContext: [AtriaStressLoggedContext] = []) {
         self.state = state
         let sortedReadings = readings.sorted { $0.date < $1.date }
@@ -50,6 +55,7 @@ struct AtriaStressDetailInput: Equatable {
         self.elevatedEvidence = AtriaStressElevatedEvidence.analyze(sortedReadings)
         self.updatedAt = updatedAt
         self.distributionComparison = distributionComparison
+        self.trendDays = trendDays
         self.loggedContext = loggedContext
     }
 
@@ -57,11 +63,13 @@ struct AtriaStressDetailInput: Equatable {
          history: [AtriaStressMonitorStore.StressHistoryPoint],
          updatedAt: Date?,
          distributionComparison: AtriaStressDistributionComparison? = nil,
+         trendDays: [AtriaStressDistributionArchive.Day] = [],
          loggedContext: [AtriaStressLoggedContext] = []) {
         self.init(state: state,
                   readings: history.map(AtriaStressDetailReading.init(historyPoint:)),
                   updatedAt: updatedAt,
                   distributionComparison: distributionComparison,
+                  trendDays: trendDays,
                   loggedContext: loggedContext)
     }
 
@@ -74,6 +82,24 @@ struct AtriaStressDetailInput: Equatable {
 
     var tint: Color {
         state.level?.tint ?? Metrics.electricStress
+    }
+}
+
+enum AtriaStressReadingFreshness: Equatable {
+    case live
+    case stale
+    case untimed
+
+    static let liveWindow: TimeInterval = 90
+    static let futureTolerance: TimeInterval = 5
+
+    static func resolve(isScored: Bool,
+                        updatedAt: Date?,
+                        now: Date = Date()) -> Self {
+        guard isScored, let updatedAt else { return .untimed }
+        let age = now.timeIntervalSince(updatedAt)
+        guard age >= -futureTolerance, age <= liveWindow else { return .stale }
+        return .live
     }
 }
 
@@ -232,6 +258,11 @@ struct AtriaStressDetailView: View {
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
+    @State private var freshnessNow = Date()
+    // Knowledge slice 5 (2026-08-01): the ⓘ presents the richer spec §20
+    // "About Stress" education sheet directly, self-contained. `onInfo` is kept
+    // for source compatibility with existing call sites.
+    @State private var showAbout = false
 
     init(input: AtriaStressDetailInput,
          onDismiss: @escaping () -> Void,
@@ -257,18 +288,42 @@ struct AtriaStressDetailView: View {
                     if let comparison = input.distributionComparison {
                         AtriaStressDistributionCard(comparison: comparison)
                     }
+                    AtriaStressDailyTrendCard(days: input.trendDays)
                     if !input.loggedContext.isEmpty {
                         loggedContextCard
                     }
                     interventionCard
                 }
-                .padding(.horizontal, 18)
+                // 12pt gutter (2026-08-05 width audit): match the app-wide
+                // screen gutter so the timeline and trend charts gain 12pt.
+                .padding(.horizontal, 12)
                 .padding(.top, 10)
                 .padding(.bottom, 28)
             }
             .scrollIndicators(.hidden)
         }
         .foregroundStyle(.primary)
+        .task(id: input.updatedAt) {
+            freshnessNow = Date()
+            guard input.state.kind == .scored,
+                  let updatedAt = input.updatedAt else { return }
+            let expiresAt = updatedAt.addingTimeInterval(
+                AtriaStressReadingFreshness.liveWindow
+            )
+            let delay = expiresAt.timeIntervalSince(freshnessNow)
+            guard delay > 0 else { return }
+            let nanoseconds = UInt64(
+                min(delay + 0.05, 24 * 60 * 60) * 1_000_000_000
+            )
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled else { return }
+            // One invalidation at the actual expiry boundary is enough; avoid
+            // a per-second timer invalidating the entire chart hierarchy.
+            freshnessNow = Date()
+        }
+        .sheet(isPresented: $showAbout) {
+            AtriaAboutMetricSheet(metric: .stress)
+        }
     }
 
     private var background: Color {
@@ -294,16 +349,14 @@ struct AtriaStressDetailView: View {
 
             Spacer(minLength: 8)
 
-            if let onInfo {
-                Button(action: onInfo) {
-                    Image(systemName: "info.circle")
-                        .frame(width: 40, height: 40)
-                }
-                .atriaGlassIconAction(tint: .primary, size: 40)
-                .accessibilityLabel("About Stress")
+            Button { showAbout = true } label: {
+                Image(systemName: "info.circle")
+                    .frame(width: 40, height: 40)
             }
+            .atriaGlassIconAction(tint: .primary, size: 40)
+            .accessibilityLabel("About Stress")
 
-            if input.state.kind == .scored {
+            if stressFreshness == .live {
                 Label("Live", systemImage: "circle.fill")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(input.tint)
@@ -372,6 +425,24 @@ struct AtriaStressDetailView: View {
                     .equatable()
                     .frame(height: 142)
                     .accessibilityLabel(timelineAccessibilityLabel(points: points))
+                    .atriaInspectableGraph(
+                        AtriaInspectableGraph(
+                            title: "Stress timeline",
+                            subtitle: "Observed readings only; blanks are collection gaps",
+                            content: .timeSeries([
+                                .init(title: "Stress",
+                                      unit: "",
+                                      tint: input.tint,
+                                      points: points.map {
+                                          .init(date: $0.reading.date,
+                                                value: $0.reading.score,
+                                                segment: $0.segment)
+                                      })
+                            ])
+                        )
+                    )
+                    // Full-bleed plot inside the card (2026-08-05 width audit).
+                    .padding(.horizontal, -16)
             } else {
                 HStack(spacing: 10) {
                     Image(systemName: "waveform.path.ecg")
@@ -460,10 +531,23 @@ struct AtriaStressDetailView: View {
     }
 
     private var updateText: String {
-        guard let updatedAt = input.updatedAt else {
-            return input.state.kind == .scored ? "Live" : input.state.label
+        switch stressFreshness {
+        case .live:
+            return "Live"
+        case .stale:
+            guard let updatedAt = input.updatedAt else { return "Last reading" }
+            return "Last reading \(updatedAt.formatted(.relative(presentation: .named)))"
+        case .untimed:
+            return input.state.kind == .scored ? "Current reading · time unavailable" : input.state.label
         }
-        return "Updated \(updatedAt.formatted(.relative(presentation: .named)))"
+    }
+
+    private var stressFreshness: AtriaStressReadingFreshness {
+        AtriaStressReadingFreshness.resolve(
+            isScored: input.state.kind == .scored,
+            updatedAt: input.updatedAt,
+            now: freshnessNow
+        )
     }
 
     private var rangeText: String? {
@@ -564,7 +648,132 @@ private struct AtriaStressGauge: View {
     }
 
     private var scoreText: String {
-        score?.formatted(.number.precision(.fractionLength(1))) ?? "—"
+        score?.formatted(.number.precision(.fractionLength(1))) ?? "--"
+    }
+}
+
+/// Daily stress trend (§3.3): one stacked bar per MEASURED day — the share of
+/// measured samples spent Calm / Medium / High, from the same persisted
+/// distribution archive the "Today vs typical" card reads. Honesty: a bar only
+/// claims measured time (never wall-clock coverage); days without enough
+/// samples simply have no bar; under 3 measured days the card shows a building
+/// state instead of a plot. Internal (not private) + self-contained so a render
+/// test can compose it directly.
+struct AtriaStressDailyTrendCard: View {
+    let days: [AtriaStressDistributionArchive.Day]
+    var referenceDate: Date = Date()
+    var calendar: Calendar = .current
+
+    private static let frameDays = 14
+    private static let minimumMeasuredDays = 3
+
+    /// Measured days clipped to the fixed frame, oldest first.
+    private var framedDays: [AtriaStressDistributionArchive.Day] {
+        let end = calendar.startOfDay(for: referenceDate)
+        guard let start = calendar.date(byAdding: .day,
+                                        value: -(Self.frameDays - 1),
+                                        to: end) else { return [] }
+        return days
+            .filter { calendar.startOfDay(for: $0.day) >= start }
+            .sorted { $0.day < $1.day }
+    }
+
+    private var xDomain: ClosedRange<Date> {
+        let end = calendar.startOfDay(for: referenceDate)
+        let start = calendar.date(byAdding: .day, value: -(Self.frameDays - 1), to: end) ?? end
+        let lo = calendar.date(byAdding: .hour, value: -12, to: start) ?? start
+        let hi = calendar.date(byAdding: .hour, value: 12, to: end) ?? end
+        return lo...hi
+    }
+
+    var body: some View {
+        let framed = framedDays
+        VStack(alignment: .leading, spacing: 13) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Stress by day")
+                    .font(.caption.weight(.bold))
+                    .textCase(.uppercase)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("Last \(Self.frameDays) days")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if framed.count >= Self.minimumMeasuredDays {
+                // Full-bleed plot inside the card (2026-08-05 width audit).
+                chart(framed)
+                    .padding(.horizontal, -16)
+                HStack(spacing: 14) {
+                    legend(color: .green, label: "Calm")
+                    legend(color: .yellow, label: "Medium")
+                    legend(color: .red, label: "High")
+                }
+                Text("Share of measured time per day. Days without enough live readings stay blank.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Building stress history — \(framed.count) of \(Self.minimumMeasuredDays) measured days so far. A day counts once it has enough live readings.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .atriaCard(cornerRadius: 22, emphasis: .strong)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilitySummary(framed))
+    }
+
+    private func chart(_ framed: [AtriaStressDistributionArchive.Day]) -> some View {
+        Chart {
+            ForEach(framed, id: \.day) { day in
+                if let fractions = day.distribution.fractions {
+                    BarMark(x: .value("Day", calendar.startOfDay(for: day.day), unit: .day),
+                            y: .value("Calm", fractions.calm))
+                        .foregroundStyle(.green)
+                    BarMark(x: .value("Day", calendar.startOfDay(for: day.day), unit: .day),
+                            y: .value("Medium", fractions.medium))
+                        .foregroundStyle(.yellow)
+                    BarMark(x: .value("Day", calendar.startOfDay(for: day.day), unit: .day),
+                            y: .value("High", fractions.high))
+                        .foregroundStyle(.red)
+                }
+            }
+        }
+        .chartXScale(domain: xDomain)
+        .chartYScale(domain: 0...1)
+        .chartXAxis {
+            AxisMarks(values: .stride(by: .day, count: 3)) { _ in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.15))
+                AxisValueLabel(format: .dateTime.day(), centered: true)
+                    .foregroundStyle(.secondary)
+                    .font(.caption2)
+            }
+        }
+        // No y-axis: every stacked bar sums to exactly 1 by construction
+        // (fractions of measured time), so a scale would label a constant.
+        // The caption carries the unit instead.
+        .chartYAxis(.hidden)
+        .frame(height: 120)
+    }
+
+    private func legend(color: Color, label: String) -> some View {
+        Label {
+            Text(label)
+        } icon: {
+            Circle().fill(color).frame(width: 7, height: 7)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+    }
+
+    private func accessibilitySummary(_ framed: [AtriaStressDistributionArchive.Day]) -> String {
+        guard framed.count >= Self.minimumMeasuredDays else {
+            return "Stress by day: building history, \(framed.count) of \(Self.minimumMeasuredDays) measured days."
+        }
+        return "Stress by day: \(framed.count) measured days in the last \(Self.frameDays)."
     }
 }
 
@@ -699,19 +908,36 @@ private struct AtriaStressTimelineChart: View, Equatable {
                 AreaMark(x: .value("Time", point.reading.date),
                          y: .value("Stress", point.reading.score),
                          series: .value("Segment", point.segment))
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .foregroundStyle(tint.opacity(0.12))
 
                 LineMark(x: .value("Time", point.reading.date),
                          y: .value("Stress", point.reading.score),
                          series: .value("Segment", point.segment))
-                    .interpolationMethod(.monotone)
+                    .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                    .foregroundStyle(tint)
+                    // Use the fixed 0–3 scale for color, rather than tinting
+                    // the entire line by the latest state. It lets the graph
+                    // communicate calm/medium/high periods at a glance.
+                    .foregroundStyle(.linearGradient(colors: [.blue, .green, .orange],
+                                                      startPoint: .bottom,
+                                                      endPoint: .top))
             }
         }
         .chartYScale(domain: 0...3)
-        .chartYAxis(.hidden)
+        .chartYAxis {
+            AxisMarks(values: [0, 1, 2, 3]) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                AxisTick().foregroundStyle(.clear)
+                AxisValueLabel {
+                    if let score = value.as(Double.self) {
+                        Text(score == 0 ? "0" : String(format: "%.0f", score))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(score >= 2 ? .orange : (score >= 1 ? .green : .blue))
+                    }
+                }
+            }
+        }
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisGridLine().foregroundStyle(.clear)

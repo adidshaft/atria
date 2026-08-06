@@ -4,16 +4,34 @@ set -euo pipefail
 device_id=${ATRIA_DEVICE_ID:-${WHOOP_DEVICE_ID:-}}
 bundle_id=${ATRIA_BUNDLE_ID:-${WHOOP_BUNDLE_ID:-com.adidshaft.atria}}
 evidence_dir=""
+runtime_only=1
+pull_profile_flag=""
+installed_provenance_only=0
 devicectl_cmd=()
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./pull_atria_state.sh [--device DEVICE_ID] [--bundle-id BUNDLE_ID] --evidence-dir DIR
+  ./pull_atria_state.sh [--device DEVICE_ID] [--bundle-id BUNDLE_ID] [--runtime-only|--full-archive] [--installed-provenance-only] --evidence-dir DIR
 
 Copies Atria's current on-device state without building, installing, launching,
 or terminating the app. This is for long-wear evidence pulls where preserving the
 running BLE session matters.
+
+Runtime-only is the default: a small, non-disruptive checkpoint of sessions,
+the active journal, preferences, provenance, and authoritative runtime state.
+It intentionally skips the large historical archive, sensor captures, and
+step calibration archive.
+
+Use --full-archive only for an explicit archive-acceptance checkpoint. It copies
+the growing historical archive, identity index, sensor captures, and step
+calibration archive, so making it opt-in prevents ordinary checks from creating
+multi-gigabyte duplicate evidence trees.
+
+Use --installed-provenance-only when proving an already-running installed build
+after the worktree has legitimately advanced. Installed binding/integrity still
+fails closed; source drift is reported separately instead of invalidating the
+older binary's runtime evidence.
 
 Pulled files, when present:
   - sessions.json
@@ -22,13 +40,16 @@ Pulled files, when present:
   - atria-active-session.segments/
   - historical-archive.jsonl
   - historical-archive.diagnostics.json
+  - historical-archive.identity.jsonl
   - historical-archive.manifest.json
   - historical-archive-segments/
   - atria-captures/ plus SHA-256 manifest
   - atria-step-calibration/
   - recovered completed step-calibration manifest (when present)
   - authoritative workout/route/step-ledger state plus SHA-256 manifest
+  - installed-app-provenance.json plus current installed-app-metadata.json
   - app preferences plist
+  - app-group preferences plist (widget publication)
   - process-check.txt
   - pull-summary.txt
 EOF
@@ -47,6 +68,28 @@ while [[ $# -gt 0 ]]; do
     --evidence-dir)
       evidence_dir=${2:?--evidence-dir requires a value}
       shift 2
+      ;;
+    --runtime-only)
+      if [[ "$pull_profile_flag" == "full_archive" ]]; then
+        printf '%s\n' '--runtime-only and --full-archive are mutually exclusive.' >&2
+        exit 2
+      fi
+      runtime_only=1
+      pull_profile_flag="runtime_only"
+      shift
+      ;;
+    --full-archive)
+      if [[ "$pull_profile_flag" == "runtime_only" ]]; then
+        printf '%s\n' '--runtime-only and --full-archive are mutually exclusive.' >&2
+        exit 2
+      fi
+      runtime_only=0
+      pull_profile_flag="full_archive"
+      shift
+      ;;
+    --installed-provenance-only)
+      installed_provenance_only=1
+      shift
       ;;
     -h|--help)
       usage
@@ -119,6 +162,28 @@ copy_from_container() {
   return 1
 }
 
+copy_from_group_container() {
+  local source_path=$1
+  local destination_path=$2
+  local label=$3
+  local group_id=$4
+
+  if "${devicectl_cmd[@]}" device copy from \
+    --device "$device_id" \
+    --domain-type appGroupDataContainer \
+    --domain-identifier "$group_id" \
+    --source "$source_path" \
+    --destination "$destination_path" >> "$summary" 2>&1; then
+    printf '%s_status=ok\n' "$label" | tee -a "$summary"
+    printf '%s_source=%s\n' "$label" "$source_path" | tee -a "$summary"
+    printf '%s_file=%s\n' "$label" "$destination_path" | tee -a "$summary"
+    return 0
+  fi
+  printf '%s_status=missing\n' "$label" | tee -a "$summary"
+  printf '%s_source=%s\n' "$label" "$source_path" | tee -a "$summary"
+  return 1
+}
+
 copy_first_from_container() {
   local destination_path=$1
   local label=$2
@@ -154,19 +219,87 @@ copy_first_from_container() {
   return 1
 }
 
+# Preserve every evidence path while avoiding another physical copy when an
+# immutable artifact is byte-identical to one in an earlier sibling pull. The
+# replacement is atomic: create the hard link first, then rename it over the
+# newly pulled file. A failed link leaves the fresh copy untouched.
+deduplicate_archive_file() {
+  local current_path=$1
+  local label=$2
+  [[ -f "$current_path" ]] || return 0
+
+  local evidence_parent
+  local current_size
+  local candidate_path=""
+  evidence_parent=$(dirname "$evidence_dir")
+  current_size=$(stat -f '%z' "$current_path")
+  while IFS= read -r -d '' possible_path; do
+    [[ "$possible_path" == "$current_path" ]] && continue
+    # Nested phase pulls (for example pre-relaunch + post-backfill evidence)
+    # intentionally share one evidence root. Byte-identical immutable archive
+    # artifacts are safe to hard-link there too; excluding the whole current
+    # root recreated hundreds of megabytes inside every multi-phase proof.
+    if cmp -s "$possible_path" "$current_path"; then
+      candidate_path=$possible_path
+      break
+    fi
+  done < <(find "$evidence_parent" -type f \
+    -name "$(basename "$current_path")" \
+    -size "${current_size}c" -print0 2>/dev/null)
+
+  if [[ -z "$candidate_path" ]]; then
+    printf '%s_dedup_status=unique\n' "$label" | tee -a "$summary"
+    return 0
+  fi
+
+  local temporary_link="${current_path}.dedupe-link-$$"
+  if ln "$candidate_path" "$temporary_link" 2>/dev/null; then
+    mv -f "$temporary_link" "$current_path"
+    printf '%s_dedup_status=hardlinked\n' "$label" | tee -a "$summary"
+    printf '%s_dedup_source=%s\n' "$label" "$candidate_path" | tee -a "$summary"
+    printf '%s_dedup_saved_bytes=%s\n' "$label" "$current_size" | tee -a "$summary"
+  else
+    printf '%s_dedup_status=unavailable_fresh_copy_retained\n' "$label" | tee -a "$summary"
+  fi
+}
+
 printf 'pull_mode=non_disruptive_copy_only\n' | tee -a "$summary"
 printf 'device_id=%s\n' "$device_id" | tee -a "$summary"
 printf 'bundle_id=%s\n' "$bundle_id" | tee -a "$summary"
 printf 'evidence_dir=%s\n' "$evidence_dir" | tee -a "$summary"
 
+installed_metadata="$evidence_dir/installed-app-metadata.json"
+if "${devicectl_cmd[@]}" device info apps \
+  --device "$device_id" \
+  --bundle-id "$bundle_id" \
+  --require-container-access \
+  --include-container-paths \
+  --include-app-group-identifiers \
+  --json-output "$installed_metadata" >> "$summary" 2>&1; then
+  printf 'installed_app_metadata_status=ok\n' | tee -a "$summary"
+  printf 'installed_app_metadata_file=%s\n' "$installed_metadata" | tee -a "$summary"
+else
+  printf 'installed_app_metadata_status=missing\n' | tee -a "$summary"
+fi
+
 if "${devicectl_cmd[@]}" device info processes --device "$device_id" > "$evidence_dir/processes.txt" 2>&1; then
+  atria_main_pattern='/Atria\.app/Atria([[:space:]]|$)'
+  atria_widget_pattern='/Atria\.app/PlugIns/AtriaWidget\.appex/AtriaWidget([[:space:]]|$)'
   whoop_widget_pattern='/Whoop\.app/PlugIns/(WhoopWidgetExtension|AtriaWidgetExtension)\.appex/(WhoopWidgetExtension|AtriaWidgetExtension)'
-  if grep -E "Atria|com\.adidshaft\.atria|/Whoop\.app/Whoop|${whoop_widget_pattern}" "$evidence_dir/processes.txt" > "$evidence_dir/process-check.txt"; then
-    printf 'process_status=running\n' | tee -a "$summary"
-    if grep -Eq 'Atria|com\.adidshaft\.atria' "$evidence_dir/process-check.txt"; then
+  if grep -E "${atria_main_pattern}|${atria_widget_pattern}|/Whoop\.app/Whoop|${whoop_widget_pattern}" "$evidence_dir/processes.txt" > "$evidence_dir/process-check.txt"; then
+    if grep -Eq "$atria_main_pattern" "$evidence_dir/process-check.txt"; then
+      printf 'process_status=running\n' | tee -a "$summary"
       printf 'process_name_status=atria\n' | tee -a "$summary"
+      printf 'atria_main_process=1\n' | tee -a "$summary"
     else
+      printf 'process_status=not_listed\n' | tee -a "$summary"
       printf 'process_name_status=not_atria\n' | tee -a "$summary"
+      printf 'atria_main_process=0\n' | tee -a "$summary"
+    fi
+    if grep -Eq "$atria_widget_pattern" "$evidence_dir/process-check.txt"; then
+      printf 'atria_widget_process=1\n' | tee -a "$summary"
+    else
+      printf 'atria_widget_process=0\n' | tee -a "$summary"
     fi
     whoop_process_count=$(grep -Ec "/Whoop\.app/(Whoop|PlugIns/(WhoopWidgetExtension|AtriaWidgetExtension)\.appex/(WhoopWidgetExtension|AtriaWidgetExtension))" "$evidence_dir/process-check.txt" || true)
     if [[ "$whoop_process_count" -gt 0 ]]; then
@@ -193,6 +326,9 @@ if "${devicectl_cmd[@]}" device info processes --device "$device_id" > "$evidenc
     cat "$evidence_dir/process-check.txt" >> "$summary"
   else
     printf 'process_status=not_listed\n' | tee -a "$summary"
+    printf 'process_name_status=not_atria\n' | tee -a "$summary"
+    printf 'atria_main_process=0\n' | tee -a "$summary"
+    printf 'atria_widget_process=0\n' | tee -a "$summary"
     printf 'official_whoop_process_status=not_listed\n' | tee -a "$summary"
     printf 'official_whoop_process_count=0\n' | tee -a "$summary"
     printf 'official_whoop_main_process=0\n' | tee -a "$summary"
@@ -201,12 +337,22 @@ if "${devicectl_cmd[@]}" device info processes --device "$device_id" > "$evidenc
   fi
 else
   printf 'process_status=unknown\n' | tee -a "$summary"
+  printf 'process_name_status=unknown\n' | tee -a "$summary"
+  printf 'atria_main_process=unknown\n' | tee -a "$summary"
+  printf 'atria_widget_process=unknown\n' | tee -a "$summary"
   printf 'official_whoop_process_status=unknown\n' | tee -a "$summary"
 fi
 
+copy_from_container "Documents/atria-installed-app-provenance.json" \
+  "$evidence_dir/installed-app-provenance.json" \
+  "installed_app_provenance" || true
 copy_from_container "Documents/sessions.json" "$evidence_dir/sessions.json" "sessions" || true
 copy_from_container "Documents/sessions-cold.json" "$evidence_dir/sessions-cold.json" "sessions_cold" || true
+deduplicate_archive_file "$evidence_dir/sessions.json" "sessions"
+deduplicate_archive_file "$evidence_dir/sessions-cold.json" "sessions_cold"
 copy_from_container "Documents/daily-rollups.json" "$evidence_dir/daily-rollups.json" "daily_rollups" || true
+copy_from_container "Documents/daily-metrics.json" "$evidence_dir/daily-metrics.json" "daily_metrics" || true
+copy_from_container "Documents/confirmed-workouts.json" "$evidence_dir/confirmed-workouts.json" "confirmed_workouts" || true
 
 if "${devicectl_cmd[@]}" device copy from \
   --device "$device_id" \
@@ -219,7 +365,13 @@ if "${devicectl_cmd[@]}" device copy from \
   printf 'active_journal_segments_dir=%s\n' "$evidence_dir/atria-active-session.segments" | tee -a "$summary"
   printf 'active_journal_storage_mode=segmented_canonical\n' | tee -a "$summary"
 else
-  printf 'active_journal_segments_status=missing\n' | tee -a "$summary"
+  if [[ -d "$evidence_dir/atria-active-session.segments" ]] && \
+     find "$evidence_dir/atria-active-session.segments" -type f -print -quit | grep -q .; then
+    : > "$evidence_dir/atria-active-session.segments.partial"
+    printf 'active_journal_segments_status=partial_copy\n' | tee -a "$summary"
+  else
+    printf 'active_journal_segments_status=missing\n' | tee -a "$summary"
+  fi
   printf 'active_journal_storage_mode=flat_snapshot_or_missing\n' | tee -a "$summary"
 fi
 
@@ -229,35 +381,101 @@ if ! copy_first_from_container "$evidence_dir/atria-active-session.json" "active
   printf 'active_journal_file_status=missing_snapshot_segments_may_reconstruct\n' | tee -a "$summary"
 fi
 
-copy_first_from_container "$evidence_dir/historical-archive.jsonl" "historical_archive" \
-  "Documents/atria-historical/historical-archive.jsonl" \
-  "Documents/whoop-historical/historical-archive.jsonl" || true
-copy_from_container "Documents/atria-historical/historical-archive.diagnostics.json" \
-  "$evidence_dir/historical-archive.diagnostics.json" \
-  "historical_archive_index" || true
-copy_from_container "Documents/atria-historical/historical-archive.manifest.json" \
-  "$evidence_dir/historical-archive.manifest.json" \
-  "historical_archive_manifest" || true
-copy_from_container "Documents/atria-historical/segments" \
-  "$evidence_dir/historical-archive-segments" \
-  "historical_archive_segments" || true
-copy_from_container "Documents/atria-captures" \
-  "$evidence_dir/atria-captures" \
-  "explicit_sensor_captures" || true
-if [[ -d "$evidence_dir/atria-captures" ]]; then
-  capture_manifest="$evidence_dir/atria-captures.sha256"
-  find -s "$evidence_dir/atria-captures" -type f -exec shasum -a 256 {} \; > "$capture_manifest"
-  capture_file_count=$(wc -l < "$capture_manifest" | tr -d ' ')
-  capture_total_bytes=$(find -s "$evidence_dir/atria-captures" -type f -exec stat -f '%z' {} \; \
-    | awk '{ total += $1 } END { print total + 0 }')
-  printf 'explicit_sensor_captures_file_count=%s\n' "$capture_file_count" | tee -a "$summary"
-  printf 'explicit_sensor_captures_total_bytes=%s\n' "$capture_total_bytes" | tee -a "$summary"
-  printf 'explicit_sensor_captures_manifest=%s\n' "$capture_manifest" | tee -a "$summary"
+if (( runtime_only == 0 )); then
+  copy_first_from_container "$evidence_dir/historical-archive.jsonl" "historical_archive" \
+    "Documents/atria-historical/historical-archive.jsonl" \
+    "Documents/whoop-historical/historical-archive.jsonl" || true
+  copy_from_container "Documents/atria-historical/historical-archive.diagnostics.json" \
+    "$evidence_dir/historical-archive.diagnostics.json" \
+    "historical_archive_index" || true
+  copy_from_container "Documents/atria-historical/historical-archive.identity.jsonl" \
+    "$evidence_dir/historical-archive.identity.jsonl" \
+    "historical_archive_identity_index" || true
+  copy_from_container "Documents/atria-historical/historical-archive.manifest.json" \
+    "$evidence_dir/historical-archive.manifest.json" \
+    "historical_archive_manifest" || true
+  copy_from_container "Documents/atria-historical/historical-archive.catalog-v2.json" \
+    "$evidence_dir/historical-archive.catalog-v2.json" \
+    "historical_archive_catalog" || true
+  copy_from_container "Documents/atria-historical/historical-archive.identity.durability.json" \
+    "$evidence_dir/historical-archive.identity.durability.json" \
+    "historical_archive_identity_durability" || true
+  copy_from_container "Documents/atria-historical/full-drain-authority-v1" \
+    "$evidence_dir/historical-full-drain-authority-v1" \
+    "historical_full_drain_authority" || true
+  # The full-drain authority carries the selected ledger digest, but the
+  # canonical ledger itself is the only evidence that binds that digest to the
+  # exact UUID, bounds, generation, and per-second expected mask. Preserve it
+  # in every full pull so an older pending gap cannot satisfy a newer controlled
+  # recovery trial. This is a read-only container copy.
+  copy_from_container "Library/Application Support/Atria/HistoricalRecovery" \
+    "$evidence_dir/historical-gap-ledger-v2" \
+    "historical_gap_ledger" || true
+  copy_from_container "Documents/atria-historical/segments" \
+    "$evidence_dir/historical-archive-segments" \
+    "historical_archive_segments" || true
+  deduplicate_archive_file "$evidence_dir/historical-archive.jsonl" \
+    "historical_archive"
+  deduplicate_archive_file "$evidence_dir/historical-archive.identity.jsonl" \
+    "historical_archive_identity_index"
+  if [[ -d "$evidence_dir/historical-archive-segments" ]]; then
+    archive_segment_index=0
+    while IFS= read -r -d '' archive_segment; do
+      archive_segment_index=$((archive_segment_index + 1))
+      deduplicate_archive_file "$archive_segment" \
+        "historical_archive_segment_${archive_segment_index}"
+    done < <(find -s "$evidence_dir/historical-archive-segments" \
+      -type f -name '*.jsonl' -print0)
+  fi
+  copy_from_container "Documents/atria-captures" \
+    "$evidence_dir/atria-captures" \
+    "explicit_sensor_captures" || true
+  if [[ -d "$evidence_dir/atria-captures" ]]; then
+    capture_manifest="$evidence_dir/atria-captures.sha256"
+    find -s "$evidence_dir/atria-captures" -type f -exec shasum -a 256 {} \; > "$capture_manifest"
+    capture_file_count=$(wc -l < "$capture_manifest" | tr -d ' ')
+    capture_total_bytes=$(find -s "$evidence_dir/atria-captures" -type f -exec stat -f '%z' {} \; \
+      | awk '{ total += $1 } END { print total + 0 }')
+    printf 'explicit_sensor_captures_file_count=%s\n' "$capture_file_count" | tee -a "$summary"
+    printf 'explicit_sensor_captures_total_bytes=%s\n' "$capture_total_bytes" | tee -a "$summary"
+    printf 'explicit_sensor_captures_manifest=%s\n' "$capture_manifest" | tee -a "$summary"
+  fi
+  copy_from_container "Documents/atria-step-calibration" \
+    "$evidence_dir/atria-step-calibration" \
+    "step_calibration_archive" || true
+else
+  printf 'pull_profile=runtime_only\n' | tee -a "$summary"
+  printf 'historical_archive_status=skipped_runtime_only\n' | tee -a "$summary"
+  printf 'historical_archive_identity_index_status=skipped_runtime_only\n' | tee -a "$summary"
+  printf 'historical_archive_manifest_status=skipped_runtime_only\n' | tee -a "$summary"
+  printf 'historical_archive_segments_status=skipped_runtime_only\n' | tee -a "$summary"
+  printf 'explicit_sensor_captures_status=skipped_runtime_only\n' | tee -a "$summary"
+  printf 'step_calibration_archive_status=skipped_runtime_only\n' | tee -a "$summary"
 fi
-copy_from_container "Documents/atria-step-calibration" \
-  "$evidence_dir/atria-step-calibration" \
-  "step_calibration_archive" || true
 copy_from_container "Library/Preferences/${bundle_id}.plist" "$evidence_dir/preferences.plist" "preferences" || true
+app_group_id="group.${bundle_id}"
+copy_from_group_container "Library/Preferences/${app_group_id}.plist" \
+  "$evidence_dir/app-group-preferences.plist" \
+  "app_group_preferences" \
+  "$app_group_id" || true
+
+if [[ -f "$evidence_dir/installed-app-provenance.json" && -f "$installed_metadata" ]]; then
+  if (( installed_provenance_only == 1 )); then
+    python3 "$(dirname "$0")/tools/app_build_provenance.py" verify \
+      --identity "$evidence_dir/installed-app-provenance.json" \
+      --installed-metadata "$installed_metadata" \
+      --source-root "$(dirname "$0")" \
+      --installed-only 2>&1 | tee -a "$summary" || true
+  else
+    python3 "$(dirname "$0")/tools/app_build_provenance.py" verify \
+      --identity "$evidence_dir/installed-app-provenance.json" \
+      --installed-metadata "$installed_metadata" \
+      --source-root "$(dirname "$0")" 2>&1 | tee -a "$summary" || true
+  fi
+else
+  printf 'app_provenance_status=fail\n' | tee -a "$summary"
+  printf 'app_provenance_blockers=missing_provenance_or_installed_metadata\n' | tee -a "$summary"
+fi
 
 runtime_state_dir="$evidence_dir/authoritative-runtime-state"
 mkdir -p "$runtime_state_dir"
@@ -276,6 +494,12 @@ copy_from_container "Library/Application Support/Atria/pending-workout-route-tra
 copy_from_container "Library/Application Support/atria-strap-step-ledger.json" \
   "$runtime_state_dir/atria-strap-step-ledger.json" \
   "strap_step_ledger" || true
+copy_from_container "Library/Application Support/Atria/verified-step-evidence-v1/whoop4-motion-tick-days-v1.json" \
+  "$runtime_state_dir/whoop4-motion-tick-days-v1.json" \
+  "whoop4_motion_tick_days" || true
+copy_from_container "Library/Application Support/Atria/whoop4-motion-compact-v1" \
+  "$runtime_state_dir/whoop4-motion-compact-v1" \
+  "whoop4_motion_compact_store" || true
 copy_from_container "Documents/atria-workout-routes" \
   "$runtime_state_dir/atria-workout-routes" \
   "workout_routes" || true
@@ -355,6 +579,40 @@ def emit_historical_archive_index_summary():
     print(f"historical_archive_index_metric_usable_rows={int(index.get('metricUsableRows') or 0)}")
     print(f"historical_archive_index_current_session_usable_rows={int(index.get('currentSessionUsableRows') or 0)}")
     print(f"historical_archive_index_gravity_validated_rows={int(index.get('gravityValidatedRows') or 0)}")
+
+def emit_historical_archive_identity_summary():
+    path = evidence / "historical-archive.identity.jsonl"
+    if not path.exists():
+        print("historical_archive_identity_summary_status=missing")
+        print("historical_archive_identity_entries=0")
+        print("historical_archive_identity_unique_keys=0")
+        print("historical_archive_identity_duplicate_keys=0")
+        print("historical_archive_identity_parse_errors=0")
+        return
+    entries = 0
+    parse_errors = 0
+    keys = []
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                parse_errors += 1
+                continue
+            key = row.get("key") if isinstance(row, dict) else None
+            if not isinstance(key, str) or not key:
+                parse_errors += 1
+                continue
+            entries += 1
+            keys.append(key)
+    unique_keys = len(set(keys))
+    print(f"historical_archive_identity_summary_status={'ok' if parse_errors == 0 else 'error'}")
+    print(f"historical_archive_identity_entries={entries}")
+    print(f"historical_archive_identity_unique_keys={unique_keys}")
+    print(f"historical_archive_identity_duplicate_keys={entries - unique_keys}")
+    print(f"historical_archive_identity_parse_errors={parse_errors}")
 
 def emit_historical_archive_rotation_summary():
     manifest_path = evidence / "historical-archive.manifest.json"
@@ -1389,8 +1647,17 @@ def historical_current_session_usable(row):
 
 def emit_historical_archive_summary():
     archive_path = evidence / "historical-archive.jsonl"
+    segments_path = evidence / "historical-archive-segments"
+    archive_paths = []
+    if archive_path.is_file():
+        archive_paths.append(archive_path)
+    if segments_path.is_dir():
+        archive_paths.extend(sorted(
+            path for path in segments_path.rglob("*.jsonl")
+            if path.is_file()
+        ))
     partial_copy = (evidence / "historical-archive.jsonl.partial").exists()
-    if not archive_path.exists():
+    if not archive_paths:
         print("historical_archive_summary_status=missing")
         print("historical_archive_metric_ready=0")
         print("historical_archive_metric_promotion_blocker=missing_archive")
@@ -1428,52 +1695,58 @@ def emit_historical_archive_summary():
         )
         if declaration:
             validated_layout_versions = set(re.findall(r'"([^"]+)"', declaration.group(1)))
+            if "layoutVersion" in declaration.group(1):
+                prefix = re.search(r'decodedLayoutPrefix\s*=\s*"([^"]+)"', source_text)
+                version = re.search(r'static let layoutVersion\s*=\s*layoutVersion\(for:\s*(\d+)\)', source_text)
+                if prefix and version:
+                    validated_layout_versions.add(f"{prefix.group(1)}_v{version.group(1)}")
     except Exception:
         validated_layout_versions = set()
-    with archive_path.open("r", encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except Exception:
-                parse_errors += 1
-                continue
-            rows += 1
-            schemas.add(str(row.get("schema", "missing")))
-            layouts.add(str(row.get("layoutVersion", "undecodable")))
-            if isinstance(row.get("payloadLength"), int):
-                payload_lengths.add(int(row["payloadLength"]))
-            if row.get("metricUsable") is True:
-                metric_usable_rows += 1
-            if row.get("currentSessionUsable") is True or historical_current_session_usable(row):
-                current_usable_rows += 1
-            if row.get("source") == "0x2f" and "layoutVersion" not in row:
-                undecodable_rows += 1
-            if isinstance(row.get("unix7"), int) and int(row["unix7"]) > 0:
-                unix_values.append(int(row["unix7"]))
-            if isinstance(row.get("clockCorrectedUnix7"), int) and int(row["clockCorrectedUnix7"]) > 0:
-                corrected_values.append(int(row["clockCorrectedUnix7"]))
-            if row.get("clockCorrectionStatus"):
-                clock_rows += 1
-                clock_statuses.add(str(row.get("clockCorrectionStatus")))
-            if isinstance(row.get("clockDriftSeconds"), int):
-                clock_offsets.append(int(row["clockDriftSeconds"]))
-            whoof_rr_values += len(row.get("whoofRR19") or [])
-            k_rr_values += len(row.get("kRR64") or [])
-            candidate_rr_values += len(row.get("candidateRR") or [])
-            payload_hex = row.get("rawPayloadHex")
-            if isinstance(payload_hex, str) and payload_hex:
-                raw_payload_rows += 1
-                gravity = decode_historical_gravity(payload_hex)
-                if gravity is not None:
-                    magnitude, valid, version = gravity
-                    gravity_rows += 1
-                    hist_versions.add(version)
-                    gravity_min = magnitude if gravity_min is None else min(gravity_min, magnitude)
-                    gravity_max = magnitude if gravity_max is None else max(gravity_max, magnitude)
-                    if valid:
-                        gravity_validated_rows += 1
+    for archive_file in archive_paths:
+        with archive_file.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    parse_errors += 1
+                    continue
+                rows += 1
+                schemas.add(str(row.get("schema", "missing")))
+                layouts.add(str(row.get("layoutVersion", "undecodable")))
+                if isinstance(row.get("payloadLength"), int):
+                    payload_lengths.add(int(row["payloadLength"]))
+                if row.get("metricUsable") is True:
+                    metric_usable_rows += 1
+                if row.get("currentSessionUsable") is True or historical_current_session_usable(row):
+                    current_usable_rows += 1
+                if row.get("source") == "0x2f" and "layoutVersion" not in row:
+                    undecodable_rows += 1
+                if isinstance(row.get("unix7"), int) and int(row["unix7"]) > 0:
+                    unix_values.append(int(row["unix7"]))
+                if isinstance(row.get("clockCorrectedUnix7"), int) and int(row["clockCorrectedUnix7"]) > 0:
+                    corrected_values.append(int(row["clockCorrectedUnix7"]))
+                if row.get("clockCorrectionStatus"):
+                    clock_rows += 1
+                    clock_statuses.add(str(row.get("clockCorrectionStatus")))
+                if isinstance(row.get("clockDriftSeconds"), int):
+                    clock_offsets.append(int(row["clockDriftSeconds"]))
+                whoof_rr_values += len(row.get("whoofRR19") or [])
+                k_rr_values += len(row.get("kRR64") or [])
+                candidate_rr_values += len(row.get("candidateRR") or [])
+                payload_hex = row.get("rawPayloadHex")
+                if isinstance(payload_hex, str) and payload_hex:
+                    raw_payload_rows += 1
+                    gravity = decode_historical_gravity(payload_hex)
+                    if gravity is not None:
+                        magnitude, valid, version = gravity
+                        gravity_rows += 1
+                        hist_versions.add(version)
+                        gravity_min = magnitude if gravity_min is None else min(gravity_min, magnitude)
+                        gravity_max = magnitude if gravity_max is None else max(gravity_max, magnitude)
+                        if valid:
+                            gravity_validated_rows += 1
     validated_layout_rows_present = bool(layouts.intersection(validated_layout_versions))
     metric_ready = (not partial_copy and parse_errors == 0 and rows > 0
                     and metric_usable_rows > 0 and current_usable_rows > 0
@@ -1511,6 +1784,7 @@ def emit_historical_archive_summary():
         metric_gate = "waiting"
         user_action = "wait_for_missed_data_after_reconnect"
     print(f"historical_archive_summary_status={'partial_copy' if partial_copy else 'ok'}")
+    print(f"historical_archive_files_scanned={len(archive_paths)}")
     print(f"historical_archive_rows={rows}")
     print(f"historical_archive_parse_errors={parse_errors}")
     print(f"historical_archive_schemas={','.join(sorted(schemas)) if schemas else 'none'}")
@@ -1547,6 +1821,7 @@ def emit_historical_archive_summary():
     print(f"historical_archive_user_action={user_action}")
     print(f"historical_archive_interpretation={interpretation}")
 
+emit_historical_archive_identity_summary()
 emit_historical_archive_summary()
 
 def rr_window_audit(prefix, rr, relative_times=False, emit=True):
@@ -1832,6 +2107,19 @@ if sessions_path.exists():
         print(f"nap_like_raw_windows={len(nap_like_windows)}")
         best_sleep_like = sleep_like_windows[0] if sleep_like_windows else None
         best_nap_like = nap_like_windows[0] if nap_like_windows else None
+        latest_sleep_like = max(sleep_like_windows, key=lambda row: float(row["end"])) if sleep_like_windows else None
+        if latest_sleep_like:
+            latest_sleep_start = app_time(latest_sleep_like["start"]).astimezone(ist)
+            latest_sleep_end = app_time(latest_sleep_like["end"]).astimezone(ist)
+            print(f"latest_sleep_like_raw_start={latest_sleep_start.isoformat()}")
+            print(f"latest_sleep_like_raw_end={latest_sleep_end.isoformat()}")
+            print(f"latest_sleep_like_raw_duration_s={int(latest_sleep_like['duration'])}")
+            print(f"latest_sleep_like_raw_avg_hr={int(round(latest_sleep_like['average_bpm']))}")
+            print(f"latest_sleep_like_raw_samples={latest_sleep_like['points']}")
+            print(f"latest_sleep_like_raw_rr_values={latest_sleep_like['rr']}")
+            print(f"latest_sleep_like_raw_reason={latest_sleep_like['reason']}")
+        else:
+            print("latest_sleep_like_raw_status=missing")
         if best_sleep_like:
             start_sleep_like = app_time(best_sleep_like["start"]).astimezone(ist)
             end_sleep_like = app_time(best_sleep_like["end"]).astimezone(ist)
@@ -1979,21 +2267,174 @@ if sessions_path.exists():
     except Exception as exc:
         print(f"sessions_summary_error={type(exc).__name__}:{exc}")
 
+def active_journal_freshness(updated_at):
+    try:
+        updated = app_time(updated_at)
+    except Exception:
+        updated = None
+    if updated is None:
+        return "unknown"
+    age = (dt.datetime.now(dt.timezone.utc) - updated.astimezone(dt.timezone.utc)).total_seconds()
+    if age < -300:
+        return "future_clock_skew"
+    return "fresh" if age <= 90 else "stale"
+
+def valid_nonnegative_integer(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+def valid_journal_time(value):
+    try:
+        parsed = app_time(value)
+        return parsed is not None and math.isfinite(parsed.timestamp())
+    except Exception:
+        return False
+
+def valid_journal_samples(values, rr=False):
+    if not isinstance(values, list):
+        return False
+    required_value = "ms" if rr else "bpm"
+    return all(
+        isinstance(value, dict)
+        and valid_journal_time(value.get("t"))
+        and isinstance(value.get(required_value), int)
+        and not isinstance(value.get(required_value), bool)
+        for value in values
+    )
+
+def journal_metadata_structure_errors(value):
+    errors = []
+    for key in (
+        "rawHRNotifications", "acceptedHRSamples", "zeroHRSamples",
+        "heldArtifacts", "droppedArtifacts", "rawHRGaps", "acceptedHRGaps",
+    ):
+        if not valid_nonnegative_integer(value.get(key)):
+            errors.append(f"invalid_{key}")
+    for key in ("maxRawHRGap", "maxAcceptedHRGap"):
+        field = value.get(key)
+        if not isinstance(field, (int, float)) or isinstance(field, bool) or not math.isfinite(float(field)) or field < 0:
+            errors.append(f"invalid_{key}")
+    optional_types = {
+        "batteryLevel": int,
+        "thermalState": str,
+        "lowPowerMode": bool,
+        "powerMode": str,
+        "cadenceMultiplier": (int, float),
+    }
+    for key, expected_type in optional_types.items():
+        field = value.get(key)
+        if field is not None and (not isinstance(field, expected_type) or (key != "lowPowerMode" and isinstance(field, bool))):
+            errors.append(f"invalid_{key}")
+    cadence = value.get("cadenceMultiplier")
+    if cadence is not None and isinstance(cadence, (int, float)) and not isinstance(cadence, bool) and not math.isfinite(float(cadence)):
+        errors.append("invalid_cadenceMultiplier")
+    return errors
+
 def reconstructed_segmented_journal(evidence):
     directory = evidence / "atria-active-session.segments"
     if not directory.exists():
-        return None
+        print("active_journal_segment_reconstruction_status=missing")
+        return None, "missing"
+    if (evidence / "atria-active-session.segments.partial").exists():
+        print("active_journal_segment_reconstruction_status=invalid")
+        print("active_journal_segment_integrity_status=partial_directory_copy")
+        print("active_journal_torn_copy_status=detected")
+        print("active_journal_torn_copy_reason=partial_directory_copy")
+        print("active_journal_torn_copy_freshness=unknown")
+        return None, "invalid"
+    paths = sorted(directory.glob("*.json"))
+    print(f"active_journal_segment_files={len(paths)}")
+    if not paths:
+        print("active_journal_segment_reconstruction_status=missing")
+        return None, "missing"
     rows = []
-    for path in directory.glob("*.json"):
+    parse_error_files = []
+    integrity_errors = []
+    freshest_parsed_update = None
+    segment_name = re.compile(r"segment-(\d{8})\.json$")
+    for path in paths:
         try:
             segment = json.loads(path.read_text())
-        except Exception:
+        except Exception as exc:
+            parse_error_files.append(f"{path.name}:{type(exc).__name__}")
             continue
-        if segment.get("schema") == 2:
-            rows.append(segment)
-    rows.sort(key=lambda row: int(row.get("sequence", 0)))
-    if not rows:
-        return None
+        if not isinstance(segment, dict):
+            integrity_errors.append(f"{path.name}:not_object")
+            continue
+        if segment.get("updatedAt") is not None:
+            candidate = segment.get("updatedAt")
+            try:
+                candidate_date = app_time(candidate)
+                current_date = app_time(freshest_parsed_update) if freshest_parsed_update is not None else None
+                if candidate_date is not None and (current_date is None or candidate_date > current_date):
+                    freshest_parsed_update = candidate
+            except Exception:
+                pass
+        match = segment_name.fullmatch(path.name)
+        sequence = segment.get("sequence")
+        if match is None:
+            integrity_errors.append(f"{path.name}:unexpected_filename")
+        elif not valid_nonnegative_integer(sequence) or sequence != int(match.group(1)):
+            integrity_errors.append(f"{path.name}:filename_sequence_mismatch")
+        if segment.get("schema") != 2:
+            integrity_errors.append(f"{path.name}:schema_{segment.get('schema')}")
+        if not isinstance(segment.get("id"), str) or not segment.get("id"):
+            integrity_errors.append(f"{path.name}:missing_id")
+        if not isinstance(segment.get("label"), str):
+            integrity_errors.append(f"{path.name}:invalid_label")
+        for key in ("startedAt", "updatedAt"):
+            if not valid_journal_time(segment.get(key)):
+                integrity_errors.append(f"{path.name}:invalid_{key}")
+        for key in ("sampleStartIndex", "rrSampleStartIndex"):
+            if not valid_nonnegative_integer(segment.get(key)):
+                integrity_errors.append(f"{path.name}:invalid_{key}")
+        if not valid_journal_samples(segment.get("samples")):
+            integrity_errors.append(f"{path.name}:invalid_samples")
+        if not valid_journal_samples(segment.get("rrSamples"), rr=True):
+            integrity_errors.append(f"{path.name}:invalid_rrSamples")
+        integrity_errors.extend(
+            f"{path.name}:{error}" for error in journal_metadata_structure_errors(segment)
+        )
+        rows.append(segment)
+    print(f"active_journal_segment_parse_errors={len(parse_error_files)}")
+    print(f"active_journal_segment_parse_status={'ok' if not parse_error_files else 'error'}")
+    if parse_error_files:
+        print(f"active_journal_segment_parse_error_files={','.join(parse_error_files)}")
+    print(f"active_journal_segment_structure_errors={len(integrity_errors)}")
+    if integrity_errors:
+        print(f"active_journal_segment_structure_error_details={','.join(integrity_errors)}")
+    if parse_error_files or integrity_errors or len(rows) != len(paths):
+        print("active_journal_segment_reconstruction_status=invalid")
+        print("active_journal_segment_integrity_status=malformed_segments")
+        print("active_journal_torn_copy_status=detected")
+        print("active_journal_torn_copy_reason=malformed_segments")
+        print(f"active_journal_torn_copy_freshness={active_journal_freshness(freshest_parsed_update)}")
+        return None, "invalid"
+    rows.sort(key=lambda row: row["sequence"])
+    ids = {row["id"] for row in rows}
+    mixed_ids = len(ids) != 1
+    print(f"active_journal_segment_id_status={'mixed' if mixed_ids else 'ok'}")
+    if mixed_ids:
+        print(f"active_journal_segment_ids={','.join(sorted(ids))}")
+    duplicate_sequences = len({row["sequence"] for row in rows}) != len(rows)
+    sequence_gap = duplicate_sequences or any(
+        current["sequence"] != previous["sequence"] + 1
+        for previous, current in zip(rows, rows[1:])
+    )
+    print(f"active_journal_segment_sequence_status={'noncontiguous' if sequence_gap else 'ok'}")
+    if sequence_gap:
+        print("active_journal_segment_sequences=" + ",".join(str(row["sequence"]) for row in rows))
+    if mixed_ids or sequence_gap:
+        reasons = []
+        if mixed_ids:
+            reasons.append("mixed_journal_ids")
+        if sequence_gap:
+            reasons.append("noncontiguous_sequence")
+        print("active_journal_segment_reconstruction_status=invalid")
+        print("active_journal_segment_integrity_status=continuity_failure")
+        print("active_journal_torn_copy_status=detected")
+        print(f"active_journal_torn_copy_reason={'+'.join(reasons)}")
+        print(f"active_journal_torn_copy_freshness={active_journal_freshness(freshest_parsed_update)}")
+        return None, "invalid"
     first = rows[0]
     journal = {
         "schema": 1,
@@ -2018,36 +2459,121 @@ def reconstructed_segmented_journal(evidence):
         "powerMode": first.get("powerMode"),
         "cadenceMultiplier": first.get("cadenceMultiplier"),
     }
-    for segment in rows:
-        if segment.get("id") != journal["id"]:
-            continue
-        if len(journal["samples"]) == int(segment.get("sampleStartIndex", len(journal["samples"]))):
-            journal["samples"].extend(segment.get("samples") or [])
-        if len(journal["rrSamples"]) == int(segment.get("rrSampleStartIndex", len(journal["rrSamples"]))):
-            journal["rrSamples"].extend(segment.get("rrSamples") or [])
+    sample_gap = False
+    rr_gap = False
+    for index, segment in enumerate(rows):
+        sample_start = segment["sampleStartIndex"]
+        rr_start = segment["rrSampleStartIndex"]
+        is_replacement_base = sample_start == 0 and rr_start == 0
+        if index == 0 and not is_replacement_base:
+            sample_gap = sample_start != 0
+            rr_gap = rr_start != 0
+            break
+        if index > 0 and is_replacement_base:
+            journal["samples"] = []
+            journal["rrSamples"] = []
+        if sample_start != len(journal["samples"]):
+            sample_gap = True
+        if rr_start != len(journal["rrSamples"]):
+            rr_gap = True
+        if sample_gap or rr_gap:
+            break
+        journal["samples"].extend(segment["samples"])
+        journal["rrSamples"].extend(segment["rrSamples"])
         for key in ("label", "updatedAt", "rawHRNotifications", "acceptedHRSamples", "zeroHRSamples",
                     "heldArtifacts", "droppedArtifacts", "rawHRGaps", "acceptedHRGaps",
                     "maxRawHRGap", "maxAcceptedHRGap", "batteryLevel", "thermalState",
                     "lowPowerMode", "powerMode", "cadenceMultiplier"):
             journal[key] = segment.get(key, journal.get(key))
-    return journal
+    print(f"active_journal_segment_sample_continuity_status={'noncontiguous' if sample_gap else 'ok'}")
+    print(f"active_journal_segment_rr_continuity_status={'noncontiguous' if rr_gap else 'ok'}")
+    if sample_gap or rr_gap:
+        reasons = []
+        if sample_gap:
+            reasons.append("sample_cursor_gap")
+        if rr_gap:
+            reasons.append("rr_cursor_gap")
+        print("active_journal_segment_reconstruction_status=invalid")
+        print("active_journal_segment_integrity_status=continuity_failure")
+        print("active_journal_torn_copy_status=detected")
+        print(f"active_journal_torn_copy_reason={'+'.join(reasons)}")
+        print(f"active_journal_torn_copy_freshness={active_journal_freshness(freshest_parsed_update)}")
+        return None, "invalid"
+    print("active_journal_segment_reconstruction_status=ok")
+    print("active_journal_segment_integrity_status=ok")
+    print("active_journal_torn_copy_status=none")
+    print(f"active_journal_segment_snapshot_freshness={active_journal_freshness(journal.get('updatedAt'))}")
+    return journal, "ok"
 
-journal_path = evidence / "atria-active-session.json"
-journal = None
-if journal_path.exists():
+def validated_flat_journal(path):
+    if not path.exists():
+        print("active_journal_snapshot_integrity_status=missing")
+        return None, "missing"
+    if path.with_name(path.name + ".partial").exists():
+        print("active_journal_snapshot_integrity_status=partial_copy")
+        print("active_journal_torn_copy_status=detected")
+        print("active_journal_torn_copy_reason=partial_flat_snapshot")
+        print("active_journal_torn_copy_freshness=unknown")
+        return None, "invalid"
     try:
-        journal = json.loads(journal_path.read_text())
+        value = json.loads(path.read_text())
     except Exception as exc:
         print(f"active_journal_file_summary_error={type(exc).__name__}:{exc}")
-if journal is None:
-    journal = reconstructed_segmented_journal(evidence)
-    if journal is not None:
-        try:
-            journal_path.write_text(json.dumps(journal, indent=2, sort_keys=True))
-            print("active_journal_reconstructed_from_segments=1")
-        except Exception as exc:
-            print(f"active_journal_reconstruct_write_error={type(exc).__name__}:{exc}")
-if journal is not None:
+        print("active_journal_snapshot_integrity_status=parse_error")
+        print("active_journal_torn_copy_status=detected")
+        print("active_journal_torn_copy_reason=malformed_flat_snapshot")
+        print("active_journal_torn_copy_freshness=unknown")
+        return None, "invalid"
+    valid = (
+        isinstance(value, dict)
+        and value.get("schema") == 1
+        and isinstance(value.get("id"), str)
+        and bool(value.get("id"))
+        and isinstance(value.get("label"), str)
+        and valid_journal_time(value.get("startedAt"))
+        and valid_journal_time(value.get("updatedAt"))
+        and valid_journal_samples(value.get("samples"))
+        and (value.get("rrSamples") is None or valid_journal_samples(value.get("rrSamples"), rr=True))
+        and not journal_metadata_structure_errors(value)
+    )
+    if not valid:
+        print("active_journal_snapshot_integrity_status=invalid_structure")
+        print("active_journal_torn_copy_status=detected")
+        print("active_journal_torn_copy_reason=invalid_flat_snapshot_structure")
+        print(f"active_journal_torn_copy_freshness={active_journal_freshness(value.get('updatedAt') if isinstance(value, dict) else None)}")
+        return None, "invalid"
+    print("active_journal_snapshot_integrity_status=ok")
+    print(f"active_journal_snapshot_freshness={active_journal_freshness(value.get('updatedAt'))}")
+    return value, "ok"
+
+journal_path = evidence / "atria-active-session.json"
+segmented_journal, segmented_status = reconstructed_segmented_journal(evidence)
+flat_journal, flat_status = validated_flat_journal(journal_path)
+journal = None
+journal_integrity_status = "missing"
+if segmented_status == "ok":
+    journal = segmented_journal
+    journal_integrity_status = "ok"
+    print("active_journal_final_source=segmented_canonical")
+elif segmented_status == "invalid":
+    journal_integrity_status = "invalid"
+    print("active_journal_final_source=invalid_segmented_canonical")
+elif flat_status == "ok":
+    journal = flat_journal
+    journal_integrity_status = "ok"
+    print("active_journal_final_source=flat_snapshot")
+elif flat_status == "invalid":
+    journal_integrity_status = "invalid"
+    print("active_journal_final_source=invalid_flat_snapshot")
+if journal is segmented_journal and journal is not None:
+    if flat_status == "invalid":
+        print("active_journal_redundant_flat_snapshot_status=invalid_ignored_segmented_authority_valid")
+    try:
+        journal_path.write_text(json.dumps(journal, indent=2, sort_keys=True))
+        print("active_journal_reconstructed_from_segments=1")
+    except Exception as exc:
+        print(f"active_journal_reconstruct_write_error={type(exc).__name__}:{exc}")
+if journal is not None and journal_integrity_status == "ok":
     print("active_journal_final_status=ok")
     try:
         prefs = {}
@@ -2116,5 +2642,92 @@ if journal is not None:
     except Exception as exc:
         print(f"active_journal_summary_error={type(exc).__name__}:{exc}")
 else:
-    print("active_journal_final_status=missing")
+    print(f"active_journal_final_status={journal_integrity_status}")
+
+def revision_hash(value):
+    if value is None:
+        return "missing"
+    if isinstance(value, bytes):
+        payload = value
+    elif isinstance(value, str):
+        payload = value.encode("utf-8")
+    else:
+        payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+def emit_projection_artifact_revisions():
+    prefs = {}
+    prefs_path = evidence / "preferences.plist"
+    if prefs_path.exists():
+        try:
+            with prefs_path.open("rb") as handle:
+                prefs = plistlib.load(handle)
+        except Exception as exc:
+            print(f"analytics_preferences_revision_error={type(exc).__name__}:{exc}")
+
+    identity_keys = []
+    identity_path = evidence / "historical-archive.identity.jsonl"
+    if identity_path.exists():
+        try:
+            with identity_path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    key = row.get("key") if isinstance(row, dict) else None
+                    if isinstance(key, str) and key:
+                        identity_keys.append(key)
+        except Exception as exc:
+            print(f"recovered_projection_revision_error={type(exc).__name__}:{exc}")
+    unique_identity_keys = sorted(set(identity_keys))
+    print(f"recovered_projection_evidence_revision={len(unique_identity_keys)}")
+    print(f"recovered_projection_evidence_fingerprint={revision_hash(unique_identity_keys)}")
+
+    sleeps = pref(prefs, "confirmedSleeps.v1") if prefs else None
+    workouts = pref(prefs, "confirmedWorkouts.v1") if prefs else None
+    print(f"sleep_projection_artifact_revision={revision_hash(sleeps)}")
+    print(f"workout_projection_artifact_revision={revision_hash(workouts)}")
+
+    rollups_path = evidence / "daily-rollups.json"
+    strain_rows = None
+    if rollups_path.exists():
+        try:
+            rollups = json.loads(rollups_path.read_text(encoding="utf-8"))
+            if isinstance(rollups, list):
+                strain_rows = [
+                    {"day": row.get("day"), "strain": row.get("strain")}
+                    for row in rollups
+                    if isinstance(row, dict) and row.get("strain") is not None
+                ]
+        except Exception as exc:
+            print(f"strain_projection_revision_error={type(exc).__name__}:{exc}")
+    print(f"strain_projection_artifact_revision={revision_hash(strain_rows)}")
+    print(f"strain_projection_artifact_days={len(strain_rows) if isinstance(strain_rows, list) else 0}")
+
+    widget = None
+    group_path = evidence / "app-group-preferences.plist"
+    if group_path.exists():
+        try:
+            with group_path.open("rb") as handle:
+                group_prefs = plistlib.load(handle)
+            raw_widget = group_prefs.get("atria.widgetSnapshot.v1")
+            if isinstance(raw_widget, bytes):
+                widget = json.loads(raw_widget)
+            elif isinstance(raw_widget, str):
+                widget = json.loads(raw_widget)
+        except Exception as exc:
+            print(f"widget_projection_revision_error={type(exc).__name__}:{exc}")
+    print(f"widget_projection_artifact_revision={revision_hash(widget)}")
+    if isinstance(widget, dict):
+        print("widget_projection_status=ok")
+        print(f"widget_projection_created_at={widget.get('createdAt', 'missing')}")
+        print(f"widget_projection_strain={widget.get('strain', 'missing')}")
+        print(f"widget_projection_sleep_hours={widget.get('sleepHours', 'missing')}")
+        print(f"widget_projection_storage={widget.get('storage', 'missing')}")
+        print(f"widget_projection_app_group_enabled={bool_int(widget.get('appGroupEnabled'))}")
+        print(f"widget_projection_target_present={bool_int(widget.get('widgetTargetPresent'))}")
+    else:
+        print("widget_projection_status=missing")
+
+emit_projection_artifact_revisions()
 PY
