@@ -1865,7 +1865,7 @@ struct AtriaWorkoutStartSheet: View {
     }
 
     private var targetRangeBadge: some View {
-        Label(selectedZoneTargetText, systemImage: "scope")
+        Label(selectedZoneRangeText, systemImage: "scope")
             .font(.caption.weight(.black).monospacedDigit())
             .foregroundStyle(.cyan)
             .lineLimit(1)
