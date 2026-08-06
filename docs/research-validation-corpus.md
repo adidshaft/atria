@@ -1,0 +1,157 @@
+# External validation corpus contract
+
+This is the admission contract for the P2 work in
+`WHOOP_REMAINING_PRODUCT_GAPS.md`. It is intentionally a research workflow, not
+a feature flag and not a way to generate a Recovery, stress, activity, sleep
+stage, temperature, or SpO2 value in Atria.
+
+Run the local validator before an offline evaluator receives any bundle:
+
+```sh
+python3 tools/validate_research_corpus.py corpus.manifest.json --output corpus.admission.json
+```
+
+An admitted result always says:
+
+```json
+{
+  "research_only": true,
+  "model_validated": false,
+  "production_promotions": 0,
+  "status": "admitted_for_external_evaluation_only"
+}
+```
+
+The admission record is evidence that the dataset shape is safe to evaluate. It
+is not evidence that a model is accurate enough to ship.
+
+## Manifest shape
+
+Use the per-consent pseudonym already present in an Atria research bundle. Do
+not add names, device serials, free text, locations, or absolute dates.
+
+```json
+{
+  "schema": 1,
+  "research_only": true,
+  "model_validated": false,
+  "production_promotions": 0,
+  "targets": ["GAP-10", "GAP-11", "GAP-12", "GAP-14"],
+  "participants": [
+    {
+      "pseudonym": "participant-development-pseudonym",
+      "split": "development",
+      "bundle": {
+        "digest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "schema": 3
+      },
+      "labels": []
+    },
+    {
+      "pseudonym": "participant-held-out-pseudonym",
+      "split": "held_out",
+      "bundle": {
+        "digest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "schema": 3
+      },
+      "labels": []
+    }
+  ]
+}
+```
+
+The empty arrays above make this a template, not an admissible corpus. Every
+declared target needs time-aligned labels from both splits. A participant may
+appear exactly once, in exactly one split.
+
+## Label contracts
+
+All `start_rel` and `end_rel` values use the bundle's schema-v3 day-zero axis.
+They must be non-overlapping for each participant.
+
+### GAP-10 — overnight physiological load
+
+```json
+{
+  "gap": "GAP-10",
+  "start_rel": 28800,
+  "end_rel": 29100,
+  "source": "research_protocol",
+  "coverage_fraction": 0.96,
+  "qualified_rr": true,
+  "motion_context": true,
+  "hr_only": false
+}
+```
+
+`source` must be `controlled_intervention`, `validated_questionnaire`, or
+`research_protocol`. HR-only observations cannot become a validation target.
+
+### GAP-11 — activity type
+
+```json
+{
+  "gap": "GAP-11",
+  "start_rel": 36000,
+  "end_rel": 36600,
+  "activity_type": "walking",
+  "label_source": "user_confirmed",
+  "features": {
+    "cadence": true,
+    "orientation": true,
+    "gyroscope": true,
+    "hr_response": true
+  }
+}
+```
+
+The only admitted classes are `walking`, `running`, `cycling`,
+`strength_training`, and `other_workout`. A type still cannot auto-save a
+workout; participant-separated precision and recall must be reviewed first.
+
+### GAP-12 — sleep stage
+
+```json
+{
+  "gap": "GAP-12",
+  "start_rel": 43200,
+  "end_rel": 43500,
+  "source": "polysomnography",
+  "stage": "deep",
+  "atria_derived": false
+}
+```
+
+Only `polysomnography` or a named `defensible_reference` source is accepted.
+An Atria hypnogram is never ground truth for its own validation.
+
+### GAP-14 — sensor decoder pair
+
+```json
+{
+  "gap": "GAP-14",
+  "start_rel": 46800,
+  "end_rel": 46860,
+  "reference_device": "named independent reference device",
+  "pair_age_seconds": 1.2,
+  "layout_stable": true,
+  "negative_control": true
+}
+```
+
+This admission check complements—not replaces—the held-out-day, reference-span,
+bias, MAE, p95, correlation, and three-day requirements in
+`14-spo2-skin-temperature-decoder-validation.md`.
+
+## Review sequence
+
+1. Build an opt-in Atria schema-v3 bundle and record its digest.
+2. Create one sidecar row per external label, on the same relative timeline.
+3. Admit the manifest with this tool; keep rejected data out of evaluation.
+4. Train and assess only on `development` participants.
+5. Calculate the documented target-specific metrics once on `held_out`
+   participants.
+6. Record the evaluator version, model version, thresholds, failures, and
+   uncertainty in a review artifact.
+7. Only after that review can a separately committed, versioned app model be
+   considered. Historical values remain frozen under their prior model.
