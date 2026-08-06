@@ -2015,6 +2015,10 @@ struct UserConfirmedWorkout: Codable, Identifiable, Equatable {
     var activitySubtype: String? = nil
     var exerciseNames: [String]? = nil
     var strengthSets: [LoggedSet]? = nil
+    /// Frozen qualified muscular-input receipt. Nil means this workout was
+    /// saved before the receipt existed; it may be presented as a legacy
+    /// recomputation but must never be claimed to be frozen history.
+    var muscularLoadReceipt: AtriaStrengthLog.MuscularLoadReceipt? = nil
     var excludedIntervals: [ExcludedInterval]? = nil
     var reviewSource: String? = nil
     /// Stable identity of the detector suggestion the user explicitly labelled.
@@ -20556,6 +20560,7 @@ final class SessionStore: ObservableObject {
             activitySubtype: cleanedSubtype,
             exerciseNames: cleanedExercises.isEmpty ? nil : cleanedExercises,
             strengthSets: request.strengthSets.isEmpty ? nil : request.strengthSets,
+            muscularLoadReceipt: AtriaStrengthLog.muscularLoadReceipt(for: request.strengthSets),
             excludedIntervals: request.excludedIntervals.isEmpty ? nil : request.excludedIntervals,
             reviewSource: cleanedReview,
             reviewCandidateID: cleanedReviewCandidateID,
@@ -20844,6 +20849,7 @@ final class SessionStore: ObservableObject {
                                              activitySubtype: cleanedActivitySubtype,
                                              exerciseNames: cleanedExercises.isEmpty ? nil : cleanedExercises,
                                              strengthSets: strengthSets.isEmpty ? nil : strengthSets,
+                                             muscularLoadReceipt: AtriaStrengthLog.muscularLoadReceipt(for: strengthSets),
                                              excludedIntervals: excludedIntervals.isEmpty ? nil : excludedIntervals,
                                              reviewSource: cleanedReviewSource,
                                              reviewCandidateID: cleanedReviewCandidateID,
@@ -21018,6 +21024,7 @@ final class SessionStore: ObservableObject {
             activitySubtype: subtype,
             exerciseNames: cleanedExercises.isEmpty ? nil : cleanedExercises,
             strengthSets: strengthSets.isEmpty ? nil : strengthSets,
+            muscularLoadReceipt: AtriaStrengthLog.muscularLoadReceipt(for: strengthSets),
             excludedIntervals: excludedIntervals.isEmpty ? nil : excludedIntervals,
             reviewSource: review,
             reviewCandidateID: candidateID,
@@ -21096,6 +21103,7 @@ final class SessionStore: ObservableObject {
         merged.activitySubtype = workout.activitySubtype
         merged.exerciseNames = workout.exerciseNames
         merged.strengthSets = workout.strengthSets
+        merged.muscularLoadReceipt = workout.muscularLoadReceipt
         merged.excludedIntervals = workout.excludedIntervals
         merged.reviewSource = workout.reviewSource
         merged.reviewCandidateID = workout.reviewCandidateID
@@ -22020,6 +22028,7 @@ final class SessionStore: ObservableObject {
             activitySubtype: old.activitySubtype,
             exerciseNames: old.exerciseNames,
             strengthSets: old.strengthSets,
+            muscularLoadReceipt: old.muscularLoadReceipt,
             excludedIntervals: old.excludedIntervals,
             reviewSource: old.reviewSource,
             reviewCandidateID: old.reviewCandidateID,
@@ -22247,6 +22256,7 @@ final class SessionStore: ObservableObject {
                     activitySubtype: activitySubtype,
                     exerciseNames: old.exerciseNames,
                     strengthSets: old.strengthSets,
+                    muscularLoadReceipt: old.muscularLoadReceipt,
                     excludedIntervals: old.excludedIntervals,
                     reviewSource: old.reviewSource,
                     reviewCandidateID: old.reviewCandidateID,
@@ -22320,6 +22330,7 @@ final class SessionStore: ObservableObject {
                 activitySubtype: activitySubtype,
                 exerciseNames: old.exerciseNames,
                 strengthSets: old.strengthSets,
+                muscularLoadReceipt: old.muscularLoadReceipt,
                 excludedIntervals: old.excludedIntervals,
                 reviewSource: old.reviewSource,
                 reviewCandidateID: old.reviewCandidateID,
@@ -22363,6 +22374,7 @@ final class SessionStore: ObservableObject {
                 activitySubtype: activitySubtype,
                 exerciseNames: old.exerciseNames,
                 strengthSets: old.strengthSets,
+                muscularLoadReceipt: old.muscularLoadReceipt,
                 excludedIntervals: old.excludedIntervals,
                 reviewSource: old.reviewSource,
                 reviewCandidateID: old.reviewCandidateID,
@@ -34697,6 +34709,8 @@ final class SessionStore: ObservableObject {
                                                 activityType: "strength",
                                                 activitySubtype: "lifting",
                                                 exerciseNames: ["Barbell bench press"],
+                                                strengthSets: proofSession.strengthSets,
+                                                muscularLoadReceipt: AtriaStrengthLog.muscularLoadReceipt(for: proofSession.strengthSets ?? []),
                                                 reviewSource: "debug_cd12_strength_proof",
                                                 strain: nil,
                                                 activeEnergyKilocalories: proofSession.activeCalories,
@@ -34751,6 +34765,8 @@ final class SessionStore: ObservableObject {
                                                     activityType: "strength",
                                                     activitySubtype: "lifting",
                                                     exerciseNames: ["Barbell bench press"],
+                                                    strengthSets: proof.session.strengthSets,
+                                                    muscularLoadReceipt: AtriaStrengthLog.muscularLoadReceipt(for: proof.session.strengthSets ?? []),
                                                     reviewSource: "debug_cd12_strength_proof",
                                                     strain: nil,
                                                     activeEnergyKilocalories: proof.session.activeCalories,
