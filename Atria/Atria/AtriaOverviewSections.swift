@@ -11924,20 +11924,6 @@ private struct AtriaRecoveryContributorMap: View {
         contributors.max { abs($0.weightedContribution) < abs($1.weightedContribution) }
     }
 
-    private var supportMagnitude: Double {
-        contributors
-            .map(\.weightedContribution)
-            .filter { $0 > 0 }
-            .reduce(0, +)
-    }
-
-    private var pressureMagnitude: Double {
-        abs(contributors
-            .map(\.weightedContribution)
-            .filter { $0 < 0 }
-            .reduce(0, +))
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
@@ -11968,8 +11954,6 @@ private struct AtriaRecoveryContributorMap: View {
                     .padding(12)
                     .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
             } else {
-                contributorBalanceStrip
-
                 VStack(spacing: 12) {
                     ForEach(contributors) { contributor in
                         contributorRow(contributor)
@@ -11984,92 +11968,6 @@ private struct AtriaRecoveryContributorMap: View {
         .padding(14)
         .atriaInsetCard(tint: Metrics.electricGreen)
         .accessibilityElement(children: .combine)
-    }
-
-    private var contributorBalanceStrip: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(alignment: .firstTextBaseline) {
-                Label("Recovery balance", systemImage: "scale.3d")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.primary)
-                Spacer(minLength: 8)
-                Text(balanceText)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(balanceTint)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(balanceTint.opacity(0.12), in: Capsule(style: .continuous))
-            }
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                let midpoint = width / 2
-                let largestSide = max(supportMagnitude, pressureMagnitude, 0.01)
-                let pressureWidth = midpoint * (pressureMagnitude / largestSide)
-                let supportWidth = midpoint * (supportMagnitude / largestSide)
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(.primary.opacity(0.07))
-                    if pressureMagnitude > 0 {
-                        Capsule(style: .continuous)
-                            .fill(Metrics.electricRed.opacity(0.72))
-                            .frame(width: pressureWidth)
-                            .offset(x: midpoint - pressureWidth)
-                    }
-                    if supportMagnitude > 0 {
-                        Capsule(style: .continuous)
-                            .fill(Metrics.electricGreen.opacity(0.72))
-                            .frame(width: supportWidth)
-                            .offset(x: midpoint)
-                    }
-                    Rectangle()
-                        .fill(.primary.opacity(0.22))
-                        .frame(width: 1.5)
-                        .offset(x: midpoint)
-                }
-                .clipShape(Capsule(style: .continuous))
-            }
-            .frame(height: 10)
-            .accessibilityHidden(true)
-
-            HStack {
-                Text("Pressure")
-                Spacer(minLength: 8)
-                Text("Baseline")
-                Spacer(minLength: 8)
-                Text("Support")
-            }
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
-        }
-        .padding(12)
-        .background(balanceTint.opacity(0.07), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.inset, style: .continuous)
-                .stroke(balanceTint.opacity(0.12), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Recovery balance. \(balanceText).")
-    }
-
-    private var balanceText: String {
-        if supportMagnitude > pressureMagnitude * 1.15 {
-            return "Supported"
-        }
-        if pressureMagnitude > supportMagnitude * 1.15 {
-            return "Pressured"
-        }
-        return "Mixed"
-    }
-
-    private var balanceTint: Color {
-        switch balanceText {
-        case "Supported": return Metrics.electricGreen
-        case "Pressured": return Metrics.electricRed
-        default: return .secondary
-        }
     }
 
     private func contributorRow(_ contributor: Metrics.RecoveryEstimate.Contributor) -> some View {
