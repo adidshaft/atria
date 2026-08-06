@@ -2283,7 +2283,7 @@ private struct AtriaSleepStressProjection: Equatable {
         var title: String {
             switch self {
             case .unavailable: return "Sleep window unavailable"
-            case .baselineNeeded: return "Building sleep-stress baseline"
+            case .baselineNeeded: return "Building overnight HR baseline"
             case .insufficientWear: return "Not enough overnight wear"
             case .ready: return "Overnight physiological load"
             }
@@ -2291,10 +2291,10 @@ private struct AtriaSleepStressProjection: Equatable {
 
         var detail: String {
             switch self {
-            case .unavailable: return "Confirm a sleep window to review overnight stress."
-            case .baselineNeeded: return "A personal resting heart-rate baseline is needed before this can be interpreted."
-            case .insufficientWear: return "Keep the strap on through the night to map observed overnight load."
-            case .ready: return "Relative to your personal resting heart rate; this is not a sleep stage or diagnosis."
+            case .unavailable: return "Confirm a sleep window to review overnight heart-rate load."
+            case .baselineNeeded: return "A personal resting heart-rate baseline is needed before overnight HR load can be interpreted."
+            case .insufficientWear: return "Keep the strap on through the night to map observed overnight HR load."
+            case .ready: return "Atria's 0–3 heart-rate-load scale, relative to your resting heart rate. It is not stress, a sleep stage, or a diagnosis."
             }
         }
     }
@@ -2413,7 +2413,7 @@ private struct AtriaSleepStressCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Sleep stress")
+                    Text("Overnight HR load")
                         .font(.subheadline.weight(.bold))
                     Text(projection.availability.title)
                         .font(.caption)
@@ -2498,8 +2498,8 @@ private struct AtriaSleepStressCard: View {
         .atriaInsetCard(tint: .orange)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(projection.availability == .ready
-                            ? "Sleep stress. \(highSummary). \(highTimingSummary ?? "")"
-                            : "Sleep stress. \(projection.availability.title). \(projection.availability.detail)")
+                            ? "Overnight heart-rate load. \(highSummary). \(highTimingSummary ?? "")"
+                            : "Overnight heart-rate load. \(projection.availability.title). \(projection.availability.detail)")
     }
 }
 

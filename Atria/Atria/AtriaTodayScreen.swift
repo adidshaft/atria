@@ -1201,23 +1201,20 @@ struct AtriaTodayScreen: View {
             strain = 12.0
         case "strain-target-over":
             strain = 15.2
-        case "recovery-after-nap":
-            strain = 4.0
         default:
             return nil
         }
 
-        let recoveryPercent = arguments[valueIndex] == "recovery-after-nap" ? 68 : 50
+        let recoveryPercent = 50
         let recovery = Metrics.RecoveryEstimate(percent: recoveryPercent,
                                                 confidence: .personalBaseline,
                                                 usesHRV: true,
-                                                detail: arguments[valueIndex] == "recovery-after-nap" ? "debug_after_nap" : "debug_strain_target",
+                                                detail: "debug_strain_target",
                                                 contributors: [])
         let guidance = Coach.guide(recovery: recovery, strain: strain, load: .learning)
         return AtriaHomeModel.HeroSnapshot(recoveryEstimate: recovery,
                                            recoveryIsProvisional: false,
                                            recoveryIsFromPreviousSleep: false,
-                                           recoveryLiftedAfterNap: arguments[valueIndex] == "recovery-after-nap",
                                            strain: strain,
                                            strainConfidence: "local",
                                            // Debug fixture pins strain-target
@@ -1502,8 +1499,7 @@ struct AtriaTodayScreen: View {
     private var displayRecovery: (value: String, detail: String, percent: Int?) {
         let estimate = displayHero.recoveryEstimate
         if let percent = estimate.percent {
-            let detail = displayHero.recoveryLiftedAfterNap ? "↑ after nap" : displayHero.recoveryDetail
-            return ("\(percent)%", detail, percent)
+            return ("\(percent)%", displayHero.recoveryDetail, percent)
         }
         // Same rule as strainValue: the value line carries a numeral or "--",
         // never a status word. Recovery is computable exactly when the estimator

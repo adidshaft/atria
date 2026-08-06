@@ -299,10 +299,13 @@ enum AtriaSleepDebtChartPresentation {
         /// nil = no confirmed main sleep that morning — renders as an empty
         /// slot with a subtle mark, never a fabricated bar.
         let sleptHours: Double?
-        let needHours: Double
+        /// nil means this historical night predates frozen adaptive need. The
+        /// chart must leave that node absent instead of rebuilding it from the
+        /// wearer's current baseline.
+        let needHours: Double?
 
         var shortfall: Bool {
-            guard let sleptHours else { return false }
+            guard let sleptHours, let needHours else { return false }
             return sleptHours < needHours
         }
     }
@@ -312,7 +315,7 @@ enum AtriaSleepDebtChartPresentation {
     /// need — the exact per-night need `AtriaSleepBudget.sleepDebt` itself
     /// scores against, so the chart can never disagree with the ledger.
     static func slots(nights: [SleepHistorySnapshot.Night],
-                      baseNeedHours: Double,
+                      frozenNeedSecondsByDay: [Date: TimeInterval],
                       weekOffset: Int = 0,
                       calendar: Calendar = .current) -> [NightSlot] {
         let confirmed = nights.filter { $0.confirmed && !$0.isNapEvidence }
@@ -322,7 +325,6 @@ enum AtriaSleepDebtChartPresentation {
                                              to: newestDay) else {
             return []
         }
-        let need = min(max(baseNeedHours, 6), 10)
         return (0..<slotCount).reversed().compactMap { daysBack in
             guard let day = calendar.date(byAdding: .day, value: -daysBack, to: windowEnd) else {
                 return nil
@@ -336,7 +338,8 @@ enum AtriaSleepDebtChartPresentation {
             return NightSlot(day: day,
                              dayLetter: dayLetter(for: day, calendar: calendar),
                              sleptHours: slept,
-                             needHours: need)
+                             needHours: frozenNeedSecondsByDay[calendar.startOfDay(for: day)]
+                                .flatMap { $0 > 0 ? $0 / 3_600 : nil })
         }
     }
 
@@ -406,12 +409,25 @@ enum AtriaSleepDebtChartPresentation {
 /// real recency-weighted debt only.
 struct AtriaSleepDebtChartCard: View {
     let nights: [SleepHistorySnapshot.Night]
-    let baseNeedHours: Double
+    let rollups: [DailyRollupStoreEntry]
     @State private var weekOffset = 0
+
+    init(nights: [SleepHistorySnapshot.Night],
+         rollups: [DailyRollupStoreEntry] = []) {
+        self.nights = nights
+        self.rollups = rollups
+    }
+
+    private var frozenNeedSecondsByDay: [Date: TimeInterval] {
+        Dictionary(uniqueKeysWithValues: rollups.compactMap { rollup -> (Date, TimeInterval)? in
+            guard let need = rollup.sleepNeedSeconds, need > 0 else { return nil }
+            return (Calendar.current.startOfDay(for: rollup.day), need)
+        })
+    }
 
     private var slots: [AtriaSleepDebtChartPresentation.NightSlot] {
         AtriaSleepDebtChartPresentation.slots(nights: nights,
-                                              baseNeedHours: baseNeedHours,
+                                              frozenNeedSecondsByDay: frozenNeedSecondsByDay,
                                               weekOffset: weekOffset)
     }
 
@@ -419,8 +435,8 @@ struct AtriaSleepDebtChartCard: View {
         AtriaSleepDebtChartPresentation.realNightCount(slots)
     }
 
-    private var clampedNeedHours: Double {
-        min(max(baseNeedHours, 6), 10)
+    private var needPointCount: Int {
+        slots.compactMap(\.needHours).count
     }
 
     var body: some View {
@@ -464,7 +480,9 @@ struct AtriaSleepDebtChartCard: View {
             } else {
                 hoursVsNeedChart
                 dualLineLegend
-                Text("Sleep needed is your current nightly target (\(AtriaMetricFormat.sleepHours(clampedNeedHours))). Each point is an observed main sleep; missing mornings stay blank.")
+                Text(needPointCount == 0
+                     ? "Sleep Need will appear for nights frozen with the adaptive calculation. Older history stays blank rather than being rebuilt with today's baseline."
+                     : "Each Sleep Need point is the adaptive target frozen for that night. Missing historical targets stay blank.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -506,18 +524,22 @@ struct AtriaSleepDebtChartCard: View {
         let slept = slots.compactMap { slot in
             slot.sleptHours.map { (day: slot.day, hours: $0) }
         }
-        let highest = max(clampedNeedHours, slept.map(\.hours).max() ?? clampedNeedHours)
-        let lowest = min(clampedNeedHours, slept.map(\.hours).min() ?? clampedNeedHours)
+        let needed = slots.compactMap { slot in
+            slot.needHours.map { (day: slot.day, hours: $0) }
+        }
+        let allHours = slept.map(\.hours) + needed.map(\.hours)
+        let highest = allHours.max() ?? 8
+        let lowest = allHours.min() ?? 7
         let lowerBound = max(0, floor(lowest - 0.75))
         let upperBound = ceil(highest + 0.75)
 
         return Chart {
-            ForEach(slots, id: \.day) { slot in
-                LineMark(x: .value("Morning", slot.day), y: .value("Sleep needed", slot.needHours), series: .value("Series", "Sleep needed"))
+            ForEach(needed, id: \.day) { point in
+                LineMark(x: .value("Morning", point.day), y: .value("Sleep needed", point.hours), series: .value("Series", "Sleep needed"))
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2, dash: [4, 3]))
                     .foregroundStyle(Metrics.electricGreen)
-                PointMark(x: .value("Morning", slot.day), y: .value("Sleep needed", slot.needHours))
+                PointMark(x: .value("Morning", point.day), y: .value("Sleep needed", point.hours))
                     .symbol(Circle())
                     .symbolSize(44)
                     .foregroundStyle(Metrics.electricGreen)
@@ -531,7 +553,7 @@ struct AtriaSleepDebtChartCard: View {
                     .symbol(Circle())
                     .symbolSize(58)
                     .foregroundStyle(AtriaSleepLedgerPalette.slept)
-                    .annotation(position: point.hours >= clampedNeedHours ? .top : .bottom, overflowResolution: .init(x: .fit, y: .disabled)) {
+                    .annotation(position: point.hours >= (needed.first(where: { $0.day == point.day })?.hours ?? point.hours) ? .top : .bottom, overflowResolution: .init(x: .fit, y: .disabled)) {
                         Text(AtriaMetricFormat.sleepHours(point.hours))
                             .font(.system(size: 9, weight: .bold, design: .rounded).monospacedDigit())
                             .foregroundStyle(AtriaSleepLedgerPalette.slept)

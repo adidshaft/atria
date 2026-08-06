@@ -2148,6 +2148,8 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
         AtriaRecoveryStrainCard(hero: heroStore.state,
                                 sleepHistory: sleepHistory,
                                 sleepHistoryRevision: sleepHistoryRevision,
+                                dailyRollupHistory: vitals.dailyRollupHistory,
+                                dailyRollupHistoryRevision: vitals.dailyRollupHistoryRevision,
                                 recoveryTarget: AtriaMetricTarget.recovery(greenLower: recoveryGreenLower,
                                                                            yellowLower: recoveryYellowLower),
                                 strainGreenBand: strainGreenBand,
@@ -5399,6 +5401,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
     let sleepHistory: SleepHistorySnapshot
     let sleepHistoryRevision: Int
+    let dailyRollupHistory: [DailyRollupStoreEntry]
+    let dailyRollupHistoryRevision: Int
     let recoveryTarget: AtriaMetricTarget
     let strainGreenBand: Double
     let strainYellowBand: Double
@@ -5425,6 +5429,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     static func == (lhs: AtriaRecoveryStrainCard, rhs: AtriaRecoveryStrainCard) -> Bool {
         lhs.hero == rhs.hero
             && lhs.sleepHistoryRevision == rhs.sleepHistoryRevision
+            && lhs.dailyRollupHistoryRevision == rhs.dailyRollupHistoryRevision
             && lhs.recoveryTarget == rhs.recoveryTarget
             && lhs.strainGreenBand == rhs.strainGreenBand
             && lhs.strainYellowBand == rhs.strainYellowBand
@@ -5466,6 +5471,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
             recoveryStrainVisuals
             metricContent
             AtriaSleepHistoryCard(snapshot: sleepHistory,
+                                  dailyRollupHistory: dailyRollupHistory,
                                   hrvBaseline: hrvBaseline,
                                   hrvBaselineSamples: hrvBaselineSamples,
                                   hrvBaselineTrusted: hrvBaselineTrusted,
@@ -5587,6 +5593,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
 
 private struct AtriaSleepHistoryCard: View, Equatable {
     let snapshot: SleepHistorySnapshot
+    let dailyRollupHistory: [DailyRollupStoreEntry]
     let hrvBaseline: Int?
     let hrvBaselineSamples: Int
     let hrvBaselineTrusted: Bool
@@ -5614,6 +5621,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
 
     static func == (lhs: AtriaSleepHistoryCard, rhs: AtriaSleepHistoryCard) -> Bool {
         lhs.snapshot == rhs.snapshot
+            && lhs.dailyRollupHistory == rhs.dailyRollupHistory
             && lhs.hrvBaseline == rhs.hrvBaseline
             && lhs.hrvBaselineSamples == rhs.hrvBaselineSamples
             && lhs.hrvBaselineTrusted == rhs.hrvBaselineTrusted
@@ -5860,7 +5868,7 @@ private struct AtriaSleepHistoryCard: View, Equatable {
                 // weekly line-and-node comparison gives every night its
                 // personal need and makes missing observations explicit.
                 AtriaSleepDebtChartCard(nights: snapshot.nights,
-                                        baseNeedHours: sleepGoalHours)
+                                        rollups: dailyRollupHistory)
 
                 // Collapsed by default (UX audit 2026-07-07): the card
                 // stacked ~15 card-like units; stage detail and per-night
