@@ -10838,4 +10838,58 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    // MARK: - Exact-recovery fence: attended catch-up admission (2026-08-07)
+
+    private func fenceRefuses(
+        fullDrain: Bool = false,
+        syncInProgress: Bool = false,
+        resuming: Bool = false,
+        seekTrial: Bool = false,
+        gate2: Bool = false,
+        bank: Bool = false,
+        attended: Bool = false,
+        backlog: Bool = false
+    ) -> Bool {
+        AtriaBLEManager.shouldRefuseUnprovenExactRecoveryStart(
+            fullDrainGapRecoveryEnabled: fullDrain,
+            syncInProgress: syncInProgress,
+            resumingPersistedDrainAuthority: resuming,
+            attendedSelectorSeekTrial: seekTrial,
+            attendedGate2FullDrainProof: gate2,
+            explicitPostWorkoutBankRequest: bank,
+            attendedUserRequest: attended,
+            strapBacklogPending: backlog
+        )
+    }
+
+    func testFenceStillRefusesAutonomousStartsWithFullDrainRetired() {
+        // The 3 AM starvation state: no bypass, an automatic re-arm — refused.
+        XCTAssertTrue(fenceRefuses())
+        XCTAssertTrue(fenceRefuses(backlog: true),
+                      "a backlog alone must not admit an autonomous full-drain start")
+        XCTAssertTrue(fenceRefuses(attended: false, backlog: true))
+    }
+
+    func testAttendedRequestWithRealBacklogAdmitsCursorAnchoredCatchUp() {
+        // Settings "Sync missed data" / pull-to-refresh / banner Sync with a
+        // real strap backlog must reach the guarded catch-up lanes instead of
+        // dying as gap_retained_exact_recovery_unproven.
+        XCTAssertFalse(fenceRefuses(attended: true, backlog: true))
+    }
+
+    func testAttendedRequestWithoutBacklogStaysRefused() {
+        // Nothing pending on the strap: an attended tap has nothing safe to
+        // drain; keep the fence closed rather than issue a futile transport.
+        XCTAssertTrue(fenceRefuses(attended: true, backlog: false))
+    }
+
+    func testExistingBypassesAreUnchanged() {
+        XCTAssertFalse(fenceRefuses(syncInProgress: true))
+        XCTAssertFalse(fenceRefuses(resuming: true))
+        XCTAssertFalse(fenceRefuses(seekTrial: true))
+        XCTAssertFalse(fenceRefuses(gate2: true))
+        XCTAssertFalse(fenceRefuses(bank: true))
+        XCTAssertFalse(fenceRefuses(fullDrain: true))
+    }
+
 }

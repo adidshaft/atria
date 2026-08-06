@@ -8673,12 +8673,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let attendedGate2FullDrainProof = gate2FullDrainProofEnabled
             && gate2FullDrainRequestedGapID != nil
             && explicitHistoricalRequest
-        if !Self.productionHistoricalFullDrainGapRecoveryEnabled,
-           !offlineHistoricalSyncInProgress,
-           !resumingPersistedDrainAuthority,
-           !attendedSelectorSeekTrial,
-           !attendedGate2FullDrainProof,
-           !explicitPostWorkoutBankRequest {
+        if Self.shouldRefuseUnprovenExactRecoveryStart(
+            fullDrainGapRecoveryEnabled:
+                Self.productionHistoricalFullDrainGapRecoveryEnabled,
+            syncInProgress: offlineHistoricalSyncInProgress,
+            resumingPersistedDrainAuthority: resumingPersistedDrainAuthority,
+            attendedSelectorSeekTrial: attendedSelectorSeekTrial,
+            attendedGate2FullDrainProof: attendedGate2FullDrainProof,
+            explicitPostWorkoutBankRequest: explicitPostWorkoutBankRequest,
+            attendedUserRequest: attendedHistoricalRequest,
+            strapBacklogPending: strapBacklogPendingForCatchUp()
+        ) {
             if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
                 retainPendingOfflineHistoricalSyncRequest(
                     reason: reason,

@@ -110,4 +110,74 @@ final class AtriaMissedDataBannerPresentationTests: XCTestCase {
         XCTAssertEqual(AtriaMissedDataBannerPresentation.relativeAgo(120), "2m ago")
         XCTAssertEqual(AtriaMissedDataBannerPresentation.relativeAgo(3 * 3600), "3h ago")
     }
+
+    // MARK: - Stale pending count must not hide recovery (2026-08-07)
+
+    func testStaleLowCountWithPendingBacklogKeepsSyncAffordance() {
+        // The 3 AM case: count=132 observed 18h ago while ~7,300 records sat on
+        // the strap and the durable backlog ticket was still pending. A dead
+        // number must not declare the gap gone.
+        let c = AtriaMissedDataBannerPresentation.copy(
+            strapPendingRecords: 132,
+            protectsLiveStream: false,
+            secondsSinceLastFlush: nil,
+            backgroundLeaseActive: false,
+            debtObservedAgeSeconds: 18 * 3600,
+            backlogPending: true)
+        XCTAssertTrue(c.offersRecovery)
+        XCTAssertEqual(c.title, "Catching up history")
+        // The stale count must not be presented as a recoverable amount.
+        XCTAssertFalse(c.subtitle.contains("min"))
+    }
+
+    func testStaleCountWithActiveDrainLeadsWithFreshFlushSignal() {
+        let c = AtriaMissedDataBannerPresentation.copy(
+            strapPendingRecords: 132,
+            protectsLiveStream: false,
+            secondsSinceLastFlush: 120,
+            backgroundLeaseActive: true,
+            debtObservedAgeSeconds: 18 * 3600,
+            backlogPending: true)
+        XCTAssertTrue(c.offersRecovery)
+        XCTAssertTrue(c.subtitle.contains("synced"))
+    }
+
+    func testStaleCountWithLiveProtectionStaysRecoverable() {
+        let c = AtriaMissedDataBannerPresentation.copy(
+            strapPendingRecords: 0,
+            protectsLiveStream: true,
+            secondsSinceLastFlush: nil,
+            backgroundLeaseActive: false,
+            debtObservedAgeSeconds: nil,
+            backlogPending: true)
+        XCTAssertTrue(c.offersRecovery)
+        XCTAssertEqual(c.title, "Live HR protected")
+    }
+
+    func testStaleLowCountWithoutBacklogStaysHonestlyUnrecoverable() {
+        // No durable backlog ticket and only a stale low count: nothing says
+        // there is data to get back — keep the calm unrecoverable copy.
+        let c = AtriaMissedDataBannerPresentation.copy(
+            strapPendingRecords: 90,
+            protectsLiveStream: false,
+            secondsSinceLastFlush: nil,
+            backgroundLeaseActive: false,
+            debtObservedAgeSeconds: 18 * 3600,
+            backlogPending: false)
+        XCTAssertFalse(c.offersRecovery)
+        XCTAssertEqual(c.title, "Some earlier data wasn't recorded")
+    }
+
+    func testFreshLowCountStillReadsAsGoneEvenWithBacklogTicket() {
+        // A FRESH observation below the floor is real evidence the data is
+        // effectively gone — the ticket alone must not dangle a futile sync.
+        let c = AtriaMissedDataBannerPresentation.copy(
+            strapPendingRecords: 90,
+            protectsLiveStream: false,
+            secondsSinceLastFlush: nil,
+            backgroundLeaseActive: false,
+            debtObservedAgeSeconds: 60,
+            backlogPending: true)
+        XCTAssertFalse(c.offersRecovery)
+    }
 }
