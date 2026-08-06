@@ -3570,3 +3570,18 @@ manually. Remaining agenda: sleep-activity visualization routing +
 stage bars; Vitals stress-monitor placement (verify post-
 publication); per-activity visualizations; suppression-architecture
 cleanup; publication flip still awaiting a genuine user unlock.
+
+## 15.79 SLEEP ACTIVITY REVIEW SHEET SHIPPED (10:35)
+
+Agenda item #2 core done (3e522976): tapping a sleep in Activity now
+opens AtriaSleepActivityReviewSheet — shared hypnogram card (honest
+states intact), WHOOP-style stage bars (displayOrder, SWS→Deep fold,
+%+durations, evidence-gated on displayStageSegments), night vitals
+row (displaySleepEfficiency + footnote honesty, RHR/HRV/Resp with
+"--"), "Edit sleep times" demoted to an in-sheet button. Sim can't
+visually verify (no sleep data); user's real data verifies live.
+Post-install: 8476c59b's journal now also collecting device-use.
+REMAINING AGENDA: publication flip (STILL awaiting one genuine
+user unlock+open!); Vitals stress-monitor placement (check after
+flip); per-activity visualizations for workouts/detections;
+suppression-architecture cleanup; §15.76 re-measure coverage today.
