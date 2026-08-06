@@ -614,8 +614,11 @@ private struct AtriaJournalCheckInDeck: View {
                     .accessibilityHidden(true)
             }
         }
-        .padding(16)
-        .atriaCard(emphasis: .soft)
+        // `swipeDeck` is the one task surface. An additional enclosing card
+        // made the check-in look like a modal trapped inside another modal and
+        // pushed the answer controls below the fold on a phone. Let the deck
+        // use the section's full width instead.
+        .padding(.vertical, 4)
         .sensoryFeedback(.selection, trigger: deckIndex)
         .sensoryFeedback(.impact(weight: .medium), trigger: swipeHapticTick)
         .sheet(item: $followUpQuestion) { question in
