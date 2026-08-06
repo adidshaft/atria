@@ -66,7 +66,7 @@ appear exactly once, in exactly one split.
 
 ## Label contracts
 
-All `start_rel` and `end_rel` values use the bundle's schema-v4 day-zero axis.
+All `start_rel` and `end_rel` values use the bundle's schema-v5 day-zero axis.
 They must not overlap within the same target series. Different targets may share
 the same interval: for example, a PSG stage and an overnight-load reference
 normally describe the same sleep window.
