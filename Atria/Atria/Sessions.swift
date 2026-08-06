@@ -13079,7 +13079,16 @@ final class SessionStore: ObservableObject {
                                                             calendar: Calendar = .current) -> [SavedDailyMetric] {
         let today = calendar.startOfDay(for: now)
         let normalizedAuthoritativeDays = Set(authoritativeDays.map { calendar.startOfDay(for: $0) })
-        var merged = Dictionary(uniqueKeysWithValues: computed.map { (calendar.startOfDay(for: $0.day), $0) })
+        // A history rebuild can temporarily contain more than one timestamp for
+        // the same civil day (for example after a time-zone migration or while
+        // incremental and retained rollups overlap). This boundary owns the
+        // day-normalization, so it must also make that normalization safe.
+        // Preserve the pipeline's first computed row rather than trapping or
+        // inventing a hybrid recovery snapshot from two competing records.
+        var merged = Dictionary(
+            computed.map { (calendar.startOfDay(for: $0.day), $0) },
+            uniquingKeysWith: { existing, _ in existing }
+        )
 
         for metric in existing {
             let day = calendar.startOfDay(for: metric.day)
@@ -16466,9 +16475,15 @@ final class SessionStore: ObservableObject {
         return rest + (2 * (targetHR - rest))
     }
 
-    func rrPackageStatusFast(limitSessions: Int = 12) -> RRPackageStatus {
+    /// Compact dashboard status intentionally samples only the newest viable
+    /// RR windows. Full-history RR replay remains available to explicit
+    /// diagnostics, but repeatedly re-analysing every 15-second window of a
+    /// long recording while the overview idles can exceed iOS's CPU budget.
+    func rrPackageStatusFast(limitSessions: Int = 2,
+                             maximumWindowsPerSession: Int = 12) -> RRPackageStatus {
         let summary = replaySavedRRLedger(limitSessions: limitSessions,
-                                          includeActiveJournal: true)
+                                          includeActiveJournal: true,
+                                          maximumWindowsPerSession: maximumWindowsPerSession)
         guard summary.rrSamples > 0 else { return .empty }
         return RRPackageStatus(ready: summary.bestReady,
                                reason: summary.reason,
@@ -18647,12 +18662,14 @@ final class SessionStore: ObservableObject {
     }
 
     private func replaySavedRRLedger(limitSessions: Int? = nil,
-                                     includeActiveJournal: Bool = false) -> RRLedgerReplaySummary {
+                                     includeActiveJournal: Bool = false,
+                                     maximumWindowsPerSession: Int? = nil) -> RRLedgerReplaySummary {
         let replaySessions = canonicalSessions(includeActiveJournal: includeActiveJournal)
         let sessionsWithRR = replaySessions.filter { $0.rrSampleCount > 0 }.count
         let rrSamples = totalRRSamples(in: replaySessions)
         guard let best = bestSavedRRReferenceWindow(limitSessions: limitSessions,
-                                                    includeActiveJournal: includeActiveJournal) else {
+                                                    includeActiveJournal: includeActiveJournal,
+                                                    maximumWindowsPerSession: maximumWindowsPerSession) else {
             if rrSamples > 0 {
                 return RRLedgerReplaySummary(sessionsWithRR: sessionsWithRR,
                                              rrSamples: rrSamples,
@@ -18696,7 +18713,8 @@ final class SessionStore: ObservableObject {
     }
 
     private func bestSavedRRReferenceWindow(limitSessions: Int? = nil,
-                                            includeActiveJournal: Bool = false) -> RRSavedReferenceWindow? {
+                                            includeActiveJournal: Bool = false,
+                                            maximumWindowsPerSession: Int? = nil) -> RRSavedReferenceWindow? {
         let scanStep: TimeInterval = 15
         var best: RRSavedReferenceWindow?
         var candidates = canonicalSessions(includeActiveJournal: includeActiveJournal)
@@ -18716,9 +18734,13 @@ final class SessionStore: ObservableObject {
             guard let first = sorted.first?.t, let last = sorted.last?.t, last >= 300 else { continue }
             var startIndex = 0
             var endIndex = 0
-            let firstEnd = max(300, ceil(first / scanStep) * scanStep)
-            var endSeconds = firstEnd
-            while endSeconds <= last {
+            let endSecondsToEvaluate = Self.rrReferenceWindowEndSeconds(
+                first: first,
+                last: last,
+                scanStep: scanStep,
+                maximumWindows: maximumWindowsPerSession
+            )
+            for endSeconds in endSecondsToEvaluate {
                 let windowStartSeconds = endSeconds - 300
                 while startIndex < sorted.count && sorted[startIndex].t < windowStartSeconds {
                     startIndex += 1
@@ -18727,7 +18749,6 @@ final class SessionStore: ObservableObject {
                     endIndex += 1
                 }
                 if endIndex < startIndex || endIndex - startIndex + 1 < 2 {
-                    endSeconds += scanStep
                     continue
                 }
                 let candidate = sorted[startIndex...endIndex].map { point in
@@ -18742,7 +18763,6 @@ final class SessionStore: ObservableObject {
                                                          windowStart: windowStart,
                                                          windowEnd: now,
                                                          strictGap: strictGap) else {
-                    endSeconds += scanStep
                     continue
                 }
                 let ready = Self.savedRRReferenceWindowIsReady(snapshot: snapshot,
@@ -18764,10 +18784,39 @@ final class SessionStore: ObservableObject {
                 } else {
                     best = window
                 }
-                endSeconds += scanStep
             }
         }
         return best
+    }
+
+    /// Produces the exact exhaustive cadence when no cap is supplied. A cap
+    /// selects only the most recent eligible ends, then returns that bounded
+    /// set chronologically so the rolling index scan stays linear.
+    nonisolated static func rrReferenceWindowEndSeconds(first: TimeInterval,
+                                                        last: TimeInterval,
+                                                        scanStep: TimeInterval = 15,
+                                                        maximumWindows: Int? = nil) -> [TimeInterval] {
+        guard first.isFinite, last.isFinite, scanStep > 0 else { return [] }
+        let firstEnd = max(300, ceil(first / scanStep) * scanStep)
+        guard firstEnd <= last else { return [] }
+        if let maximumWindows {
+            guard maximumWindows > 0 else { return [] }
+            var ends: [TimeInterval] = []
+            ends.reserveCapacity(maximumWindows)
+            var end = floor(last / scanStep) * scanStep
+            while end >= firstEnd, ends.count < maximumWindows {
+                ends.append(end)
+                end -= scanStep
+            }
+            return ends.reversed()
+        }
+        var ends: [TimeInterval] = []
+        var end = firstEnd
+        while end <= last {
+            ends.append(end)
+            end += scanStep
+        }
+        return ends
     }
 
     private func rrReferenceSnapshot(_ samples: [(t: Date, ms: Double)],
@@ -19207,11 +19256,21 @@ final class SessionStore: ObservableObject {
                                                    now: Date,
                                                    source: String) {
         let requestedKey = workoutReviewKey(rest: rest, maxHR: maxHR, now: now)
-        if workoutReviewCacheKey == requestedKey || pendingWorkoutReviewCacheKey == requestedKey { return }
+        if workoutReviewCacheKey == requestedKey { return }
+
+        // Cancelling a DispatchWorkItem after it has begun does not interrupt
+        // its aggregate replay. A live checkpoint used to replace that item
+        // every few seconds, leaving several expensive scans alive at once.
+        // Keep one worker in flight and let its stale-result path rebuild once
+        // from the newest evidence when it finishes.
+        if pendingWorkoutReviewCacheWorkItem != nil {
+            pendingWorkoutReviewCacheKey = requestedKey
+            AtriaDebugLog("ATRIADBG workout_review_cache status=coalesced source=%@", source)
+            return
+        }
 
         workoutReviewCacheGeneration &+= 1
         let generation = workoutReviewCacheGeneration
-        pendingWorkoutReviewCacheWorkItem?.cancel()
         let canonicalSessions = cachedCanonicalSessions
         let confirmedWorkouts = cachedConfirmedWorkouts
         let dismissedCandidates = dismissedWorkoutCandidates
@@ -19226,16 +19285,15 @@ final class SessionStore: ObservableObject {
                 activeJournalSession: activeJournalSession
             )
             let horizonSessions = Self.workoutReviewSessionsWithinHorizon(reviewSessions, now: now)
-            let candidate = Self.makeWorkoutReviewCandidateForCache(sessions: horizonSessions,
-                                                                    confirmedWorkouts: confirmedWorkouts,
-                                                                    dismissedCandidates: dismissedCandidates,
-                                                                    rest: rest,
-                                                                    maxHR: maxHR)
+            // The multi-window replay already evaluates the same candidate
+            // corpus as the single-best path. Reusing its freshest qualified
+            // result avoids immediately repeating the full aggregate scan.
             let candidates = Self.makeWorkoutReviewCandidatesForCache(sessions: horizonSessions,
                                                                       confirmedWorkouts: confirmedWorkouts,
                                                                       dismissedCandidates: dismissedCandidates,
                                                                       rest: rest,
                                                                       maxHR: maxHR)
+            let candidate = candidates.first
             DispatchQueue.main.async { [weak self] in
                 guard let self,
                       Self.shouldPublishWorkoutReviewCache(completedGeneration: generation,

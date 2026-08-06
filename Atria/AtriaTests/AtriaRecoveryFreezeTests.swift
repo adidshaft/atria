@@ -293,6 +293,78 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         XCTAssertNil(retained.recoveryPercent)
     }
 
+    func testMergeDailyMetricHistoryKeepsFirstComputedMetricForDuplicateCivilDay() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2027, month: 1, day: 14)))
+        let first = SavedDailyMetric(
+            day: day,
+            recoveryPercent: 72,
+            recoveryConfidence: "personal",
+            hrv: 56,
+            restingHR: 51,
+            respiratoryRate: 13.8,
+            sleepDuration: 7 * 3_600,
+            sleepSpan: 7.5 * 3_600,
+            sleepStart: day.addingTimeInterval(-7.5 * 3_600),
+            sleepEnd: day,
+            sleepSource: "auto_sleep",
+            sleepStageSegments: [],
+            sleepConsistencyPercent: 84,
+            strain: 5.6
+        )
+        let duplicateTimestamp = SavedDailyMetric(
+            day: day.addingTimeInterval(12 * 3_600),
+            recoveryPercent: 38,
+            recoveryConfidence: "learning",
+            hrv: 31,
+            restingHR: 68,
+            respiratoryRate: 16.2,
+            sleepDuration: 4 * 3_600,
+            sleepSpan: 4.5 * 3_600,
+            sleepStart: day.addingTimeInterval(4 * 3_600),
+            sleepEnd: day.addingTimeInterval(8.5 * 3_600),
+            sleepSource: "incremental_overlap",
+            sleepStageSegments: [],
+            sleepConsistencyPercent: 46,
+            strain: 11.8
+        )
+
+        let merged = SessionStore.mergeDailyMetricHistory(
+            existing: [],
+            computed: [first, duplicateTimestamp],
+            sessions: [],
+            sleep: SleepHistorySnapshot(rollups: [], confirmedSleeps: []),
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: day.addingTimeInterval(2 * 86_400),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged.first?.day, day)
+        XCTAssertEqual(merged.first?.recoveryPercent, 72)
+        XCTAssertEqual(merged.first?.strain, 5.6)
+    }
+
+    func testBoundedRRWindowEndsPreferRecentSignalAndRespectLimit() {
+        XCTAssertEqual(
+            SessionStore.rrReferenceWindowEndSeconds(
+                first: 0,
+                last: 3_600,
+                scanStep: 15,
+                maximumWindows: 3
+            ),
+            [3_570, 3_585, 3_600]
+        )
+        XCTAssertEqual(
+            SessionStore.rrReferenceWindowEndSeconds(first: 0,
+                                                       last: 330,
+                                                       scanStep: 15),
+            [300, 315, 330]
+        )
+    }
+
     func testUnchangedNightIsNotAChange() {
         let a = metric(sleepEnd: at(6))
         XCTAssertFalse(SessionStore.dailyRecoveryInputsChanged(frozen: a, fresh: a))
