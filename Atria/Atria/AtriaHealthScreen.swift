@@ -2263,8 +2263,8 @@ private struct AtriaHealthMetricRow: View, Equatable {
     }
 }
 
-/// Night-only physiological load from archived, observed heart-rate rows. This
-/// is intentionally a separate projection from the daytime Stress Monitor:
+/// Night-only HR load from archived, observed heart-rate rows. This is
+/// intentionally a separate projection from the daytime Stress Monitor:
 /// that monitor remains paused during sleep so it cannot accidentally label
 /// an overnight reading as live daytime stress.
 private struct AtriaSleepStressProjection: Equatable {
@@ -2296,7 +2296,7 @@ private struct AtriaSleepStressProjection: Equatable {
             case .unavailable: return "Overnight HR load unavailable"
             case .baselineNeeded: return "Building overnight HR baseline"
             case .insufficientWear: return "Not enough overnight wear"
-            case .ready: return "Overnight physiological load"
+            case .ready: return "Observed HR · personal baseline"
             }
         }
 
