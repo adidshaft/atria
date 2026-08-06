@@ -660,6 +660,7 @@ struct AtriaActivityMonitorTab: View {
     let onAddSleep: () -> Void
 
     @State private var workoutDetail: UserConfirmedWorkout?
+    @State private var sleepDetail: SleepHistorySnapshot.Night?
     @State private var showAddWorkout = false
     @State private var reviewWorkoutWindow: ReviewWorkoutWindow?
     /// Day shown in the header timeline (user feedback 2026-07-07: "the top
@@ -775,6 +776,12 @@ struct AtriaActivityMonitorTab: View {
                 ForEach(sections) { section in
                     daySectionCard(section)
                 }
+            }
+        }
+        .sheet(item: $sleepDetail) { night in
+            AtriaSleepActivityReviewSheet(night: night) {
+                sleepDetail = nil
+                onEditSleep(night)
             }
         }
         .sheet(item: $workoutDetail) { workout in
@@ -1376,7 +1383,11 @@ struct AtriaActivityMonitorTab: View {
     private func entryRow(_ entry: Entry) -> some View {
         switch entry {
         case .sleep(let night):
-            Button { onEditSleep(night) } label: { sleepRow(night) }
+            // Review-first (user feedback 2026-08-06: tapping a sleep opened
+            // the bare time editor with no visualization). The review sheet
+            // hosts the shared hypnogram + stage breakdown; editing is a
+            // button inside it.
+            Button { sleepDetail = night } label: { sleepRow(night) }
                 .buttonStyle(.plain)
         case .workout(let workout):
             Button { workoutDetail = workout } label: {
@@ -3093,5 +3104,153 @@ struct AtriaWorkoutStressTraceChart: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(String(format: "Stress during this workout ranged from %.1f to %.1f on a 0 to 3 scale.", low, high))
+    }
+}
+
+/// Review-first sleep sheet for the Activity list (2026-08-06 user feedback:
+/// tapping a sleep opened only the bare time editor). Hosts the SHARED
+/// hypnogram card — which renders its own honest needs-motion / building /
+/// manual states — plus a WHOOP-style stage breakdown and the night's
+/// measured vitals. Every row is evidence-gated: stages render only when
+/// display segments exist, efficiency uses the honesty-gated display value,
+/// and absent vitals show the canonical "--" token.
+struct AtriaSleepActivityReviewSheet: View {
+    let night: SleepHistorySnapshot.Night
+    let onEditTimes: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private var spanSeconds: TimeInterval {
+        guard let start = night.start, let end = night.end, end > start else {
+            return night.duration
+        }
+        return end.timeIntervalSince(start)
+    }
+
+    private var stageRows: [(stage: SleepStageKind, seconds: TimeInterval)] {
+        guard !night.displayStageSegments.isEmpty else { return [] }
+        return SleepStageKind.displayOrder.compactMap { stage in
+            let seconds = night.stageDuration(stage)
+                + (stage == .deep ? night.stageDuration(.sws) : 0)
+            guard seconds > 0 else { return nil }
+            return (stage, seconds)
+        }
+    }
+
+    private static func hoursMinutes(_ seconds: TimeInterval) -> String {
+        let minutes = Int((seconds / 60).rounded())
+        return minutes >= 60 ? "\(minutes / 60) h \(minutes % 60) m" : "\(minutes) m"
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    header
+                    AtriaSleepHypnogramCard(night: night)
+                    if !stageRows.isEmpty {
+                        stageBreakdown
+                    }
+                    nightVitals
+                    Button(action: onEditTimes) {
+                        Label("Edit sleep times", systemImage: "pencil")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .atriaCardAction(prominent: false, tint: Metrics.electricSleep)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+            }
+            .navigationTitle("Sleep")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(Self.hoursMinutes(night.duration))
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .monospacedDigit()
+            if let start = night.start, let end = night.end {
+                Text("\(start.formatted(date: .omitted, time: .shortened)) – \(end.formatted(date: .omitted, time: .shortened)) · \(night.stageEvidence.label)")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text(night.stageEvidence.label)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var stageBreakdown: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("STAGES")
+                .font(.caption2.weight(.black))
+                .foregroundStyle(.tertiary)
+                .kerning(0.8)
+            ForEach(stageRows, id: \.stage) { row in
+                let fraction = spanSeconds > 0 ? row.seconds / spanSeconds : 0
+                HStack(spacing: 10) {
+                    Text(row.stage.label)
+                        .font(.subheadline.weight(.semibold))
+                        .frame(width: 56, alignment: .leading)
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule()
+                                .fill(AtriaSleepHypnogramCard.color(for: row.stage).opacity(0.18))
+                            Capsule()
+                                .fill(AtriaSleepHypnogramCard.color(for: row.stage))
+                                .frame(width: max(4, geo.size.width * fraction))
+                        }
+                    }
+                    .frame(height: 8)
+                    Text("\(Int((fraction * 100).rounded()))%")
+                        .font(.caption.weight(.bold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                    Text(Self.hoursMinutes(row.seconds))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 56, alignment: .trailing)
+                }
+            }
+        }
+        .padding(12)
+        .atriaInsetCard(tint: Metrics.electricSleep)
+    }
+
+    private var nightVitals: some View {
+        HStack(spacing: 0) {
+            vitalsCell("Efficiency",
+                       night.displaySleepEfficiency.map { "\(Int(($0 * 100).rounded()))%" } ?? "--",
+                       footnote: night.displaySleepEfficiency == nil ? night.sleepEfficiencyFootnote : nil)
+            vitalsCell("RHR", night.restingHR.map { "\($0)" } ?? "--")
+            vitalsCell("HRV", night.hrv.map { "\($0)" } ?? "--")
+            vitalsCell("Resp", night.respiratoryRate.map { String(format: "%.1f", $0) } ?? "--")
+        }
+        .padding(.vertical, 10)
+        .atriaInsetCard(tint: Metrics.electricSleep)
+    }
+
+    private func vitalsCell(_ title: String, _ value: String, footnote: String? = nil) -> some View {
+        VStack(spacing: 2) {
+            Text(title)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.subheadline.weight(.bold).monospacedDigit())
+            if let footnote {
+                Text(footnote)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .frame(maxWidth: .infinity)
     }
 }
