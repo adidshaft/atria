@@ -1421,8 +1421,10 @@ struct AtriaTodayScreen: View {
                                                yesterdayStrain: yesterdayStrain,
                                                calendar: calendar)
         return AtriaTodaySleepNeedSnapshot(needHours: need,
-                                           performancePercent: AtriaSleepBudget.performancePercent(slept: latestSleep.durationHours,
-                                                                                                   needed: need))
+                                           performancePercent: need.map {
+                                               AtriaSleepBudget.performancePercent(slept: latestSleep.durationHours,
+                                                                                   needed: $0)
+                                           })
     }
 
     private static func yesterdayStrain(for latestSleep: SleepHistorySnapshot.Night,

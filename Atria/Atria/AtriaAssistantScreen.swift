@@ -180,7 +180,13 @@ struct AtriaAssistantScreen: View {
                             provenance: "Sleep planner · awaiting a confirmed night.")
         }
         let baseNeed = SessionStore.configuredSleepBaseNeedHours()
-        let need = snapshot.sleepNeedHours(for: latest, baseNeedHours: baseNeed, yesterdayStrain: nil)
+        guard let need = snapshot.sleepNeedHours(for: latest,
+                                                 baseNeedHours: baseNeed,
+                                                 yesterdayStrain: nil) else {
+            return Exchange(question: prompt.question,
+                            answer: "That night's Sleep Need was not saved with the record, so I won't reconstruct a target from today's settings. New nights retain their exact target when they settle.",
+                            provenance: "Sleep Need · legacy record unavailable.")
+        }
         let goal = AtriaSleepPlannerGoal(rawValue: plannerGoalRaw) ?? .peak
         let plan = AtriaSleepPlanner.plan(needHours: need, goal: goal, wakeByMinutes: wakeByMinutes,
                                           nightEfficiencies: snapshot.nights.filter(\.confirmed).compactMap(\.sleepEfficiency))

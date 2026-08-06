@@ -7964,7 +7964,7 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
                 for: latest,
                 baseNeedHours: sleepBaseNeedHours,
                 yesterdayStrain: yesterdayStrainForLatestSleep
-            )
+            ) ?? sleepBaseNeedHours
         }
         let debt = sleepHistory.sleepBudgetDebtHours(baseNeedHours: sleepBaseNeedHours)
         return AtriaSleepBudget.sleepNeed(baseHours: sleepBaseNeedHours,
@@ -9956,26 +9956,33 @@ struct AtriaMetricDetailSheet: View {
     /// itemized stacked bar over the four real terms of the sleep-need math.
     /// The total is the exact number the hypnogram card's need uses -- never
     /// a separately computed figure.
+    @ViewBuilder
     private func sleepNeedLedgerCard(for night: SleepHistorySnapshot.Night) -> some View {
-        AtriaSleepNeedLedgerCard(
-            components: sleepHistory.sleepNeedComponents(for: night,
-                                                         baseNeedHours: sleepBaseNeedHours,
-                                                         yesterdayStrain: yesterdayStrainForLatestNight),
-            yesterdayStrain: yesterdayStrainForLatestNight)
+        if let components = sleepHistory.sleepNeedComponents(
+            for: night,
+            baseNeedHours: sleepBaseNeedHours,
+            yesterdayStrain: yesterdayStrainForLatestNight
+        ) {
+            AtriaSleepNeedLedgerCard(components: components,
+                                     yesterdayStrain: yesterdayStrainForLatestNight)
+        } else {
+            AtriaSleepNeedUnavailableCard()
+        }
     }
 
     private var sleepContributorRows: [AtriaMetricContributorRow] {
         let latest = sleepHistory.latestMainSleep
-        let performance = latest.map {
+        let performance = latest.flatMap {
             sleepHistory.sleepPerformancePercent(for: $0,
                                                  baseNeedHours: sleepBaseNeedHours,
                                                  yesterdayStrain: yesterdayStrainForLatestNight)
         }
-        let needText = latest.map {
-            AtriaMetricFormat.sleepHours(sleepHistory.sleepNeedHours(for: $0,
-                                                                     baseNeedHours: sleepBaseNeedHours,
-                                                                     yesterdayStrain: yesterdayStrainForLatestNight))
-        } ?? AtriaMetricFormat.sleepHours(sleepBaseNeedHours)
+        let needText = latest.flatMap {
+            sleepHistory.sleepNeedHours(for: $0,
+                                        baseNeedHours: sleepBaseNeedHours,
+                                        yesterdayStrain: yesterdayStrainForLatestNight)
+                .map(AtriaMetricFormat.sleepHours)
+        } ?? "unavailable"
         return [
             AtriaMetricContributorRow(systemImage: "moon.fill",
                                       name: "Sufficiency",
@@ -9983,9 +9990,7 @@ struct AtriaMetricDetailSheet: View {
                                       // value was the duration (shown 3 more
                                       // times on this sheet); it now shows
                                       // the performance % its name promises.
-                                      value: latest.map {
-                                          "\(sleepHistory.sleepPerformancePercent(for: $0, baseNeedHours: sleepBaseNeedHours, yesterdayStrain: yesterdayStrainForLatestNight))%"
-                                      } ?? "--",
+                                      value: performance.map { "\($0)%" } ?? "--",
                                       comparison: latest.map {
                                           sleepHistory.sleepPerformanceSummary(for: $0,
                                                                                baseNeedHours: sleepBaseNeedHours,
@@ -10073,7 +10078,7 @@ struct AtriaMetricDetailSheet: View {
             baseNeedHours: sleepBaseNeedHours,
             yesterdayStrain: yesterdayStrainForLatestNight
         )
-        return "\(performance)% of need"
+        return performance.map { "\($0)% of need" } ?? "Need unavailable"
     }
 
     private var strainContributorRows: [AtriaMetricContributorRow] {
@@ -13472,7 +13477,7 @@ struct AtriaDetailBaselineBand {
 /// stage bar of its own.
 private struct AtriaSleepPlanCard: View {
     let night: SleepHistorySnapshot.Night
-    let neededHours: Double
+    let neededHours: Double?
     @AtriaDefault(AtriaWakeAlarmStore.enabledKey) private var wakeAlarmEnabled: Bool = false
     @AtriaDefault(AtriaWakeAlarmStore.modeKey) private var wakeAlarmMode: String = AtriaWakeAlarmPlan.Mode.smartWindow.rawValue
     @AtriaDefault(AtriaWakeAlarmStore.wakeByMinutesKey) private var wakeByMinutes: Int = AtriaWakeAlarmPlan.defaultPlan.wakeByMinutes
@@ -13502,7 +13507,8 @@ private struct AtriaSleepPlanCard: View {
             // contributor rows below the chart own both values. The footer
             // keeps only the need context — duration and performance live
             // on the hero.
-            Text("Needed \(AtriaMetricFormat.sleepHours(neededHours)) last night")
+            Text(neededHours.map { "Needed \(AtriaMetricFormat.sleepHours($0)) last night" }
+                 ?? "Last night's target was not saved")
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
 
@@ -13520,7 +13526,7 @@ private struct AtriaSleepPlanCard: View {
     /// need and the user's own typical efficiency.
     private var sleepPlannerCard: some View {
         let goal = AtriaSleepPlannerGoal(rawValue: plannerGoalRaw) ?? .peak
-        let plan = AtriaSleepPlanner.plan(needHours: neededHours,
+        let plan = AtriaSleepPlanner.plan(needHours: neededHours ?? SessionStore.configuredSleepBaseNeedHours(),
                                           goal: goal,
                                           wakeByMinutes: wakeByMinutes,
                                           nightEfficiencies: nightEfficiencies)
@@ -13655,6 +13661,26 @@ private struct AtriaSleepPlanCard: View {
         }
     }
 
+}
+
+/// A historical sleep can retain duration without the Need that was used at
+/// settlement. Show that evidence gap plainly rather than recreating an old
+/// target from today's profile.
+private struct AtriaSleepNeedUnavailableCard: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Sleep Need unavailable")
+                .font(.headline.weight(.semibold))
+            Text("This legacy night did not retain its target or inputs. Atria will not recreate it using today’s settings. Newly settled nights keep the exact target and its contributors.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .atriaInsetCard(tint: Metrics.electricSleep)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Sleep Need unavailable. This legacy night did not retain its target.")
+    }
 }
 
 struct AtriaStrainBandGauge: View {

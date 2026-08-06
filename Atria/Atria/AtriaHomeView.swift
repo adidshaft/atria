@@ -1188,10 +1188,8 @@ struct AtriaHomeView: View {
                                   // lineage to preserve.
                                   preservesSensorStages: route.night != nil,
                                   evidenceNight: route.night,
-                                  evidencePerformancePercent: route.night.map {
-                                      adaptiveSleepProjection(
-                                          for: $0
-                                      ).performancePercent
+                                  evidencePerformancePercent: route.night.flatMap {
+                                      adaptiveSleepProjection(for: $0)?.performancePercent
                                   },
                                   mode: route.night.map { $0.confirmed ? .edit : .review } ?? .add,
                                   onRemove: route.night.map { night in
@@ -4770,7 +4768,7 @@ struct AtriaHomeView: View {
         let sleepDetail = sleep?.confirmationText ?? "No sleep this cycle"
         let sleepIsConfirmedNight = sleep?.confirmed == true && sleep?.isNapEvidence != true
         let sleepProjection = sleepIsConfirmedNight
-            ? sleep.map(adaptiveSleepProjection)
+            ? sleep.flatMap(adaptiveSleepProjection)
             : nil
         let sleepFill = sleepProjection.map {
             min(max(Double($0.performancePercent) / 100.0, 0), 1)
@@ -4872,7 +4870,7 @@ struct AtriaHomeView: View {
     /// alternate scoring authority.
     private func adaptiveSleepProjection(
         for night: SleepHistorySnapshot.Night
-    ) -> (needHours: Double, performancePercent: Int) {
+    ) -> (needHours: Double, performancePercent: Int)? {
         let calendar = Calendar.current
         let priorDay = calendar.date(
             byAdding: .day,
@@ -4890,6 +4888,7 @@ struct AtriaHomeView: View {
             yesterdayStrain: yesterdayStrain,
             calendar: calendar
         )
+        guard let need else { return nil }
         return (
             needHours: need,
             performancePercent: AtriaSleepBudget.performancePercent(
