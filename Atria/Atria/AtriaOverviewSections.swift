@@ -2310,7 +2310,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .sleep: return "Sleep"
         case .sleepHistory: return "Sleep history"
         case .sleepEfficiency: return "Sleep eff"
-        case .sleepPerformance: return "Sleep perf"
+        case .sleepPerformance: return "Sleep suff."
         case .rhr: return "Resting HR"
         case .respiratoryRate: return "Resp rate"
         case .steps: return "Strap steps"
@@ -4019,7 +4019,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   calibratingDay: sleepEfficiencyCalibratingDay)
         case .sleepPerformance:
             detailButton(.sleepPerformance) {
-                AtriaGlanceMetricCard(title: "Sleep perf",
+                AtriaGlanceMetricCard(title: "Sleep suff.",
                                       value: currentSleepPerformancePercent.map { "\($0)%" }
                                         ?? AtriaCompactMetricPresentation.noValue,
                                       detail: currentSleepPerformancePercent == nil
@@ -4027,7 +4027,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                         : "of need",
                                       systemImage: metric.systemImage,
                                       tint: Metrics.electricSleep,
-                                      accessibilityDetail: "Sleep performance, percent of nightly need.")
+                                      accessibilityDetail: "Sleep sufficiency, percent of nightly need.")
             }
         case .rhr:
             detailButton(.restingHeartRate) {
@@ -5670,7 +5670,7 @@ struct AtriaMonthlyReportSheet: View {
                                                  detail: hardestWeekText,
                                                  systemImage: "flame.fill",
                                                  tint: Metrics.electricStrain)
-                        AtriaWeeklyReportStatRow(title: "Sleep performance",
+                        AtriaWeeklyReportStatRow(title: "Sleep sufficiency",
                                                  value: sleepPerformanceText,
                                                  detail: sleepPerformanceDeltaText,
                                                  systemImage: "moon.zzz.fill",
@@ -8497,7 +8497,7 @@ enum AtriaMetricDetailKind: String, Identifiable {
         case .strain: return "Strain"
         case .stress: return "Stress"
         case .vo2max: return "VO2max"
-        case .sleepPerformance: return "Sleep performance"
+        case .sleepPerformance: return "Sleep sufficiency"
         case .sleepEfficiency: return "Sleep efficiency"
         case .skinTemperature: return "Skin temperature"
         case .fitnessAge: return "Fitness age"
@@ -9340,14 +9340,14 @@ struct AtriaMetricDetailSheet: View {
                 EmptyView()
             } chart: {
                 chartSlot {
-                    metricChart(title: "Sleep performance",
+                    metricChart(title: "Sleep sufficiency",
                                 unit: "%",
                                 tint: Metrics.electricSleep,
                                 points: preparedHistory.sleepPerformance[range] ?? [],
                                 summary: preparedHistory.sleepPerformanceSummary[range],
                                 comparison: preparedHistory.sleepPerformanceComparison[range],
                                 baselineBand: nil,
-                                accessibilitySummary: "Sleep performance, percent of nightly need, over \(range.label).",
+                                accessibilitySummary: "Sleep sufficiency, percent of nightly need, over \(range.label).",
                                 companions: [("Sleep duration", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? []),
                                              ("Recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod)],
                                 onOpenDay: { day in openHistoryDay(for: day) },
@@ -9969,7 +9969,7 @@ struct AtriaMetricDetailSheet: View {
         } ?? AtriaMetricFormat.sleepHours(sleepBaseNeedHours)
         return [
             AtriaMetricContributorRow(systemImage: "moon.fill",
-                                      name: "Performance",
+                                      name: "Sufficiency",
                                       // Dedup audit 2026-07-07: this row's
                                       // value was the duration (shown 3 more
                                       // times on this sheet); it now shows
@@ -10522,7 +10522,7 @@ struct AtriaMetricDetailSheet: View {
                     strainDisplayPointsForSelectedPeriod,
                     preparedHistory.strainPrior[range] ?? [], nil)
         case .sleepPerformance:
-            return ("Sleep performance", "%", Metrics.electricSleep,
+            return ("Sleep sufficiency", "%", Metrics.electricSleep,
                     preparedHistory.sleepPerformance[range] ?? [], [], nil)
         case .fitnessAge:
             return ("Pace of aging", "y", fitnessAgeTint,
@@ -11783,7 +11783,7 @@ private struct AtriaMetricMeaningInline: View {
         case .respiratoryRate:
             return "Respiratory rate is compared with your own sleep baseline. Sustained shifts can line up with stress, travel, environment, or feeling off."
         case .sleep:
-            return String(format: "Sleep performance compares your night with a %.1f hour goal while consistency tracks recent timing.", sleepGoalHours)
+            return String(format: "Sleep sufficiency compares your night with a %.1f hour goal while consistency tracks recent timing.", sleepGoalHours)
         case .strain:
             return "Strain is your day-load target, not a score to max out every day."
         case .stress:
@@ -11791,7 +11791,7 @@ private struct AtriaMetricMeaningInline: View {
         case .vo2max:
             return "VO2max is estimated from your resting baseline and measured heart-rate max, not a lab gas-exchange test."
         case .sleepPerformance:
-            return String(format: "Sleep performance compares last night's duration with a need that adjusts for debt and yesterday's strain, not a flat %.1f hour goal.", sleepGoalHours)
+            return String(format: "Sleep sufficiency compares last night's duration with a need that adjusts for debt and yesterday's strain, not a flat %.1f hour goal.", sleepGoalHours)
         case .sleepEfficiency:
             return "Sleep efficiency estimates time asleep versus time in bed from duration, not a checked sleep study."
         case .skinTemperature:
@@ -12234,7 +12234,7 @@ private struct AtriaMetricMeaningSheet: View {
         case .vo2max:
             return "VO2max estimates your aerobic capacity from resting and max heart rate."
         case .sleepPerformance:
-            return "Sleep performance compares last night with how much sleep you actually needed."
+            return "Sleep sufficiency compares last night with how much sleep you actually needed."
         case .sleepEfficiency:
             return "Sleep efficiency estimates how much of your time in bed was spent asleep."
         case .skinTemperature:
@@ -12297,7 +12297,7 @@ private struct AtriaMetricMeaningSheet: View {
         case .respiratoryRate:
             return "Respiratory rate is compared with your own sleep baseline. Sustained shifts can line up with stress, travel, environment, or feeling off."
         case .sleep:
-            return String(format: "Sleep performance compares your night with a %.1f hour goal while consistency tracks how stable your recent timing has been.", sleepGoalHours)
+            return String(format: "Sleep sufficiency compares your night with a %.1f hour goal while consistency tracks how stable your recent timing has been.", sleepGoalHours)
         case .strain:
             return "Light, Moderate, High, and All-Out bands make it easier to read the number as a coaching zone instead of raw effort."
         case .stress:
@@ -12305,7 +12305,7 @@ private struct AtriaMetricMeaningSheet: View {
         case .vo2max:
             return "VO2max is derived from your resting heart-rate baseline and measured max heart rate, refined as more sessions come in."
         case .sleepPerformance:
-            return String(format: "Sleep performance compares last night's duration against a need that adjusts for sleep debt and yesterday's strain, not a flat %.1f hour goal.", sleepGoalHours)
+            return String(format: "Sleep sufficiency compares last night's duration against a need that adjusts for sleep debt and yesterday's strain, not a flat %.1f hour goal.", sleepGoalHours)
         case .sleepEfficiency:
             return "Sleep efficiency is time asleep divided by time in bed, estimated from duration rather than a checked sleep study."
         case .skinTemperature:
