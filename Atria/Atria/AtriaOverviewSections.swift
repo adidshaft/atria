@@ -9810,27 +9810,12 @@ struct AtriaMetricDetailSheet: View {
             .value
     }
 
-    /// 7-night need-vs-slept debt chart (design 6b, 2026-08-01 parity slice):
-    /// paired bars per morning headlined by the SAME recency-weighted
-    /// `sleepBudgetDebtHours` number the need ledger uses — one math, two
-    /// views of it. Supersedes the old 14-night surplus/deficit bars.
+    /// Seven-night hours-vs-need chart. It uses the exact same sleep-need
+    /// target as the ledger and supports adjacent observed weeks; no missing
+    /// sleep is invented to keep a line visually continuous.
     private var sleepDebtTrendCard: some View {
-        let slots = AtriaSleepDebtChartPresentation.slots(nights: sleepHistory.nights,
-                                                          baseNeedHours: sleepBaseNeedHours)
-        let debt = sleepHistory.sleepBudgetDebtHours(baseNeedHours: sleepBaseNeedHours)
         return AtriaSleepDebtChartCard(
-            slots: slots,
-            carriedDebtHours: debt,
-            weekDeltaText: AtriaSleepDebtChartPresentation.weekDeltaText(
-                currentDebtHours: debt,
-                weekAgoDebtHours: AtriaSleepDebtChartPresentation.weekAgoDebtHours(
-                    nights: sleepHistory.nights,
-                    baseNeedHours: sleepBaseNeedHours)),
-            fulfilledLastNightPercent: sleepHistory.latestMainSleep.map {
-                sleepHistory.sleepPerformancePercent(for: $0,
-                                                     baseNeedHours: sleepBaseNeedHours,
-                                                     yesterdayStrain: yesterdayStrainForLatestNight)
-            },
+            nights: sleepHistory.nights,
             baseNeedHours: sleepBaseNeedHours)
     }
 

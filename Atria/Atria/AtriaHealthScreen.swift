@@ -731,6 +731,7 @@ struct AtriaHealthScreen: View {
                         AtriaVitalsLivePulseSection(liveStore: liveStore,
                                                     pulseStore: pulseStore,
                                                     homeStatsStore: homeStatsStore,
+                                                    stressMonitorStore: stressMonitorStore,
                                                     baseline: vitals.baseline,
                                                     pulseSparklineStore: pulseSparklineStore,
                                                     isActive: isActive)

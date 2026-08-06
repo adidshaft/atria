@@ -916,11 +916,28 @@ private struct AtriaStressTimelineChart: View, Equatable {
                          series: .value("Segment", point.segment))
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                    .foregroundStyle(tint)
+                    // Use the fixed 0–3 scale for color, rather than tinting
+                    // the entire line by the latest state. It lets the graph
+                    // communicate calm/medium/high periods at a glance.
+                    .foregroundStyle(.linearGradient(colors: [.blue, .green, .orange],
+                                                      startPoint: .bottom,
+                                                      endPoint: .top))
             }
         }
         .chartYScale(domain: 0...3)
-        .chartYAxis(.hidden)
+        .chartYAxis {
+            AxisMarks(values: [0, 1, 2, 3]) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                AxisTick().foregroundStyle(.clear)
+                AxisValueLabel {
+                    if let score = value.as(Double.self) {
+                        Text(score == 0 ? "0" : String(format: "%.0f", score))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(score >= 2 ? .orange : (score >= 1 ? .green : .blue))
+                    }
+                }
+            }
+        }
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 3)) { _ in
                 AxisGridLine().foregroundStyle(.clear)
