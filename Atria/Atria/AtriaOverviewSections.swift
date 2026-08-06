@@ -5181,6 +5181,15 @@ struct AtriaWeeklyReportSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showShareSheet = false
     @State private var weekOffset = 0
+    @State private var selectedTrend: WeeklyTrend = .recovery
+
+    private enum WeeklyTrend: String, CaseIterable, Identifiable {
+        case recovery = "Recovery"
+        case strain = "Strain"
+        case sleep = "Sleep"
+
+        var id: String { rawValue }
+    }
 
     var body: some View {
         NavigationStack {
@@ -5229,11 +5238,6 @@ struct AtriaWeeklyReportSheet: View {
 
                     reportKicker("Highlights")
                     VStack(spacing: 10) {
-                        AtriaWeeklyReportStatRow(title: "Sleep consistency",
-                                                 value: consistencyText,
-                                                 detail: "Bedtime routine from daily rollups",
-                                                 systemImage: "moon.zzz.fill",
-                                                 tint: .indigo)
                         AtriaWeeklyReportStatRow(title: "Best day",
                                                  value: dayText(displayedReport.bestDay),
                                                  detail: recoveryText(displayedReport.bestDay),
@@ -5246,9 +5250,7 @@ struct AtriaWeeklyReportSheet: View {
                                                  tint: Metrics.electricStrain)
                     }
 
-                    if weekRecoveryPoints.count >= 2 {
-                        weekRecoveryChart(weekRecoveryPoints)
-                    }
+                    weeklyTrendChart
 
                     if let note = displayedReport.strainRecoveryNote {
                         Label(note, systemImage: "exclamationmark.triangle.fill")
@@ -5428,78 +5430,109 @@ struct AtriaWeeklyReportSheet: View {
         return formatter
     }()
 
-    /// Week recovery sparkline (2026-07-07 design handoff): only real
-    /// recovery days plot -- a nil day is a gap in the dots, never invented.
-    /// Points are shaped OUTSIDE any render block (perf gate: no compactMap
-    /// in some-View bodies).
-    private var weekRecoveryPoints: [(day: Date, recovery: Int)] {
-        (displayedReport.recoverySeries ?? []).compactMap { day in
-            guard let recovery = day.recovery else { return nil }
-            return (day.day, recovery)
+    private var displayedWeekRollups: [DailyRollupStoreEntry] {
+        guard let start = displayedReport.weekStart, let end = displayedReport.weekEnd else { return [] }
+        return rollups.filter { $0.day >= start && $0.day <= end }.sorted { $0.day < $1.day }
+    }
+
+    private var selectedTrendPoints: [(day: Date, value: Double)] {
+        switch selectedTrend {
+        case .recovery:
+            if !displayedWeekRollups.isEmpty {
+                return displayedWeekRollups.compactMap { entry in
+                    entry.recovery.map { (entry.day, Double($0)) }
+                }
+            }
+            return (displayedReport.recoverySeries ?? []).compactMap { day in
+                day.recovery.map { (day.day, Double($0)) }
+            }
+        case .strain:
+            return displayedWeekRollups.compactMap { entry in
+                entry.strain.map { (entry.day, $0) }
+            }
+        case .sleep:
+            return displayedWeekRollups.compactMap { entry in
+                entry.sleepSeconds.map { (entry.day, $0 / 3_600) }
+            }
         }
     }
 
-    private func weekRecoveryChart(_ points: [(day: Date, recovery: Int)]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Recovery by day")
-                .font(.subheadline.weight(.semibold))
-            Chart {
-                ForEach(points, id: \.day) { point in
-                    BarMark(x: .value("Day", point.day, unit: .day),
-                            y: .value("Recovery", point.recovery),
-                            width: .fixed(18))
-                        .foregroundStyle(Metrics.recoveryColor(point.recovery))
-                        .cornerRadius(4)
-                }
-            }
-            .chartYScale(domain: 0...100)
-            .chartYAxis {
-                AxisMarks(position: .trailing, values: [0, 33, 67, 100])
-            }
-            .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                    AxisGridLine()
-                    AxisValueLabel(format: .dateTime.weekday(.abbreviated))
-                }
-            }
-            .frame(height: 120)
-            .clipped()
-            // Full-bleed plot inside the card (2026-08-05 width audit).
-            .padding(.horizontal, -14)
-            .accessibilityLabel("Recovery color bars for each recorded day of the week. Green is high recovery, yellow is moderate, red is low.")
-            .atriaInspectableGraph(
-                AtriaInspectableGraph(
-                    title: "Recovery by day",
-                    subtitle: "Recorded recovery days only",
-                    content: .timeSeries([
-                        .init(title: "Recovery",
-                              unit: "%",
-                              tint: Metrics.electricGreen,
-                              points: points.map {
-                                  .init(date: $0.day, value: Double($0.recovery))
-                              })
-                    ])
-                )
-            )
+    private var selectedTrendDomain: ClosedRange<Double> {
+        switch selectedTrend {
+        case .recovery: return 0...100
+        case .strain: return 0...21
+        case .sleep: return 0...10
+        }
+    }
 
-            HStack(spacing: 12) {
-                recoveryLegend(color: .green, text: "High 67–100")
-                recoveryLegend(color: .yellow, text: "Moderate 34–66")
-                recoveryLegend(color: .red, text: "Low 0–33")
+    private func selectedTrendColor(_ value: Double) -> Color {
+        switch selectedTrend {
+        case .recovery: return Metrics.recoveryColor(Int(value.rounded()))
+        case .strain: return value >= 13 ? .red : (value >= 8 ? .yellow : .green)
+        case .sleep: return value >= 7.5 ? .green : (value >= 6.5 ? .yellow : .red)
+        }
+    }
+
+    private var selectedTrendThresholdLabel: String {
+        switch selectedTrend {
+        case .recovery: return "Green 67–100 · yellow 34–66 · red 0–33"
+        case .strain: return "Green <8 · yellow 8–12.9 · red 13+"
+        case .sleep: return "Green 7.5h+ · yellow 6.5–7.4h · red <6.5h"
+        }
+    }
+
+    private var weeklyTrendChart: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Weekly trend")
+                    .font(.subheadline.weight(.semibold))
+                Spacer(minLength: 8)
+                Picker("Weekly trend", selection: $selectedTrend) {
+                    ForEach(WeeklyTrend.allCases) { trend in
+                        Text(trend.rawValue).tag(trend)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 210)
             }
+
+            if selectedTrendPoints.isEmpty {
+                Label("No recorded \(selectedTrend.rawValue.lowercased()) values for this week.", systemImage: "chart.bar.xaxis")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
+            } else {
+                Chart {
+                    ForEach(selectedTrendPoints, id: \.day) { point in
+                        BarMark(x: .value("Day", point.day, unit: .day),
+                                y: .value(selectedTrend.rawValue, point.value),
+                                width: .fixed(18))
+                            .foregroundStyle(selectedTrendColor(point.value))
+                            .cornerRadius(4)
+                    }
+                }
+                .chartYScale(domain: selectedTrendDomain)
+                .chartYAxis {
+                    AxisMarks(position: .trailing, values: .automatic(desiredCount: 4))
+                }
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                        AxisGridLine()
+                        AxisValueLabel(format: .dateTime.weekday(.abbreviated))
+                    }
+                }
+                .frame(height: 120)
+                .clipped()
+                .padding(.horizontal, -14)
+                .accessibilityLabel("\(selectedTrend.rawValue) color bars for each recorded day of the week. \(selectedTrendThresholdLabel).")
+            }
+
+            Text(selectedTrendThresholdLabel)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
         }
         .padding(14)
-        .atriaInsetCard(tint: Metrics.electricGreen)
-    }
-
-    private func recoveryLegend(color: Color, text: String) -> some View {
-        Label {
-            Text(text)
-        } icon: {
-            Circle().fill(color).frame(width: 7, height: 7)
-        }
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(.secondary)
+        .atriaInsetCard(tint: selectedTrend == .recovery ? Metrics.electricGreen : Metrics.electricStrain)
     }
 
     private var strainAverageText: String {
@@ -9246,7 +9279,6 @@ struct AtriaMetricDetailSheet: View {
                                        neededHours: sleepHistory.sleepNeedHours(for: latest,
                                                                                 baseNeedHours: sleepBaseNeedHours,
                                                                                 yesterdayStrain: yesterdayStrainForLatestNight),
-                                       consistencyPercent: sleepHistory.sleepConsistencyPercent,
                                        nightEfficiencies: confirmedNightEfficiencies)
                     sleepNeedLedgerCard(for: latest)
                     sleepDebtTrendCard
@@ -11978,25 +12010,39 @@ private struct AtriaRecoveryContributorMap: View {
 
             GeometryReader { proxy in
                 let width = max(proxy.size.width, 1)
-                let total = max(supportMagnitude + pressureMagnitude, 0.01)
-                let supportWidth = width * (supportMagnitude / total)
+                let midpoint = width / 2
+                let largestSide = max(supportMagnitude, pressureMagnitude, 0.01)
+                let pressureWidth = midpoint * (pressureMagnitude / largestSide)
+                let supportWidth = midpoint * (supportMagnitude / largestSide)
                 ZStack(alignment: .leading) {
                     Capsule(style: .continuous)
-                        .fill(Metrics.electricRed.opacity(0.18))
-                    Capsule(style: .continuous)
-                        .fill(Metrics.electricGreen.opacity(0.68))
-                        .frame(width: max(8, supportWidth))
+                        .fill(.primary.opacity(0.07))
+                    if pressureMagnitude > 0 {
+                        Capsule(style: .continuous)
+                            .fill(Metrics.electricRed.opacity(0.72))
+                            .frame(width: pressureWidth)
+                            .offset(x: midpoint - pressureWidth)
+                    }
+                    if supportMagnitude > 0 {
+                        Capsule(style: .continuous)
+                            .fill(Metrics.electricGreen.opacity(0.72))
+                            .frame(width: supportWidth)
+                            .offset(x: midpoint)
+                    }
                     Rectangle()
                         .fill(.primary.opacity(0.22))
                         .frame(width: 1.5)
-                        .offset(x: width / 2)
+                        .offset(x: midpoint)
                 }
+                .clipShape(Capsule(style: .continuous))
             }
             .frame(height: 10)
             .accessibilityHidden(true)
 
             HStack {
                 Text("Pressure")
+                Spacer(minLength: 8)
+                Text("Baseline")
                 Spacer(minLength: 8)
                 Text("Support")
             }
@@ -13505,7 +13551,6 @@ struct AtriaDetailBaselineBand {
 private struct AtriaSleepPlanCard: View {
     let night: SleepHistorySnapshot.Night
     let neededHours: Double
-    let consistencyPercent: Int?
     @AtriaDefault(AtriaWakeAlarmStore.enabledKey) private var wakeAlarmEnabled: Bool = false
     @AtriaDefault(AtriaWakeAlarmStore.modeKey) private var wakeAlarmMode: String = AtriaWakeAlarmPlan.Mode.smartWindow.rawValue
     @AtriaDefault(AtriaWakeAlarmStore.wakeByMinutesKey) private var wakeByMinutes: Int = AtriaWakeAlarmPlan.defaultPlan.wakeByMinutes
@@ -13543,15 +13588,6 @@ private struct AtriaSleepPlanCard: View {
 
             sleepPlannerCard
 
-            if let consistencyPercent {
-                VStack(alignment: .leading, spacing: 6) {
-                    ProgressView(value: Double(consistencyPercent), total: 100)
-                        .tint(.mint)
-                    Text("Consistency bar uses recent sleep timing and duration.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
         }
         .padding(14)
         .atriaInsetCard(tint: .cyan)

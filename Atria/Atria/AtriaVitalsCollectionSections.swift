@@ -5025,6 +5025,27 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         (buckets ?? []).isEmpty && points.isEmpty
     }
 
+    /// The chart colour is a value scale, not a blanket danger signal. It
+    /// rises from calm/cool through working green and amber into red as the
+    /// visible heart-rate domain rises, matching the 0–3 stress treatment.
+    private var heartRateGradient: LinearGradient {
+        LinearGradient(stops: [
+            .init(color: .cyan, location: 0),
+            .init(color: .green, location: 0.38),
+            .init(color: .orange, location: 0.68),
+            .init(color: .red, location: 1)
+        ], startPoint: .bottom, endPoint: .top)
+    }
+
+    private var heartRateAreaGradient: LinearGradient {
+        LinearGradient(stops: [
+            .init(color: .cyan.opacity(0.12), location: 0),
+            .init(color: .green.opacity(0.10), location: 0.38),
+            .init(color: .orange.opacity(0.08), location: 0.68),
+            .init(color: .red.opacity(0.12), location: 1)
+        ], startPoint: .bottom, endPoint: .top)
+    }
+
     private var baseChart: some View {
         Chart {
             if let buckets {
@@ -5038,11 +5059,11 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                              yStart: .value("Floor", Double(yDomain.lowerBound)),
                              yEnd: .value("BPM", bucket.average))
                         .interpolationMethod(.linear)
-                        .foregroundStyle(.red.opacity(0.12).gradient)
+                        .foregroundStyle(heartRateAreaGradient)
                     LineMark(x: .value("Time", bucket.t),
                              y: .value("BPM", bucket.average))
                         .interpolationMethod(.linear)
-                        .foregroundStyle(.red.gradient)
+                        .foregroundStyle(heartRateGradient)
                         .lineStyle(StrokeStyle(lineWidth: 2))
                 }
             } else {
@@ -5051,10 +5072,10 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                              yStart: .value("Visible floor", yDomain.lowerBound),
                              yEnd: .value("BPM", point.bpm))
                         .interpolationMethod(.linear)
-                        .foregroundStyle(.red.opacity(0.12).gradient)
+                        .foregroundStyle(heartRateAreaGradient)
                     LineMark(x: .value("Time", point.t), y: .value("BPM", point.bpm))
                         .interpolationMethod(.linear)
-                        .foregroundStyle(.red.gradient)
+                        .foregroundStyle(heartRateGradient)
                 }
             }
             if let selectedTime {

@@ -2349,14 +2349,64 @@ private struct AtriaSleepStressProjection: Equatable {
 private struct AtriaSleepStressCard: View {
     let projection: AtriaSleepStressProjection
 
+    private struct HighPeriod: Identifiable {
+        let start: Date
+        let end: Date
+
+        var id: Date { start }
+        /// Samples are five-minute observed buckets; include the final bucket
+        /// so a single reading reads as a five-minute period, not zero time.
+        var duration: TimeInterval { end.timeIntervalSince(start) + 5 * 60 }
+    }
+
     private var points: [AtriaStressTimelinePoint] {
         AtriaStressTimelinePoint.segment(projection.samples.map {
             AtriaStressDetailReading(date: $0.date, score: $0.score)
         })
     }
 
-    private var highWindowCount: Int {
-        projection.samples.filter { $0.score >= 2 }.count
+    private var highPeriods: [HighPeriod] {
+        let highSamples = projection.samples
+            .filter { $0.score >= 2 }
+            .sorted { $0.date < $1.date }
+        guard let first = highSamples.first else { return [] }
+
+        var result: [HighPeriod] = []
+        var start = first.date
+        var end = first.date
+        for sample in highSamples.dropFirst() {
+            // Consecutive real five-minute buckets form one period. Gaps stay
+            // gaps — we do not bridge missing wear into a longer high period.
+            if sample.date.timeIntervalSince(end) <= 6 * 60 {
+                end = sample.date
+            } else {
+                result.append(HighPeriod(start: start, end: end))
+                start = sample.date
+                end = sample.date
+            }
+        }
+        result.append(HighPeriod(start: start, end: end))
+        return result
+    }
+
+    private var highDuration: TimeInterval {
+        highPeriods.reduce(0) { $0 + $1.duration }
+    }
+
+    private var highSummary: String {
+        guard !highPeriods.isEmpty else { return "No high periods" }
+        let periodLabel = highPeriods.count == 1 ? "period" : "periods"
+        return "\(highPeriods.count) high \(periodLabel) · \(Int((highDuration / 60).rounded()))m"
+    }
+
+    private var highTimingSummary: String? {
+        guard !highPeriods.isEmpty else { return nil }
+        let periods = highPeriods.prefix(2).map { period in
+            let range = "\(period.start.formatted(date: .omitted, time: .shortened))–\(period.end.formatted(date: .omitted, time: .shortened))"
+            return "\(range) (\(Int((period.duration / 60).rounded()))m)"
+        }
+        let remainder = highPeriods.count > 2 ? " +\(highPeriods.count - 2) more" : ""
+        return "High periods: \(periods.joined(separator: " · "))\(remainder)"
     }
 
     var body: some View {
@@ -2371,9 +2421,9 @@ private struct AtriaSleepStressCard: View {
                 }
                 Spacer(minLength: 8)
                 if projection.availability == .ready {
-                    Text(highWindowCount == 0 ? "No high windows" : "\(highWindowCount) high windows")
+                    Text(highSummary)
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(highWindowCount == 0 ? Metrics.electricGreen : .orange)
+                        .foregroundStyle(highPeriods.isEmpty ? Metrics.electricGreen : .orange)
                 }
             }
 
@@ -2426,6 +2476,12 @@ private struct AtriaSleepStressCard: View {
                     }
                 }
                 .frame(height: 156)
+                if let highTimingSummary {
+                    Text(highTimingSummary)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else {
                 ContentUnavailableView(projection.availability.title,
                                        systemImage: "moon.zzz.fill",
@@ -2442,7 +2498,7 @@ private struct AtriaSleepStressCard: View {
         .atriaInsetCard(tint: .orange)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(projection.availability == .ready
-                            ? "Sleep stress. \(highWindowCount) high stress windows across observed overnight readings."
+                            ? "Sleep stress. \(highSummary). \(highTimingSummary ?? "")"
                             : "Sleep stress. \(projection.availability.title). \(projection.availability.detail)")
     }
 }

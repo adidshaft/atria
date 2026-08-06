@@ -2678,7 +2678,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 
     @ViewBuilder
     private var workoutZoneDistributionCard: some View {
-        if !AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout), recordedZoneSeconds > 0 {
+        if !AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout) {
             VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 3) {
@@ -2689,19 +2689,34 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
-                    Text(durationText(recordedZoneSeconds))
-                        .font(.subheadline.weight(.black).monospacedDigit())
-                        .foregroundStyle(Metrics.electricStrain)
+                    if recordedZoneSeconds > 0 {
+                        Text(durationText(recordedZoneSeconds))
+                            .font(.subheadline.weight(.black).monospacedDigit())
+                            .foregroundStyle(Metrics.electricStrain)
+                    }
                 }
 
-                ForEach(workoutZoneRows, id: \.key) { zone in
-                    workoutZoneRow(zone)
+                if recordedZoneSeconds > 0 {
+                    ForEach(workoutZoneRows, id: \.key) { zone in
+                        workoutZoneRow(zone)
+                    }
+                } else {
+                    Label("Zone distribution is unavailable for this recording. Atria saved the workout summary, but not enough heart-rate samples to place time in zones.",
+                          systemImage: "waveform.path.ecg.rectangle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
                 }
             }
             .padding(14)
             .atriaInsetCard(tint: Metrics.electricStrain)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(zoneDistributionAccessibilityLabel)
+            .accessibilityLabel(recordedZoneSeconds > 0
+                                ? zoneDistributionAccessibilityLabel
+                                : "Time in heart-rate zones unavailable. Workout summary saved, but heart-rate zone samples were not recorded.")
         }
     }
 

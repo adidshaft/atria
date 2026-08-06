@@ -1399,6 +1399,10 @@ struct AtriaWorkoutStartConfiguration: Equatable {
     /// independent from the heart-rate range below: a zone coaches intensity
     /// moment-to-moment, while strain answers when the session is complete.
     var targetStrain: Double? = nil
+    /// A presentation-only snapshot used to disclose the actual BPM bounds of
+    /// the selected zones before a workout begins. The session still captures
+    /// its immutable calculation profile at Start.
+    var maxHeartRate: Int? = nil
     var lowerTargetZone: Int = HRZone.fatBurn.rawValue
     var upperTargetZone: Int = HRZone.aerobic.rawValue
 
@@ -1617,25 +1621,9 @@ struct AtriaWorkoutStartSheet: View {
                         }
                     }
 
-                    targetHeader
+                    workoutTargetsHeader
                     strainTargetCard
-                    GlassEffectContainer(spacing: 10) {
-                        VStack(spacing: 12) {
-                            zoneSelector(title: "Target lower zone", selection: $configuration.lowerTargetZone)
-                            zoneSelector(title: "Target upper zone", selection: $configuration.upperTargetZone)
-                        }
-                    }
-                    VStack(alignment: .leading, spacing: 5) {
-                        Label("Zone coaching", systemImage: "wave.3.right")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.cyan)
-                        Text("When connected, your strap uses distinct haptic pulses as your heart rate enters or leaves this target range.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.horizontal, 2)
-                    .accessibilityHint("One pulse at the lower boundary, three above the upper boundary, and two when returning from above.")
+                    heartRateTargetCard
                 }
                 .padding(20)
             }
@@ -1767,24 +1755,24 @@ struct AtriaWorkoutStartSheet: View {
     }
 
     @ViewBuilder
-    private var targetHeader: some View {
+    private var workoutTargetsHeader: some View {
         if dynamicTypeSize.isAccessibilitySize {
             VStack(alignment: .leading, spacing: 8) {
-                targetTitle
-                targetRangeBadge
+                Text("Workout targets")
+                    .font(.title2.weight(.bold))
+                Text("Choose a session finish line and an intensity range. They coach different parts of the workout.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         } else {
-            HStack(spacing: 10) {
-                targetTitle
-                Spacer(minLength: 8)
-                targetRangeBadge
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Workout targets")
+                    .font(.title2.weight(.bold))
+                Text("Set a session finish line and an intensity range.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
-    }
-
-    private var targetTitle: some View {
-        Text("Heart-rate target")
-            .font(.title2.weight(.bold))
     }
 
     private var strainTargetCard: some View {
@@ -1823,6 +1811,43 @@ struct AtriaWorkoutStartSheet: View {
         .accessibilityElement(children: .contain)
     }
 
+    private var heartRateTargetCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Heart-rate target")
+                        .font(.title3.weight(.bold))
+                    Text("Your in-session intensity range.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                targetRangeBadge
+            }
+
+            GlassEffectContainer(spacing: 10) {
+                VStack(spacing: 12) {
+                    zoneSelector(title: "Target lower zone", selection: $configuration.lowerTargetZone)
+                    zoneSelector(title: "Target upper zone", selection: $configuration.upperTargetZone)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+                Label("Zone coaching", systemImage: "wave.3.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.cyan)
+                Text("When connected, your strap uses distinct haptic pulses as your heart rate enters or leaves this target range.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityHint("One pulse at the lower boundary, three above the upper boundary, and two when returning from above.")
+        }
+        .padding(14)
+        .background(.cyan.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .contain)
+    }
+
     private var strainTargetEnabled: Binding<Bool> {
         Binding(
             get: { configuration.targetStrain != nil },
@@ -1840,14 +1865,33 @@ struct AtriaWorkoutStartSheet: View {
     }
 
     private var targetRangeBadge: some View {
-        Label(selectedZoneRangeText, systemImage: "scope")
+        Label(selectedZoneTargetText, systemImage: "scope")
             .font(.caption.weight(.black).monospacedDigit())
             .foregroundStyle(.cyan)
             .lineLimit(1)
             .padding(.horizontal, 10)
             .frame(minHeight: 32)
             .background(.cyan.opacity(0.12), in: Capsule())
-            .accessibilityLabel("Target heart rate \(selectedZoneRangeText)")
+            .accessibilityLabel("Target heart rate \(selectedZoneTargetText)")
+    }
+
+    private var selectedZoneTargetText: String {
+        guard let rangeText = zoneBPMRangeText(for: configuration.normalizedZoneRange) else {
+            return selectedZoneRangeText
+        }
+        return "\(selectedZoneRangeText) · \(rangeText)"
+    }
+
+    private func zoneBPMRangeText(for range: ClosedRange<Int>) -> String? {
+        guard let maxHeartRate = configuration.maxHeartRate, maxHeartRate > 0,
+              let lowerZone = HRZone(rawValue: range.lowerBound),
+              let upperZone = HRZone(rawValue: range.upperBound) else {
+            return nil
+        }
+        let lower = Int((Double(maxHeartRate) * lowerZone.lowerFraction).rounded(.up))
+        let nextFraction = HRZone(rawValue: upperZone.rawValue + 1)?.lowerFraction ?? 1
+        let upper = max(lower, Int((Double(maxHeartRate) * nextFraction).rounded(.up)) - 1)
+        return "\(lower)–\(upper) bpm"
     }
 
     /// The rail computed once at sheet open: initial selection, then recents,
@@ -1949,11 +1993,19 @@ struct AtriaWorkoutStartSheet: View {
     private func zonePicker(title: String, selection: Binding<Int>) -> some View {
         Picker(title, selection: selection) {
             ForEach(HRZone.allCases.filter { $0 != .rest }, id: \.rawValue) { zone in
-                Text("Z\(zone.rawValue) · \(zone.name)").tag(zone.rawValue)
+                Text(zonePickerLabel(for: zone)).tag(zone.rawValue)
             }
         }
         .pickerStyle(.menu)
         .buttonStyle(.glass)
+    }
+
+    private func zonePickerLabel(for zone: HRZone) -> String {
+        let range = zone.rawValue...zone.rawValue
+        guard let bpm = zoneBPMRangeText(for: range) else {
+            return "Z\(zone.rawValue) · \(zone.name)"
+        }
+        return "Z\(zone.rawValue) · \(zone.name) · \(bpm)"
     }
 }
 
