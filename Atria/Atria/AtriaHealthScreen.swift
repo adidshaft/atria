@@ -2368,6 +2368,11 @@ struct AtriaSleepStressProjection: Equatable {
 
 struct AtriaSleepStressCard: View {
     let projection: AtriaSleepStressProjection
+    /// Timezone the trace's time axis renders in. Defaults to the device zone
+    /// (correct for the current-cycle card on the Health screen); the Sleep
+    /// detail passes the night's recorded event zone so a travel night reads in
+    /// the clock it was actually slept in (GAP-07).
+    var displayTimeZone: TimeZone = .current
     private enum Mode: String, CaseIterable, Identifiable { case heartRate = "Heart rate", load = "HR load"; var id: String { rawValue } }
     @State private var mode: Mode = .heartRate
 
@@ -2507,6 +2512,7 @@ struct AtriaSleepStressCard: View {
                     }
                 }
                 .frame(height: 156)
+                .environment(\.timeZone, displayTimeZone)
                 if let highTimingSummary {
                     Text(highTimingSummary)
                         .font(.caption2.weight(.semibold))

@@ -3228,6 +3228,20 @@ struct AtriaSleepActivityReviewSheet: View {
         return minutes >= 60 ? "\(minutes / 60) h \(minutes % 60) m" : "\(minutes) m"
     }
 
+    /// The night's recorded event timezone (GAP-07): a travel night renders in
+    /// the clock it was slept in, not the phone's current zone. Falls back to the
+    /// device zone for legacy nights without a recorded identifier.
+    private var eventTimeZone: TimeZone {
+        night.eventTimeZoneIdentifier.flatMap(TimeZone.init(identifier:)) ?? .current
+    }
+
+    /// Short local clock text in the night's event zone. Uses an explicit
+    /// FormatStyle timeZone rather than the SwiftUI environment, which a bare
+    /// `.formatted()` string does not consult.
+    private func clockText(_ date: Date) -> String {
+        date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, timeZone: eventTimeZone))
+    }
+
     private struct OvernightTraceKey: Equatable {
         let id: String
         let start: Date?
@@ -3276,7 +3290,8 @@ struct AtriaSleepActivityReviewSheet: View {
                         stageBreakdown
                     }
                     nightVitals
-                    AtriaSleepStressCard(projection: overnightHRProjection)
+                    AtriaSleepStressCard(projection: overnightHRProjection,
+                                         displayTimeZone: eventTimeZone)
                     Button(action: onEditTimes) {
                         Label("Edit sleep times", systemImage: "pencil")
                             .frame(maxWidth: .infinity)
@@ -3303,7 +3318,7 @@ struct AtriaSleepActivityReviewSheet: View {
                 .font(.system(size: 34, weight: .bold, design: .rounded))
                 .monospacedDigit()
             if let start = night.start, let end = night.end {
-                Text("\(start.formatted(date: .omitted, time: .shortened)) – \(end.formatted(date: .omitted, time: .shortened)) · \(night.stageEvidence.label)")
+                Text("\(clockText(start)) – \(clockText(end)) · \(night.stageEvidence.label)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
