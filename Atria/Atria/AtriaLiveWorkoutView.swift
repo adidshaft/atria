@@ -2390,6 +2390,9 @@ struct AtriaLiveWorkoutView: View {
     @State private var showStrengthProgress = false
     @State private var editingSetID: UUID?
     @State private var latestPRSetID: UUID?
+    @State private var activeSuperset: StrengthSuperset?
+    @State private var supersetMembers: [String] = []
+    @State private var showsSupersetEditor = false
     @State private var showEndPersistenceError = false
     @State private var isEndingWorkout = false
 
@@ -2728,6 +2731,24 @@ struct AtriaLiveWorkoutView: View {
                                       pendingRepsText: "\(loggerReps)",
                                       pendingRPEText: AtriaStrengthSetTablePresentation.rpeText(loggerRPE))
 
+                Button {
+                    showsSupersetEditor = true
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: activeSuperset == nil ? "link.badge.plus" : "link")
+                        Text(activeSuperset.map { "Superset · \($0.exercises.joined(separator: " → "))" } ?? "Create superset")
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                    }
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(activeSuperset == nil ? Color.secondary : Color.mint)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .padding(.horizontal, 10)
+                    .background((activeSuperset == nil ? Color.white : Color.mint).opacity(activeSuperset == nil ? 0.07 : 0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(loggerExerciseOptions, id: \.self) { exercise in
@@ -2793,6 +2814,12 @@ struct AtriaLiveWorkoutView: View {
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
             .preferredColorScheme(.dark)
+        }
+        .sheet(isPresented: $showsSupersetEditor) {
+            supersetEditor
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
+                .preferredColorScheme(.dark)
         }
         .sheet(isPresented: $showStrengthProgress) {
             // Saved history only, records included: the chart and the PR chips
@@ -2933,11 +2960,24 @@ struct AtriaLiveWorkoutView: View {
     }
 
     private func saveLoggedSet() {
+        let superset = activeSuperset.flatMap { group in
+            group.exercises.contains(where: { $0.localizedCaseInsensitiveCompare(selectedExercise) == .orderedSame }) ? group : nil
+        }
+        let order = superset.flatMap { group in
+            group.exercises.firstIndex(where: { $0.localizedCaseInsensitiveCompare(selectedExercise) == .orderedSame })
+        }
+        let prior = superset.flatMap { group in
+            loggedSets.last(where: { $0.supersetGroupID == group.id })
+        }
+        let now = Date()
         let set = LoggedSet(exercise: selectedExercise,
                             weightKg: loggerWeightKg > 0 ? loggerWeightKg : nil,
                             reps: loggerReps,
                             rpe: loggerRPE,
-                            t: Date())
+                            t: now,
+                            supersetGroupID: superset?.id,
+                            supersetOrder: order,
+                            supersetTransitionSeconds: prior.map { max(0, now.timeIntervalSince($0.t)) })
         let isNewPR = AtriaStrengthLog.isPR(set, against: personalRecordsIncludingCurrentWorkout(for: selectedExercise))
         if let editingSetID,
            let index = loggedSets.firstIndex(where: { $0.id == editingSetID }) {
@@ -2950,6 +2990,53 @@ struct AtriaLiveWorkoutView: View {
         restTimerEndsAt = Date().addingTimeInterval(restSeconds(for: selectedExercise))
         mirrorLoggedSetsToActiveJournal()
         UIImpactFeedbackGenerator(style: isNewPR ? .heavy : .light).impactOccurred()
+    }
+
+    private var supersetEditor: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Superset")
+                .font(.title3.weight(.black))
+            Text("Select two or more movements in order. Atria keeps each set intact and records the observed handoff separately from your between-round rest.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            List {
+                ForEach(loggerExerciseOptions, id: \.self) { exercise in
+                    Button {
+                        toggleSupersetMember(exercise)
+                    } label: {
+                        HStack {
+                            Text(exercise)
+                            Spacer()
+                            Image(systemName: supersetMembers.contains(exercise) ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(supersetMembers.contains(exercise) ? .mint : .secondary)
+                        }
+                    }
+                }
+            }
+            HStack {
+                Button("Ungroup") { activeSuperset = nil; supersetMembers.removeAll(); showsSupersetEditor = false }
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Save group") {
+                    guard supersetMembers.count >= 2 else { return }
+                    activeSuperset = StrengthSuperset(exercises: supersetMembers)
+                    showsSupersetEditor = false
+                }
+                .disabled(supersetMembers.count < 2)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.mint)
+        }
+        .padding(18)
+        .onAppear { if supersetMembers.isEmpty { supersetMembers = activeSuperset?.exercises ?? [selectedExercise] } }
+    }
+
+    private func toggleSupersetMember(_ exercise: String) {
+        if let index = supersetMembers.firstIndex(of: exercise) {
+            supersetMembers.remove(at: index)
+        } else {
+            supersetMembers.append(exercise)
+        }
     }
 
     private func editLoggedSet(_ set: LoggedSet) {

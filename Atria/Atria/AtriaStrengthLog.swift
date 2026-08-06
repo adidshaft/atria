@@ -7,6 +7,24 @@ struct LoggedSet: Codable, Equatable, Identifiable {
     var reps: Int?
     var rpe: Double?
     let t: Date
+    /// Optional ordered superset receipt. Nil means this set was logged as an
+    /// ordinary set; legacy rows remain exactly that.
+    var supersetGroupID: String? = nil
+    var supersetOrder: Int? = nil
+    /// Observed time since the previous member of this group. This lets later
+    /// muscular-load work distinguish the quick intra-round handoff from the
+    /// longer rest before the next round without guessing from HR.
+    var supersetTransitionSeconds: TimeInterval? = nil
+}
+
+struct StrengthSuperset: Codable, Equatable, Identifiable {
+    let id: String
+    var exercises: [String]
+
+    init(id: String = UUID().uuidString, exercises: [String]) {
+        self.id = id
+        self.exercises = exercises
+    }
 }
 
 struct ExcludedInterval: Codable, Equatable {
