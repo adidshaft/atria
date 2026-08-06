@@ -297,6 +297,31 @@ final class AtriaResearchSharingTests: XCTestCase {
         XCTAssertEqual(decoded.recoveryReceipt?.sleepDurationSeconds, 27_000)
     }
 
+    func testMuscularReceiptStaysSeparateFromCardiovascularStrain() throws {
+        let receipt = AtriaResearchBundlePayload.Workout.MuscularInputReceipt(
+            calculationVersion: 1,
+            setCount: 8,
+            loadQualifiedSetCount: 8,
+            effortQualifiedSetCount: 8,
+            effectiveVolumeKg: 4_200,
+            densityBonusFraction: 0.06,
+            muscularInputScore: 42,
+            movementClasses: ["External load"],
+            fusedWithCardiovascularStrain: false
+        )
+        let workout = AtriaResearchBundlePayload.Workout(startRel: 0,
+                                                          endRel: 1800,
+                                                          activityType: "Strength training",
+                                                          labelSource: "user_confirmed",
+                                                          avgHR: 120,
+                                                          peakHR: 152,
+                                                          muscularInputReceipt: receipt)
+        let decoded = try JSONDecoder().decode(AtriaResearchBundlePayload.Workout.self,
+                                                from: JSONEncoder().encode(workout))
+        XCTAssertEqual(decoded.muscularInputReceipt?.muscularInputScore, 42)
+        XCTAssertFalse(decoded.muscularInputReceipt?.fusedWithCardiovascularStrain ?? true)
+    }
+
     // MARK: - Fixtures
 
     private func fixturePayload() -> AtriaResearchBundlePayload {
@@ -338,7 +363,8 @@ final class AtriaResearchSharingTests: XCTestCase {
                              activityType: "Running",
                              labelSource: "user_confirmed",
                              avgHR: 140,
-                             peakHR: 172)],
+                             peakHR: 172,
+                             muscularInputReceipt: nil)],
             days: [.init(dayIndex: 0,
                          recoveryPercent: 67,
                          recoveryReceipt: nil,

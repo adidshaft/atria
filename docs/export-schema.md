@@ -229,7 +229,7 @@ as separate candidates against independent reference values and negative
 controls. It reports held-out error, correlation, span, session coverage, and
 false promotions, but does not enable a decoder.
 
-For GAP-13, schema-v5 research bundles carry only frozen, versioned Recovery
+For GAP-13, schema-v5-and-newer research bundles carry only frozen, versioned Recovery
 receipts. `tools/evaluate_recovery_model.py` compares a candidate version with
 pre-registered external outcomes on held-out participants; it cannot rewrite
 stored scores or approve a Recovery model.
@@ -515,7 +515,7 @@ The static check enforces the denylist and required consent infrastructure.
 
 1. **Pseudonym isolation:** The pseudonym is a random UUID per consent grant,
    destroyed on revoke. No device-persistent secret links shares across time.
-2. **Explicit contracts:** Schema version 5 is the current anonymous research
+2. **Explicit contracts:** Schema version 6 is the current anonymous research
    contract. Future versions will be declared here before a changed bundle ships.
 3. **Unmodifiability:** The bundle is a static JSON file, hashable. SHA-256 digests
    are recorded in the local ledger to detect mutation or corruption in transit.
