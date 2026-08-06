@@ -24,7 +24,7 @@ def label(gap: str, start: float) -> dict:
                          "features": {"cadence": True, "orientation": True, "gyroscope": True, "hr_response": True}}
     if gap == "GAP-12":
         return common | {"source": "polysomnography", "stage": "deep", "atria_derived": False}
-    return common | {"reference_device": "reference oximeter", "pair_age_seconds": 1,
+    return common | {"signal": "spo2", "reference_device": "reference oximeter", "pair_age_seconds": 1,
                      "layout_stable": True, "negative_control": True}
 
 
@@ -91,6 +91,32 @@ class ResearchCorpusTests(unittest.TestCase):
         value["participants"][1]["labels"] = [entry for entry in value["participants"][1]["labels"] if entry["gap"] != "GAP-12"]
         with self.assertRaisesRegex(corpus.CorpusError, "GAP-12 requires both"):
             corpus.validate(value)
+
+    def test_admits_concurrent_labels_for_distinct_targets(self) -> None:
+        value = manifest()
+        for entry in value["participants"]:
+            entry["labels"][1]["start_rel"] = 0
+            entry["labels"][1]["end_rel"] = 60
+            entry["labels"][2]["start_rel"] = 0
+            entry["labels"][2]["end_rel"] = 60
+        result = corpus.validate(value)
+        self.assertEqual(result["status"], "admitted_for_external_evaluation_only")
+
+    def test_rejects_overlap_within_one_target_series(self) -> None:
+        value = manifest()
+        duplicate = label("GAP-10", 30)
+        value["participants"][0]["labels"].append(duplicate)
+        with self.assertRaisesRegex(corpus.CorpusError, "same target series"):
+            corpus.validate(value)
+
+    def test_admits_temperature_and_spo2_pairs_at_the_same_time(self) -> None:
+        value = manifest()
+        for entry in value["participants"]:
+            pair = label("GAP-14", 210)
+            pair["signal"] = "skin_temperature"
+            entry["labels"].append(pair)
+        result = corpus.validate(value)
+        self.assertEqual(result["labels_by_target"]["GAP-14"], 4)
 
 
 if __name__ == "__main__":
