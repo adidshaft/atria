@@ -1,4 +1,4 @@
-anonymousResearchSchemaVersion: 3
+anonymousResearchSchemaVersion: 4
 rawExportSchemaVersion: 1
 
 # Atria Anonymous Research Bundle Schema
@@ -68,7 +68,7 @@ User profile snapshot and bundle metadata:
 
 ```typescript
 {
-  "schema": 3,                      // integer, always 3 for this schema version
+  "schema": 4,                      // integer, always 4 for this schema version
   "pseudonym": "UUID",              // string, 36-char UUID (e.g., "550e8400-e29b-41d4-a716-446655440000")
   "appVersion": "string",           // e.g., "1.0.2"
   "ageBand": "N-M" or "unknown",    // age band (e.g., "30-34"); see Banding rules below
@@ -153,6 +153,8 @@ User-confirmed sleep records with optional stage breakdowns.
   "endRel": double,                 // seconds since day-0
   "durationS": double,              // total duration in seconds (e.g., 28800 = 8 hours)
   "confidence": "high"|"medium"|"low"|"unknown"|"...",  // string, user confidence or source
+  "stageProvenance": "atria_derived_research_only_not_reference",
+  "stageReferenceEligible": false,
   "stageSeconds": {
     "light": double,                // seconds in light sleep
     "deep": double,                 // seconds in deep sleep
@@ -162,11 +164,13 @@ User-confirmed sleep records with optional stage breakdowns.
 }
 ```
 
-**stageSeconds:** A map of sleep-stage names to duration in seconds. Stages may
-include "light", "deep", "rem", "awake", or other stage names returned by the
-source (e.g., wearable device). The map is empty `{}` if no stage breakdown is
-available. Durations are aggregated (summed) from all stage segments in the sleep
-record.
+**stageSeconds:** A map of Atria-generated sleep-stage names to duration in
+seconds. It may contain `light`, `deep`, `rem`, or `awake`, and is empty `{}` if
+no stage breakdown is available. Durations are aggregated from Atria stage
+segments. `stageProvenance` is always
+`atria_derived_research_only_not_reference` and `stageReferenceEligible` is
+always `false`: this field is never PSG, never an independent reference, and
+must not be used as a training or validation target for sleep staging.
 
 ## Workouts
 

@@ -43,7 +43,7 @@ not add names, device serials, free text, locations, or absolute dates.
       "split": "development",
       "bundle": {
         "digest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "schema": 3
+        "schema": 4
       },
       "labels": []
     },
@@ -52,7 +52,7 @@ not add names, device serials, free text, locations, or absolute dates.
       "split": "held_out",
       "bundle": {
         "digest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-        "schema": 3
+        "schema": 4
       },
       "labels": []
     }
@@ -66,7 +66,7 @@ appear exactly once, in exactly one split.
 
 ## Label contracts
 
-All `start_rel` and `end_rel` values use the bundle's schema-v3 day-zero axis.
+All `start_rel` and `end_rel` values use the bundle's schema-v4 day-zero axis.
 They must be non-overlapping for each participant.
 
 ### GAP-10 — overnight physiological load
@@ -145,7 +145,9 @@ bias, MAE, p95, correlation, and three-day requirements in
 
 ## Review sequence
 
-1. Build an opt-in Atria schema-v3 bundle and record its digest.
+1. Build an opt-in Atria schema-v4 bundle and record its digest. Schema v4 is
+   required for GAP-12 because it declares that Atria's own stage totals are
+   not reference labels.
 2. Create one sidecar row per external label, on the same relative timeline.
 3. Admit the manifest with this tool; keep rejected data out of evaluation.
 4. Train and assess only on `development` participants.
