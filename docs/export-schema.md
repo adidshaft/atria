@@ -189,6 +189,24 @@ confirmed activity. The free-text workout title is never exported.
 **labelSource:** Always `"user_confirmed"`. This bundle can support future
 evaluation, but it does not claim an automatic activity classifier exists.
 
+## External-validation corpus admission
+
+`tools/validate_research_corpus.py` is the fail-closed admission gate for any
+offline research corpus built from these bundles. It consumes a separate,
+local-only manifest of pseudonymous bundle digests and time-aligned external
+labels; it does not upload data, train a model, or promote an app metric.
+
+Every declared target must have both `development` and `held_out` participants,
+and no pseudonym may appear in both. The manifest rejects HR-only
+overnight-load labels, non-user-confirmed activity labels, Atria-generated sleep
+stages as references, and sensor pairs without stable layouts, negative controls,
+or two-second clock alignment. It also rejects any attempted model validation or
+production promotion.
+
+Successful validation emits only `admitted_for_external_evaluation_only` with
+`model_validated: false` and `production_promotions: 0`. A separate review of
+held-out metrics is required before a versioned production model can exist.
+
 ## Days
 
 Daily metric rollups (aggregates used for charts and context).
