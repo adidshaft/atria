@@ -3734,7 +3734,10 @@ private struct AtriaVitalsLiveSignalCard: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Continuous stress")
+                    // The selected segment already names the metric. Repeating
+                    // “stress” in every tier made the empty state feel like a
+                    // feature pitch rather than a useful live surface.
+                    Text("Current reading")
                         .font(.subheadline.weight(.bold))
                     Text(stressPresentation.detail)
                         .font(.caption)
@@ -3749,9 +3752,9 @@ private struct AtriaVitalsLiveSignalCard: View {
             }
 
             if stressPoints.isEmpty {
-                ContentUnavailableView("Collecting stress",
+                ContentUnavailableView("Preparing your baseline",
                                        systemImage: "waveform.path.ecg",
-                                       description: Text("Wear the strap continuously; scored 0–3 readings will appear here when your personal baseline is ready."))
+                                       description: Text("Keep wearing your strap. Your 0–3 score will appear once your baseline is ready."))
                     .frame(maxWidth: .infinity, minHeight: 154)
                     .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else {
@@ -3768,9 +3771,13 @@ private struct AtriaVitalsLiveSignalCard: View {
             }
             .accessibilityLabel("Stress scale: 0 calm, 1 low, 2 medium, 3 high")
 
-            Text("Observed readings only · gaps mean the strap was not collecting.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            // A gap note is valuable beside a real timeline, but repeats the
+            // empty-state explanation before there are any readings to inspect.
+            if !stressPoints.isEmpty {
+                Text("Observed readings only · gaps mean the strap was not collecting.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
