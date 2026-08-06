@@ -16,9 +16,10 @@ enum AtriaResearchSharing {
     static let pseudonymKey = "atria.dataSharing.pseudonymUUID"
     static let consentDateKey = "atria.dataSharing.consentDate"
     static let receiptsKey = "atria.dataSharing.receipts.v1"
-    // v2 replaces free-form workout titles with allowlisted activity types and
-    // adds only compact, timestamp-shifted motion features for validation.
-    static let schemaVersion = 2
+    // v3 puts every temporal field on one day-zero-relative axis. v2 mixed
+    // session-relative HR/RR offsets with day-zero motion and labels, which
+    // made a future validation set impossible to align without guessing.
+    static let schemaVersion = 3
 
     static var isOptedIn: Bool {
         UserDefaults.standard.bool(forKey: optInKey)
@@ -241,9 +242,15 @@ enum AtriaResearchBundleBuilder {
     }
 
     nonisolated static func makePayload(input: BuildInput) -> AtriaResearchBundlePayload? {
+        // Every record that can carry an exported label or measurement must
+        // participate in the epoch. Otherwise a manual workout or journal
+        // answer that predates the first saved session would serialize with a
+        // negative coordinate, breaking the bundle's single time contract.
         var allDates: [Date] = input.sessions.map(\.start)
         allDates.append(contentsOf: input.sleeps.map(\.start))
+        allDates.append(contentsOf: input.workouts.map(\.start))
         allDates.append(contentsOf: input.days.map(\.day))
+        allDates.append(contentsOf: input.journalAnswers.map(\.day))
         guard let earliest = allDates.min() else { return nil }
         let epoch0 = input.calendar.startOfDay(for: earliest)
 
@@ -262,22 +269,39 @@ enum AtriaResearchBundleBuilder {
             var hrPoints: [[Double]] = []
             hrPoints.reserveCapacity(session.points.count)
             for point in session.points {
-                let tRel: Double = (point.t * 10).rounded() / 10
-                hrPoints.append([tRel, Double(point.bpm)])
+                // Do not emit malformed offsets outside the saved session. A
+                // point is only useful to research if it has an unambiguous
+                // absolute position on the bundle's one relative timeline.
+                guard point.t.isFinite,
+                      point.t >= 0,
+                      point.t <= session.duration,
+                      point.bpm > 0 else { continue }
+                hrPoints.append([rel(session.start.addingTimeInterval(point.t)), Double(point.bpm)])
             }
             var rrPoints: [[Double]] = []
             rrPoints.reserveCapacity(session.rrPoints?.count ?? 0)
             for point in session.rrPoints ?? [] {
-                let tRel: Double = (point.t * 10).rounded() / 10
-                rrPoints.append([tRel, Double(point.ms)])
+                guard point.t.isFinite,
+                      point.t >= 0,
+                      point.t <= session.duration,
+                      point.ms > 0 else { continue }
+                rrPoints.append([rel(session.start.addingTimeInterval(point.t)), Double(point.ms)])
             }
             let sessionEnd = session.start.addingTimeInterval(session.duration)
-            let motionEpochs = (session.recoveredMotionEpochs ?? [])
+            let motionEpochs: [AtriaResearchBundlePayload.Session.MotionEpoch] = (session.recoveredMotionEpochs ?? [])
                 .filter { $0.end > session.start && $0.start < sessionEnd }
-                .map { epoch in
-                    AtriaResearchBundlePayload.Session.MotionEpoch(
-                        startRel: rel(epoch.start),
-                        endRel: rel(epoch.end),
+                .compactMap { epoch in
+                    // A recovered epoch may slightly overhang the session
+                    // that retained it. Clip to the true session interval so
+                    // all emitted timestamps remain bounded and align with
+                    // HR/RR points instead of leaking a negative pre-session
+                    // coordinate.
+                    let epochStart = max(epoch.start, session.start)
+                    let epochEnd = min(epoch.end, sessionEnd)
+                    guard epochEnd > epochStart else { return nil }
+                    return AtriaResearchBundlePayload.Session.MotionEpoch(
+                        startRel: rel(epochStart),
+                        endRel: rel(epochEnd),
                         rows: epoch.rows,
                         validatedRows: epoch.validatedRows,
                         stillnessRatio: epoch.stillnessRatio,

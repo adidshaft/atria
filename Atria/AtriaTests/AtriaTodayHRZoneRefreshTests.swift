@@ -57,6 +57,7 @@ final class AtriaTodayHRZoneRefreshTests: XCTestCase {
 
         let summary = SessionStore.makeTodayHRZoneMinutes(
             sessions: [future, crossMidnight, old],
+            rest: 60,
             maxHR: 200,
             now: today,
             calendar: calendar
@@ -80,6 +81,7 @@ final class AtriaTodayHRZoneRefreshTests: XCTestCase {
         )
 
         let summary = SessionStore.makeTodayHRZoneMinutes(sessions: [workout],
+                                                           rest: 60,
                                                            maxHR: 190,
                                                            now: start)
 
