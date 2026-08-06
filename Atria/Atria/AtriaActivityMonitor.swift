@@ -788,7 +788,7 @@ struct AtriaActivityMonitorTab: View {
                     .filter { $0.t >= workout.start && $0.t <= workout.end }
                     .map(AtriaStressDetailReading.init(historyPoint:))
             )
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showAddWorkout) {
@@ -818,7 +818,64 @@ struct AtriaActivityMonitorTab: View {
                                      activity: activity,
                                      calendar: calendar)
         }
+        .onAppear {
+            #if DEBUG
+            guard workoutDetail == nil,
+                  let fixture = Self.debugWorkoutDetailFixture else { return }
+            workoutDetail = fixture
+            #endif
+        }
     }
+
+    #if DEBUG
+    /// Presentation-only fixtures exercise the exact production detail sheet
+    /// without mutating the user's workout history or sensor state.
+    private static var debugWorkoutDetailFixture: UserConfirmedWorkout? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return nil }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        guard arguments.indices.contains(valueIndex) else { return nil }
+
+        let hasZoneDistribution: Bool
+        switch arguments[valueIndex] {
+        case "activity-zone-detail": hasZoneDistribution = true
+        case "activity-zone-unavailable": hasZoneDistribution = false
+        default: return nil
+        }
+
+        let end = Date().addingTimeInterval(-8 * 60)
+        let start = end.addingTimeInterval(-52 * 60)
+        return UserConfirmedWorkout(
+            id: "debug-activity-zone-detail",
+            createdAt: end,
+            start: start,
+            end: end,
+            label: hasZoneDistribution ? "Tempo run" : "Strength session",
+            source: "debug_fixture",
+            confidence: "fixture",
+            sessions: 1,
+            samples: hasZoneDistribution ? 2_180 : 720,
+            avgHR: hasZoneDistribution ? 151 : 122,
+            peakHR: hasZoneDistribution ? 181 : 151,
+            p95HR: hasZoneDistribution ? 172 : 144,
+            p99HR: hasZoneDistribution ? 178 : 149,
+            thresholdHR: 128,
+            streamCoveragePercent: hasZoneDistribution ? 96 : 54,
+            observedDuration: hasZoneDistribution ? 50 * 60 : 28 * 60,
+            reason: "debug activity-zone presentation fixture",
+            activityType: hasZoneDistribution ? "Running" : "Strength",
+            activitySubtype: hasZoneDistribution ? "Tempo" : nil,
+            exerciseNames: nil,
+            reviewSource: "debug_fixture",
+            strain: hasZoneDistribution ? 11.7 : 5.6,
+            activeEnergyKilocalories: hasZoneDistribution ? 540 : 280,
+            activeEnergyConfidence: "fixture",
+            zoneSeconds: hasZoneDistribution
+                ? ["warmup": 460, "fatBurn": 720, "aerobic": 1_120, "anaerobic": 620, "max": 200]
+                : nil
+        )
+    }
+    #endif
 
     /// The navigation title already says Activity. Keep day navigation and Add
     /// in one compact control row instead of stacking a duplicate section title
