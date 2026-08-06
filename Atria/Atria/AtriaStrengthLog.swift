@@ -36,6 +36,44 @@ enum AtriaStrengthLog {
     static let customExercisesKey = "atria.exercises.custom.v1"
     static let restSecondsKey = "atria.strength.restSeconds.v1"
 
+    /// Reproducible logged-strength input, intentionally separate from
+    /// cardiovascular Strain. It only considers explicit sets with weight and
+    /// reps; unlogged Strength activities remain unavailable rather than being
+    /// inferred from heart rate or duration.
+    struct MuscularLoadReceipt: Equatable {
+        let setCount: Int
+        let qualifiedSetCount: Int
+        let volumeKg: Double
+        let densityBonusFraction: Double
+        let score: Double
+    }
+
+    static func muscularLoadReceipt(for sets: [LoggedSet]) -> MuscularLoadReceipt? {
+        guard !sets.isEmpty else { return nil }
+        let qualified = sets.compactMap { set -> Double? in
+            guard let weight = set.weightKg, weight > 0,
+                  let reps = set.reps, reps > 0 else { return nil }
+            let effort = min(max((set.rpe ?? 7) / 7, 0.70), 1.25)
+            return weight * Double(reps) * effort
+        }
+        guard !qualified.isEmpty else { return nil }
+        let quickTransitions = sets.filter {
+            guard $0.supersetGroupID != nil,
+                  let seconds = $0.supersetTransitionSeconds else { return false }
+            return seconds <= 90
+        }.count
+        let density = min(0.15, Double(quickTransitions) * 0.03)
+        let volume = qualified.reduce(0, +)
+        // Saturating presentation score for comparison within the user's own
+        // explicit logs, not a proprietary strain clone or a combined score.
+        let score = min(100, 100 * (1 - exp(-(volume * (1 + density)) / 5_000)))
+        return MuscularLoadReceipt(setCount: sets.count,
+                                   qualifiedSetCount: qualified.count,
+                                   volumeKg: volume,
+                                   densityBonusFraction: density,
+                                   score: score)
+    }
+
     static func estimatedOneRepMax(weightKg: Double?, reps: Int?) -> Double? {
         guard let weightKg,
               let reps,

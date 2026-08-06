@@ -1913,6 +1913,10 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         }
     }
 
+    private var muscularLoadReceipt: AtriaStrengthLog.MuscularLoadReceipt? {
+        AtriaStrengthLog.muscularLoadReceipt(for: workout.strengthSets ?? [])
+    }
+
     @ViewBuilder
     private var strengthSetSummaryCard: some View {
         if !strengthExerciseSummaries.isEmpty || pausedWorkoutSeconds > 0 {
@@ -1932,6 +1936,25 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                     Label("\(Int((pausedWorkoutSeconds / 60).rounded())) min paused",
                           systemImage: "pause.fill")
                         .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                if let muscularLoadReceipt {
+                    Divider()
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Logged strength load")
+                                .font(.caption.weight(.bold))
+                            Text("\(Int(muscularLoadReceipt.volumeKg.rounded())) kg volume · \(muscularLoadReceipt.qualifiedSetCount) qualified sets\(muscularLoadReceipt.densityBonusFraction > 0 ? " · superset density included" : "")")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text("\(Int(muscularLoadReceipt.score.rounded()))")
+                            .font(.title3.weight(.black).monospacedDigit())
+                            .foregroundStyle(.orange)
+                    }
+                    Text("Logged sets only · separate from cardiovascular Strain")
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
