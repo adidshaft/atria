@@ -4053,11 +4053,11 @@ private struct AtriaPulseStatRail: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            stat("Now", now, tint: .red)
+            stat("Now", now, tint: heartRateTint(for: now))
             Divider().frame(height: 38)
-            stat("Average", average, tint: .pink)
+            stat("Average", average, tint: heartRateTint(for: average))
             Divider().frame(height: 38)
-            stat("Peak", peak, tint: .red)
+            stat("Peak", peak, tint: heartRateTint(for: peak))
             Divider().frame(height: 38)
             stat("Resting", resting, tint: restingTint)
         }
@@ -4065,6 +4065,20 @@ private struct AtriaPulseStatRail: View {
         .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Heart rate now \(now) beats per minute, average \(average), peak \(peak), resting \(resting)")
+    }
+
+    /// Live pulse values should use the same calm → working → high colour
+    /// language as the timeline. A fixed red/pink rail made an ordinary
+    /// mid-range reading look like an alert even while the chart said it was
+    /// merely elevated. These are display bands, not training zones.
+    private func heartRateTint(for value: String) -> Color {
+        guard let bpm = Int(value.filter(\.isNumber)) else { return .secondary }
+        switch bpm {
+        case ..<60: return .cyan
+        case ..<80: return .green
+        case ..<100: return .orange
+        default: return .red
+        }
     }
 
     private func stat(_ label: String, _ value: String, tint: Color) -> some View {
