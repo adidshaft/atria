@@ -329,7 +329,8 @@ struct AtriaTodayScreen: View {
             }
         }
         .sheet(isPresented: $showWeeklyReport) {
-            AtriaWeeklyReportSheet(report: weeklyReport)
+            AtriaWeeklyReportSheet(report: weeklyReport,
+                                   rollups: highlightRollups)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -3707,4 +3708,3 @@ private extension View {
         }
     }
 }
-

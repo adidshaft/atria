@@ -1395,6 +1395,10 @@ final class AtriaPendingWorkoutIntentStore: @unchecked Sendable {
 
 struct AtriaWorkoutStartConfiguration: Equatable {
     var activityType: AtriaWorkoutActivityType = .other
+    /// An optional, wearer-chosen finish-line for this workout. This is kept
+    /// independent from the heart-rate range below: a zone coaches intensity
+    /// moment-to-moment, while strain answers when the session is complete.
+    var targetStrain: Double? = nil
     var lowerTargetZone: Int = HRZone.fatBurn.rawValue
     var upperTargetZone: Int = HRZone.aerobic.rawValue
 
@@ -1614,12 +1618,23 @@ struct AtriaWorkoutStartSheet: View {
                     }
 
                     targetHeader
+                    strainTargetCard
                     GlassEffectContainer(spacing: 10) {
                         VStack(spacing: 12) {
                             zoneSelector(title: "Target lower zone", selection: $configuration.lowerTargetZone)
                             zoneSelector(title: "Target upper zone", selection: $configuration.upperTargetZone)
                         }
                     }
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label("Zone coaching", systemImage: "wave.3.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.cyan)
+                        Text("When connected, your strap uses distinct haptic pulses as your heart rate enters or leaves this target range.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 2)
                     .accessibilityHint("One pulse at the lower boundary, three above the upper boundary, and two when returning from above.")
                 }
                 .padding(20)
@@ -1770,6 +1785,58 @@ struct AtriaWorkoutStartSheet: View {
     private var targetTitle: some View {
         Text("Heart-rate target")
             .font(.title2.weight(.bold))
+    }
+
+    private var strainTargetCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Strain target")
+                        .font(.title3.weight(.bold))
+                    Text(configuration.targetStrain == nil
+                         ? "Follow today's guidance until you set a goal."
+                         : "Your session finish-line, separate from heart-rate zones.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+                Toggle("Set strain target", isOn: strainTargetEnabled)
+                    .labelsHidden()
+                    .accessibilityLabel("Set a strain target")
+            }
+
+            if let target = configuration.targetStrain {
+                HStack(spacing: 12) {
+                    Slider(value: strainTargetBinding, in: 1...AtriaWorkoutTargetMath.strainCeiling, step: 0.5)
+                        .tint(.orange)
+                        .accessibilityLabel("Workout strain target")
+                        .accessibilityValue(String(format: "%.1f", target))
+                    Text(String(format: "%.1f", target))
+                        .font(.title3.weight(.black).monospacedDigit())
+                        .foregroundStyle(.orange)
+                        .frame(width: 42, alignment: .trailing)
+                }
+            }
+        }
+        .padding(14)
+        .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var strainTargetEnabled: Binding<Bool> {
+        Binding(
+            get: { configuration.targetStrain != nil },
+            set: { enabled in
+                configuration.targetStrain = enabled ? (configuration.targetStrain ?? 10) : nil
+            }
+        )
+    }
+
+    private var strainTargetBinding: Binding<Double> {
+        Binding(
+            get: { configuration.targetStrain ?? 10 },
+            set: { configuration.targetStrain = min(max($0, 1), AtriaWorkoutTargetMath.strainCeiling) }
+        )
     }
 
     private var targetRangeBadge: some View {
