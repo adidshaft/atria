@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 // Sleep Planner charts (design source: Claude Design "Atria App UI.dc.html",
 // section 6 "SLEEP PLANNER & SMART WAKE", 2026-08-01 design-parity slice 1):
@@ -306,20 +307,24 @@ enum AtriaSleepDebtChartPresentation {
         }
     }
 
-    /// The last 7 civil mornings ending at the newest confirmed main sleep's
-    /// wake day. Need per slot is the clamped base need — the exact per-night
-    /// need `AtriaSleepBudget.sleepDebt` itself scores against, so the bars
-    /// and the carried-debt hero can never disagree about the target.
+    /// One requested 7-night window, anchored to the newest confirmed morning
+    /// and movable backwards in whole weeks. Need per slot is the clamped base
+    /// need — the exact per-night need `AtriaSleepBudget.sleepDebt` itself
+    /// scores against, so the chart can never disagree with the ledger.
     static func slots(nights: [SleepHistorySnapshot.Night],
                       baseNeedHours: Double,
+                      weekOffset: Int = 0,
                       calendar: Calendar = .current) -> [NightSlot] {
         let confirmed = nights.filter { $0.confirmed && !$0.isNapEvidence }
-        guard let newestDay = confirmed.map({ calendar.startOfDay(for: $0.day) }).max() else {
+        guard let newestDay = confirmed.map({ calendar.startOfDay(for: $0.day) }).max(),
+              let windowEnd = calendar.date(byAdding: .day,
+                                             value: min(weekOffset, 0) * slotCount,
+                                             to: newestDay) else {
             return []
         }
         let need = min(max(baseNeedHours, 6), 10)
         return (0..<slotCount).reversed().compactMap { daysBack in
-            guard let day = calendar.date(byAdding: .day, value: -daysBack, to: newestDay) else {
+            guard let day = calendar.date(byAdding: .day, value: -daysBack, to: windowEnd) else {
                 return nil
             }
             // Two confirmed main sleeps on one morning is a rare edit
@@ -333,6 +338,23 @@ enum AtriaSleepDebtChartPresentation {
                              sleptHours: slept,
                              needHours: need)
         }
+    }
+
+    static func canNavigateToPreviousWeek(nights: [SleepHistorySnapshot.Night],
+                                           weekOffset: Int,
+                                           calendar: Calendar = .current) -> Bool {
+        let confirmed = nights.filter { $0.confirmed && !$0.isNapEvidence }
+        guard let newest = confirmed.map({ calendar.startOfDay(for: $0.day) }).max(),
+              let oldest = confirmed.map({ calendar.startOfDay(for: $0.day) }).min(),
+              let nextEnd = calendar.date(byAdding: .day,
+                                          value: (min(weekOffset, 0) - 1) * slotCount,
+                                          to: newest),
+              let nextStart = calendar.date(byAdding: .day,
+                                            value: -(slotCount - 1),
+                                            to: nextEnd) else {
+            return false
+        }
+        return nextStart >= oldest
     }
 
     static func realNightCount(_ slots: [NightSlot]) -> Int {
@@ -383,13 +405,15 @@ enum AtriaSleepDebtChartPresentation {
 /// 7-night need-vs-slept debt card (design 6b). Fed by real slots and the
 /// real recency-weighted debt only.
 struct AtriaSleepDebtChartCard: View {
-    let slots: [AtriaSleepDebtChartPresentation.NightSlot]
-    let carriedDebtHours: Double
-    let weekDeltaText: String?
-    /// Real performance percent of the latest confirmed night, nil while
-    /// unknown — the ring simply stays away rather than guessing.
-    let fulfilledLastNightPercent: Int?
+    let nights: [SleepHistorySnapshot.Night]
     let baseNeedHours: Double
+    @State private var weekOffset = 0
+
+    private var slots: [AtriaSleepDebtChartPresentation.NightSlot] {
+        AtriaSleepDebtChartPresentation.slots(nights: nights,
+                                              baseNeedHours: baseNeedHours,
+                                              weekOffset: weekOffset)
+    }
 
     private var realNightCount: Int {
         AtriaSleepDebtChartPresentation.realNightCount(slots)
@@ -401,23 +425,46 @@ struct AtriaSleepDebtChartCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Sleep debt")
+            HStack(alignment: .center, spacing: 8) {
+                Text("Hours vs. need")
                     .font(.subheadline.weight(.semibold))
                 Spacer(minLength: 0)
-                Text("Last 7 nights · recency-weighted")
-                    .font(.caption2.weight(.semibold))
+                Button {
+                    weekOffset -= 1
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(.plain)
+                .disabled(!canNavigateToPreviousWeek)
+                .foregroundStyle(canNavigateToPreviousWeek ? .primary : .tertiary)
+                .accessibilityLabel("Previous sleep week")
+
+                Text(weekTitle)
+                    .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
+                    .frame(minWidth: 70)
+
+                Button {
+                    weekOffset = min(weekOffset + 1, 0)
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .frame(width: 30, height: 30)
+                }
+                .buttonStyle(.plain)
+                .disabled(weekOffset == 0)
+                .foregroundStyle(weekOffset == 0 ? .tertiary : .primary)
+                .accessibilityLabel("Next sleep week")
             }
 
             if realNightCount < AtriaSleepDebtChartPresentation.minimumRealNights {
                 buildingState
             } else {
-                heroRow
-                pairedBars
-                dayLetterRow
-                legendRow
-                Text("Need here is your base need (\(AtriaMetricFormat.sleepHours(clampedNeedHours))) — the same per-night target the debt math scores against. Shortfall nights show amber; mornings without confirmed sleep stay empty.")
+                hoursVsNeedChart
+                dualLineLegend
+                Text("Sleep needed is your current nightly target (\(AtriaMetricFormat.sleepHours(clampedNeedHours))). Each point is an observed main sleep; missing mornings stay blank.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -427,6 +474,19 @@ struct AtriaSleepDebtChartCard: View {
         .atriaInsetCard(tint: Metrics.electricSleep)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
+    }
+
+    private var canNavigateToPreviousWeek: Bool {
+        AtriaSleepDebtChartPresentation.canNavigateToPreviousWeek(nights: nights,
+                                                                   weekOffset: weekOffset)
+    }
+
+    private var weekTitle: String {
+        guard let first = slots.first?.day, let last = slots.last?.day else { return "No nights" }
+        if Calendar.current.isDate(first, equalTo: last, toGranularity: .month) {
+            return "\(first.formatted(.dateTime.month(.abbreviated).day()))–\(last.formatted(.dateTime.day()))"
+        }
+        return "\(first.formatted(.dateTime.month(.abbreviated).day()))–\(last.formatted(.dateTime.month(.abbreviated).day()))"
     }
 
     // MARK: - Building
@@ -442,143 +502,90 @@ struct AtriaSleepDebtChartCard: View {
         }
     }
 
-    // MARK: - Hero
+    private var hoursVsNeedChart: some View {
+        let slept = slots.compactMap { slot in
+            slot.sleptHours.map { (day: slot.day, hours: $0) }
+        }
+        let highest = max(clampedNeedHours, slept.map(\.hours).max() ?? clampedNeedHours)
+        let lowest = min(clampedNeedHours, slept.map(\.hours).min() ?? clampedNeedHours)
+        let lowerBound = max(0, floor(lowest - 0.75))
+        let upperBound = ceil(highest + 0.75)
 
-    private var debtText: String {
-        carriedDebtHours > 0.05
-            ? SleepHistorySnapshot.formatDuration(carriedDebtHours * 3_600)
-            : "0m"
-    }
-
-    private var heroRow: some View {
-        HStack(alignment: .center, spacing: AtriaDesignTokens.Spacing.lg) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Carried debt")
-                    .font(.caption2.weight(.semibold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
-                Text(debtText)
-                    .font(.system(size: 28, weight: .bold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(carriedDebtHours > 0.05
-                                     ? AtriaSleepLedgerPalette.debtValue
-                                     : Metrics.electricGreen)
-                if let weekDeltaText {
-                    Text(weekDeltaText)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
+        return Chart {
+            ForEach(slots, id: \.day) { slot in
+                LineMark(x: .value("Morning", slot.day), y: .value("Sleep needed", slot.needHours), series: .value("Series", "Sleep needed"))
+                    .interpolationMethod(.linear)
+                    .lineStyle(StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                    .foregroundStyle(Metrics.electricGreen)
+                PointMark(x: .value("Morning", slot.day), y: .value("Sleep needed", slot.needHours))
+                    .symbol(Circle())
+                    .symbolSize(44)
+                    .foregroundStyle(Metrics.electricGreen)
             }
-            Spacer(minLength: 0)
-            if let fulfilledLastNightPercent {
-                fulfilledRing(percent: fulfilledLastNightPercent)
+            ForEach(slept, id: \.day) { point in
+                LineMark(x: .value("Morning", point.day), y: .value("Hours slept", point.hours), series: .value("Series", "Hours slept"))
+                    .interpolationMethod(.linear)
+                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                    .foregroundStyle(AtriaSleepLedgerPalette.slept)
+                PointMark(x: .value("Morning", point.day), y: .value("Hours slept", point.hours))
+                    .symbol(Circle())
+                    .symbolSize(58)
+                    .foregroundStyle(AtriaSleepLedgerPalette.slept)
+                    .annotation(position: point.hours >= clampedNeedHours ? .top : .bottom, overflowResolution: .init(x: .fit, y: .disabled)) {
+                        Text(AtriaMetricFormat.sleepHours(point.hours))
+                            .font(.system(size: 9, weight: .bold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(AtriaSleepLedgerPalette.slept)
+                    }
             }
         }
-    }
-
-    private func fulfilledRing(percent: Int) -> some View {
-        let fraction = min(max(Double(percent) / 100, 0), 1)
-        return VStack(spacing: 4) {
-            ZStack {
-                Circle()
-                    .stroke(Color.primary.opacity(0.08), lineWidth: 7)
-                Circle()
-                    .trim(from: 0, to: fraction)
-                    .stroke(AtriaSleepLedgerPalette.slept,
-                            style: StrokeStyle(lineWidth: 7, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                Text("\(percent)%")
-                    .font(.system(size: 13, weight: .bold, design: .rounded).monospacedDigit())
-            }
-            .frame(width: 52, height: 52)
-            Text("last night")
-                .font(.system(size: 9.5, weight: .semibold))
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    // MARK: - Bars
-
-    private var barScaleHours: Double {
-        let tallest = slots.reduce(clampedNeedHours) { max($0, $1.sleptHours ?? 0) }
-        return tallest + 0.5
-    }
-
-    private var pairedBars: some View {
-        let scale = barScaleHours
-        return HStack(alignment: .bottom, spacing: AtriaDesignTokens.Spacing.sm) {
-            ForEach(Array(slots.enumerated()), id: \.offset) { _, slot in
-                ZStack(alignment: .bottom) {
-                    // Need track — translucent, full slot width.
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(Color.primary.opacity(0.10))
-                        .frame(height: Self.chartHeight * slot.needHours / scale)
-                    if let sleptHours = slot.sleptHours {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(slot.shortfall
-                                  ? AtriaSleepLedgerPalette.strain
-                                  : AtriaSleepLedgerPalette.slept)
-                            .frame(height: max(3, Self.chartHeight * sleptHours / scale))
-                            .padding(.horizontal, 3)
-                    } else {
-                        // No confirmed sleep that morning — subtle mark only.
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .fill(Color.primary.opacity(0.14))
-                            .frame(height: 3)
-                            .padding(.horizontal, 5)
+        .chartYScale(domain: lowerBound...upperBound)
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                AxisTick().foregroundStyle(.clear)
+                AxisValueLabel {
+                    if let value = value.as(Double.self) {
+                        Text(AtriaMetricFormat.sleepHours(value))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .bottom)
             }
         }
-        .frame(height: Self.chartHeight, alignment: .bottom)
-    }
-
-    private var dayLetterRow: some View {
-        HStack(spacing: AtriaDesignTokens.Spacing.sm) {
-            ForEach(Array(slots.enumerated()), id: \.offset) { _, slot in
-                Text(slot.dayLetter)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(slot.shortfall
-                                     ? AtriaSleepLedgerPalette.strain
-                                     : Color.secondary)
-                    .frame(maxWidth: .infinity)
+        .chartXAxis {
+            AxisMarks(values: slots.map(\.day)) { value in
+                AxisTick().foregroundStyle(.clear)
+                AxisValueLabel {
+                    if let day = value.as(Date.self) {
+                        VStack(spacing: 1) {
+                            Text(day.formatted(.dateTime.weekday(.narrow)))
+                            Text(day.formatted(.dateTime.day()))
+                        }
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
+        .frame(height: 172)
+        .padding(.trailing, 8)
     }
 
-    private var legendRow: some View {
-        HStack(spacing: AtriaDesignTokens.Spacing.md) {
-            legendSwatch(fill: AnyShapeStyle(AtriaSleepLedgerPalette.slept), label: "Slept")
-            legendSwatch(fill: AnyShapeStyle(Color.primary.opacity(0.10)), label: "Need")
-            legendSwatch(fill: AnyShapeStyle(AtriaSleepLedgerPalette.strain), label: "Shortfall")
+    private var dualLineLegend: some View {
+        HStack(spacing: 14) {
+            Label("Hours slept", systemImage: "circle")
+                .foregroundStyle(AtriaSleepLedgerPalette.slept)
+            Label("Sleep needed", systemImage: "circle.dashed")
+                .foregroundStyle(Metrics.electricGreen)
             Spacer(minLength: 0)
         }
-    }
-
-    private func legendSwatch(fill: AnyShapeStyle, label: String) -> some View {
-        HStack(spacing: 5) {
-            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                .fill(fill)
-                .frame(width: 10, height: 10)
-            Text(label)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.secondary)
-        }
+        .font(.caption2.weight(.semibold))
     }
 
     private var accessibilityText: String {
         guard realNightCount >= AtriaSleepDebtChartPresentation.minimumRealNights else {
-            return "Sleep debt chart building. Needs \(AtriaSleepDebtChartPresentation.minimumRealNights) confirmed nights, \(realNightCount) so far."
+            return "Hours versus sleep need chart building. Needs \(AtriaSleepDebtChartPresentation.minimumRealNights) confirmed nights, \(realNightCount) so far."
         }
-        var parts = ["Sleep debt over the last 7 nights.",
-                     "Carried debt \(debtText)."]
-        if let weekDeltaText { parts.append("\(weekDeltaText).") }
-        if let fulfilledLastNightPercent {
-            parts.append("Fulfilled \(fulfilledLastNightPercent) percent of need last night.")
-        }
-        parts.append("\(realNightCount) of 7 mornings have confirmed sleep.")
-        return parts.joined(separator: " ")
+        return "Hours versus sleep need for \(weekTitle). \(realNightCount) of 7 mornings have confirmed sleep."
     }
-
-    private static let chartHeight: CGFloat = 120
 }

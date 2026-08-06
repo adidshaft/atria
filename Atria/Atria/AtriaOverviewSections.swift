@@ -3118,7 +3118,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showWeeklyReport) {
-            AtriaWeeklyReportSheet(report: debugWeeklyReport ?? weeklyReportHighlight ?? WeeklyReport(rollups: dailyRollupHistory))
+            AtriaWeeklyReportSheet(report: debugWeeklyReport ?? weeklyReportHighlight ?? WeeklyReport(rollups: dailyRollupHistory),
+                                   rollups: dailyRollupHistory)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -5173,8 +5174,13 @@ private struct AtriaWeeklyReportHighlightRow: View, Equatable {
 
 struct AtriaWeeklyReportSheet: View {
     let report: WeeklyReport
+    /// Full local history lets this report move through prior weeks without
+    /// fabricating any points. Existing callers that only have one report keep
+    /// the current-week experience.
+    var rollups: [DailyRollupStoreEntry] = []
     @Environment(\.dismiss) private var dismiss
     @State private var showShareSheet = false
+    @State private var weekOffset = 0
 
     var body: some View {
         NavigationStack {
@@ -5193,6 +5199,8 @@ struct AtriaWeeklyReportSheet: View {
                         Text(weekRangeText)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
+
+                        weekNavigator
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
@@ -5227,13 +5235,13 @@ struct AtriaWeeklyReportSheet: View {
                                                  systemImage: "moon.zzz.fill",
                                                  tint: .indigo)
                         AtriaWeeklyReportStatRow(title: "Best day",
-                                                 value: dayText(report.bestDay),
-                                                 detail: recoveryText(report.bestDay),
+                                                 value: dayText(displayedReport.bestDay),
+                                                 detail: recoveryText(displayedReport.bestDay),
                                                  systemImage: "lightbulb.max.fill",
                                                  tint: Metrics.electricYellow)
                         AtriaWeeklyReportStatRow(title: "Hardest day",
-                                                 value: dayText(report.hardestDay),
-                                                 detail: strainText(report.hardestDay),
+                                                 value: dayText(displayedReport.hardestDay),
+                                                 detail: strainText(displayedReport.hardestDay),
                                                  systemImage: "flame.fill",
                                                  tint: Metrics.electricStrain)
                     }
@@ -5242,7 +5250,7 @@ struct AtriaWeeklyReportSheet: View {
                         weekRecoveryChart(weekRecoveryPoints)
                     }
 
-                    if let note = report.strainRecoveryNote {
+                    if let note = displayedReport.strainRecoveryNote {
                         Label(note, systemImage: "exclamationmark.triangle.fill")
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.orange)
@@ -5286,28 +5294,103 @@ struct AtriaWeeklyReportSheet: View {
             .accessibilityAddTraits(.isHeader)
     }
 
+    private var reportCalendar: Calendar {
+        var calendar = Calendar(identifier: .iso8601)
+        calendar.timeZone = .current
+        return calendar
+    }
+
+    /// The presented report is always a real seven-day slice plus the prior
+    /// seven days needed for its comparison. It intentionally leaves missing
+    /// days empty rather than borrowing a neighbor's score.
+    private var displayedReport: WeeklyReport {
+        guard weekOffset > 0, !rollups.isEmpty,
+              let anchor = reportCalendar.date(byAdding: .day,
+                                                value: -7 * weekOffset,
+                                                to: report.generatedAt),
+              let earliest = reportCalendar.date(byAdding: .day,
+                                                  value: -13,
+                                                  to: anchor) else {
+            return report
+        }
+        let window = rollups.filter { $0.day >= earliest && $0.day <= anchor }
+        return WeeklyReport(rollups: window, now: anchor, calendar: reportCalendar)
+    }
+
+    private var canNavigateToPreviousWeek: Bool {
+        guard !rollups.isEmpty,
+              let previousWeekEnd = reportCalendar.date(byAdding: .day,
+                                                        value: -7 * (weekOffset + 1),
+                                                        to: report.generatedAt) else { return false }
+        return rollups.contains { $0.day <= previousWeekEnd }
+    }
+
+    private var weekNavigator: some View {
+        HStack(spacing: 4) {
+            Button {
+                guard canNavigateToPreviousWeek else { return }
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
+                    weekOffset += 1
+                }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 32, height: 28)
+            }
+            .buttonStyle(.plain)
+            .disabled(!canNavigateToPreviousWeek)
+            .accessibilityLabel("Previous week")
+
+            Spacer(minLength: 0)
+
+            Text(weekOffset == 0 ? "Current week" : "\(weekOffset) week\(weekOffset == 1 ? "" : "s") ago")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 0)
+
+            Button {
+                guard weekOffset > 0 else { return }
+                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
+                    weekOffset -= 1
+                }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 32, height: 28)
+            }
+            .buttonStyle(.plain)
+            .disabled(weekOffset == 0)
+            .accessibilityLabel("Next week")
+        }
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
+        .background(.primary.opacity(0.055), in: Capsule(style: .continuous))
+    }
+
     /// Narrative hero (dedup audit + design HIGHLIGHTS card, 2026-07-07):
     /// the hero used to repeat the Recovery-average stat row verbatim. It is
     /// now a one-line story built ONLY from real report fields — every
     /// clause is gated on data, phrasing stays associative ("while"/"with"),
     /// never causal. Numbers live in the stat rows below.
     private var heroText: String {
-        guard let _ = report.recoveryAvg else { return "Still building this week's picture" }
+        guard let _ = displayedReport.recoveryAvg else { return "Still building this week's picture" }
 
         var clauses: [String] = []
-        if let delta = report.recoveryDeltaVsPriorWeek {
+        if let delta = displayedReport.recoveryDeltaVsPriorWeek {
             if delta >= 3 { clauses.append("Recovery climbed") }
             else if delta <= -3 { clauses.append("Recovery dipped") }
             else { clauses.append("Recovery held steady") }
         } else {
             clauses.append("Recovery on the board")
         }
-        if let strain = report.strainAvg, strain > 0 {
+        if let strain = displayedReport.strainAvg, strain > 0 {
             if strain >= 12 { clauses.append("under a heavy training load") }
             else if strain >= 8 { clauses.append("with a solid training load") }
             else { clauses.append("with a light training load") }
         }
-        if let sleep = report.sleepAvgSeconds, sleep > 0 {
+        if let sleep = displayedReport.sleepAvgSeconds, sleep > 0 {
             if sleep >= 7.5 * 3600 { clauses.append("while sleep stayed long") }
             else if sleep >= 6.5 * 3600 { clauses.append("while sleep hovered near need") }
             else { clauses.append("while sleep ran short") }
@@ -5316,7 +5399,7 @@ struct AtriaWeeklyReportSheet: View {
     }
 
     private var recoveryAverageText: String {
-        report.recoveryAvg.map { "\($0)%" } ?? "--"
+        displayedReport.recoveryAvg.map { "\($0)%" } ?? "--"
     }
 
     /// Human date range ("Jun 29 – Jul 5") from the report's rollup days;
@@ -5332,8 +5415,8 @@ struct AtriaWeeklyReportSheet: View {
     /// the more useful half, and a range cannot contradict itself. The ISO
     /// label still stands in when no dates were stored.
     private var weekRangeText: String {
-        guard let start = report.weekStart, let end = report.weekEnd else {
-            return "Week \(report.isoWeek), \(report.isoYear)"
+        guard let start = displayedReport.weekStart, let end = displayedReport.weekEnd else {
+            return "Week \(displayedReport.isoWeek), \(displayedReport.isoYear)"
         }
         let formatter = Self.rangeDayFormatter
         return "\(formatter.string(from: start)) – \(formatter.string(from: end))"
@@ -5350,7 +5433,7 @@ struct AtriaWeeklyReportSheet: View {
     /// Points are shaped OUTSIDE any render block (perf gate: no compactMap
     /// in some-View bodies).
     private var weekRecoveryPoints: [(day: Date, recovery: Int)] {
-        (report.recoverySeries ?? []).compactMap { day in
+        (displayedReport.recoverySeries ?? []).compactMap { day in
             guard let recovery = day.recovery else { return nil }
             return (day.day, recovery)
         }
@@ -5358,22 +5441,20 @@ struct AtriaWeeklyReportSheet: View {
 
     private func weekRecoveryChart(_ points: [(day: Date, recovery: Int)]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Recovery through the week")
+            Text("Recovery by day")
                 .font(.subheadline.weight(.semibold))
             Chart {
                 ForEach(points, id: \.day) { point in
-                    LineMark(x: .value("Day", point.day, unit: .day),
-                             y: .value("Recovery", point.recovery))
-                        .interpolationMethod(.linear)
-                        .foregroundStyle(Metrics.electricGreen)
-                    PointMark(x: .value("Day", point.day, unit: .day),
-                              y: .value("Recovery", point.recovery))
+                    BarMark(x: .value("Day", point.day, unit: .day),
+                            y: .value("Recovery", point.recovery),
+                            width: .fixed(18))
                         .foregroundStyle(Metrics.recoveryColor(point.recovery))
+                        .cornerRadius(4)
                 }
             }
             .chartYScale(domain: 0...100)
             .chartYAxis {
-                AxisMarks(position: .trailing, values: [0, 50, 100])
+                AxisMarks(position: .trailing, values: [0, 33, 67, 100])
             }
             .chartXAxis {
                 AxisMarks(values: .automatic(desiredCount: 4)) { _ in
@@ -5385,10 +5466,10 @@ struct AtriaWeeklyReportSheet: View {
             .clipped()
             // Full-bleed plot inside the card (2026-08-05 width audit).
             .padding(.horizontal, -14)
-            .accessibilityLabel("Recovery for each day of the week.")
+            .accessibilityLabel("Recovery color bars for each recorded day of the week. Green is high recovery, yellow is moderate, red is low.")
             .atriaInspectableGraph(
                 AtriaInspectableGraph(
-                    title: "Recovery through the week",
+                    title: "Recovery by day",
                     subtitle: "Recorded recovery days only",
                     content: .timeSeries([
                         .init(title: "Recovery",
@@ -5400,28 +5481,44 @@ struct AtriaWeeklyReportSheet: View {
                     ])
                 )
             )
+
+            HStack(spacing: 12) {
+                recoveryLegend(color: .green, text: "High 67–100")
+                recoveryLegend(color: .yellow, text: "Moderate 34–66")
+                recoveryLegend(color: .red, text: "Low 0–33")
+            }
         }
         .padding(14)
         .atriaInsetCard(tint: Metrics.electricGreen)
     }
 
+    private func recoveryLegend(color: Color, text: String) -> some View {
+        Label {
+            Text(text)
+        } icon: {
+            Circle().fill(color).frame(width: 7, height: 7)
+        }
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(.secondary)
+    }
+
     private var strainAverageText: String {
-        report.strainAvg.map { String(format: "%.1f", $0) } ?? "--"
+        displayedReport.strainAvg.map { String(format: "%.1f", $0) } ?? "--"
     }
 
     private var sleepAverageText: String {
-        guard let seconds = report.sleepAvgSeconds else { return "--" }
+        guard let seconds = displayedReport.sleepAvgSeconds else { return "--" }
         let totalMinutes = Int((seconds / 60).rounded())
         return "\(totalMinutes / 60)h \(totalMinutes % 60)m"
     }
 
     private var recoveryDeltaText: String {
-        guard let delta = report.recoveryDeltaVsPriorWeek else { return "Prior week comparison building" }
+        guard let delta = displayedReport.recoveryDeltaVsPriorWeek else { return "Prior week comparison building" }
         return delta >= 0 ? "+\(delta) vs prior week" : "\(delta) vs prior week"
     }
 
     private var consistencyText: String {
-        report.sleepConsistencyPct.map { "\($0)%" } ?? "--"
+        displayedReport.sleepConsistencyPct.map { "\($0)%" } ?? "--"
     }
 
     private func dayText(_ day: WeeklyReport.DaySummary?) -> String {
@@ -5438,14 +5535,14 @@ struct AtriaWeeklyReportSheet: View {
     }
 
     private func makeWeeklyShareSnapshot() -> AtriaWeeklyShareSnapshot {
-        AtriaWeeklyShareSnapshot(date: report.generatedAt,
+        AtriaWeeklyShareSnapshot(date: displayedReport.generatedAt,
                                  title: "My week on Atria",
                                  recoveryAverage: recoveryAverageText,
                                  recoveryDelta: recoveryDeltaText,
                                  sleepConsistency: consistencyText,
-                                 bestDay: dayText(report.bestDay),
-                                 hardestDay: dayText(report.hardestDay),
-                                 note: report.strainRecoveryNote)
+                                 bestDay: dayText(displayedReport.bestDay),
+                                 hardestDay: dayText(displayedReport.hardestDay),
+                                 note: displayedReport.strainRecoveryNote)
     }
 
     private static let dayFormatter: DateFormatter = {
@@ -9810,27 +9907,12 @@ struct AtriaMetricDetailSheet: View {
             .value
     }
 
-    /// 7-night need-vs-slept debt chart (design 6b, 2026-08-01 parity slice):
-    /// paired bars per morning headlined by the SAME recency-weighted
-    /// `sleepBudgetDebtHours` number the need ledger uses — one math, two
-    /// views of it. Supersedes the old 14-night surplus/deficit bars.
+    /// Seven-night hours-vs-need chart. It uses the exact same sleep-need
+    /// target as the ledger and supports adjacent observed weeks; no missing
+    /// sleep is invented to keep a line visually continuous.
     private var sleepDebtTrendCard: some View {
-        let slots = AtriaSleepDebtChartPresentation.slots(nights: sleepHistory.nights,
-                                                          baseNeedHours: sleepBaseNeedHours)
-        let debt = sleepHistory.sleepBudgetDebtHours(baseNeedHours: sleepBaseNeedHours)
         return AtriaSleepDebtChartCard(
-            slots: slots,
-            carriedDebtHours: debt,
-            weekDeltaText: AtriaSleepDebtChartPresentation.weekDeltaText(
-                currentDebtHours: debt,
-                weekAgoDebtHours: AtriaSleepDebtChartPresentation.weekAgoDebtHours(
-                    nights: sleepHistory.nights,
-                    baseNeedHours: sleepBaseNeedHours)),
-            fulfilledLastNightPercent: sleepHistory.latestMainSleep.map {
-                sleepHistory.sleepPerformancePercent(for: $0,
-                                                     baseNeedHours: sleepBaseNeedHours,
-                                                     yesterdayStrain: yesterdayStrainForLatestNight)
-            },
+            nights: sleepHistory.nights,
             baseNeedHours: sleepBaseNeedHours)
     }
 

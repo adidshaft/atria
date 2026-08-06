@@ -411,10 +411,10 @@ struct AtriaWidgetEntryView: View {
 
                     Spacer(minLength: 0)
 
-                    Text(secondaryText)
+                    Text(mediumSecondaryText)
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(1)
                         .minimumScaleFactor(0.75)
                 }
                 .frame(width: 108, alignment: .leading)
@@ -779,6 +779,16 @@ struct AtriaWidgetEntryView: View {
             return "Recovery \(recovery)% · \(recoveryEvidenceText(snapshot))"
         }
         return "Recovery learning · \(recoveryEvidenceText(snapshot))"
+    }
+
+    /// The medium widget has room for a recovery verdict, but not a complete
+    /// sentence plus a provenance paragraph. Keeping the specific evidence and
+    /// using the short metric name avoids the clipped "unverifi…" treatment
+    /// seen on the physical device while remaining honest about the score.
+    private var mediumSecondaryText: String {
+        guard let snapshot = entry.snapshot else { return "Open Atria for strap status" }
+        let recovery = snapshot.recoveryPercent.map { "Rec \($0)%" } ?? "Rec learning"
+        return "\(recovery) · \(recoveryEvidenceText(snapshot))"
     }
 
     /// Keep the widget aligned with the in-app recovery card. A useful day-one
@@ -1674,12 +1684,13 @@ private struct AtriaLiveActivityLockScreenView: View {
     }
 
     var body: some View {
-        // Lock Screen Live Activities have a deliberately tight system-owned
-        // height. Use one stable workout card hierarchy: identity and state,
-        // the three metrics someone glances at mid-set, then signal + controls.
-        // Detailed goal progress remains in the expanded Island and app so this
-        // surface does not grow until iOS clips it.
-        VStack(alignment: .leading, spacing: 10) {
+        // Lock Screen Live Activities have a system-owned, variable height.
+        // Lock Screen Live Activities never scroll. This deliberate three-row
+        // hierarchy keeps both direct controls and the workout essentials on
+        // the smallest supported Lock Screen:
+        //   identity + state + battery / HR + zone + time / compact metrics + actions.
+        let steps = liveActivityStepsPresentation(for: context.state)
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Label("Atria · \(context.state.activityName ?? "Workout")",
                       systemImage: context.state.activitySystemImage ?? "figure.mixed.cardio")
@@ -1706,25 +1717,29 @@ private struct AtriaLiveActivityLockScreenView: View {
                 }
             }
 
-            HStack(alignment: .lastTextBaseline, spacing: 0) {
+            HStack(alignment: .center, spacing: 12) {
                 lockScreenMetric(value: signalFresh ? "\(context.state.heartRate)" : "--",
                                  title: "BPM",
                                  systemImage: "heart.fill",
                                  tint: .red,
                                  emphasis: true)
 
-                Divider()
-                    .frame(height: 36)
-                    .padding(.horizontal, 12)
-
-                lockScreenMetric(value: workoutStrainText,
-                                 title: "Strain",
-                                 systemImage: "bolt.fill",
-                                 tint: liveActivityStrainProgressColor(for: context.state))
-
-                Divider()
-                    .frame(height: 36)
-                    .padding(.horizontal, 12)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(liveActivityZoneLabel(for: context.state,
+                                               availability: heartRateAvailability))
+                        .font(.subheadline.weight(.black))
+                        .foregroundStyle(liveActivityZoneColor(for: context.state,
+                                                               availability: heartRateAvailability))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                    if let target = liveActivityTargetZoneLabel(for: context.state) {
+                        Text(target)
+                            .font(.caption2.weight(.bold).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
 
                 VStack(alignment: .leading, spacing: 2) {
                     liveActivityTimer(state: context.state,
@@ -1746,24 +1761,30 @@ private struct AtriaLiveActivityLockScreenView: View {
                                                         availability: heartRateAvailability))
 
             HStack(spacing: 8) {
-                if let sensorStatus = liveActivitySensorStatusText(
-                    state: context.state,
-                    heartRateAvailability: heartRateAvailability
-                ) {
-                    Label(sensorStatus, systemImage: "antenna.radiowaves.left.and.right")
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                        .accessibilityLabel("Sensor status \(sensorStatus)")
+                HStack(spacing: 9) {
+                    lockScreenCompactMetric(value: steps.compactText,
+                                            systemImage: "figure.walk",
+                                            tint: steps.tint)
+                    lockScreenCompactMetric(value: workoutStrainText,
+                                            systemImage: "bolt.fill",
+                                            tint: liveActivityStrainProgressColor(for: context.state))
+                    lockScreenCompactMetric(value: liveActivityCaloriesText(for: context.state),
+                                            systemImage: "flame.fill",
+                                            tint: .pink)
                 }
-                Spacer(minLength: 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
+
+                // Icon-only controls retain a 44pt hit target. Labels would
+                // either wrap or force the activity beyond its system height.
                 AtriaLiveActivityControls(state: context.state,
                                           startedAt: context.attributes.startedAt,
-                                          compact: false)
-                    .controlSize(.small)
-                    .frame(width: 154)
+                                          compact: true)
+                    .controlSize(.regular)
+                    .frame(width: 108)
             }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(steps.accessibilityText). Strain \(workoutStrainText). \(liveActivityCaloriesAccessibilityText(for: context.state)).")
         }
         .padding(.horizontal, 2)
         .padding(.vertical, 2)
@@ -1799,6 +1820,22 @@ private struct AtriaLiveActivityLockScreenView: View {
         // The emphasized three-digit heart rate must win horizontal
         // compression before secondary strain and duration metrics.
         .layoutPriority(emphasis ? 3 : 0)
+    }
+
+    private func lockScreenCompactMetric(value: String,
+                                         systemImage: String,
+                                         tint: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage)
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(tint)
+            Text(value)
+                .font(.caption.weight(.bold).monospacedDigit())
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.55)
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var workoutStrainText: String {

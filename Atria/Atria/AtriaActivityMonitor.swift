@@ -872,12 +872,9 @@ struct AtriaActivityMonitorTab: View {
                     .foregroundStyle(stressMonitorStore.state.level?.tint ?? .secondary)
             }
 
-            // Always a graph (design 2026-08-05): start from whatever readings
-            // exist rather than a text "warming up" card. ONLY the line carries
-            // range color -- the WHOOP stress palette blue (calm) -> green
-            // (medium) -> orange (high); a point low on the axis reads blue and
-            // a spike reads orange. The area stays a single faint neutral tint,
-            // never colored horizontal bands.
+            // Only measured readings earn a graph. Leaving an empty plot with
+            // Calm/Low/Med/High labels made the current device state look like
+            // data had been omitted rather than honestly not collected yet.
             let stressLineGradient = LinearGradient(
                 colors: [Metrics.electricStrain, Metrics.electricGreen, Metrics.electricStress],
                 startPoint: .bottom, endPoint: .top)
@@ -891,6 +888,22 @@ struct AtriaActivityMonitorTab: View {
                 default: return Metrics.electricStress
                 }
             }
+            if points.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "waveform.path.ecg")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(Metrics.electricStress)
+                    Text("Collecting stress")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Keep the strap on for steady wear; your 0–3 timeline will appear here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, minHeight: 112)
+                .padding(.horizontal, 20)
+                .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
             Chart {
                 ForEach(points) { point in
                     AreaMark(x: .value("Time", point.reading.date),
@@ -905,8 +918,7 @@ struct AtriaActivityMonitorTab: View {
                         .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
                         .foregroundStyle(stressLineGradient)
                 }
-                // A lone/sparse reading still reads as a graph: mark the latest
-                // point so the monitor is never an empty rectangle.
+                // A lone/sparse reading still reads as a graph.
                 if let latest = points.last {
                     PointMark(x: .value("Time", latest.reading.date),
                               y: .value("Stress", latest.reading.score))
@@ -935,14 +947,6 @@ struct AtriaActivityMonitorTab: View {
             }
             .frame(height: 112)
             .clipped()
-            .overlay {
-                if points.isEmpty {
-                    Text("Collecting — your stress line appears as soon as there's steady wear.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 16)
-                }
             }
 
             Text(points.isEmpty
@@ -2165,6 +2169,8 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                         }
                     }
 
+                    workoutZoneDistributionCard
+
                     if workout.samples == 0 {
                         Label("Saved without strap metrics", systemImage: "heart.slash")
                             .font(.caption.weight(.semibold))
@@ -2652,6 +2658,94 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .atriaInsetCard(tint: tint)
+    }
+
+    private var workoutZoneRows: [(key: String, label: String, range: String, tint: Color, seconds: TimeInterval)] {
+        let zones = workout.zoneSeconds ?? [:]
+        return [
+            ("max", "Z5 · Max", "90–100%", Metrics.heartRateZoneTint(5), zones["max"] ?? 0),
+            ("anaerobic", "Z4 · Anaerobic", "80–90%", Metrics.heartRateZoneTint(4), zones["anaerobic"] ?? 0),
+            ("aerobic", "Z3 · Aerobic", "70–80%", Metrics.heartRateZoneTint(3), zones["aerobic"] ?? 0),
+            ("fatBurn", "Z2 · Fat burn", "60–70%", Metrics.heartRateZoneTint(2), zones["fatBurn"] ?? 0),
+            ("warmup", "Z1 · Warm-up", "50–60%", Metrics.heartRateZoneTint(1), zones["warmup"] ?? 0),
+            ("rest", "Z0 · Restorative", "<50%", Metrics.heartRateZoneTint(0), zones["rest"] ?? 0)
+        ]
+    }
+
+    private var recordedZoneSeconds: TimeInterval {
+        workoutZoneRows.reduce(0) { $0 + $1.seconds }
+    }
+
+    @ViewBuilder
+    private var workoutZoneDistributionCard: some View {
+        if !AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout), recordedZoneSeconds > 0 {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Time in heart-rate zones")
+                            .font(.headline.weight(.bold))
+                        Text("Share of recorded heart-rate time")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Text(durationText(recordedZoneSeconds))
+                        .font(.subheadline.weight(.black).monospacedDigit())
+                        .foregroundStyle(Metrics.electricStrain)
+                }
+
+                ForEach(workoutZoneRows, id: \.key) { zone in
+                    workoutZoneRow(zone)
+                }
+            }
+            .padding(14)
+            .atriaInsetCard(tint: Metrics.electricStrain)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(zoneDistributionAccessibilityLabel)
+        }
+    }
+
+    private func workoutZoneRow(_ zone: (key: String, label: String, range: String, tint: Color, seconds: TimeInterval)) -> some View {
+        let fraction = min(max(zone.seconds / recordedZoneSeconds, 0), 1)
+        let percent = Int((fraction * 100).rounded())
+        return VStack(spacing: 5) {
+            HStack(spacing: 8) {
+                Text(zone.label)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.secondary)
+                Text(zone.range)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                Spacer(minLength: 4)
+                Text("\(percent)%")
+                    .font(.caption2.weight(.black).monospacedDigit())
+                    .foregroundStyle(zone.tint)
+                Text(durationText(zone.seconds))
+                    .font(.caption.weight(.bold).monospacedDigit())
+                    .frame(minWidth: 42, alignment: .trailing)
+            }
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(.primary.opacity(0.10))
+                    Capsule(style: .continuous)
+                        .fill(zone.tint)
+                        .frame(width: max(0, proxy.size.width * fraction))
+                }
+            }
+            .frame(height: 9)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(zone.label), \(zone.range), \(percent) percent, \(durationText(zone.seconds))")
+    }
+
+    private var zoneDistributionAccessibilityLabel: String {
+        let summary = workoutZoneRows
+            .filter { $0.seconds > 0 }
+            .map { "\($0.label) \(durationText($0.seconds))" }
+            .joined(separator: ", ")
+        return "Time in heart-rate zones. \(durationText(recordedZoneSeconds)) of recorded heart-rate time. \(summary)"
     }
 
     private func durationText(_ interval: TimeInterval) -> String {

@@ -1398,7 +1398,10 @@ struct AtriaHomeView: View {
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showWorkoutStartSheet) {
-            AtriaWorkoutStartSheet(onPrepare: {
+            AtriaWorkoutStartSheet(initial: AtriaWorkoutStartConfiguration(
+                activityType: .other,
+                targetStrain: model.heroStore.state.guidance.target
+            ), onPrepare: {
                 // Warm the two authorities while the picker is on screen.
                 // This is strictly read-only: Start still requires both the
                 // exact persisted intent and a hydrated strap-step ledger.
@@ -2034,6 +2037,7 @@ struct AtriaHomeView: View {
             profile: store.profile
         )
         let session = AtriaWorkoutSession(start: start,
+                                          targetStrain: configuration.targetStrain,
                                           lowerTargetZone: configuration.lowerTargetZone,
                                           upperTargetZone: configuration.upperTargetZone,
                                           activityType: configuration.activityType,
@@ -4582,8 +4586,8 @@ struct AtriaHomeView: View {
         private static let refreshInterval: TimeInterval = 15
 
         var body: some View {
-            TimelineView(.periodic(from: .now, by: Self.refreshInterval)) { context in
-                let notices = notices(now: context.date)
+            TimelineView(.periodic(from: .now, by: Self.refreshInterval)) { _ in
+                let notices = notices()
                 if !notices.isEmpty {
                     GlassEffectContainer(spacing: 10) {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -4649,23 +4653,13 @@ struct AtriaHomeView: View {
             return ((step % count) + count) % count
         }
 
-        /// Every notice that is true right now, most actionable first. Returning
-        /// the full set (rather than the single highest-priority one) is what
-        /// lets a slow-maturing status stay visible alongside a live one.
-        private func notices(now: Date) -> [Status] {
+        /// Every actionable or explanatory notice that is true right now, most
+        /// actionable first. A healthy live capture stays in the compact strap
+        /// chip above; it is a state, not dashboard content worth spending a
+        /// full row on.
+        private func notices() -> [Status] {
             var result: [Status] = []
-            // Always lead with live-capture health when live HR is flowing, so a
-            // background history sync (or a stale-data "needs review" note) never
-            // reads as "live HR is broken". The user must be able to tell at a
-            // glance that the strap is connected and recording right now — the
-            // "Syncing strap history" chip is about the BACKGROUND catch-up, not
-            // the live stream, and showing it alone made that ambiguous.
-            let live = coreLiveStore.state
-            let liveStatus = liveProtectedStatus(live, now: now)
-            if let liveStatus {
-                result.append(liveStatus)
-            }
-            if let status = status(now: now), status.title != liveStatus?.title {
+            if let status = status() {
                 result.append(status)
             }
             if let maturity = maturityText() {
@@ -4686,7 +4680,7 @@ struct AtriaHomeView: View {
             return result
         }
 
-        private func status(now: Date) -> Status? {
+        private func status() -> Status? {
             let live = coreLiveStore.state
             switch live.historicalRecoveryPresentation {
             case .syncing(let savedRecords):
@@ -4707,31 +4701,19 @@ struct AtriaHomeView: View {
                               accessibilityLabel: "This recovery saved \(savedRecords) records, but recovery of the missing interval is not verified.")
             case .needsAttention:
                 guard live.rangeLossBackfillPending else {
-                    return liveProtectedStatus(live, now: now)
+                    return nil
                 }
-                return Status(title: "Missed data needs review",
+                return Status(title: "Strap data gap · recovery unverified",
                               symbol: "exclamationmark.triangle.fill",
                               accessibilityLabel: "Missed strap data needs review. It has not been verified as recovered.")
             case .idle:
                 if live.rangeLossBackfillPending {
-                    return Status(title: "Missed data needs review",
+                    return Status(title: "Strap data gap · recovery unverified",
                                   symbol: "exclamationmark.triangle.fill",
                                   accessibilityLabel: "Missed strap data needs review. It has not been verified as recovered.")
                 }
-                return liveProtectedStatus(live, now: now)
-            }
-        }
-
-        private func liveProtectedStatus(_ live: AtriaHomeModel.CoreLiveState,
-                                         now: Date) -> Status? {
-            guard live.status == .connected,
-                  live.hasRecentHeartRateSample,
-                  live.lastReadingAt.map({ now.timeIntervalSince($0) <= 15 }) == true else {
                 return nil
             }
-            return Status(title: "Capturing live",
-                          symbol: "checkmark.shield.fill",
-                          accessibilityLabel: "Heart rate is being recorded live.")
         }
 
         private struct Status {
