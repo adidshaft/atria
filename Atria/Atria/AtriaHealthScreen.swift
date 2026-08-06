@@ -2274,6 +2274,12 @@ private struct AtriaSleepStressProjection: Equatable {
         var id: TimeInterval { date.timeIntervalSinceReferenceDate }
     }
 
+    struct HeartRateSample: Identifiable, Equatable {
+        let date: Date
+        let bpm: Double
+        var id: TimeInterval { date.timeIntervalSinceReferenceDate }
+    }
+
     enum Availability: Equatable {
         case unavailable
         case baselineNeeded
@@ -2300,16 +2306,17 @@ private struct AtriaSleepStressProjection: Equatable {
     }
 
     let samples: [Sample]
+    let heartRateSamples: [HeartRateSample]
     let availability: Availability
 
-    static let unavailable = Self(samples: [], availability: .unavailable)
+    static let unavailable = Self(samples: [], heartRateSamples: [], availability: .unavailable)
 
     static func make(points: [HistoricalArchive.HeartRatePoint],
                      sleepStart: Date,
                      sleepEnd: Date,
                      restingHeartRate: Int?) -> Self {
         guard let restingHeartRate, (35...120).contains(restingHeartRate) else {
-            return Self(samples: [], availability: .baselineNeeded)
+            return Self(samples: [], heartRateSamples: [], availability: .baselineNeeded)
         }
         guard sleepEnd.timeIntervalSince(sleepStart) >= 60 * 60 else {
             return .unavailable
@@ -2324,7 +2331,7 @@ private struct AtriaSleepStressProjection: Equatable {
             let bucket = Int(floor(point.t.timeIntervalSince(sleepStart) / bucketSeconds))
             valuesByBucket[bucket, default: []].append(point.bpm)
         }
-        let samples = valuesByBucket.keys.sorted().compactMap { bucket -> Sample? in
+        let pairs = valuesByBucket.keys.sorted().compactMap { bucket -> (Sample, HeartRateSample)? in
             guard let values = valuesByBucket[bucket], !values.isEmpty else { return nil }
             let average = Double(values.reduce(0, +)) / Double(values.count)
             // A deliberately conservative HR-only activation. It takes a
@@ -2333,21 +2340,26 @@ private struct AtriaSleepStressProjection: Equatable {
             let threshold = max(10, Double(restingHeartRate) * 0.20)
             let score = min(max((average - Double(restingHeartRate) - 3) / threshold, 0), 1) * 3
             let date = sleepStart.addingTimeInterval((Double(bucket) + 0.5) * bucketSeconds)
-            return Sample(date: date, score: score)
+            return (Sample(date: date, score: score), HeartRateSample(date: date, bpm: average))
         }
+
+        let samples = pairs.map(\.0)
+        let heartRateSamples = pairs.map(\.1)
 
         guard samples.count >= 12,
               let first = samples.first?.date,
               let last = samples.last?.date,
               last.timeIntervalSince(first) >= min(3 * 60 * 60, sleepEnd.timeIntervalSince(sleepStart) * 0.45) else {
-            return Self(samples: [], availability: .insufficientWear)
+            return Self(samples: [], heartRateSamples: [], availability: .insufficientWear)
         }
-        return Self(samples: samples, availability: .ready)
+        return Self(samples: samples, heartRateSamples: heartRateSamples, availability: .ready)
     }
 }
 
 private struct AtriaSleepStressCard: View {
     let projection: AtriaSleepStressProjection
+    private enum Mode: String, CaseIterable, Identifiable { case heartRate = "Heart rate", load = "HR load"; var id: String { rawValue } }
+    @State private var mode: Mode = .heartRate
 
     private struct HighPeriod: Identifiable {
         let start: Date
@@ -2362,6 +2374,12 @@ private struct AtriaSleepStressCard: View {
     private var points: [AtriaStressTimelinePoint] {
         AtriaStressTimelinePoint.segment(projection.samples.map {
             AtriaStressDetailReading(date: $0.date, score: $0.score)
+        })
+    }
+
+    private var heartRatePoints: [AtriaStressTimelinePoint] {
+        AtriaStressTimelinePoint.segment(projection.heartRateSamples.map {
+            AtriaStressDetailReading(date: $0.date, score: $0.bpm)
         })
     }
 
@@ -2428,42 +2446,45 @@ private struct AtriaSleepStressCard: View {
             }
 
             if projection.availability == .ready {
+                AtriaTextSelector(items: Mode.allCases,
+                                  title: { $0.rawValue },
+                                  selection: $mode)
                 Chart {
-                    ForEach(points) { point in
+                    ForEach(mode == .load ? points : heartRatePoints) { point in
                         AreaMark(x: .value("Time", point.reading.date),
-                                 y: .value("Stress", point.reading.score),
+                                 y: .value(mode == .load ? "Load" : "BPM", point.reading.score),
                                  series: .value("Segment", point.segment))
                             .interpolationMethod(.linear)
-                            .foregroundStyle(.linearGradient(colors: [.blue.opacity(0.14), .green.opacity(0.08), .orange.opacity(0.03)],
+                            .foregroundStyle(.linearGradient(colors: mode == .load ? [.blue.opacity(0.14), .green.opacity(0.08), .orange.opacity(0.03)] : [.red.opacity(0.18), .red.opacity(0.02)],
                                                               startPoint: .bottom,
                                                               endPoint: .top))
                         LineMark(x: .value("Time", point.reading.date),
-                                 y: .value("Stress", point.reading.score),
+                                 y: .value(mode == .load ? "Load" : "BPM", point.reading.score),
                                  series: .value("Segment", point.segment))
                             .interpolationMethod(.linear)
                             .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                            .foregroundStyle(.linearGradient(colors: [.blue, .green, .orange],
+                            .foregroundStyle(.linearGradient(colors: mode == .load ? [.blue, .green, .orange] : [.red, .orange],
                                                               startPoint: .bottom,
                                                               endPoint: .top))
                     }
-                    ForEach(points.filter { $0.reading.score >= 2 }) { point in
+                    ForEach(mode == .load ? points.filter { $0.reading.score >= 2 } : []) { point in
                         PointMark(x: .value("Time", point.reading.date),
                                   y: .value("Stress", point.reading.score))
                             .symbolSize(28)
                             .foregroundStyle(.orange)
                     }
                 }
-                .chartYScale(domain: 0...3)
+                .chartYScale(domain: mode == .load ? 0...3 : heartRateDomain)
                 .chartYAxis {
-                    AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
+                    AxisMarks(position: .leading) { value in
                         AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
                         AxisTick().foregroundStyle(.clear)
                         AxisValueLabel {
-                            if let value = value.as(Int.self) {
+                            if mode == .load, let value = value.as(Int.self) {
                                 Text(value == 3 ? "High" : "\(value)")
                                     .font(.caption2.monospacedDigit())
                                     .foregroundStyle(value >= 2 ? .orange : (value == 1 ? .green : .blue))
-                            }
+                            } else if let value = value.as(Double.self) { Text("\(Int(value.rounded()))") }
                         }
                     }
                 }
@@ -2500,6 +2521,13 @@ private struct AtriaSleepStressCard: View {
         .accessibilityLabel(projection.availability == .ready
                             ? "Overnight heart-rate load. \(highSummary). \(highTimingSummary ?? "")"
                             : "Overnight heart-rate load. \(projection.availability.title). \(projection.availability.detail)")
+    }
+
+    private var heartRateDomain: ClosedRange<Double> {
+        let values = projection.heartRateSamples.map(\.bpm)
+        let low = max(35, (values.min() ?? 50) - 5)
+        let high = max(low + 10, (values.max() ?? 80) + 5)
+        return low...high
     }
 }
 
