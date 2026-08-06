@@ -2537,8 +2537,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 
     @ViewBuilder
     private var workoutZoneDistributionCard: some View {
-        if !AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout) {
-            VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Time in heart-rate zones")
@@ -2569,14 +2568,13 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
                 }
-            }
-            .padding(14)
-            .atriaInsetCard(tint: Metrics.electricStrain)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(recordedZoneSeconds > 0
-                                ? zoneDistributionAccessibilityLabel
-                                : "Time in heart-rate zones unavailable. Workout summary saved, but heart-rate zone samples were not recorded.")
         }
+        .padding(14)
+        .atriaInsetCard(tint: Metrics.electricStrain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(recordedZoneSeconds > 0
+                            ? zoneDistributionAccessibilityLabel
+                            : "Time in heart-rate zones unavailable. Workout summary saved, but heart-rate zone samples were not recorded.")
     }
 
     private func workoutZoneRow(_ zone: (key: String, label: String, range: String, tint: Color, seconds: TimeInterval)) -> some View {
