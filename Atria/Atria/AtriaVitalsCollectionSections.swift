@@ -1683,12 +1683,29 @@ private struct AtriaVitalsPulseCardHost: View {
         isActive ? pulseSparklineStore.state : sparkline
     }
 
+    #if DEBUG
+    private var isDisconnectedPresentationFixture: Bool {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return false }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        return arguments.indices.contains(valueIndex)
+            && arguments[valueIndex] == "vitals-disconnected"
+    }
+    #else
+    private var isDisconnectedPresentationFixture: Bool { false }
+    #endif
+
     var body: some View {
-        AtriaVitalsLiveSignalCard(isConnected: displayedLive.status == .connected,
+        AtriaVitalsLiveSignalCard(isConnected: !isDisconnectedPresentationFixture
+                                                && displayedLive.status == .connected,
                                   live: displayedPulse,
                                   miniTimelineSeries: miniTimelineSeries,
-                                  stressState: stressMonitorStore.state,
-                                  stressHistory: stressMonitorStore.history,
+                                  stressState: isDisconnectedPresentationFixture
+                                                ? .noSignal
+                                                : stressMonitorStore.state,
+                                  stressHistory: isDisconnectedPresentationFixture
+                                                ? []
+                                                : stressMonitorStore.history,
                                   restingHeartRate: displayedHomeStats.restingHeartRate,
                                   restingHeartRateText: displayedHomeStats.restingHeartRateText,
                                   restingBaseline: baselineSnapshot.restingBaseline,
