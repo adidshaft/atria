@@ -32678,6 +32678,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 defaults.removeObject(
                     forKey: Self.terminalConsumerCoverageFailureAtKey
                 )
+                // The persisted typed diagnostic must retire with the cache:
+                // the seed-from-diagnostic path below otherwise re-mints the
+                // exact keys just removed (observed 2026-08-06 09:28 —
+                // retire ran, seeding resurrected the 23:28 failure).
+                defaults.removeObject(
+                    forKey: "atria.offlineSync.terminalArchiveFailureDiagnostic.v1"
+                )
+                defaults.removeObject(
+                    forKey: "atria.offlineSync.terminalArchiveFailureAt.v1"
+                )
                 AtriaDebugLog(
                     "ATRIADBG historical_full_drain_publish status=coverage_failure_cache_retired reason=dependency_window_passed generation=%llu",
                     authority.attempt.transportGeneration
