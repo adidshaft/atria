@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Evaluate activity-type predictions only against admitted held-out people.
+"""Evaluate categorical research predictions against admitted held-out people.
 
 This is intentionally an offline research reporter.  It accepts no training
 data, makes no production decision, and refuses any corpus that has not first
-passed ``validate_research_corpus.py``.  Its only job is to make GAP-11's
-participant-level, per-class precision/recall requirement reproducible once
-real consented labels and model predictions are available.
+passed ``validate_research_corpus.py``. It supports GAP-11 activity type and
+GAP-12 sleep stage reports, keeping their participant-level, per-class
+precision/recall requirements reproducible once consented reference labels and
+model predictions are available.
 """
 
 from __future__ import annotations
@@ -24,7 +25,18 @@ import validate_research_corpus as corpus
 
 SCHEMA = 1
 UNKNOWN = "unknown"
-PREDICTIONS = set(corpus.ACTIVITIES) | {UNKNOWN}
+
+
+class EvaluationContract:
+    def __init__(self, label_field: str, classes: set[str]) -> None:
+        self.label_field = label_field
+        self.classes = classes
+
+
+CONTRACTS = {
+    "GAP-11": EvaluationContract("activity_type", corpus.ACTIVITIES),
+    "GAP-12": EvaluationContract("stage", {"wake", "light", "deep", "rem"}),
+}
 
 
 class EvaluationError(ValueError):
@@ -83,36 +95,39 @@ def prediction_key(pseudonym: str, start_rel: float, end_rel: float) -> tuple[st
     return pseudonym, start_rel, end_rel
 
 
-def admitted_gap11_labels(document: dict[str, Any]) -> dict[tuple[str, float, float], dict[str, str]]:
+def admitted_labels(document: dict[str, Any], gap: str) -> dict[tuple[str, float, float], dict[str, str]]:
+    contract = CONTRACTS.get(gap)
+    if contract is None:
+        raise EvaluationError("unsupported evaluation target")
     try:
         corpus.validate(document)
     except corpus.CorpusError as exc:
         raise EvaluationError(f"corpus was not admitted: {exc}") from exc
-    if "GAP-11" not in document["targets"]:
-        raise EvaluationError("corpus does not declare GAP-11")
+    if gap not in document["targets"]:
+        raise EvaluationError(f"corpus does not declare {gap}")
 
     labels: dict[tuple[str, float, float], dict[str, str]] = {}
     for participant in document["participants"]:
         pseudonym = participant["pseudonym"]
         split = participant["split"]
         for label in participant["labels"]:
-            if label["gap"] != "GAP-11":
+            if label["gap"] != gap:
                 continue
-            start = finite_time(label["start_rel"], "GAP-11.start_rel")
-            end = finite_time(label["end_rel"], "GAP-11.end_rel")
+            start = finite_time(label["start_rel"], f"{gap}.start_rel")
+            end = finite_time(label["end_rel"], f"{gap}.end_rel")
             key = prediction_key(pseudonym, start, end)
             if key in labels:
-                raise EvaluationError("admitted corpus contains duplicate GAP-11 windows")
+                raise EvaluationError(f"admitted corpus contains duplicate {gap} windows")
             labels[key] = {
-                "expected": label["activity_type"],
+                "expected": label[contract.label_field],
                 "split": split,
             }
     if not labels:
-        raise EvaluationError("admitted corpus contains no GAP-11 labels")
+        raise EvaluationError(f"admitted corpus contains no {gap} labels")
     return labels
 
 
-def read_predictions(document: dict[str, Any]) -> tuple[str, dict[tuple[str, float, float], str]]:
+def read_predictions(document: dict[str, Any], allowed_predictions: set[str]) -> tuple[str, dict[tuple[str, float, float], str]]:
     root = exact_object(document,
                         {"schema", "research_only", "model_validated", "production_promotions", "model_id", "predictions"},
                         "predictions")
@@ -138,7 +153,7 @@ def read_predictions(document: dict[str, Any]) -> tuple[str, dict[tuple[str, flo
         if key in result:
             raise EvaluationError("predictions contain a duplicate activity window")
         prediction = text(item["prediction"], f"predictions[{index}].prediction")
-        if prediction not in PREDICTIONS:
+        if prediction not in allowed_predictions:
             raise EvaluationError(f"predictions[{index}] has unsupported prediction")
         result[key] = prediction
     return model_id, result
@@ -148,13 +163,19 @@ def safe_rate(numerator: int, denominator: int) -> float | None:
     return None if denominator == 0 else numerator / denominator
 
 
-def evaluate(corpus_document: dict[str, Any], predictions_document: dict[str, Any]) -> dict[str, Any]:
-    labels = admitted_gap11_labels(corpus_document)
-    model_id, predictions = read_predictions(predictions_document)
+def evaluate(corpus_document: dict[str, Any],
+             predictions_document: dict[str, Any],
+             gap: str = "GAP-11") -> dict[str, Any]:
+    contract = CONTRACTS.get(gap)
+    if contract is None:
+        raise EvaluationError("unsupported evaluation target")
+    labels = admitted_labels(corpus_document, gap)
+    allowed_predictions = contract.classes | {UNKNOWN}
+    model_id, predictions = read_predictions(predictions_document, allowed_predictions)
     if set(predictions) != set(labels):
         missing = len(set(labels) - set(predictions))
         unexpected = len(set(predictions) - set(labels))
-        raise EvaluationError(f"prediction windows must exactly match admitted GAP-11 labels (missing={missing}, unexpected={unexpected})")
+        raise EvaluationError(f"prediction windows must exactly match admitted {gap} labels (missing={missing}, unexpected={unexpected})")
 
     held_out = [(labels[key]["expected"], prediction)
                 for key, prediction in predictions.items()
@@ -164,12 +185,12 @@ def evaluate(corpus_document: dict[str, Any], predictions_document: dict[str, An
 
     # `unknown` is an explicit abstention, not a sixth activity class.
     per_class: dict[str, dict[str, int | float | None]] = {}
-    for activity in sorted(corpus.ACTIVITIES):
-        true_positive = sum(expected == activity and predicted == activity for expected, predicted in held_out)
-        false_positive = sum(expected != activity and predicted == activity for expected, predicted in held_out)
-        false_negative = sum(expected == activity and predicted != activity for expected, predicted in held_out)
-        support = sum(expected == activity for expected, _ in held_out)
-        per_class[activity] = {
+    for label_class in sorted(contract.classes):
+        true_positive = sum(expected == label_class and predicted == label_class for expected, predicted in held_out)
+        false_positive = sum(expected != label_class and predicted == label_class for expected, predicted in held_out)
+        false_negative = sum(expected == label_class and predicted != label_class for expected, predicted in held_out)
+        support = sum(expected == label_class for expected, _ in held_out)
+        per_class[label_class] = {
             "support": support,
             "true_positive": true_positive,
             "false_positive": false_positive,
@@ -179,10 +200,10 @@ def evaluate(corpus_document: dict[str, Any], predictions_document: dict[str, An
         }
 
     confusion: dict[str, dict[str, int]] = {}
-    for expected in sorted(corpus.ACTIVITIES):
+    for expected in sorted(contract.classes):
         confusion[expected] = {
             predicted: sum(actual == expected and candidate == predicted for actual, candidate in held_out)
-            for predicted in sorted(PREDICTIONS)
+            for predicted in sorted(allowed_predictions)
         }
 
     development_count = sum(1 for item in labels.values() if item["split"] == "development")
@@ -192,6 +213,7 @@ def evaluate(corpus_document: dict[str, Any], predictions_document: dict[str, An
         "model_validated": False,
         "production_promotions": 0,
         "status": "held_out_metrics_for_review_only",
+        "target": gap,
         "model_id": model_id,
         "development_window_count": development_count,
         "held_out_window_count": len(held_out),
@@ -204,10 +226,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("corpus", type=Path)
     parser.add_argument("predictions", type=Path)
+    parser.add_argument("--target-gap", choices=sorted(CONTRACTS), default="GAP-11")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = evaluate(read_json(args.corpus, "corpus"), read_json(args.predictions, "predictions"))
+        report = evaluate(read_json(args.corpus, "corpus"),
+                          read_json(args.predictions, "predictions"),
+                          gap=args.target_gap)
     except EvaluationError as exc:
         print(f"ACTIVITY_EVALUATION_REJECTED: {exc}", file=sys.stderr)
         return 2
