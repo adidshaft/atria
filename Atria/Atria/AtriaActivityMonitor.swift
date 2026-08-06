@@ -776,7 +776,12 @@ struct AtriaActivityMonitorTab: View {
         }
         .sheet(item: $sleepDetail) { night in
             AtriaSleepActivityReviewSheet(night: night,
-                                          restingBaseline: store.baseline.restingInt) {
+                                          restingBaseline: store.baseline.restingInt,
+                                          typicalRestingBand: AtriaOvernightTypical.restingBand(
+                                            restingHRs: activity.sleepHistorySnapshot.nights
+                                                .filter { $0.confirmed && !$0.isNapEvidence }
+                                                .suffix(30)
+                                                .compactMap { $0.restingHR })) {
                 sleepDetail = nil
                 onEditSleep(night)
             }
@@ -3199,6 +3204,9 @@ struct AtriaSleepActivityReviewSheet: View {
     /// overnight HR-load trace here reads the same resting reference the Health
     /// screen uses. Falls back to the night's own measured resting HR.
     var restingBaseline: Int? = nil
+    /// GAP-07: the user's typical overnight resting-HR band, shaded behind the
+    /// heart-rate trace when enough qualified nights exist.
+    var typicalRestingBand: ClosedRange<Double>? = nil
     let onEditTimes: () -> Void
     @Environment(\.dismiss) private var dismiss
     /// GAP-07: the exact same overnight HR trace / HR-load reading shown on the
@@ -3291,7 +3299,8 @@ struct AtriaSleepActivityReviewSheet: View {
                     }
                     nightVitals
                     AtriaSleepStressCard(projection: overnightHRProjection,
-                                         displayTimeZone: eventTimeZone)
+                                         displayTimeZone: eventTimeZone,
+                                         typicalRestingBand: typicalRestingBand)
                     Button(action: onEditTimes) {
                         Label("Edit sleep times", systemImage: "pencil")
                             .frame(maxWidth: .infinity)

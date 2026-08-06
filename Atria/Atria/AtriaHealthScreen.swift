@@ -970,7 +970,8 @@ struct AtriaHealthScreen: View {
                     AtriaSleepStageSummary(night: currentSleep)
                 }
 
-                AtriaSleepStressCard(projection: sleepStressProjection)
+                AtriaSleepStressCard(projection: sleepStressProjection,
+                                     typicalRestingBand: typicalOvernightRestingBand)
             }
 
             // Real bed-to-wake windows, now explicitly explained with their
@@ -1013,6 +1014,16 @@ struct AtriaHealthScreen: View {
         // Below the minimum present components the composite is withheld and
         // Sleep Sufficiency remains the primary measure — don't mount the card.
         return score.score == nil ? nil : score
+    }
+
+    /// GAP-07: the user's typical overnight resting-HR band from recent
+    /// qualified nights, or nil below the documented minimum.
+    private var typicalOvernightRestingBand: ClosedRange<Double>? {
+        let restingHRs = vitalsStore.state.sleepHistorySnapshot.nights
+            .filter { $0.confirmed && !$0.isNapEvidence }
+            .suffix(30)
+            .compactMap { $0.restingHR }
+        return AtriaOvernightTypical.restingBand(restingHRs: restingHRs)
     }
 
     private var yesterdayStrainForLatestNight: Double? {
@@ -2398,6 +2409,9 @@ struct AtriaSleepStressCard: View {
     /// detail passes the night's recorded event zone so a travel night reads in
     /// the clock it was actually slept in (GAP-07).
     var displayTimeZone: TimeZone = .current
+    /// GAP-07: the user's typical overnight resting-HR band, shaded behind the
+    /// heart-rate trace when enough qualified nights exist. Nil hides it.
+    var typicalRestingBand: ClosedRange<Double>? = nil
     private enum Mode: String, CaseIterable, Identifiable { case heartRate = "Heart rate", load = "HR load"; var id: String { rawValue } }
     @State private var mode: Mode = .heartRate
 
@@ -2490,6 +2504,11 @@ struct AtriaSleepStressCard: View {
                                   title: { $0.rawValue },
                                   selection: $mode)
                 Chart {
+                    if mode == .heartRate, let band = typicalRestingBand {
+                        RectangleMark(yStart: .value("Typical low", band.lowerBound),
+                                      yEnd: .value("Typical high", band.upperBound))
+                            .foregroundStyle(.secondary.opacity(0.12))
+                    }
                     ForEach(mode == .load ? points : heartRatePoints) { point in
                         AreaMark(x: .value("Time", point.reading.date),
                                  y: .value(mode == .load ? "Load" : "BPM", point.reading.score),
@@ -2544,6 +2563,12 @@ struct AtriaSleepStressCard: View {
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                if mode == .heartRate, let band = typicalRestingBand {
+                    Text("Shaded band: your typical overnight resting HR, \(Int(band.lowerBound.rounded()))–\(Int(band.upperBound.rounded())) bpm")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else {
                 ContentUnavailableView(projection.availability.title,
                                        systemImage: "moon.zzz.fill",
@@ -2566,8 +2591,13 @@ struct AtriaSleepStressCard: View {
 
     private var heartRateDomain: ClosedRange<Double> {
         let values = projection.heartRateSamples.map(\.bpm)
-        let low = max(35, (values.min() ?? 50) - 5)
-        let high = max(low + 10, (values.max() ?? 80) + 5)
+        var low = max(35, (values.min() ?? 50) - 5)
+        var high = max(low + 10, (values.max() ?? 80) + 5)
+        // Keep the typical band in view when it sits below the night's samples.
+        if let band = typicalRestingBand {
+            low = min(low, band.lowerBound - 3)
+            high = max(high, band.upperBound + 3)
+        }
         return low...high
     }
 }

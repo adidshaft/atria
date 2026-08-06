@@ -109,6 +109,27 @@ final class AtriaSleepScoreTests: XCTestCase {
         XCTAssertEqual(a, b)
     }
 
+    // MARK: - GAP-07 typical overnight resting band
+
+    func testTypicalBandIsNilBelowTheDocumentedMinimum() {
+        let thirteen = Array(repeating: 50, count: 13)
+        XCTAssertNil(AtriaOvernightTypical.restingBand(restingHRs: thirteen))
+    }
+
+    func testTypicalBandIsMeanPlusMinusOneSD() throws {
+        // 14 values, mean 50, variance 2 -> sd ~1.4142; band 48.586...51.414.
+        let values = [48, 50, 52, 49, 51, 50, 48, 52, 50, 49, 51, 50, 48, 52]
+        let band = try XCTUnwrap(AtriaOvernightTypical.restingBand(restingHRs: values))
+        XCTAssertEqual(band.lowerBound, 48.586, accuracy: 0.01)
+        XCTAssertEqual(band.upperBound, 51.414, accuracy: 0.01)
+    }
+
+    func testTypicalBandDropsImplausibleValuesBeforeCounting() {
+        // 13 plausible + 2 implausible: after filtering only 13 remain -> nil.
+        let values = Array(repeating: 50, count: 13) + [0, 240]
+        XCTAssertNil(AtriaOvernightTypical.restingBand(restingHRs: values))
+    }
+
     func testNoComponentsProducesNoScoreButStillProvisional() {
         let score = AtriaSleepScore.make(sufficiencyPercent: nil,
                                          consistencyPercent: nil,
