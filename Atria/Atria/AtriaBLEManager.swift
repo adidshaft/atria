@@ -21863,12 +21863,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                      lowerTargetZone: Int?,
                                      upperTargetZone: Int?,
                                      maxHR: Int,
+                                     restingHR: Int,
                                      isPaused: Bool) {
         workoutZoneHapticLifecycle.configure(
             workoutStartedAt: workoutStartedAt,
             lowerTargetZone: lowerTargetZone,
             upperTargetZone: upperTargetZone,
             maxHR: maxHR,
+            restingHR: restingHR,
             isPaused: isPaused
         )
     }

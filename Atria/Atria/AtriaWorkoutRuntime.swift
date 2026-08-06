@@ -654,6 +654,7 @@ final class AtriaWorkoutRuntime {
             lowerTargetZone: intent.lowerTargetZone,
             upperTargetZone: intent.upperTargetZone,
             maxHR: store.profile.maxHR,
+            restingHR: store.baseline.restingInt ?? 60,
             isPaused: intent.pauseStartedAt != nil
         )
         ble.flushActiveSessionJournal(reason: "live_activity_\(action.rawValue)")

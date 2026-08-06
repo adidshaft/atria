@@ -1479,11 +1479,13 @@ struct AtriaWorkoutZoneHapticLifecycle: Equatable {
         let lowerZone: HRZone
         let upperZone: HRZone
         let maxHR: Int
+        let restingHR: Int
 
         init?(workoutStartedAt: Date,
               lowerTargetZone: Int,
               upperTargetZone: Int,
-              maxHR: Int) {
+              maxHR: Int,
+              restingHR: Int = 0) {
             guard maxHR > 0 else { return nil }
             let lowerRaw = min(lowerTargetZone, upperTargetZone)
             let upperRaw = max(lowerTargetZone, upperTargetZone)
@@ -1493,15 +1495,34 @@ struct AtriaWorkoutZoneHapticLifecycle: Equatable {
             self.lowerZone = lowerZone
             self.upperZone = upperZone
             self.maxHR = maxHR
+            // A resting value only counts when it forms a valid HR-reserve
+            // domain (0 < rest < max). Otherwise boundaries fall back to
+            // percent-of-max so a caller without a resting baseline still coaches.
+            self.restingHR = (restingHR > 0 && restingHR < maxHR) ? restingHR : 0
+        }
+
+        /// The SAME frozen HR-reserve (Karvonen) boundaries the live zone bar and
+        /// the completed-workout distribution display, so the target haptic fires
+        /// at the exact BPM the user is shown rather than a divergent
+        /// percent-of-max value (GAP-03). Nil only when no valid resting baseline
+        /// is available, in which case the boundaries degrade to percent-of-max.
+        private var reserveBoundaries: AtriaHRRZoneBoundaries? {
+            AtriaHRRZoneBoundaries(restingHR: restingHR, maxHR: maxHR)
         }
 
         var lowerBPM: Int {
-            Int((Double(maxHR) * lowerZone.lowerFraction).rounded(.up))
+            if let reserveBoundaries {
+                return reserveBoundaries.lowerBPM(for: lowerZone)
+            }
+            return Int((Double(maxHR) * lowerZone.lowerFraction).rounded(.up))
         }
 
         var upperBPM: Int {
             guard let nextZone = HRZone(rawValue: upperZone.rawValue + 1) else {
                 return maxHR
+            }
+            if let reserveBoundaries {
+                return reserveBoundaries.lowerBPM(for: nextZone) - 1
             }
             return Int((Double(maxHR) * nextZone.lowerFraction).rounded(.up)) - 1
         }
@@ -1515,6 +1536,7 @@ struct AtriaWorkoutZoneHapticLifecycle: Equatable {
                             lowerTargetZone: Int?,
                             upperTargetZone: Int?,
                             maxHR: Int,
+                            restingHR: Int = 0,
                             isPaused: Bool) {
         guard let workoutStartedAt,
               let lowerTargetZone,
@@ -1522,7 +1544,8 @@ struct AtriaWorkoutZoneHapticLifecycle: Equatable {
               let next = Configuration(workoutStartedAt: workoutStartedAt,
                                        lowerTargetZone: lowerTargetZone,
                                        upperTargetZone: upperTargetZone,
-                                       maxHR: maxHR) else {
+                                       maxHR: maxHR,
+                                       restingHR: restingHR) else {
             reset()
             return
         }
