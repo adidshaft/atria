@@ -775,7 +775,8 @@ struct AtriaActivityMonitorTab: View {
             }
         }
         .sheet(item: $sleepDetail) { night in
-            AtriaSleepActivityReviewSheet(night: night) {
+            AtriaSleepActivityReviewSheet(night: night,
+                                          restingBaseline: store.baseline.restingInt) {
                 sleepDetail = nil
                 onEditSleep(night)
             }
@@ -3190,8 +3191,16 @@ struct AtriaWorkoutStressTraceChart: View {
 /// and absent vitals show the canonical "--" token.
 struct AtriaSleepActivityReviewSheet: View {
     let night: SleepHistorySnapshot.Night
+    /// Personal resting-HR baseline, threaded from the presenting store so the
+    /// overnight HR-load trace here reads the same resting reference the Health
+    /// screen uses. Falls back to the night's own measured resting HR.
+    var restingBaseline: Int? = nil
     let onEditTimes: () -> Void
     @Environment(\.dismiss) private var dismiss
+    /// GAP-07: the exact same overnight HR trace / HR-load reading shown on the
+    /// Health screen, now surfaced in the Sleep detail from this night's real
+    /// archived heart-rate rows. Missing wear stays a gap; nothing is inferred.
+    @State private var overnightHRProjection = AtriaSleepStressProjection.unavailable
 
     private var spanSeconds: TimeInterval {
         guard let start = night.start, let end = night.end, end > start else {
@@ -3215,6 +3224,44 @@ struct AtriaSleepActivityReviewSheet: View {
         return minutes >= 60 ? "\(minutes / 60) h \(minutes % 60) m" : "\(minutes) m"
     }
 
+    private struct OvernightTraceKey: Equatable {
+        let id: String
+        let start: Date?
+        let end: Date?
+        let resting: Int?
+    }
+
+    private var overnightTraceKey: OvernightTraceKey {
+        OvernightTraceKey(id: night.id,
+                          start: night.start,
+                          end: night.end,
+                          resting: restingBaseline ?? night.restingHR)
+    }
+
+    /// Reads this night's real archived heart-rate rows over the exact saved
+    /// sleep window (its own timestamps, so travel nights are not reinterpreted
+    /// against the phone's current clock) and builds the same 5-minute-bucket
+    /// projection the Health screen uses. Missing wear stays a gap.
+    @MainActor
+    private func refreshOvernightHRProjection() async {
+        guard let start = night.start, let end = night.end, end > start else {
+            overnightHRProjection = .unavailable
+            return
+        }
+        let resting = restingBaseline ?? night.restingHR
+        let projection = await Task.detached(priority: .utility) {
+            let raw = HistoricalArchive.metricHeartRatePoints(start: start,
+                                                              end: end,
+                                                              maximumPoints: 50_000)?.points ?? []
+            return AtriaSleepStressProjection.make(points: raw,
+                                                   sleepStart: start,
+                                                   sleepEnd: end,
+                                                   restingHeartRate: resting)
+        }.value
+        guard !Task.isCancelled else { return }
+        overnightHRProjection = projection
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -3225,6 +3272,7 @@ struct AtriaSleepActivityReviewSheet: View {
                         stageBreakdown
                     }
                     nightVitals
+                    AtriaSleepStressCard(projection: overnightHRProjection)
                     Button(action: onEditTimes) {
                         Label("Edit sleep times", systemImage: "pencil")
                             .frame(maxWidth: .infinity)
@@ -3234,6 +3282,7 @@ struct AtriaSleepActivityReviewSheet: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             }
+            .task(id: overnightTraceKey) { await refreshOvernightHRProjection() }
             .navigationTitle("Sleep")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

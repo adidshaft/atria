@@ -2267,7 +2267,12 @@ private struct AtriaHealthMetricRow: View, Equatable {
 /// intentionally a separate projection from the daytime Stress Monitor:
 /// that monitor remains paused during sleep so it cannot accidentally label
 /// an overnight reading as live daytime stress.
-private struct AtriaSleepStressProjection: Equatable {
+///
+/// Internal (not file-private) so the Sleep detail sheet in
+/// `AtriaActivityMonitor` renders the exact same overnight HR trace and
+/// HR-load reading as the Health screen — one card, not two divergent copies
+/// (GAP-07).
+struct AtriaSleepStressProjection: Equatable {
     struct Sample: Identifiable, Equatable {
         let date: Date
         let score: Double
@@ -2361,7 +2366,7 @@ private struct AtriaSleepStressProjection: Equatable {
     }
 }
 
-private struct AtriaSleepStressCard: View {
+struct AtriaSleepStressCard: View {
     let projection: AtriaSleepStressProjection
     private enum Mode: String, CaseIterable, Identifiable { case heartRate = "Heart rate", load = "HR load"; var id: String { rawValue } }
     @State private var mode: Mode = .heartRate
