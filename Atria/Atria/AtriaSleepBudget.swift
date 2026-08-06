@@ -99,6 +99,31 @@ enum AtriaSleepBudget {
     }
 }
 
+/// GAP-07 — the user's typical overnight range, overlaid behind the overnight
+/// HR trace. It is the typical band of the resting heart rate Atria already
+/// measures each night (an overnight-derived value), not an inferred per-minute
+/// curve, and it stays hidden until a documented minimum of qualified nights.
+enum AtriaOvernightTypical {
+    /// Documented minimum qualified nights before a typical band is shown.
+    static let minimumQualifiedNights = 14
+
+    /// Mean ± 1 SD band of recent qualified nights' resting heart rate. Nil
+    /// until `minimumNights` plausible values are available — never a band drawn
+    /// from too little evidence.
+    static func restingBand(restingHRs: [Int],
+                            minimumNights: Int = minimumQualifiedNights) -> ClosedRange<Double>? {
+        let values = restingHRs.filter { (30...120).contains($0) }.map(Double.init)
+        guard values.count >= minimumNights else { return nil }
+        let mean = values.reduce(0, +) / Double(values.count)
+        let variance = values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(values.count)
+        let sd = variance.squareRoot()
+        let low = max(30, mean - sd)
+        let high = mean + sd
+        guard high > low else { return nil }
+        return low...high
+    }
+}
+
 /// GAP-06 — the current-generation composite Atria Sleep Score.
 ///
 /// It is INTENTIONALLY and permanently provisional under the current model:
