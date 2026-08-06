@@ -98,3 +98,107 @@ enum AtriaSleepBudget {
         return min(max(Int(((slept / needed) * 100).rounded()), 0), 100)
     }
 }
+
+/// GAP-06 — the current-generation composite Atria Sleep Score.
+///
+/// It is INTENTIONALLY and permanently provisional under the current model:
+/// WHOOP does not publish its weights and Atria has not validated its own, and
+/// the overnight physiological-load component (GAP-10) is not validated, so it
+/// never contributes. The result must always be presented in an explicit
+/// provisional state — never as an equivalent to a validated four-component
+/// score.
+///
+/// Honesty rules enforced here (from the handoff's qualification behavior):
+/// - A component contributes only when it is independently displayable for the
+///   night. A `nil` input is treated as missing, never as a population constant.
+/// - Missing components are reported so the UI can show them as missing.
+/// - The composite requires at least `minimumPresentComponents` present
+///   components; with only Sufficiency, callers keep showing "Sleep
+///   Sufficiency", not a composite relabelled from a single number.
+/// - The final score and every component value are retained so the result is
+///   reproducible from frozen inputs.
+struct AtriaSleepScore: Equatable, Codable {
+    enum Component: String, Codable, CaseIterable {
+        case sufficiency
+        case consistency
+        case efficiency
+        case overnightLoad
+
+        /// Provisional, unvalidated weight. These are engineering placeholders,
+        /// not a validated model, and must be surfaced as provisional.
+        var provisionalWeight: Double {
+            switch self {
+            case .sufficiency: return 0.50
+            case .consistency: return 0.25
+            case .efficiency: return 0.15
+            case .overnightLoad: return 0.10
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .sufficiency: return "Sufficiency"
+            case .consistency: return "Consistency"
+            case .efficiency: return "Efficiency"
+            case .overnightLoad: return "Overnight load"
+            }
+        }
+    }
+
+    struct ComponentValue: Equatable, Codable {
+        let component: Component
+        /// 0...100 when the component is independently displayable for this
+        /// night, else nil (missing — never substituted with a constant).
+        let percent: Double?
+        var isPresent: Bool { percent != nil }
+    }
+
+    /// Minimum present components before any composite is shown. Below this,
+    /// callers keep showing Sleep Sufficiency on its own rather than relabelling
+    /// a single number as a composite.
+    static let minimumPresentComponents = 2
+
+    let components: [ComponentValue]
+    /// Provisional composite (0...100). Nil when fewer than
+    /// `minimumPresentComponents` components are present for the night.
+    let score: Int?
+    /// Always true under the current model (weights unvalidated; overnight-load
+    /// model unvalidated). A validated model would set this false.
+    let isProvisional: Bool
+
+    var presentComponents: [Component] { components.filter(\.isPresent).map(\.component) }
+    var missingComponents: [Component] { components.filter { !$0.isPresent }.map(\.component) }
+
+    /// Builds the composite from independently-displayable component percents.
+    /// Pass nil for any component that is not displayable for this night; a nil
+    /// is treated as missing and can never influence the score.
+    ///
+    /// `validatedOvernightLoadPercent` exists for when GAP-10 is validated; it
+    /// must stay nil until then so the unvalidated HR-only projection can never
+    /// silently enter the score.
+    static func make(sufficiencyPercent: Double?,
+                     consistencyPercent: Double?,
+                     efficiencyPercent: Double?,
+                     validatedOvernightLoadPercent: Double?) -> AtriaSleepScore {
+        func clamp(_ value: Double?) -> Double? { value.map { min(max($0, 0), 100) } }
+        let values: [ComponentValue] = [
+            ComponentValue(component: .sufficiency, percent: clamp(sufficiencyPercent)),
+            ComponentValue(component: .consistency, percent: clamp(consistencyPercent)),
+            ComponentValue(component: .efficiency, percent: clamp(efficiencyPercent)),
+            ComponentValue(component: .overnightLoad, percent: clamp(validatedOvernightLoadPercent))
+        ]
+        let present = values.filter(\.isPresent)
+        let score: Int?
+        if present.count >= minimumPresentComponents {
+            // Renormalize the provisional weights over only the present
+            // components. This is an explicitly provisional presentation, not a
+            // claim of equivalence to the full four-component score.
+            let totalWeight = present.reduce(0.0) { $0 + $1.component.provisionalWeight }
+            let weighted = present.reduce(0.0) { $0 + ($1.percent ?? 0) * $1.component.provisionalWeight }
+            score = totalWeight > 0 ? Int((weighted / totalWeight).rounded()) : nil
+        } else {
+            score = nil
+        }
+        return AtriaSleepScore(components: values, score: score, isProvisional: true)
+    }
+}
