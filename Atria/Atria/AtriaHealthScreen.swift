@@ -2288,7 +2288,12 @@ private struct AtriaSleepStressProjection: Equatable {
 
         var title: String {
             switch self {
-            case .unavailable: return "Sleep window unavailable"
+            // `AtriaSleepStressCard` is mounted only after the enclosing Sleep
+            // detail has resolved a real sleep window. Calling this state
+            // "Sleep window unavailable" therefore contradicted the saved
+            // sleep shown directly above it. What is unavailable here is the
+            // archived heart-rate evidence needed to construct the load trace.
+            case .unavailable: return "Overnight HR load unavailable"
             case .baselineNeeded: return "Building overnight HR baseline"
             case .insufficientWear: return "Not enough overnight wear"
             case .ready: return "Overnight physiological load"
@@ -2297,7 +2302,7 @@ private struct AtriaSleepStressProjection: Equatable {
 
         var detail: String {
             switch self {
-            case .unavailable: return "Confirm a sleep window to review overnight heart-rate load."
+            case .unavailable: return "This saved sleep has no usable archived heart-rate evidence for an overnight load trace."
             case .baselineNeeded: return "A personal resting heart-rate baseline is needed before overnight HR load can be interpreted."
             case .insufficientWear: return "Keep the strap on through the night to map observed overnight HR load."
             case .ready: return "Atria's 0–3 heart-rate-load scale, relative to your resting heart rate. It is not stress, a sleep stage, or a diagnosis."
