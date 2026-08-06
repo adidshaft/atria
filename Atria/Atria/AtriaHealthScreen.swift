@@ -2218,11 +2218,10 @@ private struct AtriaHealthMetricRow: View, Equatable {
     }
 }
 
-/// Sleep-consistency regularity strip (design 2026-08-05, WHOOP-parity): the
-/// recent nights' bed→wake windows stacked on a shared 6 PM → noon axis. A
-/// regular schedule reads as an aligned column; irregular nights scatter. It
-/// plots ONLY the real recorded sleep times (no fabricated data) and is always
-/// present — a short building note stands in until there are enough nights.
+/// A schedule graph has to explain itself. The former unlabeled cyan bars gave
+/// no answer to when a person slept, how much the schedule moved, or whether
+/// that movement is meaningful. This uses the same real bed-to-wake windows,
+/// but makes the times and the consistency verdict explicit.
 private struct AtriaSleepConsistencyStrip: View {
     let nights: [SleepHistorySnapshot.Night]
 
@@ -2232,8 +2231,11 @@ private struct AtriaSleepConsistencyStrip: View {
 
     private struct Row: Identifiable {
         let id: String
+        let dayLabel: String
         let startFrac: CGFloat
         let endFrac: CGFloat
+        let startHour: Double
+        let endHour: Double
     }
 
     private var rows: [Row] {
@@ -2244,66 +2246,127 @@ private struct AtriaSleepConsistencyStrip: View {
                let timeZone = TimeZone(identifier: identifier) {
                 calendar.timeZone = timeZone
             }
-            func fraction(_ date: Date) -> CGFloat? {
+            func relativeHour(_ date: Date) -> Double? {
                 let comps = calendar.dateComponents([.hour, .minute], from: date)
                 let hour = Double(comps.hour ?? 0) + Double(comps.minute ?? 0) / 60
                 var rel = (hour - Self.anchorHour).truncatingRemainder(dividingBy: 24)
                 if rel < 0 { rel += 24 }
                 guard rel <= Self.spanHours else { return nil }   // outside the night window (daytime nap)
-                return CGFloat(rel / Self.spanHours)
+                return rel
             }
-            guard let startFrac = fraction(start),
-                  let endFrac = fraction(end),
-                  endFrac > startFrac else { return nil }
-            return Row(id: night.id, startFrac: startFrac, endFrac: endFrac)
+            guard let startHour = relativeHour(start),
+                  let endHour = relativeHour(end),
+                  endHour > startHour else { return nil }
+            return Row(id: night.id,
+                       dayLabel: night.day.formatted(.dateTime.weekday(.narrow)),
+                       startFrac: CGFloat(startHour / Self.spanHours),
+                       endFrac: CGFloat(endHour / Self.spanHours),
+                       startHour: startHour,
+                       endHour: endHour)
+        }
+    }
+
+    private var bedtimeSpreadMinutes: Int { spreadMinutes(rows.map(\.startHour)) }
+    private var wakeTimeSpreadMinutes: Int { spreadMinutes(rows.map(\.endHour)) }
+    private var typicalBedtime: String { clockText(averageHour(rows.map(\.startHour))) }
+    private var typicalWakeTime: String { clockText(averageHour(rows.map(\.endHour))) }
+
+    private var consistencyVerdict: (title: String, detail: String, tint: Color) {
+        let spread = max(bedtimeSpreadMinutes, wakeTimeSpreadMinutes)
+        switch spread {
+        case ...30:
+            return ("Very consistent", "Your bed and wake times stayed within half an hour.", Metrics.electricGreen)
+        case ...60:
+            return ("Consistent", "Your schedule moved less than an hour night to night.", .cyan)
+        case ...90:
+            return ("Variable", "A steadier bedtime would make this week more regular.", .orange)
+        default:
+            return ("Irregular", "Bed and wake times moved by more than 90 minutes.", Metrics.electricRed)
         }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Sleep consistency")
-                    .font(.caption.weight(.semibold))
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Sleep schedule")
+                        .font(.caption.weight(.semibold))
+                    if rows.count >= 2 {
+                        Text("Usually \(typicalBedtime) – \(typicalWakeTime)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 Spacer(minLength: 0)
                 if !rows.isEmpty {
-                    Text("\(rows.count) \(rows.count == 1 ? "night" : "nights")")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(consistencyVerdict.title)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(consistencyVerdict.tint)
+                        Text("\(rows.count) nights")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
             if rows.count >= 2 {
+                Text("Bedtime varies \(minutesText(bedtimeSpreadMinutes)) · wake time varies \(minutesText(wakeTimeSpreadMinutes))")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
                 GeometryReader { geo in
-                    let w = geo.size.width
-                    VStack(spacing: 4) {
+                    let plotWidth = geo.size.width - 28
+                    VStack(spacing: 5) {
                         ForEach(rows) { row in
-                            ZStack(alignment: .leading) {
-                                Capsule(style: .continuous)
-                                    .fill(Color.primary.opacity(0.05))
-                                    .frame(height: 9)
-                                Capsule(style: .continuous)
-                                    .fill(Color.cyan.opacity(0.85))
-                                    .frame(width: max(3, (row.endFrac - row.startFrac) * w), height: 9)
-                                    .offset(x: row.startFrac * w)
+                            HStack(spacing: 7) {
+                                Text(row.dayLabel)
+                                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 21, alignment: .leading)
+                                ZStack(alignment: .leading) {
+                                    Capsule(style: .continuous)
+                                        .fill(Color.primary.opacity(0.05))
+                                        .frame(height: 11)
+                                    Capsule(style: .continuous)
+                                        .fill(consistencyVerdict.tint.opacity(0.84))
+                                        .frame(width: max(3, (row.endFrac - row.startFrac) * plotWidth), height: 11)
+                                        .offset(x: row.startFrac * plotWidth)
+                                    Circle()
+                                        .fill(consistencyVerdict.tint)
+                                        .frame(width: 7, height: 7)
+                                        .offset(x: row.startFrac * plotWidth - 3.5)
+                                    Circle()
+                                        .fill(consistencyVerdict.tint)
+                                        .frame(width: 7, height: 7)
+                                        .offset(x: row.endFrac * plotWidth - 3.5)
+                                }
                             }
                         }
                     }
                 }
-                .frame(height: CGFloat(rows.count) * 13)
+                .frame(height: CGFloat(rows.count) * 16)
 
-                HStack {
-                    Text("6 PM")
-                    Spacer(minLength: 0)
-                    Text("12 AM")
-                    Spacer(minLength: 0)
-                    Text("6 AM")
-                    Spacer(minLength: 0)
-                    Text("12 PM")
+                HStack(spacing: 0) {
+                    Color.clear.frame(width: 28)
+                    HStack {
+                        Text("6 PM")
+                        Spacer(minLength: 0)
+                        Text("12 AM")
+                        Spacer(minLength: 0)
+                        Text("6 AM")
+                        Spacer(minLength: 0)
+                        Text("12 PM")
+                    }
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.tertiary)
                 }
-                .font(.system(size: 9, weight: .medium))
-                .foregroundStyle(.tertiary)
+
+                Text(consistencyVerdict.detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             } else {
-                Text("A few more nights and your bed & wake-time regularity charts here.")
+                Text("A few more nights will show your usual bedtime, wake time, and how much each one moves.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2314,7 +2377,31 @@ private struct AtriaSleepConsistencyStrip: View {
         .atriaInsetCard(tint: .cyan)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(rows.count >= 2
-                            ? "Sleep consistency across \(rows.count) recent nights."
-                            : "Sleep consistency, building.")
+                            ? "Sleep schedule across \(rows.count) recent nights. Usually \(typicalBedtime) to \(typicalWakeTime). \(consistencyVerdict.title). Bedtime varies \(minutesText(bedtimeSpreadMinutes)); wake time varies \(minutesText(wakeTimeSpreadMinutes))."
+                            : "Sleep schedule, building.")
+    }
+
+    private func averageHour(_ values: [Double]) -> Double {
+        guard !values.isEmpty else { return 0 }
+        return values.reduce(0, +) / Double(values.count)
+    }
+
+    private func spreadMinutes(_ values: [Double]) -> Int {
+        guard values.count >= 2 else { return 0 }
+        let mean = averageHour(values)
+        let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count)
+        return Int((sqrt(variance) * 60).rounded())
+    }
+
+    private func clockText(_ relativeHour: Double) -> String {
+        let totalMinutes = Int((relativeHour * 60).rounded()) + Int(Self.anchorHour * 60)
+        let hour24 = ((totalMinutes / 60) % 24 + 24) % 24
+        let minute = ((totalMinutes % 60) + 60) % 60
+        let hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12
+        return String(format: "%d:%02d %@", hour12, minute, hour24 < 12 ? "AM" : "PM")
+    }
+
+    private func minutesText(_ minutes: Int) -> String {
+        minutes < 60 ? "\(minutes)m" : "\(minutes / 60)h \(minutes % 60)m"
     }
 }
