@@ -447,7 +447,7 @@ private struct AtriaJournalTypedInsightsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             AtriaPanelSectionHeader(title: "Patterns",
-                                    subtitle: "From your typed answers")
+                                    subtitle: "From your journal entries")
 
             if insights.isEmpty {
                 // Was a padlock captioned "Patterns are locked". Nothing is
