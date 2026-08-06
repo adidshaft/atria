@@ -1400,7 +1400,8 @@ struct AtriaHomeView: View {
         .sheet(isPresented: $showWorkoutStartSheet) {
             AtriaWorkoutStartSheet(initial: AtriaWorkoutStartConfiguration(
                 activityType: .other,
-                targetStrain: model.heroStore.state.guidance.target
+                targetStrain: model.heroStore.state.guidance.target,
+                maxHeartRate: store.profile.maxHR
             ), onPrepare: {
                 // Warm the two authorities while the picker is on screen.
                 // This is strictly read-only: Start still requires both the
