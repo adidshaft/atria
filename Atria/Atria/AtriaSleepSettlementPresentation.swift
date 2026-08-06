@@ -35,7 +35,10 @@ enum AtriaSleepSettlementState: Equatable {
         switch self {
         case .processing: return "Sleep ended · processing"
         case .reviewReady: return "Sleep detected · review ready"
-        case .saved: return "Sleep saved · journal ready"
+        // A confirmed window proves its timing was saved. It does not prove
+        // that motion, HR, staging, or overnight-load evidence is available,
+        // so avoid wording that can be read as "analysis is complete."
+        case .saved: return "Sleep window saved"
         // "Subject · state" like its siblings — the subject-less version
         // never said WHAT was waiting (2026-08-04 review, rank 8). Still
         // deliberately not "no sleep detected": only "not enough to judge".

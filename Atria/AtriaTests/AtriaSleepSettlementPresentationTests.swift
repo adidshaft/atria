@@ -95,7 +95,7 @@ final class AtriaSleepSettlementPresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(state, .saved(at: savedAt))
-        XCTAssertEqual(state.title, "Sleep saved · journal ready")
+        XCTAssertEqual(state.title, "Sleep window saved")
     }
 
     /// The candidate that produced a confirmation usually remains in the
