@@ -324,7 +324,7 @@ struct AtriaTodayScreen: View {
                                        vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                        skinTemperatureDeviation: sessionProjectionStore.state.skinTemperatureDeviationSummary,
                                        provenance: provenance(for: detail))
-                    .presentationDetents([.medium, .large])
+                    .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
             }
         }
@@ -1055,11 +1055,16 @@ struct AtriaTodayScreen: View {
 
     private static func debugHighlightRollups(includeNutrition: Bool = false) -> [DailyRollupStoreEntry] {
         let calendar = Calendar(identifier: .gregorian)
-        let today = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
+        // Keep the fixture anchored to the current week. WeeklyReport's
+        // navigation deliberately uses its generated-at date, so fixed future
+        // dates made the prior-week control look disabled in physical QA.
+        let today = calendar.startOfDay(for: Date())
+        let recoveries = [82, 71, 58, 43, 28, 67, 75,
+                          74, 60, 48, 31, 69, 79, 56, 36]
         var rollups: [DailyRollupStoreEntry] = []
-        for offset in 0..<8 {
+        for offset in recoveries.indices {
             let day = calendar.date(byAdding: .day, value: -offset, to: today) ?? today
-            let recovery = 72 - offset
+            let recovery = recoveries[offset]
             let rmssdSource = Double(58 - min(offset, 6))
             let restingHeartRate = offset == 0 ? 52 : 58 + (offset % 2)
             let sleepSeconds: TimeInterval = 8 * 60 * 60

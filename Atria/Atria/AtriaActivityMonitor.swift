@@ -751,10 +751,6 @@ struct AtriaActivityMonitorTab: View {
         return LazyVStack(alignment: .leading, spacing: 14) {
             activityToolbar
 
-            if viewingCurrentPhysiologicalDay {
-                stressMonitorCard
-            }
-
             let sections = daySectionsCache.value(for: requestKey) ?? []
             // A fully-empty settled day used to stack three adjacent
             // negatives (stress "waiting" + bare axis "nothing recorded" +
@@ -792,7 +788,7 @@ struct AtriaActivityMonitorTab: View {
                     .filter { $0.t >= workout.start && $0.t <= workout.end }
                     .map(AtriaStressDetailReading.init(historyPoint:))
             )
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showAddWorkout) {
@@ -822,144 +818,64 @@ struct AtriaActivityMonitorTab: View {
                                      activity: activity,
                                      calendar: calendar)
         }
-    }
-
-    /// Intraday heart/stress monitor for the Activity view: the current stress
-    /// state plus a past-24h stress timeline. Honest — plots only observed
-    /// readings, breaks the line at collection gaps, and shows the state's own
-    /// explanation when there isn't yet a meaningful window (never a fabricated
-    /// flat line). Activity is the intraday surface; weekly trends live in the
-    /// metric details.
-    @ViewBuilder private var stressMonitorCard: some View {
-        let presentation = AtriaStressPresentation.make(state: stressMonitorStore.state)
-        let cutoff = Calendar.current.date(byAdding: .hour, value: -24, to: Date()) ?? Date.distantPast
-        let readings = stressMonitorStore.history
-            .filter { $0.t >= cutoff }
-            .map(AtriaStressDetailReading.init(historyPoint:))
-        let points = AtriaStressTimelinePoint.segment(readings)
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                // The card's accessibility label already says "Stress
-                // monitor" — the visible title now matches it (and WHOOP's
-                // feature name) instead of contradicting it (2026-08-04).
-                // WHOOP monitor-tile grammar (2026-08-05): monitors are named
-                // in caps letterspaced micro-labels, values carry the weight.
-                Label {
-                    Text("STRESS MONITOR")
-                        .font(.caption.weight(.bold))
-                        .tracking(1.2)
-                } icon: {
-                    Image(systemName: "bolt.heart.fill")
-                        .font(.caption.weight(.bold))
-                }
-                .foregroundStyle(Metrics.electricStress)
-                Spacer()
-                // Live heart rate beside the stress band (user-directed:
-                // Activity's top card is the heart/stress monitor). Shown only
-                // while a contact-backed reading is fresh — no cached bpm.
-                if let heart = stressMonitorStore.liveHeartRate, heart.isFresh() {
-                    Label("\(heart.bpm)", systemImage: "heart.fill")
-                        .font(.subheadline.weight(.bold).monospacedDigit())
-                        .foregroundStyle(.red)
-                        .labelStyle(.titleAndIcon)
-                        .imageScale(.small)
-                        .contentTransition(.numericText())
-                        .accessibilityLabel("Heart rate \(heart.bpm) beats per minute")
-                }
-                Text(presentation.value)
-                    .font(.subheadline.weight(.bold).monospacedDigit())
-                    .contentTransition(.numericText())
-                    .foregroundStyle(stressMonitorStore.state.level?.tint ?? .secondary)
-            }
-
-            // Only measured readings earn a graph. Leaving an empty plot with
-            // Calm/Low/Med/High labels made the current device state look like
-            // data had been omitted rather than honestly not collected yet.
-            let stressLineGradient = LinearGradient(
-                colors: [Metrics.electricStrain, Metrics.electricGreen, Metrics.electricStress],
-                startPoint: .bottom, endPoint: .top)
-            let stressAreaFade = LinearGradient(
-                colors: [Color.primary.opacity(0.07), Color.primary.opacity(0.01)],
-                startPoint: .top, endPoint: .bottom)
-            let stressPointColor: (Double) -> Color = { score in
-                switch score {
-                case ..<1.0: return Metrics.electricStrain
-                case ..<2.0: return Metrics.electricGreen
-                default: return Metrics.electricStress
-                }
-            }
-            if points.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "waveform.path.ecg")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(Metrics.electricStress)
-                    Text("Collecting stress")
-                        .font(.subheadline.weight(.semibold))
-                    Text("Keep the strap on for steady wear; your 0–3 timeline will appear here.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, minHeight: 112)
-                .padding(.horizontal, 20)
-                .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            } else {
-            Chart {
-                ForEach(points) { point in
-                    AreaMark(x: .value("Time", point.reading.date),
-                             y: .value("Stress", point.reading.score),
-                             series: .value("Segment", point.segment))
-                        .interpolationMethod(.catmullRom)
-                        .foregroundStyle(stressAreaFade)
-                    LineMark(x: .value("Time", point.reading.date),
-                             y: .value("Stress", point.reading.score),
-                             series: .value("Segment", point.segment))
-                        .interpolationMethod(.catmullRom)
-                        .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                        .foregroundStyle(stressLineGradient)
-                }
-                // A lone/sparse reading still reads as a graph.
-                if let latest = points.last {
-                    PointMark(x: .value("Time", latest.reading.date),
-                              y: .value("Stress", latest.reading.score))
-                        .symbolSize(56)
-                        .foregroundStyle(stressPointColor(Double(latest.reading.score)))
-                }
-            }
-            .chartYScale(domain: 0...3)
-            .chartYAxis {
-                AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
-                    AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
-                    AxisValueLabel {
-                        if let raw = value.as(Int.self) {
-                            Text(["Calm", "Low", "Med", "High"][max(0, min(3, raw))])
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-            }
-            .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                    AxisValueLabel(format: .dateTime.hour())
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(height: 112)
-            .clipped()
-            }
-
-            Text(points.isEmpty
-                 ? "Past 24 hours · no readings yet."
-                 : "Past 24 hours · observed readings only; blanks are collection gaps.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+        .onAppear {
+            #if DEBUG
+            guard workoutDetail == nil,
+                  let fixture = Self.debugWorkoutDetailFixture else { return }
+            workoutDetail = fixture
+            #endif
         }
-        .padding(14)
-        .atriaInsetCard(tint: Metrics.electricStress)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Stress monitor. \(presentation.value). \(presentation.detail)")
     }
+
+    #if DEBUG
+    /// Presentation-only fixtures exercise the exact production detail sheet
+    /// without mutating the user's workout history or sensor state.
+    private static var debugWorkoutDetailFixture: UserConfirmedWorkout? {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let fixtureIndex = arguments.firstIndex(of: "--atria-ui-fixture") else { return nil }
+        let valueIndex = arguments.index(after: fixtureIndex)
+        guard arguments.indices.contains(valueIndex) else { return nil }
+
+        let hasZoneDistribution: Bool
+        switch arguments[valueIndex] {
+        case "activity-zone-detail": hasZoneDistribution = true
+        case "activity-zone-unavailable": hasZoneDistribution = false
+        default: return nil
+        }
+
+        let end = Date().addingTimeInterval(-8 * 60)
+        let start = end.addingTimeInterval(-52 * 60)
+        return UserConfirmedWorkout(
+            id: "debug-activity-zone-detail",
+            createdAt: end,
+            start: start,
+            end: end,
+            label: hasZoneDistribution ? "Tempo run" : "Strength session",
+            source: "debug_fixture",
+            confidence: "fixture",
+            sessions: 1,
+            samples: hasZoneDistribution ? 2_180 : 720,
+            avgHR: hasZoneDistribution ? 151 : 122,
+            peakHR: hasZoneDistribution ? 181 : 151,
+            p95HR: hasZoneDistribution ? 172 : 144,
+            p99HR: hasZoneDistribution ? 178 : 149,
+            thresholdHR: 128,
+            streamCoveragePercent: hasZoneDistribution ? 96 : 54,
+            observedDuration: hasZoneDistribution ? 50 * 60 : 28 * 60,
+            reason: "debug activity-zone presentation fixture",
+            activityType: hasZoneDistribution ? "Running" : "Strength",
+            activitySubtype: hasZoneDistribution ? "Tempo" : nil,
+            exerciseNames: nil,
+            reviewSource: "debug_fixture",
+            strain: hasZoneDistribution ? 11.7 : 5.6,
+            activeEnergyKilocalories: hasZoneDistribution ? 540 : 280,
+            activeEnergyConfidence: "fixture",
+            zoneSeconds: hasZoneDistribution
+                ? ["warmup": 460, "fatBurn": 720, "aerobic": 1_120, "anaerobic": 620, "max": 200]
+                : nil
+        )
+    }
+    #endif
 
     /// The navigation title already says Activity. Keep day navigation and Add
     /// in one compact control row instead of stacking a duplicate section title
@@ -1270,7 +1186,9 @@ struct AtriaActivityMonitorTab: View {
                 // reads as broken (sighted users previously got only the
                 // VoiceOver label).
                 .chartOverlay { _ in
-                    Text("Nothing recorded yet this day")
+                    Text(window.isCurrentPhysiologicalDay
+                         ? "No activity recorded yet today"
+                         : "No activity recorded on this day")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -2678,8 +2596,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 
     @ViewBuilder
     private var workoutZoneDistributionCard: some View {
-        if !AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout), recordedZoneSeconds > 0 {
-            VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 12) {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("Time in heart-rate zones")
@@ -2689,20 +2606,34 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 8)
-                    Text(durationText(recordedZoneSeconds))
-                        .font(.subheadline.weight(.black).monospacedDigit())
-                        .foregroundStyle(Metrics.electricStrain)
+                    if recordedZoneSeconds > 0 {
+                        Text(durationText(recordedZoneSeconds))
+                            .font(.subheadline.weight(.black).monospacedDigit())
+                            .foregroundStyle(Metrics.electricStrain)
+                    }
                 }
 
-                ForEach(workoutZoneRows, id: \.key) { zone in
-                    workoutZoneRow(zone)
+                if recordedZoneSeconds > 0 {
+                    ForEach(workoutZoneRows, id: \.key) { zone in
+                        workoutZoneRow(zone)
+                    }
+                } else {
+                    Label("Zone distribution is unavailable for this recording. Atria saved the workout summary, but not enough heart-rate samples to place time in zones.",
+                          systemImage: "waveform.path.ecg.rectangle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
                 }
-            }
-            .padding(14)
-            .atriaInsetCard(tint: Metrics.electricStrain)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(zoneDistributionAccessibilityLabel)
         }
+        .padding(14)
+        .atriaInsetCard(tint: Metrics.electricStrain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(recordedZoneSeconds > 0
+                            ? zoneDistributionAccessibilityLabel
+                            : "Time in heart-rate zones unavailable. Workout summary saved, but heart-rate zone samples were not recorded.")
     }
 
     private func workoutZoneRow(_ zone: (key: String, label: String, range: String, tint: Color, seconds: TimeInterval)) -> some View {

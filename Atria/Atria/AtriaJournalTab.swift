@@ -154,11 +154,9 @@ struct AtriaJournalTab: View {
             AtriaJournalCheckInDeck(store: store, projection: projection)
             AtriaJournalTypedInsightsSection(insights: projection.typedInsights)
             AtriaBehaviorImpactCard(model: impactModel)
-            AtriaBehaviorImpactMapCard(model: impactModel)
-            // De-dup 2026-08-01: the full diverging chart + impact map above
-            // supersede the compact behavior strip on the Journal tab (it now
-            // reads as three impact surfaces). The strip stays on Overview,
-            // where it's the only behavior surface.
+            // The evidence chart and its compact evidence rows already answer
+            // what moved recovery and how much data supports it. A second
+            // classification map repeated those same results without an action.
             // Heat strip rides directly under the behavior-impact section it
             // visualizes (UX audit 2026-07-07) instead of orphaned mid-stack.
             AtriaJournalHeatStrip(entries: store.behaviorJournalEntries,
@@ -449,7 +447,7 @@ private struct AtriaJournalTypedInsightsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             AtriaPanelSectionHeader(title: "Patterns",
-                                    subtitle: "From your typed answers")
+                                    subtitle: "From your journal entries")
 
             if insights.isEmpty {
                 // Was a padlock captioned "Patterns are locked". Nothing is
