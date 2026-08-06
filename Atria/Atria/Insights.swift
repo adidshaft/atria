@@ -25,6 +25,13 @@ struct PersonalBaseline: Codable {
     private static let maxSamples = 90
     static let trustedMinimumSamples = 14
     static let staleAfter: TimeInterval = 21 * 24 * 60 * 60
+    /// Recovery keeps a slightly longer historical comparator than the live
+    /// stress and target surfaces.  It still requires the same recent 21-day
+    /// evidence to be eligible, but the comparison itself can see a complete
+    /// 30-day physiological cycle.  This is deliberately recovery-specific:
+    /// changing `freshSamples` would silently alter unrelated live metrics.
+    static let recoveryComparisonHorizonDays = 30
+    static let recoveryRecentQualificationHorizonDays = 21
     /// Once this many fresh OVERNIGHT HRV samples exist, the lnRMSSD baseline is
     /// computed from overnight samples only (WHOOP-like sleep-window HRV). Below it,
     /// we fall back to all samples so an intermittent overnight stream never starves
@@ -47,6 +54,33 @@ struct PersonalBaseline: Codable {
         }
 
         var isOvernightSample: Bool { overnight == true }
+    }
+
+    /// A frozen, auditable candidate comparator for a future, externally
+    /// validated Recovery model.  The current displayed Recovery v2 score does
+    /// not consume this yet; recording it beside v2 lets validation compare the
+    /// candidate with eventual user-confirmed outcomes without rewriting history.
+    struct RecoveryComparison: Equatable {
+        struct Statistic: Equatable {
+            /// Median rather than a mean. The explicit `statistic` field in a
+            /// receipt prevents this location from being mistaken for v2's
+            /// ordinary mean.
+            let location: Double
+            /// MAD scaled to a normal-distribution SD equivalent.
+            let scale: Double
+            let sampleCount: Int
+        }
+
+        let asOf: Date
+        let comparisonHorizonDays: Int
+        let recentQualificationHorizonDays: Int
+        let statistic: String
+        let restingHeartRate: Statistic?
+        let hrv: Statistic?
+        let recentQualifiedRestingDays: Int
+        let recentQualifiedHRVNights: Int
+        let restingTrusted: Bool
+        let hrvTrusted: Bool
     }
 
     init(restingHR: Double? = nil, hrvEMA: Double? = nil, sessions: Int = 0,
@@ -335,6 +369,53 @@ struct PersonalBaseline: Codable {
         return (mean, sqrt(variance), allStats.count)
     }
 
+    /// Produces a 30-civil-day robust comparison receipt for Recovery research.
+    /// This is intentionally not wired into `recoveryV2`: changing a displayed
+    /// health score requires held-out outcome validation, not a convenient
+    /// statistical substitution.  The normal 14 recent-day/night qualification
+    /// rule remains the authority for whether either comparator is mature.
+    func recoveryComparison(
+        now: Date,
+        calendar: Calendar = .current
+    ) -> RecoveryComparison {
+        let canonical = Self.canonicalDailySamples(samples, calendar: calendar)
+        let today = calendar.startOfDay(for: now)
+        let comparisonStart = calendar.date(
+            byAdding: .day,
+            value: -(Self.recoveryComparisonHorizonDays - 1),
+            to: today
+        ) ?? today
+        let comparisonSamples = canonical.filter { sample in
+            let day = calendar.startOfDay(for: sample.date)
+            return day >= comparisonStart && day <= today && sample.date <= now
+        }
+
+        let recentRestingDays = freshRestingSampleCount(now: now)
+        let recentHRVNights = freshHRVSampleCount(now: now)
+        let isCurrent = !isStale(now: now)
+        let restingTrusted = isCurrent && recentRestingDays >= Self.trustedMinimumSamples
+        let hrvTrusted = hrvQualificationVersion >= Self.currentHRVQualificationVersion
+            && isCurrent
+            && recentHRVNights >= Self.trustedMinimumSamples
+
+        return RecoveryComparison(
+            asOf: now,
+            comparisonHorizonDays: Self.recoveryComparisonHorizonDays,
+            recentQualificationHorizonDays: Self.recoveryRecentQualificationHorizonDays,
+            statistic: "median_mad",
+            restingHeartRate: Self.robustStats(comparisonSamples.map(\.restingHR)),
+            hrv: hrvQualificationVersion >= Self.currentHRVQualificationVersion
+                ? Self.robustStats(comparisonSamples
+                    .filter(\.isOvernightSample)
+                    .compactMap(\.lnRMSSD))
+                : nil,
+            recentQualifiedRestingDays: recentRestingDays,
+            recentQualifiedHRVNights: recentHRVNights,
+            restingTrusted: restingTrusted,
+            hrvTrusted: hrvTrusted
+        )
+    }
+
     /// Feedback vs the learned norm: negative = below baseline (more recovered).
     func delta(comparedTo resting: Int) -> Int? {
         guard let base = restingInt else { return nil }
@@ -347,6 +428,30 @@ struct PersonalBaseline: Codable {
         guard values.count > 1 else { return (mean, 0, values.count) }
         let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count - 1)
         return (mean, sqrt(variance), values.count)
+    }
+
+    /// Median and median absolute deviation prevent one corrupted or unusually
+    /// stressful night from moving a future recovery comparator.  A zero MAD is
+    /// meaningful (the cohort is identical); downstream models must apply their
+    /// explicit minimum scale rather than quietly inflating it with an outlier.
+    private static func robustStats(_ values: [Double]) -> RecoveryComparison.Statistic? {
+        let finite = values.filter(\.isFinite).sorted()
+        guard !finite.isEmpty else { return nil }
+        let location = median(finite)
+        let deviations = finite.map { abs($0 - location) }.sorted()
+        return RecoveryComparison.Statistic(
+            location: location,
+            scale: median(deviations) * 1.4826,
+            sampleCount: finite.count
+        )
+    }
+
+    private static func median(_ sortedValues: [Double]) -> Double {
+        let midpoint = sortedValues.count / 2
+        if sortedValues.count.isMultiple(of: 2) {
+            return (sortedValues[midpoint - 1] + sortedValues[midpoint]) / 2
+        }
+        return sortedValues[midpoint]
     }
 
     private mutating func rebuildLearnedValuesFromCanonicalSamples() {

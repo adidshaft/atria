@@ -13694,7 +13694,9 @@ final class SessionStore: ObservableObject {
                                         sleepEfficiency: confirmedMainSleep?.sleepEfficiency,
                                         respiratoryRate: respiratoryRate,
                                         baseline: baseline,
-                                        respiratoryBaseline: sleep.respiratoryBaselineStats
+                                        respiratoryBaseline: sleep.respiratoryBaselineStats,
+                                        now: now,
+                                        calendar: calendar
                                     )
                                 ))
     }

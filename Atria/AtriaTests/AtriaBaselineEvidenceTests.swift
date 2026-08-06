@@ -195,4 +195,65 @@ final class AtriaBaselineEvidenceTests: XCTestCase {
         ).hasNearTrustedRestingBaselineForFragmentedSleep(now: now))
     }
 
+    func testRecoveryComparisonUsesThirtyCivilDaysWithoutRelaxingRecentQualification() throws {
+        let now = DateComponents(calendar: calendar,
+                                 year: 2026, month: 8, day: 1,
+                                 hour: 12).date!
+        let samples = (0..<31).map { daysAgo in
+            PersonalBaseline.BaselineSample(
+                date: calendar.date(byAdding: .day, value: -daysAgo, to: now)!,
+                restingHR: daysAgo == 30 ? 99 : 60,
+                rmssd: daysAgo == 30 ? 160 : 50,
+                overnight: true
+            )
+        }
+        let baseline = PersonalBaseline(restingHR: 60,
+                                        hrvEMA: 50,
+                                        sessions: samples.count,
+                                        updated: now,
+                                        samples: samples)
+
+        let comparison = baseline.recoveryComparison(now: now, calendar: calendar)
+        XCTAssertEqual(comparison.comparisonHorizonDays, 30)
+        XCTAssertEqual(comparison.recentQualificationHorizonDays, 21)
+        XCTAssertEqual(comparison.restingHeartRate?.sampleCount, 30,
+                       "the 31st civil day must not enter the comparison")
+        XCTAssertEqual(try XCTUnwrap(comparison.restingHeartRate).location, 60,
+                       accuracy: 0.000_001)
+        XCTAssertEqual(comparison.hrv?.sampleCount, 30)
+        XCTAssertTrue(comparison.restingTrusted)
+        XCTAssertTrue(comparison.hrvTrusted)
+
+        let staleNow = calendar.date(byAdding: .day, value: 22, to: now)!
+        let staleComparison = baseline.recoveryComparison(now: staleNow, calendar: calendar)
+        XCTAssertFalse(staleComparison.restingTrusted,
+                       "a 30-day historical cohort cannot bypass the existing 21-day readiness gate")
+        XCTAssertFalse(staleComparison.hrvTrusted)
+    }
+
+    func testRecoveryComparisonMedianMADResistsAnExtremeNight() throws {
+        let now = DateComponents(calendar: calendar,
+                                 year: 2026, month: 8, day: 1,
+                                 hour: 12).date!
+        let samples = (0..<30).map { daysAgo in
+            PersonalBaseline.BaselineSample(
+                date: calendar.date(byAdding: .day, value: -daysAgo, to: now)!,
+                restingHR: daysAgo == 29 ? 160 : 60,
+                rmssd: daysAgo == 29 ? 250 : 50,
+                overnight: true
+            )
+        }
+        let baseline = PersonalBaseline(restingHR: 60,
+                                        hrvEMA: 50,
+                                        sessions: samples.count,
+                                        updated: now,
+                                        samples: samples)
+        let comparison = baseline.recoveryComparison(now: now, calendar: calendar)
+
+        XCTAssertEqual(comparison.statistic, "median_mad")
+        XCTAssertEqual(try XCTUnwrap(comparison.restingHeartRate).location, 60, accuracy: 0.000_001)
+        XCTAssertEqual(try XCTUnwrap(comparison.restingHeartRate).scale, 0, accuracy: 0.000_001)
+        XCTAssertEqual(try XCTUnwrap(comparison.hrv).location, log(50), accuracy: 0.000_001)
+    }
+
 }
