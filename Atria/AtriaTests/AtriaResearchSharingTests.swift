@@ -141,14 +141,14 @@ final class AtriaResearchSharingTests: XCTestCase {
 
     // MARK: - Relative-time structs
 
-    func testSessionRelativeTimesRoundTripExactly() throws {
+    func testDayZeroTimesRoundTripExactly() throws {
         let session = AtriaResearchBundlePayload.Session(startRel: 3600.5,
                                                          endRel: 5400.9,
                                                          kind: "sleep",
-                                                         hrPoints: [[0.1, 58], [60.2, 61]],
-                                                         rrPoints: [[0.1, 1012.5]],
-                                                         motionEpochs: [.init(startRel: 30,
-                                                                              endRel: 60,
+                                                         hrPoints: [[3600.6, 58], [3660.7, 61]],
+                                                         rrPoints: [[3600.6, 1012.5]],
+                                                         motionEpochs: [.init(startRel: 3630,
+                                                                              endRel: 3660,
                                                                               rows: 30,
                                                                               validatedRows: 30,
                                                                               stillnessRatio: 0.82,
@@ -166,14 +166,103 @@ final class AtriaResearchSharingTests: XCTestCase {
         XCTAssertEqual(decoded.startRel, 3600.5)
         XCTAssertEqual(decoded.endRel, 5400.9)
         XCTAssertEqual(decoded.kind, "sleep")
-        XCTAssertEqual(decoded.hrPoints, [[0.1, 58], [60.2, 61]])
-        XCTAssertEqual(decoded.rrPoints, [[0.1, 1012.5]])
+        XCTAssertEqual(decoded.hrPoints, [[3600.6, 58], [3660.7, 61]])
+        XCTAssertEqual(decoded.rrPoints, [[3600.6, 1012.5]])
         XCTAssertEqual(decoded.motionEpochs.count, 1)
-        XCTAssertEqual(decoded.motionEpochs[0].startRel, 30)
+        XCTAssertEqual(decoded.motionEpochs[0].startRel, 3630)
         XCTAssertEqual(decoded.motionEpochs[0].movementIntensity, 0.08)
         XCTAssertEqual(decoded.motionEpochs[0].source, AtriaRecoveredMotionEpoch.source)
         XCTAssertEqual(decoded.restingStable, 57)
         XCTAssertEqual(decoded.hrv, 82)
+    }
+
+    func testBuilderUsesOneDayZeroTimelineForMeasurementsAndLabels() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let epochDay = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_780_000_000))
+        let workoutStart = epochDay.addingTimeInterval(2 * 3_600)
+        let sessionStart = epochDay.addingTimeInterval(2 * 86_400 + 10 * 3_600)
+        let sessionEnd = sessionStart.addingTimeInterval(60)
+
+        var session = SavedSession(id: UUID(),
+                                   start: sessionStart,
+                                   end: sessionEnd,
+                                   label: "strap capture",
+                                   points: [.init(t: 10, bpm: 71), .init(t: 60, bpm: 73)])
+        session.rrPoints = [.init(t: 20, ms: 900)]
+        session.recoveredMotionEpochs = [AtriaRecoveredMotionEpoch(
+            start: sessionStart.addingTimeInterval(30),
+            end: sessionEnd,
+            rows: 30,
+            validatedRows: 30,
+            stillnessRatio: 0.8,
+            movementIntensity: 0.1,
+            p95VectorDelta: 0.2,
+            maximumGapSeconds: 1,
+            measurementValidated: true,
+            lowMotionQualified: true,
+            reason: "fixture"
+        )]
+        let workout = UserConfirmedWorkout(id: "early-workout",
+                                           createdAt: workoutStart,
+                                           start: workoutStart,
+                                           end: workoutStart.addingTimeInterval(30 * 60),
+                                           label: "private free-text title",
+                                           source: "manual",
+                                           confidence: "user_confirmed",
+                                           sessions: 0,
+                                           samples: 0,
+                                           avgHR: 0,
+                                           peakHR: 0,
+                                           p95HR: 0,
+                                           p99HR: 0,
+                                           thresholdHR: 0,
+                                           streamCoveragePercent: 0,
+                                           observedDuration: 0,
+                                           reason: "manual",
+                                           activityType: "Running")
+        let journal = AtriaJournalAnswer(questionID: "tag.sleep",
+                                         day: epochDay,
+                                         value: .yes,
+                                         loggedAt: epochDay.addingTimeInterval(8 * 3_600),
+                                         source: "user")
+        let input = AtriaResearchBundleBuilder.BuildInput(
+            manifest: .init(schema: AtriaResearchSharing.schemaVersion,
+                            pseudonym: "00000000-0000-0000-0000-000000000000",
+                            appVersion: "test",
+                            ageBand: "30-34",
+                            weightBandKg: "75-80 kg",
+                            heightBandCm: "180-185 cm",
+                            biologicalSex: "male"),
+            sessions: [session],
+            sleeps: [],
+            workouts: [workout],
+            days: [],
+            journalAnswers: [journal],
+            calendar: calendar
+        )
+
+        let payload = try XCTUnwrap(AtriaResearchBundleBuilder.makePayload(input: input))
+        let exportedSession = try XCTUnwrap(payload.sessions.first)
+        let exportedWorkout = try XCTUnwrap(payload.workouts.first)
+        let expectedSessionStart = 2 * 86_400.0 + 10 * 3_600.0
+
+        XCTAssertEqual(payload.manifest.schema, 3)
+        XCTAssertEqual(exportedSession.startRel, expectedSessionStart, accuracy: 0.001)
+        XCTAssertEqual(exportedSession.hrPoints, [[expectedSessionStart + 10, 71],
+                                                   [expectedSessionStart + 60, 73]])
+        XCTAssertEqual(exportedSession.rrPoints, [[expectedSessionStart + 20, 900]])
+        XCTAssertEqual(exportedSession.motionEpochs.map(\.startRel), [expectedSessionStart + 30])
+        XCTAssertEqual(exportedWorkout.startRel, 2 * 3_600, accuracy: 0.001)
+        XCTAssertEqual(payload.journal.first?.dayIndex, 0)
+
+        XCTAssertTrue(exportedSession.hrPoints.allSatisfy { $0[0] >= exportedSession.startRel })
+        XCTAssertTrue(exportedSession.rrPoints.allSatisfy { $0[0] >= exportedSession.startRel })
+        XCTAssertTrue(exportedSession.motionEpochs.allSatisfy {
+            $0.startRel >= exportedSession.startRel && $0.endRel <= exportedSession.endRel
+        })
+        XCTAssertTrue(payload.workouts.allSatisfy { $0.startRel >= 0 && $0.endRel >= $0.startRel })
+        XCTAssertTrue(payload.journal.allSatisfy { $0.dayIndex >= 0 })
     }
 
     // MARK: - Fixtures

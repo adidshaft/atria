@@ -1,4 +1,5 @@
-schemaVersion: 1
+anonymousResearchSchemaVersion: 3
+rawExportSchemaVersion: 1
 
 # Atria Anonymous Research Bundle Schema
 
@@ -30,9 +31,11 @@ shows compressed size and SHA-256 digest, and displays a truncated pretty-printe
 sample. The Agree button is **disabled** until the inspector is opened and returns a
 non-zero byte count. Only then can the user press "I agree — share anonymously".
 
-On "I agree", `grantConsent()` executes:
+On "I agree", `grantConsent(previewPseudonym:)` executes:
 - Sets `optIn = true`
-- Generates a fresh **pseudonym UUID** (stored as a string in UserDefaults)
+- Adopts the temporary **pseudonym UUID** shown in the inspected bundle (stored
+  as a string in UserDefaults), so the reviewed manifest is exactly the one a
+  later manual or queued share uses
 - Records the consent timestamp
 
 **Revocation:** User toggles off in Settings → calls `revokeConsent()`:
@@ -65,7 +68,7 @@ User profile snapshot and bundle metadata:
 
 ```typescript
 {
-  "schema": 1,                      // integer, always 1 for this schema version
+  "schema": 3,                      // integer, always 3 for this schema version
   "pseudonym": "UUID",              // string, 36-char UUID (e.g., "550e8400-e29b-41d4-a716-446655440000")
   "appVersion": "string",           // e.g., "1.0.2"
   "ageBand": "N-M" or "unknown",    // age band (e.g., "30-34"); see Banding rules below
@@ -91,22 +94,48 @@ capture of heart rate and RR interval series.
   "startRel": double,       // seconds since day-0, relative epoch (e.g., 120.5)
   "endRel": double,         // seconds since day-0
   "kind": "session"|"sleep"|other,  // string, activity kind (usually "session" or source)
-  "hrPoints": [[tRel, bpm], ...],   // array of [time, heart rate] pairs
-  "rrPoints": [[tRel, ms], ...],    // array of [time, RR interval in ms] pairs
+  "hrPoints": [[tRel, bpm], ...],   // array of [day-0 time, heart rate] pairs
+  "rrPoints": [[tRel, ms], ...],    // array of [day-0 time, RR interval in ms] pairs
+  "motionEpochs": [MotionEpoch, ...], // bounded day-0-aligned motion features
   "restingStable": integer,         // count of resting-HR-stable samples (0–100 range expected)
   "hrv": integer or null            // heart-rate variability (ms), optional
 }
 ```
 
-**Time precision:** `rel(date) = floor((date.secondsSince(epoch0) * 10)) / 10`.
+**Time precision:** `rel(date) = round(date.secondsSince(epoch0) * 10) / 10`.
 Times are rounded to 0.1-second precision.
 
 **hrPoints:** Each point is `[tRel, bpm]` where `tRel` is seconds since day-0 and
-`bpm` is an integer heart rate in beats per minute. Every accepted sample from the
-session is included.
+`bpm` is an integer heart rate in beats per minute. A point's timestamp is exactly
+`rel(session.start + secondsFromSessionStart)`. Malformed points outside the saved
+session interval are omitted rather than clamped or reconstructed.
 
-**rrPoints:** RR intervals (beat-to-beat intervals) in milliseconds. Times are also
-relative to day-0. If no RR data was captured, this array is empty.
+**rrPoints:** RR intervals (beat-to-beat intervals) in milliseconds. Times use the
+same day-0 axis as `startRel`, `endRel`, `hrPoints`, and `motionEpochs`. If no RR
+data was captured, this array is empty.
+
+### MotionEpoch
+
+Only bounded features from independently recovered gravity evidence are included.
+Raw IMU frames, location, device identifiers, and free text never leave the phone.
+Each epoch is clipped to its owning session before export, so it shares the same
+day-0 axis as HR/RR points.
+
+```typescript
+{
+  "startRel": double,
+  "endRel": double,
+  "rows": integer,
+  "validatedRows": integer,
+  "stillnessRatio": double|null,
+  "movementIntensity": double|null,
+  "p95VectorDelta": double|null,
+  "maximumGapSeconds": integer,
+  "measurementValidated": boolean,
+  "lowMotionQualified": boolean,
+  "source": "historical_gravity_recovered_epoch_v1"
+}
+```
 
 **restingStable:** Counter of how many HR samples were stable enough to be included
 in the resting-HR baseline. Integer, 0–100 typical range.
@@ -147,14 +176,18 @@ User-confirmed workout records.
 {
   "startRel": double,               // seconds since day-0
   "endRel": double,                 // seconds since day-0
-  "label": "string",                // e.g., "Run", "Cycling", "Strength"
+  "activityType": "string",          // canonical picker value, e.g., "Running"
+  "labelSource": "user_confirmed",   // never an automatic classification
   "avgHR": integer,                 // average heart rate during workout
   "peakHR": integer                 // peak (maximum) heart rate during workout
 }
 ```
 
-**label:** Free-text activity name. Examples: "Run", "Cycling", "Strength",
-"Swimming".
+**activityType:** An allowlisted canonical picker value resolved from the user's
+confirmed activity. The free-text workout title is never exported.
+
+**labelSource:** Always `"user_confirmed"`. This bundle can support future
+evaluation, but it does not claim an automatic activity classifier exists.
 
 ## Days
 
@@ -217,14 +250,16 @@ earliest date in the bundle:
 epoch0 = startOfDay(min(
   all session start dates,
   all sleep start dates,
-  all daily metric dates
+  all workout start dates,
+  all daily metric dates,
+  all journal-answer days
 ))
 ```
 
 **Relative time computation:**
 
 ```
-rel(date) = floor((date.secondsSince(epoch0) * 10)) / 10
+rel(date) = round(date.secondsSince(epoch0) * 10) / 10
 ```
 
 Times are stored as seconds since epoch0, rounded to 0.1-second precision.
@@ -303,7 +338,7 @@ construction.
 
 ## Schema Version and Upgrade Path
 
-**Current version:** 1
+**Current anonymous research bundle version:** 3
 
 **When to bump the version:**
 
@@ -328,10 +363,11 @@ construction.
 
 **Upgrade strategy:** Future versions should follow a two-step deprecation:
 
-1. Version 2 introduces a new field or struct, but the encoder still emits version
-   1 for one release cycle.
-2. Subsequent version defaults to version 2; version 1 is no longer emitted.
-3. Decoders must accept both versions 1 and 2 for at least one release cycle.
+1. A new version introduces a new field, renamed key, or changed temporal contract.
+2. The encoder emits only one explicit version; receivers must reject a version
+   whose contract they do not understand rather than silently guessing.
+3. Version 3 is the first version with one day-zero-relative timeline across
+   sessions, HR/RR points, motion epochs, workouts, daily rows, and journal rows.
 
 ## Allowlist and Transparency
 
@@ -420,7 +456,8 @@ The `AtriaResearchSharingTests.swift` suite validates:
 
 - Consent lifecycle (grant, revoke, re-consent generates fresh pseudonym).
 - Banding math for age, weight, height.
-- Relative-time encoding and round-trip accuracy (times survive JSON encode/decode).
+- Builder-level temporal alignment: every emitted timestamp/index is non-negative;
+  HR/RR points, motion epochs, workouts, and journal rows share one day-zero axis.
 - Payload contains no ISO-8601 dates, deviceName, displayName, birthYear, or
   timezone.
 - Receipts ledger caps at 20 entries, newest first.
@@ -433,8 +470,8 @@ The static check enforces the denylist and required consent infrastructure.
 
 1. **Pseudonym isolation:** The pseudonym is a random UUID per consent grant,
    destroyed on revoke. No device-persistent secret links shares across time.
-2. **Backward compatibility:** Schema version 1 is final. Future versions will be
-   declared in this document before any bundle with a higher version is shipped.
+2. **Explicit contracts:** Schema version 3 is the current anonymous research
+   contract. Future versions will be declared here before a changed bundle ships.
 3. **Unmodifiability:** The bundle is a static JSON file, hashable. SHA-256 digests
    are recorded in the local ledger to detect mutation or corruption in transit.
 4. **Opt-in default:** Sharing is OFF by default. No bundle is built or sent unless
