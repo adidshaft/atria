@@ -324,7 +324,7 @@ struct AtriaTodayScreen: View {
                                        vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                        skinTemperatureDeviation: sessionProjectionStore.state.skinTemperatureDeviationSummary,
                                        provenance: provenance(for: detail))
-                    .presentationDetents([.medium, .large])
+                    .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
             }
         }

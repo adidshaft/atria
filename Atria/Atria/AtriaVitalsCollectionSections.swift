@@ -341,7 +341,7 @@ struct AtriaVitalsTabContent: View {
                                    sleepGoalHours: sleepGoalHours,
                                    sleepBaseNeedHours: sleepBaseNeedHours,
                                    skinTemperatureDeviation: vitals.skinTemperatureDeviationSummary)
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
     }
