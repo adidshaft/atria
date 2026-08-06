@@ -206,3 +206,77 @@ The last run completed **37 tests, all passing**.
 `bb35c644 Export frozen muscular research receipts` is the last implementation
 commit before this handoff. The handoff commit that follows records this paused
 state; no merge has been made to `main`.
+
+## Field diagnosis 2026-08-06 23:15 IST — five user-reported symptoms, one wedge
+
+Read-only forensics (device plist pulled 23:14; no code changed). User
+reports: (1) steps "3% of today verified · no usable step count yet";
+(2) Stress "Waiting for a fresh strap signal"; (3) Live strain chart
+"No saved observations"; (4) Vitals history heart/strain missing +
+"not connected to Bluetooth"; (5) workout started 21:35 but review
+window begins ~19:06-19:30.
+
+### Root finding: offlineSync transport wedged mid-handshake since 09:26:58
+
+- `atria.offlineSync.handshakeStatus.v1 = history_first_frame_received`
+  with `handshakeAt = 09:26:58` — a history handshake opened at 09:26:58
+  and NEVER completed or reset.
+- `lastDurableFlushBoundaryOKAt = 09:33:47` — the durable flush boundary
+  has been FROZEN for ~14 h. flushDebt stuck at "low 132" observed
+  09:26:55 (the debt monitor stalled with it).
+- Meanwhile LIVE capture ran all day: `sample.lastRawNotificationAt =
+  22:53:02`, 779,791 accepted samples, session checkpoints saving
+  (`saved_accepted_hr_watchdog`), duty-cycle armed 14.3 h today. HR was
+  CAPTURED but nothing after 09:33 was durably flushed/verified.
+
+Downstream, this one wedge produces all five symptoms:
+1. STEPS 3%: offload verification rides the same transport —
+   `pendingOffloads` ballooned to 244 tickets (was 6-16 yesterday);
+   windows close but never verify → coverage collapapsed to 3%.
+2. STRESS: intraday stress needs fresh flushed/verified signal; the
+   stores starved after 09:33. (Also the link is down right now.)
+3. LIVE STRAIN "No saved observations": no durably saved rows since
+   09:33 → today's chart genuinely has nothing saved to draw.
+4. VITALS history missing + "not connected": same starvation for the
+   history surfaces, and the "not connected" chip is TRUE — the link
+   is currently down (`keepalive missing_peripheral` since ~22:54,
+   `strapStream.state unknown / notifying=false`; a bluetooth.off
+   actionable diagnosis fired 19:16; stallReconnects now 101).
+   Strap battery 29% at 22:35 — declining, charge it tonight.
+5. WORKOUT WINDOW: `workoutMotion.boundaryStartedAt = 19:06:26`,
+   status released 19:15:48, backfillReason r10_range_unrecovered for
+   ~19:39-19:43 — the detection boundary anchored at the 19:06-19:16
+   link-flap era. With no durable rows since 09:33, cluster anchors
+   degrade; the 21:35 workout inherited the 19:06 boundary. (Chain is
+   evidence-consistent; exact review-window math needs code
+   confirmation next session.)
+
+### Timing/causality note (honest accounting)
+
+09:26-09:33 is exactly the morning ship flurry on the OTHER branch
+(codex/atria-reliability-handoff-2026-07-22): eda13ba0/31225021
+installs (~09:25/~09:33) and d8c0f441 (~09:15) which set
+`automaticFullDrainRecoveryEnabled = false`. Leading hypothesis: an
+install kill interrupted the 09:26:58 history handshake, AND the
+disabled automatic drain lane removed the path that historically
+RESET half-open handshake state on its next arming — so nothing ever
+clears it. The deadlock the flag-disable fixed was real (authority is
+now `resolved` — yesterday's publication landed); the missing piece is
+a handshake reset that does not depend on drain arming.
+
+### Recommended fixes (next implementer — none applied)
+
+1. HANDSHAKE WATCHDOG: half-open history handshake
+   (`history_first_frame_received` and friends) older than N minutes
+   with no subsequent frames → reset the offlineSync transport state
+   machine (same self-heal family as the §15.50 poweredOff-wedge
+   design in HANDOFF_2026-08-03). This is the structural fix.
+2. IMMEDIATE USER REMEDIATION (no code): relaunch the app (clears
+   process handshake state — proven on the CB wedge) and charge the
+   strap (29%). Expect boundary to advance and the 244 tickets to
+   start verifying within minutes of a healthy link.
+3. Re-examine d8c0f441's side effects: enumerate every reset path
+   that only ran on automatic drain arming; move those resets to
+   connection-epoch boundaries instead.
+4. After recovery, re-run the coverage SLA measurement (§15.76 in
+   HANDOFF_2026-08-03) on a clean day — today is invalid for it.
