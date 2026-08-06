@@ -705,8 +705,9 @@ private struct AtriaHealthMonitorCard: View {
                 }
             }
         }
-        .padding(18)
-        .atriaCard(emphasis: .soft)
+        // The monitor's timeline/empty-state is the primary surface. Remove
+        // the outer shell so it can use the full tab width; inner signal cards
+        // retain their own evidence boundaries.
         .sheet(item: $educationTopic) { topic in
             AtriaAboutMetricSheet(metric: topic.aboutMetric,
                                   trend: .make(for: topic.aboutMetric,

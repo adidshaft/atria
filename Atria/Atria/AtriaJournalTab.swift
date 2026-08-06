@@ -260,8 +260,8 @@ private struct AtriaJournalCycleCard: View {
                 disabledContent
             }
         }
-        .padding(16)
-        .atriaCard(emphasis: .soft)
+        // The swipe card is already the check-in surface. A second enclosing
+        // card only reduced its reading width and made the deck feel boxed in.
         .sheet(isPresented: $showLogSheet) {
             AtriaCyclePeriodLogSheet(store: store)
         }

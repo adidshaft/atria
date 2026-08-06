@@ -973,9 +973,9 @@ struct AtriaHealthScreen: View {
             // typical schedule and spread instead of a decorative bar stack.
             AtriaSleepConsistencyStrip(nights: vitalsStore.state.sleepHistorySnapshot.nights)
         }
-        .padding(16)
-        .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
+        // The screen already provides its own horizontal rhythm. Keeping an
+        // additional container here made the metric tiles, stage evidence and
+        // overnight chart compete with a redundant outer card.
     }
 
     /// One sleep-performance number for this whole screen (UX audit
