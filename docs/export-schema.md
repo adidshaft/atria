@@ -515,7 +515,7 @@ The static check enforces the denylist and required consent infrastructure.
 
 1. **Pseudonym isolation:** The pseudonym is a random UUID per consent grant,
    destroyed on revoke. No device-persistent secret links shares across time.
-2. **Explicit contracts:** Schema version 3 is the current anonymous research
+2. **Explicit contracts:** Schema version 5 is the current anonymous research
    contract. Future versions will be declared here before a changed bundle ships.
 3. **Unmodifiability:** The bundle is a static JSON file, hashable. SHA-256 digests
    are recorded in the local ledger to detect mutation or corruption in transit.
