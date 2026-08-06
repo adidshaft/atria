@@ -3149,7 +3149,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                    sleepGoalHours: sleepGoalHours,
                                    sleepBaseNeedHours: sleepBaseNeedHours,
                                    skinTemperatureDeviation: skinTemperatureSummary)
-                .presentationDetents([.medium, .large])
+                // Metric detail is a data-reading surface, not a quick
+                // confirmation. Keep its graph and interpretation in view
+                // together instead of opening in a cramped half-sheet.
+                .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showStrapStepsDetail) {

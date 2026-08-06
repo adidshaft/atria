@@ -815,7 +815,7 @@ struct AtriaHealthScreen: View {
                                    maxHeartRate: vitals.maxHeartRate,
                                    vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
                                    skinTemperatureDeviation: vitals.skinTemperatureDeviationSummary)
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
         .fullScreenCover(isPresented: $showBreathworkSession) {
