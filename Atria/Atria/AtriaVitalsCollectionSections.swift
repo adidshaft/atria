@@ -3742,8 +3742,12 @@ private struct AtriaVitalsLiveSignalCard: View {
                 heartRateMonitor
             }
         }
-        .padding(18)
-        .atriaCard(emphasis: .soft)
+        // The selected signal already owns the one useful canvas (the trace
+        // or its honest empty state). A second full-width shell around it
+        // consumed nearly a screenful of vertical space and made Vitals read
+        // as cards inside cards. Keep the header and control directly in the
+        // section rhythm so the signal is the primary surface.
+        .padding(.vertical, 4)
     }
 
     private var stressMetricState: AtriaMetricState {
