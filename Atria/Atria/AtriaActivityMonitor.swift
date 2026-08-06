@@ -1951,42 +1951,8 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 }
                 if let muscularLoadReceipt {
                     Divider()
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Logged muscular input")
-                                .font(.caption.weight(.bold))
-                            Text("\(Int(muscularLoadReceipt.volumeKg.rounded())) kg volume · \(muscularLoadReceipt.qualifiedSetCount) loaded sets\(muscularLoadReceipt.densityBonusFraction > 0 ? " · observed superset density" : "")")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                            Label(muscularLoadReceipt.loadBasisText,
-                                  systemImage: muscularLoadReceipt.includesBodyweightEstimate ? "scalemass" : "dumbbell")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(muscularLoadReceipt.includesBodyweightEstimate ? Color.orange.opacity(0.85) : Color.secondary)
-                            Text(muscularLoadReceipt.rpeCoverageText)
-                                .font(.caption2)
-                                .foregroundStyle(muscularLoadReceipt.hasCompleteEffortEvidence ? Color.secondary : Color.orange)
-                        }
-                        Spacer()
-                        if let score = muscularLoadReceipt.score {
-                            VStack(alignment: .trailing, spacing: 1) {
-                                Text("\(Int(score.rounded()))")
-                                    .font(.title3.weight(.black).monospacedDigit())
-                                    .foregroundStyle(.orange)
-                                Text("relative input")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                            }
-                        } else {
-                            Text("Add RPE")
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(.orange)
-                        }
-                    }
-                    Text(muscularLoadReceipt.hasCompleteEffortEvidence
-                         ? "\(muscularLoadReceiptIsFrozen ? "Frozen with this workout" : "Legacy recomputation") · separate from cardiovascular Strain"
-                         : "Add RPE to every loaded set for a relative input estimate. It never changes cardiovascular Strain.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    AtriaMuscularLoadSummary(receipt: muscularLoadReceipt,
+                                             isFrozen: muscularLoadReceiptIsFrozen)
                 }
             }
             .padding(12)
@@ -3198,6 +3164,56 @@ struct AtriaWorkoutStressTraceChart: View {
 /// measured vitals. Every row is evidence-gated: stages render only when
 /// display segments exist, efficiency uses the honesty-gated display value,
 /// and absent vitals show the canonical "--" token.
+/// Logged muscular input for a completed strength workout. Extracted from the
+/// workout summary so it is independently renderable/testable (GAP-09): it
+/// distinguishes measured external load from a body-mass estimate and states
+/// outright that it is separate from cardiovascular Strain.
+struct AtriaMuscularLoadSummary: View {
+    let receipt: AtriaStrengthLog.MuscularLoadReceipt
+    let isFrozen: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Logged muscular input")
+                        .font(.caption.weight(.bold))
+                    Text("\(Int(receipt.volumeKg.rounded())) kg volume · \(receipt.qualifiedSetCount) loaded sets\(receipt.densityBonusFraction > 0 ? " · observed superset density" : "")")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Label(receipt.loadBasisText,
+                          systemImage: receipt.includesBodyweightEstimate ? "scalemass" : "dumbbell")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(receipt.includesBodyweightEstimate ? Color.orange.opacity(0.85) : Color.secondary)
+                    Text(receipt.rpeCoverageText)
+                        .font(.caption2)
+                        .foregroundStyle(receipt.hasCompleteEffortEvidence ? Color.secondary : Color.orange)
+                }
+                Spacer()
+                if let score = receipt.score {
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text("\(Int(score.rounded()))")
+                            .font(.title3.weight(.black).monospacedDigit())
+                            .foregroundStyle(.orange)
+                        Text("relative input")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text("Add RPE")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.orange)
+                }
+            }
+            Text(receipt.hasCompleteEffortEvidence
+                 ? "\(isFrozen ? "Frozen with this workout" : "Legacy recomputation") · separate from cardiovascular Strain"
+                 : "Add RPE to every loaded set for a relative input estimate. It never changes cardiovascular Strain.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 struct AtriaSleepActivityReviewSheet: View {
     let night: SleepHistorySnapshot.Night
     /// Personal resting-HR baseline, threaded from the presenting store so the
