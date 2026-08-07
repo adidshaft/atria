@@ -393,6 +393,31 @@ struct AtriaTriRing: View, Equatable {
         actions[slot] ?? {}
     }
 
+    /// Compress a metric's own detail line into the one-word marker the
+    /// separate layout has room for. Returns nil for a settled metric so a
+    /// confident ring stays clean — the marker exists to stop a provisional
+    /// number from masquerading as a final one (2026-08-08: recovery visibly
+    /// moved 41% -> 67% as HRV/sleep evidence landed, with nothing on screen
+    /// saying the first number was an upgrading estimate). Never invents a
+    /// caveat the detail line does not already state.
+    static func confidenceMarker(for metric: AtriaTriRingMetric) -> String? {
+        let detail = metric.detail.lowercased()
+        guard !detail.isEmpty else { return nil }
+        if detail.contains("limited confidence") || detail.contains("resting hr only") {
+            return "estimate"
+        }
+        if detail.contains("learning") || detail.contains("building") {
+            return "learning"
+        }
+        if detail.contains("lower bound") || detail.contains("partial") {
+            return "partial"
+        }
+        if detail.contains("needs") || detail.contains("unavailable") {
+            return "no data"
+        }
+        return nil
+    }
+
     var body: some View {
         switch ringLayout {
         case .concentric: concentricBody
@@ -422,7 +447,10 @@ struct AtriaTriRing: View, Equatable {
                                         value: content.metric.value,
                                         fraction: content.metric.fill,
                                         tint: content.metric.tint,
-                                        size: ringSize)
+                                        size: ringSize,
+                                        confidenceMarker: Self.confidenceMarker(
+                                            for: content.metric
+                                        ))
                     }
                     .buttonStyle(.plain)
                 }

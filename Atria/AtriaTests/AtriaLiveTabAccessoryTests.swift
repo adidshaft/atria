@@ -679,4 +679,28 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
     }
+
+    /// 2026-08-08: a provisional recovery (RHR-only, 41%) rendered in the
+    /// separate ring layout exactly like a validated one (67%), so the number
+    /// visibly "jumped" as better evidence landed with nothing on screen
+    /// saying the first value was an upgrading estimate.
+    func testSeparateRingLayoutMarksProvisionalMetricsAndStaysQuietWhenSettled() {
+        func marker(_ detail: String) -> String? {
+            AtriaTriRing.confidenceMarker(for: AtriaTriRingMetric(
+                title: "Recovery",
+                value: "41%",
+                detail: detail,
+                systemImage: "heart.fill",
+                tint: .green,
+                fill: 0.41))
+        }
+        XCTAssertEqual(marker("Limited confidence · sleep and HRV unavailable · from resting HR only"),
+                       "estimate")
+        XCTAssertEqual(marker("Still learning your typical day"), "learning")
+        XCTAssertEqual(marker("≥ 9.1 lower bound"), "partial")
+        XCTAssertEqual(marker("Needs motion data"), "no data")
+        // A settled metric must stay clean — never invent a caveat.
+        XCTAssertNil(marker("Flat vs yesterday"))
+        XCTAssertNil(marker(""))
+    }
 }
