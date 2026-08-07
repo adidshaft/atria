@@ -5165,6 +5165,23 @@ enum HistoricalArchive {
             index.modificationTime = attributes.modificationTime
             writeDiagnosticsIndex(index, for: accumulator.archiveURL)
         }
+        // Sync-progress frontier (2026-08-07): the newest strap record durably
+        // on the phone, written at durable-flush cadence so the Overview
+        // footer's "behind" number visibly FALLS while the drain runs. The
+        // archive-status refresh path may lag materialization by hours;
+        // monotonic-max here so display never regresses to that lag.
+        let frontier = accumulators.compactMap { accumulator -> Double? in
+            guard let index = accumulator.index else { return nil }
+            let last = index.correctedUnixLast ?? index.unixLast
+            return last.map(Double.init)
+        }.max() ?? 0
+        if frontier > 0 {
+            let defaults = UserDefaults.standard
+            let key = AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+            if frontier > defaults.double(forKey: key) {
+                defaults.set(frontier, forKey: key)
+            }
+        }
     }
 
     private static func discardDurableDiagnostics(generation: UInt64) {
