@@ -360,4 +360,43 @@ final class AtriaPolicyMathTests: XCTestCase {
         let m = LocalNotificationScheduler.morningNudgeMinutes(windowEnd: 30)
         XCTAssertTrue((0..<1440).contains(m))
     }
+
+    // MARK: - rrImpliedMedianBPM (content-key cached, 2026-08-07)
+
+    private func rrSession(msValues: [Int]) -> SavedSession {
+        var session = SavedSession(id: UUID(),
+                                   start: Date(timeIntervalSince1970: 1_786_000_000),
+                                   end: Date(timeIntervalSince1970: 1_786_003_600),
+                                   label: "Test",
+                                   points: [])
+        session.rrPoints = msValues.enumerated().map { index, ms in
+            SavedSession.RRPoint(t: Double(index),
+                                 ms: ms,
+                                 source: .standardHeartRateMeasurement2A37)
+        }
+        return session
+    }
+
+    func testRRImpliedMedianBPMIsCorrectAndStableAcrossRepeatedCalls() {
+        // 1000ms → 60 bpm, 600ms → 100 bpm, 750ms → 80 bpm; median = 80.
+        let session = rrSession(msValues: [1_000, 600, 750])
+        XCTAssertEqual(session.rrImpliedMedianBPM, 80)
+        // Second call hits the content-key cache and must be identical — the
+        // repeated recompute in the windowed workout pass is what burned 83%
+        // background CPU and got the app killed mid-drain.
+        XCTAssertEqual(session.rrImpliedMedianBPM, 80)
+        // A different session with the same shape must not collide.
+        let other = rrSession(msValues: [1_000, 1_000, 1_000])
+        XCTAssertEqual(other.rrImpliedMedianBPM, 60)
+    }
+
+    func testRRImpliedMedianBPMStillNilForSparseOrUnqualifiedRR() {
+        let sparse = rrSession(msValues: [1_000, 900])
+        XCTAssertNil(sparse.rrImpliedMedianBPM)
+        var unqualified = rrSession(msValues: [1_000, 600, 750])
+        unqualified.rrPoints = unqualified.rrPoints?.map {
+            SavedSession.RRPoint(t: $0.t, ms: $0.ms, source: nil)
+        }
+        XCTAssertNil(unqualified.rrImpliedMedianBPM)
+    }
 }
