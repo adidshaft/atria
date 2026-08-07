@@ -423,7 +423,8 @@ extension AtriaBLEManager {
         attendedGate2FullDrainProof: Bool,
         explicitPostWorkoutBankRequest: Bool,
         attendedUserRequest: Bool,
-        strapBacklogPending: Bool
+        strapBacklogPending: Bool,
+        autonomousBackgroundCatchUp: Bool = false
     ) -> Bool {
         if fullDrainGapRecoveryEnabled
             || syncInProgress
@@ -434,6 +435,9 @@ extension AtriaBLEManager {
             return false
         }
         if attendedUserRequest && strapBacklogPending {
+            return false
+        }
+        if autonomousBackgroundCatchUp {
             return false
         }
         return true
@@ -479,6 +483,51 @@ extension AtriaBLEManager {
         guard let lastProgress = lastAuthorityProgressAtUnix,
               lastProgress.isFinite else { return true }
         return now.timeIntervalSince1970 - lastProgress >= progressSilenceFloor
+    }
+
+    /// Autonomous cursor-anchored catch-up admission (2026-08-07, the last
+    /// starvation hole): resume lanes and attended taps could START nothing
+    /// when no authority existed — after any process kill that cleared or
+    /// resolved the authority, the backlog sat dead until a human tapped Sync
+    /// or relaunched. A BACKGROUND re-arm with a real backlog may create the
+    /// same forward-from-cursor chunked catch-up an attended tap gets, under
+    /// the same proven-live-epoch conditions as the stranded resume plus an
+    /// attempt cooldown. Foreground still defers (that dead-end stays dead);
+    /// the seekless full-flash gap replay stays retired.
+    nonisolated static func shouldAdmitAutonomousCursorAnchoredCatchUpStart(
+        foregroundInteractive: Bool,
+        strapBacklogPending: Bool,
+        syncInProgress: Bool,
+        linkConnected: Bool,
+        connectedAt: Date?,
+        lastAcceptedHRAt: Date?,
+        lastAttemptAt: Date?,
+        activeExplicitWorkout: Bool,
+        recentDisconnectStorm: Bool,
+        now: Date,
+        stableConnectionInterval: TimeInterval = 60,
+        acceptedFreshnessWindow: TimeInterval = 45,
+        attemptCooldown: TimeInterval = 120
+    ) -> Bool {
+        guard !foregroundInteractive,
+              strapBacklogPending,
+              !syncInProgress,
+              linkConnected,
+              !activeExplicitWorkout,
+              !recentDisconnectStorm,
+              let connectedAt,
+              let lastAcceptedHRAt else { return false }
+        let connectionAge = now.timeIntervalSince(connectedAt)
+        let acceptedAge = now.timeIntervalSince(lastAcceptedHRAt)
+        guard connectionAge >= stableConnectionInterval,
+              acceptedAge >= 0,
+              acceptedAge <= acceptedFreshnessWindow else { return false }
+        if let lastAttemptAt {
+            guard now.timeIntervalSince(lastAttemptAt) >= attemptCooldown else {
+                return false
+            }
+        }
+        return true
     }
 
     /// Coalesces a deferred transport request without erasing the authority
