@@ -193,24 +193,37 @@ partially-drained day ⇒ `stepCount = nil` ⇒ the UI's
 essentially never happens, so a step count essentially never shows. **This is
 the "3% recovered / steps not fresh" complaint.**
 
-Everything needed for the honest fix ALREADY EXISTS and is simply not wired up:
-- `StepDay.knownStepDeltaSum` — the projection already computes and preserves
-  the non-overlapping accepted-delta subtotal ("preserved diagnostically
-  without promoting it to a day value").
-- `AtriaDailyStepPresentation` already has the copy for it:
-  `"At least \(count) steps. Partial verified archive coverage."` — currently
-  unreachable, because the count is nil'd upstream before it arrives.
+**CORRECTION (same session, 05:10) — the above "not wired up" claim was WRONG.**
+The partial lower bound IS already wired end to end:
 
-**Fix:** on a partial day with `knownStepDeltaSum > 0`, surface it as an
-explicit LOWER BOUND ("At least 4,200 steps · 62% verified") instead of
-"no usable step count yet". Never promote it to an exact day total, never sum
-overlapping epochs (the existing `invalidStepEvidence` throw must stay).
+```swift
+// AtriaDailyStepPresentation.resolve (~line 285)
+if let partial {                       // state == .missing && knownCoverageSeconds > 0
+    return .init(count: partial.knownStepDeltaSum, completeness: .partial, ...)
+}
+// detail (~line 90)
+if count == 0 { return "\(coverage)% of today verified · no usable step count yet" }
+return "Partial archive · \(coverage)% covered"
+```
 
-**Care required:** this is the most honesty-tested surface in the app —
-`AtriaDailyStepPresentationTests` pins the current vocabulary hard, and the
-"exact vs at-least" distinction is a product rule, not cosmetics. Do it with a
-clear head and extend the tests deliberately; do NOT weaken `fullyCovered`
-itself (an exact count must stay exact).
+So `"3% of today verified · no usable step count yet"` means exactly what it
+says: only 3% of today had drained, and within that drained window the
+validated motion epochs summed to **zero steps** — which is CORRECT, because
+that 3% is the earliest part of the day, while the user was asleep.
+
+**Conclusion: steps are NOT broken.** The step surface is honest and its
+partial path works. What starves it is simply the drain backlog — today's
+motion arrives last (oldest-first FIFO). Steps become fresh when the drain is
+current, which is what the continuity work above delivers.
+
+`fullyCovered` remains strict (exact counts stay exact) and that is correct;
+the partial path is what carries the lower bound in the meantime.
+
+**Method note for whoever reads this:** two conclusions in this section were
+asserted from partially-read code and had to be retracted within the same
+session (a "stalled materialization" claim, then this "not wired up" claim).
+Read the whole branch — resolve() AND the detail switch AND the projection —
+before concluding anything about step honesty.
 
 ## Earlier lead (superseded by the above): consumer materialization is stalled
 
