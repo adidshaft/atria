@@ -174,11 +174,43 @@ Two of the three symptoms look honest-by-design rather than broken:
   on the strap has no sessions, so 0% is correct. Archive rows contribute
   TRIMP, not coverage.
 
-**Therefore the still-open question is specifically STEPS**, not stages or
-coverage: does `verifiedHistoricalStepEvidenceDays` get populated for a
-fully-drained past day after a foreground projection pass? Test that directly
-(it is the one symptom with no by-design explanation) before touching
-background projection.
+### STEPS — root cause found (2026-08-08 05:00). Highest-value single fix.
+
+`AtriaHistoricalDailyConsumerProjection.stepDays` (~line 575):
+
+```swift
+let fullyCovered = accepted.first?.0.start == day.start
+    && accepted.last?.0.end == day.end
+    && zip(accepted, accepted.dropFirst()).allSatisfy { $0.0.0.end == $0.1.0.start }
+    && knownSeconds == daySeconds
+stepCount: fullyCovered ? sum : nil
+```
+
+A day yields a step count ONLY under gapless, midnight-aligned, whole-day
+motion-epoch coverage. One shower, one disconnect, one missing epoch, or a
+partially-drained day ⇒ `stepCount = nil` ⇒ the UI's
+`"N% of today verified · no usable step count yet"`. In practice full coverage
+essentially never happens, so a step count essentially never shows. **This is
+the "3% recovered / steps not fresh" complaint.**
+
+Everything needed for the honest fix ALREADY EXISTS and is simply not wired up:
+- `StepDay.knownStepDeltaSum` — the projection already computes and preserves
+  the non-overlapping accepted-delta subtotal ("preserved diagnostically
+  without promoting it to a day value").
+- `AtriaDailyStepPresentation` already has the copy for it:
+  `"At least \(count) steps. Partial verified archive coverage."` — currently
+  unreachable, because the count is nil'd upstream before it arrives.
+
+**Fix:** on a partial day with `knownStepDeltaSum > 0`, surface it as an
+explicit LOWER BOUND ("At least 4,200 steps · 62% verified") instead of
+"no usable step count yet". Never promote it to an exact day total, never sum
+overlapping epochs (the existing `invalidStepEvidence` throw must stay).
+
+**Care required:** this is the most honesty-tested surface in the app —
+`AtriaDailyStepPresentationTests` pins the current vocabulary hard, and the
+"exact vs at-least" distinction is a product rule, not cosmetics. Do it with a
+clear head and extend the tests deliberately; do NOT weaken `fullyCovered`
+itself (an exact count must stay exact).
 
 ## Earlier lead (superseded by the above): consumer materialization is stalled
 
