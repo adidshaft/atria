@@ -8710,6 +8710,37 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let attendedGate2FullDrainProof = gate2FullDrainProofEnabled
             && gate2FullDrainRequestedGapID != nil
             && explicitHistoricalRequest
+        let fenceStormSignal =
+            defaults.integer(forKey: Self.protectedR10EarlyDisconnectsKey)
+                >= Self.protectedR10EarlyDisconnectLimit
+            || (defaults.object(forKey: Self.protectedR10DisconnectStormAtKey)
+                as? Double).map {
+                    Date().timeIntervalSince1970 - $0 < 300
+                } ?? false
+        let fenceLastAttemptValue = defaults.object(
+            forKey: OfflineSyncDefaults.lastAttemptAt
+        )
+        let autonomousBackgroundCatchUp =
+            Self.shouldAdmitAutonomousCursorAnchoredCatchUpStart(
+                foregroundInteractive: foregroundInteractiveMode,
+                strapBacklogPending: strapBacklogPendingForCatchUp(),
+                syncInProgress: offlineHistoricalSyncInProgress,
+                linkConnected: connectedLink,
+                connectedAt: connectedAt,
+                lastAcceptedHRAt: lastAcceptedHRAt,
+                lastAttemptAt: (fenceLastAttemptValue as? Date)
+                    ?? (fenceLastAttemptValue as? Double)
+                        .map(Date.init(timeIntervalSince1970:)),
+                activeExplicitWorkout: activeExplicitWorkout,
+                recentDisconnectStorm: fenceStormSignal,
+                now: Date()
+            )
+        if autonomousBackgroundCatchUp {
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=autonomous_catch_up_admitted reason=%@ action=create_cursor_anchored_chunked_catch_up_from_stable_background_epoch",
+                reason
+            )
+        }
         if Self.shouldRefuseUnprovenExactRecoveryStart(
             fullDrainGapRecoveryEnabled:
                 Self.productionHistoricalFullDrainGapRecoveryEnabled,
@@ -8719,7 +8750,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             attendedGate2FullDrainProof: attendedGate2FullDrainProof,
             explicitPostWorkoutBankRequest: explicitPostWorkoutBankRequest,
             attendedUserRequest: attendedHistoricalRequest,
-            strapBacklogPending: strapBacklogPendingForCatchUp()
+            strapBacklogPending: strapBacklogPendingForCatchUp(),
+            autonomousBackgroundCatchUp: autonomousBackgroundCatchUp
         ) {
             if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) {
                 retainPendingOfflineHistoricalSyncRequest(

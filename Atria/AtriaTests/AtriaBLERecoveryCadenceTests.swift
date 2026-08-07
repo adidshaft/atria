@@ -10950,4 +10950,71 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(strandedResume(progressAgo: nil))
     }
 
+    // MARK: - Autonomous cursor-anchored catch-up creation (2026-08-07)
+
+    private func autonomousStart(
+        foreground: Bool = false,
+        backlog: Bool = true,
+        syncInProgress: Bool = false,
+        linkConnected: Bool = true,
+        connectedAgo: TimeInterval? = 120,
+        acceptedHRAgo: TimeInterval? = 5,
+        lastAttemptAgo: TimeInterval? = 10 * 60,
+        workout: Bool = false,
+        storm: Bool = false
+    ) -> Bool {
+        let now = Date(timeIntervalSince1970: 1_786_060_000)
+        return AtriaBLEManager.shouldAdmitAutonomousCursorAnchoredCatchUpStart(
+            foregroundInteractive: foreground,
+            strapBacklogPending: backlog,
+            syncInProgress: syncInProgress,
+            linkConnected: linkConnected,
+            connectedAt: connectedAgo.map { now.addingTimeInterval(-$0) },
+            lastAcceptedHRAt: acceptedHRAgo.map { now.addingTimeInterval(-$0) },
+            lastAttemptAt: lastAttemptAgo.map { now.addingTimeInterval(-$0) },
+            activeExplicitWorkout: workout,
+            recentDisconnectStorm: storm,
+            now: now
+        )
+    }
+
+    func testBackgroundBacklogWithStableLiveEpochCreatesCatchUp() {
+        // The post-kill dead state: authority cleared, backlog pending, link
+        // healthy — a bg_processing/P3 re-arm must be able to START a drain
+        // without a human tap.
+        XCTAssertTrue(autonomousStart())
+        XCTAssertFalse(AtriaBLEManager.shouldRefuseUnprovenExactRecoveryStart(
+                           fullDrainGapRecoveryEnabled: false,
+                           syncInProgress: false,
+                           resumingPersistedDrainAuthority: false,
+                           attendedSelectorSeekTrial: false,
+                           attendedGate2FullDrainProof: false,
+                           explicitPostWorkoutBankRequest: false,
+                           attendedUserRequest: false,
+                           strapBacklogPending: true,
+                           autonomousBackgroundCatchUp: true),
+                       "an admitted autonomous catch-up must pass the fence")
+    }
+
+    func testForegroundNeverStartsAutonomously() {
+        // Foreground defers history by design (the reverted speed-run stays
+        // reverted); only background lanes may create the catch-up.
+        XCTAssertFalse(autonomousStart(foreground: true))
+    }
+
+    func testAutonomousStartRequiresProvenLiveEpochAndCalm() {
+        XCTAssertFalse(autonomousStart(backlog: false))
+        XCTAssertFalse(autonomousStart(syncInProgress: true))
+        XCTAssertFalse(autonomousStart(linkConnected: false))
+        XCTAssertFalse(autonomousStart(connectedAgo: 20))
+        XCTAssertFalse(autonomousStart(acceptedHRAgo: 120))
+        XCTAssertFalse(autonomousStart(acceptedHRAgo: nil))
+        XCTAssertFalse(autonomousStart(workout: true))
+        XCTAssertFalse(autonomousStart(storm: true))
+        XCTAssertFalse(autonomousStart(lastAttemptAgo: 30),
+                       "attempt cooldown bounds churn")
+        XCTAssertTrue(autonomousStart(lastAttemptAgo: nil),
+                      "no prior attempt is not a reason to starve")
+    }
+
 }
