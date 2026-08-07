@@ -115,7 +115,45 @@ surface the same way when their sources change).
 - Foreground pauses draining (by design). Backgrounded + worn + near phone = drains.
 - Never re-enable `automaticFullDrainRecoveryEnabled`; no seek exists (WHOOP 4).
 
-## ⚠️ TOP PRIORITY (found 2026-08-08 04:15): consumer materialization is stalled
+## 🔴 ROOT CAUSE FOUND (2026-08-08 04:40): drain and projection cannot both run
+
+`SessionStore.shouldStartAutomaticArchiveProjection(applicationIsActive:)`
+returns `applicationIsActive` — **archive projection only runs in the
+FOREGROUND**. Gates confirmed at Sessions.swift ~9976, ~11026, ~11333, ~11576,
+~15805; the deferral logs as
+`recovered_projection status=deferred ... app_active=0 action=coalesce_until_foreground`
+and `confirmed_workout_steps status=deferred ... action=wait_for_foreground`.
+
+Projection is what produces `verifiedHistoricalStepEvidenceDays` (steps), sleep
+stages/efficiency and archive-derived daily metrics — note `refreshHistorySnapshotCache`
+only PRESERVES step-evidence days unless `isRecoveredPublication` is true
+(Sessions.swift ~7583), and that path is driven by `runRecoveredHistoryStep`.
+
+Meanwhile the DRAIN only runs in the background (foreground defers history to
+protect live HR). So:
+
+| app state | raw drain | projection into readings |
+|---|---|---|
+| background | ✅ runs | ❌ deferred |
+| foreground | ❌ deferred | ✅ runs |
+
+**This is the actual reason steps stay at "3% of today verified", sleep
+efficiency/stages never appear, and the archive grows with nothing to show for
+it.** It is NOT the backlog and NOT the throughput. A user who follows the
+"keep it backgrounded so it syncs" advice gets ~0 readings; this session gave
+exactly that advice for hours and made it worse.
+
+**Fix direction:** run projection in the background under the same guarded
+conditions the drain already proves safe (bounded slices, storm-free, idle/
+charging, yield to live HR), or interleave drain↔projection so neither starves.
+Must not reintroduce the `cpu_resource_fatal` class of kill — projection is the
+CPU-heavy stage (that is WHY it was foreground-gated). Chunked + cooperative
+pause (see `orphanHistoryReplayPauseDuration`) is the likely shape.
+
+**User-facing stopgap until then:** open the app for a few minutes to let
+projection catch up, then background it to resume draining.
+
+## Earlier lead (superseded by the above): consumer materialization is stalled
 
 The raw drain is NOT the only pipeline. Raw strap data is archived through
 Fri 18:02, but the **consumer materialization** that turns archived rows into
