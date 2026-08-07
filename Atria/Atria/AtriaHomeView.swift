@@ -11866,8 +11866,19 @@ enum AtriaTopStatusProjection {
                     tone = .green
                 }
             } else {
-                label = "Live · Battery pending"
-                symbol = "questionmark.circle"
+                // Battery Service notifications are CHANGE-driven: a stable
+                // strap can go hours without a packet, so after any reconnect
+                // (or an app reinstall) the credible level ages past the
+                // 10-minute display-freshness limit and this branch used to
+                // pin "Battery pending ?" on a perfectly healthy live strap
+                // for hours (field reports 2026-08-07, twice). That is the
+                // same mistake the charger branch above already rejects:
+                // giving an internal fail-closed state user-facing
+                // prominence. The pill's job is collection state — say the
+                // strap is live, stay silent about the unconfirmed
+                // percentage, and let the Strap/Battery detail carry it.
+                label = "Live"
+                accessibilityLabel = "Live strap, battery percentage not yet confirmed"
                 tone = .cyan
             }
         }
