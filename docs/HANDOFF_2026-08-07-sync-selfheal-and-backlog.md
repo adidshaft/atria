@@ -153,6 +153,33 @@ pause (see `orphanHistoryReplayPauseDuration`) is the likely shape.
 **User-facing stopgap until then:** open the app for a few minutes to let
 projection catch up, then background it to resume draining.
 
+### Empirical test of the above (2026-08-08 02:53, 4-minute foreground)
+
+- ✅ CONFIRMED the gate is real: `daily-metrics.json` and `daily-rollups.json`
+  were both rewritten the moment the app was foregrounded. Projection is
+  foreground-triggered exactly as the code says.
+- ❌ NOT SUFFICIENT: after the pass, Aug 7 still showed `stages 0` and
+  `strainCoverageFraction 0%`. So the foreground gate alone does NOT explain
+  the missing readings. Do not "fix" background projection expecting steps and
+  stages to appear.
+
+Two of the three symptoms look honest-by-design rather than broken:
+- **Stages = 0 on every day** — the product requires qualified motion evidence
+  AND a validated stage model; no validated stage model exists, and it
+  deliberately refuses to synthesise a hypnogram from hours-asleep. This is a
+  MODELLING PROJECT and a product decision, not a defect (see memory
+  `atria-product-decisions`).
+- **Past-day `strainCoverageFraction = 0%`** — coverage is derived from live
+  sessions (`observedHeartRateUnionSeconds(sessions:)`); a day whose data sat
+  on the strap has no sessions, so 0% is correct. Archive rows contribute
+  TRIMP, not coverage.
+
+**Therefore the still-open question is specifically STEPS**, not stages or
+coverage: does `verifiedHistoricalStepEvidenceDays` get populated for a
+fully-drained past day after a foreground projection pass? Test that directly
+(it is the one symptom with no by-design explanation) before touching
+background projection.
+
 ## Earlier lead (superseded by the above): consumer materialization is stalled
 
 The raw drain is NOT the only pipeline. Raw strap data is archived through
