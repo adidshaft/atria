@@ -151,11 +151,16 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                    lastReadingAt: now.addingTimeInterval(-16),
                                    hasEverConnected: true)
 
+        // 2026-08-08: an unconfirmed percentage no longer shouts "Battery
+        // pending ?" on a healthy live strap (change-driven 2A19 means a
+        // stable level legitimately ages out). The pill states collection
+        // state; the percentage lives in Strap/Battery detail.
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: fresh, now: now),
-                       AtriaTopStatusPresentation(label: "Live · Battery pending",
-                                                  symbol: "questionmark.circle",
+                       AtriaTopStatusPresentation(label: "Live",
+                                                  symbol: "bolt.heart.fill",
                                                   tone: .cyan,
-                                                  isConnected: true))
+                                                  isConnected: true,
+                                                  accessibilityLabel: "Live strap, battery percentage not yet confirmed"))
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: stale, now: now),
                        AtriaTopStatusPresentation(label: "Reconnecting…",
                                                   symbol: "bolt.horizontal.circle",
@@ -174,10 +179,11 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                                    hasEverConnected: true)
 
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: input, now: now),
-                       AtriaTopStatusPresentation(label: "Live · Battery pending",
-                                                  symbol: "questionmark.circle",
+                       AtriaTopStatusPresentation(label: "Live",
+                                                  symbol: "bolt.heart.fill",
                                                   tone: .cyan,
-                                                  isConnected: true))
+                                                  isConnected: true,
+                                                  accessibilityLabel: "Live strap, battery percentage not yet confirmed"))
     }
 
     func testTopStatusUsesFreshBatteryTruthAndPreservesPendingState() {
@@ -239,7 +245,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: low, now: now).label,
                        "10% · Low")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: pending, now: now).label,
-                       "Live · Battery pending")
+                       "Live")
         XCTAssertEqual(AtriaTopStatusProjection.presentation(input: recent, now: now),
                        AtriaTopStatusPresentation(label: "30%",
                                                   symbol: "battery.25percent",
