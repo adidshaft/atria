@@ -9211,14 +9211,17 @@ final class SessionStore: ObservableObject {
                 }
                 self.historicalArchiveStatus = status
                 // Sync-progress footer frontier: display-only "synced through"
-                // marker; refreshed here because this path already computed
-                // the archive diagnostics off-main.
+                // marker. Monotonic-max only — the durable-flush path in
+                // HistoricalArchive advances this live during a drain, and the
+                // archive diagnostics here can lag materialization by hours;
+                // regressing the display made a working drain read as stuck.
                 if let frontier = diagnostics.correctedUnixLast ?? diagnostics.unixLast,
                    frontier > 0 {
-                    UserDefaults.standard.set(
-                        Double(frontier),
-                        forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
-                    )
+                    let key = AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+                    let defaults = UserDefaults.standard
+                    if Double(frontier) > defaults.double(forKey: key) {
+                        defaults.set(Double(frontier), forKey: key)
+                    }
                 }
                 guard !diagnostics.exists || diagnostics.parseOK else {
                     completion?(false)

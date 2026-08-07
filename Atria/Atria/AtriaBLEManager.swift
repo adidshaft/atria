@@ -4111,7 +4111,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// independent step ledger must seed its durable prefix before that fence
     /// is prepared or the prefix can be stranded behind a new segment UUID.
     private var activeSessionRestoreDeferredForStepLedgerReason: String?
-    private var foregroundInteractiveMode = true
+    /// A launching process is NOT interactive until its scene actually
+    /// activates (2026-08-07): iOS relaunches after jetsam/CPU kills — and
+    /// devicectl launches on a locked phone — never fire a scene event, and
+    /// the old `true` default left those processes in phantom-foreground,
+    /// blocking every background drain lane (foreground defers history by
+    /// design). Real foreground launches set this true within milliseconds
+    /// via the scene-activation handlers; no drain admission can slip through
+    /// that gap (admission needs a 60 s-stable link).
+    private var foregroundInteractiveMode = false
     private var lastInteractiveForegroundHandlingAt: Date?
     private var foregroundHighFrequencyDisplayMode = false
     private let powerThermalGovernor = PowerThermalGovernor()
@@ -13333,8 +13341,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// `scheduleRangeLossBackfillIfNeeded` lane cannot reach on connected WHOOP 4.
     private func startRangeLossBackfillMaintenanceTickerIfNeeded(reason: String) {
         let defaults = UserDefaults.standard
+        // A stale-but-nonzero debt observation still starts the backstop (the
+        // tick refreshes the observation itself); only a FRESH caught-up
+        // reading may keep it down. Mirrors the tick's own keep-alive rule.
+        let lastObservedDebt = defaults.integer(
+            forKey: OfflineSyncDefaults.flushDebtPendingRecords
+        )
         guard defaults.bool(forKey: OfflineSyncDefaults.enabled),
-              strapBacklogPendingForCatchUp(),
+              strapBacklogPendingForCatchUp()
+                  || (currentFlushDebtLevel() != .caughtUp
+                      && lastObservedDebt > Self.flushDebtCaughtUpRecords),
               rangeLossBackfillMaintenanceTickerTask == nil else { return }
         AtriaDebugLog("ATRIADBG offline_sync status=maintenance_ticker_started reason=%@ interval_s=%.0f floor_s=%.0f action=hr_independent_rearm_backstop",
                       reason,
@@ -13366,8 +13382,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// through the same guarded entry point the HR path uses — independent of HR.
     private func maintenanceTickRangeLossBackfillReArmIfDue() {
         let defaults = UserDefaults.standard
+        // Keep the backstop alive while the LAST debt observation still shows
+        // records above the caught-up floor even if the range-loss ticket
+        // cleared and the observation has gone stale (2026-08-07: publication
+        // cleared the ticket with ~5,400 records still on the strap and a
+        // 30-min-stale observation — every lane idled and the tail never
+        // drained). A FRESH caught-up observation stops the ticker as before.
+        let lastObservedDebt = defaults.integer(
+            forKey: OfflineSyncDefaults.flushDebtPendingRecords
+        )
+        let freshlyCaughtUp = currentFlushDebtLevel() == .caughtUp
         guard defaults.bool(forKey: OfflineSyncDefaults.enabled),
-              defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else {
+              !freshlyCaughtUp,
+              defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending)
+                  || lastObservedDebt > Self.flushDebtCaughtUpRecords else {
             stopRangeLossBackfillMaintenanceTicker(
                 reason: "backlog_cleared_or_disabled"
             )
@@ -13375,6 +13403,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         let now = Date()
         let connected = peripheral?.state == .connected && status == .connected
+        // Drain-keeping continuity (2026-08-07): the tick is also the
+        // background self-heal for a dropped link and for a stale 0x22 debt
+        // observation. The user found the app backgrounded, DISCONNECTED and
+        // idle — foregrounding it was what reconnected. Nudge the existing
+        // safe reconnect when the link is down (idempotent when a connect is
+        // already pending), and refresh the strap status read when the debt
+        // observation has gone stale on a healthy link, so the backlog signal
+        // itself cannot starve the catch-up engine.
+        if !foregroundInteractiveMode {
+            if !connected {
+                _ = reconnectToSavedPeripheralIfPossible(
+                    reason: "maintenance_tick_link_down"
+                )
+            } else if currentFlushDebtLevel(now: now) == nil {
+                requestStrapStatusRead(reason: "maintenance_tick_stale_debt")
+            }
+        }
         // Same recent-storm signal the connected-catch-up / maintenance-window
         // admission uses (see requestOfflineHistoricalSyncIfNeeded).
         let recentDisconnectStorm =

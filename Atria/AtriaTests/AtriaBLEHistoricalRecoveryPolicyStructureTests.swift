@@ -35,6 +35,27 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         )
     }
 
+    func testLaunchingProcessIsNotInteractiveUntilSceneActivates() throws {
+        // 2026-08-07: iOS relaunches after jetsam/CPU kills never fire a scene
+        // event; a `true` default left those processes in phantom-foreground
+        // and blocked every background drain lane. The flag must start false
+        // and only real scene activation may set it true.
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let manager = try String(
+            contentsOf: appDirectory.appendingPathComponent("AtriaBLEManager.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(
+            manager.contains("private var foregroundInteractiveMode = false"),
+            "a launching process must not claim interactive foreground before its scene activates"
+        )
+        XCTAssertFalse(
+            manager.contains("private var foregroundInteractiveMode = true"),
+            "phantom-foreground default must not return"
+        )
+    }
+
     func testDurableAdmissionLedgerIsPreparedBeforeHistoryOwnerCutover() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")

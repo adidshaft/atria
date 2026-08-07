@@ -3013,11 +3013,23 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
     }
 
     func testProductionHistoryRecoveryUsesQualifiedFullDrainGapAuthority() {
+        // 2026-08-06 (d8c0f441): automatic full-drain arming is RETIRED —
+        // duty-cycle attribution measured the lane owning the transport
+        // 44-73% of wall time while closing zero ledger seconds. This test
+        // used to pin the enabled world; it now pins the retirement: the
+        // exact-gap transaction capability and its automatic connected
+        // handoff stay OFF, and catch-up flows through the cursor-anchored
+        // chunked lanes (attended, stranded-resume, autonomous background)
+        // instead.
         XCTAssertFalse(
             AtriaBLEManager.productionHistoricalExactRangeTransportEnabledAndProven
         )
         XCTAssertTrue(
             AtriaBLEManager.productionHistoricalClockAuthorityEnabledAndProven
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.productionHistoricalFullDrainGapRecoveryEnabled,
+            "the non-convergent full-drain gap recovery stays retired"
         )
         let transactionReady = AtriaBLEManager.supportsVerifiedHistoricalTransactionRecovery(
             model: .strap4Class,
@@ -3026,10 +3038,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             fullDrainGapRecoveryEnabled:
                 AtriaBLEManager.productionHistoricalFullDrainGapRecoveryEnabled
         )
-        XCTAssertTrue(transactionReady)
+        XCTAssertFalse(transactionReady,
+                       "no verified transaction recovery while the full drain is retired")
 
         let now = Date(timeIntervalSince1970: 100_000)
-        XCTAssertTrue(AtriaBLEManager.shouldAttemptAutomaticConnectedHistoricalHandoff(
+        XCTAssertFalse(AtriaBLEManager.shouldAttemptAutomaticConnectedHistoricalHandoff(
             linkConnected: true,
             exactGapPending: true,
             verifiedMetricRecovery: transactionReady,
@@ -3042,28 +3055,14 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             requestedAt: now.addingTimeInterval(-120),
             lastAttemptAt: nil,
             now: now
-        ), "fresh accepted HR proves the bounded connected slice has a healthy owner to protect")
-        XCTAssertFalse(AtriaBLEManager.shouldAttemptAutomaticConnectedHistoricalHandoff(
-            linkConnected: true,
-            exactGapPending: true,
-            verifiedMetricRecovery: transactionReady,
-            activeExplicitWorkout: false,
-            syncInProgress: false,
-            connectedAt: now.addingTimeInterval(-120),
-            hasContact: true,
-            acceptedSampleCount: 100,
-            lastAcceptedHRAt: now.addingTimeInterval(-50),
-            requestedAt: now.addingTimeInterval(-120),
-            lastAttemptAt: nil,
-            now: now
-        ), "an already-stale owner must restore realtime before history starts")
-        XCTAssertFalse(AtriaBLEManager.shouldDeferAutomaticOfflineSyncForConnectedLink(
+        ), "even a healthy epoch may not arm the retired exact-gap handoff")
+        XCTAssertTrue(AtriaBLEManager.shouldDeferAutomaticOfflineSyncForConnectedLink(
             linkConnected: true,
             explicitUserRequest: false,
             exactGapPending: true,
             verifiedMetricRecovery: transactionReady,
             automaticConnectedHandoffAllowed: true
-        ), "the qualified automatic handoff must reach the durable drain")
+        ), "an unverified automatic handoff must keep deferring on a connected link")
     }
 
     func testRawOnlyGapArchiveRunsOnceAtASafeNaturalDisconnect() {
@@ -9702,7 +9701,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
 
         let source = try leaseManagerSource()
         let gate = try XCTUnwrap(source.range(
-            of: "let resumingPersistedDrainAuthority = Self"
+            of: "let resumingPersistedDrainAuthority = strandedDrainingAuthorityResumeAdmitted"
         ))
         let gateEnd = try XCTUnwrap(source.range(
             of: "gap_retained_exact_recovery_unproven",
@@ -9710,9 +9709,12 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         let body = String(source[gate.lowerBound..<gateEnd.lowerBound])
         XCTAssertTrue(body.contains(".status == .draining && $0.gap.pending"),
-                      "the carve-out requires a durable draining authority with a pending gap")
-        XCTAssertTrue(body.contains("!resumingPersistedDrainAuthority"),
-                      "the gate must keep retaining every non-resume request")
+                      "the persisted carve-out still requires a durable draining authority with a pending gap")
+        // 2026-08-07: the refusal negation moved into
+        // shouldRefuseUnprovenExactRecoveryStart (unit-tested directly); the
+        // call site must still feed the resume evidence into that fence.
+        XCTAssertTrue(body.contains("resumingPersistedDrainAuthority: resumingPersistedDrainAuthority"),
+                      "the fence must keep judging every non-resume request against the resume evidence")
     }
 
     func testRecoveryPresentationDowngradesOnlyWhenNothingIsActionable() throws {
