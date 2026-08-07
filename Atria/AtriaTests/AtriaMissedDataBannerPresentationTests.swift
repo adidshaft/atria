@@ -212,13 +212,24 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
     }
 
     func testHiddenWhenNothingToCatchUp() {
-        XCTAssertNil(footer(backlogPending: false))
-        // Fresh caught-up debt with no ticket → still hidden.
+        // A recent frontier with no ticket and no debt info → quiet screen.
+        XCTAssertNil(footer(drainedAgo: 10 * 60, backlogPending: false))
+        // Fresh caught-up debt hides even an hours-old frontier (the lag is
+        // phone-side processing, not missing strap data).
         XCTAssertNil(footer(backlogPending: false, debtRecords: 60, debtAge: 30))
     }
 
     func testFreshDeepDebtShowsEvenWithoutTicket() {
         XCTAssertNotNil(footer(backlogPending: false, debtRecords: 7_000, debtAge: 30))
+    }
+
+    func testHoursBehindFrontierShowsEvenWithClearedTicketAndStaleDebt() {
+        // The strap-off trap (2026-08-07): ticket cleared, count 41 min stale,
+        // 12 h behind — the footer vanished. "Behind" is itself the reason to
+        // show; a stale count must not hide it.
+        let f = footer(backlogPending: false, debtRecords: 4_867, debtAge: 41 * 60)
+        XCTAssertNotNil(f)
+        XCTAssertTrue(f!.detail.contains("behind"))
     }
 
     func testBehindFrontierAndActivityAreHonest() {

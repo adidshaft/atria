@@ -5615,6 +5615,12 @@ enum AtriaSyncProgressFooterPresentation {
     /// Mirrors the drain's own caught-up floor (~2 min at 1 Hz).
     static let caughtUpRecordFloor = 120
 
+    /// A frontier this far behind is worth showing even when no ticket is
+    /// pending and the strap-debt observation has gone stale (2026-08-07: a
+    /// strap-off pause cleared the ticket, the count aged out, and the footer
+    /// vanished while 12 h behind — "behind" is itself the reason to show).
+    static let behindDisplayFloor: TimeInterval = 30 * 60
+
     static func behindText(_ seconds: TimeInterval) -> String {
         let s = max(0, Int(seconds.rounded()))
         let m = s / 60
@@ -5636,8 +5642,21 @@ enum AtriaSyncProgressFooterPresentation {
                 && $0 <= AtriaMissedDataBannerPresentation.debtFreshnessWindow
         } ?? false
         let freshBacklogRecords = debtFresh ? (debtRecords ?? 0) : 0
-        // Show only while there is genuinely something to catch up on.
-        guard backlogPending || freshBacklogRecords > caughtUpRecordFloor else {
+        // A FRESH caught-up strap reading is the one signal allowed to hide a
+        // stale-looking frontier (the remaining lag is phone-side processing,
+        // not missing strap data).
+        let freshlyCaughtUp = debtFresh
+            && (debtRecords ?? 0) <= caughtUpRecordFloor
+        let behindSeconds = drainedThroughUnix.map {
+            now.timeIntervalSince1970 - $0
+        }
+        let visiblyBehind = !freshlyCaughtUp
+            && (behindSeconds ?? 0) >= behindDisplayFloor
+        // Show while there is genuinely something to catch up on — a pending
+        // ticket, a fresh nonzero strap count, or an hours-old frontier.
+        guard backlogPending
+                || freshBacklogRecords > caughtUpRecordFloor
+                || visiblyBehind else {
             return nil
         }
         let active: Bool = {

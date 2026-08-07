@@ -13593,14 +13593,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// drives the same engine through the same downstream guards. The
     /// range-loss flag keeps precedence for exact-gap accounting; this only
     /// broadens WHEN the guarded machinery is allowed to try.
+    /// A drained-through frontier this far behind is itself backlog evidence.
+    /// The 0x22 debt count only refreshes when a drain runs, and a drain only
+    /// used to start when that count was fresh — a circular deadlock exposed
+    /// 2026-08-07 (strap-off cleared the ticket; the count aged out; every
+    /// lane idled 18+ min while 12 h behind). Admitting on the stale frontier
+    /// is self-correcting: the drain's own 22/00 preflight refreshes the true
+    /// count, which then either drives convergence or honestly reads caught-up.
+    nonisolated static let frontierBacklogFloorSeconds: TimeInterval = 30 * 60
+
     private func strapBacklogPendingForCatchUp(now: Date = Date()) -> Bool {
         if UserDefaults.standard.bool(
             forKey: OfflineSyncDefaults.rangeLossBackfillPending
         ) {
             return true
         }
-        guard let level = currentFlushDebtLevel(now: now) else { return false }
-        return level != .caughtUp
+        if let level = currentFlushDebtLevel(now: now) {
+            return level != .caughtUp
+        }
+        let frontier = UserDefaults.standard.double(
+            forKey: OfflineSyncDefaults.drainedThroughUnix
+        )
+        return frontier > 0
+            && now.timeIntervalSince1970 - frontier
+                >= Self.frontierBacklogFloorSeconds
     }
 
     /// The current flush-debt level, or nil when the last observation is missing
