@@ -125,15 +125,32 @@ steps / sleep stages / strain coverage has produced nothing since **Aug 6
 - `Documents/atria-historical/consumer-receipts-v1/consumer-artifact-steps-*.bin`
   newest is **Aug 6 09:52** (others Aug 5, Jul 30) — nothing since, despite
   ~44 h of newly drained raw data.
-- `daily-metrics.json`: Aug 7 `strainCoverageFraction = 0%`, `strainEvidenceQuality = None`
-  even though Friday's raw is fully drained. Aug 8 shows 98% / `exact`
-  (that day is live-session driven, not archive-materialized).
 - `sleepStageSegments = []` on every day → the hypnogram gate can never pass.
 - `daily-rollups.json`: `steps: None` and `duration: 0` for Aug 5–8.
+- No `.v2` consumer keys and no `terminalConsumerCoverageFailure` record exist,
+  so terminal consumer materialization has not FAILED — it appears never to
+  have run in this build's lifetime. (The `terminalConsumerDependencyMismatch.v1`
+  value on device is legacy from an older build; the code writes `.v2`.)
 
-**Consequence: finishing the drain will NOT by itself restore steps, sleep
-efficiency or stages.** This stage gates every reading the user is missing.
-Fix this before any further throughput work.
+**Explicitly NOT established — do not assume:** that this stall is what starves
+steps/stages. `strainCoverageFraction` is computed from LIVE SESSIONS
+(`observedHeartRateUnionSeconds(sessions:)`), not from archive rows, so Aug 7
+reading 0% has an innocent explanation (that day's data sat on the strap, so no
+live sessions existed) and is NOT evidence of a materialization bug. Likewise
+the consumer-receipts artifacts are terminal-publication durability receipts,
+which may be a different path from the live `historySnapshot` /
+`AtriaHistoricalDailyConsumerProjection.StepDay` the UI actually reads.
+
+**First job next session — settle the causal chain before fixing anything:**
+1. Does archived raw data ever become `StepDay` / stage evidence WITHOUT a
+   terminal full-drain publication? Trace `historySnapshot` step days and
+   `AtriaWhoop4MotionTickDailyStore` back to their inputs.
+2. If it requires a terminal publication, the chunked catch-up lane (which
+   never reaches `historyComplete`) has no materialization stage at all — that
+   would be the real architectural gap and the true cause of the missing
+   readings.
+3. Success test either way: a fresh `consumer-artifact-steps-*.bin`, or a
+   populated `StepDay` for an already-drained past day.
 
 Where to start: `historicalConsumerMaterializationInFlight`, the
 `consumer-receipts-v1` writer, and the `pendingConsumerDependency` /
