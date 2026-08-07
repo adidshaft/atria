@@ -368,10 +368,12 @@ struct AtriaTriRing: View, Equatable {
     private static let outerDiameter: CGFloat = 226
     private static let lineWidth: CGFloat = 19
     private static let gap: CGFloat = 3
-    // 136 ~= the inner ring's clear diameter; the old 104 clamp forced
-    // "7h 42m"-style center values below the readability floor
-    // (UX-quality audit, 2026-07-07).
-    private static let centerContentWidth: CGFloat = 136
+    // The innermost ring's clear hole is ~119pt across (outer 226, three 19pt
+    // strokes + 3pt gaps: inner ring centerline 138, minus the 19pt stroke =
+    // 119 clear). The old 136 clamp was WIDER than that hole, so the center
+    // numeral's glyphs spilled onto the inner ring (esp. a tall value like a
+    // big "67%" at the top of the stack). Keep the content inside the hole.
+    private static let centerContentWidth: CGFloat = 116
 
     private static func diameter(at index: Int) -> CGFloat {
         outerDiameter - CGFloat(index) * (lineWidth + gap) * 2
@@ -509,11 +511,11 @@ struct AtriaTriRing: View, Equatable {
     }
 
     private var centerContent: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 1) {
             Text(centerValue)
-                .font(.system(size: 44, weight: .bold, design: .rounded))
+                .font(.system(size: 40, weight: .bold, design: .rounded))
                 .monospacedDigit()
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(0.55)
                 .lineLimit(1)
                 .contentTransition(reduceMotion ? .identity : .numericText())
             if showsCenterMetricName, let centerMetricName {
