@@ -485,6 +485,27 @@ extension AtriaBLEManager {
         return now.timeIntervalSince1970 - lastProgress >= progressSilenceFloor
     }
 
+    /// Attempt cadence for the catch-up lanes (2026-08-07 overnight): the
+    /// 6-hour ordinary interval is idle-upkeep pacing, and the 10-minute
+    /// catch-up interval used to apply ONLY while the range-loss ticket was
+    /// pending. Once publication cleared that ticket mid-backlog, every
+    /// maintenance re-arm answered `throttled` for up to six hours while the
+    /// strap still held hours of data — the drain ran in rare bursts. Any real
+    /// backlog now uses the catch-up cadence, and a previous attempt that
+    /// actually yielded rows earns the fast progress-gated retry (the same
+    /// "progress, not hope" rule as the P1 slice chain). Every downstream
+    /// guard (stable link, fresh HR, workout, storm) still applies.
+    nonisolated static func catchUpAttemptMinimumInterval(
+        backlogPending: Bool,
+        lastAttemptYieldedRows: Bool,
+        ordinaryInterval: TimeInterval,
+        backlogInterval: TimeInterval,
+        productiveInterval: TimeInterval
+    ) -> TimeInterval {
+        guard backlogPending else { return ordinaryInterval }
+        return lastAttemptYieldedRows ? productiveInterval : backlogInterval
+    }
+
     /// Autonomous cursor-anchored catch-up admission (2026-08-07, the last
     /// starvation hole): resume lanes and attended taps could START nothing
     /// when no authority existed — after any process kill that cleared or

@@ -10952,6 +10952,36 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(strandedResume(progressAgo: nil))
     }
 
+    // MARK: - Catch-up attempt cadence (2026-08-08 overnight throttle)
+
+    private func catchUpInterval(backlog: Bool, yielded: Bool) -> TimeInterval {
+        AtriaBLEManager.catchUpAttemptMinimumInterval(
+            backlogPending: backlog,
+            lastAttemptYieldedRows: yielded,
+            ordinaryInterval: 6 * 60 * 60,
+            backlogInterval: 10 * 60,
+            productiveInterval: 60
+        )
+    }
+
+    func testIdleUpkeepKeepsTheLongOrdinaryCadence() {
+        XCTAssertEqual(catchUpInterval(backlog: false, yielded: true), 6 * 60 * 60)
+        XCTAssertEqual(catchUpInterval(backlog: false, yielded: false), 6 * 60 * 60)
+    }
+
+    func testProductiveBacklogEarnsTheFastRetry() {
+        // The 01:20 trap: ticket cleared mid-backlog, so every re-arm answered
+        // `throttled` against a 5.75 h-old attempt under a 6 h interval while
+        // 9.6 h of data still sat on the strap.
+        XCTAssertEqual(catchUpInterval(backlog: true, yielded: true), 60)
+    }
+
+    func testUnproductiveBacklogStillPacesAtTheCatchUpInterval() {
+        // No rows last time → hopeful, not progress-gated: keep the bounded
+        // catch-up cadence so a stuck boundary cannot spin the radio.
+        XCTAssertEqual(catchUpInterval(backlog: true, yielded: false), 10 * 60)
+    }
+
     // MARK: - Autonomous cursor-anchored catch-up creation (2026-08-07)
 
     private func autonomousStart(
