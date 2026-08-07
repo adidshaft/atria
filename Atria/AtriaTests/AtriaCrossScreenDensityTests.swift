@@ -348,6 +348,26 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         }
     }
 
+    /// 2026-08-08 field report: "Sleep and strain rings are grey in 3 ring view
+    /// and does not show at all in concentric rings." Both layouts must render
+    /// an awaiting-data metric as a clearly present, dashed ring — one state,
+    /// one story, and never a fabricated arc.
+    func testAwaitingDataRingIsVisiblyPresentInBothLayouts() throws {
+        let concentric = try source("AtriaTriRing.swift")
+        XCTAssertTrue(concentric.contains("if metric.fill == nil {"),
+                      "the concentric hero must special-case an unavailable metric")
+        XCTAssertTrue(concentric.contains("dash: [2, lineWidth * 1.4]"),
+                      "an unavailable concentric ring reads as dashed-awaiting, not absent")
+        XCTAssertFalse(concentric.contains("metric.tint.opacity(0.20), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))\n\n            if metric.fill != nil"),
+                       "the near-invisible ghost track must not be the unavailable state")
+
+        let separate = try source("AtriaMetricRing.swift")
+        XCTAssertTrue(separate.contains("if fraction == nil {"),
+                      "the separate layout must special-case an unavailable metric")
+        XCTAssertTrue(separate.contains("dash: [2, lineWidth * 1.4]"),
+                      "both layouts share the awaiting-data treatment")
+    }
+
     func testSettingsStartsAsFiveCompactPlainLanguageDestinations() throws {
         let source = try source("AtriaSettingsView.swift")
         let labelsStart = try XCTUnwrap(source.range(of: "private var settingsHub"))
