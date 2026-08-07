@@ -561,8 +561,23 @@ struct AtriaTriRing: View, Equatable {
         // is carried only by `stateTint`, applied to the small legend dot
         // and the radial target marker, never to the fill hue itself.
         return ZStack {
-            Circle()
-                .stroke(metric.tint.opacity(0.20), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+            // Awaiting-data honesty (2026-08-08): a metric with no fill used to
+            // paint ONLY this 20%-opacity track, which on the dark hero reads as
+            // "the ring isn't there" — the same state the separate layout shows
+            // as a clearly present grey ring with its label. A dashed, brighter
+            // track says "this ring exists and is waiting for data" instead of
+            // looking broken, without ever implying a value.
+            if metric.fill == nil {
+                Circle()
+                    .stroke(metric.tint.opacity(0.34),
+                            style: StrokeStyle(lineWidth: lineWidth,
+                                               lineCap: .round,
+                                               dash: [2, lineWidth * 1.4]))
+            } else {
+                Circle()
+                    .stroke(metric.tint.opacity(0.20),
+                            style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+            }
 
             if metric.fill != nil {
                 Circle()

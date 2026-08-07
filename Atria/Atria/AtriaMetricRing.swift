@@ -31,8 +31,19 @@ struct AtriaMetricRing: View, Equatable {
     var body: some View {
         VStack(spacing: 7) {
             ZStack {
-                Circle()
-                    .stroke(Color.primary.opacity(0.08), lineWidth: lineWidth)
+                // Matches the concentric hero's awaiting-data treatment
+                // (2026-08-08) so the same metric never reads as "present" in
+                // one ring layout and "missing" in the other.
+                if fraction == nil {
+                    Circle()
+                        .stroke(tint.opacity(0.30),
+                                style: StrokeStyle(lineWidth: lineWidth,
+                                                   lineCap: .round,
+                                                   dash: [2, lineWidth * 1.4]))
+                } else {
+                    Circle()
+                        .stroke(Color.primary.opacity(0.08), lineWidth: lineWidth)
+                }
 
                 if fraction != nil && clamped >= 0.01 {
                     Circle()
