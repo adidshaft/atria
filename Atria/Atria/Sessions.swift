@@ -628,6 +628,9 @@ private final class SavedSessionRangeLocalHRVCache: @unchecked Sendable {
 /// A finished heart-rate session, persisted locally (no cloud, no manufacturer account).
 struct SavedSession: Codable, Identifiable {
     private static let respiratoryRateCache = SavedSessionRespiratoryRateCache()
+    // Same content-keyed cache shape, separate instance: RR-implied median
+    // BPM for the workout contact-artifact gate (see rrImpliedMedianBPM).
+    private static let rrImpliedMedianCache = SavedSessionRespiratoryRateCache()
     private static let localHRVCache = SavedSessionLocalHRVCache()
     private static let rangeLocalHRVCache = SavedSessionRangeLocalHRVCache()
 
@@ -5410,16 +5413,31 @@ extension SavedSession {
     /// Median heart rate implied by this session's RR/IBI intervals (bpm =
     /// 60000/ms), or nil when there are too few RR samples to judge. This is
     /// the sanity-ceiling companion to the strap's own reported HR.
+    ///
+    /// Content-key cached (2026-08-07): the windowed workout-candidate pass
+    /// evaluates this per session per WINDOW; uncached, the repeated full RR
+    /// sort burned >80% CPU for a minute of background materialization and
+    /// iOS killed the app (cpu_resource_fatal ×3), taking the drain with it.
     var rrImpliedMedianBPM: Double? {
         guard hasQualifiedRRProvenance,
               let rrPoints, rrPoints.count >= 3 else { return nil }
+        let cacheKey = respiratoryRateCacheKey(rrPoints: rrPoints)
+        let cached = Self.rrImpliedMedianCache.lookup(cacheKey)
+        if cached.hit { return cached.value }
         let implied = rrPoints.compactMap { point -> Double? in
             guard point.ms > 0 else { return nil }
             return 60_000.0 / Double(point.ms)
         }.sorted()
-        guard implied.count >= 3 else { return nil }
+        guard implied.count >= 3 else {
+            Self.rrImpliedMedianCache.store(nil, for: cacheKey)
+            return nil
+        }
         let mid = implied.count / 2
-        return implied.count.isMultiple(of: 2) ? (implied[mid - 1] + implied[mid]) / 2 : implied[mid]
+        let median = implied.count.isMultiple(of: 2)
+            ? (implied[mid - 1] + implied[mid]) / 2
+            : implied[mid]
+        Self.rrImpliedMedianCache.store(median, for: cacheKey)
+        return median
     }
 
     /// True when RR intervals are present but imply a heart rate more than
