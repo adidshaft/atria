@@ -115,6 +115,35 @@ surface the same way when their sources change).
 - Foreground pauses draining (by design). Backgrounded + worn + near phone = drains.
 - Never re-enable `automaticFullDrainRecoveryEnabled`; no seek exists (WHOOP 4).
 
+## ⚠️ TOP PRIORITY (found 2026-08-08 04:15): consumer materialization is stalled
+
+The raw drain is NOT the only pipeline. Raw strap data is archived through
+Fri 18:02, but the **consumer materialization** that turns archived rows into
+steps / sleep stages / strain coverage has produced nothing since **Aug 6
+09:52**. Evidence, all from the device:
+
+- `Documents/atria-historical/consumer-receipts-v1/consumer-artifact-steps-*.bin`
+  newest is **Aug 6 09:52** (others Aug 5, Jul 30) — nothing since, despite
+  ~44 h of newly drained raw data.
+- `daily-metrics.json`: Aug 7 `strainCoverageFraction = 0%`, `strainEvidenceQuality = None`
+  even though Friday's raw is fully drained. Aug 8 shows 98% / `exact`
+  (that day is live-session driven, not archive-materialized).
+- `sleepStageSegments = []` on every day → the hypnogram gate can never pass.
+- `daily-rollups.json`: `steps: None` and `duration: 0` for Aug 5–8.
+
+**Consequence: finishing the drain will NOT by itself restore steps, sleep
+efficiency or stages.** This stage gates every reading the user is missing.
+Fix this before any further throughput work.
+
+Where to start: `historicalConsumerMaterializationInFlight`, the
+`consumer-receipts-v1` writer, and the `pendingConsumerDependency` /
+`terminalConsumerDependencyMismatch.v1` state (a mismatch value IS persisted:
+`pending_consumer_dependency_v1|37b98471-…|1785004200000|1785104606322|Asia/Kolkata`).
+Also check `recovery_window_pending` / `partial_history_published_gap_preserved`
+statuses seen cycling during drains — publication may be repeatedly deferring
+consumer commit. Verify with a fresh `consumer-artifact-steps-*.bin` appearing
+after a drain slice.
+
 ## BACKLOG — in priority order (user's list, 2026-08-07)
 
 1. **Fresh-day surface audit** (after full catch-up): every Overview/Vitals card
