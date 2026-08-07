@@ -1539,6 +1539,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     // silently waiting six hours.
     private let automaticConnectedHistoryAttemptCooldown: TimeInterval = 5 * 60
     private let rangeLossBackfillRetryInterval: TimeInterval = 10 * 60
+    /// Re-arm cadence while a backlog is draining productively. The previous
+    /// attempt yielded durable rows, so the next slice is progress-gated
+    /// rather than hopeful — this is what keeps catch-up continuous instead of
+    /// bursty between slices.
+    private let catchUpProductiveRetryInterval: TimeInterval = 60
     // Drain-keeping P1: while actively catching up a backlog (the previous
     // slice pulled durable history rows and the gap is still open) chain the
     // next slice on this short interval instead of idling the full retry
@@ -13810,14 +13815,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func offlineHistoricalSyncMinimumInterval(for reason: String) -> TimeInterval {
         let defaults = UserDefaults.standard
-        guard defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else {
-            return offlineHistoricalSyncMinimumInterval
+        // The ticket-keyed fast interval used to be the ONLY escape from the
+        // 6-hour ordinary cadence; a cleared ticket mid-backlog then throttled
+        // every re-arm for hours (2026-08-08 01:20: `throttled`, last attempt
+        // 5.75 h earlier, 9.6 h still on the strap). Judge the backlog itself.
+        if strapBacklogPendingForCatchUp() {
+            let pendingReason = defaults.string(
+                forKey: OfflineSyncDefaults.rangeLossBackfillReason
+            ) ?? ""
+            let exactTicketLane = defaults.bool(
+                forKey: OfflineSyncDefaults.rangeLossBackfillPending
+            ) && (reason == pendingReason
+                  || reason.contains("range_loss")
+                  || reason.contains("long_wear_range_loss"))
+            return Self.catchUpAttemptMinimumInterval(
+                backlogPending: true,
+                lastAttemptYieldedRows: exactTicketLane || defaults.bool(
+                    forKey: OfflineSyncDefaults.lastDrainAttemptYieldedRows
+                ),
+                ordinaryInterval: offlineHistoricalSyncMinimumInterval,
+                backlogInterval: rangeLossBackfillRetryInterval,
+                productiveInterval: catchUpProductiveRetryInterval
+            )
         }
-        let pendingReason = defaults.string(forKey: OfflineSyncDefaults.rangeLossBackfillReason) ?? ""
-        guard reason == pendingReason || reason.contains("range_loss") || reason.contains("long_wear_range_loss") else {
-            return offlineHistoricalSyncMinimumInterval
-        }
-        return rangeLossBackfillRetryInterval
+        return offlineHistoricalSyncMinimumInterval
     }
 
     private func shouldProtectLiveStreamForOfflineSync(now: Date = Date()) -> Bool {
