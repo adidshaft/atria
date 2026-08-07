@@ -11,6 +11,14 @@ struct AtriaMetricRing: View, Equatable {
     let fraction: Double?
     let tint: Color
     let size: CGFloat
+    /// Short confidence/provenance marker ("estimate", "limited", …) shown
+    /// under the label. 2026-08-08: this layout rendered title + value ONLY,
+    /// so a provisional RHR-only recovery (41%) looked exactly as settled as a
+    /// validated one (67%) — and the number visibly "jumped" as better
+    /// evidence landed, which reads as a random product rather than an
+    /// upgrading estimate. The concentric hero already says this; both
+    /// layouts must. Nil renders exactly as before.
+    var confidenceMarker: String? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Fill actually drawn; sweeps toward `clamped` so the ring animates in
@@ -23,6 +31,7 @@ struct AtriaMetricRing: View, Equatable {
             && lhs.fraction == rhs.fraction
             && lhs.tint == rhs.tint
             && lhs.size == rhs.size
+            && lhs.confidenceMarker == rhs.confidenceMarker
     }
 
     private var lineWidth: CGFloat { max(7, size * 0.085) }
@@ -97,14 +106,25 @@ struct AtriaMetricRing: View, Equatable {
             }
             .frame(width: size, height: size)
 
-            Text(label)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+            VStack(spacing: 1) {
+                Text(label)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+
+                if let confidenceMarker, !confidenceMarker.isEmpty {
+                    Text(confidenceMarker)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+            }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(label) \(value)")
+        .accessibilityLabel(confidenceMarker.map { "\(label) \(value), \($0)" }
+                            ?? "\(label) \(value)")
     }
 }
 
