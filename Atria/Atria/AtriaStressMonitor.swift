@@ -173,7 +173,14 @@ enum AtriaStressMonitor {
     // physiological default of resting + offset. Divisor/thresholds unchanged,
     // which reproduces a sensible ~65% Calm / ~20% Medium day on the real data.
     static let defaultAwakeOffsetBPM = 15.0
-    static let defaultAwakeSpreadBPM = 12.0
+    // Widened 12 -> 14 (2026-08-08) after pulling 178k real awake-HR samples
+    // from the device: quiet-awake HR spans ~69-92 (p10-p90) around a ~78
+    // median, so a 12 bpm default spread flagged ordinary up-and-about HR (85+)
+    // as Medium during the cold-start window BEFORE the personal reference
+    // warms. Widening the spread (center unchanged, so genuinely-calm wearers
+    // are not under-read) moves typical active-awake HR back to Low; the learned
+    // reference still supersedes this default the moment it warms.
+    static let defaultAwakeSpreadBPM = 14.0
     static let awakeActivationFloorSD = 5.0
     static let awakeActivationDivisor = 2.0
 
