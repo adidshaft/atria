@@ -36212,6 +36212,19 @@ struct SleepHistorySnapshot: Equatable {
                 : displayStageSegments
         }
 
+        /// Display-shaped HR-only stage ESTIMATE (2026-08-08, user-requested).
+        /// Same folded segments `stageSegmentsForStorage` already keeps, exposed
+        /// only so the hypnogram card can render a clearly-labeled estimate on an
+        /// HR-only night instead of an empty "unavailable" state. It is READ-only
+        /// and never persisted, never feeds numeric/efficiency surfaces — those
+        /// stay gated on `displayStageSegments` (empty here), so no measured
+        /// claim changes. Empty unless this night is `.hrOnlyEstimate`.
+        var estimatedDisplayStageSegments: [SleepStageSegment] {
+            stageEvidence == .hrOnlyEstimate
+                ? Self.foldedDisplaySegments(from: stageSegments)
+                : []
+        }
+
         /// The stored `sleepEfficiency` for an HR-only night is captured/span
         /// coverage, not sleep efficiency — an uninterrupted HR-only capture
         /// showed a false "100%". Display surfaces must use this instead:

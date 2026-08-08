@@ -255,6 +255,27 @@ final class AtriaSleepHypnogramPresentationTests: XCTestCase {
                        .needsMotion)
     }
 
+    func testHrOnlyNightRendersLabeledEstimateFromTheHrModel() {
+        let start = date(24, 23)
+        let end = date(25, 6)
+        let hrOnly = night(motionValidated: false,
+                           confidence: "settled",
+                           segments: fullNightSegments(start: start, end: end),
+                           start: start,
+                           end: end)
+        // Numeric/persistence gate stays honest: no DISPLAY segments...
+        XCTAssertTrue(hrOnly.displayStageSegments.isEmpty)
+        // ...but the HR-only stage model's folded segments are exposed for the
+        // card as a clearly-labeled estimate.
+        XCTAssertFalse(hrOnly.estimatedDisplayStageSegments.isEmpty,
+                       "the HR-only stage model produced usable segments")
+        XCTAssertEqual(AtriaSleepHypnogramCard.displayState(segments: hrOnly.estimatedDisplayStageSegments,
+                                                            stageEvidence: hrOnly.stageEvidence,
+                                                            start: hrOnly.start,
+                                                            end: hrOnly.end),
+                       .estimate)
+    }
+
     func testMotionValidatedNightRendersTimeline() {
         let start = date(24, 23)
         let end = date(25, 6)
