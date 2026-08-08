@@ -36087,6 +36087,12 @@ struct SleepHistorySnapshot: Equatable {
         let confirmed: Bool
         let stageSegments: [SleepStageSegment]
         let displayStageSegments: [SleepStageSegment]
+        /// DISPLAY-ONLY HR estimate hypnogram feed (2026-08-08). Empty unless the
+        /// night is `.hrOnlyEstimate`; rebalanced so its non-awake epochs reconcile
+        /// with the credited effective sleep duration, so a labeled estimate never
+        /// contradicts the hero hours. NEVER persisted, NEVER feeds numeric /
+        /// efficiency / HealthKit / research surfaces.
+        let estimatedDisplayStageSegments: [SleepStageSegment]
         let stageEvidence: SleepStageEvidence
         let eventTimeZoneIdentifier: String?
         /// The original main-sleep target, if this night settled after Need
@@ -36176,10 +36182,40 @@ struct SleepHistorySnapshot: Equatable {
                                                 stageEvidence: evidence) {
                 evidence = .hrOnlyEstimate
             }
+            // Rescue an awake-heavy HR-only research timeline into a clearly-
+            // labeled ESTIMATE (2026-08-08, user-requested). Without validated
+            // motion the engine over-calls `.awake` (heart rate alone can't cleanly
+            // separate wake), so the strict presentation reconcile fails and
+            // evidence collapses to `.none` — the hypnogram hides behind
+            // "unavailable" even though a full HR curve exists. Such a night can
+            // never become a validated timeline without motion anyway, so surface
+            // the estimate; the DISPLAY feed below is rebalanced to reconcile with
+            // the credited hours, and all numeric surfaces stay withheld. Never
+            // rescues a validated-motion night (that path renders the real
+            // timeline and later upgrades this one in place).
+            if evidence == .none,
+               !Self.hasValidatedMotionEvidence(motionValidated: motionValidated,
+                                                confidence: confidence,
+                                                stageEvidence: evidence),
+               Self.qualifiesForHROnlyEstimate(source: source,
+                                               stageSegments: stageSegments,
+                                               stagesPassIntegrity: stagesPassIntegrity) {
+                evidence = .hrOnlyEstimate
+            }
             self.stageEvidence = evidence
             self.displayStageSegments = (evidence == .none || evidence == .hrOnlyEstimate)
                 ? []
                 : Self.foldedDisplaySegments(from: stageSegments)
+            // DISPLAY-ONLY estimate feed, rebalanced to reconcile with the credited
+            // effective sleep duration so the labeled estimate never contradicts
+            // the hero hours. Never persisted; never feeds metrics/HealthKit.
+            self.estimatedDisplayStageSegments = {
+                guard evidence == .hrOnlyEstimate, let start, let end, end > start else { return [] }
+                return Self.reconciledEstimateSegments(from: stageSegments,
+                                                       start: start,
+                                                       end: end,
+                                                       effectiveSleepDuration: duration)
+            }()
             self.stageDurationsByStage = Self.stageDurations(from: displayStageSegments)
         }
 
@@ -36212,19 +36248,6 @@ struct SleepHistorySnapshot: Equatable {
                 : displayStageSegments
         }
 
-        /// Display-shaped HR-only stage ESTIMATE (2026-08-08, user-requested).
-        /// Same folded segments `stageSegmentsForStorage` already keeps, exposed
-        /// only so the hypnogram card can render a clearly-labeled estimate on an
-        /// HR-only night instead of an empty "unavailable" state. It is READ-only
-        /// and never persisted, never feeds numeric/efficiency surfaces — those
-        /// stay gated on `displayStageSegments` (empty here), so no measured
-        /// claim changes. Empty unless this night is `.hrOnlyEstimate`.
-        var estimatedDisplayStageSegments: [SleepStageSegment] {
-            stageEvidence == .hrOnlyEstimate
-                ? Self.foldedDisplaySegments(from: stageSegments)
-                : []
-        }
-
         /// The stored `sleepEfficiency` for an HR-only night is captured/span
         /// coverage, not sleep efficiency — an uninterrupted HR-only capture
         /// showed a false "100%". Display surfaces must use this instead:
@@ -36240,6 +36263,89 @@ struct SleepHistorySnapshot: Equatable {
                 return "Needs motion data"
             }
             return "Duration-based estimate"
+        }
+
+        /// DISPLAY-ONLY. Rebalances an HR-only research timeline so its non-awake
+        /// epochs sum to within the presentation tolerance (`max(5min, 5%)`, the
+        /// same as `reconcilesForPresentation`) of the credited effective sleep
+        /// duration, so the labeled ESTIMATE hypnogram is internally consistent
+        /// with the hero hours. Inside a window the user confirmed as sleep, the
+        /// engine's over-called `.awake` is genuinely wrong; interior awake
+        /// (between the first and last sleep epoch) becomes `.light` — the least-
+        /// committal stage, innermost first — while leading/trailing awake is kept
+        /// as honest sleep-onset latency / final waking. Idempotent when the input
+        /// already reconciles. NEVER persisted; NEVER fed to HealthKit/research/
+        /// metrics. Returns the input folded when there isn't enough convertible
+        /// interior awake, so the card then falls back to an honest state rather
+        /// than a fabricated one.
+        static func reconciledEstimateSegments(from segments: [SleepStageSegment],
+                                               start: Date,
+                                               end: Date,
+                                               effectiveSleepDuration: TimeInterval) -> [SleepStageSegment] {
+            let folded = foldedDisplaySegments(from: segments)
+            guard !folded.isEmpty, effectiveSleepDuration > 0 else { return folded }
+            let tolerance = max(5 * 60, effectiveSleepDuration * 0.05)
+            func nonAwake(_ segs: [SleepStageSegment]) -> TimeInterval {
+                segs.reduce(0) { $0 + ($1.stage == .awake ? 0 : max(0, $1.duration)) }
+            }
+            let classified = nonAwake(folded)
+            if abs(classified - effectiveSleepDuration) <= tolerance { return folded }
+            // Surplus: never let the estimate claim MORE sleep than credited.
+            // Trim trailing non-awake -> awake down to exactly the credited hours.
+            if classified > effectiveSleepDuration + tolerance {
+                var over = classified - effectiveSleepDuration
+                var result: [SleepStageSegment] = []
+                for seg in folded.reversed() {
+                    guard over > 0, seg.stage != .awake else { result.insert(seg, at: 0); continue }
+                    if seg.duration <= over {
+                        result.insert(SleepStageSegment(id: seg.id, start: seg.start, end: seg.end, stage: .awake), at: 0)
+                        over -= seg.duration
+                    } else {
+                        let cut = seg.end.addingTimeInterval(-over)
+                        result.insert(SleepStageSegment(id: seg.id + "-awk", start: cut, end: seg.end, stage: .awake), at: 0)
+                        result.insert(SleepStageSegment(id: seg.id, start: seg.start, end: cut, stage: seg.stage), at: 0)
+                        over = 0
+                    }
+                }
+                return foldedDisplaySegments(from: result)
+            }
+            // Deficit (the over-awake failure): convert over-called awake -> light
+            // until non-awake reaches the credited duration. INTERIOR awake
+            // (between the first and last sleep epoch) is converted first, innermost
+            // first — it is unambiguously an over-call. Only if that is not enough
+            // to reach the credited hours do we convert EDGE awake (sleep-onset
+            // latency / final waking), nearest the sleep core first: a confirmed
+            // window asserts sleep across its whole span, so when the credited
+            // duration fills the window there is no awake budget left to keep.
+            guard let lo = folded.firstIndex(where: { $0.stage != .awake }),
+                  let hi = folded.lastIndex(where: { $0.stage != .awake }) else { return folded }
+            var deficit = effectiveSleepDuration - classified
+            let center = Double(lo + hi) / 2
+            let awakeIdx = folded.indices.filter { folded[$0].stage == .awake }
+            let interior = awakeIdx.filter { $0 > lo && $0 < hi }
+                .sorted { abs(Double($0) - center) < abs(Double($1) - center) }
+            let edge = awakeIdx.filter { $0 < lo || $0 > hi }
+                .sorted { min(abs($0 - lo), abs($0 - hi)) < min(abs($1 - lo), abs($1 - hi)) }
+            var convertFull = Set<Int>()
+            var split: (index: Int, seconds: TimeInterval)?
+            for idx in interior + edge where deficit > 0 {
+                let dur = folded[idx].duration
+                if dur <= deficit { convertFull.insert(idx); deficit -= dur }
+                else { split = (idx, deficit); deficit = 0 }
+            }
+            var result: [SleepStageSegment] = []
+            for (idx, seg) in folded.enumerated() {
+                if convertFull.contains(idx) {
+                    result.append(SleepStageSegment(id: seg.id, start: seg.start, end: seg.end, stage: .light))
+                } else if let sp = split, sp.index == idx {
+                    let cut = seg.start.addingTimeInterval(sp.seconds)
+                    result.append(SleepStageSegment(id: seg.id + "-lgt", start: seg.start, end: cut, stage: .light))
+                    result.append(SleepStageSegment(id: seg.id, start: cut, end: seg.end, stage: .awake))
+                } else {
+                    result.append(seg)
+                }
+            }
+            return foldedDisplaySegments(from: result)
         }
 
         /// Collapses `.sws` into `.deep` for display and re-merges adjacent runs of the
@@ -36411,6 +36517,23 @@ struct SleepHistorySnapshot: Equatable {
                 return .validated
             }
             return .sensorResearch
+        }
+
+        /// A structurally-valid HR-only research timeline that fails the STRICT
+        /// presentation reconcile (the engine over-calls awake without motion) can
+        /// still back a clearly-labeled ESTIMATE — it could never become a
+        /// validated hypnogram without motion anyway. Manual windows are excluded
+        /// (storage policy strips their stages), and a `validated_sleep_stages`
+        /// night is never rescued: if its real stages don't reconcile it stays an
+        /// honest `.none` rather than being downgraded to an estimate (2026-08-08).
+        private static func qualifiesForHROnlyEstimate(source: String,
+                                                       stageSegments: [SleepStageSegment],
+                                                       stagesPassIntegrity: Bool) -> Bool {
+            stagesPassIntegrity
+                && !stageSegments.isEmpty
+                && source != "validated_sleep_stages"
+                && source != "manual_sleep"
+                && source != "manual_nap"
         }
 
         private static func stageDurations(from segments: [SleepStageSegment]) -> [SleepStageKind: TimeInterval] {
