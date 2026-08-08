@@ -9852,10 +9852,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason: String,
         maintenanceWindow: Bool = false
     ) async -> Bool {
-        let started = resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
+        let priorGeneration = offlineHistoricalSyncGeneration
+        _ = resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             reason: reason,
             maintenanceWindow: maintenanceWindow)
-        guard started || offlineHistoricalSyncInProgress else { return false }
+        // Await ONLY a drain this call actually launched — a generation advance.
+        // The IfNeeded result cannot be trusted as "a generation is now running":
+        // it returns true for `retainedRequestOwnsTransport` too (a request kept
+        // for a later accepted-HR/reconnect edge), which does NOT bump the
+        // generation, and a false success there would make the caller publish +
+        // complete the window as if motion drained. A motion offload also can
+        // never ride an already-in-progress generation (its eligibility gate
+        // requires !historyOwnerActive), so a genuine start is exactly a fresh
+        // generation; anything else means nothing drained in THIS window.
+        guard offlineHistoricalSyncGeneration > priorGeneration else { return false }
         let generation = offlineHistoricalSyncGeneration
         while lastCompletedHistoricalSyncGeneration < generation {
             guard !Task.isCancelled else { return false }
@@ -13712,14 +13722,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard !foregroundInteractiveMode,
               !offlineHistoricalSyncInProgress,
               strapBacklogPendingForCatchUp(now: now) else { return }
-        // First refusal (2026-08-08): if HR is only SOFT-behind (frontier stale,
-        // but no range-loss ticket and flush debt caught-up) and a motion offload
-        // is waiting, yield THIS callback so the HR lane doesn't perpetually
-        // re-seize the one shared transport while motion tickets starve. The next
-        // accepted-HR callback re-evaluates, so HR is interleaved, never starved.
-        if Self.strapBacklogReason(now: now) == .frontierStale, hasResumableMotionBankOffload {
-            return
-        }
+        // No explicit HR->motion yield here (2026-08-08): this same accepted-HR
+        // handler already attempted the motion offload FIRST
+        // (resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded, "fresh_accepted_hr").
+        // If motion could actually run it set offlineHistoricalSyncInProgress and
+        // the guard above already returned — motion wins the shared transport. If
+        // motion could NOT run (bank capturing, cadence not elapsed, not
+        // connected), draining HR here keeps that transport productive instead of
+        // idling it. An earlier optimistic ledger-only yield (hasResumableMotionBankOffload)
+        // wrongly skipped HR even while motion was in fact blocked; removed.
         _ = requestOfflineHistoricalSyncIfNeeded(
             reason: "accepted_hr_autonomous_catchup",
             force: false,
