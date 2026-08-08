@@ -6264,8 +6264,8 @@ struct AtriaStrapStepsDetailSheet: View {
 
                             if presentation.completeness != .complete {
                                 Text(presentation.source == .live
-                                     ? "Partial — grows as new movement arrives."
-                                     : "Lower bound · partial archive coverage.")
+                                     ? "Counting so far — grows as you move."
+                                     : "Counted so far — fills in as your strap syncs.")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
