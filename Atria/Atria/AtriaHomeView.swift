@@ -8921,6 +8921,7 @@ final class AtriaHomeModel {
         nonisolated static func resolvedStressPresentation(
             state: AtriaStressState,
             lastMeasuredAt: Date?,
+            physiologicalCycleStart: Date? = nil,
             now: Date = Date()
         ) -> AtriaStressPresentation {
             let presentation = AtriaStressPresentation.make(state: state)
@@ -8929,6 +8930,7 @@ final class AtriaHomeModel {
             switch AtriaStressReadingFreshness.resolve(
                 isScored: true,
                 updatedAt: lastMeasuredAt,
+                physiologicalCycleStart: physiologicalCycleStart,
                 now: now
             ) {
             case .live:
@@ -8939,6 +8941,13 @@ final class AtriaHomeModel {
                     value: AtriaCompactMetricPresentation.noValue,
                     detail: "Waiting for a fresh stress reading",
                     narrative: "The last scored stress reading is older than 90 seconds, so Atria is not showing it as current."
+                )
+            case .previousPhysiologicalCycle:
+                return AtriaStressPresentation(
+                    level: nil,
+                    value: AtriaCompactMetricPresentation.noValue,
+                    detail: "Waiting for this cycle's first stress reading",
+                    narrative: "The last scored stress reading belongs to the previous physiological day, so Atria is not showing it as current."
                 )
             case .untimed:
                 return AtriaStressPresentation(
@@ -10047,9 +10056,19 @@ final class AtriaHomeModel {
                   now: now
               ) == .live else { return }
 
-        let expiresAt = lastMeasuredAt.addingTimeInterval(
-            AtriaStressReadingFreshness.liveWindow
+        // A live reading can sit immediately before a deterministic no-sleep
+        // rollover. Expire at whichever truth boundary comes first so the hero
+        // cannot carry a prior-cycle band for the remainder of its 90-second
+        // age lease merely because no publisher fires at the rollover instant.
+        let cycleRollover = AtriaPhysiologicalCycle.nextNoSleepRollover(
+            now: now,
+            confirmedSleeps: store.confirmedSleeps,
+            calendar: .current
         )
+        guard let expiresAt = AtriaStressReadingFreshness.expirationDeadline(
+            updatedAt: lastMeasuredAt,
+            nextPhysiologicalCycleStart: cycleRollover
+        ) else { return }
         let delay = max(0, expiresAt.timeIntervalSince(now) + 0.05)
         stressFreshnessExpiryTask = Task { [weak self] in
             if delay > 0 {
@@ -10788,6 +10807,7 @@ final class AtriaHomeModel {
         let stress = HeroSnapshot.resolvedStressPresentation(
             state: stressState,
             lastMeasuredAt: stressLastMeasuredAt,
+            physiologicalCycleStart: physiologicalCycle.start,
             now: now
         )
         let liveTRIMP = live.liveTRIMP

@@ -697,6 +697,18 @@ struct RestingTrendPoint: Identifiable {
 struct RestingTrendChart: View {
     let points: [RestingTrendPoint]
     let baseline: Int?
+    private let segmentedSamples: [AtriaTrendPoint.Sample]
+
+    init(points: [RestingTrendPoint], baseline: Int?) {
+        self.points = points
+        self.baseline = baseline
+        // Prepare once when the value view is created. Chart and inspector
+        // both consume this projection, so neither repeats mapping/sorting
+        // while SwiftUI evaluates their render closures.
+        segmentedSamples = AtriaTrendGapPolicy.assigningSegments(to: points.map {
+            AtriaTrendPoint.Sample(date: $0.start, value: Double($0.resting))
+        })
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -706,13 +718,14 @@ struct RestingTrendChart: View {
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 Chart {
-                    ForEach(points) { point in
-                        LineMark(x: .value("Date", point.start),
-                                 y: .value("Resting", point.resting))
+                    ForEach(segmentedSamples) { sample in
+                        LineMark(x: .value("Date", sample.date),
+                                 y: .value("Resting", sample.value),
+                                 series: .value("Observed run", "resting-\(sample.segment)"))
                             .interpolationMethod(.linear)
                             .foregroundStyle(.teal)
-                        PointMark(x: .value("Date", point.start),
-                                  y: .value("Resting", point.resting))
+                        PointMark(x: .value("Date", sample.date),
+                                  y: .value("Resting", sample.value))
                             .foregroundStyle(.teal)
                     }
                 }
@@ -725,8 +738,10 @@ struct RestingTrendChart: View {
                             .init(title: "Resting HR",
                                   unit: " bpm",
                                   tint: .teal,
-                                  points: points.map {
-                                      .init(date: $0.start, value: Double($0.resting))
+                                  points: segmentedSamples.map {
+                                      .init(date: $0.date,
+                                            value: $0.value,
+                                            segment: $0.segment)
                                   })
                         ])
                     )

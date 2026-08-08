@@ -30,6 +30,50 @@ final class AtriaStressReadingFreshnessTests: XCTestCase {
         ), .stale)
     }
 
+    func testFreshReadingBeforePhysiologicalCycleIsNotLive() {
+        let now = Date(timeIntervalSinceReferenceDate: 1_000)
+        XCTAssertEqual(AtriaStressReadingFreshness.resolve(
+            isScored: true,
+            updatedAt: now.addingTimeInterval(-30),
+            physiologicalCycleStart: now.addingTimeInterval(-15),
+            now: now
+        ), .previousPhysiologicalCycle)
+    }
+
+    func testReadingAtPhysiologicalCycleBoundaryCanBeLive() {
+        let now = Date(timeIntervalSinceReferenceDate: 1_000)
+        let boundary = now.addingTimeInterval(-30)
+        XCTAssertEqual(AtriaStressReadingFreshness.resolve(
+            isScored: true,
+            updatedAt: boundary,
+            physiologicalCycleStart: boundary,
+            now: now
+        ), .live)
+    }
+
+    func testPhysiologicalRolloverCanExpireBeforeAgeLease() {
+        let measuredAt = Date(timeIntervalSinceReferenceDate: 1_000)
+        let rollover = measuredAt.addingTimeInterval(40)
+        XCTAssertEqual(
+            AtriaStressReadingFreshness.expirationDeadline(
+                updatedAt: measuredAt,
+                nextPhysiologicalCycleStart: rollover
+            ),
+            rollover
+        )
+    }
+
+    func testAgeLeaseStillWinsWhenRolloverIsLater() {
+        let measuredAt = Date(timeIntervalSinceReferenceDate: 1_000)
+        XCTAssertEqual(
+            AtriaStressReadingFreshness.expirationDeadline(
+                updatedAt: measuredAt,
+                nextPhysiologicalCycleStart: measuredAt.addingTimeInterval(600)
+            ),
+            measuredAt.addingTimeInterval(AtriaStressReadingFreshness.liveWindow)
+        )
+    }
+
     func testScoredReadingWithoutClockIsUntimedInsteadOfLive() {
         XCTAssertEqual(AtriaStressReadingFreshness.resolve(
             isScored: true,
@@ -83,6 +127,21 @@ final class AtriaStressReadingFreshnessTests: XCTestCase {
         XCTAssertEqual(presentation.value, AtriaCompactMetricPresentation.noValue)
         XCTAssertEqual(presentation.detail, "Reading time unavailable")
         XCTAssertFalse(presentation.narrative.contains("Low"))
+    }
+
+    func testHomeHeroHidesFreshStressFromPreviousPhysiologicalCycle() {
+        let now = Date(timeIntervalSinceReferenceDate: 1_000)
+        let presentation = AtriaHomeModel.HeroSnapshot.resolvedStressPresentation(
+            state: scoredState(level: .medium),
+            lastMeasuredAt: now.addingTimeInterval(-30),
+            physiologicalCycleStart: now.addingTimeInterval(-15),
+            now: now
+        )
+
+        XCTAssertNil(presentation.level)
+        XCTAssertEqual(presentation.value, AtriaCompactMetricPresentation.noValue)
+        XCTAssertEqual(presentation.detail, "Waiting for this cycle's first stress reading")
+        XCTAssertTrue(presentation.narrative.contains("previous physiological day"))
     }
 
     func testHomeHeroLeavesUnscoredPresentationUnchangedWithoutClock() {

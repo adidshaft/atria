@@ -9329,16 +9329,23 @@ struct AtriaMetricDetailSheet: View {
                                       heroState: strainHeroState,
                                       tint: Metrics.electricStrain,
                                       heroStyle: .strain(score: strainHeroRawValue,
-                                                         target: guidance.target)) {
+                                                         target: showsCurrentPhysiologicalCycleContext
+                                                            ? guidance.target
+                                                            : nil)) {
                 if let provenance {
                     AtriaMetricProvenanceCard(provenance: provenance)
                 }
                 strainRecoveryComboCard
-                strainWorkoutSection
-                strainZoneHistogramCard
-                strainActivityMixCard
+                if showsCurrentPhysiologicalCycleContext {
+                    strainWorkoutSection
+                    strainZoneHistogramCard
+                    strainActivityMixCard
+                }
             } contributors: {
-                AtriaMetricContributorRows(rows: strainContributorRows, tint: Metrics.electricStrain)
+                if showsCurrentPhysiologicalCycleContext {
+                    AtriaMetricContributorRows(rows: strainContributorRows,
+                                               tint: Metrics.electricStrain)
+                }
             } chart: {
                 chartSlot {
                     metricChart(title: "Strain",
@@ -9590,6 +9597,19 @@ struct AtriaMetricDetailSheet: View {
             range: range,
             periodAnchor: periodAnchor,
             calendar: preparationBaseInput.calendar
+        )
+    }
+
+    /// Workout rows, zone totals, activity mix, and the target all come from
+    /// the live physiological-cycle inputs. They are honest only while the
+    /// prepared chart and the requested period both resolve to that cycle.
+    /// Failing closed during an async period change also prevents a current-day
+    /// card from flashing over a still-displayed historical chart.
+    private var showsCurrentPhysiologicalCycleContext: Bool {
+        AtriaStrainDetailContextPolicy.showsCurrentCycle(
+            range: range,
+            usesCurrentCycle: currentCycleDetailProjection.usesCurrentCycle,
+            isPreparingSelectedPeriod: isPreparingSelectedPeriod
         )
     }
 
@@ -9900,9 +9920,12 @@ struct AtriaMetricDetailSheet: View {
 
     private var strainHeroState: String {
         if dayStrainMetricsIncomplete { return "Partial · sparse HR" }
-        guard let latest = strainHeroRawValue,
-              let target = guidance.target else {
+        guard let latest = strainHeroRawValue else {
             return "Learning"   // canonical not-ready word (was "Building"), consistent with HRV/RHR/respiration hero states
+        }
+        guard showsCurrentPhysiologicalCycleContext,
+              let target = guidance.target else {
+            return range == .day ? "Saved day" : "Period average"
         }
         if latest >= target + 1 { return "Strained" }
         if latest >= target - 1 { return "On target" }
@@ -13545,12 +13568,31 @@ struct AtriaDetailChartPoint: Identifiable, Sendable {
     let day: Date
     let value: Double
     let tint: Color
+    /// Stable observed-run identity. A nonzero transition breaks line/area
+    /// interpolation at missing-evidence gaps without inventing values.
+    var segment: Int = 0
     /// Weekly-bucket min/max band bounds (2026-07-07 design handoff long-range
     /// bucketing). nil on raw daily points.
     var bandLower: Double? = nil
     var bandUpper: Double? = nil
 
     var id: Date { day }
+}
+
+/// Keeps live workout/zone/target context confined to the one period it
+/// actually describes. A week, month, or all-time selection can include the
+/// current cycle while still representing an aggregate, so `usesCurrentCycle`
+/// alone is not sufficient authority.
+enum AtriaStrainDetailContextPolicy {
+    static func showsCurrentCycle(
+        range: AtriaTrendRange,
+        usesCurrentCycle: Bool,
+        isPreparingSelectedPeriod: Bool
+    ) -> Bool {
+        range == .day
+            && usesCurrentCycle
+            && !isPreparingSelectedPeriod
+    }
 }
 
 struct AtriaDetailBaselineBand {

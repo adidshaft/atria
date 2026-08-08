@@ -2,6 +2,31 @@ import XCTest
 @testable import Atria
 
 final class AtriaStrainDetailPresentationTests: XCTestCase {
+    func testCurrentCycleContextIsDayOnlyAndFailsClosed() {
+        XCTAssertTrue(AtriaStrainDetailContextPolicy.showsCurrentCycle(
+            range: .day,
+            usesCurrentCycle: true,
+            isPreparingSelectedPeriod: false
+        ))
+        for aggregateRange in AtriaTrendRange.allCases where aggregateRange != .day {
+            XCTAssertFalse(AtriaStrainDetailContextPolicy.showsCurrentCycle(
+                range: aggregateRange,
+                usesCurrentCycle: true,
+                isPreparingSelectedPeriod: false
+            ), "\(aggregateRange) is an aggregate, not today's live context")
+        }
+        XCTAssertFalse(AtriaStrainDetailContextPolicy.showsCurrentCycle(
+            range: .day,
+            usesCurrentCycle: false,
+            isPreparingSelectedPeriod: false
+        ))
+        XCTAssertFalse(AtriaStrainDetailContextPolicy.showsCurrentCycle(
+            range: .day,
+            usesCurrentCycle: true,
+            isPreparingSelectedPeriod: true
+        ))
+    }
+
     func testWorkoutRowsDistinguishBoundedWorkoutStrainFromDayStrain() throws {
         let sourceURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -36,6 +61,48 @@ final class AtriaStrainDetailPresentationTests: XCTestCase {
         XCTAssertFalse(strainDetail.contains("AtriaStrainBandGauge("))
         XCTAssertTrue(source.contains("private struct AtriaStrainScoreHero"))
         XCTAssertTrue(source.contains("AtriaStrainTargetPresentation.progress(for: score)"))
+    }
+
+    func testHistoricalStrainDetailGatesCurrentCycleWorkoutContext() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaOverviewSections.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let detailTemplate = try XCTUnwrap(source.range(of: "private var detailTemplate: some View"))
+        let start = try XCTUnwrap(
+            source.range(of: "case .strain:", range: detailTemplate.upperBound..<source.endIndex)
+        )
+        let end = try XCTUnwrap(
+            source.range(of: "case .sleepPerformance:", range: start.upperBound..<source.endIndex)
+        )
+        let strainDetail = String(source[start.lowerBound..<end.lowerBound])
+        let gateStart = try XCTUnwrap(
+            strainDetail.range(of: "if showsCurrentPhysiologicalCycleContext {")
+        )
+        let contributorsStart = try XCTUnwrap(
+            strainDetail.range(of: "} contributors:", range: gateStart.upperBound..<strainDetail.endIndex)
+        )
+        let gatedCards = String(strainDetail[gateStart.lowerBound..<contributorsStart.lowerBound])
+
+        XCTAssertTrue(gatedCards.contains("strainWorkoutSection"))
+        XCTAssertTrue(gatedCards.contains("strainZoneHistogramCard"))
+        XCTAssertTrue(gatedCards.contains("strainActivityMixCard"))
+        XCTAssertTrue(strainDetail.contains("target: showsCurrentPhysiologicalCycleContext"),
+                      "A past-day hero must not be classified against today's target")
+        XCTAssertTrue(strainDetail.contains("if showsCurrentPhysiologicalCycleContext {\n                    AtriaMetricContributorRows"),
+                      "Today's workout and zone contributor rows must be absent on past days")
+
+        let projectionStart = try XCTUnwrap(
+            source.range(of: "private var showsCurrentPhysiologicalCycleContext: Bool")
+        )
+        let truthStart = try XCTUnwrap(
+            source.range(of: "private var currentCycleStrainTruth",
+                         range: projectionStart.upperBound..<source.endIndex)
+        )
+        let projection = String(source[projectionStart.lowerBound..<truthStart.lowerBound])
+        XCTAssertTrue(projection.contains("AtriaStrainDetailContextPolicy.showsCurrentCycle("))
+        XCTAssertTrue(source.contains("return range == .day ? \"Saved day\" : \"Period average\""))
     }
 
     func testPartialDayStrainKeepsMeasuredNumberAndAddsLimitation() throws {

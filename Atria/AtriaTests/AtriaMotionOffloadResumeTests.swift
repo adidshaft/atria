@@ -75,4 +75,56 @@ final class AtriaMotionOffloadResumeTests: XCTestCase {
         s.set(strap, forKey: strapKey)
         XCTAssertFalse(resumable(s), "verified strap but empty ledger -> not resumable")
     }
+
+    func testMotionOffloadCompletionRequiresExactTerminalAndLiveRestoredGeneration() {
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankOffloadCompletionSucceeded(
+                launchedGeneration: 42,
+                completedGeneration: 42,
+                reachedTerminalWithLiveRestoredAuthority: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.historicalMotionBankOffloadCompletionSucceeded(
+                launchedGeneration: 42,
+                completedGeneration: 42,
+                reachedTerminalWithLiveRestoredAuthority: false
+            ),
+            "a timed-out, interrupted, or live-restore-failed generation is not a drained motion bank"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.historicalMotionBankOffloadCompletionSucceeded(
+                launchedGeneration: 42,
+                completedGeneration: 41,
+                reachedTerminalWithLiveRestoredAuthority: true
+            ),
+            "terminal authority from another generation cannot satisfy this await"
+        )
+    }
+
+    func testAwaitingMotionOffloadUsesTerminalCompletionPolicy() throws {
+        let managerURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: managerURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(
+            of: "func resumePendingWorkoutHistoricalMotionBankOffloadAwaitingCompletion("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "nonisolated static func historicalMotionBankOffloadCompletionSucceeded(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains(
+            "historicalMotionBankOffloadCompletionSucceeded("
+        ))
+        XCTAssertTrue(body.contains(
+            "lastCompletedHistoricalSyncReachedTerminal"
+        ))
+        XCTAssertFalse(body.contains(
+            "return lastCompletedHistoricalSyncGeneration == generation"
+        ))
+    }
 }
