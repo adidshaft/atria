@@ -356,3 +356,39 @@ Verdict: direction right, first cut not shippable. Fixed in the follow-up commit
 - **Minors:** persist the awake reference across launches; blend learned→default
   spread (floor 5 vs default 12 step-change); scope the ~65/20 validation claim
   to the HR-only path; cold-start offset/spread don't scale with fitness.
+
+## Grind progress (2026-08-08, session cont.)
+
+- **DONE — persist the awake reference across launches (06a9f3cb).** The 45-min
+  buffer needs ~8 min of quiet-awake wear to warm up; until then every cold
+  launch scored against the fixed default (rest+15), so a high-awake-HR wearer
+  read a false Low/Medium right after opening the app. Now each learned
+  reference is persisted (write throttled 5 min) and the next launch seeds from
+  it; the live buffer supersedes it once warm; a >14-day seed is discarded
+  (awake HR drifts). `AtriaAwakeReferenceSnapshot` + injectable UserDefaults
+  suite; 2 new tests (seed-before-warm, stale-ignored); suite 22/22 green.
+  Resolves the first "Minors" item above and gives B3 a persistence building
+  block.
+- **#9 (scoring-during-sleep) — BLOCKED, not a grind.** Confirmed there is NO
+  live "asleep-now" authority anywhere on the live path: sleep is detected only
+  retrospectively (`currentMainSleep` is a completed session; there is no
+  in-progress/open-night marker), and the one live signal — the duty-cycle sleep
+  window — is explicitly forbidden by the scorer comment (radio schedule, not
+  proof of sleep). The real harm #9 named (overnight HR contaminating the awake
+  reference → post-wake false Medium, B2) is already neutralized by the
+  `> rest + 8` buffer floor. Residual: during genuine sleep the store still
+  computes a (near-resting → Calm) band instead of suppressing to "Asleep" —
+  cosmetic, not the old "always Medium". Proper fix needs a live-sleep detector,
+  which is a product/architecture decision, not a confirmed-list grind. Deferred
+  to the product-decision list.
+- **B5 (workout cliff) — re-assessed, NOT a clean bug.** The `hrNow > rest + 40`
+  suppression fires on the **60 s-smoothed** HR fed by the store, not a raw
+  sample, so it already carries ~1 min of sustain. What remains is a categorical
+  boundary judgment (is rest+40 → zone 2 acute stress or light exertion?).
+  Changing it risks relabeling real exertion as stress; needs a product call on
+  the intended semantics, not a blind edit.
+- **B3 (sustained-stress absorption) — the real remaining engine item.** Now
+  more tractable on top of the persistence infra, but doing it right means a
+  slow multi-day / sleep-gated awake baseline validated against the 2-3 days of
+  real strap HR the user has (they explicitly asked to use it) — a focused,
+  data-backed effort, not a 5-min tick. Next substantive engine target.
