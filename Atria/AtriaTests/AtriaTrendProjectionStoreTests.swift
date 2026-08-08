@@ -268,6 +268,32 @@ final class AtriaTrendProjectionStoreTests: XCTestCase {
         XCTAssertLessThanOrEqual(comparison.lowerBound, 58)
     }
 
+    func testDailyTrendSegmentationBreaksAtMissingCivilDays() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let start = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 8, day: 1, hour: 8
+        )))
+        let samples = [0, 1, 3, 4].map { offset in
+            AtriaTrendPoint.Sample(
+                date: calendar.date(byAdding: .day, value: offset, to: start)!,
+                value: Double(60 + offset)
+            )
+        }
+
+        let segmented = AtriaTrendGapPolicy.assigningSegments(
+            to: Array(samples.reversed()),
+            calendar: calendar
+        )
+
+        XCTAssertEqual(segmented.map(\.date), samples.map(\.date),
+                       "segmentation should restore chronological order once, before render")
+        XCTAssertEqual(segmented.map(\.segment), [0, 0, 1, 1],
+                       "the absent August 3 reading must break both trend lines")
+        XCTAssertEqual(segmented.map(\.value), samples.map(\.value),
+                       "gap handling must not average or synthesize values")
+    }
+
     func testTrendChartHasNoAutomaticBaselineRuleAndLabelsOptInComparison() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory
@@ -286,6 +312,21 @@ final class AtriaTrendProjectionStoreTests: XCTestCase {
         XCTAssertFalse(card.contains("RuleMark(y: .value(\"Baseline\""))
         XCTAssertTrue(card.contains("Compare prior \\(range.narrativeLabel)"))
         XCTAssertTrue(card.contains("showsPriorPeriod && priorComparisonIsAvailable"))
+        XCTAssertTrue(card.contains("current-line-\\(sample.segment)"))
+        XCTAssertTrue(card.contains("prior-\\(ghostSample.segment)"))
+        XCTAssertTrue(card.contains("segment: $0.segment"),
+                      "the expanded chart must preserve the compact chart's observed-run breaks")
+
+        let expanded = try String(
+            contentsOf: sourceURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("AtriaExpandedChart.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(expanded.contains("current-\\(point.segment)"))
+        XCTAssertTrue(expanded.contains("current-fill-\\(point.segment)"))
+        XCTAssertTrue(expanded.contains("segment: point.segment"),
+                      "rescaling an overlay must not erase its real collection gaps")
 
         let insights = try String(
             contentsOf: sourceURL.deletingLastPathComponent().appendingPathComponent("Insights.swift"),
@@ -300,6 +341,7 @@ final class AtriaTrendProjectionStoreTests: XCTestCase {
         )
         let restingChart = String(insights[restingStart.lowerBound..<restingEnd.lowerBound])
         XCTAssertFalse(restingChart.contains("RuleMark(y: .value(\"Baseline\""))
+        XCTAssertTrue(restingChart.contains("resting-\\(sample.segment)"))
         XCTAssertTrue(restingChart.contains("subtitle: baseline.map { \"Baseline \\($0) bpm\" }"))
     }
 

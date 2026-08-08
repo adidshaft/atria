@@ -88,6 +88,7 @@ struct AtriaStressDetailInput: Equatable {
 enum AtriaStressReadingFreshness: Equatable {
     case live
     case stale
+    case previousPhysiologicalCycle
     case untimed
 
     static let liveWindow: TimeInterval = 90
@@ -95,11 +96,30 @@ enum AtriaStressReadingFreshness: Equatable {
 
     static func resolve(isScored: Bool,
                         updatedAt: Date?,
+                        physiologicalCycleStart: Date? = nil,
                         now: Date = Date()) -> Self {
         guard isScored, let updatedAt else { return .untimed }
+        if let physiologicalCycleStart,
+           updatedAt < physiologicalCycleStart {
+            return .previousPhysiologicalCycle
+        }
         let age = now.timeIntervalSince(updatedAt)
         guard age >= -futureTolerance, age <= liveWindow else { return .stale }
         return .live
+    }
+
+    /// The compact projection needs one wake-up at the first boundary that can
+    /// invalidate a scored value: either its normal age lease or the next
+    /// deterministic physiological-day rollover. This is deliberately pure so
+    /// scheduling never becomes a second definition of freshness.
+    static func expirationDeadline(
+        updatedAt: Date?,
+        nextPhysiologicalCycleStart: Date?
+    ) -> Date? {
+        guard let updatedAt else { return nil }
+        let ageDeadline = updatedAt.addingTimeInterval(liveWindow)
+        guard let nextPhysiologicalCycleStart else { return ageDeadline }
+        return min(ageDeadline, nextPhysiologicalCycleStart)
     }
 }
 
@@ -537,6 +557,8 @@ struct AtriaStressDetailView: View {
         case .stale:
             guard let updatedAt = input.updatedAt else { return "Last reading" }
             return "Last reading \(updatedAt.formatted(.relative(presentation: .named)))"
+        case .previousPhysiologicalCycle:
+            return "Last reading · previous cycle"
         case .untimed:
             return input.state.kind == .scored ? "Current reading · time unavailable" : input.state.label
         }

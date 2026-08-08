@@ -266,13 +266,18 @@ struct AtriaTrendChartCard: View {
     /// series. Days without a value are simply absent.
     private var expandedChartPoints: [AtriaDetailChartPoint] {
         let cutoff = range.cutoffDate()
-        return points.compactMap { point in
+        let samples = points.compactMap { point -> AtriaTrendPoint.Sample? in
             guard point.date >= cutoff else { return nil }
             return point.value(for: metric).map {
-                AtriaDetailChartPoint(day: point.date, value: $0, tint: metric.tint)
+                AtriaTrendPoint.Sample(date: point.date, value: $0)
             }
         }
-        .sorted { $0.day < $1.day }
+        return AtriaTrendGapPolicy.assigningSegments(to: samples).map {
+            AtriaDetailChartPoint(day: $0.date,
+                                  value: $0.value,
+                                  tint: metric.tint,
+                                  segment: $0.segment)
+        }
     }
 
     private func refreshPreparedSeries(now: Date = Date()) {
@@ -312,12 +317,22 @@ struct AtriaTrendChartCard: View {
                 previousSamples.append(sample)
             }
         }
+        // One absent civil day is missing evidence, not permission to draw a
+        // straight line through it. Assign stable run IDs while this series is
+        // already being prepared off the render path so both the compact line
+        // and its fill break at capture gaps without adding body-time sorting.
+        samples = AtriaTrendGapPolicy.assigningSegments(to: samples)
+        previousSamples = AtriaTrendGapPolicy.assigningSegments(to: previousSamples)
         // Time-shift the prior window forward onto the current window so it can
         // be drawn as a dashed ghost line sharing the same x-axis (this-N vs
         // previous-N, aligned by day-of-period rather than by date).
         let shift = Double(range.days) * 86_400
         let ghost: [AtriaTrendPoint.Sample] = range.hasPriorPeriod
-            ? previousSamples.map { AtriaTrendPoint.Sample(date: $0.date.addingTimeInterval(shift), value: $0.value) }
+            ? previousSamples.map {
+                AtriaTrendPoint.Sample(date: $0.date.addingTimeInterval(shift),
+                                       value: $0.value,
+                                       segment: $0.segment)
+            }
             : []
         let hasQualifiedComparison = AtriaTrendComparisonPolicy.isAvailable(
             currentCount: samples.count,
@@ -466,7 +481,7 @@ struct AtriaTrendChartCard: View {
                     LineMark(
                         x: .value("Date", ghostSample.date),
                         y: .value("Prior \(metric.shortLabel)", ghostSample.value),
-                        series: .value("Series", "prior")
+                        series: .value("Series", "prior-\(ghostSample.segment)")
                     )
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
@@ -480,7 +495,8 @@ struct AtriaTrendChartCard: View {
             ForEach(prepared.series) { sample in
                 AreaMark(
                     x: .value("Date", sample.date),
-                    y: .value(metric.shortLabel, sample.value)
+                    y: .value(metric.shortLabel, sample.value),
+                    series: .value("Series", "current-fill-\(sample.segment)")
                 )
                 .interpolationMethod(.linear)
                 .foregroundStyle(
@@ -492,7 +508,8 @@ struct AtriaTrendChartCard: View {
 
                 LineMark(
                     x: .value("Date", sample.date),
-                    y: .value(metric.shortLabel, sample.value)
+                    y: .value(metric.shortLabel, sample.value),
+                    series: .value("Series", "current-line-\(sample.segment)")
                 )
                 .interpolationMethod(.linear)
                 .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
@@ -2980,7 +2997,14 @@ struct AtriaTrendPoint: Equatable, Identifiable {
     struct Sample: Identifiable, Equatable {
         let date: Date
         let value: Double
+        let segment: Int
         var id: Date { date }
+
+        init(date: Date, value: Double, segment: Int = 0) {
+            self.date = date
+            self.value = value
+            self.segment = segment
+        }
     }
 
     #if DEBUG
@@ -3030,6 +3054,34 @@ struct AtriaTrendPoint: Equatable, Identifiable {
         }
     }
     #endif
+}
+
+/// Shared honesty policy for daily trend surfaces. It returns the same real
+/// observations, sorted, and increments `segment` only when at least one civil
+/// day has no reading. Charts use the segment as their series identity so they
+/// never imply measurements inside an unworn gap.
+enum AtriaTrendGapPolicy {
+    static func assigningSegments(
+        to samples: [AtriaTrendPoint.Sample],
+        calendar: Calendar = .current
+    ) -> [AtriaTrendPoint.Sample] {
+        let ordered = samples.sorted { $0.date < $1.date }
+        var segment = 0
+        var previousDay: Date?
+        return ordered.map { sample in
+            let day = calendar.startOfDay(for: sample.date)
+            if let previousDay {
+                let missingDayCount = calendar.dateComponents([.day],
+                                                              from: previousDay,
+                                                              to: day).day ?? 0
+                if missingDayCount > 1 { segment += 1 }
+            }
+            previousDay = day
+            return AtriaTrendPoint.Sample(date: sample.date,
+                                          value: sample.value,
+                                          segment: segment)
+        }
+    }
 }
 
 #if DEBUG

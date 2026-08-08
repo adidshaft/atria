@@ -1,6 +1,7 @@
 import SwiftUI
 import Charts
 import MapKit
+import Combine
 
 struct AtriaActivitySectionsRequestKey: Equatable {
     let sleepRevision: Int
@@ -66,6 +67,24 @@ struct AtriaActivityDisplayWindow: Equatable {
         return Self(interval: DateInterval(start: start, end: end),
                     labelDay: start,
                     isCurrentPhysiologicalDay: false)
+    }
+}
+
+/// Bounded invalidation policy for the selected-day signal projection. Raw
+/// archive appends can arrive about once per second, so Activity deliberately
+/// does not observe that row-level notification. It refreshes when the scene
+/// becomes usable again and when SessionStore publishes one fully-settled
+/// recovered-data revision.
+enum AtriaActivityTimelineRefreshPolicy {
+    static func shouldRefresh(
+        previousScenePhase: ScenePhase,
+        scenePhase: ScenePhase
+    ) -> Bool {
+        previousScenePhase != .active && scenePhase == .active
+    }
+
+    static func nextRevision(after revision: UInt64) -> UInt64 {
+        revision &+ 1
     }
 }
 
@@ -930,6 +949,7 @@ private enum AtriaWorkoutRouteTransactionRecovery {
 /// Activity projection; nothing here is fabricated — a metric only renders
 /// when the underlying session actually recorded it.
 struct AtriaActivityMonitorTab: View {
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var activityStore: AtriaHomeModel.ActivityStore
     /// Live stress monitor for the intraday (past-24h) card at the top of the
     /// Activity view — Activity is the intraday + log surface (heart/stress +
@@ -959,6 +979,11 @@ struct AtriaActivityMonitorTab: View {
     @State private var liveHeartRateTail: [AtriaActivityTimelineHeartRatePoint] = []
     @State private var heartRateLoadState: HeartRateLoadState = .idle
     @State private var stressProjection = AtriaActivityTimelineStressProjection.empty
+    /// Advances only at a foreground boundary or after SessionStore has
+    /// published one complete recovered-data revision. Including this in the
+    /// task key backfills signal rows captured while the app was suspended,
+    /// without turning per-row archive writes into repeated whole-window scans.
+    @State private var timelineCompletenessRevision: UInt64 = 0
 
     private enum TimelineSignal: String, CaseIterable, Hashable {
         case heartRate = "Heart rate"
@@ -974,12 +999,14 @@ struct AtriaActivityMonitorTab: View {
 
     /// Current-day windows advance each minute, but re-scanning the raw archive
     /// every time the clock or stress store publishes would be unnecessary I/O.
-    /// Current windows key by their wake boundary and refresh on re-entry; a
-    /// fresh live reading extends the plotted trace while the screen is mounted.
+    /// Current windows key by their wake boundary plus the bounded completeness
+    /// revision; a fresh live reading extends the plotted trace between those
+    /// refresh boundaries.
     private struct TimelineSignalWindowKey: Hashable {
         let start: Date
         let historicalEnd: Date?
         let isCurrent: Bool
+        let completenessRevision: UInt64
     }
 
     private struct TimelineStressRequestKey: Hashable {
@@ -1146,6 +1173,24 @@ struct AtriaActivityMonitorTab: View {
         }
         .onChange(of: stressMonitorStore.liveHeartRate) { _, reading in
             appendFreshLiveHeartRate(reading)
+        }
+        .onChange(of: scenePhase) { previous, current in
+            guard AtriaActivityTimelineRefreshPolicy.shouldRefresh(
+                previousScenePhase: previous,
+                scenePhase: current
+            ) else { return }
+            advanceTimelineCompletenessRevision()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: SessionStore.recoveredDataRecomputeDidPublishNotification
+            )
+        ) { notification in
+            // Multiple SessionStore instances exist in tests/previews. Only the
+            // store backing this Activity tab may invalidate its selected day.
+            guard let publishingStore = notification.object as? SessionStore,
+                  publishingStore === store else { return }
+            advanceTimelineCompletenessRevision()
         }
         .onAppear {
             #if DEBUG
@@ -1477,12 +1522,19 @@ struct AtriaActivityMonitorTab: View {
         let window = currentDisplayWindow
         return TimelineSignalWindowKey(start: window.interval.start,
                                        historicalEnd: window.isCurrentPhysiologicalDay ? nil : window.interval.end,
-                                       isCurrent: window.isCurrentPhysiologicalDay)
+                                       isCurrent: window.isCurrentPhysiologicalDay,
+                                       completenessRevision: timelineCompletenessRevision)
     }
 
     private var timelineStressRequestKey: TimelineStressRequestKey {
         TimelineStressRequestKey(window: timelineSignalWindowKey,
                                  historyRevision: stressMonitorStore.historyRevision)
+    }
+
+    private func advanceTimelineCompletenessRevision() {
+        timelineCompletenessRevision = AtriaActivityTimelineRefreshPolicy.nextRevision(
+            after: timelineCompletenessRevision
+        )
     }
 
     @MainActor

@@ -294,7 +294,7 @@ struct AtriaExpandedChartView: View {
                 ForEach(priorPoints) { point in
                     LineMark(x: .value("Day", point.day, unit: .day),
                              y: .value(title, point.value),
-                             series: .value("Series", "prior"))
+                             series: .value("Series", "prior-\(point.segment)"))
                         .interpolationMethod(.linear)
                         .foregroundStyle(.secondary.opacity(0.4))
                         .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 5]))
@@ -305,7 +305,7 @@ struct AtriaExpandedChartView: View {
                 ForEach(overlay.points) { point in
                     LineMark(x: .value("Day", point.day, unit: .day),
                              y: .value(title, point.value),
-                             series: .value("Series", "overlay"))
+                             series: .value("Series", "overlay-\(point.segment)"))
                         .interpolationMethod(.linear)
                         .foregroundStyle(overlay.tint.opacity(0.7))
                         .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [6, 3]))
@@ -446,7 +446,8 @@ struct AtriaExpandedChartView: View {
                 // y-scale keeps it inside the plot, and no value is implied
                 // beyond the real sampled line it sits under.
                 AreaMark(x: .value("Day", point.day, unit: .day),
-                         y: .value(title, point.value))
+                         y: .value(title, point.value),
+                         series: .value("Series", "current-fill-\(point.segment)"))
                     .interpolationMethod(.linear)
                     .foregroundStyle(
                         LinearGradient(colors: [tint.opacity(0.24), tint.opacity(0.02)],
@@ -454,7 +455,7 @@ struct AtriaExpandedChartView: View {
                     )
                 LineMark(x: .value("Day", point.day, unit: .day),
                          y: .value(title, point.value),
-                         series: .value("Series", "current"))
+                         series: .value("Series", "current-\(point.segment)"))
                     .interpolationMethod(.linear)
                     .foregroundStyle(tint)
                 PointMark(x: .value("Day", point.day, unit: .day),
@@ -623,7 +624,8 @@ private struct AtriaExpandedChartPreparedModel {
             let fraction = (point.value - low) / (high - low)
             return AtriaDetailChartPoint(day: point.day,
                                          value: targetLo + fraction * (targetHi - targetLo),
-                                         tint: tint)
+                                         tint: tint,
+                                         segment: point.segment)
         }
     }
 

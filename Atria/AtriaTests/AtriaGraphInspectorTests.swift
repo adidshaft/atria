@@ -73,7 +73,7 @@ final class AtriaGraphInspectorTests: XCTestCase {
                       "a stale portrait restoration must not override a reopened landscape graph")
     }
 
-    func testMeaningfulGraphSurfacesUseSharedInspector() throws {
+    func testStandaloneGraphSurfacesUseSharedInspector() throws {
         let sources = try [
             "AtriaHealthspanDetailView.swift",
             "AtriaStressDetailView.swift",
@@ -82,13 +82,23 @@ final class AtriaGraphInspectorTests: XCTestCase {
             "Sessions.swift",
             "AtriaActivityMonitor.swift",
             "AtriaVitalsCollectionSections.swift",
-            "HRV.swift",
-            "AtriaOverviewSections.swift"
+            "HRV.swift"
         ].map(source)
 
         for (name, contents) in sources {
             XCTAssertTrue(contents.contains(".atriaInspectableGraph("), "Missing inspector route in \(name)")
         }
+
+        let (_, health) = try source("AtriaHealthScreen.swift")
+        XCTAssertTrue(health.contains("private var inspectorGraph: AtriaInspectableGraph"))
+        XCTAssertTrue(health.contains("segment: $0.segment"),
+                      "overnight HR/load inspection must preserve real collection gaps")
+
+        // Overview metric charts deliberately own a richer period/comparison
+        // full-screen route through `expandedChartConfig` + `onExpand`. The
+        // next test verifies that route metric-by-metric; requiring the shared
+        // modifier here as well would assert an implementation spelling, not a
+        // missing user capability, and made the suite contradict itself.
     }
 
     func testEverySavedMetricTrendCanOpenLandscapeInspector() throws {

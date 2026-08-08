@@ -3,6 +3,40 @@ import UIKit
 @testable import Atria
 
 final class AtriaActivitySectionsCacheTests: XCTestCase {
+    func testActivityTimelineRefreshPolicyUsesOnlySceneReentryBoundaries() {
+        XCTAssertTrue(AtriaActivityTimelineRefreshPolicy.shouldRefresh(
+            previousScenePhase: .background,
+            scenePhase: .active
+        ))
+        XCTAssertTrue(AtriaActivityTimelineRefreshPolicy.shouldRefresh(
+            previousScenePhase: .inactive,
+            scenePhase: .active
+        ))
+        XCTAssertFalse(AtriaActivityTimelineRefreshPolicy.shouldRefresh(
+            previousScenePhase: .active,
+            scenePhase: .inactive
+        ))
+        XCTAssertFalse(AtriaActivityTimelineRefreshPolicy.shouldRefresh(
+            previousScenePhase: .active,
+            scenePhase: .active
+        ))
+        XCTAssertEqual(AtriaActivityTimelineRefreshPolicy.nextRevision(after: 41), 42)
+    }
+
+    func testActivityTimelineRefreshesAfterSettledArchivePublicationNotEveryRawRow() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaActivityMonitor.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("SessionStore.recoveredDataRecomputeDidPublishNotification"))
+        XCTAssertTrue(source.contains("completenessRevision: timelineCompletenessRevision"))
+        XCTAssertFalse(source.contains(
+            "publisher(for: HistoricalArchive.didUpdateNotification)"
+        ), "Per-row archive writes must not trigger repeated whole-day scans")
+    }
+
     func testDetectedActivityPresentationUsesOnlyExplicitClassifierHint() {
         let generic = AtriaDetectedActivityPresentation.make(kind: .activityCandidate,
                                                              suggestedActivityType: nil)

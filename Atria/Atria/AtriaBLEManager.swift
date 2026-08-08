@@ -9911,7 +9911,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             guard !Task.isCancelled else { return false }
             try? await Task.sleep(for: .milliseconds(250))
         }
-        return lastCompletedHistoricalSyncGeneration == generation
+        return Self.historicalMotionBankOffloadCompletionSucceeded(
+            launchedGeneration: generation,
+            completedGeneration: lastCompletedHistoricalSyncGeneration,
+            reachedTerminalWithLiveRestoredAuthority:
+                lastCompletedHistoricalSyncReachedTerminal
+        )
+    }
+
+    /// A generation advancing only proves that a transport attempt started.
+    /// Timeout, disconnect, admission failure and post-history live-HR restore
+    /// failure all retire that generation too, but must leave BGProcessing free
+    /// to spend the same window on its HR fallback. The completion bit supplied
+    /// here is published only after the matching generation reaches HISTORY_COMPLETE
+    /// and a fresh accepted HR sample proves live ownership was restored.
+    nonisolated static func historicalMotionBankOffloadCompletionSucceeded(
+        launchedGeneration: UInt64,
+        completedGeneration: UInt64,
+        reachedTerminalWithLiveRestoredAuthority: Bool
+    ) -> Bool {
+        completedGeneration == launchedGeneration
+            && reachedTerminalWithLiveRestoredAuthority
     }
 
     nonisolated static func onboardingHistoryTransportAuthorityIsValid(

@@ -2528,6 +2528,7 @@ struct AtriaSleepStressCard: View {
                 // fill/glow bled below the 156pt frame onto the caption text.
                 .clipped()
                 .environment(\.timeZone, displayTimeZone)
+                .atriaInspectableGraph(inspectorGraph)
                 if let highTimingSummary {
                     Text(highTimingSummary)
                         .font(.caption2.weight(.semibold))
@@ -2570,6 +2571,47 @@ struct AtriaSleepStressCard: View {
             high = max(high, band.upperBound + 3)
         }
         return low...high
+    }
+
+    /// The compact selector and the landscape inspector read the exact same
+    /// observed buckets and segment IDs. Expanding the chart therefore cannot
+    /// bridge an unworn interval or silently switch from HR to the derived
+    /// 0–3 load view.
+    private var inspectorGraph: AtriaInspectableGraph {
+        switch mode {
+        case .heartRate:
+            return AtriaInspectableGraph(
+                title: "Overnight heart rate",
+                subtitle: typicalRestingBand.map {
+                    "Typical resting band \(Int($0.lowerBound.rounded()))–\(Int($0.upperBound.rounded())) bpm"
+                },
+                content: .timeSeries([
+                    .init(title: "Heart rate",
+                          unit: " bpm",
+                          tint: .red,
+                          points: heartRatePoints.map {
+                              .init(date: $0.date,
+                                    value: $0.bpm,
+                                    segment: $0.segment)
+                          })
+                ])
+            )
+        case .load:
+            return AtriaInspectableGraph(
+                title: "Overnight HR load",
+                subtitle: "Observed HR relative to your resting baseline · 0–3 scale",
+                content: .timeSeries([
+                    .init(title: "HR load",
+                          unit: "",
+                          tint: .orange,
+                          points: points.map {
+                              .init(date: $0.reading.date,
+                                    value: $0.reading.score,
+                                    segment: $0.segment)
+                          })
+                ])
+            )
+        }
     }
 }
 

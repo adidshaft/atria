@@ -204,13 +204,13 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
                       "Sleep, workout, and review markers must share one non-overlapping lane")
     }
 
-    func testOnboardingConnectionCardKeepsGuidanceForVoiceOverWithoutVisibleParagraph() throws {
+    func testOnboardingConnectionCardKeepsGuidanceVisibleAndAvailableToVoiceOver() throws {
         let source = try source("ContentView.swift")
         let start = try XCTUnwrap(source.range(of: "struct OnboardingConnectionStatusView"))
         let end = try XCTUnwrap(source.range(of: "extension View", range: start.upperBound..<source.endIndex))
         let card = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertFalse(card.contains("Text(subtitle)"))
+        XCTAssertTrue(card.contains("Text(subtitle)"))
         XCTAssertTrue(card.contains(".accessibilityLabel(\"\\(title). \\(subtitle)\")"))
         XCTAssertTrue(card.contains(".padding(.vertical, 12)"))
     }
