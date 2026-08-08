@@ -13385,14 +13385,30 @@ private struct AtriaPreparedMetricHistory: Sendable {
             sleepSummaryByRange[range] = AtriaDetailPeriodSummary(points: sleepPoints, unit: "h")
             sleepComparisonByRange[range] = AtriaDetailComparisonSummary(current: sleepPoints, prior: priorSleepPoints, unit: "h")
 
+            // Match StrainPresentation.resolve (the canonical resolver used by
+            // the Health screen and History sheet): a persisted strain with nil
+            // quality AND nil coverage is a legacy/exact-equivalent full-day
+            // value. The old literal `== .exact` gate wrongly dropped those
+            // nil-quality days from the ring/chart/hero, so a past day (e.g.
+            // yesterday's 15.2) showed empty boxes here while every other surface
+            // showed it. Genuine .partial / low-coverage days still resolve to
+            // .partial and stay out of the trend, so nothing is fabricated.
+            func strainEntersExactTrend(_ item: AtriaMetricDetailPreparationInput.Rollup) -> Bool {
+                Metrics.StrainPresentation.resolve(
+                    value: item.strain,
+                    coverageFraction: item.strainCoverageFraction,
+                    baseConfidence: "dated history",
+                    persistedQuality: item.strainEvidenceQuality
+                ).quality == .exact
+            }
             let strainPoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
-                guard item.strainEvidenceQuality == .exact else { return nil }
+                guard strainEntersExactTrend(item) else { return nil }
                 return item.strain.map {
                     AtriaDetailChartPoint(day: item.day, value: $0, tint: Metrics.electricStrain)
                 }
             }
             let priorStrainPoints: [AtriaDetailChartPoint] = priorFiltered.compactMap { item in
-                guard item.strainEvidenceQuality == .exact else { return nil }
+                guard strainEntersExactTrend(item) else { return nil }
                 return item.strain.map {
                     AtriaDetailChartPoint(day: item.day, value: $0, tint: Metrics.electricStrain)
                 }
@@ -13402,9 +13418,7 @@ private struct AtriaPreparedMetricHistory: Sendable {
             strainPriorByRange[range] = Self.ghostSeries(priorStrainPoints, from: previousInterval, to: interval, range: range, calendar: calendar)
             strainSummaryByRange[range] = AtriaDetailPeriodSummary(points: strainPoints, unit: "")
             strainComparisonByRange[range] = AtriaDetailComparisonSummary(current: strainPoints, prior: priorStrainPoints, unit: "")
-            latestStrainByRange[range] = filtered.last(where: {
-                $0.strainEvidenceQuality == .exact
-            })?.strain
+            latestStrainByRange[range] = filtered.last(where: { strainEntersExactTrend($0) })?.strain
 
             let sleepPerformancePoints: [AtriaDetailChartPoint] = filtered.compactMap { item in
                 item.sleepPerformance.map { AtriaDetailChartPoint(day: item.day, value: Double($0), tint: Metrics.electricSleep) }
