@@ -94,6 +94,34 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
         XCTAssertTrue(source.contains("guard next != state else { return false }"))
     }
 
+    func testInsightsTileUsesRankedBehaviorProjectionAndCanonicalCard() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaTodayScreen.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("let behaviorInsights: [AtriaInsight]"))
+        XCTAssertTrue(source.contains("behaviorInsights = store.behaviorInsights"))
+        XCTAssertTrue(source.contains("store.$behaviorInsights.dropFirst()"),
+                      "Today must refresh when the ranked insight engine publishes")
+
+        let insightCaseStart = try XCTUnwrap(source.range(of: "case .insights:"))
+        let layoutSizeStart = try XCTUnwrap(
+            source.range(of: "private func layoutSize(for metric:",
+                         range: insightCaseStart.upperBound..<source.endIndex)
+        )
+        let insightCase = String(source[insightCaseStart.lowerBound..<layoutSizeStart.lowerBound])
+        XCTAssertTrue(insightCase.contains("sessionProjectionStore.state.behaviorInsights"))
+        XCTAssertTrue(insightCase.contains("value: \"\\(insights.count)\""))
+        XCTAssertFalse(insightCase.contains("highlights.count"),
+                       "The Insights tile must not count unrelated Today highlights")
+
+        XCTAssertTrue(source.contains("showInsights = true"))
+        XCTAssertTrue(source.contains("AtriaInsightsCardHost(store: store)"),
+                      "Today should reuse the canonical ranked-insights card")
+    }
+
     func testDayStrainIncompleteCacheReusesOnlyExactSourceWindow() {
         let day = Date(timeIntervalSince1970: 1_720_000_000)
         let key = AtriaTodayDayStrainIncompleteKey(confirmedWorkoutsRevision: 7,

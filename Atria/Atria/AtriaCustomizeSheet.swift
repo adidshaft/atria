@@ -371,6 +371,17 @@ private struct AtriaCustomizePreview: View {
 
     var body: some View {
         VStack(spacing: 14) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Layout preview")
+                    .font(.caption.weight(.semibold))
+
+                Spacer(minLength: 8)
+
+                Text("Example data")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+
             AtriaTriRing(sleep: sleepMetric,
                          recovery: recoveryMetric,
                          strain: strainMetric,
