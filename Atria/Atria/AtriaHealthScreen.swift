@@ -2606,6 +2606,10 @@ struct AtriaSleepStressCard: View {
                     }
                 }
                 .frame(height: 156)
+                // Clip the AreaMark gradient to the plot frame (2026-08-08):
+                // unlike every other AreaMark chart this one had no clip, so the
+                // fill/glow bled below the 156pt frame onto the caption text.
+                .clipped()
                 .environment(\.timeZone, displayTimeZone)
                 if let highTimingSummary {
                     Text(highTimingSummary)
