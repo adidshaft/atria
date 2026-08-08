@@ -385,7 +385,7 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
 
         XCTAssertTrue(widgetSource.contains(
-            "value: AtriaWidgetMetric.strain.value(entry.snapshot,\n                                                                        now: entry.date)"
+            "if AtriaWidgetMetric.strain.value(entry.snapshot, now: entry.date) != \"--\""
         ), "system-small strain must use the cycle/timestamp gate")
         XCTAssertTrue(widgetSource.contains(
             "\"Strain \\(AtriaWidgetMetric.strain.value(entry.snapshot, now: entry.date))\""
@@ -914,6 +914,218 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(resolved.confidence, .personalBaseline)
         XCTAssertEqual(resolved.detail, "frozen morning recovery")
         XCTAssertTrue(resolved.usesHRV)
+    }
+
+    func testAggregateHomeWidgetUsesBothStaticMediumRingLayoutsWithoutMigratingKind() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let entryStart = try XCTUnwrap(source.range(of: "struct AtriaWidgetEntryView: View"))
+        let entryEnd = try XCTUnwrap(source.range(of: "private enum AtriaDailyOverviewMetric"))
+        let aggregate = String(source[entryStart.lowerBound..<entryEnd.lowerBound])
+
+        XCTAssertEqual(
+            source.components(separatedBy: "StaticConfiguration(kind: \"AtriaWidget\"").count - 1,
+            1,
+            "the installed aggregate widget kind must remain a single StaticConfiguration"
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: "StaticConfiguration(kind: \"AtriaSeparateOverviewWidget\"").count - 1,
+            1,
+            "the separate layout needs one permanent, distinct static kind"
+        )
+        XCTAssertFalse(source.contains("AppIntentConfiguration(kind: \"AtriaWidget\""),
+                       "migrating the installed kind to an intent can strand existing widgets")
+        XCTAssertTrue(source.contains(
+            "AtriaWidgetEntryView(entry: entry, mediumOverviewLayout: .concentric)"
+        ))
+        XCTAssertTrue(source.contains(
+            "AtriaWidgetEntryView(entry: entry, mediumOverviewLayout: .separate)"
+        ))
+        let separateStart = try XCTUnwrap(source.range(of: "struct AtriaSeparateOverviewWidget: Widget"))
+        let separateEnd = try XCTUnwrap(source.range(
+            of: "#if DEBUG",
+            range: separateStart.upperBound..<source.endIndex
+        ))
+        let separateWidget = String(source[separateStart.lowerBound..<separateEnd.lowerBound])
+        XCTAssertTrue(separateWidget.contains(".supportedFamilies([.systemMedium])"))
+
+        let bundleStart = try XCTUnwrap(source.range(of: "struct AtriaWidgetBundle: WidgetBundle"))
+        let bundle = String(source[bundleStart.lowerBound...])
+        XCTAssertEqual(bundle.components(separatedBy: "AtriaSeparateOverviewWidget()").count - 1, 1)
+
+        XCTAssertTrue(aggregate.contains("private var concentricMediumOverview"))
+        XCTAssertTrue(aggregate.contains("private var separateMediumOverview"))
+        XCTAssertTrue(aggregate.contains("ForEach(AtriaDailyOverviewMetric.allCases)"),
+                      "Sleep, Recovery, and Strain must keep an always-visible legend")
+        XCTAssertGreaterThanOrEqual(
+            aggregate.components(separatedBy: "ViewThatFits(in: .vertical)").count - 1,
+            3,
+            "Small, standard Medium, and accessibility Medium each need a constrained fallback"
+        )
+        XCTAssertTrue(aggregate.contains("dailyOverviewTextLayout(compact: true)"),
+                      "Medium needs a deterministic terminal text fallback")
+
+        let standardStart = try XCTUnwrap(aggregate.range(of: "private var standardMediumWidget"))
+        let standardEnd = try XCTUnwrap(aggregate.range(
+            of: "private var recoveryOnlyWidget",
+            range: standardStart.upperBound..<aggregate.endIndex
+        ))
+        let medium = String(aggregate[standardStart.lowerBound..<standardEnd.lowerBound])
+        XCTAssertFalse(medium.contains("widgetHeader"))
+        XCTAssertFalse(medium.contains("Text(\"Atria\")"),
+                       "the medium daily overview must reclaim the old visible title row")
+        XCTAssertFalse(medium.contains(".background("),
+                       "rings and legend stay flat on WidgetKit's one calm background")
+    }
+
+    func testAggregateDailyRingsKeepRecoveryStrainAndSleepTruthVisible() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let helperStart = try XCTUnwrap(source.range(of: "private func dailyValue"))
+        let helperEnd = try XCTUnwrap(source.range(
+            of: "private var recoveryOnlyWidget",
+            range: helperStart.upperBound..<source.endIndex
+        ))
+        let helpers = String(source[helperStart.lowerBound..<helperEnd.lowerBound])
+        let ringStart = try XCTUnwrap(source.range(of: "private enum AtriaDailyOverviewMetric"))
+        let ringEnd = try XCTUnwrap(source.range(of: "private struct AtriaWidgetRecoveryGauge"))
+        let rings = String(source[ringStart.lowerBound..<ringEnd.lowerBound])
+
+        XCTAssertTrue(source.contains(
+            "private enum AtriaDailyOverviewMetric: String, CaseIterable, Identifiable {\n    case sleep\n    case recovery\n    case strain"
+        ), "widget order must match AtriaTriRingSlot.defaultOrder")
+        XCTAssertTrue(rings.contains("AtriaWidgetDailyRing(presentation: sleep"))
+        XCTAssertTrue(rings.contains(".frame(width: 88, height: 88)"),
+                      "Sleep is the outer concentric ring")
+        XCTAssertTrue(helpers.contains(
+            "AtriaWidgetMetric.strain.value(snapshot, now: entry.date) != \"--\""
+        ), "Strain must use its cycle and evidence clock before any fill")
+        XCTAssertTrue(helpers.contains("return .partial"))
+        XCTAssertTrue(rings.contains("dash: [5, 4]"),
+                      "partial Strain is a non-completion dashed rail")
+        XCTAssertTrue(helpers.contains("snapshot.strain / 21"),
+                      "only current complete Strain may use its real 0...21 scale")
+        XCTAssertTrue(helpers.contains("return .presence"))
+        XCTAssertTrue(rings.contains("dash: [1, 4]"),
+                      "Sleep duration is presence-only without personal need")
+        XCTAssertFalse(helpers.contains("sleepHours / 8"))
+        XCTAssertFalse(helpers.contains("sleepHours / 12"))
+        XCTAssertTrue(helpers.contains("return displayRecoveryEvidence(snapshot)"))
+        XCTAssertTrue(helpers.contains("return detail"),
+                      "Confirmed and Review sleep provenance must remain visible")
+        XCTAssertTrue(helpers.contains("guard let snapshot = entry.snapshot else { return \"Learning\" }"))
+        XCTAssertTrue(source.contains("return \"Widget updated"),
+                      "createdAt may only describe generic widget delivery")
+        XCTAssertFalse(helpers.contains("Recovery updated"))
+        XCTAssertFalse(helpers.contains("Sleep updated"))
+        XCTAssertTrue(source.contains("#Preview(\"Daily Overview · Concentric\""))
+        XCTAssertTrue(source.contains("#Preview(\"Daily Overview · Separate · Partial\""))
+        XCTAssertTrue(source.contains("sleepDetail: \"Review sleep\""))
+        XCTAssertTrue(source.contains("strainDetail: \"Partial · 52% covered\""))
+    }
+
+    func testAggregateHomeWidgetKeepsEvidenceInsideMarginsAndAdaptsForAccessibility() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let entryStart = try XCTUnwrap(source.range(of: "struct AtriaWidgetEntryView: View"))
+        let entryEnd = try XCTUnwrap(source.range(of: "private struct AtriaWidgetRecoveryGauge"))
+        let aggregate = String(source[entryStart.lowerBound..<entryEnd.lowerBound])
+
+        XCTAssertTrue(aggregate.contains("if dynamicTypeSize.isAccessibilitySize"))
+        XCTAssertTrue(aggregate.contains("private var accessibleSmallWidget"))
+        XCTAssertTrue(aggregate.contains("private var accessibleMediumWidget"))
+        XCTAssertTrue(aggregate.contains("private var widgetStatusFooter"))
+        XCTAssertTrue(aggregate.contains("return \"Widget stale \\(hours)h · Open Atria\""))
+        XCTAssertTrue(aggregate.contains("return \"Widget updated \\(atriaTimeOfDayFormatter.string(from: snapshot.createdAt))\""),
+                      "the delivery clock must explicitly qualify the widget, not Recovery")
+        XCTAssertTrue(aggregate.contains("case \"unverified\": return \"Early estimate\""))
+        XCTAssertTrue(aggregate.contains("case \"validated\": return \"Checked\""))
+        XCTAssertFalse(aggregate.contains("return \"Validated\""),
+                       "internal evidence states must not leak lab vocabulary into end-user copy")
+        XCTAssertTrue(aggregate.contains("Text(recoveryEvidenceFooter)"))
+        XCTAssertTrue(aggregate.contains("Text(widgetFreshnessFooter)"))
+
+        let headerStart = try XCTUnwrap(aggregate.range(of: "private var widgetHeader"))
+        let headerEnd = try XCTUnwrap(aggregate.range(of: "private var recoverySummaryRow", range: headerStart.upperBound..<aggregate.endIndex))
+        let header = String(aggregate[headerStart.lowerBound..<headerEnd.lowerBound])
+        XCTAssertFalse(header.contains("recoveryPercent"),
+                       "the header must not duplicate the recovery score above the recovery hero")
+    }
+
+    func testAggregateWidgetAvoidsVisualUnitDuplicationAndSpeaksClinicalUnits() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let entryStart = try XCTUnwrap(source.range(of: "struct AtriaWidgetEntryView: View"))
+        let entryEnd = try XCTUnwrap(source.range(of: "private struct AtriaWidgetRecoveryGauge"))
+        let aggregate = String(source[entryStart.lowerBound..<entryEnd.lowerBound])
+
+        XCTAssertTrue(aggregate.contains("case .sleep, .steps, .strain: return nil"),
+                      "Sleep values already include h and must not render a duplicate unit")
+        XCTAssertTrue(aggregate.contains("case .hrv: return \"\\(value) milliseconds\""))
+        XCTAssertTrue(aggregate.contains("case .bpm, .rhr: return \"\\(value) beats per minute\""))
+        XCTAssertGreaterThanOrEqual(
+            aggregate.components(separatedBy: "metricAccessibilityValue(metric, value: value)").count - 1,
+            2,
+            "Small summaries and flat rows must both retain spoken units"
+        )
+    }
+
+    func testLiveOnlyPatchCannotPassWidgetClockOffAsRecoveryFreshness() throws {
+        let initialClock = Date(timeIntervalSince1970: 10_000)
+        let liveClock = initialClock.addingTimeInterval(120)
+        let current = deliverySnapshot(steps: 1_400,
+                                       stepsCapturedAt: initialClock,
+                                       heartRate: 72,
+                                       heartRateCapturedAt: initialClock)
+        let patched = WidgetSnapshotPublisher.liveWorkoutPatchedSnapshot(
+            current: current,
+            createdAt: liveClock,
+            heartRate: 84,
+            heartRateCapturedAt: liveClock,
+            steps: 1_420,
+            stepsAreEstimated: false,
+            stepsCapturedAt: liveClock,
+            stepsSource: "verifiedCanonical",
+            stepsCompleteness: "partial",
+            stepsCoverageFraction: 0.52,
+            stepsAuthorityVersion: WidgetSnapshotPublisher.qualifiedStepAuthorityVersion,
+            strain: current.strain,
+            strainDetail: current.strainDetail,
+            strainCapturedAt: current.strainCapturedAt,
+            batteryLevel: current.batteryLevel,
+            batteryCapturedAt: liveClock,
+            batteryCorroboratedAt: liveClock,
+            batteryChargeCapturedAt: liveClock,
+            batteryChargeStatus: "notCharging",
+            batteryChargeText: "Not charging"
+        )
+
+        XCTAssertEqual(patched.createdAt, liveClock)
+        XCTAssertEqual(patched.recoveryPercent, current.recoveryPercent)
+        XCTAssertEqual(patched.recoveryConfidence, current.recoveryConfidence)
+        XCTAssertEqual(patched.recoveryDetail, current.recoveryDetail)
+
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(source.contains("Widget updated"))
+        XCTAssertTrue(source.contains("Widget stale"))
+        XCTAssertFalse(source.contains("Recovery updated"))
+        XCTAssertFalse(source.contains("Recovery stale"))
     }
 
 }
