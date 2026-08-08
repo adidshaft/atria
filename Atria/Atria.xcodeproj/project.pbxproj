@@ -336,11 +336,12 @@
 				CODE_SIGN_ENTITLEMENTS = Atria/Atria.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = JP4HU7X6G7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_CFBundleDisplayName = Atria;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Atria reads live data from your strap over Bluetooth.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "This app reads Health only to confirm locally captured Atria data appears in Apple Health.";
@@ -371,11 +372,12 @@
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
 				CODE_SIGN_ENTITLEMENTS = Atria/Atria.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = JP4HU7X6G7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_CFBundleDisplayName = Atria;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Atria reads live data from your strap over Bluetooth.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "This app reads Health only to confirm locally captured Atria data appears in Apple Health.";
@@ -406,7 +408,7 @@
 				CODE_SIGN_ENTITLEMENTS = AtriaWidget.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = JP4HU7X6G7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -435,7 +437,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
 				CODE_SIGN_ENTITLEMENTS = AtriaWidget.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = JP4HU7X6G7;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -462,7 +464,7 @@
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = JP4HU7X6G7;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
@@ -487,7 +489,7 @@
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = JP4HU7X6G7;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;

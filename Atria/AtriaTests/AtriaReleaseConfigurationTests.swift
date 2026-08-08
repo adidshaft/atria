@@ -55,4 +55,29 @@ final class AtriaReleaseConfigurationTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(buildNumbers.first ?? 0, 2,
                                     "build 1 has already been uploaded")
     }
+
+    func testTestFlightReleaseDeclaresEncryptionAndExternalEligibility() throws {
+        let projectDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let project = try String(
+            contentsOf: projectDirectory
+                .appendingPathComponent("Atria.xcodeproj/project.pbxproj"),
+            encoding: .utf8
+        )
+        let exportOptions = try String(
+            contentsOf: projectDirectory
+                .appendingPathComponent("ExportOptions-TestFlight.plist"),
+            encoding: .utf8
+        )
+
+        XCTAssertEqual(
+            project.components(separatedBy: "INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;").count - 1,
+            2,
+            "both app configurations must answer export compliance in the archived Info.plist"
+        )
+        XCTAssertTrue(exportOptions.contains("<string>app-store-connect</string>"))
+        XCTAssertTrue(exportOptions.contains("<key>testFlightInternalTestingOnly</key>\n\t<false/>"),
+                      "the uploaded build must remain eligible for external beta groups")
+    }
 }
