@@ -37,6 +37,15 @@ struct AtriaStepsWeekChart: View {
                                     y: .value("Steps", steps))
                                 .foregroundStyle(Metrics.electricGreen.opacity(0.85))
                                 .cornerRadius(4)
+                                // Per-bar count (2026-08-08): bars alone gave no
+                                // read of the actual number. Small label above
+                                // each bar; days with no bar stay empty.
+                                .annotation(position: .top, spacing: 2) {
+                                    Text(steps.formatted(.number.grouping(.automatic)))
+                                        .font(.system(size: 9, weight: .semibold))
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize()
+                                }
                         }
                     }
                     if goal > 0 {
@@ -62,11 +71,11 @@ struct AtriaStepsWeekChart: View {
                 // Full-bleed plot inside the card (2026-08-05 width audit).
                 .padding(.horizontal, -12)
 
-                Text("Verified strap steps per day. A day with no verified reading shows no bar.")
+                Text("Verified steps per day · no bar means no verified reading.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             } else {
-                Text("Building your step history — days with verified strap steps will appear here as they're recorded.")
+                Text("Verified strap-step days will appear here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
