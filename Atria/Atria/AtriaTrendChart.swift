@@ -28,7 +28,6 @@ struct AtriaTrendChartCard: View {
     @State private var scrubDate: Date?
     @State private var showExpandedChart = false
     @State private var periodReadout = AtriaTrendPeriodReadout.empty
-    @State private var rangeCoverage: [AtriaTrendRange: Int] = [:]
     // Perf (handoff #5/#8): watching the full points array did a full equality
     // before the skip guard could help. Watch a cheap O(1) key instead;
     // store-backed data supplies a revision, previews fall back to endpoint
@@ -162,40 +161,31 @@ struct AtriaTrendChartCard: View {
             }
 
             if showMoreInsights {
-                // AtriaTrendRangeDock unmounted (dedup audit 2026-07-07):
-                // it was a second control mutating the same $range as the
-                // segmented picker, with the day counts shown a third way.
-                // The struct stays for potential reuse of its coverage rail.
-
-                if periodReadout.hasEnoughSignal {
-                    AtriaTrendRangeReportCard(readout: periodReadout)
-                    AtriaTrendPeriodBalanceMap(readout: periodReadout)
-                    AtriaTrendGlanceBoard(readout: periodReadout)
-                }
-
                 AtriaTrendRangeLens(range: range,
                                     metric: metric,
                                     summary: prepared.summary,
                                     sampleCount: prepared.series.count)
 
-                if let assessment = prepared.assessment, !periodReadout.hasEnoughSignal {
-                    AtriaTrendRangeAssessmentCard(assessment: assessment)
+                if periodReadout.hasCompleteComparison(
+                    minimumSamples: range.confidenceTargetPoints
+                ) {
+                    AtriaTrendRangeReportCard(readout: periodReadout)
+                } else {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Label("Insights are forming", systemImage: "hourglass")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Atria will compare HRV, resting heart rate, and strain after enough current and prior-period days are saved.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .atriaInsetCard(cornerRadius: 18, tint: metric.tint)
                 }
 
-                if let action = prepared.action, !periodReadout.hasEnoughSignal {
-                    AtriaTrendActionReadoutCard(action: action)
-                } else if let summary = prepared.summary {
+                if let summary = prepared.summary {
                     AtriaTrendRangeSummaryStrip(summary: summary, tint: metric.tint)
-                }
-
-                if prepared.series.count >= 3 {
-                    AtriaTrendRangePositionBand(series: prepared.series,
-                                                metric: metric)
-                }
-
-                if prepared.series.count >= 3 {
-                    AtriaTrendSessionDotStrip(series: prepared.series,
-                                              metric: metric)
                 }
             }
         }
@@ -255,9 +245,6 @@ struct AtriaTrendChartCard: View {
                                       now: now)
         periodReadout = Self.preparePeriodReadout(points: points,
                                                   range: range,
-                                                  now: now)
-        rangeCoverage = Self.prepareRangeCoverage(points: points,
-                                                  metric: metric,
                                                   now: now)
     }
 
@@ -352,28 +339,19 @@ struct AtriaTrendChartCard: View {
                                        narrativeRangeLabel: range.narrativeLabel,
                                        hrv: AtriaTrendPeriodDelta(current: average(currentHRV),
                                                                   previous: average(priorHRV),
+                                                                  currentCount: currentHRV.count,
+                                                                  previousCount: priorHRV.count,
                                                                   metric: .hrv),
                                        restingHR: AtriaTrendPeriodDelta(current: average(currentRHR),
                                                                         previous: average(priorRHR),
+                                                                        currentCount: currentRHR.count,
+                                                                        previousCount: priorRHR.count,
                                                                         metric: .restingHR),
                                        strain: AtriaTrendPeriodDelta(current: average(currentStrain),
                                                                      previous: average(priorStrain),
+                                                                     currentCount: currentStrain.count,
+                                                                     previousCount: priorStrain.count,
                                                                      metric: .strain))
-    }
-
-    private static func prepareRangeCoverage(points: [AtriaTrendPoint],
-                                             metric: AtriaTrendMetric,
-                                             now: Date) -> [AtriaTrendRange: Int] {
-        var output: [AtriaTrendRange: Int] = [:]
-        for range in AtriaTrendRange.allCases {
-            let cutoff = range.cutoffDate(now: now)
-            output[range] = points.reduce(into: 0) { count, point in
-                guard point.date >= cutoff,
-                      point.value(for: metric) != nil else { return }
-                count += 1
-            }
-        }
-        return output
     }
 
     private static func average(_ values: [Double]) -> Double? {
@@ -614,8 +592,17 @@ private struct AtriaTrendPeriodReadout: Equatable {
                                                restingHR: .empty(metric: .restingHR),
                                                strain: .empty(metric: .strain))
 
-    var hasEnoughSignal: Bool {
-        [hrv.current, restingHR.current, strain.current].compactMap { $0 }.count >= 2
+    /// The cross-metric readiness/load report needs every input on both sides
+    /// of the comparison. Defaulting a missing metric to a neutral score made
+    /// sparse history look like a real "Ready", "Hold", or "Unload" cue.
+    func hasCompleteComparison(minimumSamples: Int) -> Bool {
+        let required = max(minimumSamples, 1)
+        return [hrv, restingHR, strain].allSatisfy {
+            $0.current != nil
+                && $0.previous != nil
+                && $0.currentCount >= required
+                && $0.previousCount >= required
+        }
     }
 
     var hasPriorSignal: Bool {
@@ -1486,10 +1473,16 @@ private struct AtriaTrendRangeDock: View, Equatable {
 private struct AtriaTrendPeriodDelta: Equatable {
     let current: Double?
     let previous: Double?
+    let currentCount: Int
+    let previousCount: Int
     let metric: AtriaTrendMetric
 
     static func empty(metric: AtriaTrendMetric) -> AtriaTrendPeriodDelta {
-        AtriaTrendPeriodDelta(current: nil, previous: nil, metric: metric)
+        AtriaTrendPeriodDelta(current: nil,
+                              previous: nil,
+                              currentCount: 0,
+                              previousCount: 0,
+                              metric: metric)
     }
 
     var hasPrevious: Bool { previous != nil }

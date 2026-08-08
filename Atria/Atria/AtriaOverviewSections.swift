@@ -9447,7 +9447,7 @@ struct AtriaMetricDetailSheet: View {
                 honestPartialDetail(heroValue: sleepHistory.latestMainSleep?.sleepEfficiencyText ?? "--",
                                     heroState: sleepHistory.latestMainSleep?.displaySleepEfficiency == nil ? "Learning" : "Duration-based estimate",
                                     tint: Metrics.electricSleep,
-                                    bodyText: "Sleep efficiency is estimated from time asleep versus time in bed. A night-by-night trend appears after 5 confirmed nights with motion-validated efficiency.")
+                                    bodyText: "Sleep efficiency compares estimated time asleep with time in bed. A night-by-night trend appears after 5 confirmed nights with enough strap motion to separate sleep from still wakefulness.")
             }
         case .skinTemperature:
             let decoderAvailable = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable

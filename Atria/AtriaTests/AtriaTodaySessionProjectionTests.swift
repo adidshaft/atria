@@ -26,6 +26,24 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
         withExtendedLifetime(cancellable) {}
     }
 
+    func testTodayStateCarriesCivilDaySoMidnightClearsDayScopedCheckIn() {
+        let sessionStore = SessionStore()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let beforeMidnight = Date(timeIntervalSince1970: 1_783_641_599)
+        let afterMidnight = beforeMidnight.addingTimeInterval(2)
+
+        let before = AtriaTodaySessionState(store: sessionStore,
+                                            now: beforeMidnight,
+                                            calendar: calendar)
+        let after = AtriaTodaySessionState(store: sessionStore,
+                                           now: afterMidnight,
+                                           calendar: calendar)
+
+        XCTAssertNotEqual(before.localDay, after.localDay)
+        XCTAssertNotEqual(before, after)
+    }
+
     func testRelevantProfileChangePublishesProjectedMaxHeartRate() async {
         let sessionStore = SessionStore()
         let originalProfile = sessionStore.profile

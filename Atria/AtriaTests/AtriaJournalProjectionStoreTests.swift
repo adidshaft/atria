@@ -100,6 +100,66 @@ final class AtriaJournalProjectionStoreTests: XCTestCase {
         withExtendedLifetime(cancellable) {}
     }
 
+    func testDailyBriefProgressCountsYesNoAndScaleAnswersForToday() {
+        let entry = BehaviorJournalEntry(id: "today",
+                                         day: day,
+                                         createdAt: day,
+                                         tags: [.sleep])
+        let answers = [
+            AtriaJournalCheckInProgress.booleanQuestionID(for: .alcohol):
+                AtriaJournalAnswer(questionID: AtriaJournalCheckInProgress.booleanQuestionID(for: .alcohol),
+                                   day: day,
+                                   value: .no,
+                                   loggedAt: day,
+                                   source: "user"),
+            AtriaJournalTypedQuestion.moodScale.rawValue:
+                AtriaJournalAnswer(questionID: AtriaJournalTypedQuestion.moodScale.rawValue,
+                                   day: day,
+                                   value: .scale(4),
+                                   loggedAt: day,
+                                   source: "user")
+        ]
+
+        let progress = AtriaJournalCheckInProgress.resolve(
+            trackedTags: [.sleep, .alcohol],
+            todayEntry: entry,
+            answersByQuestion: answers
+        )
+
+        XCTAssertEqual(progress.answeredCount, 3)
+        XCTAssertEqual(progress.totalCount, 7)
+        XCTAssertTrue(progress.isStarted)
+        XCTAssertFalse(progress.isComplete)
+        XCTAssertEqual(progress.actionLabel, "Resume check-in · 3 of 7")
+    }
+
+    func testDailyBriefProgressReportsCompletionOnlyWhenEveryCardIsAnswered() {
+        let trackedTags: [BehaviorJournalEntry.Tag] = [.sleep]
+        let entry = BehaviorJournalEntry(id: "complete",
+                                         day: day,
+                                         createdAt: day,
+                                         tags: [.sleep])
+        var answers: [String: AtriaJournalAnswer] = [:]
+        for question in AtriaJournalCheckInProgress.scaleQuestions {
+            answers[question.rawValue] = AtriaJournalAnswer(questionID: question.rawValue,
+                                                            day: day,
+                                                            value: .scale(3),
+                                                            loggedAt: day,
+                                                            source: "user")
+        }
+
+        let progress = AtriaJournalCheckInProgress.resolve(
+            trackedTags: trackedTags,
+            todayEntry: entry,
+            answersByQuestion: answers
+        )
+
+        XCTAssertEqual(progress.answeredCount, progress.totalCount)
+        XCTAssertTrue(progress.isComplete)
+        XCTAssertEqual(progress.actionLabel, "Review check-in")
+        XCTAssertEqual(progress.statusLabel, "Done")
+    }
+
     func testJournalSourceUsesNarrowProjectionInsteadOfSessionStoreObservation() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory

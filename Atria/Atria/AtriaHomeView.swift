@@ -804,7 +804,7 @@ struct AtriaHomeView: View {
 
         var title: String {
             switch self {
-            case .overview: return "Overview"
+            case .overview: return "Today"
             case .vitals: return "Vitals"
             case .journal: return "Journal"
             case .plan: return "Activity"
@@ -8914,6 +8914,42 @@ final class AtriaHomeModel {
         let loadNarrative: String
         let hrZoneMinutes: TodayHRZoneMinutes
 
+        /// Home and Today render a compact projection of the canonical stress
+        /// state, but a scored enum alone does not prove the reading is still
+        /// current. Reuse the same source-clock policy as the expanded Stress
+        /// detail and fail closed without changing the scorer's state/history.
+        nonisolated static func resolvedStressPresentation(
+            state: AtriaStressState,
+            lastMeasuredAt: Date?,
+            now: Date = Date()
+        ) -> AtriaStressPresentation {
+            let presentation = AtriaStressPresentation.make(state: state)
+            guard state.kind == .scored else { return presentation }
+
+            switch AtriaStressReadingFreshness.resolve(
+                isScored: true,
+                updatedAt: lastMeasuredAt,
+                now: now
+            ) {
+            case .live:
+                return presentation
+            case .stale:
+                return AtriaStressPresentation(
+                    level: nil,
+                    value: AtriaCompactMetricPresentation.noValue,
+                    detail: "Waiting for a fresh stress reading",
+                    narrative: "The last scored stress reading is older than 90 seconds, so Atria is not showing it as current."
+                )
+            case .untimed:
+                return AtriaStressPresentation(
+                    level: nil,
+                    value: AtriaCompactMetricPresentation.noValue,
+                    detail: "Reading time unavailable",
+                    narrative: "Atria cannot verify when this stress reading was measured, so it is not shown as current."
+                )
+            }
+        }
+
         var recoveryValue: String {
             Self.recoveryValueText(recoveryEstimate: recoveryEstimate)
         }
@@ -9198,6 +9234,7 @@ final class AtriaHomeModel {
     private var diagnosticsWorkInFlight = false
     private var diagnosticsRefreshToken = UUID()
     private var liveHeartRateFreshnessTask: Task<Void, Never>?
+    private var stressFreshnessExpiryTask: Task<Void, Never>?
     private var prefersPulseSparklineUpdates = false
     private var prefersActivityProjectionUpdates = false
     private var activityProjectionIsDirty = false
@@ -9446,7 +9483,8 @@ final class AtriaHomeModel {
                                                 live: initialCoreLive,
                                                 savedAggregate: self.savedAggregate,
                                                 deferredDetails: nil,
-                                                stressState: sharedStressStore.state)
+                                                stressState: sharedStressStore.state,
+                                                stressLastMeasuredAt: sharedStressStore.lastMeasuredAt)
         let initialHeroState: HeroSnapshot
         #if DEBUG
         let debugHeroFixture = Self.debugFixtureProvisionalRecoveryHeroSnapshot(arguments: ProcessInfo.processInfo.arguments)
@@ -9725,6 +9763,27 @@ final class AtriaHomeModel {
             }
             .store(in: &cancellables)
 
+        stressMonitorStore.$lastMeasuredAt
+            .removeDuplicates()
+            .sink { [weak self] lastMeasuredAt in
+                guard let self else { return }
+                // `state` publishes immediately before `lastMeasuredAt` on a
+                // scored tick. Refresh only when a clock can unlock a currently
+                // hidden scored projection; ordinary timestamp renewal merely
+                // moves the expiry deadline and adds no render cadence.
+                if self.stressMonitorStore.state.kind == .scored,
+                   self.stressMonitorStore.state.level != nil,
+                   self.heroStore.state.stressLevel == nil,
+                   AtriaStressReadingFreshness.resolve(
+                       isScored: true,
+                       updatedAt: lastMeasuredAt
+                   ) == .live {
+                    self.heroRefreshSubject.send(())
+                }
+                self.scheduleStressFreshnessExpiry(lastMeasuredAt: lastMeasuredAt)
+            }
+            .store(in: &cancellables)
+
         let collectionLiveChanges = Publishers.MergeMany([
             ble.$isRecording.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$capturedRows.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -9972,6 +10031,36 @@ final class AtriaHomeModel {
         }
     }
 
+    /// Refresh the compact stress projection once, just after its source-clock
+    /// lease expires. New scored measurements cancel and move this deadline;
+    /// there is no per-second timer invalidating the Home hierarchy.
+    private func scheduleStressFreshnessExpiry(lastMeasuredAt: Date?) {
+        stressFreshnessExpiryTask?.cancel()
+        stressFreshnessExpiryTask = nil
+
+        let now = Date()
+        guard stressMonitorStore.state.kind == .scored,
+              let lastMeasuredAt,
+              AtriaStressReadingFreshness.resolve(
+                  isScored: true,
+                  updatedAt: lastMeasuredAt,
+                  now: now
+              ) == .live else { return }
+
+        let expiresAt = lastMeasuredAt.addingTimeInterval(
+            AtriaStressReadingFreshness.liveWindow
+        )
+        let delay = max(0, expiresAt.timeIntervalSince(now) + 0.05)
+        stressFreshnessExpiryTask = Task { [weak self] in
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.stressFreshnessExpiryTask = nil
+            self.refreshHeroSnapshot()
+        }
+    }
+
     private func publishPulseSparkline() {
         // Throttle FIRST (2026-07-08 perf audit): the chart buckets per second,
         // but RR/HR arrive several times a second, and makePulseSparklineState
@@ -10103,7 +10192,8 @@ final class AtriaHomeModel {
                                                           live: coreLiveStore.state,
                                                           savedAggregate: savedAggregate,
                                                           deferredDetails: deferredDetails,
-                                                          stressState: stressMonitorStore.state))
+                                                          stressState: stressMonitorStore.state,
+                                                          stressLastMeasuredAt: stressMonitorStore.lastMeasuredAt))
     }
 
     private func updateSharedStress(now: Date = Date()) {
@@ -10176,7 +10266,8 @@ final class AtriaHomeModel {
                                                      live: self.coreLiveStore.state,
                                                      savedAggregate: self.savedAggregate,
                                                      deferredDetails: details,
-                                                     stressState: self.stressMonitorStore.state)
+                                                     stressState: self.stressMonitorStore.state,
+                                                     stressLastMeasuredAt: self.stressMonitorStore.lastMeasuredAt)
                 }
                 #else
                 nextHero = Self.makeHeroSnapshot(ble: self.ble,
@@ -10184,7 +10275,8 @@ final class AtriaHomeModel {
                                                  live: self.coreLiveStore.state,
                                                  savedAggregate: self.savedAggregate,
                                                  deferredDetails: details,
-                                                 stressState: self.stressMonitorStore.state)
+                                                 stressState: self.stressMonitorStore.state,
+                                                 stressLastMeasuredAt: self.stressMonitorStore.lastMeasuredAt)
                 #endif
                 self.publishHeroSnapshotIfNeeded(nextHero)
                 self.publishSnapshotIfNeeded(Self.makeSnapshot(store: self.store,
@@ -10642,7 +10734,8 @@ final class AtriaHomeModel {
                                          live: CoreLiveState,
                                          savedAggregate: SavedAggregate,
                                          deferredDetails: DeferredDetails?,
-                                         stressState: AtriaStressState) -> HeroSnapshot {
+                                         stressState: AtriaStressState,
+                                         stressLastMeasuredAt: Date?) -> HeroSnapshot {
         let restingContext = savedAggregate.restingContext
         let rest = restingContext.resolved
         let calendar = Calendar.current
@@ -10692,7 +10785,11 @@ final class AtriaHomeModel {
             && latestSleep.flatMap({ $0.end ?? $0.day }).map {
                 !calendar.isDateInToday($0)
             } == true
-        let stress = AtriaStressPresentation.make(state: stressState)
+        let stress = HeroSnapshot.resolvedStressPresentation(
+            state: stressState,
+            lastMeasuredAt: stressLastMeasuredAt,
+            now: now
+        )
         let liveTRIMP = live.liveTRIMP
         let totalTRIMP = SessionStore.mergedTodayTRIMP(
             savedToday: savedAggregate.savedTodayTRIMP,

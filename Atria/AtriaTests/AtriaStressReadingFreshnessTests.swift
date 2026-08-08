@@ -2,6 +2,16 @@ import XCTest
 @testable import Atria
 
 final class AtriaStressReadingFreshnessTests: XCTestCase {
+    private func scoredState(level: AtriaStressLevel = .medium) -> AtriaStressState {
+        AtriaStressState(level: level,
+                         label: level.title,
+                         detail: "Personal HR + HRV",
+                         kind: .scored,
+                         confidence: 1,
+                         rawActivation: 0.6,
+                         hrvAvailable: true)
+    }
+
     func testFreshScoredReadingIsLive() {
         let now = Date(timeIntervalSinceReferenceDate: 1_000)
         XCTAssertEqual(AtriaStressReadingFreshness.resolve(
@@ -34,5 +44,62 @@ final class AtriaStressReadingFreshnessTests: XCTestCase {
             updatedAt: now,
             now: now
         ), .untimed)
+    }
+
+    func testHomeHeroPreservesFreshScoredStress() {
+        let now = Date(timeIntervalSinceReferenceDate: 1_000)
+        let presentation = AtriaHomeModel.HeroSnapshot.resolvedStressPresentation(
+            state: scoredState(),
+            lastMeasuredAt: now.addingTimeInterval(-30),
+            now: now
+        )
+
+        XCTAssertEqual(presentation.level, .medium)
+        XCTAssertEqual(presentation.value, "Medium")
+        XCTAssertEqual(presentation.detail, "Personal HR + HRV")
+    }
+
+    func testHomeHeroHidesStaleScoredStress() {
+        let now = Date(timeIntervalSinceReferenceDate: 1_000)
+        let presentation = AtriaHomeModel.HeroSnapshot.resolvedStressPresentation(
+            state: scoredState(level: .high),
+            lastMeasuredAt: now.addingTimeInterval(-91),
+            now: now
+        )
+
+        XCTAssertNil(presentation.level)
+        XCTAssertEqual(presentation.value, AtriaCompactMetricPresentation.noValue)
+        XCTAssertEqual(presentation.detail, "Waiting for a fresh stress reading")
+        XCTAssertFalse(presentation.narrative.contains("High"))
+    }
+
+    func testHomeHeroHidesUntimedScoredStress() {
+        let presentation = AtriaHomeModel.HeroSnapshot.resolvedStressPresentation(
+            state: scoredState(level: .low),
+            lastMeasuredAt: nil
+        )
+
+        XCTAssertNil(presentation.level)
+        XCTAssertEqual(presentation.value, AtriaCompactMetricPresentation.noValue)
+        XCTAssertEqual(presentation.detail, "Reading time unavailable")
+        XCTAssertFalse(presentation.narrative.contains("Low"))
+    }
+
+    func testHomeHeroLeavesUnscoredPresentationUnchangedWithoutClock() {
+        let state = AtriaStressState(level: nil,
+                                     label: "Warming up",
+                                     detail: "",
+                                     kind: .warmingUp,
+                                     confidence: 0,
+                                     rawActivation: 0,
+                                     hrvAvailable: false)
+
+        XCTAssertEqual(
+            AtriaHomeModel.HeroSnapshot.resolvedStressPresentation(
+                state: state,
+                lastMeasuredAt: nil
+            ),
+            AtriaStressPresentation.make(state: state)
+        )
     }
 }

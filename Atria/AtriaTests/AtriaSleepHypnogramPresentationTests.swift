@@ -2,9 +2,9 @@ import XCTest
 @testable import Atria
 
 /// Segment→lane mapping, duration-legend math, and axis-tick derivation for
-/// the shared sleep-stages hypnogram — plus the honesty gate: HR-only or
-/// segment-less nights must resolve to an honest empty state, never a
-/// fabricated band.
+/// the shared sleep-stages hypnogram — plus the honesty gate: HR-only nights
+/// may show one generic estimated-asleep window, but no fabricated stage lane,
+/// duration, or percentage.
 final class AtriaSleepHypnogramPresentationTests: XCTestCase {
     private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
@@ -236,7 +236,7 @@ final class AtriaSleepHypnogramPresentationTests: XCTestCase {
         ]
     }
 
-    func testHrOnlyNightRendersHonestNeedsMotionStateNotABand() {
+    func testHrOnlyNightUsesGenericEstimateStateWithoutStageFeed() {
         let start = date(24, 23)
         let end = date(25, 6)
         let hrOnly = night(motionValidated: false,
@@ -252,10 +252,10 @@ final class AtriaSleepHypnogramPresentationTests: XCTestCase {
                                                             stageEvidence: hrOnly.stageEvidence,
                                                             start: hrOnly.start,
                                                             end: hrOnly.end),
-                       .needsMotion)
+                       .estimate)
     }
 
-    func testHrOnlyNightRendersLabeledEstimateFromTheHrModel() {
+    func testHrOnlyCardWithholdsRawStagePrecisionAndKeepsMeasuredHRContext() {
         let start = date(24, 23)
         let end = date(25, 6)
         let hrOnly = night(motionValidated: false,
@@ -263,17 +263,40 @@ final class AtriaSleepHypnogramPresentationTests: XCTestCase {
                            segments: fullNightSegments(start: start, end: end),
                            start: start,
                            end: end)
-        // Numeric/persistence gate stays honest: no DISPLAY segments...
-        XCTAssertTrue(hrOnly.displayStageSegments.isEmpty)
-        // ...but the HR-only stage model's folded segments are exposed for the
-        // card as a clearly-labeled estimate.
-        XCTAssertFalse(hrOnly.estimatedDisplayStageSegments.isEmpty,
-                       "the HR-only stage model produced usable segments")
-        XCTAssertEqual(AtriaSleepHypnogramCard.displayState(segments: hrOnly.estimatedDisplayStageSegments,
+        let card = AtriaSleepHypnogramCard(night: hrOnly)
+
+        XCTAssertFalse(hrOnly.stageSegments.isEmpty,
+                       "the regression fixture must contain raw HR-derived stages")
+        XCTAssertTrue(card.segments.isEmpty,
+                      "the HR-only card must not receive raw stage segments")
+        let directCard = AtriaSleepHypnogramCard(segments: hrOnly.stageSegments,
+                                                 start: hrOnly.start,
+                                                 end: hrOnly.end,
+                                                 stageEvidence: .hrOnlyEstimate,
+                                                 provenanceText: "Estimate",
+                                                 measuredHeartRate: hrOnly.restingHR)
+        XCTAssertTrue(directCard.segments.isEmpty,
+                      "even a direct initializer cannot retain HR-derived stage input")
+        XCTAssertTrue(AtriaSleepHypnogramPresentation.legend(for: card.segments).isEmpty,
+                      "an HR-only card cannot derive stage durations or percentages")
+        XCTAssertEqual(card.measuredHeartRate, 52)
+        XCTAssertEqual(AtriaSleepHypnogramCard.measuredHeartRateText(card.measuredHeartRate),
+                       "Measured resting HR · 52 bpm")
+        XCTAssertEqual(AtriaSleepHypnogramCard.displayState(segments: card.segments,
                                                             stageEvidence: hrOnly.stageEvidence,
                                                             start: hrOnly.start,
                                                             end: hrOnly.end),
                        .estimate)
+    }
+
+    func testHrOnlyEstimateWithoutAUsableWindowFallsBackToNeedsMotion() {
+        XCTAssertEqual(AtriaSleepHypnogramCard.displayState(segments: [],
+                                                            stageEvidence: .hrOnlyEstimate,
+                                                            start: nil,
+                                                            end: nil),
+                       .needsMotion)
+        XCTAssertNil(AtriaSleepHypnogramCard.measuredHeartRateText(nil))
+        XCTAssertNil(AtriaSleepHypnogramCard.measuredHeartRateText(0))
     }
 
     func testMotionValidatedNightRendersTimeline() {
@@ -287,6 +310,9 @@ final class AtriaSleepHypnogramPresentationTests: XCTestCase {
 
         XCTAssertEqual(validated.stageEvidence, .sensorResearch)
         XCTAssertFalse(validated.displayStageSegments.isEmpty)
+        XCTAssertEqual(AtriaSleepHypnogramCard(night: validated).segments,
+                       validated.displayStageSegments,
+                       "motion-backed stage rendering must remain unchanged")
         XCTAssertEqual(AtriaSleepHypnogramCard.displayState(segments: validated.displayStageSegments,
                                                             stageEvidence: validated.stageEvidence,
                                                             start: validated.start,

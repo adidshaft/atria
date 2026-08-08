@@ -10014,7 +10014,8 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_contains(self, home + overview, needle)
         assert_contains(self, home, "let stressMonitorStore: AtriaStressMonitorStore")
         assert_contains(self, home, "stressState: stressMonitorStore.state")
-        assert_contains(self, home, "let stress = AtriaStressPresentation.make(state: stressState)")
+        assert_contains(self, home, "let stress = HeroSnapshot.resolvedStressPresentation(")
+        assert_contains(self, home, "lastMeasuredAt: stressLastMeasuredAt")
         assert_not_contains(self, home, "private static func stressState(ble:")
         for needle in [
             r"\(hero.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)",

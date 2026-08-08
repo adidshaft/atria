@@ -638,7 +638,7 @@ struct AtriaSleepScoreCard: View {
 
     private func valueText(_ component: AtriaSleepScore.ComponentValue) -> String {
         if let percent = component.percent { return "\(Int(percent.rounded()))%" }
-        return component.component == .overnightLoad ? "Not validated" : "Not yet"
+        return component.component == .overnightLoad ? "Needs more evidence" : "Not yet"
     }
 
     var body: some View {
@@ -647,10 +647,10 @@ struct AtriaSleepScoreCard: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Sleep Score")
                         .font(.subheadline.weight(.bold))
-                    Text("Provisional")
+                    Text("Early estimate")
                         .font(.caption2.weight(.black))
                         .foregroundStyle(.orange)
-                        .accessibilityLabel("Provisional score")
+                        .accessibilityLabel("Early sleep score estimate")
                 }
                 Spacer(minLength: 8)
                 if let value = score.score {
