@@ -15,8 +15,15 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         let controls = String(source[controlsStart.lowerBound..<controlsEnd.lowerBound])
 
         XCTAssertTrue(controls.contains("if compact"))
-        XCTAssertTrue(controls.contains("Image(systemName: (state.isPaused ?? false) ? \"play.fill\" : \"pause.fill\")"))
-        XCTAssertTrue(controls.contains("Image(systemName: \"stop.fill\")"))
+        XCTAssertTrue(controls.contains("systemImage: (state.isPaused ?? false) ? \"play.fill\" : \"pause.fill\""))
+        XCTAssertTrue(controls.contains("systemImage: \"stop.fill\""))
+        XCTAssertTrue(controls.contains(".buttonStyle(.glassProminent)"),
+                      "Live Activity actions should use the native high-contrast glass treatment")
+        XCTAssertTrue(controls.contains(".frame(width: compact ? 44 : nil, height: 44)"),
+                      "the styled control itself—not an inset label—must own the 44pt hit target")
+        XCTAssertFalse(controls.contains("minHeight: 44"),
+                       "button-style insets around a 44pt label make the Live Activity clip vertically")
+        XCTAssertFalse(controls.contains(".buttonStyle(.borderedProminent)"))
         XCTAssertTrue(controls.contains(".accessibilityLabel((state.isPaused ?? false) ? \"Resume workout\" : \"Pause workout\")"))
         XCTAssertTrue(controls.contains(".accessibilityLabel(\"End workout\")"))
         XCTAssertTrue(controls.contains("Resumes workout time and route tracking"))
@@ -39,27 +46,34 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         let compactHeart = String(source[compactHeartStart.lowerBound..<compactHeartEnd.lowerBound])
         let lockScreen = String(source[lockScreenStart.lowerBound...])
 
-        XCTAssertTrue(island.contains("Text(signalFresh ? \"\\(context.state.heartRate) bpm\" : \"-- bpm\")"))
+        XCTAssertTrue(island.contains("expandedMetric(value: signalFresh ? \"\\(state.heartRate)\" : \"--\""))
         XCTAssertTrue(island.contains(".lineLimit(1)"))
-        XCTAssertTrue(island.contains(".minimumScaleFactor(0.62)"))
+        XCTAssertTrue(island.contains(".minimumScaleFactor(0.78)"))
         XCTAssertTrue(island.contains(".allowsTightening(true)"))
-        XCTAssertTrue(island.contains(".layoutPriority(2)"))
         XCTAssertTrue(island.contains("AtriaDynamicIslandCompactHeartRate(heartRate: context.state.heartRate"))
         XCTAssertTrue(compactHeart.contains("Text(isLive ? \"\\(heartRate)\" : \"--\")"),
                       "the compact island must show the live numeric HR without an overflowing suffix")
+        XCTAssertTrue(compactHeart.contains("size: 15"))
         XCTAssertTrue(compactHeart.contains(".lineLimit(1)"))
-        XCTAssertTrue(compactHeart.contains(".minimumScaleFactor(0.55)"))
+        XCTAssertTrue(compactHeart.contains(".minimumScaleFactor(0.82)"))
         XCTAssertTrue(compactHeart.contains("Heart rate \\(heartRate) beats per minute"))
 
         XCTAssertTrue(lockScreen.contains("? .system(size: 30, weight: .black, design: .rounded)"),
                       "the reusable metric helper must fit a three-digit heart rate")
         XCTAssertTrue(lockScreen.contains(".minimumScaleFactor(0.58)"))
-        XCTAssertTrue(lockScreen.contains(".layoutPriority(emphasis ? 3 : 0)"))
+        XCTAssertTrue(lockScreen.contains(".frame(width: 68, alignment: .leading)"),
+                      "bounded HR width must leave room for zone and duration")
+        XCTAssertTrue(lockScreen.contains(".frame(width: 82, alignment: .leading)"),
+                      "bounded timer width must stay inside the Lock Screen mask")
+        XCTAssertFalse(lockScreen.contains(".layoutPriority(emphasis ? 3 : 0)"),
+                       "a greedy HR priority pushes every trailing essential outside the frame")
+        XCTAssertTrue(lockScreen.contains(".frame(width: 96)\n                    .layoutPriority(2)"),
+                      "fixed action width must remain visible after secondary metrics compress")
         XCTAssertTrue(lockScreen.contains("title: \"BPM\""),
                       "the BPM suffix must remain a separate label in the reusable metric helper")
         XCTAssertTrue(lockScreen.contains(".lineLimit(1)"))
-        XCTAssertTrue(lockScreen.contains(".minimumScaleFactor(0.68)"),
-                      "the HR-zone, step, calorie, and strain row must shrink rather than wrap")
+        XCTAssertTrue(lockScreen.contains(".minimumScaleFactor(0.72)"),
+                      "the HR-zone, step, and strain rows must shrink rather than wrap")
     }
 
     func testLiveActivityExposesTruthfulBatteryAndSensorStatus() throws {
@@ -78,6 +92,121 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertFalse(source.contains(".accessibilityLabel(\"Sensor status\")"))
         XCTAssertTrue(source.contains(".accessibilityLabel(\"\\(context.state.activityName ?? \"Workout\") workout\")"),
                       "compact and minimal island presentations need a meaningful activity label")
+    }
+
+    func testLiveActivityFullChargeStatusExpiresOnItsIndependentClock() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
+        let chargeStart = try XCTUnwrap(source.range(of: "private func liveActivityChargeStatusIsFresh"))
+        let chargeEnd = try XCTUnwrap(source.range(of: "private func liveActivityHeartRateAvailability",
+                                                  range: chargeStart.upperBound..<source.endIndex))
+        let chargePresentation = String(source[chargeStart.lowerBound..<chargeEnd.lowerBound])
+
+        XCTAssertTrue(chargePresentation.contains("state.batteryChargeStatus == \"charging\""))
+        XCTAssertTrue(chargePresentation.contains("|| state.batteryChargeStatus == \"full\""))
+        XCTAssertTrue(chargePresentation.contains("age <= atriaBatteryChargeFreshness"))
+        XCTAssertTrue(chargePresentation.contains("if liveActivityChargeStatusIsFresh"))
+        XCTAssertFalse(chargePresentation.contains("if state.batteryChargeStatus == \"full\""),
+                       "full must not bypass its independent evidence clock")
+        XCTAssertFalse(chargePresentation.contains("case \"full\": return .green"),
+                       "an expired full status must fall back to the level tint")
+    }
+
+    func testLiveActivityHierarchyIsMinimalTruthfulAndPreviewable() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
+        let islandStart = try XCTUnwrap(source.range(of: "struct AtriaLiveActivityWidget: Widget"))
+        let islandEnd = try XCTUnwrap(source.range(of: "private func liveActivityBatteryAvailability",
+                                                   range: islandStart.upperBound..<source.endIndex))
+        let island = String(source[islandStart.lowerBound..<islandEnd.lowerBound])
+
+        XCTAssertEqual(island.components(separatedBy: "liveActivityTimer(state:").count - 1, 1)
+        XCTAssertFalse(island.contains("DynamicIslandExpandedRegion(.center)"))
+        XCTAssertFalse(island.contains("liveActivityCaloriesText(for: context.state)"))
+        XCTAssertFalse(island.contains("liveActivityDailyStepGoalPresentation(for: context.state)"))
+        XCTAssertTrue(island.contains("ViewThatFits(in: .vertical)"))
+        XCTAssertTrue(island.contains("expandedContent(compactControls: false, showsSensorDetail: true)"))
+        XCTAssertTrue(island.contains("expandedContent(compactControls: true, showsSensorDetail: false)"))
+        XCTAssertFalse(island.contains("if showsZoneBar"),
+                       "the decorative zone bar must yield to the bounded metric and action rows")
+        XCTAssertTrue(island.contains("compact: compactControls"))
+        XCTAssertTrue(island.contains("if showsSensorDetail, let sensorStatus = liveActivitySensorStatusText"))
+        XCTAssertTrue(island.contains("let activityIsStale = context.isStale"))
+        XCTAssertTrue(island.contains("activityIsStale ? Date.distantFuture : Date()"),
+                      "ActivityKit's stale transition must fail every transient sensor value closed")
+        XCTAssertTrue(source.contains("case .reconnecting:"))
+        XCTAssertTrue(source.contains("case .stale:"))
+        XCTAssertTrue(source.contains("case .unavailable:"))
+        XCTAssertTrue(island.contains(".widgetURL(atriaVitalsURL)"))
+        XCTAssertTrue(island.contains(".keylineTint(nominalState"))
+
+        for previewKind in [
+            "as: .content",
+            "as: .dynamicIsland(.expanded)",
+            "as: .dynamicIsland(.compact)",
+            "as: .dynamicIsland(.minimal)"
+        ] {
+            XCTAssertTrue(source.contains(previewKind), "missing preview for \(previewKind)")
+        }
+        for fixture in ["live", "aboveTarget", "paused", "reconnecting", "stale", "unavailable", "ending"] {
+            XCTAssertTrue(source.contains("AtriaLiveActivityPreviewFixture.\(fixture)"))
+        }
+
+        let lockStart = try XCTUnwrap(source.range(of: "private struct AtriaLiveActivityLockScreenView"))
+        let lockEnd = try XCTUnwrap(source.range(of: "#if DEBUG",
+                                                range: lockStart.upperBound..<source.endIndex))
+        let lockScreen = String(source[lockStart.lowerBound..<lockEnd.lowerBound])
+        XCTAssertTrue(lockScreen.contains(".accessibilityLabel(\"Workout strain "))
+        XCTAssertTrue(lockScreen.contains("if dynamicTypeSize.isAccessibilitySize"))
+        XCTAssertTrue(lockScreen.contains("compactLockScreenContent"),
+                      "Accessibility sizes need a terminal two-row layout under ActivityKit's height cap")
+        XCTAssertTrue(lockScreen.contains("context.isStale ? .distantFuture : Date()"))
+        XCTAssertFalse(lockScreen.contains(".frame(width: 108)\n            }\n            .accessibilityElement(children: .ignore)"),
+                       "the parent must not suppress the Pause and End buttons")
+    }
+
+    func testDynamicIslandCoexistencePrioritizesCurrentWorkoutTruthWithoutOwningNowPlaying() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
+        let islandStart = try XCTUnwrap(source.range(of: "struct AtriaLiveActivityWidget: Widget"))
+        let islandEnd = try XCTUnwrap(source.range(of: "private struct AtriaDynamicIslandExpandedBottom",
+                                                  range: islandStart.upperBound..<source.endIndex))
+        let island = String(source[islandStart.lowerBound..<islandEnd.lowerBound])
+        let minimalStart = try XCTUnwrap(source.range(of: "private struct AtriaDynamicIslandMinimalHeartRate"))
+        let minimalEnd = try XCTUnwrap(source.range(of: "private struct AtriaDynamicIslandActivityGlyph",
+                                                   range: minimalStart.upperBound..<source.endIndex))
+        let minimalHeartRate = String(source[minimalStart.lowerBound..<minimalEnd.lowerBound])
+
+        XCTAssertTrue(island.contains("liveActivityTargetZoneLabel(for: context.state)"),
+                      "compact leading should retain the prescribed zone target")
+        XCTAssertTrue(island.contains("AtriaDynamicIslandCompactHeartRate(heartRate: context.state.heartRate"),
+                      "compact trailing should retain the current measured heart rate")
+        XCTAssertTrue(island.contains("AtriaDynamicIslandMinimalHeartRate("),
+                      "minimal coexistence should prefer updated workout information over a static glyph")
+        XCTAssertTrue(island.contains("if nominalState"))
+        XCTAssertTrue(island.contains("Image(systemName: status.systemImage)"),
+                      "paused, ending, reconnecting, and stale truth must override the live metric")
+        XCTAssertFalse(minimalHeartRate.contains("Image(systemName: \"heart.fill\")"),
+                       "minimal must spend its narrow slot on the legible three-digit value")
+        XCTAssertTrue(minimalHeartRate.contains("Text(\"\\(heartRate)\")"))
+        XCTAssertTrue(minimalHeartRate.contains("size: 14"))
+        XCTAssertTrue(minimalHeartRate.contains(".minimumScaleFactor(0.85)"))
+        XCTAssertTrue(minimalHeartRate.contains("live heart rate \\(heartRate) beats per minute, \\(zoneLabel)"),
+                      "VoiceOver should identify the workout, current metric, and color-coded zone")
+        XCTAssertTrue(island.contains("zoneLabel: liveActivityZoneLabel(for: context.state"))
+        XCTAssertFalse(island.contains("NowPlaying"))
+        XCTAssertFalse(island.contains("mediaController"))
+
+        XCTAssertEqual(source.components(separatedBy: "AtriaLiveActivityPreviewFixture.aboveTarget").count - 1, 4,
+                       "the long-name, hour-plus, three-digit stress case belongs in every presentation")
+        XCTAssertTrue(source.contains("state.heartRate = 178"))
+        XCTAssertTrue(source.contains("state.heartRateZoneIndex = 5"))
     }
 
     func testActionStoreConsumesRecentSessionMatchedCommandQueueOnceInTapOrder() throws {
@@ -812,7 +941,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(source.contains("labelText: \"Steps stale\""))
         XCTAssertTrue(source.contains("labelText: \"Steps unavailable\""))
         XCTAssertTrue(source.contains("strap-derived workout steps"))
-        XCTAssertTrue(source.contains("liveActivityStrainProgressText(for: context.state)"))
+        XCTAssertTrue(source.contains("liveActivityStrainProgressText(for: state, now: now)"))
         XCTAssertTrue(source.contains("String(format: \"%.1f / %.1f\", strain, target)"))
         XCTAssertTrue(source.contains("String(format: \"Goal ✓ · %.1f\", strain)"))
         XCTAssertTrue(source.contains("let strain = state.workoutStrain else { return nil }"),
@@ -826,8 +955,6 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         XCTAssertTrue(source.contains("age > atriaBatteryFreshness"))
         XCTAssertFalse(source.contains("state.batteryCapturedAt ?? state.updatedAt"),
                        "timer and HR writes must not renew battery evidence")
-        XCTAssertTrue(source.contains("ProgressView(value: liveActivityStrainProgressFraction(for: context.state))"))
-        XCTAssertTrue(source.contains("liveActivityDailyStepGoalPresentation(for: context.state)"))
         XCTAssertTrue(source.contains("state.dailyStepsAreEstimated != false"),
                       "missing daily-step provenance must fail closed as estimated")
         XCTAssertTrue(source.contains("state.dailyStepsIsLowerBound != false"),
@@ -843,14 +970,10 @@ final class AtriaLiveActivityActionTests: XCTestCase {
                       "healthy live sources must not waste Lock Screen space on a redundant status row")
         XCTAssertTrue(source.contains("\\(label) last \\(atriaCaptureTimeText($0))"),
                       "stale sensor values must reveal their actual capture time")
-        XCTAssertTrue(source.contains("|| dailyStepGoal?.fraction != nil"),
-                      "the goal progress row renders only with a live fraction; stale/unavailable honesty is carried by the presentation function and sensor status row")
         XCTAssertTrue(source.contains("text: \"Step goal stale\""),
                       "stale daily-goal evidence must keep its fail-closed presentation branch")
         XCTAssertTrue(source.contains("text: \"Step goal --\""),
                       "missing daily-goal evidence must keep its fail-closed presentation branch")
-        XCTAssertTrue(source.contains("Label(dailyStepGoal.text, systemImage: \"target\")"))
-        XCTAssertTrue(source.contains("liveActivityCaloriesText(for: context.state)"))
         XCTAssertTrue(source.contains("Approximately \\(Int(calories.rounded())) active calories"))
         XCTAssertTrue(source.contains("guard let calories = state.activeEnergyKilocalories"))
         XCTAssertTrue(source.contains("calories.isFinite"))

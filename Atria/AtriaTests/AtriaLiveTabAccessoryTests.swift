@@ -596,6 +596,54 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertFalse(chrome.contains("Button(action: onShowStrap)"))
     }
 
+    func testTopChromeGlassPlusOffersExactlyStartAndAddActivity() throws {
+        let source = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaHomeView.swift"),
+                                encoding: .utf8)
+        let chromeStart = try XCTUnwrap(source.range(of: "private struct AtriaHomeTopChrome: View"))
+        let chromeEnd = try XCTUnwrap(source.range(of: "private enum AtriaHeaderControlMetrics",
+                                                   range: chromeStart.upperBound..<source.endIndex))
+        let chrome = String(source[chromeStart.lowerBound..<chromeEnd.lowerBound])
+        let actionsStart = try XCTUnwrap(chrome.range(of: "private var actionButtons: some View"))
+        let menuStart = try XCTUnwrap(chrome.range(of: "Menu {", range: actionsStart.upperBound..<chrome.endIndex))
+        let menuEnd = try XCTUnwrap(chrome.range(of: "} label: {", range: menuStart.upperBound..<chrome.endIndex))
+        let menuActions = String(chrome[menuStart.lowerBound..<menuEnd.lowerBound])
+
+        XCTAssertEqual(menuActions.components(separatedBy: "Button(action:").count - 1, 2)
+        XCTAssertTrue(menuActions.contains("Button(action: onStartActivity)"))
+        XCTAssertTrue(menuActions.contains("Label(\"Start Activity\", systemImage: \"figure.run\")"))
+        XCTAssertTrue(menuActions.contains("Button(action: onAddActivity)"))
+        XCTAssertTrue(menuActions.contains("Label(\"Add Activity\", systemImage: \"calendar.badge.plus\")"))
+        XCTAssertTrue(chrome.contains("AtriaToolbarIcon(symbol: \"plus\")"))
+        XCTAssertTrue(chrome.contains(".buttonStyle(AtriaHeaderActionButtonStyle())"))
+        XCTAssertTrue(chrome.contains(".accessibilityLabel(\"Activity shortcuts\")"))
+        XCTAssertTrue(chrome.contains(".accessibilityHint(\"Start a live activity or add a past activity.\")"))
+        XCTAssertFalse(chrome.contains("bubble.left.and.bubble.right.fill"))
+        XCTAssertFalse(chrome.contains("onShowAssistant"))
+        XCTAssertTrue(source.contains("static let height: CGFloat = 44"),
+                      "the glass plus must keep the existing HIG-sized header target")
+    }
+
+    func testTopChromeActivityShortcutReusesExistingStartAndManualAddFlows() throws {
+        let source = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaHomeView.swift"),
+                                encoding: .utf8)
+
+        XCTAssertTrue(source.contains("@State private var showWorkoutStartSheet = false"))
+        XCTAssertTrue(source.contains("@State private var showAddActivitySheet = false"))
+        XCTAssertTrue(source.contains(".sheet(isPresented: $showWorkoutStartSheet)"))
+        XCTAssertTrue(source.contains("AtriaWorkoutStartSheet(initial: AtriaWorkoutStartConfiguration("))
+        XCTAssertTrue(source.contains(".sheet(isPresented: $showAddActivitySheet)"))
+        XCTAssertTrue(source.contains("AtriaAddWorkoutSheet(store: store)"))
+        XCTAssertTrue(source.contains(
+            "onStartActivity: {\n                               guard workoutSession == nil, !isSecuringWorkoutStart else { return }\n                               showWorkoutStartSheet = true"
+        ))
+        XCTAssertTrue(source.contains(
+            "onAddActivity: {\n                               showAddActivitySheet = true"
+        ))
+        XCTAssertTrue(source.contains(
+            "onStartWorkout: {\n                                 showWorkoutStartSheet = true"
+        ), "the existing in-page Today shortcut must remain intact")
+    }
+
     func testNeverConnectedAndPendingReconnectLabelsRemainDistinct() {
         let now = Date(timeIntervalSince1970: 1_800_200_000)
         let neverConnected = topStatusInput(status: .disconnected,

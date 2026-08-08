@@ -924,7 +924,15 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in forbidden:
             assert_not_contains(self, text, needle)
 
-        assert_not_contains(self, text, "ViewThatFits")
+        # Bounded WidgetKit/ActivityKit surfaces may use ViewThatFits to preserve
+        # qualifiers at accessibility sizes. Keep the original ban across the
+        # main app, where it could silently substitute or hide screen content.
+        non_widget_text = "\n".join(
+            source(path) for path in swift_files() if "AtriaWidget" not in path.parts
+        )
+        assert_not_contains(self, non_widget_text, "ViewThatFits")
+        widget_text = source(ROOT / "Atria" / "AtriaWidget" / "AtriaWidget.swift")
+        self.assertGreaterEqual(widget_text.count("ViewThatFits(in: .vertical)"), 4)
 
         for needle in [
             "TabView(selection:",
@@ -932,18 +940,22 @@ class HandoffStaticChecks(unittest.TestCase):
             ".tabItem { Label(HomeTab.vitals.title, systemImage: HomeTab.vitals.systemImage) }",
             ".tabItem { Label(HomeTab.journal.title, systemImage: HomeTab.journal.systemImage) }",
             ".tag(HomeTab.journal)",
-            # Strap moved to the top chrome (2026-07-05). Assistant (still "Coming
-            # Soon") also moved to a top-right icon (2026-07-06); the Plan tab took
-            # the bottom-bar slot.
+            # Strap stays in the status chip. The old Assistant bubble is now a
+            # native two-action activity shortcut while Assistant remains
+            # available through its in-page surfaces/cover.
             ".tabItem { Label(HomeTab.plan.title, systemImage: HomeTab.plan.systemImage) }",
             'onTapWhenConnected: onShowStrap',
-            'Button(action: onShowAssistant) {',
+            'AtriaToolbarIcon(symbol: "plus")',
+            'Label("Start Activity", systemImage: "figure.run")',
+            'Label("Add Activity", systemImage: "calendar.badge.plus")',
             'case .strap: "Strap"',
             # 2026-07-08 user-directed: the Assistant is implemented
             # (AtriaAssistantScreen — deterministic Q&A + opt-in coach card);
             # the Coming Soon placeholder is gone.
             'AtriaAssistantScreen(store: store,',
-            ".tabBarMinimizeBehavior(.onScrollDown)",
+            # Core daily destinations remain visible; the old minimize behavior
+            # collapsed them behind an opaque affordance on physical iOS 26.
+            ".toolbarBackground(.hidden, for: .tabBar)",
             ".tabViewBottomAccessory",
             ".padding(.bottom, scrollBottomClearance)",
             "private var scrollBottomClearance: CGFloat",
@@ -10794,17 +10806,36 @@ class HandoffStaticChecks(unittest.TestCase):
             assert_not_contains(self, top_chrome, forbidden)
 
         top_chrome_body = top_chrome[:top_chrome.index("private enum AtriaHeaderControlMetrics")]
-        # Strap is now the always-interactive leading battery/status pill and
-        # remains available in Settings, leaving two compact trailing actions.
-        self.assertEqual(top_chrome_body.count(".buttonStyle(AtriaHeaderActionButtonStyle())"), 2)
+        actions = top_chrome_body[top_chrome_body.index("private var actionButtons: some View"):]
+        activity_menu = actions[:actions.index("// Settings remains reachable")]
+        settings_action = actions[actions.index("// Settings remains reachable"):]
+        # Strap is the leading status pill. The two trailing interactive controls
+        # are now a native two-option activity Menu and Settings; both retain the
+        # shared 44pt Liquid Glass button style without relying on a brittle total.
+        for needle in [
+            "Menu {",
+            "Button(action: onStartActivity)",
+            'Label("Start Activity", systemImage: "figure.run")',
+            "Button(action: onAddActivity)",
+            'Label("Add Activity", systemImage: "calendar.badge.plus")',
+            'AtriaToolbarIcon(symbol: "plus")',
+            '.accessibilityLabel("Activity shortcuts")',
+        ]:
+            assert_contains(self, activity_menu, needle)
+        assert_contains(self, activity_menu, ".buttonStyle(AtriaHeaderActionButtonStyle())")
+        assert_contains(self, settings_action, ".buttonStyle(AtriaHeaderActionButtonStyle())")
+        assert_not_contains(self, top_chrome_body, "bubble.left.and.bubble.right.fill")
+        assert_not_contains(self, top_chrome_body, "onShowAssistant")
         assert_contains(self, top_chrome_body, "onTapWhenConnected: onShowStrap")
         assert_not_contains(self, top_chrome_body, "Button(action: onShowStrap)")
         assert_contains(self, top_chrome_body, "Button(action: onShowSettings)")
         self.assertNotIn("private var shouldShowTopChromeHelp: Bool", home)
         assert_contains(self, top_chrome_body, "AtriaToolbarIcon(symbol: \"gearshape\")")
         assert_contains(self, top_chrome_body, ".accessibilityLabel(\"Settings\")")
-        assert_contains(self, home, 'Text("Data gap · \\(missedDataDurationText)")')
-        assert_contains(self, home, 'Text(protectsLiveStream ? "Live protected" : "Check strap history")')
+        assert_contains(self, home, "Text(bannerCopy.title)")
+        assert_contains(self, home, "Text(syncTapFeedback ?? bannerCopy.subtitle)")
+        assert_contains(self, home, 'return Copy(title: "Live HR protected"')
+        assert_contains(self, home, 'return Copy(title: "Catching up history"')
         assert_contains(self, home, "private var compactState: some View")
         assert_contains(self, home, "if diagnosis.guidanceDomain.offersConnectionGuide {")
         assert_contains(self, home, "Button(action: onHelp) {\n                    Image(systemName: \"questionmark.circle\")")

@@ -285,10 +285,10 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         let compactHeartEnd = try XCTUnwrap(widgetSource.range(of: "private struct AtriaDynamicIslandActivityGlyph",
                                                                range: compactHeartStart.upperBound..<widgetSource.endIndex))
         let compactHeart = String(widgetSource[compactHeartStart.lowerBound..<compactHeartEnd.lowerBound])
-        XCTAssertTrue(island.contains(".minimumScaleFactor(0.62)"))
-        XCTAssertTrue(island.contains("Heart rate \\(context.state.heartRate) beats per minute"))
+        XCTAssertTrue(island.contains(".minimumScaleFactor(0.78)"))
+        XCTAssertTrue(island.contains("Heart rate \\(state.heartRate) beats per minute"))
         XCTAssertTrue(island.contains("AtriaDynamicIslandCompactHeartRate(heartRate: context.state.heartRate"))
-        XCTAssertTrue(compactHeart.contains(".minimumScaleFactor(0.55)"))
+        XCTAssertTrue(compactHeart.contains(".minimumScaleFactor(0.82)"))
         XCTAssertTrue(compactHeart.contains(".lineLimit(1)"))
         XCTAssertTrue(compactHeart.contains("Heart rate \\(heartRate) beats per minute"))
 
@@ -297,7 +297,9 @@ final class AtriaWorkoutRouteTests: XCTestCase {
                                                        range: lockStart.upperBound..<widgetSource.endIndex))
         let lock = String(widgetSource[lockStart.lowerBound..<lockEnd.lowerBound])
         XCTAssertTrue(lock.contains(".minimumScaleFactor(0.58)"))
-        XCTAssertTrue(lock.contains(".layoutPriority(emphasis ? 3 : 0)"))
+        XCTAssertTrue(lock.contains(".frame(width: 68, alignment: .leading)"))
+        XCTAssertTrue(lock.contains(".frame(width: 82, alignment: .leading)"))
+        XCTAssertFalse(lock.contains(".layoutPriority(emphasis ? 3 : 0)"))
         XCTAssertTrue(lock.contains(".accessibilityElement(children: .ignore)"))
     }
 

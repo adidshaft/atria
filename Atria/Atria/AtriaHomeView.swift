@@ -912,6 +912,7 @@ struct AtriaHomeView: View {
     @State private var workoutSession: AtriaWorkoutSession?
     @State private var workoutPersistenceRevision: UInt64 = 0
     @State private var showWorkoutStartSheet = false
+    @State private var showAddActivitySheet = false
     /// A tap must be visibly acknowledged before the crash-safe intent write
     /// completes. This is deliberately not a workout: no clock, metrics, or
     /// motion lease is published until the atomic intent has read back.
@@ -1424,6 +1425,14 @@ struct AtriaHomeView: View {
             }
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showAddActivitySheet) {
+            // Reuse Activity's canonical manual-workout flow. This shortcut is
+            // presentation-only; persistence and evidence rules stay owned by
+            // AtriaAddWorkoutSheet and SessionStore.
+            AtriaAddWorkoutSheet(store: store)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
         .alert("Workout couldn't start",
                isPresented: $showWorkoutStartPersistenceError) {
@@ -4523,8 +4532,13 @@ struct AtriaHomeView: View {
                            onShowStrap: {
                                showStrapScreen = true
                            },
-                           onShowAssistant: {
-                               showAssistant = true
+                           activityStartIsAvailable: workoutSession == nil && !isSecuringWorkoutStart,
+                           onStartActivity: {
+                               guard workoutSession == nil, !isSecuringWorkoutStart else { return }
+                               showWorkoutStartSheet = true
+                           },
+                           onAddActivity: {
+                               showAddActivitySheet = true
                            },
                            onTapStatusWhenNotConnected: {
                                ble.startScan(reason: "home_status_chip")
@@ -11631,7 +11645,9 @@ private struct AtriaHomeTopChrome: View {
     let prefersLiveActivityStatus: Bool
     let onShowSettings: () -> Void
     let onShowStrap: () -> Void
-    let onShowAssistant: () -> Void
+    let activityStartIsAvailable: Bool
+    let onStartActivity: () -> Void
+    let onAddActivity: () -> Void
     let onTapStatusWhenNotConnected: () -> Void
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.verticalSizeClass) private var verticalSizeClass
@@ -11680,12 +11696,26 @@ private struct AtriaHomeTopChrome: View {
 
     private var actionButtons: some View {
         HStack(spacing: 10) {
-            // Assistant (Coming Soon) — relocated here from the bottom tab bar.
-            Button(action: onShowAssistant) {
-                AtriaToolbarIcon(symbol: "bubble.left.and.bubble.right.fill")
+            // One native menu replaces the ambiguous chat bubble. The trigger
+            // remains the only new glass surface; both destinations reuse their
+            // existing sheets and keep the Today page's in-content actions.
+            Menu {
+                Button(action: onStartActivity) {
+                    Label("Start Activity", systemImage: "figure.run")
+                }
+                .disabled(!activityStartIsAvailable)
+
+                Button(action: onAddActivity) {
+                    Label("Add Activity", systemImage: "calendar.badge.plus")
+                }
+            } label: {
+                AtriaToolbarIcon(symbol: "plus")
             }
+            .menuOrder(.fixed)
+            .menuIndicator(.hidden)
             .buttonStyle(AtriaHeaderActionButtonStyle())
-            .accessibilityLabel("Assistant")
+            .accessibilityLabel("Activity shortcuts")
+            .accessibilityHint("Start a live activity or add a past activity.")
 
             // Settings remains reachable while the strap reconnects and while
             // the workout's compact metrics move to ActivityKit surfaces.
