@@ -277,6 +277,118 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertNil(AtriaStressMonitorStore.awakeReference(from: cold, now: base.addingTimeInterval(90)))
     }
 
+    // Persisted awake reference (2026-08-08 §"persist awake reference"): the
+    // 45-min buffer takes ~8 min of quiet-awake wear to warm up, so without a
+    // seed every cold launch scores the first minutes against the fixed
+    // physiological default. Store A learns and persists a reference; a fresh
+    // Store B on the same suite must seed from it and score the wearer's own
+    // (high-for-most-people) awake HR as Calm on its very first scored tick —
+    // before its own buffer can warm — where an unseeded Store C does not.
+    @MainActor
+    func testAwakeReferencePersistsAndSeedsFreshLaunchBeforeBufferWarms() throws {
+        let baseline = makeBaseline(restingMean: 56, restingSD: 3, hrvSampleDays: 0)
+        let awakeHR = 85 // this wearer's real awake HR, well above rest (60)
+
+        let suiteName = "atria.stress.awakeref.test.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+
+        // Store A: warm the awake buffer past its 60-sample / 8-min trust gate so
+        // a reference is learned and written to the injected suite.
+        let storeA = AtriaStressMonitorStore(defaults: suite)
+        for i in 0..<70 {
+            storeA.update(heartRate: (i % 2 == 0) ? 84 : 86,
+                          hasContact: true,
+                          recentRRSamples: [],
+                          isRecording: false,
+                          zoneIndex: 0,
+                          hrvSnapshot: nil,
+                          baseline: baseline,
+                          restingMaxHR: restingMaxHR,
+                          hasActiveSleepEvidence: false,
+                          now: now.addingTimeInterval(Double(i) * 9))
+        }
+        let persisted = try XCTUnwrap(
+            AtriaStressMonitorStore.loadPersistedAwakeReference(defaults: suite),
+            "a warm awake buffer must persist its learned reference")
+        XCTAssertEqual(persisted.center, 85, accuracy: 1.0)
+
+        // Drive a fresh store to its FIRST scored tick (≈125s of contact) with a
+        // handful of same-HR ticks — too few to warm its own buffer, so scoring
+        // depends entirely on whatever reference was seeded at launch.
+        func warmToFirstScoredTick(_ store: AtriaStressMonitorStore) {
+            for offset in [0.0, 50.0, 100.0, 125.0] {
+                store.update(heartRate: awakeHR,
+                             hasContact: true,
+                             recentRRSamples: [],
+                             isRecording: false,
+                             zoneIndex: 0,
+                             hrvSnapshot: nil,
+                             baseline: baseline,
+                             restingMaxHR: restingMaxHR,
+                             hasActiveSleepEvidence: false,
+                             now: now.addingTimeInterval(1000 + offset))
+            }
+        }
+
+        // Store B: fresh launch on the SAME suite → seeded → Calm at 85 bpm.
+        let storeB = AtriaStressMonitorStore(defaults: suite)
+        warmToFirstScoredTick(storeB)
+        XCTAssertEqual(storeB.state.kind, .scored)
+        XCTAssertEqual(storeB.state.level, .calm,
+                       "seeded from the wearer's own ~85 bpm awake HR, 85 reads Calm")
+
+        // Store C: fresh launch on an EMPTY suite → no seed → the physiological
+        // default centers far lower, so the same 85 bpm does NOT read Calm.
+        let emptyName = "atria.stress.awakeref.test.empty.\(UUID().uuidString)"
+        let emptySuite = try XCTUnwrap(UserDefaults(suiteName: emptyName))
+        defer { emptySuite.removePersistentDomain(forName: emptyName) }
+        let storeC = AtriaStressMonitorStore(defaults: emptySuite)
+        warmToFirstScoredTick(storeC)
+        XCTAssertEqual(storeC.state.kind, .scored)
+        XCTAssertNotEqual(storeC.state.level, .calm,
+                          "without a seed the default reference flags this wearer's typical awake HR as elevated")
+    }
+
+    // A persisted reference older than the seed max-age must be ignored — awake
+    // HR drifts with fitness/illness/season, so a stale seed is worse than the
+    // default. A ~30-day-old seed for a low-awake-HR profile must NOT drag a
+    // genuinely-typical reading; the store falls back to the default instead.
+    @MainActor
+    func testStaleAwakeReferenceSeedIsIgnored() throws {
+        let baseline = makeBaseline(restingMean: 56, restingSD: 3, hrvSampleDays: 0)
+
+        let suiteName = "atria.stress.awakeref.stale.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+
+        // Hand-write a seed stamped 30 days ago (past the 14-day max-age).
+        let stale = AtriaAwakeReferenceSnapshot(center: 120,
+                                                spread: 6,
+                                                updatedAt: now.addingTimeInterval(-30 * 24 * 3600))
+        suite.set(try JSONEncoder().encode(stale), forKey: "atria.stress.awakeReference.v1")
+
+        let store = AtriaStressMonitorStore(defaults: suite)
+        for offset in [0.0, 50.0, 100.0, 125.0] {
+            store.update(heartRate: 85,
+                         hasContact: true,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 0,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: now.addingTimeInterval(offset))
+        }
+        // A fresh center-120 seed would make 85 bpm read Calm; because the seed
+        // is stale it is discarded and the default (center ≈ rest + 15) applies,
+        // so 85 bpm scores elevated exactly as in the unseeded case.
+        XCTAssertEqual(store.state.kind, .scored)
+        XCTAssertNotEqual(store.state.level, .calm,
+                          "a seed past the max-age must be ignored in favour of the default")
+    }
+
     // MARK: Suppression
 
     func testSuppressedWhileRecording() {
