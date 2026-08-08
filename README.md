@@ -40,6 +40,33 @@ This project is independent and unaffiliated with WHOOP. It does not bypass paid
   <img src="assets/atria-ai-coach.png" alt="Atria AI coach screen" width="260">
 </p>
 
+## App Tour
+
+<p align="center">
+  <a href="assets/screenshots/atria-today-overview.png"><img src="assets/screenshots/atria-today-overview.png" alt="Atria Today overview" width="180"></a>
+  <a href="assets/screenshots/atria-today-glance.png"><img src="assets/screenshots/atria-today-glance.png" alt="Atria Today metrics at a glance" width="180"></a>
+  <a href="assets/screenshots/atria-vitals-live.png"><img src="assets/screenshots/atria-vitals-live.png" alt="Atria live vitals monitor" width="180"></a>
+  <a href="assets/screenshots/atria-vitals-overview.png"><img src="assets/screenshots/atria-vitals-overview.png" alt="Atria health monitor" width="180"></a>
+</p>
+
+<p align="center">
+  <a href="assets/screenshots/atria-hrv-trends.png"><img src="assets/screenshots/atria-hrv-trends.png" alt="Atria HRV trends" width="180"></a>
+  <a href="assets/screenshots/atria-journal-insights.png"><img src="assets/screenshots/atria-journal-insights.png" alt="Atria journal insights" width="180"></a>
+  <a href="assets/screenshots/atria-activity-timeline.png"><img src="assets/screenshots/atria-activity-timeline.png" alt="Atria daily activity timeline" width="180"></a>
+</p>
+
+<p align="center">
+  <a href="assets/screenshots/atria-workout-setup.png"><img src="assets/screenshots/atria-workout-setup.png" alt="Atria workout setup" width="180"></a>
+  <a href="assets/screenshots/atria-activity-picker.png"><img src="assets/screenshots/atria-activity-picker.png" alt="Atria activity picker" width="180"></a>
+  <a href="assets/screenshots/atria-live-workout.png"><img src="assets/screenshots/atria-live-workout.png" alt="Atria live workout" width="180"></a>
+</p>
+
+<p align="center">
+  <a href="assets/screenshots/atria-workout-summary.png"><img src="assets/screenshots/atria-workout-summary.png" alt="Atria workout summary" width="180"></a>
+  <a href="assets/screenshots/atria-breathwork.png"><img src="assets/screenshots/atria-breathwork.png" alt="Atria breathwork" width="180"></a>
+  <a href="assets/screenshots/atria-metric-customization.png"><img src="assets/screenshots/atria-metric-customization.png" alt="Atria Today metric customization" width="180"></a>
+</p>
+
 ## Current Status
 
 Atria is usable for local backup and honest diagnostics on a physical iPhone. For the current single-strap build, personal baseline is the end-user ready HRV/recovery state; external-reference validation remains an optional/internal gate for HealthKit HRV and research claims, not a required user task.
