@@ -508,13 +508,40 @@ struct AtriaApp: App {
                 // Robust backlog signal, not the raw ticket (2026-08-08): a
                 // background window must drain whenever records still sit on the
                 // strap, even after publication falsely cleared the ticket.
-                if ble.hasDrainableStrapBacklog {
+                //
+                // Motion/step coverage (2026-08-08): HR and motion offload on the
+                // same single BLE transport, but only HR had a background wake, so
+                // motion tickets chronically starved (steps stuck ~48%). This
+                // window now drives MOTION when HR is caught up OR only SOFT behind
+                // (frontier stale, no range-loss ticket, flush debt caught-up) and
+                // a motion offload is waiting. HR still wins outright when it is
+                // HARD behind — a range-loss ticket or fresh flush debt — so
+                // latest-data reliability is never traded for motion.
+                let hrBacklogReason = AtriaBLEManager.strapBacklogReason()
+                let hrHardBehind = hrBacklogReason == .ticket || hrBacklogReason == .freshDebt
+                let motionResumable = ble.hasResumableMotionBankOffload
+                if ble.hasDrainableStrapBacklog, hrHardBehind || !motionResumable {
                     historicalRecoverySucceeded = await ble
                         .requestOfflineHistoricalSyncAwaitingCompletion(
                             reason: reason,
                             admitAutomaticConnectedHandoffIfEligible: true
                         )
                     if historicalRecoverySucceeded {
+                        recoveredPublicationSucceeded = await store.awaitRecoveredDataPublication(
+                            after: priorArchiveRevision,
+                            timeout: .seconds(25)
+                        )
+                    }
+                } else if motionResumable {
+                    // The wrapper no-ops if a sync is already running (it awaits
+                    // that generation instead), so no in-progress guard is needed
+                    // here — `offlineHistoricalSyncInProgress` is private anyway.
+                    let motionOffloaded = await ble
+                        .resumePendingWorkoutHistoricalMotionBankOffloadAwaitingCompletion(
+                            reason: "bg_processing_motion",
+                            maintenanceWindow: true
+                        )
+                    if motionOffloaded {
                         recoveredPublicationSucceeded = await store.awaitRecoveredDataPublication(
                             after: priorArchiveRevision,
                             timeout: .seconds(25)
