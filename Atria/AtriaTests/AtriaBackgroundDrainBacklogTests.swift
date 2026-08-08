@@ -109,4 +109,65 @@ final class AtriaBackgroundDrainBacklogTests: XCTestCase {
         s.set(now.timeIntervalSince1970 - 40 * 60, forKey: frontierKey) // also stale
         XCTAssertEqual(reason(s), .ticket, "a real ticket must win over a stale frontier -> no yield")
     }
+
+    // MARK: - Connected-slice HOLD signal parity (2026-08-08 bg-convergence fix)
+    // The drain HOLD (keep a productive background slice through live-HR silence
+    // instead of releasing it into a 5-min cooldown) must key on the SAME robust
+    // backlog signal as admission — not the raw range-loss ticket, which the
+    // publication race can clear while records still sit on the strap.
+
+    private func hold(backlog: Bool,
+                      foreground: Bool = false,
+                      owner: AtriaBLEManager.ProtectedR10CleanOwnerState = .none,
+                      workout: Bool = false,
+                      storm: Bool = false,
+                      productive: Bool = true) -> Bool {
+        AtriaBLEManager.shouldHoldProductiveBacklogSlice(
+            backlogPending: backlog,
+            foregroundInteractive: foreground,
+            cleanOwnerState: owner,
+            activeExplicitWorkout: workout,
+            recentDisconnectStorm: storm,
+            recentDurableProgress: productive)
+    }
+
+    func testHoldEngagesForBackgroundProductiveBacklog() {
+        XCTAssertTrue(hold(backlog: true))
+    }
+
+    func testHoldNeverEngagesInForeground() {
+        XCTAssertFalse(hold(backlog: true, foreground: true),
+                       "live HR wins in the foreground; never hold a slice there")
+    }
+
+    func testStalledSliceIsReleasedNotHeld() {
+        XCTAssertFalse(hold(backlog: true, productive: false),
+                       "no recent durable progress -> release, never hold a dead slice")
+    }
+
+    func testNoBacklogNoHold() {
+        XCTAssertFalse(hold(backlog: false))
+    }
+
+    func testWorkoutOrStormBlocksHold() {
+        XCTAssertFalse(hold(backlog: true, workout: true))
+        XCTAssertFalse(hold(backlog: true, storm: true))
+    }
+
+    func testUnprovenOwnerStateBlocksHold() {
+        XCTAssertFalse(hold(backlog: true, owner: .proving))
+    }
+
+    /// THE FIX: a frontier-stale backlog (no raw ticket, no fresh debt) now
+    /// engages the hold because it reads the robust signal. Under the old
+    /// raw-ticket gate this returned false and the background drain stalled.
+    func testFrontierStaleBacklogEngagesHoldViaRobustSignal() throws {
+        let (s, n) = try makeSuite(); defer { s.removePersistentDomain(forName: n) }
+        s.set(now.timeIntervalSince1970 - 40 * 60, forKey: frontierKey) // 40 min stale, NO ticket
+        XCTAssertFalse(s.bool(forKey: ticketKey), "precondition: the raw range-loss ticket is clear")
+        let backlog = AtriaBLEManager.drainableStrapBacklogPendingFromDefaults(now: now, defaults: s)
+        XCTAssertTrue(backlog, "robust signal recognizes the frontier-stale backlog")
+        XCTAssertTrue(hold(backlog: backlog),
+                      "hold engages on robust backlog even with the raw ticket clear (the bug's target case)")
+    }
 }
