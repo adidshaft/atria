@@ -519,29 +519,37 @@ struct AtriaApp: App {
                 // latest-data reliability is never traded for motion.
                 let hrBacklogReason = AtriaBLEManager.strapBacklogReason()
                 let hrHardBehind = hrBacklogReason == .ticket || hrBacklogReason == .freshDebt
-                let motionResumable = ble.hasResumableMotionBankOffload
-                if ble.hasDrainableStrapBacklog, hrHardBehind || !motionResumable {
+                // Give the chronically-starved motion offload THIS window whenever
+                // HR is not HARD-behind. But `hasResumableMotionBankOffload` is a
+                // ledger-only signal — the offload can still refuse (bank capturing,
+                // 15-min cadence, not connected, calibration hold) — so treat it as
+                // an ATTEMPT, and never idle the window: if motion did not actually
+                // drain (a real generation advance, per the await wrapper), fall
+                // through to the HR drain below so a background wake is never wasted.
+                var motionDrained = false
+                if !hrHardBehind, ble.hasResumableMotionBankOffload {
+                    motionDrained = await ble
+                        .resumePendingWorkoutHistoricalMotionBankOffloadAwaitingCompletion(
+                            reason: "bg_processing_motion",
+                            maintenanceWindow: true
+                        )
+                    if motionDrained {
+                        recoveredPublicationSucceeded = await store.awaitRecoveredDataPublication(
+                            after: priorArchiveRevision,
+                            timeout: .seconds(25)
+                        )
+                    }
+                }
+                // HR drain: outright when HARD-behind, otherwise as the fallback
+                // when motion could not run. Latest-data reliability is never
+                // traded away, and the window always does whatever work is possible.
+                if !motionDrained, ble.hasDrainableStrapBacklog {
                     historicalRecoverySucceeded = await ble
                         .requestOfflineHistoricalSyncAwaitingCompletion(
                             reason: reason,
                             admitAutomaticConnectedHandoffIfEligible: true
                         )
                     if historicalRecoverySucceeded {
-                        recoveredPublicationSucceeded = await store.awaitRecoveredDataPublication(
-                            after: priorArchiveRevision,
-                            timeout: .seconds(25)
-                        )
-                    }
-                } else if motionResumable {
-                    // The wrapper no-ops if a sync is already running (it awaits
-                    // that generation instead), so no in-progress guard is needed
-                    // here — `offlineHistoricalSyncInProgress` is private anyway.
-                    let motionOffloaded = await ble
-                        .resumePendingWorkoutHistoricalMotionBankOffloadAwaitingCompletion(
-                            reason: "bg_processing_motion",
-                            maintenanceWindow: true
-                        )
-                    if motionOffloaded {
                         recoveredPublicationSucceeded = await store.awaitRecoveredDataPublication(
                             after: priorArchiveRevision,
                             timeout: .seconds(25)
