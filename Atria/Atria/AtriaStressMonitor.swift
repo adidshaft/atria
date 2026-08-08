@@ -2,12 +2,13 @@ import Darwin
 import Foundation
 import SwiftUI
 
-/// WHOOP-style live 0-3 stress score, built entirely from signals this codebase
-/// already publishes: live HR (`ble.heartRate` / `PulseLiveState.heartRate`),
-/// rolling RR beats (`recentRRSamples`) for a fast short-window RMSSD, the
-/// slower 5-minute `HRVSnapshot`, and the wearer's own personal baseline
-/// (`PersonalBaseline`) with its trust tiers. No IMU is used — elevated HR
-/// during a workout is recognized and suppressed, not scored as "stress".
+/// Live physiological Stress and cardiac-arousal evidence built entirely from
+/// signals this codebase already publishes: live HR
+/// (`ble.heartRate` / `PulseLiveState.heartRate`), rolling RR beats
+/// (`recentRRSamples`) for a fast short-window RMSSD, the slower qualified
+/// `HRVSnapshot`, and the wearer's own personal baseline (`PersonalBaseline`)
+/// with its trust tiers. No IMU is used or claimed as motion qualification —
+/// recognized workouts are suppressed rather than scored as Stress.
 ///
 /// The HR term is z-scored against the wearer's own recent AWAKE heart rate
 /// (learned median, or resting + a default offset until learned) — NOT their
@@ -17,9 +18,9 @@ import SwiftUI
 ///
 /// Honesty first: until a personal resting-HR baseline is trusted (14 distinct
 /// fresh days), no numeric level is shown at all — only "Calibrating (n/14)".
-/// Until the HRV baseline is *also* trusted, the score runs HR-only and is
-/// capped at Medium (2): elevated HR alone can never be reported as "High"
-/// without HRV corroboration.
+/// Until the HRV baseline is *also* trusted, Atria reports a qualitative
+/// HR-only cardiac-arousal band (capped at Medium), not a numeric Stress score.
+/// Elevated HR alone can never be reported as "High" without HRV evidence.
 enum AtriaStressLevel: Int, Equatable, CaseIterable, Sendable {
     case calm = 0
     case low = 1
@@ -48,6 +49,82 @@ enum AtriaStressLevel: Int, Equatable, CaseIterable, Sendable {
     }
 }
 
+/// The physiological evidence contract behind one scored monitor sample.
+///
+/// HR-only elevation remains useful evidence, but it is not interchangeable
+/// with a numeric Stress score: heart rate cannot separate psychological
+/// arousal from posture, movement, illness, stimulants, or other metabolic
+/// demand on its own. A numeric 0...3 Stress value is therefore reserved for a
+/// sample that also has a fresh, qualified HRV term.
+enum AtriaStressEvidenceMode: String, Equatable, Sendable {
+    case physiologicalStress
+    case cardiacArousal
+
+    var metricTitle: String {
+        switch self {
+        case .physiologicalStress: return "Stress"
+        case .cardiacArousal: return "Cardiac arousal"
+        }
+    }
+}
+
+/// Pure shared conversion from the monitor's canonical 0...1 activation into
+/// its product-scale evidence. Consumers should use this projection instead of
+/// multiplying activation by three themselves, because only full HR+HRV
+/// evidence is a numeric Stress score.
+struct AtriaStressEvidenceProjection: Equatable, Sendable {
+    static let maximumDisplayValue = 3.0
+
+    let mode: AtriaStressEvidenceMode
+    let activation: Double
+
+    init(activation: Double, mode: AtriaStressEvidenceMode) {
+        self.mode = mode
+        self.activation = activation.isFinite ? min(max(activation, 0), 1) : 0
+    }
+
+    /// A bounded 0...3 value in the evidence mode's own coordinate system.
+    /// This is queryable for both modes so persisted HR-only evidence can later
+    /// power a separate cardiac-arousal surface without being relabelled Stress.
+    var displayValue: Double {
+        activation * Self.maximumDisplayValue
+    }
+
+    /// Numeric physiological Stress exists only with qualified HR+HRV evidence.
+    var numericStressScore: Double? {
+        mode == .physiologicalStress ? displayValue : nil
+    }
+
+    /// HR-only evidence remains separately queryable, never substituted for a
+    /// numeric Stress score.
+    var cardiacArousalValue: Double? {
+        mode == .cardiacArousal ? displayValue : nil
+    }
+
+    /// The bounded qualitative band in this evidence coordinate. Cardiac
+    /// arousal deliberately has no High claim: without HRV, even activation at
+    /// the upper cap remains Medium.
+    var qualitativeLevel: AtriaStressLevel {
+        let rawBand = AtriaStressMonitor.band(activation)
+        let boundedBand = mode == .cardiacArousal
+            ? min(rawBand, AtriaStressLevel.medium.rawValue)
+            : rawBand
+        return AtriaStressLevel(rawValue: boundedBand) ?? .calm
+    }
+
+    static var lowStartsAt: Double {
+        AtriaStressMonitor.calmUpperBound * maximumDisplayValue
+    }
+
+    static var mediumStartsAt: Double {
+        AtriaStressMonitor.lowUpperBound * maximumDisplayValue
+    }
+
+    static var highStartsAt: Double {
+        AtriaStressMonitor.mediumUpperBound * maximumDisplayValue
+    }
+}
+
 /// Emitted state for the live stress monitor. `level` is nil for every
 /// non-scored `kind` (no numeric claim is made while suppressed or learning).
 struct AtriaStressState: Equatable {
@@ -70,10 +147,21 @@ struct AtriaStressState: Equatable {
     /// non-scored states). Internal bookkeeping the store uses for EMA
     /// smoothing + hysteresis; not shown to the user directly.
     let rawActivation: Double
-    /// True when the HRV term corroborated this reading (full HR+HRV mode).
-    /// False in every non-scored state and in the HR-only fallback mode,
-    /// where the emitted level is capped at `.medium`.
+    /// True when a fresh qualified HRV term was available for this reading.
+    /// False in every non-scored state and in the HR-only fallback mode, where
+    /// the emitted level is capped at `.medium`.
     let hrvAvailable: Bool
+
+    var evidenceMode: AtriaStressEvidenceMode? {
+        guard kind == .scored, level != nil else { return nil }
+        return hrvAvailable ? .physiologicalStress : .cardiacArousal
+    }
+
+    var evidenceProjection: AtriaStressEvidenceProjection? {
+        guard let evidenceMode else { return nil }
+        return AtriaStressEvidenceProjection(activation: rawActivation,
+                                             mode: evidenceMode)
+    }
 
     static let noSignal = AtriaStressState(level: nil, label: "No signal", detail: "",
                                            kind: .noSignal, confidence: 0,
@@ -89,16 +177,42 @@ struct AtriaStressPresentation: Equatable {
     let value: String
     let detail: String
     let narrative: String
+    /// Nil for every unscored state. This is the one shared product contract
+    /// callers use to distinguish numeric Stress from HR-only cardiac arousal.
+    let evidenceMode: AtriaStressEvidenceMode?
+    let metricTitle: String
+    /// A bounded 0...3 value only for fresh qualified HR+HRV evidence.
+    let numericScore: Double?
+
+    init(level: AtriaStressLevel?,
+         value: String,
+         detail: String,
+         narrative: String,
+         evidenceMode: AtriaStressEvidenceMode? = nil,
+         metricTitle: String = "Stress",
+         numericScore: Double? = nil) {
+        self.level = level
+        self.value = value
+        self.detail = detail
+        self.narrative = narrative
+        self.evidenceMode = evidenceMode
+        self.metricTitle = metricTitle
+        self.numericScore = numericScore
+    }
 
     static func make(state: AtriaStressState) -> Self {
         let detail: String
         let narrative: String
+        let projection = state.evidenceProjection
         switch state.kind {
         case .scored:
-            detail = state.detail.isEmpty ? "Live strap reading" : state.detail
-            narrative = state.hrvAvailable
-                ? "Measured from live HR (vs your typical awake heart rate) and HRV (vs your overnight baseline). Either signal alone reads at most Medium; High needs both."
-                : "Measured from live HR vs your typical awake heart rate; without a trusted HRV baseline it is capped at Medium — High needs HRV corroboration."
+            if state.hrvAvailable {
+                detail = state.detail.isEmpty ? "Live HR + HRV evidence" : state.detail
+                narrative = "Measured from live HR versus your typical awake heart rate and qualified HRV versus your overnight baseline. A score of 0 means no positive cardiac elevation was detected; it does not mean zero psychological stress."
+            } else {
+                detail = "Cardiac arousal · HR only"
+                narrative = "Heart rate shows a qualitative cardiac-arousal band. Without fresh qualified HRV, Atria does not turn this evidence into a numeric Stress score."
+            }
         case .calibrating:
             detail = state.detail.isEmpty ? "Building your personal HR baseline" : state.detail
             // Real-time confusion fix (2026-08-05, user report): live HR was
@@ -130,7 +244,10 @@ struct AtriaStressPresentation: Equatable {
                     value: state.level?.title
                         ?? AtriaCompactMetricPresentation.noValue,
                     detail: detail,
-                    narrative: narrative)
+                    narrative: narrative,
+                    evidenceMode: projection?.mode,
+                    metricTitle: projection?.mode.metricTitle ?? "Stress",
+                    numericScore: projection?.numericStressScore)
     }
 }
 
@@ -143,7 +260,7 @@ enum AtriaStressMonitor {
     /// Persisted with every derived timeline point. Bump whenever activation,
     /// banding, capping, or hysteresis semantics change so a later build never
     /// silently presents unlike scores as one continuous series.
-    static let scoringVersion = 1
+    static let scoringVersion = 2
 
     /// First N seconds of live contact are "Warming up" — too little data for
     /// even an HR-only read.
@@ -317,7 +434,7 @@ enum AtriaStressMonitor {
             .min() ?? calmUpperBound
     }
 
-    /// HR contribution to stress activation, z-scored against the wearer's
+    /// HR contribution to cardiac activation, z-scored against the wearer's
     /// AWAKE heart-rate reference — never their resting/sleep baseline. Uses the
     /// person's own observed recent awake HR (`awakeReference`) when the store
     /// has learned it, otherwise a physiological default of
@@ -414,7 +531,7 @@ struct AtriaStressDistributionArchive: Codable, Equatable {
 
     private(set) var days: [Day]
 
-    private static let defaultsKey = "atria.stress.distribution.v1"
+    static let defaultsKey = "atria.stress.distribution.v2"
     private static let retentionDays = 35
     private static let minimumSamplesPerDay = 10
     private static let minimumTypicalDays = 3
@@ -561,7 +678,7 @@ struct AtriaStressHistoryArchive: Codable, Equatable, Sendable {
         }
     }
 
-    static let currentSchemaVersion = 1
+    static let currentSchemaVersion = 2
     /// Two local days lets Activity restore today or yesterday without growing
     /// into long-term health storage. At the store's 30-second cadence this is
     /// bounded again by `maximumPointCount`.
@@ -641,7 +758,7 @@ final class AtriaStressHistoryPersistence: @unchecked Sendable {
     }
 
     private struct Shard: Codable, Equatable, Sendable {
-        static let schemaVersion = 1
+        static let schemaVersion = 2
         let version: Int
         let hour: Int64
         let points: [AtriaStressHistoryArchive.Point]
@@ -669,8 +786,9 @@ final class AtriaStressHistoryPersistence: @unchecked Sendable {
     static let maximumEncodedBytesPerShard = 16 * 1_024
     private static let secondsPerShard: TimeInterval = 60 * 60
     private static let maximumRelevantShardCount = 50
-    private static let filenamePrefix = "stress-hour-v1-"
+    static let filenamePrefix = "stress-hour-v2-"
     private static let filenameSuffix = ".json"
+    static let productionDirectoryName = "Atria/stress-history-v2"
     private let directoryURL: URL
     private let fileManager: FileManager
     private let ioQueue = DispatchQueue(label: "com.adidshaft.atria.stress-history",
@@ -688,7 +806,7 @@ final class AtriaStressHistoryPersistence: @unchecked Sendable {
         let support = fileManager.urls(for: .applicationSupportDirectory,
                                        in: .userDomainMask)[0]
         return AtriaStressHistoryPersistence(
-            directoryURL: support.appendingPathComponent("Atria/stress-history-v1",
+            directoryURL: support.appendingPathComponent(productionDirectoryName,
                                                           isDirectory: true),
             fileManager: fileManager
         )
@@ -1112,11 +1230,11 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// truly are no retained readings; `loading` / `unavailable` must not be
     /// presented as the same empty-data claim.
     @Published private(set) var historyLoadState: AtriaStressHistoryLoadState = .disabled
-    /// Persisted, measured stress-band counts. This is deliberately a compact
-    /// aggregate rather than a second high-frequency sample archive: it can
-    /// answer "today versus a typical weekday" without inventing values across
-    /// gaps or turning a 30-second live signal into an unbounded disk stream.
-    private var distributionArchive = AtriaStressDistributionArchive.load()
+    /// Persisted, measured physiological-Stress band counts. HR-only cardiac
+    /// arousal remains in `history` with provenance, but never enters an
+    /// aggregate labelled Stress. This is deliberately a compact aggregate
+    /// rather than a second high-frequency sample archive.
+    private var distributionArchive: AtriaStressDistributionArchive
     @Published private(set) var distributionRevision = 0
 
     struct StressHistoryPoint: Identifiable, Equatable, Sendable {
@@ -1146,6 +1264,15 @@ final class AtriaStressMonitorStore: ObservableObject {
         }
 
         var id: TimeInterval { t.timeIntervalSinceReferenceDate }
+
+        var evidenceMode: AtriaStressEvidenceMode {
+            hrvAvailable ? .physiologicalStress : .cardiacArousal
+        }
+
+        var evidenceProjection: AtriaStressEvidenceProjection {
+            AtriaStressEvidenceProjection(activation: activation,
+                                          mode: evidenceMode)
+        }
     }
 
     private var hrBuffer: [(t: Date, bpm: Int)] = []
@@ -1206,6 +1333,7 @@ final class AtriaStressMonitorStore: ObservableObject {
          historyPersistence: AtriaStressHistoryPersistence? = nil,
          historyLoadNow: Date = Date()) {
         self.awakeReferenceDefaults = defaults
+        self.distributionArchive = AtriaStressDistributionArchive.load(defaults: defaults)
         self.persistedAwakeReference = Self.loadPersistedAwakeReference(defaults: defaults)
         self.awakeBaselineArchive = AtriaAwakeBaselineArchive.load(defaults: defaults)
         self.historyPersistence = historyPersistence
@@ -1236,6 +1364,10 @@ final class AtriaStressMonitorStore: ObservableObject {
     private var lastWorkoutEndAt: Date?
 
     private var smoothedActivation: Double?
+    /// EMA/hysteresis state is valid only inside one evidence coordinate. A
+    /// mode transition resets it so an uncapped HR-only value can never leak
+    /// into the full HR+HRV Stress band (or vice versa).
+    private var smoothedEvidenceMode: AtriaStressEvidenceMode?
     private var lastEmittedLevel: AtriaStressLevel?
     private var candidateLevel: AtriaStressLevel?
     private var candidateStreak = 0
@@ -1606,14 +1738,18 @@ final class AtriaStressMonitorStore: ObservableObject {
             checkpointHistory(now: now)
         }
 
-        if distributionArchive.record(level: level, at: now) {
+        // Daily Stress distributions contain only numeric physiological-Stress
+        // evidence. HR-only cardiac arousal remains queryable in `history` and
+        // is intentionally not counted as if it were the same metric.
+        if state.evidenceMode == .physiologicalStress,
+           distributionArchive.record(level: level, at: now) {
             distributionRevision &+= 1
             unsavedDistributionSamples += 1
             // At the 30-second history cadence this writes at most every five
             // minutes. A process interruption can lose only the small pending
             // tail; previously persisted evidence is never reconstructed.
             if unsavedDistributionSamples >= 10 {
-                distributionArchive.save()
+                distributionArchive.save(defaults: awakeReferenceDefaults)
                 unsavedDistributionSamples = 0
             }
         }
@@ -1803,12 +1939,33 @@ final class AtriaStressMonitorStore: ObservableObject {
 
         guard raw.kind == .scored, let rawLevel = raw.level else {
             smoothedActivation = nil
+            smoothedEvidenceMode = nil
             lastEmittedLevel = nil
             candidateLevel = nil
             candidateStreak = 0
             lastMeasuredAt = nil
             if raw != state { state = raw }
             return
+        }
+
+        guard let rawEvidenceMode = raw.evidenceMode else {
+            // `raw.kind == .scored` and a non-nil level make this unreachable,
+            // but fail closed instead of blending an unclassified coordinate.
+            smoothedActivation = nil
+            smoothedEvidenceMode = nil
+            lastEmittedLevel = nil
+            candidateLevel = nil
+            candidateStreak = 0
+            lastMeasuredAt = nil
+            return
+        }
+
+        if smoothedEvidenceMode != rawEvidenceMode {
+            smoothedActivation = nil
+            lastEmittedLevel = nil
+            candidateLevel = nil
+            candidateStreak = 0
+            smoothedEvidenceMode = rawEvidenceMode
         }
 
         let ema = smoothedActivation.map { $0 + Self.activationEMAAlpha * (raw.rawActivation - $0) } ?? raw.rawActivation
@@ -1847,12 +2004,11 @@ final class AtriaStressMonitorStore: ObservableObject {
         }
 
         // HR-only mode caps the emitted level at Medium (see `cappedBand`
-        // above). The published activation drives the detail gauge and the
-        // history timeline (both render score = activation × 3), so it must be
-        // capped to the same Medium ceiling — otherwise the gauge/timeline can
-        // render "High" while the label reads "Medium" (audit §1 #7). The
-        // internal `smoothedActivation` keeps the true, uncapped EMA so band
-        // continuity and hysteresis are unaffected.
+        // above). Its published activation is retained for the separate
+        // qualitative cardiac-arousal surface, so that evidence coordinate must
+        // agree with the emitted band and can never acquire a High claim. The
+        // internal `smoothedActivation` keeps the true, uncapped EMA only within
+        // the current evidence mode for temporal continuity and hysteresis.
         let displayActivation = raw.hrvAvailable
             ? ema
             : min(ema, AtriaStressMonitor.mediumUpperBound)

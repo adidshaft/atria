@@ -1,26 +1,24 @@
 import SwiftUI
 import Charts
 
-/// Canonical hardware-unavailable copy for blood oxygen (SpO2).
+/// Canonical unavailable copy for blood oxygen (SpO2).
 ///
 /// SpO2 has ONE honest story across the app: this strap's sensor can't produce a
 /// validated reading, so Atria shows nothing rather than an estimate. The exact
-/// phrasing had fragmented across ~15 hand-written strings (some framed by time
-/// -- "Not available yet" -- some by hardware -- "Not available on this strap").
+/// phrasing had fragmented across ~15 hand-written strings. These states name
+/// whether Atria lacks a verified decoder or the strap lacks the sensor, rather
+/// than implying that waiting alone will produce a reading.
 /// These constants are the single source of truth the design signed off on, so
 /// any surface that wants the canonical wording can reference one place instead
 /// of re-inventing it. Deliberately never renders a percentage.
 enum AtriaSpO2Copy {
     /// Short honesty line.
     static let wontFakeAPercentage = "Atria won't fake a percentage."
-    /// Short state line. 2026-08-01: reframed from "Not available on this strap"
-    /// to an APP-limitation, because the WHOOP 4 strap DOES carry the SpO2 sensor
-    /// (`AtriaBLEManager.AtriaStrapModel.supportsSpO2 == true`) — Atria simply has
-    /// no validated decoder for it yet (`AtriaResearchProbe.validatedSpO2Decoder-
-    /// Available == false`). Saying "not on this strap" over-claimed a hardware
-    /// gap that isn't real. Constant name kept for reference stability; the value
-    /// is the source of truth. See the SpO2-decoder research task.
-    static let notAvailableOnStrap = "Not available yet."
+    /// Short app-limitation state for straps that carry the sensor. Waiting is
+    /// not the blocker: Atria has not verified a decoder for the signal.
+    static let decoderNotVerified = "Decoder not verified"
+    /// Short hardware state used only when the identified strap lacks SpO2.
+    static let notAvailableOnStrap = "Sensor unavailable on this strap"
     /// Long form for compact education/detail surfaces.
     static let longUnavailable = "Atria can't yet produce a validated SpO2 reading from this strap's sensor. Rather than estimate, it leaves this blank — and tells you why."
     /// Full "why it's blank" explanation shown when the user taps SpO2 to open the
@@ -35,9 +33,9 @@ enum AtriaSpO2Copy {
 /// that MUST match the actual algorithm (verified against HRV.swift,
 /// AtriaStressMonitor.swift, AtriaAnalytics.swift, AtriaFitnessAge.swift,
 /// Sessions.swift / AtriaSleepWakeResearch.swift on 2026-08-01), and an honesty
-/// note. `bloodOxygen` is the hardware-unavailable case: it has no compute
-/// description because there is nothing computed -- it carries the canonical
-/// unavailable copy instead.
+/// note. `bloodOxygen` has no verified app decoder: it has no compute
+/// description because Atria cannot yet produce a defensible value, so it
+/// carries the canonical unavailable copy instead.
 enum AtriaAboutMetric: String, Identifiable, CaseIterable {
     case hrv
     case stress
@@ -115,20 +113,22 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .vo2max:
             return "An estimate of your cardiorespiratory fitness (VO₂max) and how old your heart data reads versus your calendar age. It is a fitness signal from everyday wear, not a lab test."
         case .skinTemperature:
-            return "A relative wrist-skin temperature signal measured while you sleep. It shows how tonight compares with your own recent nights — never an absolute or core body temperature."
+            return "WHOOP 4 includes a wrist-skin temperature signal intended for relative overnight trends. Atria has not yet verified the Bluetooth decoder, so it does not currently publish a temperature value."
         case .bloodOxygen:
             return "Blood-oxygen saturation is the percentage of your hemoglobin carrying oxygen. It normally sits in the high 90s at rest."
         }
     }
 
-    /// True when there is nothing to compute because the hardware can't produce a
-    /// validated reading. The compute card becomes an honest "why it's blank"
-    /// card carrying the canonical copy.
-    var isHardwareUnavailable: Bool { self == .bloodOxygen }
+    /// True when Atria has no verified value to compute or present. Supported
+    /// WHOOP 4 hardware carries an optical sensor; the blocker is the decoder,
+    /// not the absence of hardware, so keep that distinction in the API name.
+    var showsWhyBlank: Bool {
+        self == .bloodOxygen || self == .skinTemperature
+    }
 
     /// Section label above the middle card.
     var computeCardTitle: String {
-        isHardwareUnavailable ? "WHY IT'S BLANK" : "HOW ATRIA COMPUTES IT"
+        showsWhyBlank ? "WHY IT'S BLANK" : "HOW ATRIA COMPUTES IT"
     }
 
     /// Middle card body. For every computed metric this describes the REAL
@@ -142,11 +142,11 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             return "Clean beat-to-beat intervals from overnight wear — 300–2000 ms, with any beat more than 20% off its neighbors dropped — then the beat-to-beat variation is measured over the most stable stretch of sleep."
         case .stress:
             // AtriaStressMonitor.swift: HR z-scored vs the wearer's own AWAKE HR
-            // reference (learned median, or resting + offset until learned), HRV
-            // z-scored vs the overnight baseline; each term caps a lone signal at
-            // Medium, both together reach High. HR-only capped at Medium; noSignal
-            // when contact is lost.
-            return "Your live heart rate is compared with your own typical awake heart rate, and your beat-to-beat variability with your overnight baseline, then mapped to a Calm / Low / Medium / High band. Comparing heart rate against your awake baseline — not your sleeping rate — is what keeps ordinary wakefulness from reading as stress. Either signal on its own reads at most Medium; \u{201c}High\u{201d} needs elevated heart rate and suppressed variability together, and until a variability baseline is trusted the score is capped at Medium. It needs continuous, well-seated contact: a loose fit, movement noise, or the strap being off pauses the read as \u{201c}No signal\u{201d} rather than guessing."
+            // Reference (learned awake median, or resting + offset until
+            // learned), plus qualified HRV vs the overnight baseline. Numeric
+            // Stress is reserved for the combined evidence mode; HR alone is a
+            // separate qualitative cardiac-arousal observation.
+            return "Atria compares live heart rate with your own typical awake heart rate and qualified beat-to-beat variability with your overnight baseline. When both signals are available, it reports a 0–3 physiological Stress score with Calm / Low / Medium / High bands. Heart rate alone is shown separately as qualitative Cardiac arousal because posture, movement, illness, stimulants, and emotion can all raise it; Atria does not turn that into a numeric Stress score. A score of 0 means no positive deviation was detected, not zero psychological stress. Loose contact, movement noise, and recognized workouts pause the reading instead of substituting zero."
         case .recovery:
             // AtriaAnalytics.swift: z-blend HRV 0.60 / RHR 0.20 (inverted) / sleep
             // 0.15 / respiration 0.05, logistic → 1–99%.
@@ -171,9 +171,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // slope of the weekly offset.
             return "VO₂max is estimated from the ratio of your measured maximum to resting heart rate (about 15.3 × maxHR ÷ resting HR), then bounded to a plausible range. Body Age combines five factors — VO₂max, resting HR, HRV, weekly zone-2-and-up minutes, and sleep consistency — into an age offset against your calendar age. Pace of aging is the trend of that offset over recent weeks."
         case .skinTemperature:
-            // Sessions.swift: mean skin-temp over a sleep session minus the mean of
-            // prior sleep nights; needs ≥3 prior nights; ±0.5 °C typical.
-            return "Averaged from the strap's skin-temperature sensor across a night's sleep, then compared with the mean of your prior sleep nights to give a deviation in °C. It needs at least 3 prior nights before a delta appears, and reads within about ±0.5 °C as typical."
+            return "Atria can see candidate sensor bytes, but it has not verified which field and scale represent wrist temperature. It will not turn raw values into degrees. After a decoder is validated, the intended model averages a night's reading and compares it with at least 3 prior nights as a personal deviation."
         case .bloodOxygen:
             return AtriaSpO2Copy.whyBlank
         }
@@ -195,16 +193,16 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .respiration:
             return "Compared with your own typical nights only. A missing night stays missing — no interpolated breaths."
         case .sleep:
-            return "A duration and consistency estimate from heart-rate evidence, not a clinical sleep study. On heart-rate-only nights, the hypnogram is clearly labeled as an estimate and never changes your saved sleep numbers. When the strap also records enough motion, Atria can draw the fuller stage timeline. Manually added sleep has no stage breakdown. Unworn time is never counted as sleep."
+            return "A duration and timing-consistency estimate from heart-rate evidence, not a clinical sleep study or a measurement of circadian phase. On heart-rate-only nights, the hypnogram is clearly labeled as an estimate and never changes your saved sleep numbers. When the strap also records enough motion, Atria can draw the fuller stage timeline. Manually added sleep has no stage breakdown. Unworn time is never counted as sleep."
         case .vo2max:
             // AtriaFitnessAge.swift footnote + thresholds; VO2max needs a measured
             // HRmax. There is no "Medium" confidence literal in source, so this
             // states the real early/confident day thresholds instead.
             return "An estimate from heart data — not a medical measurement. It needs about 14 days before an early read appears and 28 for a confident baseline, and VO₂max stays \u{201c}preliminary\u{201d} until you've recorded a hard effort that measures your maximum heart rate."
         case .skinTemperature:
-            return "A sleep-only relative signal, not core temperature and not a fever check. It is experimental, kept on your device, and never written to Health."
+            return "Decoder not verified. If enabled after validation, this remains a sleep-only relative signal — not core temperature or a fever check — kept on your device and never written to Health."
         case .bloodOxygen:
-            return "\(AtriaSpO2Copy.wontFakeAPercentage) \(AtriaSpO2Copy.notAvailableOnStrap)"
+            return "\(AtriaSpO2Copy.wontFakeAPercentage) \(AtriaSpO2Copy.decoderNotVerified)."
         }
     }
 }
@@ -407,7 +405,7 @@ struct AtriaMiniTrendCard: View {
 ///
 /// A reusable template: a tinted glyph tile, an H1, a definition paragraph, a
 /// "HOW ATRIA COMPUTES IT" card, and a "HONESTY NOTE" card tinted in the metric
-/// hue. For a hardware-unavailable metric (blood oxygen) the middle card becomes
+/// hue. For an unverified experimental signal the middle card becomes
 /// an honest "WHY IT'S BLANK" card carrying the canonical unavailable copy.
 ///
 /// Self-contained so any metric detail surface can present it with local state,

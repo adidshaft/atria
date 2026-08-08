@@ -122,7 +122,7 @@ final class SavedDailyMetricCodableTests: XCTestCase {
         )
 
         XCTAssertEqual(restored, original)
-        XCTAssertEqual(restored.modelVersion, 2)
+        XCTAssertEqual(restored.modelVersion, FrozenRecoverySummary.recoveryV2ModelVersion)
         XCTAssertEqual(restored.inputSnapshot?.hrvRMSSD, 68)
         XCTAssertEqual(restored.inputSnapshot?.restingHeartRateBPM, 49)
         XCTAssertEqual(restored.inputSnapshot?.sleepEfficiency, 0.91)

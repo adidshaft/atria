@@ -220,6 +220,150 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         XCTAssertEqual(projected.sleepSource, "manual_sleep")
     }
 
+    func testRecoveryUsesOnlyMotionBackedSleepEfficiencyOnHistoricalAndMorningPaths() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2027,
+                                                                   month: 1,
+                                                                   day: 16)))
+        let start = day.addingTimeInterval(-8 * 3_600)
+        let end = day
+
+        func sleepNight(efficiency: Double?, motionValidated: Bool) -> SleepHistorySnapshot.Night {
+            SleepHistorySnapshot.Night(
+                id: "efficiency-\(motionValidated)-\(efficiency ?? -1)",
+                day: day,
+                start: start,
+                end: end,
+                duration: 8 * 3_600,
+                restingHR: 52,
+                hrv: nil,
+                respiratoryRate: nil,
+                sleepEfficiency: efficiency,
+                confidence: motionValidated
+                    ? "user_confirmed_motion_validated"
+                    : "user_confirmed_hr_only",
+                source: "aggregate_sleep",
+                confirmed: true,
+                stageSegments: [],
+                eventTimeZoneIdentifier: "UTC",
+                motionValidated: motionValidated
+            )
+        }
+
+        let hrOnlyWithRawCoverage = sleepNight(efficiency: 1, motionValidated: false)
+        let hrOnlyWithoutEfficiency = sleepNight(efficiency: nil, motionValidated: false)
+        let validated = sleepNight(efficiency: 0.91, motionValidated: true)
+
+        func historicalMetric(_ night: SleepHistorySnapshot.Night) throws -> SavedDailyMetric {
+            try XCTUnwrap(SessionStore.makeSavedDailyMetrics(
+                rollups: [rollup(day: day)],
+                sleep: SleepHistorySnapshot(nights: [night],
+                                            confirmedCount: 1,
+                                            candidateCount: 0),
+                baseline: PersonalBaseline(),
+                calendar: calendar
+            ).first)
+        }
+
+        XCTAssertEqual(try historicalMetric(hrOnlyWithRawCoverage).recoveryPercent,
+                       try historicalMetric(hrOnlyWithoutEfficiency).recoveryPercent,
+                       "capture/span coverage must not silently boost Recovery")
+
+        let hrOnlyMorning = try XCTUnwrap(SessionStore.makeMorningFrozenDailyMetric(
+            for: day,
+            computed: [],
+            sessions: [],
+            sleep: SleepHistorySnapshot(nights: [hrOnlyWithRawCoverage],
+                                        confirmedCount: 1,
+                                        candidateCount: 0),
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: end.addingTimeInterval(60),
+            calendar: calendar
+        ))
+        XCTAssertNil(hrOnlyMorning.recoverySummary?.inputSnapshot?.sleepEfficiency)
+
+        let validatedMorning = try XCTUnwrap(SessionStore.makeMorningFrozenDailyMetric(
+            for: day,
+            computed: [],
+            sessions: [],
+            sleep: SleepHistorySnapshot(nights: [validated],
+                                        confirmedCount: 1,
+                                        candidateCount: 0),
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: end.addingTimeInterval(60),
+            calendar: calendar
+        ))
+        XCTAssertEqual(try XCTUnwrap(validatedMorning.recoverySummary?.inputSnapshot?.sleepEfficiency),
+                       0.91,
+                       accuracy: 0.000_001)
+    }
+
+    func testMorningSleepNeedUsesExactNightReceiptAndLeavesLegacyTargetUnknown() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2027,
+                                                                   month: 1,
+                                                                   day: 16)))
+        let start = day.addingTimeInterval(-8 * 3_600)
+        let end = day
+        let components = AtriaSleepBudget.sleepNeedComponents(
+            baseHours: 8,
+            yesterdayStrain: 12,
+            debtHours: 1,
+            sameDayNapHours: 0
+        )
+        let receipt = AtriaSleepBudget.FrozenNeed(components)
+
+        func sleepNight(frozenNeed: AtriaSleepBudget.FrozenNeed?,
+                        legacyNeed: TimeInterval?) -> SleepHistorySnapshot.Night {
+            SleepHistorySnapshot.Night(
+                id: frozenNeed == nil ? "legacy-need" : "receipt-need",
+                day: day,
+                start: start,
+                end: end,
+                duration: 8 * 3_600,
+                restingHR: 52,
+                hrv: nil,
+                respiratoryRate: nil,
+                sleepEfficiency: nil,
+                confidence: "user_confirmed_hr_only",
+                source: "aggregate_sleep",
+                confirmed: true,
+                stageSegments: [],
+                eventTimeZoneIdentifier: "UTC",
+                motionValidated: false,
+                sleepNeedSeconds: legacyNeed,
+                frozenSleepNeed: frozenNeed
+            )
+        }
+
+        func morningMetric(_ night: SleepHistorySnapshot.Night) throws -> SavedDailyMetric {
+            try XCTUnwrap(SessionStore.makeMorningFrozenDailyMetric(
+                for: day,
+                computed: [],
+                sessions: [],
+                sleep: SleepHistorySnapshot(nights: [night],
+                                            confirmedCount: 1,
+                                            candidateCount: 0),
+                baseline: PersonalBaseline(),
+                maxHR: 190,
+                now: end.addingTimeInterval(60),
+                calendar: calendar
+            ))
+        }
+
+        XCTAssertEqual(try XCTUnwrap(morningMetric(sleepNight(frozenNeed: receipt,
+                                                              legacyNeed: nil)).sleepNeedSeconds),
+                       receipt.seconds,
+                       accuracy: 0.000_001)
+        XCTAssertNil(try morningMetric(sleepNight(frozenNeed: nil,
+                                                  legacyNeed: receipt.seconds)).sleepNeedSeconds,
+                     "a legacy seconds-only row has no replayable target receipt")
+    }
+
     func testUnconfirmedSleepCandidateCannotProjectHistoricalRecoveryInputs() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))

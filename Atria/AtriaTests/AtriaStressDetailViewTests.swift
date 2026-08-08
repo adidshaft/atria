@@ -57,6 +57,20 @@ final class AtriaStressDetailViewTests: XCTestCase {
         XCTAssertNil(input.score)
     }
 
+    func testHROnlyInputUsesCardiacArousalContractWithoutNumericStress() {
+        let input = AtriaStressDetailInput(
+            state: scoredState(activation: AtriaStressMonitor.mediumUpperBound,
+                               hrvAvailable: false),
+            readings: [],
+            updatedAt: now
+        )
+
+        XCTAssertNil(input.score)
+        XCTAssertEqual(input.presentation.evidenceMode, .cardiacArousal)
+        XCTAssertEqual(input.presentation.metricTitle, "Cardiac arousal")
+        XCTAssertTrue(input.presentation.detail.contains("HR only"))
+    }
+
     func testTimelineLeavesRealGapInsteadOfConnectingIt() {
         let readings = [
             AtriaStressDetailReading(date: now, score: 0.4),
@@ -76,6 +90,66 @@ final class AtriaStressDetailViewTests: XCTestCase {
         ]
 
         XCTAssertEqual(AtriaStressTimelinePoint.segment(readings).map(\.segment), [0, 0])
+    }
+
+    func testTimelineOmitsHROnlyEvidenceAndBreaksNumericStressLineAroundIt() {
+        let readings = [
+            AtriaStressDetailReading(date: now, score: 0.7),
+            AtriaStressDetailReading(date: now.addingTimeInterval(30),
+                                     score: 2.1,
+                                     evidenceMode: .cardiacArousal),
+            AtriaStressDetailReading(date: now.addingTimeInterval(60), score: 1.4),
+        ]
+
+        let points = AtriaStressTimelinePoint.segment(readings)
+
+        XCTAssertEqual(points.map(\.reading.date),
+                       [now, now.addingTimeInterval(60)])
+        XCTAssertEqual(points.map(\.segment), [0, 1],
+                       "the chart must preserve a visible gap across another metric")
+    }
+
+    func testHROnlyHistoryProjectsToUsefulQualitativeCardiacArousalTimeline() {
+        let readings = [
+            AtriaStressDetailReading(date: now,
+                                     score: 0,
+                                     evidenceMode: .cardiacArousal),
+            AtriaStressDetailReading(date: now.addingTimeInterval(30),
+                                     score: 0.9,
+                                     evidenceMode: .cardiacArousal),
+            AtriaStressDetailReading(date: now.addingTimeInterval(60),
+                                     score: AtriaStressEvidenceProjection.highStartsAt,
+                                     evidenceMode: .cardiacArousal,
+                                     level: .high),
+        ]
+
+        let projection = AtriaStressTimelineEvidenceProjection.make(readings: readings)
+
+        XCTAssertEqual(projection.presentation, .cardiacArousal)
+        XCTAssertTrue(projection.stressPoints.isEmpty)
+        XCTAssertEqual(projection.cardiacArousalPoints.count, 3)
+        XCTAssertEqual(projection.cardiacArousalPoints.map(\.level),
+                       [.calm, .low, .medium],
+                       "HR-only history remains useful but can never acquire a High claim")
+        XCTAssertEqual(projection.displayedReadings, readings)
+    }
+
+    func testAnyQualifiedStressReadingKeepsNumericAndArousalCoordinatesSeparate() {
+        let readings = [
+            AtriaStressDetailReading(date: now,
+                                     score: 1.2,
+                                     evidenceMode: .cardiacArousal),
+            AtriaStressDetailReading(date: now.addingTimeInterval(30),
+                                     score: 1.4,
+                                     evidenceMode: .physiologicalStress),
+        ]
+
+        let projection = AtriaStressTimelineEvidenceProjection.make(readings: readings)
+
+        XCTAssertEqual(projection.presentation, .physiologicalStress)
+        XCTAssertEqual(projection.stressPoints.map(\.reading.date),
+                       [now.addingTimeInterval(30)])
+        XCTAssertEqual(projection.cardiacArousalPoints.map(\.reading.date), [now])
     }
 
     func testElevatedEvidenceFindsOnlyMeasuredSustainedWindows() {
@@ -110,6 +184,24 @@ final class AtriaStressDetailViewTests: XCTestCase {
         XCTAssertNil(evidence.countText)
         XCTAssertNil(evidence.interventionDetail(state: scoredState(activation: 0.8),
                                                   updatedAt: readings.last?.date))
+    }
+
+    func testElevatedStressEvidenceIgnoresCardiacArousalPoints() {
+        let readings = (0..<30).map { index in
+            AtriaStressDetailReading(date: now.addingTimeInterval(Double(index) * 30),
+                                     score: 3,
+                                     evidenceMode: .cardiacArousal)
+        }
+
+        let evidence = AtriaStressElevatedEvidence.analyze(readings)
+
+        XCTAssertEqual(evidence.readingCount, 0)
+        XCTAssertFalse(evidence.isSupported)
+        XCTAssertTrue(evidence.windows.isEmpty)
+        XCTAssertNil(evidence.interventionDetail(
+            state: scoredState(activation: 0.8, hrvAvailable: false),
+            updatedAt: readings.last?.date
+        ))
     }
 
     func testElevatedWindowAnalysisNeverBridgesARealTelemetryGap() {
@@ -183,17 +275,31 @@ final class AtriaStressDetailViewTests: XCTestCase {
         ] {
             XCTAssertFalse(corpus.contains(staleClaim), "stale stress copy: \(staleClaim)")
         }
-        XCTAssertTrue(corpus.contains("first measured reading"))
+        XCTAssertTrue(corpus.contains("first measured hr + hrv or hr-only reading"))
         XCTAssertTrue(corpus.contains("gaps mean no stress score was recorded"))
     }
 
-    private func scoredState(activation: Double) -> AtriaStressState {
+    func testExpandedStressLineRemainsThinAndQualitativeArousalHasNoNumericScale() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaStressDetailView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("StrokeStyle(lineWidth: 1.5,"),
+                      "the expanded numeric Stress trace should remain visually thin")
+        XCTAssertTrue(source.contains("qualitative Calm / Low / Medium bands"))
+        XCTAssertTrue(source.contains("no 0–3 Stress score or High claim"))
+    }
+
+    private func scoredState(activation: Double,
+                             hrvAvailable: Bool = true) -> AtriaStressState {
         AtriaStressState(level: .medium,
                          label: "Medium",
-                         detail: "HR + HRV vs your baseline",
+                         detail: hrvAvailable ? "HR + HRV vs your baseline" : "HR-only",
                          kind: .scored,
-                         confidence: 0.85,
+                         confidence: hrvAvailable ? 0.85 : 0.55,
                          rawActivation: activation,
-                         hrvAvailable: true)
+                         hrvAvailable: hrvAvailable)
     }
 }

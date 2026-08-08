@@ -158,6 +158,157 @@ final class AtriaMetricChartPreparationTests: XCTestCase {
         XCTAssertNotEqual(present, nextDay)
     }
 
+    func testCurrentCycleHRVAndRestingHeartRateAppendOrReplaceAcrossDayWeekMonth() {
+        let cycleStart = date(day: 29, hour: 14)
+        let current = AtriaHealthMetricAuthority.resolve(.currentCycle(.init(
+            recoveryPercent: 62,
+            recoveryDetail: "provisional",
+            restingHeartRateText: "54",
+            hrvValue: "47",
+            hrvDetail: "personal · provisional",
+            cycleStart: cycleStart,
+            projectedAt: cycleStart.addingTimeInterval(3_600)
+        )))
+        let staleSameDay = [
+            point(day: 28, value: 41),
+            point(day: 29, value: 91)
+        ]
+
+        for range in AtriaTrendRange.primarySegments {
+            let projection = AtriaHealthMetricAuthority.detailProjection(
+                currentCycle: current,
+                historicalRecoveryPercent: nil,
+                historicalStrain: nil,
+                range: range,
+                periodAnchor: cycleStart,
+                calendar: calendar
+            )
+            XCTAssertTrue(projection.usesCurrentCycle, "\(range) must include the active cycle")
+
+            for (value, tint) in [(47.0, Metrics.electricHRV),
+                                  (54.0, Metrics.electricRHR)] {
+                let appended = AtriaMetricDetailCurrentCyclePointPolicy.replacingSameDay(
+                    in: [],
+                    value: value,
+                    displayAnchor: cycleStart,
+                    usesCurrentCycle: projection.usesCurrentCycle,
+                    tint: tint,
+                    calendar: calendar
+                )
+                XCTAssertEqual(appended.count, 1,
+                               "\(range) must show measured current-cycle evidence before a rollup finalizes")
+                XCTAssertEqual(appended.first?.value, value)
+                XCTAssertTrue(calendar.isDate(appended[0].day, inSameDayAs: cycleStart))
+
+                let replaced = AtriaMetricDetailCurrentCyclePointPolicy.replacingSameDay(
+                    in: staleSameDay,
+                    value: value,
+                    displayAnchor: cycleStart,
+                    usesCurrentCycle: projection.usesCurrentCycle,
+                    tint: tint,
+                    calendar: calendar
+                )
+                XCTAssertEqual(replaced.count, 2)
+                XCTAssertEqual(replaced.filter {
+                    calendar.isDate($0.day, inSameDayAs: cycleStart)
+                }.map(\.value), [value],
+                "\(range) must replace—not duplicate—the stale civil-day point")
+            }
+        }
+    }
+
+    func testCurrentCycleHRVAndRestingHeartRateDoNotLeakIntoPriorPeriods() {
+        let cycleStart = date(day: 29, hour: 14)
+        let current = AtriaHealthMetricAuthority.resolve(.currentCycle(.init(
+            recoveryPercent: 62,
+            recoveryDetail: "provisional",
+            restingHeartRateText: "54",
+            hrvValue: "47",
+            hrvDetail: "personal · provisional",
+            cycleStart: cycleStart,
+            projectedAt: cycleStart.addingTimeInterval(3_600)
+        )))
+
+        for range in AtriaTrendRange.primarySegments {
+            let priorAnchor = range.adjacentPeriodAnchor(
+                from: cycleStart,
+                offset: -1,
+                calendar: calendar
+            )
+            let projection = AtriaHealthMetricAuthority.detailProjection(
+                currentCycle: current,
+                historicalRecoveryPercent: nil,
+                historicalStrain: nil,
+                range: range,
+                periodAnchor: priorAnchor,
+                calendar: calendar
+            )
+            XCTAssertFalse(projection.usesCurrentCycle)
+
+            for value in [47.0, 54.0] {
+                let points = AtriaMetricDetailCurrentCyclePointPolicy.replacingSameDay(
+                    in: [],
+                    value: value,
+                    displayAnchor: cycleStart,
+                    usesCurrentCycle: projection.usesCurrentCycle,
+                    tint: .pink,
+                    calendar: calendar
+                )
+                XCTAssertTrue(points.isEmpty,
+                              "\(range) must not inject the active cycle after navigating backward")
+            }
+        }
+    }
+
+    func testMetricDetailWiresCurrentHRVAndRestingHeartRateThroughEveryChartSurface() throws {
+        let source = try overviewSource()
+        let policyStart = try XCTUnwrap(source.range(
+            of: "enum AtriaMetricDetailCurrentCyclePointPolicy"
+        ))
+        let policyEnd = try XCTUnwrap(source.range(
+            of: "private actor AtriaMetricDetailPreparationCache",
+            range: policyStart.upperBound..<source.endIndex
+        ))
+        let policy = String(source[policyStart.lowerBound..<policyEnd.lowerBound])
+
+        XCTAssertTrue(policy.contains("guard usesCurrentCycle, let displayAnchor else { return points }"))
+        XCTAssertTrue(policy.contains("!calendar.isDate($0.day, inSameDayAs: currentDay)"))
+        XCTAssertFalse(policy.localizedCaseInsensitiveContains("baseline"),
+                       "measured/provisional HRV and RHR must not require a trusted baseline to plot")
+        for token in [
+            "hrvAutoPointsForSelectedPeriod",
+            "hrvRawPointsForSelectedPeriod",
+            "hrvDisplayPointsForSelectedPeriod",
+            "hrvSummaryForSelectedPeriod",
+            "hrvComparisonForSelectedPeriod",
+            "restingHeartRateAutoPointsForSelectedPeriod",
+            "restingHeartRateRawPointsForSelectedPeriod",
+            "restingHeartRateDisplayPointsForSelectedPeriod",
+            "restingHeartRateSummaryForSelectedPeriod",
+            "restingHeartRateComparisonForSelectedPeriod",
+        ] {
+            XCTAssertTrue(source.contains(token), "missing current-cycle projection: \(token)")
+        }
+        XCTAssertTrue(source.contains("case .hrv:\n                    return usesCurrentCyclePrimaryRangePoint"))
+        XCTAssertTrue(source.contains("case .restingHeartRate:\n                    return usesCurrentCyclePrimaryRangePoint"))
+        XCTAssertTrue(source.contains("&& !isPreparingSelectedPeriod"),
+                      "current-cycle evidence must wait until the selected period's prepared history is accepted")
+        XCTAssertTrue(source.contains("return (\"HRV\", \"ms\", metric.tint,\n                    hrvDisplayPointsForSelectedPeriod"))
+        XCTAssertTrue(source.contains("return (\"Resting HR\", \"bpm\", metric.tint,\n                    restingHeartRateDisplayPointsForSelectedPeriod"))
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy: "hrvAutoPointsForSelectedPeriod").count - 1,
+            6,
+            "HRV must stay current as a hero/chart value and as a sibling chart companion"
+        )
+        XCTAssertTrue(source.contains("currentCycleEvidenceCopy(currentCycleAuthority?.hrvDetail"),
+                      "the measured/provisional authority copy must remain visible")
+        XCTAssertTrue(source.contains("comparison: latest?.displaySleepEfficiency == nil"))
+        XCTAssertTrue(source.contains("direction: latest?.displaySleepEfficiency.map"))
+        XCTAssertTrue(source.contains("compactMap(\\.displaySleepEfficiency)"),
+                      "HR-only span coverage must not enter a displayed efficiency trend or sleep plan")
+        XCTAssertFalse(source.contains("compactMap(\\.sleepEfficiency)"))
+    }
+
     func testEmptyPreparationUsesStableFallbacks() {
         let prepared = makePrepared(points: [])
         XCTAssertEqual(prepared.domain, 0...1)
@@ -173,6 +324,14 @@ final class AtriaMetricChartPreparationTests: XCTestCase {
                                      priorAverage: nil,
                                      companionPoints: [],
                                      calendar: calendar)
+    }
+
+    private func overviewSource() throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaOverviewSections.swift")
+        return try String(contentsOf: url, encoding: .utf8)
     }
 
     private func periodProjection(

@@ -191,6 +191,55 @@ final class AtriaMetricTruthUXTests: XCTestCase {
         ))
     }
 
+    func testTrendAndSleepDurationLabelsDoNotClaimCircadianRhythm() throws {
+        let trend = try source("AtriaTrendChart.swift")
+        let assessmentStart = try XCTUnwrap(
+            trend.range(of: "private struct AtriaTrendRangeAssessmentCard")
+        )
+        let assessmentEnd = try XCTUnwrap(
+            trend.range(
+                of: "private struct AtriaTrendActionReadout",
+                range: assessmentStart.upperBound..<trend.endIndex
+            )
+        )
+        let assessment = String(
+            trend[assessmentStart.lowerBound..<assessmentEnd.lowerBound]
+        )
+        XCTAssertTrue(assessment.contains("assessmentBar(label: \"Consistency\""))
+        XCTAssertFalse(assessment.contains("assessmentBar(label: \"Rhythm\""))
+
+        let overview = try source("AtriaOverviewSections.swift")
+        XCTAssertTrue(overview.contains("Label(\"Sleep duration vs target\""))
+        XCTAssertTrue(overview.contains(
+            ".accessibilityLabel(\"Sleep duration versus target. Latest"
+        ))
+        XCTAssertFalse(overview.contains("Label(\"Sleep rhythm\""))
+        XCTAssertFalse(overview.contains(".accessibilityLabel(\"Sleep rhythm."))
+
+        XCTAssertTrue(AtriaAboutMetric.sleep.honestyNote.contains("not a measurement of circadian phase"))
+    }
+
+    func testUnsupportedSensorCardsNameDecoderLimitationAndKeepNoValue() throws {
+        let overview = try source("AtriaOverviewSections.swift")
+        XCTAssertTrue(overview.contains("detail: AtriaSpO2Copy.decoderNotVerified"))
+        XCTAssertTrue(overview.contains("heroState: AtriaSpO2Copy.decoderNotVerified"))
+        XCTAssertTrue(overview.contains("heroState: hasReading ? \"vs sleep baseline\" : (decoderAvailable ? \"Building baseline\" : \"Decoder not verified\")"))
+        XCTAssertTrue(overview.contains(
+            "AtriaGlanceMetricCard(title: \"Blood oxygen\",\n                                  value: \"--\""
+        ))
+        XCTAssertFalse(AtriaSpO2Copy.decoderNotVerified.localizedCaseInsensitiveContains("available yet"))
+
+        let settings = try source("AtriaSettingsView.swift")
+        XCTAssertTrue(settings.contains("cannot measure an ECG or classify sinus rhythm"))
+    }
+
+    func testSleepSufficiencyShowsRecordedSleepAndFrozenNeedNotAnUnexplainedPercent() throws {
+        let health = try source("AtriaHealthScreen.swift")
+        XCTAssertTrue(health.contains("footnote: sleepPerformanceFootnote"))
+        XCTAssertTrue(health.contains("sleepPerformanceSummary("))
+        XCTAssertFalse(health.contains("footnote: \"of nightly need\""))
+    }
+
     func testTodayWristTemperatureUsesCanonicalNoValueProjection() throws {
         let today = try source("AtriaTodayScreen.swift")
         let bodyTemperatureStart = try XCTUnwrap(
@@ -224,5 +273,29 @@ final class AtriaMetricTruthUXTests: XCTestCase {
             ),
             AtriaCompactMetricPresentation.noValue
         )
+    }
+
+    func testCompactStressConsumersKeepTheCanonicalEvidenceTitle() throws {
+        let home = try source("AtriaHomeView.swift")
+        XCTAssertTrue(home.contains("let stressEvidenceMode: AtriaStressEvidenceMode?"))
+        XCTAssertTrue(home.contains("let stressMetricTitle: String"))
+        XCTAssertTrue(home.contains("stressEvidenceMode: stress.evidenceMode"))
+        XCTAssertTrue(home.contains("stressMetricTitle: stress.metricTitle"))
+
+        let today = try source("AtriaTodayScreen.swift")
+        XCTAssertTrue(today.contains("title: displayHero.stressMetricTitle"))
+        XCTAssertTrue(today.contains("stressEvidenceMode: displayHero.stressEvidenceMode"))
+
+        let overview = try source("AtriaOverviewSections.swift")
+        XCTAssertTrue(overview.contains("AtriaGlanceMetricCard(title: hero.stressMetricTitle"))
+        XCTAssertTrue(overview.contains("lhs.hero.stressEvidenceMode == rhs.hero.stressEvidenceMode"))
+        XCTAssertTrue(overview.contains("lhs.hero.stressMetricTitle == rhs.hero.stressMetricTitle"))
+
+        let vitals = try source("AtriaVitalsCollectionSections.swift")
+        XCTAssertTrue(vitals.contains("AtriaMetricTile(label: hero.stressMetricTitle"))
+
+        let coach = try source("AtriaAICoach.swift")
+        XCTAssertTrue(coach.contains("Cardiac arousal \\(context.stressText) (HR only; not a numeric Stress score)"))
+        XCTAssertFalse(coach.contains("stress \\(context.stressText)"))
     }
 }

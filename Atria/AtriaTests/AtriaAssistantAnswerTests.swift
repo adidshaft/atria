@@ -7,6 +7,31 @@ import SwiftUI
 /// not enough data" line and never invents a number.
 @MainActor
 final class AtriaAssistantAnswerTests: XCTestCase {
+    private func sleepNight(id: String,
+                            efficiency: Double,
+                            motionValidated: Bool,
+                            source: String = "auto_sleep",
+                            confirmed: Bool = true) -> SleepHistorySnapshot.Night {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let duration: TimeInterval = source == "auto_nap" ? 60 * 60 : 8 * 60 * 60
+        return SleepHistorySnapshot.Night(
+            id: id,
+            day: start,
+            start: start,
+            end: start.addingTimeInterval(duration),
+            duration: duration,
+            restingHR: 58,
+            hrv: 54,
+            respiratoryRate: 14.2,
+            sleepEfficiency: efficiency,
+            confidence: motionValidated ? "ready" : "hr_only",
+            source: source,
+            confirmed: confirmed,
+            stageSegments: [],
+            motionValidated: motionValidated
+        )
+    }
+
     // "Learning" is the sentinel production actually emits (HeroSnapshot
     // .recoveryValue) when there's no score — not "--". Exercising the real
     // value is what caught the recovery guard bug (2026-07-08 self-review).
@@ -38,6 +63,33 @@ final class AtriaAssistantAnswerTests: XCTestCase {
             XCTAssertFalse(result.answer.contains("%"),
                            "\(expectation.id) fail-closed answer must not state a percent: \(result.answer)")
         }
+    }
+
+    func testBedtimePlannerUsesOnlyMotionQualifiedMainSleepEfficiency() {
+        let hrOnlyMain = sleepNight(id: "hr-only-main",
+                                    efficiency: 0.99,
+                                    motionValidated: false)
+        let validatedMain = sleepNight(id: "validated-main",
+                                       efficiency: 0.84,
+                                       motionValidated: true)
+        let validatedNap = sleepNight(id: "validated-nap",
+                                      efficiency: 0.72,
+                                      motionValidated: true,
+                                      source: "auto_nap")
+        let unconfirmedMain = sleepNight(id: "unconfirmed-main",
+                                         efficiency: 0.91,
+                                         motionValidated: true,
+                                         confirmed: false)
+        let snapshot = SleepHistorySnapshot(
+            nights: [hrOnlyMain, validatedMain, validatedNap, unconfirmedMain],
+            confirmedCount: 3,
+            candidateCount: 1
+        )
+
+        XCTAssertEqual(
+            AtriaAssistantSleepPlannerEvidence.efficiencies(from: snapshot),
+            [0.84]
+        )
     }
 
     func testEveryAnswerCitesItsProvenance() {

@@ -2646,20 +2646,17 @@ enum AtriaExperimentalSensorCopy {
             : "--"
     }
 
-    // SpO2 copy consolidation (2026-08-01): only the strap-3 branch is a true
-    // hardware limitation (no SpO2 sensor), so it now routes through the
-    // canonical AtriaSpO2Copy strings. The other branches are genuinely
-    // TIME-BASED, not hardware: strap-4+ carry the sensor but Atria has no
-    // validated decoder yet ("Not available yet"), and the decoder-present
-    // branch is still waiting on a reading ("No SpO2 reading yet"). Per the
-    // honesty rule these keep their transient wording -- forcing "on this
-    // strap" onto a strap that HAS the sensor would over-claim a hardware limit.
+    // Strap 3 is a hardware limitation. Supported/unknown newer straps instead
+    // name Atria's actual app limitation until the decoder is verified. Neither
+    // branch promotes candidate bytes into a blood-oxygen percentage.
     static func bloodOxygenStatus(strapModel: AtriaBLEManager.AtriaStrapModel,
                                   decoderAvailable: Bool) -> String {
         if strapModel == .strap3 {
             return AtriaSpO2Copy.notAvailableOnStrap
         }
-        return decoderAvailable ? "No SpO2 reading yet" : "Not available yet"
+        return decoderAvailable
+            ? "No SpO2 reading yet"
+            : AtriaSpO2Copy.decoderNotVerified
     }
 
     static func bloodOxygenFootnote(strapModel: AtriaBLEManager.AtriaStrapModel,
@@ -2668,7 +2665,7 @@ enum AtriaExperimentalSensorCopy {
             return "\(AtriaSpO2Copy.notAvailableOnStrap) \(AtriaSpO2Copy.wontFakeAPercentage)"
         }
         if !decoderAvailable {
-            return "Not available yet. Atria does not estimate a percentage."
+            return "\(AtriaSpO2Copy.decoderNotVerified). Atria does not estimate a percentage."
         }
         return "No SpO2 reading yet."
     }
@@ -2680,7 +2677,7 @@ enum AtriaExperimentalSensorCopy {
             return AtriaSpO2Copy.longUnavailable
         }
         if !decoderAvailable {
-            return "Not available yet. Atria does not show raw sensor data as blood oxygen."
+            return "\(AtriaSpO2Copy.decoderNotVerified). Atria does not show raw sensor data as blood oxygen."
         }
         return candidateFrames > 0
             ? "\(candidateFrames) candidate frames found. Atria does not show an SpO2 percentage until quality checks pass."
@@ -2689,20 +2686,20 @@ enum AtriaExperimentalSensorCopy {
 
     static func skinTemperatureStatus(summary: IMUAuditSummary.SkinTemperatureDeviationSummary,
                                       decoderAvailable: Bool) -> String {
-        guard decoderAvailable else { return "Not available yet" }
+        guard decoderAvailable else { return "Decoder not verified" }
         return summary.detailText
     }
 
     static func skinTemperatureFootnote(candidateValues: Int,
                                         decoderAvailable: Bool) -> String {
         guard !decoderAvailable else { return "Sleep-only relative deviation; no absolute temperature." }
-        return "Not available yet. Atria does not show raw sensor data as wrist temperature."
+        return "Decoder not verified. Atria does not show raw sensor data as wrist temperature."
     }
 
     static func skinTemperatureDetail(summary: IMUAuditSummary.SkinTemperatureDeviationSummary,
-                                      decoderAvailable: Bool) -> String {
+        decoderAvailable: Bool) -> String {
         guard decoderAvailable else {
-            return "Not available yet. Atria does not show raw sensor data as wrist temperature."
+            return "Decoder not verified. Atria does not show raw sensor data as wrist temperature."
         }
         return summary.isReady
             ? "\(summary.valueText) delta C versus your local sleep baseline. This is a relative wrist-skin signal, not core temperature."
@@ -2717,7 +2714,7 @@ enum AtriaExperimentalSensorCopy {
                                                   decoderAvailable: decoderAvailable) else {
             return decoderAvailable
                 ? "Wrist temperature deviation is \(summary.detailText.lowercased())."
-                : "Wrist temperature deviation is not available yet."
+                : "Wrist-temperature decoder not verified."
         }
         return "Wrist temperature relative sleep signal \(summary.valueText) delta C from baseline, \(summary.footnoteText)."
     }
@@ -3681,22 +3678,35 @@ private enum AtriaVitalsLiveSignalMode: String, CaseIterable, Identifiable {
 /// stale persisted point can otherwise make yesterday look current after a
 /// disconnected relaunch.
 enum AtriaVitalsStressTimelineProjection {
+    static func evidence(
+        history: [AtriaStressMonitorStore.StressHistoryPoint],
+        referenceDate: Date,
+        window: TimeInterval = AtriaStressTimelineWindow.inlineDefault
+    ) -> AtriaStressTimelineEvidenceProjection {
+        let cutoff = referenceDate.addingTimeInterval(-window)
+        let readings = history.lazy
+            .filter { $0.t >= cutoff && $0.t <= referenceDate }
+            .map(AtriaStressDetailReading.init(historyPoint:))
+        return AtriaStressTimelineEvidenceProjection.make(readings: Array(readings))
+    }
+
+    /// Compatibility projection for callers that explicitly need numeric
+    /// physiological Stress. The Vitals surface itself uses `evidence` so an
+    /// HR-only day can render cardiac arousal rather than a conflicting blank.
     static func points(
         history: [AtriaStressMonitorStore.StressHistoryPoint],
         referenceDate: Date,
         window: TimeInterval = AtriaStressTimelineWindow.inlineDefault
     ) -> [AtriaStressTimelinePoint] {
-        let cutoff = referenceDate.addingTimeInterval(-window)
-        let readings = history.lazy
-            .filter { $0.t >= cutoff && $0.t <= referenceDate }
-            .map(AtriaStressDetailReading.init(historyPoint:))
-        return AtriaStressTimelinePoint.segment(Array(readings))
+        evidence(history: history,
+                 referenceDate: referenceDate,
+                 window: window).stressPoints
     }
 }
 
 enum AtriaVitalsStressTimelineCopy {
     static let gapNote = "Observed readings only · gaps mean no stress score was recorded."
-    static let accessibilityLabel = "Stress timeline with observed readings, scale 0 through 3. Collection gaps remain blank. Pinch to zoom between 12 and 4 hours."
+    static let accessibilityLabel = "Stress timeline with observed HR plus HRV readings, scale 0 through 3. Low starts at 0.60, Medium at 1.35, and High at 2.16. Collection gaps remain blank. Pinch to zoom between 12 and 4 hours."
 }
 
 /// One top-level monitoring surface keeps the two live signals on the same
@@ -3775,7 +3785,7 @@ private struct AtriaVitalsLiveSignalCard: View {
 
     private var stressMonitor: some View {
         let referenceDate = Date()
-        let stressPoints = AtriaVitalsStressTimelineProjection.points(
+        let projection = AtriaVitalsStressTimelineProjection.evidence(
             history: stressHistory,
             referenceDate: referenceDate
         )
@@ -3785,7 +3795,9 @@ private struct AtriaVitalsLiveSignalCard: View {
                     // The selected segment already names the metric. Repeating
                     // “stress” in every tier made the empty state feel like a
                     // feature pitch rather than a useful live surface.
-                    Text("Current reading")
+                    Text(stressPresentation.evidenceMode == .cardiacArousal
+                         ? "Cardiac arousal"
+                         : "Current reading")
                         .font(.subheadline.weight(.bold))
                     Text(stressPresentation.detail)
                         .font(.caption)
@@ -3799,30 +3811,51 @@ private struct AtriaVitalsLiveSignalCard: View {
                     .foregroundStyle(stressState.level?.tint ?? .secondary)
             }
 
-            if stressPoints.isEmpty {
+            switch projection.presentation {
+            case .physiologicalStress:
+                AtriaVitalsStressTimelineChart(points: projection.stressPoints,
+                                               referenceDate: referenceDate)
+                    .frame(height: 172)
+                    .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            case .cardiacArousal:
+                AtriaCardiacArousalTimelineChart(
+                    points: projection.cardiacArousalPoints,
+                    referenceDate: referenceDate,
+                    window: AtriaStressTimelineWindow.inlineDefault
+                )
+                .frame(height: 172)
+                .padding(.vertical, 8)
+                .padding(.trailing, 8)
+                .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            case .empty:
                 ContentUnavailableView(stressEmptyTitle,
                                        systemImage: stressEmptySystemImage,
                                        description: Text(stressEmptyDescription))
                     .frame(maxWidth: .infinity, minHeight: 154)
                     .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            } else {
-                AtriaVitalsStressTimelineChart(points: stressPoints,
-                                               referenceDate: referenceDate)
-                    .frame(height: 172)
-                    .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
 
-            HStack(spacing: 0) {
-                stressScaleItem("0", "Calm", tint: .blue)
-                stressScaleItem("1", "Low", tint: .green)
-                stressScaleItem("2", "Medium", tint: .orange)
-                stressScaleItem("3", "High", tint: .red)
+            if projection.presentation == .physiologicalStress {
+                HStack(spacing: 0) {
+                    stressScaleItem("0.00", "Calm", tint: .blue)
+                    stressScaleItem("0.60", "Low", tint: .green)
+                    stressScaleItem("1.35", "Medium", tint: .orange)
+                    stressScaleItem("2.16", "High", tint: .red)
+                }
+                .accessibilityLabel("Stress scale: Calm from 0, Low from 0.60, Medium from 1.35, High from 2.16")
+            } else if projection.presentation == .cardiacArousal {
+                Text("HR only · qualitative Calm / Low / Medium bands · no 0–3 Stress score or High claim")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .accessibilityLabel("Stress scale: 0 calm, 1 low, 2 medium, 3 high")
 
             // A gap note is valuable beside a real timeline, but repeats the
             // empty-state explanation before there are any readings to inspect.
-            if !stressPoints.isEmpty {
+            if projection.presentation == .physiologicalStress,
+               !projection.stressPoints.isEmpty {
                 Text(AtriaVitalsStressTimelineCopy.gapNote)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -3831,7 +3864,10 @@ private struct AtriaVitalsLiveSignalCard: View {
     }
 
     private var stressEmptyTitle: String {
-        isConnected ? "Preparing your baseline" : "Strap disconnected"
+        if stressPresentation.evidenceMode == .cardiacArousal {
+            return "Starting cardiac arousal"
+        }
+        return isConnected ? "Preparing your baseline" : "Strap disconnected"
     }
 
     private var stressEmptySystemImage: String {
@@ -3839,7 +3875,10 @@ private struct AtriaVitalsLiveSignalCard: View {
     }
 
     private var stressEmptyDescription: String {
-        isConnected
+        if stressPresentation.evidenceMode == .cardiacArousal {
+            return "Keep wearing your strap. The first HR-only Calm, Low, or Medium band will appear here without a numeric Stress claim."
+        }
+        return isConnected
             ? "Keep wearing your strap. Your 0–3 score will appear once your baseline is ready."
             : "Reconnect your strap to resume live readings. Recent measured readings remain visible when available."
     }
@@ -4042,6 +4081,16 @@ private struct AtriaVitalsStressTimelineChart: View {
 
     var body: some View {
         Chart {
+            RuleMark(y: .value("Low starts", AtriaStressEvidenceProjection.lowStartsAt))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                .foregroundStyle(.secondary.opacity(0.24))
+            RuleMark(y: .value("Medium starts", AtriaStressEvidenceProjection.mediumStartsAt))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                .foregroundStyle(.secondary.opacity(0.24))
+            RuleMark(y: .value("High starts", AtriaStressEvidenceProjection.highStartsAt))
+                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                .foregroundStyle(.secondary.opacity(0.24))
+
             ForEach(points) { point in
                 AreaMark(x: .value("Time", point.reading.date),
                          y: .value("Stress", point.reading.score),
@@ -4054,13 +4103,13 @@ private struct AtriaVitalsStressTimelineChart: View {
                          y: .value("Stress", point.reading.score),
                          series: .value("Segment", point.segment))
                     .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                    .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
                     .foregroundStyle(.linearGradient(colors: [.blue, .green, .orange],
                                                       startPoint: .bottom,
                                                       endPoint: .top))
             }
         }
-        .chartYScale(domain: 0...3)
+        .chartYScale(domain: 0...AtriaStressEvidenceProjection.maximumDisplayValue)
         .chartXScale(domain: xDomain)
         .chartYAxis {
             AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
@@ -4070,7 +4119,7 @@ private struct AtriaVitalsStressTimelineChart: View {
                     if let value = value.as(Int.self) {
                         Text("\(value)")
                             .font(.caption2.monospacedDigit())
-                            .foregroundStyle(value >= 2 ? .orange : (value == 1 ? .green : .blue))
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -5479,7 +5528,7 @@ private struct AtriaHRVCard: View, Equatable {
                         state: live.hrvPNN50 == nil ? .learning : hrvState,
                         tint: .purple,
                         footnote: "Share of adjacent beat intervals differing by more than 50 ms.")
-        AtriaMetricTile(label: "Stress",
+        AtriaMetricTile(label: hero.stressMetricTitle,
                         value: hero.stressValue,
                         state: .local,
                         tint: .purple)

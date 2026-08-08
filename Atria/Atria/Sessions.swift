@@ -12865,8 +12865,13 @@ final class SessionStore: ObservableObject {
                                                   restingNow: session.restingStable,
                                                   baseline: baseline,
                                                   hrvReferenceValidated: session.hrvReferenceValidated == true,
-                                                  sleepEfficiency: Self.sleepEfficiency(duration: sleepRollup?.sleepDuration,
-                                                                                        span: sleepRollup?.sleepSpan),
+                                                  // DailyRollup has no durable
+                                                  // motion-validation provenance.
+                                                  // Its duration/span ratio is
+                                                  // coverage, not sleep efficiency;
+                                                  // use duration alone in this
+                                                  // legacy history fallback.
+                                                  sleepEfficiency: nil,
                                                   sleepDurationHours: sleepRollup?.sleepDuration.map { $0 / 3_600 },
                                                   respiratoryRate: row.sleepRespiratoryRate,
                                                   respiratoryBaseline: respiratoryBaseline)
@@ -13316,6 +13321,16 @@ final class SessionStore: ObservableObject {
         ).deviations
     }
 
+    /// Recovery and Sleep presentation share one evidence authority. The raw
+    /// value on an HR-only night is capture/span coverage and must never enter
+    /// a score, preview, cache fingerprint, or frozen receipt as if motion had
+    /// established time asleep.
+    nonisolated static func recoverySleepEfficiency(
+        from night: SleepHistorySnapshot.Night?
+    ) -> Double? {
+        night?.displaySleepEfficiency
+    }
+
     nonisolated static func makeSavedDailyMetrics(rollups: [DailyRollup],
                                                           sleep: SleepHistorySnapshot,
                                                           baseline: PersonalBaseline,
@@ -13359,7 +13374,12 @@ final class SessionStore: ObservableObject {
                                                   restingNow: restingHR,
                                                   baseline: baseline,
                                                   hrvReferenceValidated: false,
-                                                  sleepEfficiency: night?.sleepEfficiency,
+                                                  // Stored HR-only "efficiency" is capture/span
+                                                  // coverage, not measured sleep efficiency. The
+                                                  // same motion authority that controls the Sleep UI
+                                                  // must control Recovery; otherwise an honest "--"
+                                                  // tile can still silently boost the score as 100%.
+                                                  sleepEfficiency: recoverySleepEfficiency(from: night),
                                                   sleepDurationHours: sleepDuration.map { $0 / 3_600 },
                                                   respiratoryRate: respiratoryRate,
                                                   respiratoryBaseline: sleep.respiratoryBaselineStats)
@@ -13859,35 +13879,13 @@ final class SessionStore: ObservableObject {
             asOf: day,
             calendar: calendar
         )
-        // A night owns the adaptive Sleep Need that was known when its
-        // physiological cycle settled. We preserve an existing value across
-        // edits, while a newly settled night derives it once from only prior
-        // *frozen* nights. Legacy history stays unknown instead of being
-        // reconstructed with a later profile, debt, or strain setting.
-        let frozenSleepNeedSeconds: TimeInterval? = {
-            guard let confirmedMainSleep,
-                  sleepDuration != nil else { return nil }
-            if let existing = computedToday?.sleepNeedSeconds, existing > 0 {
-                return existing
-            }
-            let prior = computed
-                .filter { calendar.startOfDay(for: $0.day) < calendar.startOfDay(for: day) }
-                .sorted { $0.day < $1.day }
-            let priorFrozenNights = prior.suffix(7).compactMap { metric -> (needed: Double, slept: Double)? in
-                guard let duration = metric.sleepDuration, duration > 0,
-                      let need = metric.sleepNeedSeconds, need > 0 else { return nil }
-                return (needed: need / 3_600, slept: duration / 3_600)
-            }
-            let yesterdayStrain = prior.last?.strain
-            let components = AtriaSleepBudget.sleepNeedComponents(
-                baseHours: configuredSleepBaseNeedHours(),
-                yesterdayStrain: yesterdayStrain,
-                debtHours: AtriaSleepBudget.sleepDebt(nights: priorFrozenNights),
-                sameDayNapHours: sleep.sameDayNapHours(for: confirmedMainSleep,
-                                                        calendar: calendar)
-            )
-            return components.totalHours * 3_600
-        }()
+        // The confirmed night is the single authority for the adaptive target
+        // that was frozen when this physiological cycle settled. Re-deriving a
+        // target here from today's profile/debt/strain made the daily rollup
+        // disagree with the Sleep detail shown for the very same night. Older
+        // records without a durable receipt remain unknown rather than being
+        // assigned a retroactive target.
+        let frozenSleepNeedSeconds = confirmedMainSleep?.frozenSleepNeed?.seconds
         let strain = computedToday?.strain ?? wearStrain
         let strainDayEnd = min(
             now,
@@ -13931,7 +13929,7 @@ final class SessionStore: ObservableObject {
                                           restingNow: restingHR,
                                           baseline: baseline,
                                           hrvReferenceValidated: false,
-                                          sleepEfficiency: confirmedMainSleep?.sleepEfficiency,
+                                          sleepEfficiency: recoverySleepEfficiency(from: confirmedMainSleep),
                                           sleepDurationHours: sleepDuration.map { $0 / 3_600 },
                                           respiratoryRate: respiratoryRate,
                                           respiratoryBaseline: sleep.respiratoryBaselineStats)
@@ -13961,7 +13959,7 @@ final class SessionStore: ObservableObject {
                                         hrvRMSSD: hrv.map(Double.init),
                                         restingHeartRateBPM: restingHR.map(Double.init),
                                         sleepDurationSeconds: sleepDuration,
-                                        sleepEfficiency: confirmedMainSleep?.sleepEfficiency,
+                                        sleepEfficiency: recoverySleepEfficiency(from: confirmedMainSleep),
                                         respiratoryRate: respiratoryRate,
                                         baseline: baseline,
                                         respiratoryBaseline: sleep.respiratoryBaselineStats,
@@ -14751,7 +14749,7 @@ final class SessionStore: ObservableObject {
             restingHeartRate: restingHeartRate,
             hrvReferenceValidated: validatedHRV != nil,
             sleepID: latestSleep?.id,
-            sleepEfficiency: latestSleep?.sleepEfficiency,
+            sleepEfficiency: Self.recoverySleepEfficiency(from: latestSleep),
             sleepDurationHours: latestSleep?.durationHours,
             respiratoryRate: latestSleep?.respiratoryRate,
             respiratoryBaselineMean: respiratoryBaseline?.mean,
@@ -14782,7 +14780,7 @@ final class SessionStore: ObservableObject {
                 restingNow: restingHeartRate,
                 baseline: baseline,
                 hrvReferenceValidated: validatedHRV != nil,
-                sleepEfficiency: latestSleep?.sleepEfficiency,
+                sleepEfficiency: Self.recoverySleepEfficiency(from: latestSleep),
                 sleepDurationHours: latestSleep?.durationHours,
                 respiratoryRate: latestSleep?.respiratoryRate,
                 respiratoryBaseline: respiratoryBaseline
@@ -14923,7 +14921,7 @@ final class SessionStore: ObservableObject {
               maximumAge > 0 else {
             return nil
         }
-        if let efficiency = night.sleepEfficiency,
+        if let efficiency = recoverySleepEfficiency(from: night),
            !efficiency.isFinite || !(0...1).contains(efficiency) {
             return nil
         }
@@ -14950,7 +14948,7 @@ final class SessionStore: ObservableObject {
             restingNow: night.restingHR,
             baseline: baseline,
             hrvReferenceValidated: false,
-            sleepEfficiency: night.sleepEfficiency,
+            sleepEfficiency: recoverySleepEfficiency(from: night),
             sleepDurationHours: night.durationHours,
             respiratoryRate: night.respiratoryRate,
             respiratoryBaseline: respiratoryBaseline

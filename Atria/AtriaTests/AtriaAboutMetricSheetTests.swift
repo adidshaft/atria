@@ -4,7 +4,7 @@ import XCTest
 /// Knowledge slice 5 (2026-08-01): the "About <metric>" education sheets carry
 /// real, honest copy. These are content contracts, not view tests -- the pure
 /// model is asserted so a future edit can't quietly ship an empty card or drop
-/// the canonical hardware-unavailable copy.
+/// the canonical unverified-decoder copy.
 final class AtriaAboutMetricSheetTests: XCTestCase {
     func testEveryMetricHasNonEmptyEducationCopy() {
         for metric in AtriaAboutMetric.allCases {
@@ -39,9 +39,9 @@ final class AtriaAboutMetricSheetTests: XCTestCase {
         }
     }
 
-    func testBloodOxygenIsHardwareUnavailableWithCanonicalCopy() {
+    func testBloodOxygenExplainsItsUnverifiedDecoderWithCanonicalCopy() {
         let spo2 = AtriaAboutMetric.bloodOxygen
-        XCTAssertTrue(spo2.isHardwareUnavailable)
+        XCTAssertTrue(spo2.showsWhyBlank)
         XCTAssertEqual(spo2.computeCardTitle, "WHY IT'S BLANK")
         // 2026-08-01: the middle card now carries the full "why it's blank"
         // explanation (derived ratio-of-ratios value + the decode-vs-calibrate
@@ -50,8 +50,8 @@ final class AtriaAboutMetricSheetTests: XCTestCase {
         // ...and the honesty note carries both canonical short lines verbatim.
         XCTAssertTrue(spo2.honestyNote.contains(AtriaSpO2Copy.wontFakeAPercentage),
                       "SpO2 honesty note must use canonical \"won't fake a percentage\" copy")
-        XCTAssertTrue(spo2.honestyNote.contains(AtriaSpO2Copy.notAvailableOnStrap),
-                      "SpO2 honesty note must use canonical \"not available on this strap\" copy")
+        XCTAssertTrue(spo2.honestyNote.contains(AtriaSpO2Copy.decoderNotVerified),
+                      "SpO2 honesty note must name the unverified app decoder")
         // Never a fabricated percentage anywhere in the SpO2 copy.
         for text in [spo2.definition, spo2.computeCardBody, spo2.honestyNote] {
             XCTAssertFalse(text.contains("%"), "SpO2 copy must never render a percentage: \(text)")
@@ -64,11 +64,15 @@ final class AtriaAboutMetricSheetTests: XCTestCase {
     // fabricated %) is unchanged; only the availability framing moved.
     func testCanonicalSpO2ConstantsUseAppLimitationFraming() {
         XCTAssertEqual(AtriaSpO2Copy.wontFakeAPercentage, "Atria won't fake a percentage.")
-        XCTAssertEqual(AtriaSpO2Copy.notAvailableOnStrap, "Not available yet.")
+        XCTAssertEqual(AtriaSpO2Copy.decoderNotVerified, "Decoder not verified")
+        XCTAssertEqual(AtriaSpO2Copy.notAvailableOnStrap,
+                       "Sensor unavailable on this strap")
         XCTAssertEqual(AtriaSpO2Copy.longUnavailable,
                        "Atria can't yet produce a validated SpO2 reading from this strap's sensor. Rather than estimate, it leaves this blank — and tells you why.")
-        // The framing must NOT claim the hardware lacks the sensor.
-        XCTAssertFalse(AtriaSpO2Copy.notAvailableOnStrap.contains("on this strap"))
+        // The supported-strap state names the app limitation and does not imply
+        // that simply waiting will make a value appear.
+        XCTAssertFalse(AtriaSpO2Copy.decoderNotVerified.localizedCaseInsensitiveContains("strap"))
+        XCTAssertFalse(AtriaSpO2Copy.decoderNotVerified.localizedCaseInsensitiveContains("yet"))
         XCTAssertFalse(AtriaSpO2Copy.longUnavailable.contains("can't produce"))
     }
 
@@ -85,9 +89,15 @@ final class AtriaAboutMetricSheetTests: XCTestCase {
         XCTAssertEqual(AtriaAboutMetric.bloodOxygen.computeCardTitle, "WHY IT'S BLANK")
     }
 
-    func testOnlyBloodOxygenIsHardwareUnavailable() {
-        for metric in AtriaAboutMetric.allCases where metric != .bloodOxygen {
-            XCTAssertFalse(metric.isHardwareUnavailable, "\(metric) should be a computed metric")
+    func testOnlyUnverifiedExperimentalSignalsUseWhyBlankEducation() {
+        XCTAssertTrue(AtriaAboutMetric.bloodOxygen.showsWhyBlank)
+        XCTAssertTrue(AtriaAboutMetric.skinTemperature.showsWhyBlank)
+        XCTAssertTrue(AtriaAboutMetric.skinTemperature.computeCardBody.contains("has not verified"))
+        XCTAssertTrue(AtriaAboutMetric.skinTemperature.honestyNote.contains("Decoder not verified"))
+
+        for metric in AtriaAboutMetric.allCases
+            where metric != .bloodOxygen && metric != .skinTemperature {
+            XCTAssertFalse(metric.showsWhyBlank, "\(metric) should be a computed metric")
             XCTAssertEqual(metric.computeCardTitle, "HOW ATRIA COMPUTES IT")
         }
     }

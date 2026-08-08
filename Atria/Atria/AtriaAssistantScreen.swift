@@ -1,5 +1,16 @@
 import SwiftUI
 
+/// Bedtime planning may consume only the same motion-qualified efficiency the
+/// app is willing to display. HR-only captured/span coverage can be stored for
+/// diagnostics, but it is not sleep efficiency and must not move bedtime.
+enum AtriaAssistantSleepPlannerEvidence {
+    static func efficiencies(from snapshot: SleepHistorySnapshot) -> [Double] {
+        snapshot.nights
+            .filter { $0.confirmed && !$0.isNapEvidence }
+            .compactMap(\.displaySleepEfficiency)
+    }
+}
+
 /// The Assistant, implemented (2026-07-07, user-directed — previously
 /// "Coming Soon"). Two honest layers:
 ///
@@ -189,7 +200,8 @@ struct AtriaAssistantScreen: View {
         }
         let goal = AtriaSleepPlannerGoal(rawValue: plannerGoalRaw) ?? .peak
         let plan = AtriaSleepPlanner.plan(needHours: need, goal: goal, wakeByMinutes: wakeByMinutes,
-                                          nightEfficiencies: snapshot.nights.filter(\.confirmed).compactMap(\.sleepEfficiency))
+                                          nightEfficiencies: AtriaAssistantSleepPlannerEvidence
+                                            .efficiencies(from: snapshot))
         return Exchange(question: prompt.question,
                         answer: "Tonight's need is about \(AtriaMetricFormat.sleepHours(need)). For your \(goal.title) goal, aim to be in bed by \(plan.inBedByText) to get \(AtriaMetricFormat.sleepHours(plan.targetSleepHours)) asleep before your \(String(format: "%d:%02d", wakeByMinutes / 60, wakeByMinutes % 60)) wake-by time.",
                         provenance: "Sleep need, wake time, and \(plan.efficiencyIsDefault ? "typical efficiency while yours is learned" : "your typical efficiency").")

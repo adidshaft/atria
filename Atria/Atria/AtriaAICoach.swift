@@ -53,8 +53,46 @@ struct AtriaCoachContext: Equatable {
     let recoveryText: String
     let hrvText: String
     let stressText: String
+    let stressMetricTitle: String
+    let stressEvidenceMode: AtriaStressEvidenceMode?
     let baselineSamples: Int
     let sessionsCount: Int
+
+    init(guidance: Coach.Guidance,
+         strain: Double,
+         recoveryText: String,
+         hrvText: String,
+         stressText: String,
+         stressMetricTitle: String = "Stress",
+         stressEvidenceMode: AtriaStressEvidenceMode? = nil,
+         baselineSamples: Int,
+         sessionsCount: Int) {
+        self.guidance = guidance
+        self.strain = strain
+        self.recoveryText = recoveryText
+        self.hrvText = hrvText
+        self.stressText = stressText
+        self.stressMetricTitle = stressMetricTitle
+        self.stressEvidenceMode = stressEvidenceMode
+        self.baselineSamples = baselineSamples
+        self.sessionsCount = sessionsCount
+    }
+}
+
+/// One wording policy for local coaching. HR-only evidence remains useful, but
+/// it must never enter an insight sentence under the physiological Stress name.
+enum AtriaCoachStressPresentation {
+    static func clause(context: AtriaCoachContext) -> String {
+        let title = context.stressMetricTitle
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedTitle = title.isEmpty ? "Stress" : title
+        switch context.stressEvidenceMode {
+        case .cardiacArousal:
+            return "Cardiac arousal \(context.stressText) (HR only; not a numeric Stress score)"
+        case .physiologicalStress, nil:
+            return "\(resolvedTitle) \(context.stressText)"
+        }
+    }
 }
 
 struct AtriaCoachPayload: Codable, Equatable {
@@ -334,7 +372,8 @@ struct AtriaLocalCoachProvider: AtriaCoachProvider {
 
     func answer(payload: AtriaCoachPayload, context: AtriaCoachContext) async -> AtriaCoachAnswer {
         let target = context.guidance.target.map { String(format: "%.1f", $0) } ?? "learning"
-        var detail = "Today: strain \(String(format: "%.1f", context.strain)) vs target \(target). Recovery \(context.recoveryText), HRV \(context.hrvText), stress \(context.stressText). \(context.guidance.detail)"
+        let stressClause = AtriaCoachStressPresentation.clause(context: context)
+        var detail = "Today: strain \(String(format: "%.1f", context.strain)) vs target \(target). Recovery \(context.recoveryText), HRV \(context.hrvText), \(stressClause). \(context.guidance.detail)"
         // Cycle tracking is opt-in and off by default (AtriaCycleTracking.swift);
         // this line only appears when the user enabled it AND a phase estimate
         // exists, and is always labeled "Cycle estimate" — never presented as a

@@ -872,13 +872,11 @@ struct AtriaHealthScreen: View {
 
         let restingHeartRate = vitalsStore.state.baseline.restingInt
         let projection = await Task.detached(priority: .utility) {
-            let raw = HistoricalArchive.metricHeartRatePoints(start: start,
-                                                               end: end,
-                                                               maximumPoints: 50_000)?.points ?? []
-            return AtriaSleepStressProjection.make(points: raw,
-                                                    sleepStart: start,
-                                                    sleepEnd: end,
-                                                    restingHeartRate: restingHeartRate)
+            AtriaSleepStressArchiveProjection.load(
+                sleepStart: start,
+                sleepEnd: end,
+                restingHeartRate: restingHeartRate
+            )
         }.value
         guard !Task.isCancelled else { return }
         sleepStressProjection = projection
@@ -911,7 +909,12 @@ struct AtriaHealthScreen: View {
                                     value: sleepPerformanceValue,
                                     state: currentSleep == nil ? .learning : .local,
                                     tint: Metrics.electricSleep,
-                                    footnote: "of nightly need")
+                                    // A percentage without its numerator and
+                                    // denominator left the user guessing what
+                                    // “80%” meant. Keep the compact value, but
+                                    // show the exact recorded sleep and frozen
+                                    // need receipt directly underneath it.
+                                    footnote: sleepPerformanceFootnote)
                 }
                 .buttonStyle(.plain)
                 .accessibilityHint("Opens sleep sufficiency detail")
@@ -1040,6 +1043,17 @@ struct AtriaHealthScreen: View {
     private var sleepPerformanceValue: String {
         guard let performance = sleepPerformancePercentUnified else { return "--" }
         return "\(performance)%"
+    }
+
+    private var sleepPerformanceFootnote: String {
+        guard let currentMainSleep else {
+            return "Needs a confirmed sleep"
+        }
+        return vitalsStore.state.sleepHistorySnapshot.sleepPerformanceSummary(
+            for: currentMainSleep,
+            baseNeedHours: sleepBaseNeedHours,
+            yesterdayStrain: yesterdayStrainForLatestNight
+        )
     }
 
     /// Mounts the multi-metric trend chart (resting HR / strain / HRV, with
@@ -1488,7 +1502,9 @@ struct AtriaHealthScreen: View {
 
     // MARK: Stress (AtriaStressMonitor)
 
-    /// Downsample the bounded live/restored stress history for display. The raw
+    /// Downsample the bounded live/restored physiological-Stress history for
+    /// display. HR-only cardiac-arousal points stay in persistence for their own
+    /// surface, but are omitted here and force a visible segment break. The raw
     /// ring can reach 5,760 points (48h @ 30s); the strip drew an AreaMark + a
     /// LineMark PER point (~2880 marks) on every body eval — the worst scroll-jank
     /// offender on Vitals. Bucket each contiguous run so the whole strip stays near
@@ -1505,11 +1521,21 @@ struct AtriaHealthScreen: View {
                                   targetTotal: Int = 110) -> [StressStripPoint] {
         guard history.count > 1 else { return [] }
 
-        // Contiguous runs, split on a >5min gap.
+        // Contiguous numeric-Stress runs, split on a >5min telemetry gap or an
+        // intervening HR-only cardiac-arousal point. This never connects two
+        // different evidence coordinates as though they were one metric.
         var segments: [[AtriaStressMonitorStore.StressHistoryPoint]] = []
         var current: [AtriaStressMonitorStore.StressHistoryPoint] = []
-        for (index, point) in history.enumerated() {
-            if index > 0, point.t.timeIntervalSince(history[index - 1].t) > 5 * 60 {
+        for point in history.sorted(by: { $0.t < $1.t }) {
+            guard point.evidenceProjection.numericStressScore != nil else {
+                if !current.isEmpty {
+                    segments.append(current)
+                    current = []
+                }
+                continue
+            }
+            if let previous = current.last,
+               point.t.timeIntervalSince(previous.t) > 5 * 60 {
                 segments.append(current)
                 current = []
             }
@@ -1517,7 +1543,8 @@ struct AtriaHealthScreen: View {
         }
         if !current.isEmpty { segments.append(current) }
 
-        let total = history.count
+        let total = segments.reduce(0) { $0 + $1.count }
+        guard total > 1 else { return [] }
         var out: [StressStripPoint] = []
         out.reserveCapacity(min(total, targetTotal + segments.count))
         var emittedID = 0
@@ -1525,7 +1552,9 @@ struct AtriaHealthScreen: View {
             let reduced: [(t: Date, value: Double)]
             if total <= 150 || segment.count <= 2 {
                 // Already legible / too small to thin — keep full fidelity.
-                reduced = segment.map { ($0.t, $0.activation * 3) }
+                reduced = segment.compactMap { point in
+                    point.evidenceProjection.numericStressScore.map { (point.t, $0) }
+                }
             } else {
                 // Budget proportional to this run's share of the readings (>=2 so a
                 // real run never collapses to a single point).
@@ -1543,27 +1572,30 @@ struct AtriaHealthScreen: View {
     }
 
     /// Time-bucket one contiguous run to ~`targetBuckets` points, averaging the
-    /// activation of the samples that fall in each bucket (the real mean, matching
-    /// the HR chart's `smoothedBuckets`). Value is the 0-1 activation scaled x3 to
-    /// the chart's 0...3 domain — identical to the raw 1:1 mapping.
+    /// numeric Stress score of the samples that fall in each bucket (the real
+    /// mean, matching the HR chart's `smoothedBuckets`). The shared evidence
+    /// projection owns the 0...1 to 0...3 conversion and filters HR-only points.
     private static func bucketStressSegment(_ segment: [AtriaStressMonitorStore.StressHistoryPoint],
                                             targetBuckets: Int) -> [(t: Date, value: Double)] {
         guard let first = segment.first?.t, let last = segment.last?.t, last > first,
               segment.count > targetBuckets else {
-            return segment.map { ($0.t, $0.activation * 3) }
+            return segment.compactMap { point in
+                point.evidenceProjection.numericStressScore.map { (point.t, $0) }
+            }
         }
         let span = last.timeIntervalSince(first)
         let width = span / Double(targetBuckets)
         var grouped: [Int: [Double]] = [:]
         for point in segment {
+            guard let score = point.evidenceProjection.numericStressScore else { continue }
             let index = min(targetBuckets - 1, Int(point.t.timeIntervalSince(first) / width))
-            grouped[index, default: []].append(point.activation)
+            grouped[index, default: []].append(score)
         }
         return grouped.keys.sorted().compactMap { index in
             guard let activations = grouped[index], !activations.isEmpty else { return nil }
             let center = first.addingTimeInterval((Double(index) + 0.5) * width)
             let avg = activations.reduce(0, +) / Double(activations.count)
-            return (center, avg * 3)
+            return (center, avg)
         }
     }
 
@@ -1706,7 +1738,7 @@ private struct AtriaHealthStressSection: View {
 
     var body: some View {
         Group {
-            AtriaHealthMetricRow(title: "Stress",
+            AtriaHealthMetricRow(title: stressPresentation.metricTitle,
                                  value: stressValue,
                                  detail: stressDetail,
                                  systemImage: "bolt.heart.fill",
@@ -1778,11 +1810,15 @@ private struct AtriaHealthStressSection: View {
     /// not lost: `stressDetail` below already surfaces that same label as the
     /// detail, which is where an explanation belongs.
     private var stressValue: String {
-        AtriaStressPresentation.make(state: stressMonitorStore.state).value
+        stressPresentation.value
     }
 
     private var stressDetail: String {
-        AtriaStressPresentation.make(state: stressMonitorStore.state).detail
+        stressPresentation.detail
+    }
+
+    private var stressPresentation: AtriaStressPresentation {
+        AtriaStressPresentation.make(state: stressMonitorStore.state)
     }
 
     private var stressTint: Color {
@@ -2216,10 +2252,12 @@ private struct AtriaHealthMetricRow: View, Equatable {
     }
 }
 
-/// Night-only HR load from archived, observed heart-rate rows. This is
-/// intentionally a separate projection from the daytime Stress Monitor:
-/// that monitor remains paused during sleep so it cannot accidentally label
-/// an overnight reading as live daytime stress.
+/// Night-only HR load from archived, observed heart-rate rows. This remains a
+/// separate metric from the live Stress Monitor: it describes overnight
+/// cardiac load relative to resting HR and never relabels it as psychological
+/// stress or a sleep stage. Atria does not yet publish a validated in-progress
+/// sleep interval authority, so this projection must not imply that the live
+/// monitor independently knew the wearer was asleep at capture time.
 ///
 /// Internal (not file-private) so the Sleep detail sheet in
 /// `AtriaActivityMonitor` renders the exact same overnight HR trace and
@@ -2282,7 +2320,10 @@ struct AtriaSleepStressProjection: Equatable {
             return Self(samples: [], heartRateSamples: [], availability: .baselineNeeded)
         }
         guard sleepEnd.timeIntervalSince(sleepStart) >= 60 * 60 else {
-            return .unavailable
+            // The caller has already distinguished a failed archive read from a
+            // successful one. A readable short window simply cannot provide the
+            // minimum overnight bucket coverage; it is not a history failure.
+            return Self(samples: [], heartRateSamples: [], availability: .insufficientWear)
         }
 
         // Five-minute buckets make the graph legible without inventing samples
@@ -2316,6 +2357,63 @@ struct AtriaSleepStressProjection: Equatable {
             return Self(samples: [], heartRateSamples: [], availability: .insufficientWear)
         }
         return Self(samples: samples, heartRateSamples: heartRateSamples, availability: .ready)
+    }
+}
+
+/// One typed archive-read boundary for every overnight HR-load surface. A
+/// successful empty read means the archive was readable but the night lacked
+/// enough observed buckets; nil means the exact history could not be read (for
+/// example an unreadable/truncated file or row overflow). Missing baseline is
+/// resolved before I/O and remains a distinct, truthful prerequisite state.
+enum AtriaSleepStressArchiveProjection {
+    static func make(
+        read: HistoricalArchive.HeartRateWindowRead?,
+        sleepStart: Date,
+        sleepEnd: Date,
+        restingHeartRate: Int?
+    ) -> AtriaSleepStressProjection {
+        guard let restingHeartRate, (35...120).contains(restingHeartRate) else {
+            return AtriaSleepStressProjection.make(
+                points: [],
+                sleepStart: sleepStart,
+                sleepEnd: sleepEnd,
+                restingHeartRate: restingHeartRate
+            )
+        }
+        guard let read else { return .unavailable }
+        return AtriaSleepStressProjection.make(
+            points: read.points,
+            sleepStart: sleepStart,
+            sleepEnd: sleepEnd,
+            restingHeartRate: restingHeartRate
+        )
+    }
+
+    static func load(
+        sleepStart: Date,
+        sleepEnd: Date,
+        restingHeartRate: Int?,
+        maximumPoints: Int = 50_000
+    ) -> AtriaSleepStressProjection {
+        guard let restingHeartRate, (35...120).contains(restingHeartRate) else {
+            return make(
+                read: nil,
+                sleepStart: sleepStart,
+                sleepEnd: sleepEnd,
+                restingHeartRate: restingHeartRate
+            )
+        }
+        let read = HistoricalArchive.metricHeartRatePoints(
+            start: sleepStart,
+            end: sleepEnd,
+            maximumPoints: maximumPoints
+        )
+        return make(
+            read: read,
+            sleepStart: sleepStart,
+            sleepEnd: sleepEnd,
+            restingHeartRate: restingHeartRate
+        )
     }
 }
 

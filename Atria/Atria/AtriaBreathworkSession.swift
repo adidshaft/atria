@@ -17,12 +17,9 @@ struct AtriaBreathworkStressReading: Equatable {
     }
 
     init?(state: AtriaStressState, measuredAt: Date?) {
-        guard state.kind == .scored,
-              state.level != nil,
-              state.rawActivation.isFinite,
+        guard let score = state.evidenceProjection?.numericStressScore,
               let measuredAt else { return nil }
-        self.score = min(max(state.rawActivation * 3, 0), 3)
-        self.measuredAt = measuredAt
+        self.init(score: score, measuredAt: measuredAt)
     }
 
     func fresh(at now: Date,

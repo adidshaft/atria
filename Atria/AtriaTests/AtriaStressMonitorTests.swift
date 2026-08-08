@@ -147,6 +147,21 @@ final class AtriaStressMonitorTests: XCTestCase {
                                 sessions: dayCount, updated: now, samples: samples)
     }
 
+    /// A continuous, artifact-screenable 90-second tachogram whose adjacent
+    /// intervals alternate by `rmssd` milliseconds. The resulting RMSSD is
+    /// exactly `rmssd`, making evidence-mode transition tests deterministic.
+    private func qualifiedRRSamples(endingAt end: Date,
+                                    rmssd: Int = 100) -> [AtriaBreathworkSession.RRSample] {
+        let lower = 1_000 - rmssd / 2
+        let upper = 1_000 + rmssd / 2
+        return (0...90).map { index in
+            AtriaBreathworkSession.RRSample(
+                date: end.addingTimeInterval(Double(index - 90)),
+                ms: index.isMultiple(of: 2) ? lower : upper
+            )
+        }
+    }
+
     // MARK: Scored cases
 
     func testCalmAtPersonalBaselineHROnly() {
@@ -169,6 +184,92 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(state.level, .calm)
         XCTAssertFalse(state.hrvAvailable)
         XCTAssertEqual(state.detail, "HR-only")
+    }
+
+    func testEvidenceProjectionSeparatesNumericStressFromCardiacArousalAndClampsBounds() {
+        let stress = AtriaStressEvidenceProjection(activation: 1.5,
+                                                   mode: .physiologicalStress)
+        XCTAssertEqual(stress.activation, 1)
+        XCTAssertEqual(stress.displayValue, 3)
+        XCTAssertEqual(stress.numericStressScore, 3)
+        XCTAssertNil(stress.cardiacArousalValue)
+
+        let arousal = AtriaStressEvidenceProjection(activation: -0.5,
+                                                    mode: .cardiacArousal)
+        XCTAssertEqual(arousal.activation, 0)
+        XCTAssertEqual(arousal.displayValue, 0)
+        XCTAssertNil(arousal.numericStressScore,
+                     "HR-only evidence must never occupy the numeric Stress scale")
+        XCTAssertEqual(arousal.cardiacArousalValue, 0)
+
+        let nonFinite = AtriaStressEvidenceProjection(activation: .infinity,
+                                                      mode: .physiologicalStress)
+        XCTAssertEqual(nonFinite.activation, 0, "invalid input fails closed")
+    }
+
+    func testProductScaleThresholdsExactlyMatchCanonicalBandSemantics() {
+        XCTAssertEqual(AtriaStressEvidenceProjection.lowStartsAt, 0.60, accuracy: 1e-12)
+        XCTAssertEqual(AtriaStressEvidenceProjection.mediumStartsAt, 1.35, accuracy: 1e-12)
+        XCTAssertEqual(AtriaStressEvidenceProjection.highStartsAt, 2.16, accuracy: 1e-12)
+
+        XCTAssertEqual(AtriaStressMonitor.band(AtriaStressMonitor.calmUpperBound.nextDown),
+                       AtriaStressLevel.calm.rawValue)
+        XCTAssertEqual(AtriaStressMonitor.band(AtriaStressMonitor.calmUpperBound),
+                       AtriaStressLevel.low.rawValue)
+        XCTAssertEqual(AtriaStressMonitor.band(AtriaStressMonitor.lowUpperBound),
+                       AtriaStressLevel.medium.rawValue)
+        XCTAssertEqual(AtriaStressMonitor.band(AtriaStressMonitor.mediumUpperBound),
+                       AtriaStressLevel.high.rawValue)
+    }
+
+    func testBelowBaselineFullEvidenceMeansZeroDetectedElevationNotZeroPsychologicalStress() throws {
+        let baseline = makeBaseline(restingMean: 60,
+                                    restingSD: 4,
+                                    lnRMSSDMean: log(100),
+                                    lnRMSSDSD: 0.15,
+                                    hrvSampleDays: 20)
+        let state = AtriaStressMonitor.score(
+            hrNow: 60,
+            hrWindow: [60, 60, 60],
+            rrWindowMs: [],
+            hrvFallbackRMSSD: 100,
+            baseline: baseline,
+            restingMaxHR: restingMaxHR,
+            workoutActive: false,
+            zoneIndex: 0,
+            inSleepWindow: false,
+            hasContact: true,
+            contactAgeSeconds: 300,
+            awakeReference: (center: 75, spread: 14),
+            now: now
+        )
+
+        XCTAssertEqual(state.evidenceMode, .physiologicalStress)
+        XCTAssertEqual(state.rawActivation, 0, accuracy: 1e-12)
+        let presentation = AtriaStressPresentation.make(state: state)
+        XCTAssertEqual(try XCTUnwrap(presentation.numericScore), 0, accuracy: 1e-12)
+        XCTAssertTrue(presentation.narrative.contains("does not mean zero psychological stress"))
+    }
+
+    func testHROnlyPresentationIsQualitativeAndRemainsSeparatelyQueryable() throws {
+        let state = AtriaStressState(level: .medium,
+                                     label: "Medium",
+                                     detail: "HR-only",
+                                     kind: .scored,
+                                     confidence: 0.55,
+                                     rawActivation: AtriaStressMonitor.mediumUpperBound,
+                                     hrvAvailable: false)
+        let presentation = AtriaStressPresentation.make(state: state)
+
+        XCTAssertEqual(presentation.evidenceMode, .cardiacArousal)
+        XCTAssertEqual(presentation.metricTitle, "Cardiac arousal")
+        XCTAssertNil(presentation.numericScore)
+        XCTAssertEqual(
+            try XCTUnwrap(state.evidenceProjection?.cardiacArousalValue),
+            AtriaStressEvidenceProjection.highStartsAt,
+            accuracy: 1e-12
+        )
+        XCTAssertTrue(presentation.narrative.contains("does not turn this evidence into a numeric Stress score"))
     }
 
     /// Corroboration model (2026-08-08 adversarial review): a lone signal — an
@@ -389,11 +490,9 @@ final class AtriaStressMonitorTests: XCTestCase {
                           "a seed past the max-age must be ignored in favour of the default")
     }
 
-    // Audit §1 #7: in HR-only mode the emitted level is capped at Medium, but
-    // the store used to publish the uncapped activation EMA — so the detail
-    // gauge and the history timeline (both score = activation × 3) could render
-    // "High" while the label read "Medium". Both the published activation and
-    // the recorded history point must be capped to the Medium ceiling.
+    // HR-only cardiac arousal remains a bounded, queryable evidence stream even
+    // though it no longer occupies the numeric Stress chart. The published and
+    // persisted activation must agree with its qualitative Medium ceiling.
     @MainActor
     func testHROnlyModeCapsPublishedActivationToMediumCeiling() {
         let baseline = makeBaseline(restingMean: 60, restingSD: 4, hrvSampleDays: 0)
@@ -427,13 +526,168 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertGreaterThan(store.state.rawActivation, AtriaStressMonitor.lowUpperBound,
                              "a genuinely elevated HR-only reading should still fill the Medium band")
 
-        // The timeline reads the recorded history point — the same cap must apply.
+        // The separately queryable persisted point carries the same bounded value.
         guard let recorded = store.history.last else {
             return XCTFail("a scored tick must record a history point")
         }
         XCTAssertLessThanOrEqual(recorded.activation,
                                  AtriaStressMonitor.mediumUpperBound + 1e-9,
-                                 "recorded timeline activation must also be capped")
+                                 "persisted cardiac-arousal activation must also be capped")
+        XCTAssertEqual(recorded.evidenceMode, .cardiacArousal)
+        XCTAssertNil(recorded.evidenceProjection.numericStressScore)
+        XCTAssertEqual(recorded.evidenceProjection.cardiacArousalValue,
+                       recorded.evidenceProjection.displayValue)
+    }
+
+    @MainActor
+    func testHROnlyToFullEvidenceTransitionCannotLeakHiddenEMAIntoFalseHigh() throws {
+        let baseline = makeBaseline(restingMean: 60,
+                                    restingSD: 4,
+                                    lnRMSSDMean: log(100),
+                                    lnRMSSDSD: 0.15,
+                                    hrvSampleDays: 20)
+        let store = AtriaStressMonitorStore()
+
+        for offset in [0.0, 50.0, 100.0, 125.0, 155.0, 185.0, 215.0, 245.0] {
+            store.update(heartRate: 98,
+                         hasContact: true,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 1,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: now.addingTimeInterval(offset))
+        }
+        XCTAssertEqual(store.state.evidenceMode, .cardiacArousal)
+        XCTAssertEqual(store.state.level, .medium)
+
+        let fullEvidenceAt = now.addingTimeInterval(275)
+        store.update(heartRate: 98,
+                     hasContact: true,
+                     recentRRSamples: qualifiedRRSamples(endingAt: fullEvidenceAt),
+                     isRecording: false,
+                     zoneIndex: 1,
+                     hrvSnapshot: nil,
+                     baseline: baseline,
+                     restingMaxHR: restingMaxHR,
+                     hasActiveSleepEvidence: false,
+                     now: fullEvidenceAt)
+
+        let expectedFreshFullState = AtriaStressMonitor.score(
+            hrNow: 98,
+            hrWindow: [98],
+            rrWindowMs: [],
+            hrvFallbackRMSSD: 100,
+            baseline: baseline,
+            restingMaxHR: restingMaxHR,
+            workoutActive: false,
+            zoneIndex: 1,
+            inSleepWindow: false,
+            hasContact: true,
+            contactAgeSeconds: 275,
+            now: fullEvidenceAt
+        )
+        XCTAssertEqual(store.state.evidenceMode, .physiologicalStress)
+        XCTAssertNotEqual(store.state.level, .high,
+                          "the prior HR-only EMA must not become a full-evidence High")
+        XCTAssertEqual(store.state.rawActivation,
+                       expectedFreshFullState.rawActivation,
+                       accuracy: 1e-9,
+                       "the new evidence coordinate starts from its own current sample")
+    }
+
+    @MainActor
+    func testFullToHROnlyTransitionStartsFreshCardiacArousalCoordinate() {
+        let baseline = makeBaseline(restingMean: 60,
+                                    restingSD: 4,
+                                    lnRMSSDMean: log(100),
+                                    lnRMSSDSD: 0.15,
+                                    hrvSampleDays: 20)
+        let store = AtriaStressMonitorStore()
+
+        for offset in [0.0, 50.0, 100.0, 125.0] {
+            let tick = now.addingTimeInterval(offset)
+            store.update(heartRate: 98,
+                         hasContact: true,
+                         recentRRSamples: qualifiedRRSamples(endingAt: tick),
+                         isRecording: false,
+                         zoneIndex: 1,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: tick)
+        }
+        XCTAssertEqual(store.state.evidenceMode, .physiologicalStress)
+
+        store.update(heartRate: 98,
+                     hasContact: true,
+                     recentRRSamples: [],
+                     isRecording: false,
+                     zoneIndex: 1,
+                     hrvSnapshot: nil,
+                     baseline: baseline,
+                     restingMaxHR: restingMaxHR,
+                     hasActiveSleepEvidence: false,
+                     now: now.addingTimeInterval(155))
+
+        XCTAssertEqual(store.state.evidenceMode, .cardiacArousal)
+        XCTAssertEqual(store.state.level, .medium)
+        XCTAssertEqual(store.state.rawActivation,
+                       AtriaStressMonitor.mediumUpperBound,
+                       accuracy: 1e-12,
+                       "HR-only smoothing starts fresh, then applies its truthful cap")
+        XCTAssertNil(store.state.evidenceProjection?.numericStressScore)
+    }
+
+    @MainActor
+    func testDailyStressDistributionExcludesHROnlyButKeepsHistoryQueryable() throws {
+        let suiteName = "atria.stress.mode-distribution.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let baseline = makeBaseline(restingMean: 60,
+                                    restingSD: 4,
+                                    lnRMSSDMean: log(100),
+                                    lnRMSSDSD: 0.15,
+                                    hrvSampleDays: 20)
+        let store = AtriaStressMonitorStore(defaults: suite)
+
+        for offset in [0.0, 50.0, 100.0, 125.0] {
+            store.update(heartRate: 98,
+                         hasContact: true,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 1,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: now.addingTimeInterval(offset))
+        }
+
+        XCTAssertNil(store.distributionComparison(now: now.addingTimeInterval(125)),
+                     "cardiac arousal cannot enter an aggregate labelled Stress")
+        XCTAssertEqual(store.history.last?.evidenceMode, .cardiacArousal,
+                       "HR-only evidence remains available for its own future surface")
+
+        let fullEvidenceAt = now.addingTimeInterval(155)
+        store.update(heartRate: 98,
+                     hasContact: true,
+                     recentRRSamples: qualifiedRRSamples(endingAt: fullEvidenceAt),
+                     isRecording: false,
+                     zoneIndex: 1,
+                     hrvSnapshot: nil,
+                     baseline: baseline,
+                     restingMaxHR: restingMaxHR,
+                     hasActiveSleepEvidence: false,
+                     now: fullEvidenceAt)
+
+        let comparison = try XCTUnwrap(store.distributionComparison(now: fullEvidenceAt))
+        XCTAssertEqual(comparison.today.sampleCount, 1)
+        XCTAssertEqual(store.history.map(\.evidenceMode),
+                       [.cardiacArousal, .physiologicalStress])
     }
 
     // MARK: Bounded local stress-history continuity
@@ -443,6 +697,44 @@ final class AtriaStressMonitorTests: XCTestCase {
             .appendingPathComponent("atria-stress-history-tests-\(UUID().uuidString)",
                                     isDirectory: true)
         return (AtriaStressHistoryPersistence(directoryURL: directory), directory)
+    }
+
+    func testStressPersistenceUsesV2NamespacesAndFailsClosedOnLegacySemantics() throws {
+        XCTAssertEqual(AtriaStressMonitor.scoringVersion, 2)
+        XCTAssertEqual(AtriaStressHistoryArchive.currentSchemaVersion, 2)
+        XCTAssertEqual(AtriaStressHistoryPersistence.filenamePrefix, "stress-hour-v2-")
+        XCTAssertEqual(AtriaStressHistoryPersistence.productionDirectoryName,
+                       "Atria/stress-history-v2")
+        XCTAssertEqual(AtriaStressDistributionArchive.defaultsKey,
+                       "atria.stress.distribution.v2")
+
+        let legacyPoint = AtriaStressHistoryArchive.Point(
+            t: now,
+            activation: 0.3,
+            level: .low,
+            confidence: 0.7,
+            hrvAvailable: true,
+            scoringVersion: 1
+        )
+        XCTAssertThrowsError(
+            try AtriaStressHistoryArchive(points: [legacyPoint])
+                .validatedAndPruned(now: now)
+        )
+
+        let suiteName = "atria.stress.legacy-distribution.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let legacyArchive = AtriaStressDistributionArchive(days: [
+            .init(day: now,
+                  distribution: .init(calmSamples: 4,
+                                      mediumSamples: 3,
+                                      highSamples: 2),
+                  lastSampleAt: now),
+        ])
+        suite.set(try JSONEncoder().encode(legacyArchive),
+                  forKey: "atria.stress.distribution.v1")
+        XCTAssertTrue(AtriaStressDistributionArchive.load(defaults: suite).days.isEmpty,
+                      "v1 mixed-semantics aggregates are ignored, not relabelled v2")
     }
 
     func testStressHistoryArchiveRoundTripPreservesTimestampsGapsAndProvenance() async throws {
@@ -1147,10 +1439,39 @@ final class AtriaStressMonitorTests: XCTestCase {
         let healthProjection = AtriaStressPresentation.make(state: state)
         XCTAssertEqual(homeProjection, healthProjection)
         XCTAssertEqual(homeProjection.value, "Calm")
-        XCTAssertEqual(homeProjection.detail, "HR-only")
-        // Copy now names the awake reference (2026-08-08 rescoring) rather than
-        // "personal baseline", which specifically meant the resting baseline.
-        XCTAssertTrue(homeProjection.narrative.contains("awake heart rate"))
+        XCTAssertEqual(homeProjection.metricTitle, "Cardiac arousal")
+        XCTAssertEqual(homeProjection.detail, "Cardiac arousal · HR only")
+        XCTAssertNil(homeProjection.numericScore)
+        XCTAssertTrue(homeProjection.narrative.contains("qualitative cardiac-arousal band"))
+    }
+
+    func testCoachCopyNeverRelabelsHROnlyCardiacArousalAsStress() {
+        let guidance = Coach.guide(recovery: 0, strain: 0)
+        let hrOnly = AtriaCoachContext(guidance: guidance,
+                                       strain: 0,
+                                       recoveryText: "--",
+                                       hrvText: "--",
+                                       stressText: "Medium",
+                                       stressMetricTitle: "Cardiac arousal",
+                                       stressEvidenceMode: .cardiacArousal,
+                                       baselineSamples: 0,
+                                       sessionsCount: 0)
+        XCTAssertEqual(
+            AtriaCoachStressPresentation.clause(context: hrOnly),
+            "Cardiac arousal Medium (HR only; not a numeric Stress score)"
+        )
+
+        let physiological = AtriaCoachContext(guidance: guidance,
+                                               strain: 0,
+                                               recoveryText: "--",
+                                               hrvText: "--",
+                                               stressText: "Medium",
+                                               stressMetricTitle: "Stress",
+                                               stressEvidenceMode: .physiologicalStress,
+                                               baselineSamples: 0,
+                                               sessionsCount: 0)
+        XCTAssertEqual(AtriaCoachStressPresentation.clause(context: physiological),
+                       "Stress Medium")
     }
 
     func testWarmingUpDuringFirst120SecondsOfContact() {

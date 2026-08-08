@@ -30,6 +30,18 @@ final class AtriaBreathworkStressFeedbackTests: XCTestCase {
         XCTAssertNil(AtriaBreathworkStressReading(state: state, measuredAt: Date()))
     }
 
+    func testHROnlyCardiacArousalCannotBecomeNumericBreathworkStress() {
+        let state = AtriaStressState(level: .medium,
+                                     label: "Medium",
+                                     detail: "HR-only",
+                                     kind: .scored,
+                                     confidence: 0.55,
+                                     rawActivation: AtriaStressMonitor.mediumUpperBound,
+                                     hrvAvailable: false)
+
+        XCTAssertNil(AtriaBreathworkStressReading(state: state, measuredAt: Date()))
+    }
+
     func testFreshnessRejectsStaleAndFutureReadings() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
 
