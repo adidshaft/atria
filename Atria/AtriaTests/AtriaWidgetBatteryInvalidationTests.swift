@@ -1030,6 +1030,54 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(source.contains("strainDetail: \"Partial · 52% covered\""))
     }
 
+    func testSeparateDailyRingsUseTheMediumHeightWithoutCompressingEvidence() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("AtriaWidget/AtriaWidget.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let overviewStart = try XCTUnwrap(source.range(of: "private var separateMediumOverview"))
+        let overviewEnd = try XCTUnwrap(source.range(
+            of: "private var accessibleMediumWidget",
+            range: overviewStart.upperBound..<source.endIndex
+        ))
+        let overview = String(source[overviewStart.lowerBound..<overviewEnd.lowerBound])
+        let ringStart = try XCTUnwrap(source.range(of: "private func dailySeparateRing"))
+        let ringEnd = try XCTUnwrap(source.range(
+            of: "private func dailyOverviewTextLayout",
+            range: ringStart.upperBound..<source.endIndex
+        ))
+        let ring = String(source[ringStart.lowerBound..<ringEnd.lowerBound])
+
+        XCTAssertTrue(overview.contains(".frame(maxHeight: .infinity, alignment: .center)"),
+                      "the metric row should consume available height instead of huddling at the top")
+        XCTAssertTrue(overview.contains("Divider()"),
+                      "the freshness and battery footer needs a stable bottom rail")
+        XCTAssertTrue(overview.contains(
+            ".frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)"
+        ))
+        XCTAssertTrue(ring.contains(".frame(width: 58, height: 58)"),
+                      "separate rings should remain glanceable at the medium-widget scale")
+        XCTAssertTrue(ring.contains(".font(.system(size: 14, weight: .bold, design: .rounded))"))
+        XCTAssertTrue(ring.contains(".lineLimit(2)"),
+                      "evidence such as Review sleep and partial coverage may use two readable lines")
+        XCTAssertTrue(ring.contains(".font(.system(size: 10, weight: .medium))"),
+                      "qualifiers must remain legible on the physical medium widget")
+        XCTAssertTrue(ring.contains(
+            ".frame(maxWidth: .infinity, minHeight: 22, alignment: .top)"
+        ), "all three evidence qualifiers should keep a shared baseline")
+        XCTAssertTrue(ring.contains("presentation: dailyRingPresentation(metric)"),
+                      "the reflow must retain the truthful progress/partial/presence projection")
+        XCTAssertTrue(ring.contains("Text(dailyDetail(metric))"),
+                      "the visual reflow must retain each metric's provenance")
+
+        let staticSurface = overview + ring
+        XCTAssertFalse(staticSurface.contains(".background("))
+        XCTAssertFalse(staticSurface.contains("Material"))
+        XCTAssertFalse(staticSurface.contains("glassEffect"),
+                       "WidgetKit already owns the static widget material")
+    }
+
     func testAggregateHomeWidgetKeepsEvidenceInsideMarginsAndAdaptsForAccessibility() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
