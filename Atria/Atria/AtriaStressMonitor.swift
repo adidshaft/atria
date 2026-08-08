@@ -7,6 +7,12 @@ import SwiftUI
 /// (`PersonalBaseline`) with its trust tiers. No IMU is used — elevated HR
 /// during a workout is recognized and suppressed, not scored as "stress".
 ///
+/// The HR term is z-scored against the wearer's own recent AWAKE heart rate
+/// (learned median, or resting + a default offset until learned) — NOT their
+/// resting/sleep baseline, which made ordinary wakefulness read as stress. The
+/// HRV term is z-scored against the overnight HRV baseline. Either signal alone
+/// tops out at Medium; only elevated HR AND suppressed HRV together reach High.
+///
 /// Honesty first: until a personal resting-HR baseline is trusted (14 distinct
 /// fresh days), no numeric level is shown at all — only "Calibrating (n/14)".
 /// Until the HRV baseline is *also* trusted, the score runs HR-only and is
@@ -89,8 +95,8 @@ struct AtriaStressPresentation: Equatable {
         case .scored:
             detail = state.detail.isEmpty ? "Live strap reading" : state.detail
             narrative = state.hrvAvailable
-                ? "Measured from live HR and HRV against your personal baseline."
-                : "Measured from live HR against your personal baseline; high stress requires HRV corroboration."
+                ? "Measured from live HR (vs your typical awake heart rate) and HRV (vs your overnight baseline). Either signal alone reads at most Medium; High needs both."
+                : "Measured from live HR vs your typical awake heart rate; without a trusted HRV baseline it is capped at Medium — High needs HRV corroboration."
         case .calibrating:
             detail = state.detail.isEmpty ? "Building your personal HR baseline" : state.detail
             // Real-time confusion fix (2026-08-05, user report): live HR was
@@ -146,10 +152,17 @@ enum AtriaStressMonitor {
     /// considered trustworthy enough to feed the HRV term.
     static let minimumHRVWindowSeconds: TimeInterval = 90
 
-    static let hrActivationFloorSD = 3.0
     static let hrvActivationFloorSD = 0.15
-    static let hrActivationWeight = 0.6
-    static let hrvActivationWeight = 0.4
+    /// Corroboration weight for the HR+HRV combination. Each term is multiplied
+    /// by this, so a single term alone tops out at 0.6 — inside the Medium band
+    /// (< the 0.72 High threshold) — and only genuine HR elevation AND HRV
+    /// suppression together clear into High. This keeps the stated contract
+    /// ("elevated HR alone is never High without HRV corroboration"), extends
+    /// the same guarantee symmetrically to a lone HRV drop (which is nonspecific
+    /// — illness/alcohol/dehydration), and avoids the noisy-OR's over-firing
+    /// where two merely-moderate signals combined to High (adversarial review
+    /// 2026-08-08).
+    static let stressCorroborationWeight = 0.6
 
     // Awake HR reference (2026-08-08 rescoring). Live awake HR was z-scored
     // against the RESTING/sleep baseline, so ordinary wakefulness saturated
@@ -246,12 +259,16 @@ enum AtriaStressMonitor {
         let activation: Double
         let hrvAvailable: Bool
         if let hrvActivation {
-            // Probabilistic OR: either strong signal — elevated HR OR suppressed
-            // HRV — drives activation up, and both together drive it higher.
-            // Replaces a fixed weighted sum whose HR weight, calibrated back
-            // when HR saturated easily, could no longer let a genuine HRV drop
-            // reach High once the HR term was correctly referenced to awake HR.
-            activation = 1 - (1 - hrActivation) * (1 - hrvActivation)
+            // Corroboration model (adversarial review 2026-08-08): each term is
+            // weighted by `stressCorroborationWeight` (0.6), so a single elevated
+            // signal — HR alone OR HRV alone — tops out at 0.6, inside Medium and
+            // below the 0.72 High threshold; only genuine HR elevation AND HRV
+            // suppression together clear into High. This keeps the stated
+            // contract (elevated HR alone is never High), extends it symmetric-
+            // ally to a lone (nonspecific) HRV drop, and avoids the noisy-OR that
+            // escalated two merely-moderate signals to High by double-counting
+            // the same arousal.
+            activation = clamp01(stressCorroborationWeight * (hrActivation + hrvActivation))
             hrvAvailable = true
         } else {
             activation = hrActivation
@@ -263,7 +280,7 @@ enum AtriaStressMonitor {
         // HRV corroboration — cap at Medium.
         let cappedBand = hrvAvailable ? rawBand : min(rawBand, AtriaStressLevel.medium.rawValue)
         let level = AtriaStressLevel(rawValue: cappedBand) ?? .calm
-        let detail = hrvAvailable ? "HR + HRV vs your baseline" : "HR-only"
+        let detail = hrvAvailable ? "HR + HRV" : "HR-only"
         let confidence = hrvAvailable ? 0.85 : 0.55
 
         return AtriaStressState(level: level, label: level.title, detail: detail,
@@ -526,6 +543,10 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// trusted; until then the scorer uses its physiological default.
     private static let awakeReferenceMinSamples = 60
     private static let awakeReferenceMinSpanSeconds: TimeInterval = 8 * 60
+    /// Only HR at least this far above resting is admitted to the awake buffer,
+    /// so sleeping/resting HR can't collapse the learned reference (bug #9 makes
+    /// the sleep guard inert; this floor is the robust proxy).
+    private static let awakeReferenceMinDeltaAboveRest = 8
     private var contactStartedAt: Date?
     /// Clock of the last tick that carried live contact. Used to distinguish a
     /// brief flicker (single zero-contact sample, one missed ~6s freshness
@@ -684,11 +705,23 @@ final class AtriaStressMonitorStore: ObservableObject {
         }
         hrBuffer.removeAll { now.timeIntervalSince($0.t) > Self.hrWindowSeconds }
 
-        // Learn the wearer's awake HR reference from AWAKE, non-workout wear.
+        // Learn the wearer's awake HR reference from QUIET-AWAKE wear only. The
+        // buffer must mirror the scorer's own exclusions and, critically, reject
+        // sleeping HR: `hasActiveSleepEvidence` is currently hardcoded false at
+        // both callers (bug #9), so without an explicit floor the 45-min buffer
+        // fills with overnight ~56 bpm, the median collapses, and every morning's
+        // awake HR reads a false Medium (adversarial review 2026-08-08, B2).
+        // Bracket the accepted band: strictly above resting (excludes sleep/rest)
+        // and at/below the activity threshold (excludes exertion the scorer
+        // suppresses anyway, B4).
         let cooldownForReference = lastWorkoutEndAt
             .map { now.timeIntervalSince($0) < AtriaStressMonitor.postWorkoutCooldownSeconds } ?? false
+        let awakeLowerBound = restingMaxHR.rest + Self.awakeReferenceMinDeltaAboveRest
+        let activityUpperBound = restingMaxHR.rest + AtriaStressMonitor.sustainedWorkoutHRDelta
         if hasContact, heartRate > 0,
-           !isRecording, !cooldownForReference, !hasActiveSleepEvidence {
+           !isRecording, !cooldownForReference, !hasActiveSleepEvidence,
+           (zoneIndex ?? 0) < 2,
+           heartRate > awakeLowerBound, heartRate <= activityUpperBound {
             awakeHRBuffer.append((t: now, bpm: heartRate))
         }
         awakeHRBuffer.removeAll { now.timeIntervalSince($0.t) > Self.awakeReferenceWindowSeconds }

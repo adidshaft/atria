@@ -171,28 +171,32 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(state.detail, "HR-only")
     }
 
-    func testHighOnHRAndHRVDivergence() {
+    /// Corroboration model (2026-08-08 adversarial review): a lone signal — an
+    /// elevated HR alone OR a big (nonspecific) HRV drop alone — reads at most
+    /// Medium; only elevated HR AND suppressed HRV together reach High. This
+    /// replaces the noisy-OR that let either lone signal, or two merely-moderate
+    /// signals, escalate to High.
+    func testHighRequiresBothHRAndHRVCorroboration() {
         let baseline = makeBaseline(restingMean: 55, restingSD: 3,
                                     lnRMSSDMean: log(45), lnRMSSDSD: 0.15,
                                     hrvSampleDays: 20)
-
-        let state = AtriaStressMonitor.score(hrNow: 64,
-                                             hrWindow: [64, 63, 64],
-                                             rrWindowMs: [],
-                                             hrvFallbackRMSSD: 5,
-                                             baseline: baseline,
-                                             restingMaxHR: restingMaxHR,
-                                             workoutActive: false,
-                                             zoneIndex: 0,
-                                             inSleepWindow: false,
-                                             hasContact: true,
-                                             contactAgeSeconds: 300,
-                                             now: now)
-
-        XCTAssertEqual(state.kind, .scored)
-        XCTAssertEqual(state.level, .high)
-        XCTAssertTrue(state.hrvAvailable)
-        XCTAssertEqual(state.detail, "HR + HRV vs your baseline")
+        let awake = (center: 72.0, spread: 12.0)
+        func result(hr: Int, rmssd: Double) -> AtriaStressState {
+            AtriaStressMonitor.score(hrNow: hr, hrWindow: [hr, hr, hr], rrWindowMs: [],
+                                     hrvFallbackRMSSD: rmssd, baseline: baseline,
+                                     restingMaxHR: restingMaxHR, workoutActive: false,
+                                     zoneIndex: 0, inSleepWindow: false, hasContact: true,
+                                     contactAgeSeconds: 300, awakeReference: awake, now: now)
+        }
+        // Lone big HRV drop, calm HR → Medium (not High): HRV is nonspecific.
+        XCTAssertEqual(result(hr: 64, rmssd: 5).level, .medium)
+        // Lone elevated HR, normal HRV → Medium (not High).
+        XCTAssertEqual(result(hr: 95, rmssd: 45).level, .medium)
+        // Both elevated HR AND suppressed HRV → High (corroboration).
+        let corroborated = result(hr: 95, rmssd: 5)
+        XCTAssertEqual(corroborated.level, .high)
+        XCTAssertTrue(corroborated.hrvAvailable)
+        XCTAssertEqual(corroborated.detail, "HR + HRV")
     }
 
     func testHRVOnlyModeCapsEmittedLevelAtMedium() {
@@ -418,7 +422,9 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(homeProjection, healthProjection)
         XCTAssertEqual(homeProjection.value, "Calm")
         XCTAssertEqual(homeProjection.detail, "HR-only")
-        XCTAssertTrue(homeProjection.narrative.contains("personal baseline"))
+        // Copy now names the awake reference (2026-08-08 rescoring) rather than
+        // "personal baseline", which specifically meant the resting baseline.
+        XCTAssertTrue(homeProjection.narrative.contains("awake heart rate"))
     }
 
     func testWarmingUpDuringFirst120SecondsOfContact() {
