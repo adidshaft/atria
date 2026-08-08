@@ -3719,7 +3719,13 @@ private struct AtriaVitalsLiveSignalCard: View {
     }
 
     private var stressPoints: [AtriaStressTimelinePoint] {
-        AtriaStressTimelinePoint.segment(stressHistory.map(AtriaStressDetailReading.init(historyPoint:)))
+        // Feed only the last 12h (the inline chart's max window). History now
+        // retains 24h for the expanded detail; the inline chart must not render
+        // the older 12h off-screen. Anchored to the latest reading.
+        let readings = stressHistory.map(AtriaStressDetailReading.init(historyPoint:))
+        guard let last = readings.map(\.date).max() else { return [] }
+        let cutoff = last.addingTimeInterval(-AtriaStressTimelineWindow.inlineDefault)
+        return AtriaStressTimelinePoint.segment(readings.filter { $0.date >= cutoff })
     }
 
     var body: some View {
@@ -4000,6 +4006,21 @@ private final class AtriaHeartRateExplorerPresentationModel: ObservableObject {
 private struct AtriaVitalsStressTimelineChart: View {
     let points: [AtriaStressTimelinePoint]
 
+    // Visible window (2026-08-08 user request): default last 12h, pinch to zoom
+    // IN to a 4h window. Anchored to the latest reading so "last 12h" always
+    // ends at the most recent data, with honest blanks where the strap was off.
+    @State private var visibleSeconds: TimeInterval = AtriaStressTimelineWindow.inlineDefault
+    // @GestureState (not @State): SwiftUI auto-resets it to nil when the pinch
+    // ENDS *or is CANCELLED* — e.g. the enclosing scroll view claims the
+    // two-finger touch mid-pinch. A manually-reset @State would keep a stale
+    // start-window and snap the zoom back on the next pinch (review 2026-08-08).
+    @GestureState private var pinchBase: TimeInterval? = nil
+
+    private var xDomain: ClosedRange<Date> {
+        let last = points.map(\.reading.date).max() ?? Date()
+        return last.addingTimeInterval(-visibleSeconds)...last
+    }
+
     var body: some View {
         Chart {
             ForEach(points) { point in
@@ -4021,6 +4042,7 @@ private struct AtriaVitalsStressTimelineChart: View {
             }
         }
         .chartYScale(domain: 0...3)
+        .chartXScale(domain: xDomain)
         .chartYAxis {
             AxisMarks(position: .leading, values: [0, 1, 2, 3]) { value in
                 AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
@@ -4044,7 +4066,21 @@ private struct AtriaVitalsStressTimelineChart: View {
         }
         .padding(.vertical, 8)
         .padding(.trailing, 8)
-        .accessibilityLabel("Continuous stress timeline, scale 0 through 3")
+        .gesture(
+            MagnifyGesture()
+                .updating($pinchBase) { _, base, _ in
+                    // Capture the window at pinch start exactly once; frozen for
+                    // the rest of this gesture, auto-cleared to nil on end/cancel.
+                    if base == nil { base = visibleSeconds }
+                }
+                .onChanged { value in
+                    let base = pinchBase ?? visibleSeconds
+                    visibleSeconds = AtriaStressTimelineWindow.clamp(
+                        base / value.magnification,
+                        maxWindow: AtriaStressTimelineWindow.inlineDefault)
+                }
+        )
+        .accessibilityLabel("Continuous stress timeline, scale 0 through 3. Pinch to zoom between 12 and 4 hours.")
     }
 }
 

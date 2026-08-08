@@ -901,6 +901,22 @@ private struct AtriaStressDistributionCard: View {
     }
 }
 
+/// Shared visible-window constants + clamp for the stress timeline charts
+/// (2026-08-08 user request). The inline "Live monitor" chart defaults to the
+/// last 12h and pinches IN to 4h; the expanded detail defaults to the last 24h
+/// and pinches IN to 4h. Kept separate from the HR `Window` enum so a 4h stop
+/// never leaks into the shared HR slider/pinch.
+enum AtriaStressTimelineWindow {
+    static let minWindow: TimeInterval = 4 * 3600
+    static let inlineDefault: TimeInterval = 12 * 3600
+    static let expandedDefault: TimeInterval = 24 * 3600
+
+    /// Clamp a pinch-adjusted window to [minWindow, maxWindow].
+    static func clamp(_ seconds: TimeInterval, maxWindow: TimeInterval) -> TimeInterval {
+        min(max(seconds, minWindow), maxWindow)
+    }
+}
+
 struct AtriaStressTimelinePoint: Identifiable, Equatable {
     let reading: AtriaStressDetailReading
     let segment: Int
@@ -931,6 +947,22 @@ private struct AtriaStressTimelineChart: View, Equatable {
     let tint: Color
     let tintKey: Int
 
+    // Visible window (2026-08-08 user request): the expanded detail defaults to
+    // the last 24h and pinches IN to 4h. Anchored to the latest reading so it
+    // ends at the most recent data, with honest blanks where the strap was off.
+    @State private var visibleSeconds: TimeInterval = AtriaStressTimelineWindow.expandedDefault
+    // @GestureState (not @State): auto-resets to nil on pinch end *or cancel*
+    // (e.g. the surrounding ScrollView claims the two-finger touch), so a
+    // stale start-window can't snap the zoom back on the next pinch.
+    @GestureState private var pinchBase: TimeInterval? = nil
+
+    private var xDomain: ClosedRange<Date> {
+        let last = points.map(\.reading.date).max() ?? Date()
+        return last.addingTimeInterval(-visibleSeconds)...last
+    }
+
+    // visibleSeconds/pinchBase are internal view state, not inputs, so they
+    // are intentionally excluded from equality.
     static func == (lhs: AtriaStressTimelineChart, rhs: AtriaStressTimelineChart) -> Bool {
         lhs.points == rhs.points
             && lhs.elevatedWindows == rhs.elevatedWindows
@@ -968,6 +1000,7 @@ private struct AtriaStressTimelineChart: View, Equatable {
             }
         }
         .chartYScale(domain: 0...3)
+        .chartXScale(domain: xDomain)
         .chartYAxis {
             AxisMarks(values: [0, 1, 2, 3]) { value in
                 AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
@@ -994,6 +1027,21 @@ private struct AtriaStressTimelineChart: View, Equatable {
                 .background(.secondary.opacity(0.035))
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
+        .gesture(
+            MagnifyGesture()
+                .updating($pinchBase) { _, base, _ in
+                    // Capture the window at pinch start exactly once; frozen for
+                    // the rest of this gesture, auto-cleared to nil on end/cancel.
+                    if base == nil { base = visibleSeconds }
+                }
+                .onChanged { value in
+                    let base = pinchBase ?? visibleSeconds
+                    visibleSeconds = AtriaStressTimelineWindow.clamp(
+                        base / value.magnification,
+                        maxWindow: AtriaStressTimelineWindow.expandedDefault)
+                }
+        )
+        .accessibilityLabel("Stress timeline, scale 0 through 3. Pinch to zoom between 24 and 4 hours.")
     }
 }
 
