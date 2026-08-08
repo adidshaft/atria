@@ -11,6 +11,22 @@ import XCTest
 /// against exactly this digest. If the streaming primitive ever diverges by
 /// one byte, every projection would fail closed and defer forever.
 final class AtriaHistoricalAggregateReaderMemoryWindowingTests: XCTestCase {
+    func testAggregateLoadDoesNotCaptureDiscardedCallStacks() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let readerURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHistoricalAggregateReader.swift")
+        let source = try String(contentsOf: readerURL, encoding: .utf8)
+        let loadStart = try XCTUnwrap(source.range(of: "func load(since:"))
+        let manifestStart = try XCTUnwrap(
+            source.range(of: "var manifestURLs: [URL]", range: loadStart.upperBound..<source.endIndex)
+        )
+        let entry = String(source[loadStart.lowerBound..<manifestStart.upperBound])
+
+        XCTAssertFalse(entry.contains("Thread.callStackSymbols"),
+                       "production aggregate loads must not pay for a discarded debug stack capture")
+    }
+
     private var temporaryDirectories: [URL] = []
     private let day0 = Date(timeIntervalSince1970: 1_700_000_000)
     private let daySeconds: TimeInterval = 86_400

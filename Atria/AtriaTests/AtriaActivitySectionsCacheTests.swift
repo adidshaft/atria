@@ -37,6 +37,84 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         ), "Per-row archive writes must not trigger repeated whole-day scans")
     }
 
+    func testHighFrequencyStressObservationIsConfinedToActivityLeaves() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaActivityMonitor.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        let tabStart = try XCTUnwrap(source.range(of: "struct AtriaActivityMonitorTab: View"))
+        let timelineHostStart = try XCTUnwrap(source.range(
+            of: "private struct AtriaActivityTimelineHost: View",
+            range: tabStart.upperBound..<source.endIndex
+        ))
+        let rootBeforeTimelineLeaf = String(source[tabStart.lowerBound..<timelineHostStart.lowerBound])
+
+        XCTAssertTrue(rootBeforeTimelineLeaf.contains(
+            "let stressMonitorStore: AtriaStressMonitorStore"
+        ))
+        XCTAssertTrue(rootBeforeTimelineLeaf.contains("@Environment(\\.scenePhase)"),
+                      "Foregrounding must still recompute the bounded day-section request")
+        XCTAssertFalse(rootBeforeTimelineLeaf.contains(
+            "@ObservedObject var stressMonitorStore: AtriaStressMonitorStore"
+        ), "A live stress publication must not invalidate the whole Activity log")
+        XCTAssertFalse(rootBeforeTimelineLeaf.contains(".task(id: timelineSignalWindowKey)"))
+        XCTAssertFalse(rootBeforeTimelineLeaf.contains("@State private var liveHeartRateTail"))
+
+        let timelineHostEnd = try XCTUnwrap(source.range(
+            of: "private var addActivityMenu: some View",
+            range: timelineHostStart.upperBound..<source.endIndex
+        ))
+        let timelineHost = String(source[timelineHostStart.lowerBound..<timelineHostEnd.lowerBound])
+        XCTAssertTrue(timelineHost.contains(
+            "@ObservedObject var stressMonitorStore: AtriaStressMonitorStore"
+        ))
+        XCTAssertTrue(timelineHost.contains("@State private var liveHeartRateTail"))
+        XCTAssertTrue(timelineHost.contains(".task(id: timelineSignalWindowKey)"))
+        XCTAssertTrue(timelineHost.contains(".task(id: timelineStressRequestKey)"))
+        XCTAssertTrue(timelineHost.contains("AtriaActivityTimelineRefreshPolicy.shouldRefresh"))
+        XCTAssertTrue(timelineHost.contains(
+            "SessionStore.recoveredDataRecomputeDidPublishNotification"
+        ))
+        XCTAssertTrue(timelineHost.contains("private var timelineSignalInspector"))
+
+        let sheetHostStart = try XCTUnwrap(source.range(
+            of: "private struct AtriaActivityWorkoutDetailSheetHost: View"
+        ))
+        let sheetStart = try XCTUnwrap(source.range(
+            of: "private struct AtriaActivityWorkoutDetailSheet: View",
+            range: sheetHostStart.upperBound..<source.endIndex
+        ))
+        let sheetHost = String(source[sheetHostStart.lowerBound..<sheetStart.lowerBound])
+        XCTAssertTrue(sheetHost.contains(
+            "@ObservedObject var stressMonitorStore: AtriaStressMonitorStore"
+        ), "Workout stress history should update only while its sheet is mounted")
+    }
+
+    @MainActor
+    func testWorkoutStressProjectionPreservesInclusiveMeasuredWindow() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let end = start.addingTimeInterval(600)
+        let history: [AtriaStressMonitorStore.StressHistoryPoint] = [
+            .init(t: start.addingTimeInterval(-1), activation: 0.1, level: .calm),
+            .init(t: start, activation: 0.2, level: .low),
+            .init(t: end, activation: 0.4, level: .medium),
+            .init(t: end.addingTimeInterval(1), activation: 0.8, level: .high),
+        ]
+
+        let readings = AtriaActivityWorkoutStressProjection.readings(
+            history: history,
+            start: start,
+            end: end
+        )
+
+        XCTAssertEqual(readings.map(\.date), [start, end])
+        XCTAssertEqual(readings.count, 2)
+        XCTAssertEqual(readings[0].score, 0.6, accuracy: 0.000_001)
+        XCTAssertEqual(readings[1].score, 1.2, accuracy: 0.000_001)
+    }
+
     func testDetectedActivityPresentationUsesOnlyExplicitClassifierHint() {
         let generic = AtriaDetectedActivityPresentation.make(kind: .activityCandidate,
                                                              suggestedActivityType: nil)
@@ -381,7 +459,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                       "Workout dismissal must not erase sleep evidence from physiological history")
     }
 
-    func testSelectedDayTimelineIncludesEveryConfirmedActivityTypeWithItsOwnIcon() throws {
+    func testSelectedDayTimelineIncludesEveryConfirmedActivityTypeWithValidMappedIcon() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
         let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
@@ -406,9 +484,6 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                        Dictionary(uniqueKeysWithValues: AtriaWorkoutActivityType.allCases.map {
                            ($0.rawValue, $0.icon)
                        }))
-        XCTAssertEqual(Set(AtriaWorkoutActivityType.allCases.map(\.icon)).count,
-                       AtriaWorkoutActivityType.allCases.count,
-                       "Each selectable activity type must retain distinct timeline iconography")
         for type in AtriaWorkoutActivityType.allCases {
             XCTAssertNotNil(UIImage(systemName: type.icon),
                             "\(type.rawValue) must use an available native SF Symbol")

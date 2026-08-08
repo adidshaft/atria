@@ -678,8 +678,8 @@ final class AtriaStressMonitorStore: ObservableObject {
     private static let awakeReferenceWindowSeconds: TimeInterval = 45 * 60
     /// Minimum awake samples and time span before the learned reference is
     /// trusted; until then the scorer uses its physiological default.
-    private static let awakeReferenceMinSamples = 60
-    private static let awakeReferenceMinSpanSeconds: TimeInterval = 8 * 60
+    nonisolated private static let awakeReferenceMinSamples = 60
+    nonisolated private static let awakeReferenceMinSpanSeconds: TimeInterval = 8 * 60
     /// Only HR at least this far above resting is admitted to the awake buffer,
     /// so sleeping/resting HR can't collapse the learned reference (bug #9 makes
     /// the sleep guard inert; this floor is the robust proxy).

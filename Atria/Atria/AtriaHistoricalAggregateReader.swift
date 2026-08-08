@@ -104,16 +104,6 @@ struct AtriaHistoricalAggregateReader {
     func load(since: Date? = nil,
               until: Date? = nil,
               limits: LoadLimits? = nil) -> Snapshot {
-        // TEMPORARY (2026-08-04 memprobe): an unbounded load is the historical
-        // balloon signature — capture the caller when one happens.
-        if since == nil, until == nil, limits == nil {
-            let stack = Thread.callStackSymbols.dropFirst(1).prefix(7)
-                .map { frame in
-                    frame.split(separator: " ").dropFirst(3).joined(separator: " ")
-                }
-                .joined(separator: " | ")
-        } else {
-        }
         var manifestURLs: [URL] = []
         if let enumerator = fileManager.enumerator(
             at: manifestDirectoryURL,
