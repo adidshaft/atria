@@ -6206,7 +6206,8 @@ struct AtriaStrapStepsDetailSheet: View {
                             .releaseDailyAuthorityQualified
                 )
 
-                VStack(alignment: .leading, spacing: 14) {
+                ScrollView {
+                  VStack(alignment: .leading, spacing: 14) {
                     HStack(spacing: 12) {
                         Image(systemName: "shoeprints.fill")
                             .font(.title3.weight(.bold))
@@ -6263,15 +6264,15 @@ struct AtriaStrapStepsDetailSheet: View {
 
                             if presentation.completeness != .complete {
                                 Text(presentation.source == .live
-                                     ? "Partial day total; it grows as new strap movement arrives."
-                                     : "Partial verified archive coverage; this is a lower bound, not a full-day total.")
+                                     ? "Partial — grows as new movement arrives."
+                                     : "Lower bound · partial archive coverage.")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }
                         } else {
                             Text(presentation.detailText)
                                 .font(.caption.weight(.semibold))
-                            Text("Daily progress appears when reliable strap steps are available.")
+                            Text("Appears when reliable strap steps are available.")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -6280,11 +6281,10 @@ struct AtriaStrapStepsDetailSheet: View {
                     .atriaInsetCard(tint: status.tint)
 
                     stepsWeekChartCard
-
-                    Spacer(minLength: 0)
+                  }
+                  .padding()
+                  .accessibilityElement(children: .contain)
                 }
-                .padding()
-                .accessibilityElement(children: .contain)
             }
             .task { await loadWeekSteps() }
             .navigationTitle("Strap steps")
