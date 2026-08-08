@@ -10,10 +10,9 @@ import Charts
 struct AtriaTrendChartCard: View {
     let points: [AtriaTrendPoint]
     let pointsRevision: Int?
-    let baselineRestingHR: Int?
     /// Real saved activity for the expanded chart's marker lane. Optional so
     /// existing call sites/tests compile unchanged.
-    var events: [AtriaChartEvent] = []
+    let events: [AtriaChartEvent]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var metric: AtriaTrendMetric = .restingHR
@@ -27,6 +26,11 @@ struct AtriaTrendChartCard: View {
     // card opens a large inspection sheet; both share native chartXSelection.
     @State private var scrubDate: Date?
     @State private var showExpandedChart = false
+    // Prior-period data is useful context, but drawing it automatically made
+    // every W/M chart look like it owned a second dotted measurement. Keep the
+    // default chart current-period-only and reveal the comparison only after a
+    // deliberate, clearly labelled user action.
+    @State private var showsPriorPeriod = false
     @State private var periodReadout = AtriaTrendPeriodReadout.empty
     // Perf (handoff #5/#8): watching the full points array did a full equality
     // before the skip guard could help. Watch a cheap O(1) key instead;
@@ -68,7 +72,6 @@ struct AtriaTrendChartCard: View {
         let pointsKey: PointsKey
         let metric: AtriaTrendMetric
         let range: AtriaTrendRange
-        let baselineRestingHR: Int?
     }
     // Real progressive disclosure: the compact card shows just the chart; the
     // stacked context sub-cards (range dock, report, balance map, glance board,
@@ -78,6 +81,19 @@ struct AtriaTrendChartCard: View {
 
     private var pointsKey: PointsKey {
         PointsKey(points: points, revision: pointsRevision)
+    }
+
+    /// `baselineRestingHR` remains in the initializer for source compatibility
+    /// with the two narrow projection hosts. It is intentionally not stored:
+    /// the learned baseline is valuable textual context, but a permanent dotted
+    /// RuleMark was visually dominant and could be mistaken for another reading.
+    init(points: [AtriaTrendPoint],
+         pointsRevision: Int?,
+         baselineRestingHR _: Int?,
+         events: [AtriaChartEvent] = []) {
+        self.points = points
+        self.pointsRevision = pointsRevision
+        self.events = events
     }
 
     var body: some View {
@@ -131,10 +147,8 @@ struct AtriaTrendChartCard: View {
                     // hidden because the chart sat at the card's bottom edge, but
                     // chart-first ordering now places content beneath it.
                     .clipped()
-                if let ghostCaptionText {
-                    Text(ghostCaptionText)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                if priorComparisonIsAvailable {
+                    priorComparisonControl
                 }
             }
 
@@ -196,9 +210,14 @@ struct AtriaTrendChartCard: View {
         // broad implicit animation here also animated every Chart mark and the
         // full report subtree, making data switches noticeably more expensive.
         .onChange(of: pointsKey, initial: true) { _, _ in refreshPreparedSeries() }
-        .onChange(of: baselineRestingHR) { _, _ in refreshPreparedSeries() }
-        .onChange(of: metric) { _, _ in refreshPreparedSeries() }
-        .onChange(of: range) { _, _ in refreshPreparedSeries() }
+        .onChange(of: metric) { _, _ in
+            showsPriorPeriod = false
+            refreshPreparedSeries()
+        }
+        .onChange(of: range) { _, _ in
+            showsPriorPeriod = false
+            refreshPreparedSeries()
+        }
         // Landscape expanded chart (user feedback 2026-07-07): replaces the
         // old portrait sheet with the shared zoom/brush/markers experience.
         .fullScreenCover(isPresented: $showExpandedChart) {
@@ -209,6 +228,28 @@ struct AtriaTrendChartCard: View {
                                    events: events,
                                    onDismiss: { showExpandedChart = false })
         }
+    }
+
+    private var priorComparisonControl: some View {
+        Button {
+            showsPriorPeriod.toggle()
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: showsPriorPeriod ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(showsPriorPeriod ? metric.tint : .secondary)
+                Text(showsPriorPeriod
+                     ? "Prior \(range.narrativeLabel) · dashed"
+                     : "Compare prior \(range.narrativeLabel)")
+                    .font(.caption.weight(.semibold))
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .accessibilityLabel("Compare with prior \(range.narrativeLabel)")
+        .accessibilityValue(showsPriorPeriod ? "On, shown as a dashed line" : "Off")
     }
 
     private var expandedUnit: String {
@@ -235,23 +276,24 @@ struct AtriaTrendChartCard: View {
     }
 
     private func refreshPreparedSeries(now: Date = Date()) {
-        let key = PreparedKey(pointsKey: pointsKey, metric: metric, range: range, baselineRestingHR: baselineRestingHR)
+        let key = PreparedKey(pointsKey: pointsKey, metric: metric, range: range)
         guard preparedKey != key else { return }
         preparedKey = key
         prepared = Self.prepareSeries(points: points,
                                       metric: metric,
                                       range: range,
-                                      baselineRestingHR: baselineRestingHR,
                                       now: now)
         periodReadout = Self.preparePeriodReadout(points: points,
                                                   range: range,
                                                   now: now)
+        if !priorComparisonIsAvailable {
+            showsPriorPeriod = false
+        }
     }
 
     private static func prepareSeries(points: [AtriaTrendPoint],
                                       metric: AtriaTrendMetric,
                                       range: AtriaTrendRange,
-                                      baselineRestingHR: Int?,
                                       now: Date) -> AtriaTrendPreparedSeries {
         let cutoff = range.cutoffDate(now: now)
         let previousCutoff = range.hasPriorPeriod
@@ -261,14 +303,11 @@ struct AtriaTrendChartCard: View {
         samples.reserveCapacity(points.count)
         var previousSamples: [AtriaTrendPoint.Sample] = []
         previousSamples.reserveCapacity(points.count)
-        var domainValues: [Double] = []
-        domainValues.reserveCapacity(points.count + 1)
         for point in points where point.date >= previousCutoff {
             guard let value = point.value(for: metric) else { continue }
             let sample = AtriaTrendPoint.Sample(date: point.date, value: value)
             if point.date >= cutoff {
                 samples.append(sample)
-                domainValues.append(value)
             } else {
                 previousSamples.append(sample)
             }
@@ -280,25 +319,39 @@ struct AtriaTrendChartCard: View {
         let ghost: [AtriaTrendPoint.Sample] = range.hasPriorPeriod
             ? previousSamples.map { AtriaTrendPoint.Sample(date: $0.date.addingTimeInterval(shift), value: $0.value) }
             : []
-        domainValues.append(contentsOf: ghost.map(\.value))
-        let referenceValue = metric == .restingHR ? baselineRestingHR.map(Double.init) : nil
-        if let referenceValue {
-            domainValues.append(referenceValue)
-        }
+        let hasQualifiedComparison = AtriaTrendComparisonPolicy.isAvailable(
+            currentCount: samples.count,
+            priorCount: previousSamples.count,
+            range: range
+        )
+        // Sparse prior history cannot own trend copy any more than it can own a
+        // plotted line. Current-period movement remains available while the
+        // comparison waits for enough evidence on both sides.
+        let qualifiedPreviousSamples = hasQualifiedComparison ? previousSamples : []
+        let currentValues = samples.map(\.value)
+        let priorValues = ghost.map(\.value)
         return AtriaTrendPreparedSeries(series: samples,
                                         previousSeries: ghost,
-                                        referenceValue: referenceValue,
                                         summary: AtriaTrendRangeSummary(series: samples,
-                                                                        previousSeries: previousSamples,
+                                                                        previousSeries: qualifiedPreviousSamples,
                                                                         metric: metric),
                                         assessment: AtriaTrendRangeAssessment(series: samples,
-                                                                              previousSeries: previousSamples,
+                                                                              previousSeries: qualifiedPreviousSamples,
                                                                               metric: metric,
                                                                               range: range),
                                         action: AtriaTrendActionReadout(series: samples,
-                                                                        previousSeries: previousSamples,
+                                                                        previousSeries: qualifiedPreviousSamples,
                                                                         metric: metric),
-                                        yDomain: AtriaTrendChartScale.domain(values: domainValues))
+                                        currentYDomain: AtriaTrendComparisonPolicy.domain(
+                                            currentValues: currentValues,
+                                            priorValues: priorValues,
+                                            includesPrior: false
+                                        ),
+                                        comparisonYDomain: AtriaTrendComparisonPolicy.domain(
+                                            currentValues: currentValues,
+                                            priorValues: priorValues,
+                                            includesPrior: true
+                                        ))
     }
 
     private static func preparePeriodReadout(points: [AtriaTrendPoint],
@@ -408,18 +461,7 @@ struct AtriaTrendChartCard: View {
 
     private var coreChart: some View {
         Chart {
-            if let referenceValue = prepared.referenceValue {
-                RuleMark(y: .value("Baseline", referenceValue))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    .foregroundStyle(.secondary.opacity(0.5))
-                    .annotation(position: .top, alignment: .leading) {
-                        Text("baseline \(Int(referenceValue))")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-            }
-
-            if showGhost {
+            if showsPriorComparison {
                 ForEach(prepared.previousSeries) { ghostSample in
                     LineMark(
                         x: .value("Date", ghostSample.date),
@@ -505,7 +547,11 @@ struct AtriaTrendChartCard: View {
         // suppresses the trailing label on a real two-day series even when
         // both distinct dates are supplied explicitly.
         .chartXScale(range: .plotDimension(startPadding: 18, endPadding: 18))
-        .chartYScale(domain: prepared.yDomain)
+        // Hidden prior data must not flatten the current trace. The wider
+        // comparison domain is selected only while that data is visibly drawn.
+        .chartYScale(domain: showsPriorComparison
+                     ? prepared.comparisonYDomain
+                     : prepared.currentYDomain)
         .chartXAxis {
             // Labels ride the SAME axis marks as the gridlines (2026-08-01):
             // the previous parallel Spacer-based HStack guessed a 34pt leading
@@ -534,11 +580,18 @@ struct AtriaTrendChartCard: View {
         .accessibilityLabel(chartAccessibilityLabel)
     }
 
-    /// Honest gating for the ghost overlay: only draw it when the prior window
-    /// has enough points to be a fair comparison (never fabricate a line from
-    /// a couple of stray samples), and never for `.all` (no prior period).
-    private var showGhost: Bool {
-        prepared.previousSeries.count >= max(3, prepared.series.count / 2)
+    private var priorComparisonIsAvailable: Bool {
+        AtriaTrendComparisonPolicy.isAvailable(
+            currentCount: prepared.series.count,
+            priorCount: prepared.previousSeries.count,
+            range: range
+        )
+    }
+
+    /// Availability and visibility are deliberately separate. Having enough
+    /// data enables the control; only the user's selection enables the line.
+    private var showsPriorComparison: Bool {
+        showsPriorPeriod && priorComparisonIsAvailable
     }
 
     private var chartAccessibilityLabel: String {
@@ -548,19 +601,10 @@ struct AtriaTrendChartCard: View {
         if let summary = prepared.summary {
             combined += " Latest \(summary.latestText), average \(summary.averageText), range \(summary.rangeText), \(summary.comparisonAccessibilityText)."
         }
-        if showGhost {
+        if showsPriorComparison {
             combined += " Prior \(range.narrativeLabel) shown as a dashed line."
         }
         return combined
-    }
-
-    /// Only surfaces new copy when the ghost line is actually drawn — the
-    /// "current period only" honesty copy for the non-ghost case already
-    /// lives in `AtriaTrendPeriodReadout.subtitle` / the comparison strip, and
-    /// `.all` never claims a prior period at all.
-    private var ghostCaptionText: String? {
-        guard showGhost else { return nil }
-        return "Dashed · prior \(range.narrativeLabel)"
     }
 
     private var emptyState: some View {
@@ -2058,19 +2102,19 @@ private struct AtriaTrendPreparedSeries {
     /// window's x-axis so it can be drawn as a dashed ghost line. Empty when
     /// there is no prior period (`.all`) or no prior samples exist.
     let previousSeries: [AtriaTrendPoint.Sample]
-    let referenceValue: Double?
     let summary: AtriaTrendRangeSummary?
     let assessment: AtriaTrendRangeAssessment?
     let action: AtriaTrendActionReadout?
-    let yDomain: ClosedRange<Double>
+    let currentYDomain: ClosedRange<Double>
+    let comparisonYDomain: ClosedRange<Double>
 
     static let empty = AtriaTrendPreparedSeries(series: [],
                                                 previousSeries: [],
-                                                referenceValue: nil,
                                                 summary: nil,
                                                 assessment: nil,
                                                 action: nil,
-                                                yDomain: 0...1)
+                                                currentYDomain: 0...1,
+                                                comparisonYDomain: 0...1)
 }
 
 private struct AtriaTrendActionReadoutCard: View {
@@ -2416,6 +2460,38 @@ enum AtriaTrendChartScale {
         let span = max(high - low, max(abs(high), 1) * 0.08)
         let padding = max(span * paddingRatio, 0.5)
         return (low - padding)...(high + padding)
+    }
+}
+
+/// One truth policy for the W/M comparison across rendering, insights, scale,
+/// and tests. A comparison needs the range's documented confidence count on
+/// both sides; merely having a few old points never enables the dotted trace.
+enum AtriaTrendComparisonPolicy {
+    static func isAvailable(currentCount: Int,
+                            priorCount: Int,
+                            range: AtriaTrendRange) -> Bool {
+        guard range.hasPriorPeriod else { return false }
+        let required = max(3, range.confidenceTargetPoints)
+        return currentCount >= required && priorCount >= required
+    }
+
+    /// Computes a stable current-only domain by default. Prior values join the
+    /// scale only while the user-visible comparison is enabled.
+    static func domain(currentValues: [Double],
+                       priorValues: [Double],
+                       includesPrior: Bool) -> ClosedRange<Double> {
+        var low: Double?
+        var high: Double?
+        func include(_ value: Double) {
+            low = min(low ?? value, value)
+            high = max(high ?? value, value)
+        }
+        currentValues.forEach(include)
+        if includesPrior {
+            priorValues.forEach(include)
+        }
+        guard let low, let high else { return 0...1 }
+        return AtriaTrendChartScale.domain(low: low, high: high)
     }
 }
 

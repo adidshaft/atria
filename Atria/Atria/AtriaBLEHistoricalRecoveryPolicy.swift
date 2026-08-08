@@ -836,6 +836,25 @@ extension AtriaBLEManager {
         return nowUptime - lastProgressUptime >= idleTimeout
     }
 
+    /// The connected maintenance hold is intentionally stricter than the
+    /// transaction watchdog. Only a recent *durable* boundary may suppress the
+    /// live-HR-silence release; control traffic and retries use the broader
+    /// watchdog clock but do not qualify here.
+    nonisolated static func historicalSyncHasRecentDurableProgress(
+        lastDurableProgressUptime: TimeInterval?,
+        nowUptime: TimeInterval,
+        silenceLimit: TimeInterval
+    ) -> Bool {
+        guard let lastDurableProgressUptime,
+              lastDurableProgressUptime.isFinite,
+              nowUptime.isFinite,
+              silenceLimit.isFinite,
+              lastDurableProgressUptime >= 0,
+              nowUptime >= lastDurableProgressUptime,
+              silenceLimit > 0 else { return false }
+        return nowUptime - lastDurableProgressUptime < silenceLimit
+    }
+
     /// A connected history transfer may keep producing useful archive rows
     /// after it has silenced the standard heart-rate characteristic. Progress
     /// is not permission to monopolize the user's live stream indefinitely.

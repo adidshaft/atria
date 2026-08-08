@@ -94,7 +94,7 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         let source = try source("AtriaOnboardingFlow.swift")
 
         XCTAssertFalse(source.contains("Text(\"WHOOP insights without the subscription.\")"))
-        XCTAssertTrue(source.contains(".accessibilityHint(\"WHOOP insights without the subscription.\")"))
+        XCTAssertTrue(source.contains(".accessibilityHint(\"Sleep, recovery, and strain insights from your strap.\")"))
         // 2026-07-30: expectation flow is a vertical timeline; assert its step copy
         // is present (each step combines its title + detail for VoiceOver) rather
         // than the old Wear/Sleep/Recovery pill titles.
@@ -102,6 +102,70 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         XCTAssertTrue(source.contains("title: \"Tomorrow morning\""))
         XCTAssertTrue(source.contains(".accessibilityElement(children: .combine)"))
         XCTAssertFalse(source.contains("detail: \"First sleep\""))
+    }
+
+    func testWelcomeUsesAtriaLogoInsteadOfGenericSparkles() throws {
+        let source = try source("AtriaOnboardingFlow.swift")
+        let pageStart = try XCTUnwrap(source.range(of: "private var nicknamePage"))
+        let pageEnd = try XCTUnwrap(source.range(of: "private var ringsPage",
+                                                 range: pageStart.upperBound..<source.endIndex))
+        let page = String(source[pageStart.lowerBound..<pageEnd.lowerBound])
+
+        XCTAssertTrue(page.contains("onboardingBrandTile"))
+        XCTAssertFalse(page.contains("systemImage: \"sparkles\""))
+        XCTAssertTrue(source.contains("Image(\"AtriaLogo\")"),
+                      "The first onboarding impression should use Atria's real brand mark")
+    }
+
+    func testOnboardingCustomControlsKeepFullTargetsAndReadableBehaviorLabels() throws {
+        let source = try source("AtriaOnboardingFlow.swift")
+        let showcaseStart = try XCTUnwrap(source.range(of: "private struct StrapSetupShowcase"))
+        let parserStart = try XCTUnwrap(source.range(of: "enum AtriaOptionalProfileNumber",
+                                                      range: showcaseStart.upperBound..<source.endIndex))
+        let showcase = String(source[showcaseStart.lowerBound..<parserStart.lowerBound])
+        let chipStart = try XCTUnwrap(source.range(of: "private func behaviorChip"))
+        let chipEnd = try XCTUnwrap(source.range(of: "private func toggleTrackedBehavior",
+                                                 range: chipStart.upperBound..<source.endIndex))
+        let chip = String(source[chipStart.lowerBound..<chipEnd.lowerBound])
+
+        XCTAssertGreaterThanOrEqual(showcase.components(separatedBy: ".frame(width: 44, height: 44)").count - 1, 2,
+                                    "The rotate action and each scene selector need full touch targets")
+        XCTAssertTrue(source.contains("private var behaviorGridColumns: [GridItem]"))
+        XCTAssertTrue(source.contains("if dynamicTypeSize.isAccessibilitySize"))
+        XCTAssertTrue(chip.contains(".frame(minHeight: 44)"))
+        XCTAssertTrue(chip.contains(".lineLimit(2)"))
+        XCTAssertFalse(chip.contains(".minimumScaleFactor"),
+                       "Behavior names should wrap instead of shrinking below a readable size")
+    }
+
+    func testRestoredOnboardingDoesNotClaimReadyBeforeSavedStrapIdentityMatches() throws {
+        let flow = try source("AtriaOnboardingFlow.swift")
+        let statusStart = try XCTUnwrap(flow.range(of: "private var onboardingHistoryStatus"))
+        let pageStart = try XCTUnwrap(flow.range(of: "private var youPage",
+                                                 range: statusStart.upperBound..<flow.endIndex))
+        let status = String(flow[statusStart.lowerBound..<pageStart.lowerBound])
+
+        XCTAssertTrue(status.contains("if historyBootstrap.isCompleteForCurrentStrap"))
+        XCTAssertTrue(status.contains("Saved setup found · reconnect your strap to verify it"))
+        XCTAssertTrue(status.contains("Ready · strap history verified"))
+    }
+
+    func testConnectionPermissionGuidanceIsVisibleAndAdaptsAtAccessibilitySizes() throws {
+        let content = try source("ContentView.swift")
+        let flow = try source("AtriaOnboardingFlow.swift")
+        let start = try XCTUnwrap(content.range(of: "struct OnboardingConnectionStatusView"))
+        let end = try XCTUnwrap(content.range(of: "extension View",
+                                              range: start.upperBound..<content.endIndex))
+        let status = String(content[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(status.contains("Text(subtitle)"),
+                      "Bluetooth and pairing guidance must not be VoiceOver-only")
+        XCTAssertTrue(status.contains("Turn on Bluetooth in Settings to connect."))
+        XCTAssertTrue(status.contains("if dynamicTypeSize.isAccessibilitySize"))
+        XCTAssertTrue(status.contains("VStack(alignment: .leading, spacing: 10)"))
+        XCTAssertTrue(flow.contains("ble.status == .poweredOff { return \"Turn on Bluetooth\" }"))
+        XCTAssertTrue(flow.contains("|| ble.status == .poweredOff"),
+                      "A button cannot turn Bluetooth on and should not pretend it can")
     }
 
     func testOverviewRemovesDuplicateVisibleConnectionDetailButKeepsVoiceOverHint() throws {

@@ -204,6 +204,105 @@ final class AtriaTrendProjectionStoreTests: XCTestCase {
         XCTAssertEqual(Set(labels.values).count, distinct.count)
     }
 
+    func testPriorTrendComparisonRequiresQualifiedEvidenceOnBothSides() {
+        XCTAssertFalse(
+            AtriaTrendComparisonPolicy.isAvailable(
+                currentCount: 3,
+                priorCount: 7,
+                range: .week
+            ),
+            "A full prior week must not make a sparse current week comparable"
+        )
+        XCTAssertFalse(
+            AtriaTrendComparisonPolicy.isAvailable(
+                currentCount: 7,
+                priorCount: 3,
+                range: .week
+            ),
+            "A few old readings must not become a dotted comparison line"
+        )
+        XCTAssertTrue(
+            AtriaTrendComparisonPolicy.isAvailable(
+                currentCount: 4,
+                priorCount: 4,
+                range: .week
+            )
+        )
+        XCTAssertFalse(
+            AtriaTrendComparisonPolicy.isAvailable(
+                currentCount: 11,
+                priorCount: 30,
+                range: .month
+            )
+        )
+        XCTAssertTrue(
+            AtriaTrendComparisonPolicy.isAvailable(
+                currentCount: 12,
+                priorCount: 12,
+                range: .month
+            )
+        )
+        XCTAssertFalse(
+            AtriaTrendComparisonPolicy.isAvailable(
+                currentCount: 100,
+                priorCount: 100,
+                range: .all
+            )
+        )
+    }
+
+    func testHiddenPriorValuesDoNotFlattenCurrentTrendScale() {
+        let currentOnly = AtriaTrendComparisonPolicy.domain(
+            currentValues: [58, 60, 62],
+            priorValues: [120],
+            includesPrior: false
+        )
+        let comparison = AtriaTrendComparisonPolicy.domain(
+            currentValues: [58, 60, 62],
+            priorValues: [120],
+            includesPrior: true
+        )
+
+        XCTAssertLessThan(currentOnly.upperBound, 70)
+        XCTAssertGreaterThan(comparison.upperBound, 120)
+        XCTAssertLessThanOrEqual(comparison.lowerBound, 58)
+    }
+
+    func testTrendChartHasNoAutomaticBaselineRuleAndLabelsOptInComparison() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaTrendChart.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let cardStart = try XCTUnwrap(source.range(of: "struct AtriaTrendChartCard: View"))
+        let cardEnd = try XCTUnwrap(
+            source.range(
+                of: "private struct AtriaTrendPeriodReadout",
+                range: cardStart.lowerBound..<source.endIndex
+            )
+        )
+        let card = String(source[cardStart.lowerBound..<cardEnd.lowerBound])
+
+        XCTAssertFalse(card.contains("RuleMark(y: .value(\"Baseline\""))
+        XCTAssertTrue(card.contains("Compare prior \\(range.narrativeLabel)"))
+        XCTAssertTrue(card.contains("showsPriorPeriod && priorComparisonIsAvailable"))
+
+        let insights = try String(
+            contentsOf: sourceURL.deletingLastPathComponent().appendingPathComponent("Insights.swift"),
+            encoding: .utf8
+        )
+        let restingStart = try XCTUnwrap(insights.range(of: "struct RestingTrendChart: View"))
+        let restingEnd = try XCTUnwrap(
+            insights.range(
+                of: "// MARK: - Session time-in-zone breakdown",
+                range: restingStart.lowerBound..<insights.endIndex
+            )
+        )
+        let restingChart = String(insights[restingStart.lowerBound..<restingEnd.lowerBound])
+        XCTAssertFalse(restingChart.contains("RuleMark(y: .value(\"Baseline\""))
+        XCTAssertTrue(restingChart.contains("subtitle: baseline.map { \"Baseline \\($0) bpm\" }"))
+    }
+
     func testTrendHostUsesNarrowProjectionInsteadOfWholeSessionStoreObservation() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory

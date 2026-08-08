@@ -21,7 +21,7 @@ final class AtriaUIDensityCompletionTests: XCTestCase {
     func testOnboardingProfileFieldsStackAtAccessibilitySizesAndKeepFullHitTargets() throws {
         let source = try source("AtriaOnboardingFlow.swift")
         let start = try XCTUnwrap(source.range(of: "private func numericProfileField"))
-        let end = try XCTUnwrap(source.range(of: "private func setupStepTile",
+        let end = try XCTUnwrap(source.range(of: "private func expectationStep",
                                               range: start.upperBound..<source.endIndex))
         let fields = String(source[start.lowerBound..<end.lowerBound])
 

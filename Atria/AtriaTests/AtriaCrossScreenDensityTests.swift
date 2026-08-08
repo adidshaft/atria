@@ -179,12 +179,19 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
                        "Activity should declare one Add menu and render it only in the day toolbar")
         XCTAssertTrue(toolbar.contains("frame(width: 44, height: 44)"))
         XCTAssertFalse(source.contains("private var activityHeader"))
-        XCTAssertTrue(timeline.contains("AxisMarks(values: axisTicks.map(\\.date))"))
+        XCTAssertTrue(timeline.contains("AtriaTextSelector(items: TimelineSignal.allCases"))
+        XCTAssertTrue(timeline.contains("heartRateTimelineChart"))
+        XCTAssertTrue(timeline.contains("stressTimelineChart"))
+        XCTAssertTrue(timeline.contains("LineMark(x: .value(\"Time\", point.t)"))
+        XCTAssertTrue(timeline.contains("timelinePlotOverlay"),
+                      "The single activity-marker lane should share the monitor plot")
         XCTAssertTrue(timeline.contains("font(.system(size: 9"))
-        XCTAssertTrue(timeline.contains(".accessibilityLabel(\"Activity timeline\")"))
-        XCTAssertTrue(timeline.contains(".symbolSize(360)"))
-        XCTAssertTrue(timeline.contains(".frame(height: 44)"),
-                      "An empty activity axis should reserve one compact, predictable row")
+        XCTAssertTrue(timeline.contains(".accessibilityLabel(\"Heart rate and activity timeline\")"))
+        XCTAssertTrue(timeline.contains(".accessibilityLabel(\"Stress and activity timeline\")"))
+        XCTAssertTrue(timeline.contains(".frame(height: 154)"),
+                      "Both honest empty states and measured traces keep a stable plot height")
+        XCTAssertFalse(timeline.contains(".chartScrollableAxes"),
+                       "The compact monitor should show one complete daily context before inspection")
         XCTAssertFalse(timeline.contains("Previous day"), "Day controls belong in the single toolbar, not another stacked row")
         XCTAssertFalse(source.contains("detection.kind == .workout ? \"figure.run\""))
         XCTAssertFalse(source.contains("$0.kind == .workout ? \"figure.run\""))
@@ -192,9 +199,9 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
                       "unclassified detections must use a neutral activity icon")
         XCTAssertTrue(source.contains("if let suggestedActivityType"),
                       "a specific icon may appear only when classifier evidence supplies a type hint")
-        XCTAssertTrue(source.contains("let compactAssignments = AtriaActivityTimelineLanePacker.assignments"))
-        XCTAssertTrue(source.contains("lane: \"timeline-\\(compactAssignments[$0.id] ?? 0)\""),
-                      "Non-overlapping sleep, workout, and review spans should reuse compact lanes")
+        XCTAssertTrue(source.contains("AtriaActivityTimelineMarkerProjection.nonOverlappingSlices"))
+        XCTAssertTrue(source.contains("lane: \"activity\""),
+                      "Sleep, workout, and review markers must share one non-overlapping lane")
     }
 
     func testOnboardingConnectionCardKeepsGuidanceForVoiceOverWithoutVisibleParagraph() throws {

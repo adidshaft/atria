@@ -11,10 +11,10 @@ struct ContentView: View {
     @State private var showOnboardingConsentSheet = false
     @StateObject private var onboardingHistoryBootstrap: AtriaOnboardingHistoryBootstrap
 
-    /// Keep first launch bounded: the four core pages are followed only by the
-    /// explicit research-sharing choice. Nickname, ring layout, and cycle
-    /// tracking remain available from Customize/Settings instead of blocking
-    /// entry with three additional full-screen steps.
+    /// The active flow owns the eight compact setup and personalization pages;
+    /// this outer coordinator adds only the explicit research-sharing choice.
+    /// Keeping that consent stage separate preserves its inspect-before-agree
+    /// gate without duplicating any of the in-flow choices.
     private enum OnboardingStage {
         case flow
         case sharingChoice(AthleteProfile)
@@ -594,44 +594,33 @@ struct AtriaDashboardBackdrop: View {
 struct OnboardingConnectionStatusView: View {
     @ObservedObject var ble: AtriaBLEManager
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var isHealthyContact: Bool { ble.hasContact || ble.heartRate > 0 }
 
     private var hasFreshHeartRate: Bool { ble.currentConnectionHasFreshHeartRate }
 
     var body: some View {
-        HStack(spacing: 14) {
-            ZStack {
-                Circle()
-                    .fill(tint.opacity(0.16))
-                    .frame(width: 46, height: 46)
-                if isSearching {
-                    ProgressView().tint(tint)
-                } else {
-                    Image(systemName: symbol)
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(tint)
-                        .symbolRenderingMode(.hierarchical)
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top, spacing: 14) {
+                        statusIcon
+                        statusCopy
+                    }
+                    if hasFreshHeartRate {
+                        heartRateReading
+                    }
                 }
-            }
-
-            Text(title)
-                .font(.headline)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Spacer(minLength: 8)
-
-            if hasFreshHeartRate {
-                HStack(alignment: .firstTextBaseline, spacing: 3) {
-                    Text("\(ble.heartRate)")
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                    Text("bpm")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 14) {
+                    statusIcon
+                    statusCopy
+                    Spacer(minLength: 8)
+                    if hasFreshHeartRate {
+                        heartRateReading
+                    }
                 }
-                .transition(.opacity)
             }
         }
         .padding(.horizontal, 16)
@@ -641,6 +630,48 @@ struct OnboardingConnectionStatusView: View {
         .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.standard), value: ble.hasContact)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(title). \(subtitle)")
+    }
+
+    private var statusIcon: some View {
+        ZStack {
+            Circle()
+                .fill(tint.opacity(0.16))
+                .frame(width: 46, height: 46)
+            if isSearching {
+                ProgressView().tint(tint)
+            } else {
+                Image(systemName: symbol)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .symbolRenderingMode(.hierarchical)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    private var statusCopy: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.headline)
+            Text(subtitle)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .lineLimit(3)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var heartRateReading: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 3) {
+            Text("\(ble.heartRate)")
+                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .monospacedDigit()
+            Text("bpm")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .transition(.opacity)
+        .accessibilityHidden(true)
     }
 
     private var isSearching: Bool {
