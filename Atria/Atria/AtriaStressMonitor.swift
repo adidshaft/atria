@@ -1,3 +1,5 @@
+import Darwin
+import Foundation
 import SwiftUI
 
 /// WHOOP-style live 0-3 stress score, built entirely from signals this codebase
@@ -18,7 +20,7 @@ import SwiftUI
 /// Until the HRV baseline is *also* trusted, the score runs HR-only and is
 /// capped at Medium (2): elevated HR alone can never be reported as "High"
 /// without HRV corroboration.
-enum AtriaStressLevel: Int, Equatable, CaseIterable {
+enum AtriaStressLevel: Int, Equatable, CaseIterable, Sendable {
     case calm = 0
     case low = 1
     case medium = 2
@@ -137,6 +139,11 @@ struct AtriaStressPresentation: Equatable {
 enum AtriaStressMonitor {
 
     // MARK: Tunable thresholds (kept static + named so behavior stays auditable)
+
+    /// Persisted with every derived timeline point. Bump whenever activation,
+    /// banding, capping, or hysteresis semantics change so a later build never
+    /// silently presents unlike scores as one continuous series.
+    static let scoringVersion = 1
 
     /// First N seconds of live contact are "Warming up" — too little data for
     /// even an HR-only read.
@@ -501,6 +508,453 @@ struct AtriaAwakeReferenceSnapshot: Codable, Equatable {
     var updatedAt: Date
 }
 
+/// A compact, display-only checkpoint of real scored stress samples. This is
+/// intentionally separate from the daily distribution and awake-HR baseline:
+/// restoring it can repopulate a timeline after relaunch, but it never feeds
+/// scoring, calibration, or aggregate insight math.
+struct AtriaStressHistoryArchive: Codable, Equatable, Sendable {
+    struct Point: Codable, Equatable, Sendable {
+        let t: Date
+        let activation: Double
+        let levelRawValue: Int
+        let confidence: Double
+        let hrvAvailable: Bool
+        let scoringVersion: Int
+
+        init(t: Date,
+             activation: Double,
+             level: AtriaStressLevel,
+             confidence: Double,
+             hrvAvailable: Bool,
+             scoringVersion: Int = AtriaStressMonitor.scoringVersion) {
+            self.t = t
+            self.activation = activation
+            self.levelRawValue = level.rawValue
+            self.confidence = confidence
+            self.hrvAvailable = hrvAvailable
+            self.scoringVersion = scoringVersion
+        }
+
+        var level: AtriaStressLevel? { AtriaStressLevel(rawValue: levelRawValue) }
+
+        fileprivate var isValid: Bool {
+            let isHRVConsistent = hrvAvailable
+                || (levelRawValue != AtriaStressLevel.high.rawValue
+                    && activation <= AtriaStressMonitor.mediumUpperBound + 1e-9)
+            return t.timeIntervalSinceReferenceDate.isFinite
+                && activation.isFinite
+                && (0...1).contains(activation)
+                && AtriaStressLevel(rawValue: levelRawValue) != nil
+                && confidence.isFinite
+                && (0...1).contains(confidence)
+                && isHRVConsistent
+                && scoringVersion == AtriaStressMonitor.scoringVersion
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case t
+            case activation = "a"
+            case levelRawValue = "l"
+            case confidence = "c"
+            case hrvAvailable = "h"
+            case scoringVersion = "s"
+        }
+    }
+
+    static let currentSchemaVersion = 1
+    /// Two local days lets Activity restore today or yesterday without growing
+    /// into long-term health storage. At the store's 30-second cadence this is
+    /// bounded again by `maximumPointCount`.
+    static let retentionWindow: TimeInterval = 48 * 60 * 60
+    static let maximumPointCount = 5_760
+    /// Local sample clocks should track wall time. A larger future jump signals
+    /// a corrupt archive or clock discontinuity and is rejected rather than
+    /// displayed as measured evidence.
+    static let maximumFutureSkew: TimeInterval = 5 * 60
+
+    let schemaVersion: Int
+    private(set) var points: [Point]
+
+    init(points: [Point] = []) {
+        self.schemaVersion = Self.currentSchemaVersion
+        self.points = points
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion = "v"
+        case points = "p"
+    }
+
+    /// Validates every persisted claim, rejects future-clock corruption, then
+    /// prunes by exact sample timestamp. Sorting and exact timestamp de-duping
+    /// preserve real gaps; no samples are synthesized between observations.
+    func validatedAndPruned(now: Date) throws -> Self {
+        guard schemaVersion == Self.currentSchemaVersion,
+              now.timeIntervalSinceReferenceDate.isFinite,
+              points.allSatisfy(\.isValid),
+              points.allSatisfy({ $0.t.timeIntervalSince(now) <= Self.maximumFutureSkew }) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+
+        let cutoff = now.addingTimeInterval(-Self.retentionWindow)
+        let retained = points
+            .filter { $0.t >= cutoff }
+            .sorted { $0.t < $1.t }
+        var unique: [Point] = []
+        unique.reserveCapacity(min(retained.count, Self.maximumPointCount))
+        for point in retained {
+            if unique.last?.t == point.t {
+                // A complete later record wins an exact-timestamp collision;
+                // it never bridges a missing time range.
+                unique[unique.count - 1] = point
+            } else {
+                unique.append(point)
+            }
+        }
+        if unique.count > Self.maximumPointCount {
+            unique.removeFirst(unique.count - Self.maximumPointCount)
+        }
+        return Self(points: unique)
+    }
+}
+
+enum AtriaStressHistoryLoadState: Equatable, Sendable {
+    /// Persistence is intentionally absent (the default for isolated stores and
+    /// tests); only the app-wide production store opts in.
+    case disabled
+    case loading
+    case loaded
+    /// The archive existed but could not be read, decoded, or validated. UI can
+    /// distinguish this from a successfully loaded archive with zero readings.
+    case unavailable
+}
+
+/// Serial, protected Application Support persistence for the bounded archive.
+/// Reads and JSON encoding/writes stay off MainActor. Hour shards bound routine
+/// rewrite amplification: a live checkpoint atomically replaces only the
+/// current and immediately previous hour (the latter closes rollover tails),
+/// while load merges/prunes at most 48 hours of small files.
+final class AtriaStressHistoryPersistence: @unchecked Sendable {
+    enum LoadResult: Equatable, Sendable {
+        case loaded(AtriaStressHistoryArchive)
+        case unavailable
+    }
+
+    private struct Shard: Codable, Equatable, Sendable {
+        static let schemaVersion = 1
+        let version: Int
+        let hour: Int64
+        let points: [AtriaStressHistoryArchive.Point]
+
+        init(hour: Int64, points: [AtriaStressHistoryArchive.Point]) {
+            self.version = Self.schemaVersion
+            self.hour = hour
+            self.points = points
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case version = "v"
+            case hour = "b"
+            case points = "p"
+        }
+    }
+
+    /// A normal hour has at most 120 points at the 30-second producer cadence;
+    /// eight slots tolerate boundary/clock jitter without admitting a large or
+    /// adversarial shard.
+    static let maximumPointsPerShard = 128
+    /// Measured worst-field 128-point JSON is ~11 KB. A 16 KiB hard ceiling
+    /// bounds both corruption exposure and write amplification to <=9 MiB/day
+    /// at two shards per five-minute checkpoint (normally substantially less).
+    static let maximumEncodedBytesPerShard = 16 * 1_024
+    private static let secondsPerShard: TimeInterval = 60 * 60
+    private static let maximumRelevantShardCount = 50
+    private static let filenamePrefix = "stress-hour-v1-"
+    private static let filenameSuffix = ".json"
+    private let directoryURL: URL
+    private let fileManager: FileManager
+    private let ioQueue = DispatchQueue(label: "com.adidshaft.atria.stress-history",
+                                        qos: .utility)
+    /// Utility-queue confined. A successful recovery checkpoint must clear all
+    /// previously recognized shards before the store can leave `unavailable`.
+    private var recoveryRebuildRequired = false
+
+    init(directoryURL: URL, fileManager: FileManager = .default) {
+        self.directoryURL = directoryURL.standardizedFileURL
+        self.fileManager = fileManager
+    }
+
+    static func production(fileManager: FileManager = .default) -> AtriaStressHistoryPersistence {
+        let support = fileManager.urls(for: .applicationSupportDirectory,
+                                       in: .userDomainMask)[0]
+        return AtriaStressHistoryPersistence(
+            directoryURL: support.appendingPathComponent("Atria/stress-history-v1",
+                                                          isDirectory: true),
+            fileManager: fileManager
+        )
+    }
+
+    func load(now: Date = Date()) async -> LoadResult {
+        await withCheckedContinuation { continuation in
+            ioQueue.async { [self] in
+                continuation.resume(returning: loadSynchronously(now: now))
+            }
+        }
+    }
+
+    /// Fire-and-forget from the live store. Calls are already sample-throttled;
+    /// this serial queue additionally guarantees checkpoint ordering. Success
+    /// means every targeted shard reached a protected, synchronized atomic
+    /// replacement; callers must not advance durability state before it.
+    func enqueueCheckpoint(_ archive: AtriaStressHistoryArchive,
+                           now: Date,
+                           completion: @escaping @Sendable (Bool) -> Void) {
+        ioQueue.async { [self] in
+            do {
+                try checkpointSynchronously(archive, now: now)
+                completion(true)
+            } catch {
+                AtriaDebugLog("ATRIADBG stress_history_checkpoint status=failed error=%@",
+                              String(describing: error))
+                completion(false)
+            }
+        }
+    }
+
+    /// Test/support seam for pre-seeding a complete 48-hour relaunch fixture.
+    /// Production routine checkpoints use `enqueueCheckpoint` and therefore
+    /// rewrite only two hour shards.
+    func save(_ archive: AtriaStressHistoryArchive, now: Date = Date()) async -> Bool {
+        await withCheckedContinuation { continuation in
+            ioQueue.async { [self] in
+                do {
+                    try saveAllSynchronously(archive, now: now)
+                    continuation.resume(returning: true)
+                } catch {
+                    continuation.resume(returning: false)
+                }
+            }
+        }
+    }
+
+    /// Completes all checkpoints submitted before this call.
+    func drainWrites() async {
+        await withCheckedContinuation { continuation in
+            ioQueue.async { continuation.resume() }
+        }
+    }
+
+    /// Exact test seam for constructing a corrupt hour file. Production callers
+    /// do not need filesystem paths.
+    func shardURL(containing date: Date) -> URL {
+        shardURL(hour: Self.hourIndex(for: date))
+    }
+
+    private func loadSynchronously(now: Date) -> LoadResult {
+        guard fileManager.fileExists(atPath: directoryURL.path) else {
+            return .loaded(AtriaStressHistoryArchive())
+        }
+        do {
+            let files = try recognizedShardFiles()
+            let oldestHour = Self.hourIndex(
+                for: now.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
+            )
+            let latestAllowedHour = Self.hourIndex(
+                for: now.addingTimeInterval(AtriaStressHistoryArchive.maximumFutureSkew)
+            )
+            let relevant = files.filter { $0.hour >= oldestHour }
+            guard relevant.count <= Self.maximumRelevantShardCount,
+                  relevant.allSatisfy({ $0.hour <= latestAllowedHour }) else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+
+            var points: [AtriaStressHistoryArchive.Point] = []
+            points.reserveCapacity(relevant.count * 120)
+            for file in relevant.sorted(by: { $0.hour < $1.hour }) {
+                let data = try Data(contentsOf: file.url, options: .mappedIfSafe)
+                guard data.count <= Self.maximumEncodedBytesPerShard else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                let shard = try JSONDecoder().decode(Shard.self, from: data)
+                guard shard.version == Shard.schemaVersion,
+                      shard.hour == file.hour,
+                      shard.points.count <= Self.maximumPointsPerShard,
+                      shard.points.allSatisfy({ Self.hourIndex(for: $0.t) == shard.hour }) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                points.append(contentsOf: shard.points)
+            }
+            let archive = try AtriaStressHistoryArchive(points: points)
+                .validatedAndPruned(now: now)
+            pruneExpiredShards(files, oldestHour: oldestHour)
+            return .loaded(archive)
+        } catch {
+            recoveryRebuildRequired = true
+            return .unavailable
+        }
+    }
+
+    private func checkpointSynchronously(_ archive: AtriaStressHistoryArchive,
+                                         now: Date) throws {
+        let validated = try archive.validatedAndPruned(now: now)
+        try prepareDirectory()
+        guard let newestSubmittedPoint = validated.points.last else {
+            if recoveryRebuildRequired {
+                try clearRecognizedShards(excluding: [])
+                recoveryRebuildRequired = false
+            }
+            return
+        }
+        let anchorHour = Self.hourIndex(for: newestSubmittedPoint.t)
+        let targets = [anchorHour - 1, anchorHour]
+        let grouped = Dictionary(grouping: validated.points,
+                                 by: { Self.hourIndex(for: $0.t) })
+        for hour in targets {
+            let points = Array((grouped[hour] ?? []).suffix(Self.maximumPointsPerShard))
+            if points.isEmpty {
+                // An old current/previous shard with no corresponding point in
+                // the canonical in-memory snapshot would otherwise resurrect.
+                try removeShardIfPresent(hour: hour)
+            } else {
+                try writeShard(Shard(hour: hour, points: points))
+            }
+        }
+        if recoveryRebuildRequired {
+            // Target shards are now complete and durable. Clear every older
+            // recognized shard (valid or corrupt) before reporting recovery;
+            // otherwise a stale corrupt hour would poison the next launch.
+            try clearRecognizedShards(excluding: Set(targets))
+            recoveryRebuildRequired = false
+        }
+        let oldestHour = Self.hourIndex(
+            for: now.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
+        )
+        pruneExpiredShards(try recognizedShardFiles(), oldestHour: oldestHour)
+    }
+
+    private func saveAllSynchronously(_ archive: AtriaStressHistoryArchive,
+                                      now: Date) throws {
+        let validated = try archive.validatedAndPruned(now: now)
+        try prepareDirectory()
+        let grouped = Dictionary(grouping: validated.points,
+                                 by: { Self.hourIndex(for: $0.t) })
+        for (hour, rawPoints) in grouped {
+            let points = Array(rawPoints.suffix(Self.maximumPointsPerShard))
+            try writeShard(Shard(hour: hour, points: points))
+        }
+        let retainedHours = Set(grouped.keys)
+        for file in try recognizedShardFiles() where !retainedHours.contains(file.hour) {
+            try fileManager.removeItem(at: file.url)
+        }
+        try synchronizeDirectory()
+        recoveryRebuildRequired = false
+    }
+
+    private func prepareDirectory() throws {
+        try fileManager.createDirectory(
+            at: directoryURL,
+            withIntermediateDirectories: true,
+            attributes: [
+                .protectionKey: FileProtectionType.completeUntilFirstUserAuthentication,
+            ]
+        )
+    }
+
+    private func writeShard(_ shard: Shard) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(shard)
+        guard data.count <= Self.maximumEncodedBytesPerShard else {
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        let destination = shardURL(hour: shard.hour)
+        let temporary = directoryURL.appendingPathComponent(
+            ".stress-hour-\(shard.hour)-\(UUID().uuidString).tmp"
+        )
+        defer { try? fileManager.removeItem(at: temporary) }
+        try data.write(to: temporary,
+                       options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        let handle = try FileHandle(forWritingTo: temporary)
+        try handle.synchronize()
+        try handle.close()
+        // POSIX rename within one directory atomically replaces an existing
+        // shard. On failure the old destination is unchanged and still valid.
+        guard Darwin.rename(temporary.path, destination.path) == 0 else {
+            throw Self.posixError()
+        }
+        try synchronizeDirectory()
+    }
+
+    private func removeShardIfPresent(hour: Int64) throws {
+        let url = shardURL(hour: hour)
+        guard fileManager.fileExists(atPath: url.path) else { return }
+        try fileManager.removeItem(at: url)
+        try synchronizeDirectory()
+    }
+
+    private func recognizedShardFiles() throws -> [(hour: Int64, url: URL)] {
+        try fileManager.contentsOfDirectory(at: directoryURL,
+                                            includingPropertiesForKeys: nil,
+                                            options: [.skipsHiddenFiles])
+            .compactMap { url in
+                guard let hour = Self.hour(fromFilename: url.lastPathComponent) else {
+                    return nil
+                }
+                return (hour: hour, url: url)
+            }
+    }
+
+    private func pruneExpiredShards(_ files: [(hour: Int64, url: URL)],
+                                    oldestHour: Int64) {
+        var removed = false
+        for file in files where file.hour < oldestHour {
+            if (try? fileManager.removeItem(at: file.url)) != nil {
+                removed = true
+            }
+        }
+        if removed { try? synchronizeDirectory() }
+    }
+
+    private func clearRecognizedShards(excluding retainedHours: Set<Int64>) throws {
+        var removed = false
+        for file in try recognizedShardFiles() where !retainedHours.contains(file.hour) {
+            try fileManager.removeItem(at: file.url)
+            removed = true
+        }
+        if removed { try synchronizeDirectory() }
+    }
+
+    private func shardURL(hour: Int64) -> URL {
+        directoryURL.appendingPathComponent(
+            "\(Self.filenamePrefix)\(hour)\(Self.filenameSuffix)"
+        )
+    }
+
+    private static func hourIndex(for date: Date) -> Int64 {
+        Int64(floor(date.timeIntervalSince1970 / secondsPerShard))
+    }
+
+    private static func hour(fromFilename filename: String) -> Int64? {
+        guard filename.hasPrefix(filenamePrefix), filename.hasSuffix(filenameSuffix) else {
+            return nil
+        }
+        let start = filename.index(filename.startIndex, offsetBy: filenamePrefix.count)
+        let end = filename.index(filename.endIndex, offsetBy: -filenameSuffix.count)
+        return Int64(filename[start..<end])
+    }
+
+    private func synchronizeDirectory() throws {
+        let descriptor = Darwin.open(directoryURL.path, O_RDONLY)
+        guard descriptor >= 0 else { throw Self.posixError() }
+        defer { Darwin.close(descriptor) }
+        guard Darwin.fsync(descriptor) == 0 else { throw Self.posixError() }
+    }
+
+    private static func posixError() -> POSIXError {
+        POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+}
+
 /// A slow, multi-day awake-HR baseline that resists a single stressful stretch.
 ///
 /// The 45-min `awakeReference` is responsive but absorbs sustained stress: an
@@ -644,15 +1098,20 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// Clock of the most recent scored evaluation. Presentation surfaces use
     /// this source clock; merely opening a screen must never renew freshness.
     @Published private(set) var lastMeasuredAt: Date?
-    /// Scored readings from this app session (thinned to ~1 per 30s, capped
-    /// at 24h so the expanded detail can show a full day). In-memory only — the
-    /// history chart shows real gaps for any stretch the strap wasn't read,
-    /// never interpolation. ~2,880 points × 24 B ≈ 68 KB at the cap.
+    /// Scored readings thinned to ~1 per 30s and bounded to 48 hours / 5,760
+    /// points. The production store restores a local display-only checkpoint;
+    /// isolated stores remain memory-only unless persistence is injected. Real
+    /// sample timestamps survive relaunch, so missing strap intervals remain
+    /// gaps and are never interpolated.
     private(set) var history: [StressHistoryPoint] = []
     /// Cheap change token for SwiftUI observers. The Health screen reads
     /// `history` for data, but watches this integer so live updates never
     /// compare the full rolling array.
     @Published private(set) var historyRevision = 0
+    /// Explicit restore authority. `loaded` with an empty `history` means there
+    /// truly are no retained readings; `loading` / `unavailable` must not be
+    /// presented as the same empty-data claim.
+    @Published private(set) var historyLoadState: AtriaStressHistoryLoadState = .disabled
     /// Persisted, measured stress-band counts. This is deliberately a compact
     /// aggregate rather than a second high-frequency sample archive: it can
     /// answer "today versus a typical weekday" without inventing values across
@@ -660,11 +1119,31 @@ final class AtriaStressMonitorStore: ObservableObject {
     private var distributionArchive = AtriaStressDistributionArchive.load()
     @Published private(set) var distributionRevision = 0
 
-    struct StressHistoryPoint: Identifiable, Equatable {
+    struct StressHistoryPoint: Identifiable, Equatable, Sendable {
         let t: Date
         /// Continuous activation 0-1 behind the discrete level.
         let activation: Double
         let level: AtriaStressLevel
+        /// Confidence published with this exact derived sample.
+        let confidence: Double
+        /// Provenance: true for HR+HRV corroboration, false for HR-only.
+        let hrvAvailable: Bool
+        /// Scorer/banding/hysteresis contract that produced this point.
+        let scoringVersion: Int
+
+        init(t: Date,
+             activation: Double,
+             level: AtriaStressLevel,
+             confidence: Double = 0,
+             hrvAvailable: Bool = false,
+             scoringVersion: Int = AtriaStressMonitor.scoringVersion) {
+            self.t = t
+            self.activation = activation
+            self.level = level
+            self.confidence = confidence
+            self.hrvAvailable = hrvAvailable
+            self.scoringVersion = scoringVersion
+        }
 
         var id: TimeInterval { t.timeIntervalSinceReferenceDate }
     }
@@ -701,11 +1180,44 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// Flush the baseline archive to disk at most once per this many admitted
     /// samples; a process interruption loses only the small pending tail.
     private static let awakeBaselinePersistEverySamples = 20
+    private let historyPersistence: AtriaStressHistoryPersistence?
+    private var historyHydrationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var historyCheckpointWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Advances only after the background writer confirms a synchronized atomic
+    /// replacement. A queued or failed write is never called durable.
+    private var historyHasDurableCheckpoint = false
+    private var unsavedHistorySamples = 0
+    private var historyCheckpointInFlight = false
+    private var historyCheckpointRetryPending = false
+    private var historyForcedFlushPending = false
+    /// Number of samples from the checkpoint trigger that still need a
+    /// confirmed shard replacement. A trigger may span disconnected hours;
+    /// draining those hours serially keeps each write bounded to two shards
+    /// without calling an omitted older island durable.
+    private var historyCheckpointDrainRemainingSamples = 0
+    private var lastHistoryCheckpointAttemptAt: Date?
+    /// Ten 30-second readings = at most one routine checkpoint every five
+    /// minutes. The first retained sample is checkpointed immediately so a
+    /// short session can still restore something after a relaunch.
+    nonisolated private static let historyPersistEverySamples = 10
+    nonisolated private static let historyCheckpointMinimumInterval: TimeInterval = 5 * 60
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard,
+         historyPersistence: AtriaStressHistoryPersistence? = nil,
+         historyLoadNow: Date = Date()) {
         self.awakeReferenceDefaults = defaults
         self.persistedAwakeReference = Self.loadPersistedAwakeReference(defaults: defaults)
         self.awakeBaselineArchive = AtriaAwakeBaselineArchive.load(defaults: defaults)
+        self.historyPersistence = historyPersistence
+        self.historyLoadState = historyPersistence == nil ? .disabled : .loading
+
+        if let historyPersistence {
+            Task { [weak self] in
+                let result = await historyPersistence.load(now: historyLoadNow)
+                guard let self else { return }
+                self.completeHistoryHydration(result, now: historyLoadNow)
+            }
+        }
     }
 
     private static let awakeReferenceDefaultsKey = "atria.stress.awakeReference.v1"
@@ -801,6 +1313,254 @@ final class AtriaStressMonitorStore: ObservableObject {
         awakeReferenceDefaults.set(data, forKey: Self.awakeReferenceDefaultsKey)
     }
 
+    /// Deterministic seam for tests and consumers that must await the initial
+    /// local restore before deciding whether a timeline is genuinely empty.
+    func waitForHistoryHydration() async {
+        guard historyLoadState == .loading else { return }
+        await withCheckedContinuation { continuation in
+            historyHydrationWaiters.append(continuation)
+        }
+    }
+
+    /// Deterministic test/support seam; ordinary UI never awaits persistence.
+    func waitForPendingHistoryCheckpoint() async {
+        guard historyCheckpointInFlight else { return }
+        await withCheckedContinuation { continuation in
+            historyCheckpointWaiters.append(continuation)
+        }
+    }
+
+    private func completeHistoryHydration(_ result: AtriaStressHistoryPersistence.LoadResult,
+                                          now: Date) {
+        switch result {
+        case .loaded(let archive):
+            let restored = archive.points.compactMap { point -> StressHistoryPoint? in
+                guard let level = point.level else { return nil }
+                return StressHistoryPoint(t: point.t,
+                                          activation: point.activation,
+                                          level: level,
+                                          confidence: point.confidence,
+                                          hrvAvailable: point.hrvAvailable,
+                                          scoringVersion: point.scoringVersion)
+            }
+            let merged = Self.mergeHistory(restored: restored,
+                                           live: history,
+                                           now: now)
+            if merged != history {
+                history = merged
+                historyRevision &+= 1
+            }
+            historyHasDurableCheckpoint = !archive.points.isEmpty
+            historyLoadState = .loaded
+
+        case .unavailable:
+            // Keep any live tail recorded while the background load ran, but
+            // never relabel a failed/corrupt restore as a true empty archive.
+            history = Self.mergeHistory(restored: [], live: history, now: now)
+            historyHasDurableCheckpoint = false
+            historyLoadState = .unavailable
+        }
+
+        let waiters = historyHydrationWaiters
+        historyHydrationWaiters.removeAll(keepingCapacity: false)
+        waiters.forEach { $0.resume() }
+
+        if historyForcedFlushPending || Self.shouldPersistHistory(
+            hasDurableCheckpoint: historyHasDurableCheckpoint,
+            unsavedSampleCount: unsavedHistorySamples
+        ) {
+            let force = historyForcedFlushPending
+            historyForcedFlushPending = false
+            checkpointHistory(now: now, force: force)
+        }
+    }
+
+    /// Timestamp-keyed union used only at restore. Persisted evidence is loaded
+    /// first; a same-clock live point wins because it is the newer in-process
+    /// publication. Sorting and de-duplicating exact clocks cannot bridge gaps.
+    private static func mergeHistory(restored: [StressHistoryPoint],
+                                     live: [StressHistoryPoint],
+                                     now: Date) -> [StressHistoryPoint] {
+        let cutoff = now.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
+        var byTimestamp: [Date: StressHistoryPoint] = [:]
+        byTimestamp.reserveCapacity(restored.count + live.count)
+        for point in restored where point.t >= cutoff {
+            byTimestamp[point.t] = point
+        }
+        for point in live where point.t >= cutoff {
+            byTimestamp[point.t] = point
+        }
+        let ordered = byTimestamp.values.sorted { $0.t < $1.t }
+        if ordered.count > AtriaStressHistoryArchive.maximumPointCount {
+            return Array(ordered.suffix(AtriaStressHistoryArchive.maximumPointCount))
+        }
+        return ordered
+    }
+
+    nonisolated static func shouldPersistHistory(hasDurableCheckpoint: Bool,
+                                                 unsavedSampleCount: Int) -> Bool {
+        guard unsavedSampleCount > 0 else { return false }
+        return !hasDurableCheckpoint
+            || unsavedSampleCount >= historyPersistEverySamples
+    }
+
+    /// Keeps dirty-suffix accounting inside the points that still exist after
+    /// retention/count pruning. This matters after a prolonged write failure:
+    /// expired unsaved samples cannot remain as phantom work that repeatedly
+    /// selects the same surviving suffix.
+    nonisolated static func boundedUnsavedHistorySampleCount(_ unsavedSampleCount: Int,
+                                                             retainedPointCount: Int) -> Int {
+        min(max(0, unsavedSampleCount), max(0, retainedPointCount))
+    }
+
+    /// Nonblocking lifecycle seam. It only schedules the small current/previous
+    /// hour snapshot; JSON/file work remains on the persistence utility queue.
+    func flushHistoryCheckpoint(now: Date = Date()) {
+        checkpointHistory(now: now, force: true)
+    }
+
+    private func checkpointHistory(now: Date,
+                                   force: Bool = false,
+                                   continuingDrain: Bool = false) {
+        guard let historyPersistence, !history.isEmpty else { return }
+        guard historyLoadState != .loading else {
+            if force { historyForcedFlushPending = true }
+            return
+        }
+        guard !historyCheckpointInFlight else {
+            if force { historyForcedFlushPending = true }
+            return
+        }
+        guard unsavedHistorySamples > 0 else {
+            historyCheckpointDrainRemainingSamples = 0
+            return
+        }
+        if !force, !continuingDrain,
+           let lastHistoryCheckpointAttemptAt,
+           now.timeIntervalSince(lastHistoryCheckpointAttemptAt)
+                < Self.historyCheckpointMinimumInterval {
+            return
+        }
+
+        if !continuingDrain {
+            // Freeze the amount this trigger promises to make durable. Samples
+            // arriving while I/O is in flight may piggyback when they share a
+            // targeted hour, but do not turn one checkpoint into an unbounded
+            // foreground write loop.
+            historyCheckpointDrainRemainingSamples = max(
+                historyCheckpointDrainRemainingSamples,
+                unsavedHistorySamples
+            )
+        }
+
+        // Unsaved readings are the chronological suffix. Start with its oldest
+        // dirty hour so a newer island can never leapfrog it and then subtract
+        // it from the durability count. Adjacent dirty hours share one bounded
+        // replacement; a gap starts another two-shard checkpoint after success.
+        let suffixCount = min(unsavedHistorySamples, history.count)
+        guard suffixCount > 0 else {
+            unsavedHistorySamples = 0
+            historyCheckpointDrainRemainingSamples = 0
+            return
+        }
+        let unsavedSuffix = history.suffix(suffixCount)
+        guard let firstUnsaved = unsavedSuffix.first else { return }
+        let oldestDirtyHour = Self.historyHourIndex(for: firstUnsaved.t)
+        let nextDirtyHour = unsavedSuffix.lazy
+            .map { Self.historyHourIndex(for: $0.t) }
+            .first { $0 != oldestDirtyHour }
+        let anchorHour = nextDirtyHour == oldestDirtyHour + 1
+            ? oldestDirtyHour + 1
+            : oldestDirtyHour
+        let previousHour = anchorHour - 1
+        let isTargetHour: (Int64) -> Bool = {
+            $0 == previousHour || $0 == anchorHour
+        }
+        let submittedUnsavedSamples = unsavedSuffix.prefix {
+            isTargetHour(Self.historyHourIndex(for: $0.t))
+        }.count
+        guard submittedUnsavedSamples > 0 else { return }
+
+        // Submit the complete canonical contents of both target hours, not just
+        // their dirty suffix. This makes shard replacement preserve previously
+        // durable readings in the same hour. Routine work remains <=256 points.
+        let points = history.lazy.filter {
+            isTargetHour(Self.historyHourIndex(for: $0.t))
+        }.map {
+            AtriaStressHistoryArchive.Point(t: $0.t,
+                                            activation: $0.activation,
+                                            level: $0.level,
+                                            confidence: $0.confidence,
+                                            hrvAvailable: $0.hrvAvailable,
+                                            scoringVersion: $0.scoringVersion)
+        }
+        guard !points.isEmpty else { return }
+
+        let wasRetry = historyCheckpointRetryPending
+        historyCheckpointInFlight = true
+        lastHistoryCheckpointAttemptAt = now
+        if wasRetry {
+            AtriaDebugLog("ATRIADBG stress_history_checkpoint status=retry_queued")
+        }
+        historyPersistence.enqueueCheckpoint(
+            AtriaStressHistoryArchive(points: Array(points)),
+            now: now
+        ) { [weak self] succeeded in
+            Task { @MainActor [weak self] in
+                self?.completeHistoryCheckpoint(succeeded: succeeded,
+                                                submittedUnsavedSamples: submittedUnsavedSamples,
+                                                wasRetry: wasRetry,
+                                                now: now)
+            }
+        }
+    }
+
+    private func completeHistoryCheckpoint(succeeded: Bool,
+                                           submittedUnsavedSamples: Int,
+                                           wasRetry: Bool,
+                                           now: Date) {
+        historyCheckpointInFlight = false
+        if succeeded {
+            historyHasDurableCheckpoint = true
+            unsavedHistorySamples = max(0, unsavedHistorySamples - submittedUnsavedSamples)
+            historyCheckpointDrainRemainingSamples = max(
+                0,
+                historyCheckpointDrainRemainingSamples - submittedUnsavedSamples
+            )
+            historyCheckpointRetryPending = false
+            if historyLoadState == .unavailable {
+                // The corrupt/unreadable archive has now been replaced by a
+                // confirmed valid checkpoint. The retained live tail is the
+                // honest available history from this point forward.
+                historyLoadState = .loaded
+            }
+            if wasRetry {
+                AtriaDebugLog("ATRIADBG stress_history_checkpoint status=retry_recovered")
+            }
+        } else {
+            // Keep the unsaved count intact. The next ordinary attempt is still
+            // rate-limited by the five-minute floor; backgrounding can force a
+            // single earlier retry without turning failure into a write loop.
+            historyCheckpointRetryPending = true
+        }
+
+        if historyForcedFlushPending, unsavedHistorySamples > 0 {
+            historyForcedFlushPending = false
+            checkpointHistory(now: now, force: true)
+        } else if succeeded,
+                  historyCheckpointDrainRemainingSamples > 0,
+                  unsavedHistorySamples > 0 {
+            // Continue only the finite sample budget captured by the original
+            // trigger. Each hop still rewrites no more than two complete hours.
+            checkpointHistory(now: now, force: true, continuingDrain: true)
+        }
+        if !historyCheckpointInFlight {
+            let waiters = historyCheckpointWaiters
+            historyCheckpointWaiters.removeAll(keepingCapacity: false)
+            waiters.forEach { $0.resume() }
+        }
+    }
+
     private func recordHistory(now: Date) {
         // Record the PUBLISHED (Medium-capped in HR-only mode) activation, not
         // the raw EMA, so the timeline can never plot above the emitted level
@@ -809,9 +1569,42 @@ final class AtriaStressMonitorStore: ObservableObject {
         guard case .scored = state.kind, let level = state.level,
               smoothedActivation != nil else { return }
         if let last = history.last, now.timeIntervalSince(last.t) < 30 { return }
-        history.append(StressHistoryPoint(t: now, activation: state.rawActivation, level: level))
-        history.removeAll { now.timeIntervalSince($0.t) > 24 * 3600 }
+        let priorUnsavedSamples = Self.boundedUnsavedHistorySampleCount(
+            unsavedHistorySamples,
+            retainedPointCount: history.count
+        )
+        history.append(StressHistoryPoint(t: now,
+                                          activation: state.rawActivation,
+                                          level: level,
+                                          confidence: state.confidence,
+                                          hrvAvailable: state.hrvAvailable,
+                                          scoringVersion: AtriaStressMonitor.scoringVersion))
+        history.removeAll {
+            now.timeIntervalSince($0.t) > AtriaStressHistoryArchive.retentionWindow
+        }
+        if history.count > AtriaStressHistoryArchive.maximumPointCount {
+            history.removeFirst(history.count - AtriaStressHistoryArchive.maximumPointCount)
+        }
         historyRevision &+= 1
+        // The newly appended point is always the newest retained point. Any
+        // cap/expiry removal therefore came from the prior prefix; clamp its
+        // dirty suffix before adding this sample.
+        let survivingPriorUnsavedSamples = Self.boundedUnsavedHistorySampleCount(
+            priorUnsavedSamples,
+            retainedPointCount: max(0, history.count - 1)
+        )
+        let prunedUnsavedSamples = priorUnsavedSamples - survivingPriorUnsavedSamples
+        unsavedHistorySamples = survivingPriorUnsavedSamples + 1
+        historyCheckpointDrainRemainingSamples = max(
+            0,
+            historyCheckpointDrainRemainingSamples - prunedUnsavedSamples
+        )
+        if Self.shouldPersistHistory(
+            hasDurableCheckpoint: historyHasDurableCheckpoint,
+            unsavedSampleCount: unsavedHistorySamples
+        ) {
+            checkpointHistory(now: now)
+        }
 
         if distributionArchive.record(level: level, at: now) {
             distributionRevision &+= 1
@@ -824,6 +1617,10 @@ final class AtriaStressMonitorStore: ObservableObject {
                 unsavedDistributionSamples = 0
             }
         }
+    }
+
+    nonisolated private static func historyHourIndex(for date: Date) -> Int64 {
+        Int64(floor(date.timeIntervalSince1970 / 3_600))
     }
 
     func distributionComparison(now: Date = Date(),

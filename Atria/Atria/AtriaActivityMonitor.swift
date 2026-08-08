@@ -70,6 +70,35 @@ struct AtriaActivityDisplayWindow: Equatable {
     }
 }
 
+/// Pure day-navigation policy for Activity's mixed window model: historical
+/// selections are civil days, while Today is the current physiological day.
+/// Comparing against the selected historical window itself makes every next-day
+/// tap look like the Today boundary, so the real current display day must be an
+/// independent input.
+enum AtriaActivityDayNavigation {
+    struct Destination: Equatable {
+        let day: Date
+        let viewsCurrentPhysiologicalDay: Bool
+    }
+
+    static func next(
+        from selectedDay: Date,
+        currentPhysiologicalDisplayDay: Date,
+        calendar: Calendar = .current
+    ) -> Destination {
+        let selected = calendar.startOfDay(for: selectedDay)
+        let current = calendar.startOfDay(for: currentPhysiologicalDisplayDay)
+        guard selected < current,
+              let next = calendar.date(byAdding: .day, value: 1, to: selected) else {
+            return Destination(day: current, viewsCurrentPhysiologicalDay: true)
+        }
+        if next >= current {
+            return Destination(day: current, viewsCurrentPhysiologicalDay: true)
+        }
+        return Destination(day: next, viewsCurrentPhysiologicalDay: false)
+    }
+}
+
 /// Bounded invalidation policy for the selected-day signal projection. Raw
 /// archive appends can arrive about once per second, so Activity deliberately
 /// does not observe that row-level notification. It refreshes when the scene
@@ -616,13 +645,77 @@ struct AtriaActivityTimelineHeartRatePoint: Identifiable, Equatable, Sendable {
     let isOnlyPointInSegment: Bool
 }
 
-/// Sendable snapshot of one in-memory stress observation. The stress store's
-/// history is intentionally session-only; this value exists only to reduce a
-/// selected window away from the main actor without broadening persistence.
+/// Sendable display snapshot of one measured stress observation. The source
+/// history can include restored local readings; this value keeps selected-window
+/// reduction off the main actor without changing any recorded timestamp/value.
 struct AtriaActivityTimelineStressSample: Equatable, Sendable {
     let t: Date
     let score: Double
     let levelRawValue: Int
+}
+
+/// Immutable COW snapshot transferred to the utility task. Stress history is a
+/// value array whose points are immutable; the wrapper documents that ownership
+/// boundary without mapping the entire 48-hour ring on MainActor every 30s.
+private struct AtriaActivityTimelineStressSourceSnapshot: Sendable {
+    let history: [AtriaStressMonitorStore.StressHistoryPoint]
+}
+
+/// One honesty policy for Activity's compact timeline and workout detail. Empty
+/// retained history, an archive still loading, a failed restore, and a day older
+/// than the bounded detailed-history window are different product states.
+enum AtriaActivityStressHistoryPresentation {
+    static func emptyTimelineMessage(
+        loadState: AtriaStressHistoryLoadState,
+        interval: DateInterval,
+        isCurrentPhysiologicalDay: Bool,
+        currentState: AtriaStressState,
+        now: Date = Date()
+    ) -> String {
+        switch loadState {
+        case .loading:
+            return "Loading saved stress readings…"
+        case .unavailable:
+            return "Saved stress history couldn’t be read. New measured readings will still appear here."
+        case .disabled, .loaded:
+            break
+        }
+
+        let cutoff = now.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
+        if interval.end <= cutoff {
+            return "Detailed stress readings are kept for the past two days; this day is outside that window."
+        }
+        if isCurrentPhysiologicalDay {
+            if currentState.kind == .scored {
+                return "No measured stress reading has been recorded in this window yet."
+            }
+            let detail = AtriaStressPresentation.make(state: currentState).detail
+            return detail.isEmpty ? "Waiting for a measured stress reading." : detail
+        }
+        if interval.start < cutoff {
+            return "No retained stress readings were recorded in this window."
+        }
+        return "No measured stress readings were recorded in this window."
+    }
+
+    static func workoutEmptyMessage(
+        loadState: AtriaStressHistoryLoadState,
+        workoutEnd: Date,
+        now: Date = Date()
+    ) -> String {
+        switch loadState {
+        case .loading:
+            return "Loading saved stress readings…"
+        case .unavailable:
+            return "Saved stress history couldn’t be read for this workout."
+        case .disabled, .loaded:
+            let cutoff = now.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
+            if workoutEnd <= cutoff {
+                return "Detailed stress readings are kept for the past two days; this workout is outside that window."
+            }
+            return "No measured stress readings were recorded during this workout."
+        }
+    }
 }
 
 struct AtriaActivityTimelineStressPoint: Identifiable, Equatable, Sendable {
@@ -954,9 +1047,9 @@ struct AtriaActivityMonitorTab: View {
     // timeline completeness action lives in the narrow timeline leaf below.
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var activityStore: AtriaHomeModel.ActivityStore
-    /// Live stress monitor for the intraday (past-24h) card at the top of the
-    /// Activity view — Activity is the intraday + log surface (heart/stress +
-    /// today's timeline + activities), not the weekly-trend surface.
+    /// Live stress monitor plus its bounded restored history for the selected-day
+    /// card at the top of Activity. Activity is the signal + log surface; the
+    /// multi-week aggregate remains in the Stress monitor.
     // Lifetime reference only. The high-frequency stress store is observed by
     // `AtriaActivityTimelineHost`, so live pulse/stress publications invalidate
     // only the monitor canvas rather than this whole activity-log hierarchy.
@@ -1007,6 +1100,7 @@ struct AtriaActivityMonitorTab: View {
     private struct TimelineStressRequestKey: Hashable {
         let window: TimelineSignalWindowKey
         let historyRevision: Int
+        let loadStateKey: Int
     }
 
     private enum Entry: Identifiable {
@@ -1093,7 +1187,7 @@ struct AtriaActivityMonitorTab: View {
             let sections = daySectionsCache.value(for: requestKey) ?? []
             // Signals are useful even on a day without a saved workout. Keep
             // one monitor mounted for the selected window; its localized empty
-            // state distinguishes no captured HR, session-only stress history,
+            // state distinguishes no captured HR, pending/expired stress history,
             // and an unreadable archive instead of presenting a blank plot.
             AtriaActivityTimelineHost(activity: activity,
                                       timelineDay: timelineDay,
@@ -1264,14 +1358,18 @@ struct AtriaActivityMonitorTab: View {
             .accessibilityHint(viewingCurrentPhysiologicalDay ? "" : "Returns to today")
 
             Button {
-                if let next = calendar.date(byAdding: .day, value: 1, to: timelineDay) {
-                    if next >= currentDisplayWindow.labelDay {
-                        timelineDay = currentDisplayWindow.labelDay
-                        viewingCurrentPhysiologicalDay = true
-                    } else {
-                        timelineDay = next
-                    }
-                }
+                let currentDay = AtriaActivityDisplayWindow.current(
+                    now: Date(),
+                    sleepHistory: activityStore.state.sleepHistorySnapshot,
+                    calendar: calendar
+                ).labelDay
+                let destination = AtriaActivityDayNavigation.next(
+                    from: timelineDay,
+                    currentPhysiologicalDisplayDay: currentDay,
+                    calendar: calendar
+                )
+                timelineDay = destination.day
+                viewingCurrentPhysiologicalDay = destination.viewsCurrentPhysiologicalDay
             } label: {
                 Image(systemName: "chevron.right")
                     .font(.subheadline.weight(.bold))
@@ -1485,6 +1583,7 @@ struct AtriaActivityMonitorTab: View {
         @State private var liveHeartRateTail: [AtriaActivityTimelineHeartRatePoint] = []
         @State private var heartRateLoadState: HeartRateLoadState = .idle
         @State private var stressProjection = AtriaActivityTimelineStressProjection.empty
+        @State private var stressProjectionWindowKey: TimelineSignalWindowKey?
         /// Advances only at a foreground boundary or after SessionStore has
         /// published one complete recovered-data revision. Including this in the
         /// task key backfills signal rows captured while the app was suspended,
@@ -1561,8 +1660,23 @@ struct AtriaActivityMonitorTab: View {
     }
 
     private var timelineStressRequestKey: TimelineStressRequestKey {
-        TimelineStressRequestKey(window: timelineSignalWindowKey,
-                                 historyRevision: stressMonitorStore.historyRevision)
+        let window = timelineSignalWindowKey
+        // A live append cannot change a completed historical civil day. The
+        // load-state token still refreshes that day exactly once when restore
+        // settles, while the current physiological window follows live revisions.
+        let revision = window.isCurrent ? stressMonitorStore.historyRevision : 0
+        return TimelineStressRequestKey(window: window,
+                                        historyRevision: revision,
+                                        loadStateKey: stressHistoryLoadStateKey)
+    }
+
+    private var stressHistoryLoadStateKey: Int {
+        switch stressMonitorStore.historyLoadState {
+        case .disabled: return 0
+        case .loading: return 1
+        case .loaded: return 2
+        case .unavailable: return 3
+        }
     }
 
     private func advanceTimelineCompletenessRevision() {
@@ -1603,21 +1717,33 @@ struct AtriaActivityMonitorTab: View {
     @MainActor
     private func refreshTimelineStress(window: AtriaActivityDisplayWindow,
                                        requestKey: TimelineStressRequestKey) async {
-        stressProjection = .empty
+        // Preserve the visible trace across same-window live revisions. A day
+        // change clears immediately so readings from the prior day are never
+        // shown under the newly selected date while utility work completes.
+        if stressProjectionWindowKey != requestKey.window {
+            stressProjection = .empty
+            stressProjectionWindowKey = requestKey.window
+        }
         let end = window.isCurrentPhysiologicalDay ? max(window.interval.end, Date()) : window.interval.end
         let interval = DateInterval(start: window.interval.start,
                                     end: max(end, window.interval.start.addingTimeInterval(1)))
-        let samples = stressMonitorStore.history.map {
-            AtriaActivityTimelineStressSample(t: $0.t,
-                                              score: $0.activation * 3,
-                                              levelRawValue: $0.level.rawValue)
-        }
+        let snapshot = AtriaActivityTimelineStressSourceSnapshot(
+            history: stressMonitorStore.history
+        )
         let result = await Task.detached(priority: .utility) {
-            AtriaActivityTimelineSignalProjection.stress(samples: samples,
-                                                         interval: interval)
+            let samples = Array(snapshot.history.lazy
+                .filter { $0.t >= interval.start && $0.t < interval.end }
+                .map {
+                    AtriaActivityTimelineStressSample(t: $0.t,
+                                                      score: $0.activation * 3,
+                                                      levelRawValue: $0.level.rawValue)
+                })
+            return AtriaActivityTimelineSignalProjection.stress(samples: samples,
+                                                                interval: interval)
         }.value
         guard !Task.isCancelled, requestKey == timelineStressRequestKey else { return }
         stressProjection = result
+        stressProjectionWindowKey = requestKey.window
     }
 
     @MainActor
@@ -1907,13 +2033,13 @@ struct AtriaActivityMonitorTab: View {
 
     private var stressEmptyMessage: String? {
         guard stressProjection.points.isEmpty else { return nil }
-        if currentDisplayWindow.isCurrentPhysiologicalDay {
-            let presentation = AtriaStressPresentation.make(state: stressMonitorStore.state)
-            return presentation.detail.isEmpty
-                ? "Stress needs continuous live wear before a trace appears."
-                : presentation.detail
-        }
-        return "Stress history is session-only; no saved readings are available for this day."
+        let window = currentDisplayWindow
+        return AtriaActivityStressHistoryPresentation.emptyTimelineMessage(
+            loadState: stressMonitorStore.historyLoadState,
+            interval: window.interval,
+            isCurrentPhysiologicalDay: window.isCurrentPhysiologicalDay,
+            currentState: stressMonitorStore.state
+        )
     }
 
     private func heartRateAccessibilityValue(spans: [TimelineSpan]) -> String {
@@ -1928,13 +2054,26 @@ struct AtriaActivityMonitorTab: View {
     }
 
     private func stressAccessibilityValue(spans: [TimelineSpan]) -> String {
-        let signal: String
+        var signal: String
         if let low = stressProjection.points.map(\.score).min(),
            let high = stressProjection.points.map(\.score).max() {
             signal = String(format: "%d measured readings, %.1f to %.1f on a 0 to 3 scale.",
                             stressProjection.measuredSampleCount, low, high)
+            let runCount = Set(stressProjection.points.map(\.segment)).count
+            if runCount > 1 {
+                signal += " \(runCount) measured runs; gaps contain no recorded stress score."
+            }
         } else {
             signal = stressEmptyMessage ?? "No measured stress."
+        }
+        let cutoff = Date().addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
+        if currentDisplayWindow.interval.start < cutoff,
+           stressMonitorStore.historyLoadState != .loading {
+            signal += " Earlier detailed history is outside the two-day retention window."
+        }
+        if stressMonitorStore.historyLoadState == .unavailable,
+           !stressProjection.points.isEmpty {
+            signal += " Earlier saved stress history could not be read."
         }
         return signal + activityAccessibilityValue(spans)
     }
@@ -2464,23 +2603,39 @@ enum AtriaActivityWorkoutStressProjection {
     }
 }
 
-/// Stress history is relevant only while a workout detail is presented. This
-/// leaf preserves the prior live-refresh behavior without making the retained
-/// Activity tab observe every pulse and stress publication.
+/// Stress history is relevant only while a workout detail is presented. Retain
+/// the store without broad observation and subscribe to its two history tokens,
+/// so live pulse/state updates do not repeatedly filter the 48-hour ring.
 private struct AtriaActivityWorkoutDetailSheetHost: View {
     let store: SessionStore
     let workout: UserConfirmedWorkout
-    @ObservedObject var stressMonitorStore: AtriaStressMonitorStore
+    let stressMonitorStore: AtriaStressMonitorStore
+
+    @State private var stressReadings: [AtriaStressDetailReading] = []
+    @State private var stressHistoryLoadState: AtriaStressHistoryLoadState = .loading
 
     var body: some View {
         AtriaActivityWorkoutDetailSheet(
             store: store,
             workout: workout,
-            stressReadings: AtriaActivityWorkoutStressProjection.readings(
-                history: stressMonitorStore.history,
-                start: workout.start,
-                end: workout.end
-            )
+            stressReadings: stressReadings,
+            stressHistoryLoadState: stressHistoryLoadState
+        )
+        .task(id: workout.id) { refreshStressReadings() }
+        .onReceive(stressMonitorStore.$historyRevision.removeDuplicates()) { _ in
+            refreshStressReadings()
+        }
+        .onReceive(stressMonitorStore.$historyLoadState.removeDuplicates()) { state in
+            stressHistoryLoadState = state
+            refreshStressReadings()
+        }
+    }
+
+    private func refreshStressReadings() {
+        stressReadings = AtriaActivityWorkoutStressProjection.readings(
+            history: stressMonitorStore.history,
+            start: workout.start,
+            end: workout.end
         )
     }
 }
@@ -2499,10 +2654,11 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 
     let store: SessionStore
     let workout: UserConfirmedWorkout
-    /// Stress readings overlapping the workout window (empty when the
-    /// in-memory stress history no longer covers it — older workouts show
-    /// an honest empty state instead of a fabricated series).
+    /// Restored or live measured readings overlapping the workout window.
+    /// Load/retention authority stays separate so an empty array never has to
+    /// pretend corruption, pending hydration, and no samples are the same state.
     let stressReadings: [AtriaStressDetailReading]
+    let stressHistoryLoadState: AtriaStressHistoryLoadState
     private let recoveryEffect: AtriaActivityRecoveryEffect
     @Environment(\.dismiss) private var dismiss
 
@@ -2528,10 +2684,12 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 
     init(store: SessionStore,
          workout: UserConfirmedWorkout,
-         stressReadings: [AtriaStressDetailReading] = []) {
+         stressReadings: [AtriaStressDetailReading] = [],
+         stressHistoryLoadState: AtriaStressHistoryLoadState = .disabled) {
         self.store = store
         self.workout = workout
         self.stressReadings = stressReadings
+        self.stressHistoryLoadState = stressHistoryLoadState
         recoveryEffect = AtriaActivityRecoveryEffect.make(workout: workout,
                                                           rollups: store.dailyRollupHistory,
                                                           calendar: .current)
@@ -2639,16 +2797,16 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                             .frame(maxWidth: .infinity, minHeight: 120)
                     }
                 case .stress:
-                    if stressReadings.count >= 2 {
+                    if !stressReadings.isEmpty {
                         AtriaWorkoutStressTraceChart(readings: stressReadings)
                             .frame(height: 150)
                             // Full-bleed plot (2026-08-05 width audit).
                             .padding(.horizontal, -12)
                     } else {
-                        // The stress monitor scores from recent live wear;
-                        // its history is a bounded recent window. Say so
-                        // instead of drawing nothing silently.
-                        Text("No stress readings for this window — stress history covers the recent past only.")
+                        Text(AtriaActivityStressHistoryPresentation.workoutEmptyMessage(
+                            loadState: stressHistoryLoadState,
+                            workoutEnd: workout.end
+                        ))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, minHeight: 120)
@@ -3875,9 +4033,15 @@ struct AtriaWorkoutStressTraceChart: View {
 
     private var low: Double { readings.map(\.score).min() ?? 0 }
     private var high: Double { readings.map(\.score).max() ?? 0 }
+    private var singletonSegmentIDs: Set<Int> {
+        Set(Dictionary(grouping: points, by: \.segment)
+            .filter { $0.value.count == 1 }
+            .map { $0.key })
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let singletonSegments = singletonSegmentIDs
+        return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text(String(format: "%.1f low", low))
                     .font(.caption2.weight(.bold))
@@ -3891,7 +4055,9 @@ struct AtriaWorkoutStressTraceChart: View {
                 LineMark(x: .value("Time", point.reading.date),
                          y: .value("Stress", point.reading.score),
                          series: .value("Segment", point.segment))
-                    .interpolationMethod(.monotone)
+                    // Linear cannot overshoot the two real endpoint scores;
+                    // monotone splines can imply a peak/trough never measured.
+                    .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
                     // Height-mapped color: the gradient spans the fixed 0–3
                     // axis, so a point's color IS its band — low blue, mid
@@ -3901,6 +4067,12 @@ struct AtriaWorkoutStressTraceChart: View {
                                         startPoint: .bottom,
                                         endPoint: .top)
                     )
+                if singletonSegments.contains(point.segment) {
+                    PointMark(x: .value("Time", point.reading.date),
+                              y: .value("Stress", point.reading.score))
+                        .foregroundStyle(point.reading.score >= 2 ? .orange : .blue)
+                        .symbolSize(20)
+                }
             }
             .chartYScale(domain: 0...3)
             .chartYAxis {
@@ -3918,7 +4090,16 @@ struct AtriaWorkoutStressTraceChart: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(String(format: "Stress during this workout ranged from %.1f to %.1f on a 0 to 3 scale.", low, high))
+        .accessibilityLabel(workoutStressAccessibilityLabel)
+    }
+
+    private var workoutStressAccessibilityLabel: String {
+        let runCount = Set(points.map(\.segment)).count
+        let gapText = runCount > 1
+            ? " \(runCount) measured runs; gaps contain no recorded stress score."
+            : ""
+        return String(format: "%d measured stress readings during this workout, %.1f to %.1f on a 0 to 3 scale.",
+                      readings.count, low, high) + gapText
     }
 }
 

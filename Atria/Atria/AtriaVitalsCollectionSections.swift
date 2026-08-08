@@ -3676,6 +3676,29 @@ private enum AtriaVitalsLiveSignalMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// Vitals is a live surface, so its 12-hour stress frame ends at the screen's
+/// current reference time—not at the latest restored sample. Anchoring to a
+/// stale persisted point can otherwise make yesterday look current after a
+/// disconnected relaunch.
+enum AtriaVitalsStressTimelineProjection {
+    static func points(
+        history: [AtriaStressMonitorStore.StressHistoryPoint],
+        referenceDate: Date,
+        window: TimeInterval = AtriaStressTimelineWindow.inlineDefault
+    ) -> [AtriaStressTimelinePoint] {
+        let cutoff = referenceDate.addingTimeInterval(-window)
+        let readings = history.lazy
+            .filter { $0.t >= cutoff && $0.t <= referenceDate }
+            .map(AtriaStressDetailReading.init(historyPoint:))
+        return AtriaStressTimelinePoint.segment(Array(readings))
+    }
+}
+
+enum AtriaVitalsStressTimelineCopy {
+    static let gapNote = "Observed readings only · gaps mean no stress score was recorded."
+    static let accessibilityLabel = "Stress timeline with observed readings, scale 0 through 3. Collection gaps remain blank. Pinch to zoom between 12 and 4 hours."
+}
+
 /// One top-level monitoring surface keeps the two live signals on the same
 /// canvas. It avoids an extra full-width card while making the requested
 /// Stress / Heart Rate comparison discoverable.
@@ -3718,16 +3741,6 @@ private struct AtriaVitalsLiveSignalCard: View {
         AtriaStressPresentation.make(state: stressState)
     }
 
-    private var stressPoints: [AtriaStressTimelinePoint] {
-        // Feed only the last 12h (the inline chart's max window). History now
-        // retains 24h for the expanded detail; the inline chart must not render
-        // the older 12h off-screen. Anchored to the latest reading.
-        let readings = stressHistory.map(AtriaStressDetailReading.init(historyPoint:))
-        guard let last = readings.map(\.date).max() else { return [] }
-        let cutoff = last.addingTimeInterval(-AtriaStressTimelineWindow.inlineDefault)
-        return AtriaStressTimelinePoint.segment(readings.filter { $0.date >= cutoff })
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
@@ -3761,7 +3774,12 @@ private struct AtriaVitalsLiveSignalCard: View {
     }
 
     private var stressMonitor: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let referenceDate = Date()
+        let stressPoints = AtriaVitalsStressTimelineProjection.points(
+            history: stressHistory,
+            referenceDate: referenceDate
+        )
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
                     // The selected segment already names the metric. Repeating
@@ -3788,7 +3806,8 @@ private struct AtriaVitalsLiveSignalCard: View {
                     .frame(maxWidth: .infinity, minHeight: 154)
                     .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             } else {
-                AtriaVitalsStressTimelineChart(points: stressPoints)
+                AtriaVitalsStressTimelineChart(points: stressPoints,
+                                               referenceDate: referenceDate)
                     .frame(height: 172)
                     .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
@@ -3804,7 +3823,7 @@ private struct AtriaVitalsLiveSignalCard: View {
             // A gap note is valuable beside a real timeline, but repeats the
             // empty-state explanation before there are any readings to inspect.
             if !stressPoints.isEmpty {
-                Text("Observed readings only · gaps mean the strap was not collecting.")
+                Text(AtriaVitalsStressTimelineCopy.gapNote)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -3822,7 +3841,7 @@ private struct AtriaVitalsLiveSignalCard: View {
     private var stressEmptyDescription: String {
         isConnected
             ? "Keep wearing your strap. Your 0–3 score will appear once your baseline is ready."
-            : "Reconnect your strap to resume live readings. Your recent saved data stays available elsewhere in Vitals."
+            : "Reconnect your strap to resume live readings. Recent measured readings remain visible when available."
     }
 
     private func stressScaleItem(_ score: String, _ label: String, tint: Color) -> some View {
@@ -4005,10 +4024,11 @@ private final class AtriaHeartRateExplorerPresentationModel: ObservableObject {
 
 private struct AtriaVitalsStressTimelineChart: View {
     let points: [AtriaStressTimelinePoint]
+    let referenceDate: Date
 
     // Visible window (2026-08-08 user request): default last 12h, pinch to zoom
-    // IN to a 4h window. Anchored to the latest reading so "last 12h" always
-    // ends at the most recent data, with honest blanks where the strap was off.
+    // IN to a 4h window. It ends at the live surface's reference time, leaving
+    // an honest trailing blank when the most recent restored reading is stale.
     @State private var visibleSeconds: TimeInterval = AtriaStressTimelineWindow.inlineDefault
     // @GestureState (not @State): SwiftUI auto-resets it to nil when the pinch
     // ENDS *or is CANCELLED* — e.g. the enclosing scroll view claims the
@@ -4017,8 +4037,7 @@ private struct AtriaVitalsStressTimelineChart: View {
     @GestureState private var pinchBase: TimeInterval? = nil
 
     private var xDomain: ClosedRange<Date> {
-        let last = points.map(\.reading.date).max() ?? Date()
-        return last.addingTimeInterval(-visibleSeconds)...last
+        referenceDate.addingTimeInterval(-visibleSeconds)...referenceDate
     }
 
     var body: some View {
@@ -4080,7 +4099,7 @@ private struct AtriaVitalsStressTimelineChart: View {
                         maxWindow: AtriaStressTimelineWindow.inlineDefault)
                 }
         )
-        .accessibilityLabel("Continuous stress timeline, scale 0 through 3. Pinch to zoom between 12 and 4 hours.")
+        .accessibilityLabel(AtriaVitalsStressTimelineCopy.accessibilityLabel)
     }
 }
 

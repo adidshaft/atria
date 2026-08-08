@@ -19,6 +19,30 @@ final class AtriaStressDetailViewTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(input.score), 1.8, accuracy: 0.0001)
     }
 
+    func testInputFramesRestoredHistoryToTheSameTwentyFourHoursItAnalyzes() {
+        let staleElevated = (0..<20).map { index in
+            AtriaStressDetailReading(
+                date: now.addingTimeInterval(-47 * 3_600 + Double(index) * 30),
+                score: 2.7
+            )
+        }
+        let recentCalm = (0..<21).map { index in
+            AtriaStressDetailReading(
+                date: now.addingTimeInterval(-Double(20 - index) * 30),
+                score: 0.4
+            )
+        }
+
+        let input = AtriaStressDetailInput(state: scoredState(activation: 0.2),
+                                           readings: staleElevated + recentCalm,
+                                           updatedAt: now)
+
+        XCTAssertEqual(input.readings, recentCalm)
+        XCTAssertEqual(input.elevatedEvidence.readingCount, recentCalm.count)
+        XCTAssertTrue(input.elevatedEvidence.windows.isEmpty,
+                      "Old restored peaks outside the visible 24h must not enter its count or overlays")
+    }
+
     func testNonScoredStateNeverDisplaysNumericScore() {
         let state = AtriaStressState(level: nil,
                                      label: "Warming up",
@@ -132,6 +156,35 @@ final class AtriaStressDetailViewTests: XCTestCase {
 
     func testRelaxActionStatesItsThreeMinuteDuration() {
         XCTAssertEqual(AtriaStressDetailCopy.relaxButtonTitle, "Relax · 3 min")
+    }
+
+    func testStressHistoryCopyDoesNotRegressToSessionOnlyClaims() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceDirectory = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        let files = [
+            "AtriaActivityMonitor.swift",
+            "AtriaOverviewSections.swift",
+            "AtriaStressDetailView.swift",
+            "AtriaVitalsCollectionSections.swift",
+        ]
+        let corpus = try files.map {
+            try String(contentsOf: sourceDirectory.appendingPathComponent($0), encoding: .utf8)
+        }.joined(separator: "\n").lowercased()
+
+        for staleClaim in [
+            "stress history is session-only",
+            "doesn't yet save a daily stress history",
+            "not a saved daily trend",
+            "doesn't save a day-by-day stress history",
+            "continuous stress timeline",
+            "gaps mean the strap was not collecting",
+        ] {
+            XCTAssertFalse(corpus.contains(staleClaim), "stale stress copy: \(staleClaim)")
+        }
+        XCTAssertTrue(corpus.contains("first measured reading"))
+        XCTAssertTrue(corpus.contains("gaps mean no stress score was recorded"))
     }
 
     private func scoredState(activation: Double) -> AtriaStressState {

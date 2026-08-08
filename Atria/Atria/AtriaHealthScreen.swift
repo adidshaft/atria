@@ -1488,8 +1488,8 @@ struct AtriaHealthScreen: View {
 
     // MARK: Stress (AtriaStressMonitor)
 
-    /// Downsample the session stress history for display (perf handoff #2). The
-    /// raw history is up to ~1440 pts (12h @ 30s); the strip drew an AreaMark + a
+    /// Downsample the bounded live/restored stress history for display. The raw
+    /// ring can reach 5,760 points (48h @ 30s); the strip drew an AreaMark + a
     /// LineMark PER point (~2880 marks) on every body eval — the worst scroll-jank
     /// offender on Vitals. Bucket each contiguous run so the whole strip stays near
     /// `targetTotal` display points, averaging the REAL activation per bucket
@@ -1809,7 +1809,7 @@ private final class AtriaHealthBreathworkStressStore: ObservableObject {
     }
 }
 
-/// One downsampled+segmented session-stress reading (perf handoff #2). A gap
+/// One downsampled+segmented measured stress reading. A gap
 /// longer than 5 minutes bumps `segment`, which Swift Charts treats as a new
 /// series so the strip leaves a real blank instead of interpolating across a
 /// stretch the strap wasn't read (the honesty contract).

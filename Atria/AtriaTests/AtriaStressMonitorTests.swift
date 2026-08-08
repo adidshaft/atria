@@ -436,6 +436,442 @@ final class AtriaStressMonitorTests: XCTestCase {
                                  "recorded timeline activation must also be capped")
     }
 
+    // MARK: Bounded local stress-history continuity
+
+    private func makeStressHistoryPersistence() -> (AtriaStressHistoryPersistence, URL) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-stress-history-tests-\(UUID().uuidString)",
+                                    isDirectory: true)
+        return (AtriaStressHistoryPersistence(directoryURL: directory), directory)
+    }
+
+    func testStressHistoryArchiveRoundTripPreservesTimestampsGapsAndProvenance() async throws {
+        let (persistence, directory) = makeStressHistoryPersistence()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let base = Date(timeIntervalSince1970: 1_800_100_000)
+        let points = [
+            AtriaStressHistoryArchive.Point(t: base,
+                                            activation: 0.18,
+                                            level: .calm,
+                                            confidence: 0.62,
+                                            hrvAvailable: false),
+            AtriaStressHistoryArchive.Point(t: base.addingTimeInterval(30),
+                                            activation: 0.37,
+                                            level: .low,
+                                            confidence: 0.75,
+                                            hrvAvailable: true),
+            // Deliberate 9.5-minute hole: persistence must not invent points.
+            AtriaStressHistoryArchive.Point(t: base.addingTimeInterval(600),
+                                            activation: 0.68,
+                                            level: .medium,
+                                            confidence: 0.91,
+                                            hrvAvailable: true),
+        ]
+        let archive = AtriaStressHistoryArchive(points: points)
+        let didSave = await persistence.save(archive,
+                                             now: base.addingTimeInterval(600))
+        XCTAssertTrue(didSave)
+
+        let result = await persistence.load(now: base.addingTimeInterval(600))
+        guard case .loaded(let restored) = result else {
+            return XCTFail("a complete atomic checkpoint must round-trip")
+        }
+        XCTAssertEqual(restored, archive)
+        XCTAssertEqual(restored.points.map(\.t), points.map(\.t))
+        XCTAssertEqual(restored.points[1].confidence, 0.75, accuracy: 1e-12)
+        XCTAssertTrue(restored.points[1].hrvAvailable)
+        XCTAssertFalse(restored.points[0].hrvAvailable)
+        XCTAssertEqual(restored.points[2].scoringVersion,
+                       AtriaStressMonitor.scoringVersion)
+        XCTAssertEqual(restored.points[2].t.timeIntervalSince(restored.points[1].t),
+                       570,
+                       "the real disconnected interval must remain an unfilled gap")
+    }
+
+    func testStressHistoryArchivePrunesExpiredPointsAndEnforcesHardPointBound() async throws {
+        let (persistence, directory) = makeStressHistoryPersistence()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let end = Date(timeIntervalSince1970: 1_800_200_000)
+        var points = [
+            AtriaStressHistoryArchive.Point(
+                t: end.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow - 1),
+                activation: 0.1,
+                level: .calm,
+                confidence: 0.5,
+                hrvAvailable: false
+            ),
+        ]
+        // All 6,000 generated points are recent; the independent count cap must
+        // retain only the newest 5,760 even if a future cadence changes.
+        points += (0..<6_000).map { index in
+            AtriaStressHistoryArchive.Point(
+                t: end.addingTimeInterval(-Double(5_999 - index) * 28.5),
+                activation: 0.4,
+                level: .low,
+                confidence: 0.8,
+                hrvAvailable: index.isMultiple(of: 2)
+            )
+        }
+        let didSave = await persistence.save(AtriaStressHistoryArchive(points: points),
+                                             now: end)
+        XCTAssertTrue(didSave)
+        guard case .loaded(let restored) = await persistence.load(now: end) else {
+            return XCTFail("bounded checkpoint must load")
+        }
+        XCTAssertEqual(restored.points.count, AtriaStressHistoryArchive.maximumPointCount)
+        XCTAssertEqual(restored.points.last?.t, end)
+        XCTAssertTrue(restored.points.allSatisfy {
+            end.timeIntervalSince($0.t) <= AtriaStressHistoryArchive.retentionWindow
+        })
+
+        // The same complete archive is legitimately empty once every exact
+        // sample timestamp falls outside the 48-hour retention window.
+        let expiredAt = end.addingTimeInterval(AtriaStressHistoryArchive.retentionWindow + 1)
+        guard case .loaded(let expired) = await persistence.load(now: expiredAt) else {
+            return XCTFail("expiry is a valid empty archive, not an I/O failure")
+        }
+        XCTAssertTrue(expired.points.isEmpty)
+    }
+
+    func testMaximumStressHourShardStaysInsideMeasuredWriteBudget() async throws {
+        let (persistence, directory) = makeStressHistoryPersistence()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let hourStart = Date(timeIntervalSince1970: 1_800_000_000)
+        let points = (0..<AtriaStressHistoryPersistence.maximumPointsPerShard).map { index in
+            AtriaStressHistoryArchive.Point(
+                t: hourStart.addingTimeInterval(Double(index) * 28),
+                activation: 0.987_654_321_098_765_4,
+                level: .high,
+                confidence: 0.876_543_210_987_654_3,
+                hrvAvailable: true
+            )
+        }
+        let end = try XCTUnwrap(points.last?.t)
+        let didSave = await persistence.save(AtriaStressHistoryArchive(points: points),
+                                             now: end)
+        XCTAssertTrue(didSave)
+        let bytes = try Data(contentsOf: persistence.shardURL(containing: hourStart)).count
+        XCTAssertLessThanOrEqual(bytes,
+                                 AtriaStressHistoryPersistence.maximumEncodedBytesPerShard)
+    }
+
+    @MainActor
+    func testStressHistoryRelaunchHydrationMergesLiveTailAndDeduplicatesExactClock() async throws {
+        let (persistence, directory) = makeStressHistoryPersistence()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let base = Date(timeIntervalSince1970: 1_800_300_000)
+        let liveClock = base.addingTimeInterval(125)
+        let persisted = AtriaStressHistoryArchive(points: [
+            AtriaStressHistoryArchive.Point(t: base.addingTimeInterval(-600),
+                                            activation: 0.2,
+                                            level: .calm,
+                                            confidence: 0.6,
+                                            hrvAvailable: false),
+            // This exact timestamp will also be produced live before the async
+            // restore completes. The live publication must win, not duplicate.
+            AtriaStressHistoryArchive.Point(t: liveClock,
+                                            activation: 0.1,
+                                            level: .calm,
+                                            confidence: 0.1,
+                                            hrvAvailable: true),
+        ])
+        let didSave = await persistence.save(persisted, now: liveClock)
+        XCTAssertTrue(didSave)
+
+        let store = AtriaStressMonitorStore(historyPersistence: persistence,
+                                            historyLoadNow: liveClock)
+        XCTAssertEqual(store.historyLoadState, .loading)
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4, hrvSampleDays: 0)
+        // No suspension between store init and these updates: this creates a
+        // real live tail while the serial filesystem restore is pending.
+        for offset in [0.0, 50.0, 100.0, 125.0] {
+            store.update(heartRate: 75,
+                         hasContact: true,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 0,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: base.addingTimeInterval(offset))
+        }
+        let livePoint = try XCTUnwrap(store.history.last)
+        XCTAssertEqual(livePoint.t, liveClock)
+
+        await store.waitForHistoryHydration()
+        XCTAssertEqual(store.historyLoadState, .loaded)
+        XCTAssertEqual(store.history.count, 2,
+                       "one restored point plus one exact-clock live winner")
+        XCTAssertEqual(store.history.map(\.t), [base.addingTimeInterval(-600), liveClock])
+        let mergedTail = try XCTUnwrap(store.history.last)
+        XCTAssertEqual(mergedTail.activation, livePoint.activation, accuracy: 1e-12)
+        XCTAssertEqual(mergedTail.confidence, livePoint.confidence, accuracy: 1e-12)
+        XCTAssertEqual(mergedTail.hrvAvailable, livePoint.hrvAvailable,
+                       "live HR-only provenance must replace stale duplicate provenance")
+        XCTAssertEqual(mergedTail.t.timeIntervalSince(store.history[0].t), 725,
+                       "hydration must preserve the real gap")
+    }
+
+    @MainActor
+    func testCorruptStressHistoryReportsUnavailableInsteadOfTrueEmpty() async throws {
+        let (persistence, directory) = makeStressHistoryPersistence()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        let loadNow = Date(timeIntervalSince1970: 1_800_400_000)
+        let olderCorruptHour = loadNow.addingTimeInterval(-3 * 3_600)
+        try Data("not-json".utf8).write(
+            to: persistence.shardURL(containing: olderCorruptHour),
+            options: .atomic
+        )
+
+        let store = AtriaStressMonitorStore(historyPersistence: persistence,
+                                            historyLoadNow: loadNow)
+        await store.waitForHistoryHydration()
+        XCTAssertEqual(store.historyLoadState, .unavailable)
+        XCTAssertTrue(store.history.isEmpty)
+
+        // A new valid live checkpoint atomically replaces the corrupt current
+        // hour. Once the background writer confirms it, the live tail is again
+        // an available (shorter, honest) archive rather than a permanent error.
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4, hrvSampleDays: 0)
+        for offset in [0.0, 50.0, 100.0, 125.0] {
+            store.update(heartRate: 75,
+                         hasContact: true,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 0,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: loadNow.addingTimeInterval(offset))
+        }
+        await store.waitForPendingHistoryCheckpoint()
+        XCTAssertEqual(store.historyLoadState, .loaded)
+        // A brand-new persistence instance models the next process launch. The
+        // older corrupt shard must have been cleared before `.loaded` published.
+        let relaunched = AtriaStressHistoryPersistence(directoryURL: directory)
+        guard case .loaded(let recovered) = await relaunched.load(
+            now: loadNow.addingTimeInterval(125)
+        ) else {
+            return XCTFail("a confirmed replacement must become readable")
+        }
+        XCTAssertEqual(recovered.points.count, 1)
+        XCTAssertEqual(recovered.points.first?.t, loadNow.addingTimeInterval(125))
+    }
+
+    func testInvalidStressCheckpointIsRejectedWithoutReplacingLastValidShard() async throws {
+        let (persistence, directory) = makeStressHistoryPersistence()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let now = Date(timeIntervalSince1970: 1_800_500_000)
+        let valid = AtriaStressHistoryArchive(points: [
+            AtriaStressHistoryArchive.Point(t: now,
+                                            activation: 0.3,
+                                            level: .low,
+                                            confidence: 0.7,
+                                            hrvAvailable: false),
+        ])
+        let didSave = await persistence.save(valid, now: now)
+        XCTAssertTrue(didSave)
+
+        let invalidClaims = [
+            // HR-only provenance can never support a High band/activation.
+            AtriaStressHistoryArchive.Point(t: now,
+                                            activation: 0.9,
+                                            level: .high,
+                                            confidence: 0.8,
+                                            hrvAvailable: false),
+            AtriaStressHistoryArchive.Point(t: now,
+                                            activation: 0.3,
+                                            level: .low,
+                                            confidence: 1.1,
+                                            hrvAvailable: true),
+            AtriaStressHistoryArchive.Point(t: now,
+                                            activation: 0.3,
+                                            level: .low,
+                                            confidence: 0.7,
+                                            hrvAvailable: true,
+                                            scoringVersion: AtriaStressMonitor.scoringVersion + 1),
+            AtriaStressHistoryArchive.Point(
+                t: now.addingTimeInterval(AtriaStressHistoryArchive.maximumFutureSkew + 1),
+                activation: 0.3,
+                level: .low,
+                confidence: 0.7,
+                hrvAvailable: true
+            ),
+        ]
+        for invalid in invalidClaims {
+            let didSaveInvalid = await persistence.save(
+                AtriaStressHistoryArchive(points: [invalid]),
+                now: now
+            )
+            XCTAssertFalse(didSaveInvalid)
+        }
+
+        guard case .loaded(let restored) = await persistence.load(now: now) else {
+            return XCTFail("rejected writes must leave the previous valid shard intact")
+        }
+        XCTAssertEqual(restored, valid)
+    }
+
+    @MainActor
+    func testDelayedBackgroundFlushAnchorsSubCadenceTailToItsSampleHour() async throws {
+        let (persistence, directory) = makeStressHistoryPersistence()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let base = Date(timeIntervalSince1970: 1_800_600_000)
+        let seed = AtriaStressHistoryArchive(points: [
+            AtriaStressHistoryArchive.Point(t: base.addingTimeInterval(-600),
+                                            activation: 0.2,
+                                            level: .calm,
+                                            confidence: 0.6,
+                                            hrvAvailable: false),
+        ])
+        let didSave = await persistence.save(seed, now: base)
+        XCTAssertTrue(didSave)
+        let store = AtriaStressMonitorStore(historyPersistence: persistence,
+                                            historyLoadNow: base)
+        await store.waitForHistoryHydration()
+
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4, hrvSampleDays: 0)
+        for offset in [0.0, 50.0, 100.0, 125.0] {
+            store.update(heartRate: 75,
+                         hasContact: true,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 0,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: base.addingTimeInterval(offset))
+        }
+        // One new point is below the ordinary ten-sample cadence because a
+        // durable seed already exists. The lifecycle hook must still enqueue it.
+        // Backgrounding three hours after scoring must still write the hour that
+        // owns the unsaved sample, not wall-now's empty current/previous hours.
+        let delayedBackground = base.addingTimeInterval(3 * 3_600)
+        store.flushHistoryCheckpoint(now: delayedBackground)
+        await store.waitForPendingHistoryCheckpoint()
+        guard case .loaded(let restored) = await persistence.load(
+            now: delayedBackground
+        ) else {
+            return XCTFail("background flush must leave a readable archive")
+        }
+        XCTAssertEqual(restored.points.map(\.t),
+                       [base.addingTimeInterval(-600), base.addingTimeInterval(125)])
+    }
+
+    @MainActor
+    func testCadenceCheckpointRestoresDisconnectedSubCadenceDirtyHourAfterRelaunch() async throws {
+        let (persistence, directory) = makeStressHistoryPersistence()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // Keep both scored islands comfortably inside their respective hours.
+        // The first contributes only three dirty points (the affected 1...9
+        // sub-cadence range); seven later points bring the global count to ten.
+        let firstStart = now.addingTimeInterval(600)
+        let secondStart = firstStart.addingTimeInterval(3 * 3_600)
+        let seedClock = firstStart.addingTimeInterval(-600)
+        let didSeed = await persistence.save(
+            AtriaStressHistoryArchive(points: [
+                AtriaStressHistoryArchive.Point(t: seedClock,
+                                                activation: 0.2,
+                                                level: .calm,
+                                                confidence: 0.6,
+                                                hrvAvailable: false),
+            ]),
+            now: firstStart
+        )
+        XCTAssertTrue(didSeed)
+
+        let store = AtriaStressMonitorStore(historyPersistence: persistence,
+                                            historyLoadNow: firstStart)
+        await store.waitForHistoryHydration()
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4, hrvSampleDays: 0)
+
+        func feedIsland(start: Date, scoredPointCount: Int) {
+            let offsets = [0.0, 50.0, 100.0]
+                + (0..<scoredPointCount).map { 125.0 + Double($0) * 30 }
+            for offset in offsets {
+                store.update(heartRate: 75,
+                             hasContact: true,
+                             recentRRSamples: [],
+                             isRecording: false,
+                             zoneIndex: 0,
+                             hrvSnapshot: nil,
+                             baseline: baseline,
+                             restingMaxHR: restingMaxHR,
+                             hasActiveSleepEvidence: false,
+                             now: start.addingTimeInterval(offset))
+            }
+        }
+
+        feedIsland(start: firstStart, scoredPointCount: 3)
+        feedIsland(start: secondStart, scoredPointCount: 7)
+        await store.waitForPendingHistoryCheckpoint()
+
+        // A new persistence object and store model a process relaunch. Both
+        // dirty islands must survive; the three-hour discontinuity stays empty.
+        let relaunchNow = secondStart.addingTimeInterval(305)
+        let relaunchedPersistence = AtriaStressHistoryPersistence(directoryURL: directory)
+        let relaunchedStore = AtriaStressMonitorStore(
+            historyPersistence: relaunchedPersistence,
+            historyLoadNow: relaunchNow
+        )
+        await relaunchedStore.waitForHistoryHydration()
+
+        let firstClocks = (0..<3).map {
+            firstStart.addingTimeInterval(125 + Double($0) * 30)
+        }
+        let secondClocks = (0..<7).map {
+            secondStart.addingTimeInterval(125 + Double($0) * 30)
+        }
+        XCTAssertEqual(relaunchedStore.history.map(\.t),
+                       [seedClock] + firstClocks + secondClocks)
+        XCTAssertEqual(relaunchedStore.history.count, 11)
+        XCTAssertGreaterThan(
+            try XCTUnwrap(secondClocks.first).timeIntervalSince(
+                try XCTUnwrap(firstClocks.last)
+            ),
+            2 * 3_600,
+            "persistence must retain the real gap instead of synthesizing samples"
+        )
+    }
+
+    func testStressHistoryCheckpointCadenceIsNotPerSample() {
+        XCTAssertEqual(AtriaStressMonitorStore.boundedUnsavedHistorySampleCount(
+            6_000,
+            retainedPointCount: AtriaStressHistoryArchive.maximumPointCount
+        ), AtriaStressHistoryArchive.maximumPointCount)
+        XCTAssertEqual(AtriaStressMonitorStore.boundedUnsavedHistorySampleCount(
+            10,
+            retainedPointCount: 3
+        ), 3, "expired dirty samples cannot outlive the retained suffix")
+        XCTAssertFalse(AtriaStressMonitorStore.shouldPersistHistory(
+            hasDurableCheckpoint: false,
+            unsavedSampleCount: 0
+        ))
+        XCTAssertTrue(AtriaStressMonitorStore.shouldPersistHistory(
+            hasDurableCheckpoint: false,
+            unsavedSampleCount: 1
+        ), "the first point makes a short session relaunch-visible")
+        for pending in 1..<10 {
+            XCTAssertFalse(AtriaStressMonitorStore.shouldPersistHistory(
+                hasDurableCheckpoint: true,
+                unsavedSampleCount: pending
+            ), "an existing checkpoint must not write on sample \(pending)")
+        }
+        XCTAssertTrue(AtriaStressMonitorStore.shouldPersistHistory(
+            hasDurableCheckpoint: true,
+            unsavedSampleCount: 10
+        ), "ten 30-second points checkpoint at most once per five minutes")
+    }
+
     // MARK: Slow multi-day awake baseline (audit B3, recording-only)
 
     private func fillBaselineDay(_ archive: inout AtriaAwakeBaselineArchive,

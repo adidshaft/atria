@@ -22,10 +22,26 @@ struct AtriaStressDetailReading: Identifiable, Equatable {
     }
 }
 
+/// The detailed chart is intentionally a 24-hour recent-observation surface,
+/// even though Activity retains two days so yesterday can be browsed. Frame the
+/// input before elevated-window analysis so its count and overlays describe the
+/// same readings the chart can actually display.
+enum AtriaStressDetailHistoryWindow {
+    static func framed(
+        _ readings: [AtriaStressDetailReading],
+        maximumDuration: TimeInterval = AtriaStressTimelineWindow.expandedDefault
+    ) -> [AtriaStressDetailReading] {
+        let sorted = readings.sorted { $0.date < $1.date }
+        guard let end = sorted.last?.date else { return [] }
+        let start = end.addingTimeInterval(-maximumDuration)
+        return sorted.filter { $0.date >= start && $0.date <= end }
+    }
+}
+
 /// Immutable input for `AtriaStressDetailView`.
 ///
-/// Keeping this as a value makes the detail screen cheap to update and easy to
-/// integrate with either `AtriaStressMonitorStore` or a future persisted source.
+/// Keeping this as a value makes the detail screen cheap to update across both
+/// live and locally restored `AtriaStressMonitorStore` readings.
 struct AtriaStressDetailInput: Equatable {
     let state: AtriaStressState
     let readings: [AtriaStressDetailReading]
@@ -50,9 +66,9 @@ struct AtriaStressDetailInput: Equatable {
          trendDays: [AtriaStressDistributionArchive.Day] = [],
          loggedContext: [AtriaStressLoggedContext] = []) {
         self.state = state
-        let sortedReadings = readings.sorted { $0.date < $1.date }
-        self.readings = sortedReadings
-        self.elevatedEvidence = AtriaStressElevatedEvidence.analyze(sortedReadings)
+        let framedReadings = AtriaStressDetailHistoryWindow.framed(readings)
+        self.readings = framedReadings
+        self.elevatedEvidence = AtriaStressElevatedEvidence.analyze(framedReadings)
         self.updatedAt = updatedAt
         self.distributionComparison = distributionComparison
         self.trendDays = trendDays
@@ -468,7 +484,7 @@ struct AtriaStressDetailView: View {
                     Image(systemName: "waveform.path.ecg")
                         .foregroundStyle(input.tint)
                     Text(input.readings.isEmpty
-                         ? "Timeline starts with the first live reading."
+                         ? "Timeline starts with the first measured reading."
                          : "Learning your pattern.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -578,7 +594,7 @@ struct AtriaStressDetailView: View {
         if Calendar.current.isDate(first, inSameDayAs: last) {
             return "\(first.formatted(date: .omitted, time: .shortened))–\(last.formatted(date: .omitted, time: .shortened))"
         }
-        return "Session"
+        return "\(first.formatted(date: .abbreviated, time: .omitted))–\(last.formatted(date: .abbreviated, time: .omitted))"
     }
 
     private var timelineStatusText: String? {
@@ -774,12 +790,12 @@ struct AtriaStressDailyTrendCard: View {
                     legend(color: .yellow, label: "Medium")
                     legend(color: .red, label: "High")
                 }
-                Text("Share of measured time per day. Days without enough live readings stay blank.")
+                Text("Share of measured time per day. Days without enough measured readings stay blank.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Building stress history — \(framed.count) of \(Self.minimumMeasuredDays) measured days so far. A day counts once it has enough live readings.")
+                Text("Building stress history — \(framed.count) of \(Self.minimumMeasuredDays) measured days so far. A day counts once it has enough measured readings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -870,7 +886,7 @@ private struct AtriaStressDistributionCard: View {
                     legend(color: .red, label: "High")
                 }
             } else {
-                Text("A typical bar appears after 3 comparable days with enough live readings.")
+                Text("A typical bar appears after 3 comparable days with enough measured readings.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -4,6 +4,43 @@ import XCTest
 
 @MainActor
 final class AtriaVitalsProjectionStoreTests: XCTestCase {
+    func testVitalsStressTimelineEndsAtNowAndKeepsRestoredCollectionGaps() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let history: [AtriaStressMonitorStore.StressHistoryPoint] = [
+            .init(t: now.addingTimeInterval(-13 * 3_600), activation: 0.2, level: .low),
+            .init(t: now.addingTimeInterval(-11 * 3_600), activation: 0.3, level: .low),
+            .init(t: now.addingTimeInterval(-11 * 3_600 + 60), activation: 0.4, level: .medium),
+            .init(t: now.addingTimeInterval(-5 * 3_600), activation: 0.8, level: .high),
+            .init(t: now.addingTimeInterval(1), activation: 0.5, level: .medium),
+        ]
+
+        let points = AtriaVitalsStressTimelineProjection.points(
+            history: history,
+            referenceDate: now
+        )
+
+        XCTAssertEqual(points.map(\.reading.date), [
+            now.addingTimeInterval(-11 * 3_600),
+            now.addingTimeInterval(-11 * 3_600 + 60),
+            now.addingTimeInterval(-5 * 3_600),
+        ])
+        XCTAssertEqual(points.map(\.segment), [0, 0, 1])
+    }
+
+    func testVitalsStressCopyNeverCallsAGappedTimelineContinuous() {
+        XCTAssertTrue(AtriaVitalsStressTimelineCopy.gapNote.contains(
+            "no stress score was recorded"
+        ))
+        XCTAssertFalse(AtriaVitalsStressTimelineCopy.gapNote.contains(
+            "strap was not collecting"
+        ))
+        XCTAssertFalse(AtriaVitalsStressTimelineCopy.accessibilityLabel
+            .localizedCaseInsensitiveContains("continuous"))
+        XCTAssertTrue(AtriaVitalsStressTimelineCopy.accessibilityLabel.contains(
+            "Collection gaps remain blank"
+        ))
+    }
+
     func testNoOpRefreshDoesNotPublish() {
         let sessionStore = SessionStore()
         let projection = AtriaVitalsSessionProjectionStore(store: sessionStore)
