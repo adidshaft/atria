@@ -88,14 +88,17 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             }
             return "Verified complete day"
         case (.verifiedCanonical, .partial):
+            // Progress framing, not a failure grade (2026-08-08 user note): the
+            // strap motion engine IS counting; the day just fills in as more
+            // motion syncs off the strap. "Partial · X% covered" read as broken.
             if let coverageFraction {
                 let coverage = Int((coverageFraction * 100).rounded())
                 if count == 0 {
-                    return "\(coverage)% of today verified · no usable step count yet"
+                    return "Syncing today's steps from your strap · \(coverage)% so far"
                 }
-                return "Partial archive · \(coverage)% covered"
+                return "Today so far · \(coverage)% synced from strap"
             }
-            return "Partial archive coverage"
+            return "Syncing steps from your strap"
         case (.live, .partial):
             return isValidated ? "Today so far · live" : "Today so far · estimate"
         default:
@@ -148,7 +151,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             }
             return "\(count) steps. Verified complete day."
         case (.verifiedCanonical, .partial):
-            return "At least \(count) steps. Partial verified archive coverage."
+            return "At least \(count) steps so far, still syncing from your strap."
         case (.live, .partial):
             return "\(isValidated ? "\(count)" : "Approximately \(count)") steps today so far."
         default:
