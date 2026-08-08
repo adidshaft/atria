@@ -667,10 +667,14 @@ final class AtriaStressMonitorStore: ObservableObject {
     }
 
     private func recordHistory(now: Date) {
+        // Record the PUBLISHED (Medium-capped in HR-only mode) activation, not
+        // the raw EMA, so the timeline can never plot above the emitted level
+        // (audit §1 #7). `smoothedActivation` still gates recording to warm,
+        // scored ticks.
         guard case .scored = state.kind, let level = state.level,
-              let activation = smoothedActivation else { return }
+              smoothedActivation != nil else { return }
         if let last = history.last, now.timeIntervalSince(last.t) < 30 { return }
-        history.append(StressHistoryPoint(t: now, activation: activation, level: level))
+        history.append(StressHistoryPoint(t: now, activation: state.rawActivation, level: level))
         history.removeAll { now.timeIntervalSince($0.t) > 12 * 3600 }
         historyRevision &+= 1
 
@@ -887,10 +891,21 @@ final class AtriaStressMonitorStore: ObservableObject {
             lastEmittedLevel = smoothedLevel
         }
 
+        // HR-only mode caps the emitted level at Medium (see `cappedBand`
+        // above). The published activation drives the detail gauge and the
+        // history timeline (both render score = activation × 3), so it must be
+        // capped to the same Medium ceiling — otherwise the gauge/timeline can
+        // render "High" while the label reads "Medium" (audit §1 #7). The
+        // internal `smoothedActivation` keeps the true, uncapped EMA so band
+        // continuity and hysteresis are unaffected.
+        let displayActivation = raw.hrvAvailable
+            ? ema
+            : min(ema, AtriaStressMonitor.mediumUpperBound)
         let finalState = AtriaStressState(level: emittedLevel, label: emittedLevel.title,
                                           detail: raw.detail, kind: .scored,
                                           confidence: raw.confidence,
-                                          rawActivation: ema, hrvAvailable: raw.hrvAvailable)
+                                          rawActivation: displayActivation,
+                                          hrvAvailable: raw.hrvAvailable)
         if finalState != state {
             state = finalState
         }
