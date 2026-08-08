@@ -17,6 +17,19 @@ struct AtriaStepsWeekChart: View {
 
     private let calendar = Calendar.current
 
+    /// Completed-day performance colour (2026-08-08 user request): green at or
+    /// above the daily goal, orange under it, red well under (< half). This is
+    /// deliberately NOT `Metrics.stepsZone`, which never reds a *mid-day* Today
+    /// card; here every bar is a COMPLETED day where under-target is a real
+    /// read. Bars are still verified LOWER BOUNDS, so the honest caption stays.
+    private func barTint(steps: Int) -> Color {
+        let safeGoal = max(goal, 1)
+        let ratio = Double(steps) / Double(safeGoal)
+        if ratio >= 1.0 { return Metrics.electricGreen }
+        if ratio >= 0.5 { return .orange }
+        return .red
+    }
+
     var body: some View {
         let end = calendar.startOfDay(for: referenceDate)
         let start = calendar.date(byAdding: .day, value: -6, to: end) ?? end
@@ -35,7 +48,7 @@ struct AtriaStepsWeekChart: View {
                         if let steps = stepsByDay[day] {
                             BarMark(x: .value("Day", day, unit: .day),
                                     y: .value("Steps", steps))
-                                .foregroundStyle(Metrics.electricGreen.opacity(0.85))
+                                .foregroundStyle(barTint(steps: steps).opacity(0.85))
                                 .cornerRadius(4)
                                 // Per-bar count (2026-08-08): bars alone gave no
                                 // read of the actual number. Small label above
@@ -71,9 +84,10 @@ struct AtriaStepsWeekChart: View {
                 // Full-bleed plot inside the card (2026-08-05 width audit).
                 .padding(.horizontal, -12)
 
-                Text("Verified steps per day · no bar means no verified reading.")
+                Text("Vs your daily goal — green met, amber under, red well under. Verified so far; no bar means no reading.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("Verified strap-step days will appear here.")
                     .font(.caption)
