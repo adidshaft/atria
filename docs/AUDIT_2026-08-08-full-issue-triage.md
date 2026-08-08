@@ -392,3 +392,43 @@ Verdict: direction right, first cut not shippable. Fixed in the follow-up commit
   slow multi-day / sleep-gated awake baseline validated against the 2-3 days of
   real strap HR the user has (they explicitly asked to use it) — a focused,
   data-backed effort, not a 5-min tick. Next substantive engine target.
+
+### Grind progress (2026-08-08, cont. — §1 confirmed bugs closed out)
+
+- **DONE — §1 #7: gauge/timeline "High" while label "Medium" (cdb62762).** The
+  store published the uncapped activation EMA while the emitted level was capped
+  at Medium in HR-only mode, so `rawActivation × 3` rendered ~3.0/High on the
+  detail gauge and history line under a "Medium" label. Now the published
+  activation AND the recorded history point are capped to the Medium ceiling
+  when HRV is unavailable; the internal EMA is untouched so bands/hysteresis are
+  unchanged. All downstream 0–3 scores (gauge, timeline, health-screen chart,
+  breathwork) derive from those two sources → consistent in one place. New test;
+  suite 23/23.
+- **DONE — §1 #4: sleep-review notification never fired while suspended
+  (4afde76e).** `makeSleepReviewDecision` ran only from the foreground
+  scene-active/launch `schedule()` pass; the overnight BGTask handler never
+  evaluated it. Added `scheduleBackgroundReviewPass` (mirrors the production
+  launch flags exactly, so the `Identifier.removable` rebuild inside `schedule`
+  orphans nothing) and invoked it from `handleBackgroundTask` after the deferred
+  session load. Only schedules for a completed/unconfirmed night → a mid-sleep
+  3am pass is a no-op; post-wake fires with the same 6 s delay as foreground.
+  App target builds clean. **Runtime efficacy is a device-validation point
+  (§5):** it depends on the overnight sleep candidate being materialized before
+  the pass runs, and it now delivers autonomously rather than on app-open — if a
+  mistimed sleep-end detection ever fires it at a bad hour, the follow-up is a
+  night-window delivery gate (deliberately NOT added, to keep parity with
+  foreground).
+
+**§1 "Fix now — confirmed bugs" is now closed from the engine side: #1–#8 all
+landed; #9 remains split —**
+- **#9(a)** (score/record stress during sleep) is BLOCKED on a live-sleep
+  authority that does not exist (see prior note); harm already neutralized by
+  the awake-buffer floor.
+- **#9(b)** (compact stress tile has no freshness gating → a stale daytime
+  "Medium" can persist visually overnight) is actionable but requires threading
+  `lastMeasuredAt` through `makeHeroSnapshot` in **AtriaHomeView** (UI-session
+  lane), so it is deferred here to avoid a merge collision. Lower impact now that
+  daytime readings mostly resolve Calm/Low rather than Medium.
+
+**Next engine target: B3**, using the user's real strap HR (standing sanction).
+No safe confirmed-list engine grinds remain after this.
