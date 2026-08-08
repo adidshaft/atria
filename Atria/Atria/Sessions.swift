@@ -10117,7 +10117,8 @@ final class SessionStore: ObservableObject {
     private func requestRecoveredDataRecomputation(
         reason: String,
         allowsIncompleteOnboarding: Bool = false,
-        isExactRecoveryPublication: Bool = false
+        isExactRecoveryPublication: Bool = false,
+        backgroundProjectionAllowed: Bool = false
     ) -> Bool {
         guard !restoreInitializationBlocked else { return false }
         if Self.shouldDeferRecoveredDataRecomputationForExactRecovery(
@@ -10136,6 +10137,7 @@ final class SessionStore: ObservableObject {
             return false
         }
         if !allowsIncompleteOnboarding,
+           !backgroundProjectionAllowed,
            !Self.shouldStartAutomaticArchiveProjection(
                 applicationIsActive:
                     UIApplication.shared.applicationState == .active
@@ -10196,6 +10198,64 @@ final class SessionStore: ObservableObject {
         applicationIsActive: Bool
     ) -> Bool {
         applicationIsActive
+    }
+
+    /// Pure environmental guard for running one archive-projection cycle in the
+    /// background (2026-08-08). Projection is freshness-only work over inputs
+    /// that are already fsynced, so unlike the drain it is safe to skip under
+    /// low-power/heat and lose no data. Blocks under real device heat
+    /// (mirrors `shouldDeferDurableHistoryAdmissionForHeat`), under Low Power
+    /// Mode, and unless the phone is charging or comfortably charged (unknown
+    /// battery level fails closed). CPU is separately bounded by
+    /// `AtriaBackgroundProjectionThrottle`; this only decides whether to start.
+    nonisolated static func shouldStartBackgroundArchiveProjection(
+        thermalState: ProcessInfo.ThermalState,
+        isLowPowerModeEnabled: Bool,
+        batteryState: UIDevice.BatteryState,
+        batteryLevel: Float
+    ) -> Bool {
+        guard thermalState != .serious, thermalState != .critical else { return false }
+        guard !isLowPowerModeEnabled else { return false }
+        let charging = AtriaBLEManager.phoneStateIsCharging(batteryState)
+        guard charging || batteryLevel >= 0.5 else { return false }
+        return true
+    }
+
+    /// Start ONE background projection cycle iff the environment is safe, arming
+    /// the CPU duty-cycle throttle for its scan. Additive: it passes
+    /// `backgroundProjectionAllowed` to relax ONLY the foreground gate; the
+    /// exact-recovery / transport-owns-link deferrals still apply, so an active
+    /// drain automatically parks it. Returns whether a cycle was started.
+    @discardableResult
+    func requestBackgroundArchiveProjectionIfSafe(
+        reason: String,
+        budgetSeconds: TimeInterval = 240
+    ) -> Bool {
+        let allowed = Self.shouldStartBackgroundArchiveProjection(
+            thermalState: ProcessInfo.processInfo.thermalState,
+            isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            batteryState: UIDevice.current.batteryState,
+            batteryLevel: UIDevice.current.batteryLevel)
+        guard allowed else {
+            AtriaDebugLog("ATRIADBG bg_projection status=skipped reason=%@ action=guard_unsafe", reason)
+            return false
+        }
+        AtriaBackgroundProjectionThrottle.shared.begin(budgetSeconds: budgetSeconds)
+        let started = requestRecoveredDataRecomputation(
+            reason: reason,
+            allowsIncompleteOnboarding: false,
+            isExactRecoveryPublication: false,
+            backgroundProjectionAllowed: true)
+        if !started { AtriaBackgroundProjectionThrottle.shared.end() }
+        AtriaDebugLog("ATRIADBG bg_projection status=%@ reason=%@", started ? "started" : "deferred", reason)
+        return started
+    }
+
+    /// Release the background projection throttle (call after the cycle's
+    /// publication settles, and defensively on foreground so a leaked active
+    /// state can never throttle a live scan).
+    func endBackgroundArchiveProjectionThrottle() {
+        AtriaBackgroundProjectionThrottle.shared.end()
     }
 
     private func beginRecoveredDataMutationTransaction(
