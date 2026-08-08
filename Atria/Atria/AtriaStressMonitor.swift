@@ -638,8 +638,9 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// this source clock; merely opening a screen must never renew freshness.
     @Published private(set) var lastMeasuredAt: Date?
     /// Scored readings from this app session (thinned to ~1 per 30s, capped
-    /// at 12h). In-memory only — the history chart shows real gaps for any
-    /// stretch the strap wasn't read, never interpolation.
+    /// at 24h so the expanded detail can show a full day). In-memory only — the
+    /// history chart shows real gaps for any stretch the strap wasn't read,
+    /// never interpolation. ~2,880 points × 24 B ≈ 68 KB at the cap.
     private(set) var history: [StressHistoryPoint] = []
     /// Cheap change token for SwiftUI observers. The Health screen reads
     /// `history` for data, but watches this integer so live updates never
@@ -802,7 +803,7 @@ final class AtriaStressMonitorStore: ObservableObject {
               smoothedActivation != nil else { return }
         if let last = history.last, now.timeIntervalSince(last.t) < 30 { return }
         history.append(StressHistoryPoint(t: now, activation: state.rawActivation, level: level))
-        history.removeAll { now.timeIntervalSince($0.t) > 12 * 3600 }
+        history.removeAll { now.timeIntervalSince($0.t) > 24 * 3600 }
         historyRevision &+= 1
 
         if distributionArchive.record(level: level, at: now) {

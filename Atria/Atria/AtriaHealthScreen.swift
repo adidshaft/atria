@@ -1701,7 +1701,6 @@ private struct AtriaHealthStressSection: View {
     let onStartBreathwork: () -> Void
     let onOpenEducation: () -> Void
 
-    @State private var stressStripReduced: [StressStripPoint] = []
     @State private var lastStressEvaluationAt: Date?
     @State private var showStressDetail = false
 
@@ -1714,7 +1713,6 @@ private struct AtriaHealthStressSection: View {
                                  tint: stressTint,
                                  hint: stressHint,
                                  onTap: { showStressDetail = true })
-            stressHistoryStrip
         }
         .onChange(of: isActive, initial: true) { _, active in
             guard active else { return }
@@ -1725,9 +1723,6 @@ private struct AtriaHealthStressSection: View {
         }
         .onChange(of: stressMonitorStore.state, initial: true) { _, _ in
             publishStressForBreathwork()
-        }
-        .onChange(of: stressMonitorStore.historyRevision, initial: true) { _, _ in
-            stressStripReduced = AtriaHealthScreen.reduceStressStrip(stressMonitorStore.history)
         }
         .fullScreenCover(isPresented: $showStressDetail) {
             AtriaStressDetailView(
@@ -1790,42 +1785,6 @@ private struct AtriaHealthStressSection: View {
         AtriaStressPresentation.make(state: stressMonitorStore.state).detail
     }
 
-    private var stressHistoryStrip: some View {
-        Group {
-            if let first = stressStripReduced.first, let last = stressStripReduced.last,
-               last.t.timeIntervalSince(first.t) >= 10 * 60 {
-                VStack(alignment: .leading, spacing: 6) {
-                    AtriaStressStripChart(points: stressStripReduced)
-                        .equatable()
-                        .frame(height: 56)
-                        .clipped()
-                        .atriaInspectableGraph(
-                            AtriaInspectableGraph(
-                                title: "Session stress",
-                                subtitle: "Observed readings only; blanks are collection gaps",
-                                content: .timeSeries([
-                                    .init(title: "Stress",
-                                          unit: "",
-                                          tint: .orange,
-                                          points: stressStripReduced.map {
-                                              .init(date: $0.t,
-                                                    value: $0.value,
-                                                    segment: $0.segment)
-                                          })
-                                ])
-                            )
-                        )
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(Color(uiColor: .tertiarySystemGroupedBackground),
-                            in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Stress history for this session, \(stressStripReduced.count) readings.")
-            }
-        }
-    }
-
     private var stressTint: Color {
         stressMonitorStore.state.level?.tint ?? .secondary
     }
@@ -1860,48 +1819,6 @@ struct StressStripPoint: Identifiable, Equatable {
     let t: Date
     let value: Double
     let segment: Int
-}
-
-/// The session-stress area strip, isolated behind `Equatable` so it re-lays-out
-/// ONLY when the reduced points change — not on every parent re-render (the 5s
-/// stress tick, live-pulse publishes). Points are already downsampled to ~110
-/// (see `AtriaHealthScreen.reduceStressStrip`); this view just draws them.
-private struct AtriaStressStripChart: View, Equatable {
-    let points: [StressStripPoint]
-
-    static func == (lhs: AtriaStressStripChart, rhs: AtriaStressStripChart) -> Bool {
-        lhs.points == rhs.points
-    }
-
-    var body: some View {
-        Chart {
-            ForEach(points) { point in
-                AreaMark(x: .value("Time", point.t),
-                         y: .value("Stress", point.value),
-                         series: .value("Segment", point.segment))
-                    .interpolationMethod(.linear)
-                    .foregroundStyle(.orange.opacity(0.16))
-                LineMark(x: .value("Time", point.t),
-                         y: .value("Stress", point.value),
-                         series: .value("Segment", point.segment))
-                    .interpolationMethod(.linear)
-                    .foregroundStyle(.orange.gradient)
-            }
-            RuleMark(y: .value("Medium", 1))
-                .foregroundStyle(.secondary.opacity(0.25))
-                .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
-            RuleMark(y: .value("High", 2))
-                .foregroundStyle(.secondary.opacity(0.25))
-                .lineStyle(StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
-        }
-        .chartYScale(domain: 0...3)
-        .chartYAxis(.hidden)
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 3)) { _ in
-                AxisValueLabel(format: .dateTime.hour().minute())
-            }
-        }
-    }
 }
 
 private struct AtriaHealthFitnessAgeCard: View, Equatable {
