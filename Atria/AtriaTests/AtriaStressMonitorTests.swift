@@ -436,6 +436,137 @@ final class AtriaStressMonitorTests: XCTestCase {
                                  "recorded timeline activation must also be capped")
     }
 
+    // MARK: Slow multi-day awake baseline (audit B3, recording-only)
+
+    private func fillBaselineDay(_ archive: inout AtriaAwakeBaselineArchive,
+                                 day: Date,
+                                 bpm: Int,
+                                 count: Int,
+                                 calendar: Calendar) {
+        for i in 0..<count {
+            _ = archive.record(bpm: bpm,
+                               at: day.addingTimeInterval(Double(i) * 30),
+                               calendar: calendar)
+        }
+    }
+
+    func testAwakeBaselineDayMedianFromHistogram() throws {
+        var day = AtriaAwakeBaselineArchive.Day(day: now, histogram: [:], lastSampleAt: .distantPast)
+        // 70,70,72,74,74 → median 72; a stray 150 is one of six → still 72/73.
+        day.histogram = [70: 2, 72: 1, 74: 2]
+        XCTAssertEqual(try XCTUnwrap(day.median), 72, accuracy: 0.001)
+        day.histogram[150] = 1 // 6 samples: sorted 70,70,72,74,74,150 → median (72+74)/2
+        XCTAssertEqual(try XCTUnwrap(day.median), 73, accuracy: 0.001)
+    }
+
+    func testAwakeBaselineIgnoresASingleStressedDay() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let d0 = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 6, hour: 9)))
+        var archive = AtriaAwakeBaselineArchive()
+
+        // Three calm days at 72 bpm, then a whole stressed day at 95 bpm.
+        for offset in 0..<3 {
+            let day = try XCTUnwrap(calendar.date(byAdding: .day, value: offset, to: d0))
+            fillBaselineDay(&archive, day: day, bpm: 72, count: 40, calendar: calendar)
+        }
+        let stressedDay = try XCTUnwrap(calendar.date(byAdding: .day, value: 3, to: d0))
+        fillBaselineDay(&archive, day: stressedDay, bpm: 95, count: 40, calendar: calendar)
+
+        XCTAssertEqual(archive.qualifyingDayCount, 4)
+        // median of daily medians [72,72,72,95] = 72 — the stressed day is one
+        // outlier and cannot move the baseline. THIS is the B3 property.
+        XCTAssertEqual(try XCTUnwrap(archive.multiDayCenter()), 72, accuracy: 0.001)
+    }
+
+    func testAwakeBaselineWithheldUntilEnoughQualifyingDaysAndSamples() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let d0 = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 6, hour: 9)))
+        var archive = AtriaAwakeBaselineArchive()
+
+        // Two well-sampled days: below the 3-day floor → nil.
+        for offset in 0..<2 {
+            let day = try XCTUnwrap(calendar.date(byAdding: .day, value: offset, to: d0))
+            fillBaselineDay(&archive, day: day, bpm: 70, count: 40, calendar: calendar)
+        }
+        XCTAssertNil(archive.multiDayCenter(), "two days is below the qualifying-day floor")
+
+        // A third day but under the per-day sample floor must not qualify it.
+        let thinDay = try XCTUnwrap(calendar.date(byAdding: .day, value: 2, to: d0))
+        fillBaselineDay(&archive, day: thinDay, bpm: 70, count: 10, calendar: calendar)
+        XCTAssertEqual(archive.qualifyingDayCount, 2)
+        XCTAssertNil(archive.multiDayCenter(), "a day under the per-day sample floor does not count")
+
+        // Filling it past the floor unlocks the center.
+        fillBaselineDay(&archive,
+                        day: thinDay.addingTimeInterval(1000),
+                        bpm: 70,
+                        count: 30,
+                        calendar: calendar)
+        XCTAssertEqual(archive.qualifyingDayCount, 3)
+        XCTAssertEqual(try XCTUnwrap(archive.multiDayCenter()), 70, accuracy: 0.001)
+    }
+
+    func testAwakeBaselineRetentionDropsOldDaysAndRoundTrips() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let d0 = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 7, day: 1, hour: 9)))
+        var archive = AtriaAwakeBaselineArchive()
+        fillBaselineDay(&archive, day: d0, bpm: 70, count: 5, calendar: calendar)
+        // A sample 40 days later must evict the original day (30-day retention).
+        let farLater = try XCTUnwrap(calendar.date(byAdding: .day, value: 40, to: d0))
+        _ = archive.record(bpm: 71, at: farLater, calendar: calendar)
+        XCTAssertEqual(archive.days.count, 1)
+
+        let suiteName = "atria.stress.awakebaseline.test.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        archive.save(defaults: suite)
+        let reloaded = AtriaAwakeBaselineArchive.load(defaults: suite)
+        XCTAssertEqual(reloaded, archive, "archive must survive a persistence round-trip")
+    }
+
+    // Integration: admitted quiet-awake samples fed through the live store must
+    // flow into the slow baseline, and the exposed center must match the pure
+    // archive's median-of-daily-medians.
+    @MainActor
+    func testStoreAccumulatesSlowAwakeBaselineFromAdmittedSamples() throws {
+        let suiteName = "atria.stress.awakebaseline.store.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4, hrvSampleDays: 0)
+        let store = AtriaStressMonitorStore(defaults: suite)
+
+        XCTAssertNil(store.slowAwakeBaselineCenter(), "no center before any days accumulate")
+
+        // 72 bpm is admitted for rest 60 (above rest+8, below rest+40, zone 0).
+        // Three feeding-days spaced a full day apart. The store records with the
+        // CURRENT calendar (not injectable), so a feeding-day could straddle
+        // local midnight; 70 samples guarantees at least one calendar-day per
+        // feeding-day clears the per-day sample floor regardless of the split.
+        for dayOffset in 0..<3 {
+            let dayBase = now.addingTimeInterval(Double(dayOffset) * 86_400)
+            for i in 0..<70 {
+                store.update(heartRate: 72,
+                             hasContact: true,
+                             recentRRSamples: [],
+                             isRecording: false,
+                             zoneIndex: 0,
+                             hrvSnapshot: nil,
+                             baseline: baseline,
+                             restingMaxHR: restingMaxHR,
+                             hasActiveSleepEvidence: false,
+                             now: dayBase.addingTimeInterval(Double(i) * 60))
+            }
+        }
+
+        XCTAssertGreaterThanOrEqual(store.slowAwakeBaselineQualifyingDayCount, 3)
+        XCTAssertEqual(try XCTUnwrap(store.slowAwakeBaselineCenter()), 72, accuracy: 0.001,
+                       "every admitted sample is 72, so the median of daily medians is 72")
+    }
+
     // MARK: Suppression
 
     func testSuppressedWhileRecording() {

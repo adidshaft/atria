@@ -494,6 +494,123 @@ struct AtriaAwakeReferenceSnapshot: Codable, Equatable {
     var updatedAt: Date
 }
 
+/// A slow, multi-day awake-HR baseline that resists a single stressful stretch.
+///
+/// The 45-min `awakeReference` is responsive but absorbs sustained stress: an
+/// hours-long stressor fills the trailing window with elevated HR, the median
+/// rises, and the reading drifts back to Calm (audit B3). This archive keeps a
+/// per-day histogram of quiet-awake HR and exposes the MEDIAN OF DAILY MEDIANS,
+/// so one elevated day cannot move the baseline — a whole stressed day is scored
+/// against the wearer's calm-day norm, while a genuine multi-week fitness drift
+/// is followed because it moves most days' medians together.
+///
+/// Recording-only for now: the store accumulates into it, but scoring does NOT
+/// yet consume it (that wire-in is gated on validation against real strap HR).
+/// Kept deliberately compact (an integer-bpm histogram per retained day) rather
+/// than a second high-frequency sample stream, mirroring the distribution
+/// archive's philosophy.
+struct AtriaAwakeBaselineArchive: Codable, Equatable {
+    struct Day: Codable, Equatable {
+        var day: Date
+        /// bpm → count of admitted quiet-awake samples that day.
+        var histogram: [Int: Int]
+        var lastSampleAt: Date
+
+        var sampleCount: Int { histogram.values.reduce(0, +) }
+
+        /// The day's median bpm from the cumulative histogram, or nil if empty.
+        var median: Double? {
+            let total = sampleCount
+            guard total > 0 else { return nil }
+            let sortedBPM = histogram.keys.sorted()
+            // Lower and upper median positions (1-indexed) for an even/odd count.
+            let lowerTarget = (total + 1) / 2
+            let upperTarget = total / 2 + 1
+            var cumulative = 0
+            var lower: Int?
+            var upper: Int?
+            for bpm in sortedBPM {
+                cumulative += histogram[bpm] ?? 0
+                if lower == nil, cumulative >= lowerTarget { lower = bpm }
+                if upper == nil, cumulative >= upperTarget { upper = bpm }
+                if lower != nil, upper != nil { break }
+            }
+            guard let lower, let upper else { return nil }
+            return (Double(lower) + Double(upper)) / 2
+        }
+    }
+
+    private(set) var days: [Day]
+
+    private static let defaultsKey = "atria.stress.awakeBaseline.v1"
+    private static let retentionDays = 30
+    /// A day needs at least this many admitted quiet-awake samples before its
+    /// median is trustworthy enough to contribute to the multi-day center.
+    static let minimumSamplesPerDay = 30
+    /// The multi-day center is withheld until this many qualifying days exist.
+    static let minimumQualifyingDays = 3
+
+    init(days: [Day] = []) {
+        self.days = days.sorted { $0.day < $1.day }
+    }
+
+    @discardableResult
+    mutating func record(bpm: Int,
+                         at date: Date,
+                         calendar: Calendar = .current) -> Bool {
+        guard bpm > 0 else { return false }
+        let normalizedDay = calendar.startOfDay(for: date)
+        if let index = days.firstIndex(where: { calendar.isDate($0.day, inSameDayAs: normalizedDay) }) {
+            // Guards restoration/replay from re-counting an already-summarized
+            // sample after this store instance is rebuilt.
+            guard date > days[index].lastSampleAt else { return false }
+            days[index].histogram[bpm, default: 0] += 1
+            days[index].lastSampleAt = date
+        } else {
+            days.append(Day(day: normalizedDay,
+                            histogram: [bpm: 1],
+                            lastSampleAt: date))
+        }
+        let cutoff = calendar.date(byAdding: .day, value: -Self.retentionDays, to: normalizedDay) ?? normalizedDay
+        days.removeAll { $0.day < cutoff }
+        days.sort { $0.day < $1.day }
+        return true
+    }
+
+    /// Number of retained days with enough samples to contribute a daily median.
+    var qualifyingDayCount: Int {
+        days.filter { $0.sampleCount >= Self.minimumSamplesPerDay }.count
+    }
+
+    /// Robust multi-day center: the median of the qualifying days' daily medians,
+    /// or nil until `minimumQualifyingDays` exist. One stressed day is one
+    /// outlier among the daily medians and cannot move it.
+    func multiDayCenter() -> Double? {
+        let dailyMedians = days
+            .filter { $0.sampleCount >= Self.minimumSamplesPerDay }
+            .compactMap { $0.median }
+            .sorted()
+        guard dailyMedians.count >= Self.minimumQualifyingDays else { return nil }
+        let mid = dailyMedians.count / 2
+        return dailyMedians.count.isMultiple(of: 2)
+            ? (dailyMedians[mid - 1] + dailyMedians[mid]) / 2
+            : dailyMedians[mid]
+    }
+
+    static func load(defaults: UserDefaults = .standard) -> AtriaAwakeBaselineArchive {
+        guard let data = defaults.data(forKey: defaultsKey),
+              let archive = try? JSONDecoder().decode(AtriaAwakeBaselineArchive.self, from: data) else {
+            return AtriaAwakeBaselineArchive()
+        }
+        return archive
+    }
+
+    func save(defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        defaults.set(data, forKey: Self.defaultsKey)
+    }
+}
+
 /// Thin store that owns the rolling buffers, activation EMA, hysteresis, and
 /// post-workout cooldown; recomputes `AtriaStressMonitor.score(...)` on each
 /// pulse update. All the actual scoring logic lives in the pure function above
@@ -567,10 +684,20 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// UserDefaults suite backing the awake-reference seed. Injectable so tests
     /// can exercise persistence without touching the shared standard suite.
     private let awakeReferenceDefaults: UserDefaults
+    /// Slow multi-day awake-HR baseline (audit B3). Recording-only for now: the
+    /// store accumulates admitted quiet-awake samples into it, but scoring does
+    /// not yet consume `multiDayAwakeCenter()` — that wire-in is gated on
+    /// validation against real strap HR. Loaded from the same injected suite.
+    private var awakeBaselineArchive: AtriaAwakeBaselineArchive
+    private var unsavedAwakeBaselineSamples = 0
+    /// Flush the baseline archive to disk at most once per this many admitted
+    /// samples; a process interruption loses only the small pending tail.
+    private static let awakeBaselinePersistEverySamples = 20
 
     init(defaults: UserDefaults = .standard) {
         self.awakeReferenceDefaults = defaults
         self.persistedAwakeReference = Self.loadPersistedAwakeReference(defaults: defaults)
+        self.awakeBaselineArchive = AtriaAwakeBaselineArchive.load(defaults: defaults)
     }
 
     private static let awakeReferenceDefaultsKey = "atria.stress.awakeReference.v1"
@@ -702,6 +829,18 @@ final class AtriaStressMonitorStore: ObservableObject {
         distributionArchive.measuredTrendDays()
     }
 
+    /// Slow multi-day awake-HR center (audit B3), or nil until enough qualifying
+    /// days have accumulated. Read-only: scoring does not yet consume this — it
+    /// exists so the accumulated baseline can be validated against real strap HR
+    /// before the scorer is switched to anchor on it.
+    func slowAwakeBaselineCenter() -> Double? {
+        awakeBaselineArchive.multiDayCenter()
+    }
+
+    var slowAwakeBaselineQualifyingDayCount: Int {
+        awakeBaselineArchive.qualifyingDayCount
+    }
+
     /// Feed one pulse tick in. Safe to call as often as ~every 5s (or on every
     /// HR/RR update); the buffers + EMA absorb the exact cadence.
     func update(heartRate: Int,
@@ -775,6 +914,17 @@ final class AtriaStressMonitorStore: ObservableObject {
            (zoneIndex ?? 0) < 2,
            heartRate > awakeLowerBound, heartRate <= activityUpperBound {
             awakeHRBuffer.append((t: now, bpm: heartRate))
+            // Feed the same admitted quiet-awake sample into the slow multi-day
+            // baseline (audit B3, recording-only). This runs even before the
+            // baseline is consumed by scoring, so real per-day medians accumulate
+            // and are ready to validate the eventual wire-in.
+            if awakeBaselineArchive.record(bpm: heartRate, at: now) {
+                unsavedAwakeBaselineSamples += 1
+                if unsavedAwakeBaselineSamples >= Self.awakeBaselinePersistEverySamples {
+                    awakeBaselineArchive.save(defaults: awakeReferenceDefaults)
+                    unsavedAwakeBaselineSamples = 0
+                }
+            }
         }
         awakeHRBuffer.removeAll { now.timeIntervalSince($0.t) > Self.awakeReferenceWindowSeconds }
         let liveAwakeReference = Self.awakeReference(from: awakeHRBuffer, now: now)
