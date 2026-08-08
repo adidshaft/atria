@@ -2929,6 +2929,38 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
+    /// Whether a connected raw-drain slice should be HELD through background
+    /// live-HR silence instead of released for live HR (drain-keeping P4). True
+    /// only when real backlog remains, nobody is watching live HR (the flush
+    /// maintenance window), and the drain is still pulling durable rows. A stalled
+    /// slice (`recentDurableProgress == false`) is never held, and the hold never
+    /// engages in the foreground.
+    ///
+    /// `backlogPending` MUST be the robust backlog signal
+    /// (`drainableStrapBacklogPendingFromDefaults` / `strapBacklogPendingForCatchUp`),
+    /// matching the admission and P3 callers — NOT the raw `rangeLossBackfillPending`
+    /// ticket. The publication race can clear that ticket while records still sit
+    /// on the strap; keying the hold on it dropped the hold during the ticket
+    /// flap, so the slice released on live-HR silence and entered the 5-minute
+    /// connected-history cooldown, collapsing the background drain duty cycle and
+    /// stalling the frontier (2026-08-08 signal-parity fix).
+    nonisolated static func shouldHoldProductiveBacklogSlice(
+        backlogPending: Bool,
+        foregroundInteractive: Bool,
+        cleanOwnerState: ProtectedR10CleanOwnerState,
+        activeExplicitWorkout: Bool,
+        recentDisconnectStorm: Bool,
+        recentDurableProgress: Bool
+    ) -> Bool {
+        isFlushMaintenanceWindow(
+            rangeLossBackfillPending: backlogPending,
+            foregroundInteractive: foregroundInteractive,
+            cleanOwnerState: cleanOwnerState,
+            activeExplicitWorkout: activeExplicitWorkout,
+            recentDisconnectStorm: recentDisconnectStorm
+        ) && recentDurableProgress
+    }
+
     /// Drain-keeping P3 (HR-independent re-arm safety net): decide, on a bounded
     /// maintenance tick, whether to re-arm the range-loss drain. The re-arm loop
     /// normally rides on accepted-HR callbacks; when HR is sparse (still/asleep)
@@ -12172,21 +12204,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 as? Double).map {
                     now.timeIntervalSince1970 - $0 < 300
                 } ?? false
-        let maintenanceWindow = Self.isFlushMaintenanceWindow(
-            rangeLossBackfillPending: defaults.bool(
-                forKey: OfflineSyncDefaults.rangeLossBackfillPending
-            ),
-            foregroundInteractive: foregroundInteractiveMode,
-            cleanOwnerState: protectedR10CleanOwnerState,
-            activeExplicitWorkout: AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
-            recentDisconnectStorm: recentDisconnectStorm
-        )
         let nowUptime = ProcessInfo.processInfo.systemUptime
         let recentDurableProgress = offlineHistoricalSyncLastProgressUptime.map {
             $0.isFinite && nowUptime.isFinite && nowUptime >= $0
                 && (nowUptime - $0) < silenceLimit
         } ?? false
-        let productiveBacklogHold = maintenanceWindow && recentDurableProgress
+        // Signal-parity (2026-08-08): key the hold on the ROBUST backlog signal,
+        // exactly like the admission and P3 callers of isFlushMaintenanceWindow —
+        // NOT the raw rangeLossBackfillPending ticket. That ticket can be cleared
+        // by the publication race while records still sit on the strap; keying the
+        // hold on it dropped the hold during the flap, released the slice on 45s
+        // live-HR silence, and left the 5-min connected-history cooldown to
+        // dominate the duty cycle so the background frontier never advanced. The
+        // hold stays fenced: background-only (isFlushMaintenanceWindow requires
+        // !foregroundInteractive) and productive-only (recentDurableProgress) — a
+        // stalled slice still releases below.
+        let productiveBacklogHold = Self.shouldHoldProductiveBacklogSlice(
+            backlogPending: strapBacklogPendingForCatchUp(now: now),
+            foregroundInteractive: foregroundInteractiveMode,
+            cleanOwnerState: protectedR10CleanOwnerState,
+            activeExplicitWorkout: AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
+            recentDisconnectStorm: recentDisconnectStorm,
+            recentDurableProgress: recentDurableProgress
+        )
         if productiveBacklogHold {
             defaults.set(
                 "held_productive_backlog_maintenance",
