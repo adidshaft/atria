@@ -3637,6 +3637,7 @@ enum HistoricalArchive {
         }
 
         var pressureReliefCountdown = 16
+        var lastThrottledCandidateCount = 0
         func scanProgressTick(_ statistics: AtriaHistoricalJSONLRecentScanner.Statistics) {
                 // Footprint probe proved the scan accumulates ~1.4KB of
                 // freed-but-dirty malloc pages per decoded line (3.4GB over a
@@ -3648,6 +3649,16 @@ enum HistoricalArchive {
                     pressureReliefCountdown = 16
                     malloc_zone_pressure_relief(nil, 0)
                 }
+                // CPU duty-cycle for a BACKGROUND projection pass (2026-08-08):
+                // projection throttled memory but never CPU, which tripped
+                // cpu_resource_fatal on a long background run. This is a no-op in
+                // the foreground / whenever no background pass armed the throttle,
+                // so the live scan path is unchanged; when armed it sleeps this
+                // (dying, off-main) snapshot thread to hold average CPU near 50%.
+                let candidateDelta = max(0, statistics.candidateLineCount - lastThrottledCandidateCount)
+                lastThrottledCandidateCount = statistics.candidateLineCount
+                _ = AtriaBackgroundProjectionThrottle.shared
+                    .cooperativeCheckpointShouldAbort(processedDelta: candidateDelta)
                 onScanProgress?(statistics)
         }
         func consumeScanCandidate(_ lineData: Data) {

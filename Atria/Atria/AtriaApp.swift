@@ -320,6 +320,11 @@ struct AtriaApp: App {
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = true
                     case .active:
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = false
+                        // Defensively release the background-projection CPU
+                        // throttle on foreground, so a pass that was suspended
+                        // mid-scan (BGTask window ended before end() ran) can
+                        // never throttle a live foreground scan (2026-08-08).
+                        AtriaBackgroundProjectionThrottle.shared.end()
                     default:
                         break
                     }
@@ -558,6 +563,25 @@ struct AtriaApp: App {
             // is materialized; mirrors the launch cadence exactly and the
             // scheduler's own debounce prevents duplicate fires.
             await LocalNotificationScheduler.scheduleBackgroundReviewPass(store: store, ble: ble)
+            // Materialize archive-derived metrics (sleep efficiency/stages, daily
+            // rollups) in the BACKGROUND too (2026-08-08, backlog #1). Projection
+            // was foreground-only because it CPU-spiked into cpu_resource_fatal;
+            // this runs ONE cycle in the generous bg_processing window, ONLY when
+            // cool + charging/charged + not Low-Power, bounded by the CPU
+            // duty-cycle throttle. An active drain still parks it (transport-owns-
+            // link deferral). Placed after drain/steps/maintenance + the deferred
+            // session load so the store is populated and there is no CPU overlap.
+            if reason == "bg_processing", !Task.isCancelled {
+                let priorProjectionRevision = store.recoveredDataArchiveRevisionSnapshot
+                if store.requestBackgroundArchiveProjectionIfSafe(reason: "bg_projection") {
+                    // The timeout arg clamps up to the pipeline fence; the real
+                    // bound is the throttle deadline + this task's expiration.
+                    _ = await store.awaitRecoveredDataPublication(
+                        after: priorProjectionRevision,
+                        timeout: .seconds(1))
+                    store.endBackgroundArchiveProjectionThrottle()
+                }
+            }
             WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: reason)
             completion.complete(task,
                                 success: backupSucceeded
@@ -566,6 +590,7 @@ struct AtriaApp: App {
         }
         task.expirationHandler = {
             work.cancel()
+            AtriaBackgroundProjectionThrottle.shared.cancel()
             completion.complete(task, success: false)
         }
     }
