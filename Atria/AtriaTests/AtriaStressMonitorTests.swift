@@ -202,8 +202,12 @@ final class AtriaStressMonitorTests: XCTestCase {
         // corroboration.
         let baseline = makeBaseline(restingMean: 60, restingSD: 2, hrvSampleDays: 0)
 
-        let state = AtriaStressMonitor.score(hrNow: 80,
-                                             hrWindow: [80, 79, 80],
+        // Genuinely elevated HR (well above the awake reference), so activation
+        // saturates and the cap is what's under test. Post-rescoring (2026-08-08)
+        // an HR only mildly above rest is correctly Calm/Low, so an old value
+        // like 80 would no longer exercise the cap.
+        let state = AtriaStressMonitor.score(hrNow: 95,
+                                             hrWindow: [95, 94, 95],
                                              rrWindowMs: [],
                                              hrvFallbackRMSSD: nil,
                                              baseline: baseline,
@@ -220,6 +224,53 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(state.detail, "HR-only")
         XCTAssertEqual(state.level, .medium, "HR-only mode must cap at Medium, never High")
         XCTAssertNotEqual(state.level, .high)
+    }
+
+    /// The 2026-08-08 rescoring: awake HR at/near the wearer's own awake
+    /// reference reads Calm (not Medium), and only genuine elevation climbs.
+    /// Validated against 4 real days where the old resting-referenced math
+    /// pinned 90-98% of the waking day to Medium.
+    func testAwakeReferencedStressIsCalmAtTypicalAwakeHR() {
+        let baseline = makeBaseline(restingMean: 56, restingSD: 3, hrvSampleDays: 0)
+        let awake = (center: 73.0, spread: 12.0) // this wearer's real median/spread
+
+        func level(hr: Int) -> AtriaStressLevel? {
+            AtriaStressMonitor.score(hrNow: hr, hrWindow: [hr, hr, hr], rrWindowMs: [],
+                                     hrvFallbackRMSSD: nil, baseline: baseline,
+                                     restingMaxHR: restingMaxHR, workoutActive: false,
+                                     zoneIndex: 0, inSleepWindow: false, hasContact: true,
+                                     contactAgeSeconds: 300, awakeReference: awake, now: now).level
+        }
+        XCTAssertEqual(level(hr: 73), .calm, "at the awake reference → Calm, not Medium")
+        XCTAssertEqual(level(hr: 62), .calm, "below the awake reference → Calm")
+        XCTAssertEqual(level(hr: 95), .medium, "genuine elevation → Medium (HR-only cap)")
+
+        // Same wearer, WITHOUT a learned reference: the physiological default
+        // (resting + offset) must also keep typical awake HR out of Medium.
+        let atRestingAwake = AtriaStressMonitor.score(
+            hrNow: 71, hrWindow: [71, 71, 71], rrWindowMs: [], hrvFallbackRMSSD: nil,
+            baseline: baseline, restingMaxHR: restingMaxHR, workoutActive: false,
+            zoneIndex: 0, inSleepWindow: false, hasContact: true,
+            contactAgeSeconds: 300, now: now).level
+        XCTAssertNotEqual(atRestingAwake, .medium,
+                          "default awake reference must not pin typical awake HR to Medium")
+    }
+
+    func testAwakeReferenceLearnsRobustMedianOnceWarm() {
+        let base = Date(timeIntervalSince1970: 1_786_000_000)
+        // 70 samples over 10 min, mostly ~72 bpm with a couple of stray spikes.
+        var buffer: [(t: Date, bpm: Int)] = []
+        for i in 0..<70 {
+            let bpm = (i == 10 || i == 40) ? 150 : 72
+            buffer.append((t: base.addingTimeInterval(Double(i) * 9), bpm: bpm))
+        }
+        let ref = AtriaStressMonitorStore.awakeReference(from: buffer, now: base.addingTimeInterval(700))
+        XCTAssertNotNil(ref)
+        XCTAssertEqual(ref!.center, 72, accuracy: 0.5, "median ignores the two spikes")
+
+        // Too few samples / too short a span → nil (scorer uses its default).
+        let cold = Array(buffer.prefix(10))
+        XCTAssertNil(AtriaStressMonitorStore.awakeReference(from: cold, now: base.addingTimeInterval(90)))
     }
 
     // MARK: Suppression
@@ -389,7 +440,7 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(state.kind, .warmingUp)
         XCTAssertNil(state.level)
         XCTAssertEqual(AtriaStressPresentation.make(state: state).detail,
-                       "Collecting 2 min of live signal")
+                       "2 min of live signal")
     }
 
     // MARK: Honesty gating
