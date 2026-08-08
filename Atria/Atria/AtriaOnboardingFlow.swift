@@ -182,6 +182,8 @@ private struct StrapSetupShowcase: View {
                     }
                     .buttonStyle(.glass)
                     .buttonBorderShape(.circle)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
                     .accessibilityLabel("Rotate setup view")
                     .accessibilityHint("Shows the next strap setup view")
                 }
@@ -191,7 +193,7 @@ private struct StrapSetupShowcase: View {
             .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.hero,
                                         style: .continuous))
 
-            HStack(spacing: 7) {
+            HStack(spacing: 0) {
                 ForEach(Scene.allCases) { candidate in
                     Button {
                         select(candidate)
@@ -199,13 +201,15 @@ private struct StrapSetupShowcase: View {
                         Capsule()
                             .fill(candidate == scene ? Color.accentColor : Color.white.opacity(0.30))
                             .frame(width: candidate == scene ? 22 : 7, height: 7)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(candidate.title)
+                    .accessibilityHint("Shows this strap setup view")
                     .accessibilityAddTraits(candidate == scene ? .isSelected : [])
                 }
             }
-            .padding(.top, 10)
             .accessibilityElement(children: .contain)
         }
         .overlay {
@@ -423,7 +427,13 @@ struct AtriaOnboardingFlow: View {
             }
             .controlSize(.large)
             .atriaCardAction(tint: step == .strap && !strapIsReady ? .blue : .green)
-            .disabled(step == .strap && historyBootstrap.isWorking)
+            .disabled(step == .strap && strapActionIsUnavailable)
+        }
+
+        private var strapActionIsUnavailable: Bool {
+            historyBootstrap.isWorking
+                || ble.onboardingPairingPreflightInFlight
+                || ble.status == .poweredOff
         }
 
         private var title: String {
@@ -432,9 +442,11 @@ struct AtriaOnboardingFlow: View {
             case .nickname: return "Continue"
             case .strap:
                 if strapIsReady { return "Continue" }
+                if ble.status == .poweredOff { return "Turn on Bluetooth" }
+                if ble.onboardingPairingPreflightInFlight { return "Verifying secure access…" }
                 if historyBootstrap.isWorking { return "Preparing your strap…" }
                 if historyBootstrap.snapshot.phase == .failed { return "Retry secure import" }
-                return ble.status == .connected ? "Waiting for live data…" : "Connect"
+                return ble.status == .connected ? "Waiting for a fresh signal…" : "Connect"
             case .you: return "Continue"
             case .rings: return "Continue"
             case .behaviors: return "Continue"
@@ -611,13 +623,10 @@ struct AtriaOnboardingFlow: View {
             Text("Your strap. Your data.")
                 .font(.system(size: 28, weight: .bold, design: .rounded))
                 .fixedSize(horizontal: false, vertical: true)
-                .accessibilityHint("WHOOP insights without the subscription.")
+                .accessibilityHint("Sleep, recovery, and strain insights from your strap.")
             onboardingRingCard
-            // The ring above is drawn from fixed sample numbers (64%, 7h 42m,
-            // 13.1). Nothing on screen said so, so a first-run user could read
-            // them as their own readings before ever wearing the strap —
-            // exactly the fabrication the honesty rule exists to prevent. The
-            // ring is a layout preview; label it as one.
+            // The ring is a layout preview. Its empty values match the real
+            // fresh-install state rather than inventing first-run readings.
             Text("Your numbers appear here after your first night of wear.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -628,6 +637,7 @@ struct AtriaOnboardingFlow: View {
                 }
             }
             .pickerStyle(.segmented)
+            .frame(minHeight: 44)
             .accessibilityHint("Selects the metric shown in the center of the ring")
             if onRestoreBackup != nil {
                 // Restoring a backup is the rare path — a returning user, not
@@ -654,6 +664,8 @@ struct AtriaOnboardingFlow: View {
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.accentColor)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
                     .disabled(restoreInProgress)
                     if let restoreMessage {
                         Text(restoreMessage)
@@ -673,8 +685,7 @@ struct AtriaOnboardingFlow: View {
     /// leaving it blank removes the key, so skipping looks like skipping.
     private var nicknamePage: some View {
         VStack(alignment: .leading, spacing: 16) {
-            onboardingGradientTile(systemImage: "sparkles",
-                                   colors: [Color.purple.opacity(0.35), Color.blue.opacity(0.25)])
+            onboardingBrandTile
             Text("Welcome to Atria")
                 .font(.system(size: 30, weight: .bold, design: .rounded))
                 .fixedSize(horizontal: false, vertical: true)
@@ -742,6 +753,7 @@ struct AtriaOnboardingFlow: View {
                         }
                         .pickerStyle(.menu)
                     }
+                    .frame(minHeight: 44)
                 }
             }
             .padding(16)
@@ -759,6 +771,7 @@ struct AtriaOnboardingFlow: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .frame(minHeight: 44)
                 .accessibilityHint("Selects the metric shown in the center of the ring")
             }
             .padding(16)
@@ -849,6 +862,21 @@ struct AtriaOnboardingFlow: View {
     /// Design cycle hue #FF6482 (spec §0 · Cycle #FF6482). Kept local so this
     /// slice never edits the shared Metrics palette.
     private static let cycleHue = Color(red: 1.0, green: 0.392, blue: 0.51)
+
+    private var onboardingBrandTile: some View {
+        Image("AtriaLogo")
+            .resizable()
+            .scaledToFit()
+            .frame(width: 84, height: 84)
+            .clipShape(RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile,
+                                        style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile,
+                                 style: .continuous)
+                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+            }
+            .accessibilityHidden(true)
+    }
 
     private func onboardingGradientTile(systemImage: String, colors: [Color]) -> some View {
         RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
@@ -984,12 +1012,23 @@ struct AtriaOnboardingFlow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         case .complete:
-            Label(historyBootstrap.snapshot.importedRows > 0
-                  ? "Ready · \(historyBootstrap.snapshot.importedRows) records safely added"
-                  : "Ready · strap history verified",
-                  systemImage: "checkmark.seal.fill")
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.green)
+            if historyBootstrap.isCompleteForCurrentStrap {
+                Label(historyBootstrap.snapshot.importedRows > 0
+                      ? "Ready · \(historyBootstrap.snapshot.importedRows) records safely added"
+                      : "Ready · strap history verified",
+                      systemImage: "checkmark.seal.fill")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.green)
+            } else {
+                // The completion record survives process death, but it is bound
+                // to one exact peripheral. Until CoreBluetooth restores that
+                // identity, "Ready" would overstate what this launch has proved.
+                Label("Saved setup found · reconnect your strap to verify it",
+                      systemImage: "clock.arrow.circlepath")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.blue)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         case .failed:
             Label(historyBootstrap.snapshot.detail,
                   systemImage: "exclamationmark.triangle.fill")
@@ -1010,6 +1049,7 @@ struct AtriaOnboardingFlow: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .frame(minHeight: 44)
                 optionalNumericProfileField("Height", value: heightBinding, suffix: "cm")
                 optionalNumericProfileField("Weight", value: weightBinding, suffix: "kg")
 
@@ -1036,7 +1076,7 @@ struct AtriaOnboardingFlow: View {
                     Text(group.title.uppercased())
                         .font(.caption2.weight(.bold))
                         .foregroundStyle(.tertiary)
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)],
+                    LazyVGrid(columns: behaviorGridColumns,
                               alignment: .leading, spacing: 8) {
                         ForEach(group.tags) { tag in
                             behaviorChip(tag)
@@ -1068,6 +1108,13 @@ struct AtriaOnboardingFlow: View {
         ]
     }
 
+    private var behaviorGridColumns: [GridItem] {
+        if dynamicTypeSize.isAccessibilitySize {
+            return [GridItem(.flexible())]
+        }
+        return [GridItem(.adaptive(minimum: 150), spacing: 8)]
+    }
+
     private func behaviorChip(_ tag: BehaviorJournalEntry.Tag) -> some View {
         let selected = trackedBehaviorSet.contains(tag)
         return Button {
@@ -1081,15 +1128,15 @@ struct AtriaOnboardingFlow: View {
                 Text(tag.label)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(selected ? .primary : .secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
                     .font(.caption)
                     .foregroundStyle(selected ? Color.cyan : Color.secondary.opacity(0.45))
             }
             .padding(.horizontal, 10)
-            .frame(minHeight: 40)
+            .frame(minHeight: 44)
             .frame(maxWidth: .infinity)
             .background(selected ? Color.cyan.opacity(0.12) : Color.secondary.opacity(0.06),
                         in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -1101,6 +1148,7 @@ struct AtriaOnboardingFlow: View {
         .buttonStyle(.plain)
         .accessibilityLabel(tag.label)
         .accessibilityValue(selected ? "Tracked" : "Not tracked")
+        .accessibilityHint(selected ? "Double tap to stop tracking" : "Double tap to track")
     }
 
     private func toggleTrackedBehavior(_ tag: BehaviorJournalEntry.Tag) {
@@ -1196,10 +1244,6 @@ struct AtriaOnboardingFlow: View {
         .accessibilityLabel("Step \(step.rawValue + 1) of \(Step.allCases.count)")
     }
 
-    private var currentBirthYear: Int {
-        Calendar.current.component(.year, from: Date()) - draft.age
-    }
-
     private var ageBinding: Binding<Int> {
         Binding {
             draft.age
@@ -1251,49 +1295,6 @@ struct AtriaOnboardingFlow: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)
-    }
-
-    /// Image-led hero for the strap step (2026-07-30, user: onboarding should lead
-    /// with a real strap image and feel more visual). Shows the strap photo once one
-    /// is added to Assets.xcassets → AtriaStrapHero; until then a calm gradient panel
-    /// with a wireless-sensor glyph keeps the page premium and never broken-looking.
-    /// The slot is intentionally empty so dropping an image in Xcode is all it takes.
-    @ViewBuilder
-    private var strapHero: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.hero, style: .continuous)
-                .fill(
-                    LinearGradient(colors: [Color.blue.opacity(0.14), Color.blue.opacity(0.04)],
-                                   startPoint: .topLeading,
-                                   endPoint: .bottomTrailing)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.hero, style: .continuous)
-                        .stroke(Color.blue.opacity(0.12), lineWidth: 1)
-                }
-
-            if let strapImage = UIImage(named: "AtriaStrapHero") {
-                Image(uiImage: strapImage)
-                    .resizable()
-                    .scaledToFit()
-                    .padding(20)
-                    .accessibilityLabel("Your Atria strap")
-            } else if let strapIllustration = UIImage(named: "AtriaStrapHero3D") {
-                Image(uiImage: strapIllustration)
-                    .resizable()
-                    .scaledToFit()
-                    .padding(20)
-                    .accessibilityLabel("Your Atria strap")
-            } else {
-                Image(systemName: "sensor.tag.radiowaves.forward.fill")
-                    .font(.system(size: 68, weight: .regular))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.blue)
-                    .accessibilityHidden(true)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 190)
     }
 
     /// Optional lifestyle art from the onboarding image handoff. It gives the
@@ -1387,18 +1388,6 @@ struct AtriaOnboardingFlow: View {
         }
     }
 
-    private func numericProfileField(_ title: String, value: Binding<Double>, suffix: String) -> some View {
-        profileFieldLayout(title: title, suffix: suffix) {
-            TextField(title, value: value, format: .number.precision(.fractionLength(0)))
-                .keyboardType(.numberPad)
-                .multilineTextAlignment(.trailing)
-                .monospacedDigit()
-                .frame(minWidth: 88, idealWidth: 96, maxWidth: 132)
-                .frame(minHeight: 44)
-                .textFieldStyle(.roundedBorder)
-        }
-    }
-
     @ViewBuilder
     private func profileFieldLayout<Editor: View>(
         title: String,
@@ -1429,30 +1418,6 @@ struct AtriaOnboardingFlow: View {
             }
             .frame(minHeight: 44)
         }
-    }
-
-    private func setupStepTile(_ number: Int, title: String, systemImage: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("\(number)")
-                    .font(.caption.weight(.bold).monospacedDigit())
-                    .foregroundStyle(.blue)
-                Spacer(minLength: 4)
-                Image(systemName: systemImage)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.blue)
-                    .accessibilityHidden(true)
-            }
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
-        .padding(10)
-        .atriaInsetCard(tint: .blue)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Step \(number), \(title)")
     }
 
     private func expectationStep(icon: String,

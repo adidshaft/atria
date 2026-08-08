@@ -1821,6 +1821,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// standard 2A37 live while serving and allow a full 30-minute silent
     /// window; disconnect callbacks still interrupt immediately.
     private var offlineHistoricalSyncLastProgressUptime: TimeInterval?
+    /// A narrower clock for the connected-slice productivity hold. Unlike the
+    /// general watchdog clock above, this advances only after the reducer's
+    /// durable flush boundary or its durability-gated ACK is accepted. A
+    /// buffered archive append, preflight response, continuation write,
+    /// duplicate terminal replay, or failed ACK must never keep a silent
+    /// history owner pinned as though durable rows were still landing
+    /// (2026-08-08 independent e1124678 review).
+    private var offlineHistoricalSyncLastDurableProgressUptime: TimeInterval?
     private let offlineHistoricalSyncIdleTimeout: TimeInterval = 30 * 60
     /// The 30-minute window above is justified only after the strap has
     /// acknowledged the drain with HISTORY_START: physical WHOOP 4 serves the
@@ -11481,6 +11489,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         offlineHistoricalSyncInProgress = true
         offlineHistoricalSyncHistoryStartObserved = false
+        offlineHistoricalSyncLastDurableProgressUptime = nil
         markActiveWorkoutHistoricalMotionBankAttemptForStartedGeneration(
             at: attemptAt,
             generation: syncGeneration
@@ -12066,7 +12075,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func noteOfflineHistoricalSyncProgress(
         generation: UInt64,
-        reason: String
+        reason: String,
+        advancesDurableConnectedSliceHold: Bool = false
     ) {
         guard offlineHistoricalSyncInProgress,
               generation == offlineHistoricalSyncGeneration else { return }
@@ -12083,7 +12093,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // then is the long post-start silent window justified.
             offlineHistoricalSyncHistoryStartObserved = true
         }
-        offlineHistoricalSyncLastProgressUptime = ProcessInfo.processInfo.systemUptime
+        let progressUptime = ProcessInfo.processInfo.systemUptime
+        offlineHistoricalSyncLastProgressUptime = progressUptime
+        if advancesDurableConnectedSliceHold {
+            offlineHistoricalSyncLastDurableProgressUptime = progressUptime
+        }
         if reason != "historical_frame" {
             AtriaDebugLog("ATRIADBG offline_sync watchdog=progress generation=%llu event=%@",
                           generation,
@@ -12193,9 +12207,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             : backgroundHistoricalSliceLiveSilenceLimit
         // Drain-keeping P4: hold a productive slice through live-HR silence when
         // nobody is watching live HR (the P2 maintenance window) and the drain is
-        // still pulling durable rows. `recentDurableProgress` uses the same
-        // per-frame uptime clock the GATT idle-timeout watchdog trusts, so a
-        // stalled slice never qualifies and still releases below.
+        // still pulling durable rows. `recentDurableProgress` uses the narrower
+        // flush/ACK clock; the GATT idle-timeout keeps its
+        // broader protocol-liveness clock. A stalled row stream therefore stops
+        // qualifying even if control retries continue and still releases below.
         let defaults = UserDefaults.standard
         let recentDisconnectStorm =
             defaults.integer(forKey: Self.protectedR10EarlyDisconnectsKey)
@@ -12205,10 +12220,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     now.timeIntervalSince1970 - $0 < 300
                 } ?? false
         let nowUptime = ProcessInfo.processInfo.systemUptime
-        let recentDurableProgress = offlineHistoricalSyncLastProgressUptime.map {
-            $0.isFinite && nowUptime.isFinite && nowUptime >= $0
-                && (nowUptime - $0) < silenceLimit
-        } ?? false
+        let recentDurableProgress = Self.historicalSyncHasRecentDurableProgress(
+            lastDurableProgressUptime:
+                offlineHistoricalSyncLastDurableProgressUptime,
+            nowUptime: nowUptime,
+            silenceLimit: silenceLimit
+        )
         // Signal-parity (2026-08-08): key the hold on the ROBUST backlog signal,
         // exactly like the admission and P3 callers of isFlushMaintenanceWindow —
         // NOT the raw rangeLossBackfillPending ticket. That ticket can be cleared
@@ -12221,7 +12238,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // stalled slice still releases below.
         let productiveBacklogHold = Self.shouldHoldProductiveBacklogSlice(
             backlogPending: strapBacklogPendingForCatchUp(now: now),
-            foregroundInteractive: foregroundInteractiveMode,
+            // Fail toward live HR across lifecycle races: either the scene-owned
+            // mode or UIApplication's immediate state can prove interactivity.
+            foregroundInteractive: foreground || foregroundInteractiveMode,
             cleanOwnerState: protectedR10CleanOwnerState,
             activeExplicitWorkout: AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
             recentDisconnectStorm: recentDisconnectStorm,
@@ -12236,7 +12255,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 "ATRIADBG offline_sync status=connected_slice_held_productive_backlog generation=%llu elapsed_s=%.0f progress_age_s=%.1f foreground=%d action=keep_draining_backlog_through_live_hr_silence",
                 generation,
                 now.timeIntervalSince(startedAt),
-                offlineHistoricalSyncLastProgressUptime.map { max(0, nowUptime - $0) } ?? -1,
+                offlineHistoricalSyncLastDurableProgressUptime.map {
+                    max(0, nowUptime - $0)
+                } ?? -1,
                 foreground ? 1 : 0
             )
         }
@@ -12659,6 +12680,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         offlineHistoricalSyncTimeoutTask?.cancel()
         offlineHistoricalSyncTimeoutTask = nil
         offlineHistoricalSyncLastProgressUptime = nil
+        offlineHistoricalSyncLastDurableProgressUptime = nil
         offlineHistoricalSyncStartRows = rows
         let verifiedEmptyCursor = verifiedEmptyHistoryCursorGeneration == generation
         let completedDrain = offlineHistoricalSyncReachedTerminal || verifiedEmptyCursor
@@ -30967,7 +30989,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                          forKey: OfflineSyncDefaults.lastDurableFlushBoundaryOKAt)
                             self.noteOfflineHistoricalSyncProgress(
                                 generation: generation,
-                                reason: "durable_flush"
+                                reason: "durable_flush",
+                                advancesDurableConnectedSliceHold: true
                             )
                         }
                         if let error {
@@ -33788,7 +33811,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         noteOfflineHistoricalSyncProgress(
             generation: ackIdentity.generation,
-            reason: "history_ack_logically_accepted"
+            reason: "history_ack_logically_accepted",
+            advancesDurableConnectedSliceHold: true
         )
         AtriaDebugLog("ATRIADBG historyAck status=accepted key=%@ generation=%llu attempt=%d command_seq=%d proof=%@ response_seq=%d response=%@",
                       pendingHistoryEndACK.key,

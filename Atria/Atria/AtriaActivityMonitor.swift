@@ -586,6 +586,290 @@ enum AtriaActivityTimelineBuilder {
     }
 }
 
+/// A real recorded point selected for the compact Activity heart-rate trace.
+/// `segment` changes across material capture gaps so Charts never connects two
+/// observations through time when the strap was not read.
+struct AtriaActivityTimelineHeartRatePoint: Identifiable, Equatable, Sendable {
+    let id: Int
+    let t: Date
+    let bpm: Int
+    let segment: Int
+    let isOnlyPointInSegment: Bool
+}
+
+/// Sendable snapshot of one in-memory stress observation. The stress store's
+/// history is intentionally session-only; this value exists only to reduce a
+/// selected window away from the main actor without broadening persistence.
+struct AtriaActivityTimelineStressSample: Equatable, Sendable {
+    let t: Date
+    let score: Double
+    let levelRawValue: Int
+}
+
+struct AtriaActivityTimelineStressPoint: Identifiable, Equatable, Sendable {
+    let id: Int
+    let t: Date
+    let score: Double
+    let levelRawValue: Int
+    let segment: Int
+    let isOnlyPointInSegment: Bool
+
+    var level: AtriaStressLevel? { AtriaStressLevel(rawValue: levelRawValue) }
+}
+
+struct AtriaActivityTimelineHeartRateProjection: Equatable, Sendable {
+    let points: [AtriaActivityTimelineHeartRatePoint]
+    let measuredSampleCount: Int
+
+    static let empty = Self(points: [], measuredSampleCount: 0)
+}
+
+struct AtriaActivityTimelineStressProjection: Equatable, Sendable {
+    let points: [AtriaActivityTimelineStressPoint]
+    let measuredSampleCount: Int
+
+    static let empty = Self(points: [], measuredSampleCount: 0)
+}
+
+/// Bounded selected-day projections for the two Activity monitor traces.
+/// Reduction selects existing samples at stable indices; it never creates an
+/// averaged value or a synthetic timestamp. Each real gap remains a new series.
+enum AtriaActivityTimelineSignalProjection {
+    static let heartRateGapThreshold: TimeInterval = 2 * 60
+    static let stressGapThreshold: TimeInterval = 5 * 60
+
+    static func heartRate(
+        samples: [HistoricalArchive.HeartRatePoint],
+        interval: DateInterval,
+        targetPointCount: Int = 240
+    ) -> AtriaActivityTimelineHeartRateProjection {
+        guard interval.end > interval.start else { return .empty }
+        let measured = samples
+            .filter { $0.t >= interval.start && $0.t < interval.end && $0.bpm > 0 }
+            .sorted {
+                if $0.t != $1.t { return $0.t < $1.t }
+                return $0.bpm < $1.bpm
+            }
+        let runs = segmented(measured, date: \.t, gapThreshold: heartRateGapThreshold)
+        var points: [AtriaActivityTimelineHeartRatePoint] = []
+        points.reserveCapacity(min(measured.count, max(targetPointCount, runs.count * 2)))
+        var id = 0
+        for (segment, run) in runs.enumerated() {
+            let selected = selectRealSamples(run,
+                                             totalSampleCount: measured.count,
+                                             targetPointCount: targetPointCount,
+                                             value: { Double($0.bpm) })
+            let singleton = selected.count == 1
+            for sample in selected {
+                points.append(.init(id: id,
+                                    t: sample.t,
+                                    bpm: sample.bpm,
+                                    segment: segment,
+                                    isOnlyPointInSegment: singleton))
+                id += 1
+            }
+        }
+        return .init(points: points, measuredSampleCount: measured.count)
+    }
+
+    static func stress(
+        samples: [AtriaActivityTimelineStressSample],
+        interval: DateInterval,
+        targetPointCount: Int = 180
+    ) -> AtriaActivityTimelineStressProjection {
+        guard interval.end > interval.start else { return .empty }
+        let measured = samples
+            .filter {
+                $0.t >= interval.start && $0.t < interval.end
+                    && $0.score.isFinite && (0...3).contains($0.score)
+            }
+            .sorted {
+                if $0.t != $1.t { return $0.t < $1.t }
+                return $0.score < $1.score
+            }
+        let runs = segmented(measured, date: \.t, gapThreshold: stressGapThreshold)
+        var points: [AtriaActivityTimelineStressPoint] = []
+        points.reserveCapacity(min(measured.count, max(targetPointCount, runs.count * 2)))
+        var id = 0
+        for (segment, run) in runs.enumerated() {
+            let selected = selectRealSamples(run,
+                                             totalSampleCount: measured.count,
+                                             targetPointCount: targetPointCount,
+                                             value: { $0.score })
+            let singleton = selected.count == 1
+            for sample in selected {
+                points.append(.init(id: id,
+                                    t: sample.t,
+                                    score: sample.score,
+                                    levelRawValue: sample.levelRawValue,
+                                    segment: segment,
+                                    isOnlyPointInSegment: singleton))
+                id += 1
+            }
+        }
+        return .init(points: points, measuredSampleCount: measured.count)
+    }
+
+    private static func segmented<Sample>(
+        _ samples: [Sample],
+        date: KeyPath<Sample, Date>,
+        gapThreshold: TimeInterval
+    ) -> [[Sample]] {
+        guard !samples.isEmpty else { return [] }
+        var runs: [[Sample]] = []
+        var current: [Sample] = []
+        for sample in samples {
+            if let previous = current.last,
+               sample[keyPath: date].timeIntervalSince(previous[keyPath: date]) > gapThreshold {
+                runs.append(current)
+                current = []
+            }
+            current.append(sample)
+        }
+        if !current.isEmpty { runs.append(current) }
+        return runs
+    }
+
+    /// Keeps the first/last observation plus real min/max observations from
+    /// bounded interior buckets. Peaks survive reduction without averaged
+    /// values or synthetic timestamps. A run may receive two points beyond the
+    /// nominal proportional budget so it never collapses into a fabricated line.
+    private static func selectRealSamples<Sample>(
+        _ samples: [Sample],
+        totalSampleCount: Int,
+        targetPointCount: Int,
+        value: (Sample) -> Double
+    ) -> [Sample] {
+        guard samples.count > 1 else { return samples }
+        guard targetPointCount > 1, totalSampleCount > targetPointCount else { return samples }
+        let proportional = Int((Double(samples.count) / Double(totalSampleCount)
+                                * Double(targetPointCount)).rounded())
+        let budget = min(samples.count, max(2, proportional))
+        guard samples.count > budget else { return samples }
+        guard budget >= 4 else { return [samples[0], samples[samples.count - 1]] }
+
+        let interiorCount = samples.count - 2
+        let bucketCount = max(1, (budget - 2) / 2)
+        var selectedIndices = [0]
+        selectedIndices.reserveCapacity(bucketCount * 2 + 2)
+        for bucket in 0..<bucketCount {
+            let lower = 1 + bucket * interiorCount / bucketCount
+            let upper = 1 + (bucket + 1) * interiorCount / bucketCount
+            guard lower < upper else { continue }
+            var minimum = lower
+            var maximum = lower
+            for index in (lower + 1)..<upper {
+                if value(samples[index]) < value(samples[minimum]) { minimum = index }
+                if value(samples[index]) > value(samples[maximum]) { maximum = index }
+            }
+            selectedIndices.append(minimum)
+            if maximum != minimum { selectedIndices.append(maximum) }
+        }
+        selectedIndices.append(samples.count - 1)
+        return Array(Set(selectedIndices)).sorted().map { samples[$0] }
+    }
+}
+
+/// Inputs and visible slices for the single Activity marker lane. When saved
+/// intervals conflict, a higher-trust interval owns only the overlapping time;
+/// the lower-trust event remains visible before/after it and in the row list.
+/// No event is shifted to a time at which it did not happen.
+struct AtriaActivityTimelineMarkerInterval: Equatable, Sendable {
+    let id: String
+    let start: Date
+    let end: Date
+    let priority: Int
+}
+
+struct AtriaActivityTimelineMarkerSlice: Equatable, Identifiable, Sendable {
+    let id: String
+    let sourceID: String
+    let start: Date
+    let end: Date
+}
+
+enum AtriaActivityTimelineMarkerProjection {
+    static func nonOverlappingSlices(
+        _ intervals: [AtriaActivityTimelineMarkerInterval]
+    ) -> [AtriaActivityTimelineMarkerSlice] {
+        let ordered = intervals
+            .filter { $0.end > $0.start }
+            .sorted {
+                if $0.priority != $1.priority { return $0.priority > $1.priority }
+                if $0.start != $1.start { return $0.start < $1.start }
+                if $0.end != $1.end { return $0.end < $1.end }
+                return $0.id < $1.id
+            }
+        var occupied: [(start: Date, end: Date)] = []
+        var output: [AtriaActivityTimelineMarkerSlice] = []
+
+        for interval in ordered {
+            var visible = [(start: interval.start, end: interval.end)]
+            for cover in occupied {
+                visible = visible.flatMap { piece in
+                    subtract(cover: cover, from: piece)
+                }
+                if visible.isEmpty { break }
+            }
+            for (index, piece) in visible.enumerated() where piece.end > piece.start {
+                let keepsWholeInterval = visible.count == 1
+                    && piece.start == interval.start && piece.end == interval.end
+                output.append(.init(id: keepsWholeInterval
+                                        ? interval.id
+                                        : "\(interval.id)-visible-\(index)",
+                                    sourceID: interval.id,
+                                    start: piece.start,
+                                    end: piece.end))
+            }
+            occupied = merged(occupied + visible)
+        }
+        return output.sorted {
+            if $0.start != $1.start { return $0.start < $1.start }
+            if $0.end != $1.end { return $0.end < $1.end }
+            return $0.id < $1.id
+        }
+    }
+
+    private static func subtract(
+        cover: (start: Date, end: Date),
+        from piece: (start: Date, end: Date)
+    ) -> [(start: Date, end: Date)] {
+        guard cover.end > piece.start, cover.start < piece.end else { return [piece] }
+        var remainder: [(start: Date, end: Date)] = []
+        if cover.start > piece.start {
+            remainder.append((piece.start, min(cover.start, piece.end)))
+        }
+        if cover.end < piece.end {
+            remainder.append((max(cover.end, piece.start), piece.end))
+        }
+        return remainder
+    }
+
+    private static func merged(
+        _ intervals: [(start: Date, end: Date)]
+    ) -> [(start: Date, end: Date)] {
+        let ordered = intervals
+            .filter { $0.end > $0.start }
+            .sorted {
+                if $0.start != $1.start { return $0.start < $1.start }
+                return $0.end < $1.end
+            }
+        var result: [(start: Date, end: Date)] = []
+        for interval in ordered {
+            guard let last = result.last else {
+                result.append(interval)
+                continue
+            }
+            if interval.start <= last.end {
+                result[result.count - 1] = (last.start, max(last.end, interval.end))
+            } else {
+                result.append(interval)
+            }
+        }
+        return result
+    }
+}
+
 /// Prevents a fast Share tap from racing the asynchronous route read. The tap
 /// is retained while the saved route is prepared, then consumed exactly once
 /// so a routed workout never opens a map-less social card merely because disk
@@ -670,6 +954,38 @@ struct AtriaActivityMonitorTab: View {
     @State private var viewingCurrentPhysiologicalDay = true
     @State private var activityMemo = AtriaActivityMonitorMemo()
     @State private var daySectionsCache = AtriaActivitySectionsCache<[DaySection]>()
+    @State private var selectedSignal: TimelineSignal = .heartRate
+    @State private var heartRateProjection = AtriaActivityTimelineHeartRateProjection.empty
+    @State private var liveHeartRateTail: [AtriaActivityTimelineHeartRatePoint] = []
+    @State private var heartRateLoadState: HeartRateLoadState = .idle
+    @State private var stressProjection = AtriaActivityTimelineStressProjection.empty
+
+    private enum TimelineSignal: String, CaseIterable, Hashable {
+        case heartRate = "Heart rate"
+        case stress = "Stress"
+    }
+
+    private enum HeartRateLoadState: Equatable {
+        case idle
+        case loading
+        case loaded
+        case unavailable
+    }
+
+    /// Current-day windows advance each minute, but re-scanning the raw archive
+    /// every time the clock or stress store publishes would be unnecessary I/O.
+    /// Current windows key by their wake boundary and refresh on re-entry; a
+    /// fresh live reading extends the plotted trace while the screen is mounted.
+    private struct TimelineSignalWindowKey: Hashable {
+        let start: Date
+        let historicalEnd: Date?
+        let isCurrent: Bool
+    }
+
+    private struct TimelineStressRequestKey: Hashable {
+        let window: TimelineSignalWindowKey
+        let historyRevision: Int
+    }
 
     private enum Entry: Identifiable {
         case sleep(SleepHistorySnapshot.Night)
@@ -752,17 +1068,11 @@ struct AtriaActivityMonitorTab: View {
             activityToolbar
 
             let sections = daySectionsCache.value(for: requestKey) ?? []
-            // A fully-empty settled day used to stack three adjacent
-            // negatives (stress "waiting" + bare axis "nothing recorded" +
-            // the big empty card) and read as broken. The empty card 60pt
-            // below explains the day better than a bare axis; the strip
-            // still shows while loading and whenever anything is recorded
-            // (2026-08-04 WHOOP-alignment review, rank 7).
-            if !timelineSpans.isEmpty
-                || daySectionsCache.publishedKey != requestKey
-                || !sections.isEmpty {
-                dayTimelineCard
-            }
+            // Signals are useful even on a day without a saved workout. Keep
+            // one monitor mounted for the selected window; its localized empty
+            // state distinguishes no captured HR, session-only stress history,
+            // and an unreadable archive instead of presenting a blank plot.
+            dayTimelineCard
 
             if daySectionsCache.publishedKey != requestKey {
                 activityLoadingState
@@ -823,6 +1133,19 @@ struct AtriaActivityMonitorTab: View {
             await refreshDaySections(for: requestKey,
                                      activity: activity,
                                      calendar: calendar)
+        }
+        .task(id: timelineSignalWindowKey) {
+            let window = currentDisplayWindow
+            await refreshTimelineHeartRate(window: window,
+                                           requestKey: timelineSignalWindowKey)
+        }
+        .task(id: timelineStressRequestKey) {
+            let window = currentDisplayWindow
+            await refreshTimelineStress(window: window,
+                                        requestKey: timelineStressRequestKey)
+        }
+        .onChange(of: stressMonitorStore.liveHeartRate) { _, reading in
+            appendFreshLiveHeartRate(reading)
         }
         .onAppear {
             #if DEBUG
@@ -1150,131 +1473,429 @@ struct AtriaActivityMonitorTab: View {
             : AtriaActivityDisplayWindow.historical(day: timelineDay, calendar: calendar)
     }
 
+    private var timelineSignalWindowKey: TimelineSignalWindowKey {
+        let window = currentDisplayWindow
+        return TimelineSignalWindowKey(start: window.interval.start,
+                                       historicalEnd: window.isCurrentPhysiologicalDay ? nil : window.interval.end,
+                                       isCurrent: window.isCurrentPhysiologicalDay)
+    }
+
+    private var timelineStressRequestKey: TimelineStressRequestKey {
+        TimelineStressRequestKey(window: timelineSignalWindowKey,
+                                 historyRevision: stressMonitorStore.historyRevision)
+    }
+
+    @MainActor
+    private func refreshTimelineHeartRate(window: AtriaActivityDisplayWindow,
+                                          requestKey: TimelineSignalWindowKey) async {
+        heartRateLoadState = .loading
+        heartRateProjection = .empty
+        liveHeartRateTail = []
+        let end = window.isCurrentPhysiologicalDay ? max(window.interval.end, Date()) : window.interval.end
+        let interval = DateInterval(start: window.interval.start,
+                                    end: max(end, window.interval.start.addingTimeInterval(1)))
+        let result = await Task.detached(priority: .utility) {
+            guard let read = HistoricalArchive.metricHeartRatePoints(start: interval.start,
+                                                                      end: interval.end,
+                                                                      maximumPoints: 100_000) else {
+                return Optional<AtriaActivityTimelineHeartRateProjection>.none
+            }
+            return AtriaActivityTimelineSignalProjection.heartRate(samples: read.points,
+                                                                    interval: interval)
+        }.value
+        guard !Task.isCancelled, requestKey == timelineSignalWindowKey else { return }
+        if let result {
+            heartRateProjection = result
+            heartRateLoadState = .loaded
+        } else {
+            heartRateProjection = .empty
+            heartRateLoadState = .unavailable
+        }
+        appendFreshLiveHeartRate(stressMonitorStore.liveHeartRate)
+    }
+
+    @MainActor
+    private func refreshTimelineStress(window: AtriaActivityDisplayWindow,
+                                       requestKey: TimelineStressRequestKey) async {
+        stressProjection = .empty
+        let end = window.isCurrentPhysiologicalDay ? max(window.interval.end, Date()) : window.interval.end
+        let interval = DateInterval(start: window.interval.start,
+                                    end: max(end, window.interval.start.addingTimeInterval(1)))
+        let samples = stressMonitorStore.history.map {
+            AtriaActivityTimelineStressSample(t: $0.t,
+                                              score: $0.activation * 3,
+                                              levelRawValue: $0.level.rawValue)
+        }
+        let result = await Task.detached(priority: .utility) {
+            AtriaActivityTimelineSignalProjection.stress(samples: samples,
+                                                         interval: interval)
+        }.value
+        guard !Task.isCancelled, requestKey == timelineStressRequestKey else { return }
+        stressProjection = result
+    }
+
+    @MainActor
+    private func appendFreshLiveHeartRate(_ reading: AtriaStressMonitorStore.LiveHeartRateReading?) {
+        guard let reading,
+              currentDisplayWindow.isCurrentPhysiologicalDay,
+              reading.isFresh(),
+              reading.bpm > 0,
+              reading.at >= currentDisplayWindow.interval.start else { return }
+        let existingLast = liveHeartRateTail.last ?? heartRateProjection.points.last
+        if let latest = existingLast {
+            guard reading.at > latest.t,
+                  reading.at.timeIntervalSince(latest.t) >= 5 * 60 else { return }
+        }
+        var tail = liveHeartRateTail
+        let segment = existingLast.map {
+            reading.at.timeIntervalSince($0.t) > AtriaActivityTimelineSignalProjection.heartRateGapThreshold
+                ? $0.segment + 1 : $0.segment
+        } ?? 0
+        if let last = tail.last, last.segment == segment, last.isOnlyPointInSegment {
+            tail[tail.count - 1] = .init(id: last.id,
+                                         t: last.t,
+                                         bpm: last.bpm,
+                                         segment: last.segment,
+                                         isOnlyPointInSegment: false)
+        }
+        let nextID = max(heartRateProjection.points.last?.id ?? -1,
+                         tail.last?.id ?? -1) + 1
+        tail.append(.init(id: nextID,
+                          t: reading.at,
+                          bpm: reading.bpm,
+                          segment: segment,
+                          isOnlyPointInSegment: existingLast?.segment != segment))
+        // One real point per five minutes keeps a full bounded physiological
+        // cycle (<=28h) at <=336 appended points. Nothing is trimmed, so a
+        // mounted all-day trace cannot lose its earlier live observations.
+        liveHeartRateTail = tail
+    }
+
+    private var timelineHeartRatePoints: [AtriaActivityTimelineHeartRatePoint] {
+        heartRateProjection.points + liveHeartRateTail
+    }
+
     private var dayTimelineCard: some View {
         let calendar = Calendar.current
         let window = currentDisplayWindow
-        let dayStart = window.interval.start
-        let dayEnd = window.interval.end
+        let liveEnd = window.isCurrentPhysiologicalDay ? max(window.interval.end, Date()) : window.interval.end
+        let plotEnd = max(liveEnd, window.interval.start.addingTimeInterval(60))
+        let plotRange = window.interval.start...plotEnd
         let spans = timelineSpans
-        let axisTicks = AtriaActivityTimelineAxis.ticks(interval: window.interval,
+        let axisTicks = AtriaActivityTimelineAxis.ticks(
+                                                        interval: DateInterval(start: window.interval.start,
+                                                                               end: plotEnd),
                                                         isCurrent: window.isCurrentPhysiologicalDay,
                                                         calendar: calendar)
 
-        return VStack(alignment: .leading, spacing: 0) {
-            if spans.isEmpty {
-                Chart {
-                    RuleMark(y: .value("Lane", 0))
-                        .foregroundStyle(.clear)
-                }
-                .chartXScale(domain: dayStart...dayEnd)
-                .chartYAxis(.hidden)
-                .chartXAxis {
-                    AxisMarks(values: axisTicks.map(\.date)) { value in
-                        AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
-                        // Not `centered:` — that offsets each label half an
-                        // interval right, honest only for BAND axes; on this
-                        // continuous time axis it floated hour labels ~3.5h
-                        // from their gridlines and pushed "Now" off the edge
-                        // (2026-08-04 WHOOP-alignment review, rank 2).
-                        AxisValueLabel {
-                            if let date = value.as(Date.self),
-                               let tick = AtriaActivityTimelineAxis.tick(at: date, in: axisTicks) {
-                                Text(tick.label)
-                                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-                .frame(height: 44)
-                // Same pattern as the heart-rate timeline's empty state: say
-                // the strip is empty instead of presenting a bare axis that
-                // reads as broken (sighted users previously got only the
-                // VoiceOver label).
-                .chartOverlay { _ in
-                    Text(window.isCurrentPhysiologicalDay
-                         ? "No activity recorded yet today"
-                         : "No activity recorded on this day")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                .accessibilityLabel("No recorded activity for this day")
-            } else {
-                Chart(spans) { span in
-                    BarMark(xStart: .value("Start", span.start),
-                            xEnd: .value("End", span.end),
-                            y: .value("Lane", span.lane))
-                        .foregroundStyle(span.tint.opacity(0.85))
-                        .cornerRadius(4)
+        return VStack(alignment: .leading, spacing: 8) {
+            AtriaTextSelector(items: TimelineSignal.allCases,
+                              title: { $0.rawValue },
+                              selection: $selectedSignal)
 
-                    // A true-duration bar can be sub-pixel for a one-minute
-                    // activity on a 24-hour axis. Keep duration honest while
-                    // guaranteeing every saved activity has a visible marker.
-                    PointMark(x: .value("Activity", span.midpoint),
-                              y: .value("Lane", span.lane))
-                        .foregroundStyle(span.tint)
-                        .symbolSize(360)
-                        .annotation(position: .overlay, spacing: 0) {
-                            Image(systemName: span.icon)
-                                .font(.caption.weight(.black))
-                                .foregroundStyle(.white)
-                                .accessibilityHidden(true)
-                        }
-                }
-                .chartXScale(domain: dayStart...dayEnd)
-                // Four hours makes adjacent activities readable instead of
-                // compressing a whole physiological day into one tiny strip.
-                // The remaining day stays available via native horizontal
-                // scrolling; full-screen inspection also supports pinch zoom.
-                .chartScrollableAxes(.horizontal)
-                .chartXVisibleDomain(length: 4 * 60 * 60)
-                .chartYAxis(.hidden)
-                .chartXAxis {
-                    AxisMarks(values: axisTicks.map(\.date)) { value in
-                        AxisGridLine()
-                            .foregroundStyle(.secondary.opacity(0.12))
-                        // Not `centered:` — that offsets each label half an
-                        // interval right, honest only for BAND axes; on this
-                        // continuous time axis it floated hour labels ~3.5h
-                        // from their gridlines and pushed "Now" off the edge
-                        // (2026-08-04 WHOOP-alignment review, rank 2).
-                        AxisValueLabel {
-                            if let date = value.as(Date.self),
-                               let tick = AtriaActivityTimelineAxis.tick(at: date, in: axisTicks) {
-                                Text(tick.label)
-                                    .font(.system(size: 9, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(.secondary)
-                                    .accessibilityLabel(tick.accessibilityLabel)
-                            }
-                        }
-                    }
-                }
-                .frame(height: max(62, CGFloat(Set(spans.map(\.lane)).count) * 30 + 18))
-                .clipped()
-                .accessibilityLabel("Activity timeline")
-                .accessibilityValue(spans.map {
-                    "\($0.label), \(Self.timeRange(start: $0.start, end: $0.end))"
-                }.joined(separator: "; "))
+            HStack(spacing: 8) {
+                Text(timelineSignalUpdatedText)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text(timelineSignalValueText)
+                    .font(.subheadline.weight(.black).monospacedDigit())
+                    .foregroundStyle(selectedSignal == .stress ? Metrics.electricStress : Color.red)
+                    .lineLimit(1)
+            }
+
+            if selectedSignal == .heartRate {
+                heartRateTimelineChart(range: plotRange,
+                                       axisTicks: axisTicks,
+                                       spans: spans)
+            } else {
+                stressTimelineChart(range: plotRange,
+                                    axisTicks: axisTicks,
+                                    spans: spans)
             }
         }
-        .padding(8)
+        .padding(12)
         .atriaCard(emphasis: .soft)
-        .atriaInspectableGraph(spans.isEmpty ? nil : AtriaInspectableGraph(
-            title: "Activity timeline",
-            subtitle: window.isCurrentPhysiologicalDay
-                ? "Since waking"
-                : window.labelDay.formatted(date: .long, time: .omitted),
-            content: .intervals(spans.map { span in
-                .init(id: span.id,
-                      lane: span.lane,
-                      label: span.label,
-                      start: span.start,
-                      end: span.end,
-                      tint: span.tint)
-            }, domain: dayStart...dayEnd),
-            preferredVisibleDuration: 4 * 60 * 60
-        ))
+        .atriaInspectableGraph(timelineSignalInspector)
+    }
+
+    private func heartRateTimelineChart(
+        range: ClosedRange<Date>,
+        axisTicks: [AtriaActivityTimelineAxisTick],
+        spans: [TimelineSpan]
+    ) -> some View {
+        let points = timelineHeartRatePoints
+        let domain = AtriaHeartRateChartSeries.yDomain(for: points.map {
+            .init(t: $0.t, bpm: $0.bpm)
+        })
+        return Chart {
+            ForEach(points) { point in
+                LineMark(x: .value("Time", point.t),
+                         y: .value("Heart rate", point.bpm),
+                         series: .value("Observed run", "hr-\(point.segment)"))
+                    .lineStyle(StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                    .foregroundStyle(.red)
+                if point.isOnlyPointInSegment {
+                    PointMark(x: .value("Time", point.t),
+                              y: .value("Heart rate", point.bpm))
+                        .foregroundStyle(.red)
+                        .symbolSize(16)
+                }
+            }
+        }
+        .chartXScale(domain: range)
+        .chartYScale(domain: domain)
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
+                AxisValueLabel().font(.system(size: 9, weight: .medium, design: .rounded))
+            }
+        }
+        .chartXAxis { timelineXAxis(axisTicks) }
+        .frame(height: 154)
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                timelinePlotOverlay(proxy: proxy,
+                                    geometry: geometry,
+                                    spans: spans,
+                                    emptyMessage: heartRateEmptyMessage)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Heart rate and activity timeline")
+        .accessibilityValue(heartRateAccessibilityValue(spans: spans))
+    }
+
+    private func stressTimelineChart(
+        range: ClosedRange<Date>,
+        axisTicks: [AtriaActivityTimelineAxisTick],
+        spans: [TimelineSpan]
+    ) -> some View {
+        let points = stressProjection.points
+        return Chart {
+            ForEach(points) { point in
+                LineMark(x: .value("Time", point.t),
+                         y: .value("Stress", point.score),
+                         series: .value("Observed run", "stress-\(point.segment)"))
+                    .lineStyle(StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round))
+                    .foregroundStyle(Metrics.electricStress)
+                if point.isOnlyPointInSegment {
+                    PointMark(x: .value("Time", point.t),
+                              y: .value("Stress", point.score))
+                        .foregroundStyle(Metrics.electricStress)
+                        .symbolSize(16)
+                }
+            }
+        }
+        .chartXScale(domain: range)
+        .chartYScale(domain: 0...3)
+        .chartYAxis {
+            AxisMarks(position: .leading, values: [0, 1, 2, 3]) { _ in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
+                AxisValueLabel().font(.system(size: 9, weight: .medium, design: .rounded))
+            }
+        }
+        .chartXAxis { timelineXAxis(axisTicks) }
+        .frame(height: 154)
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                timelinePlotOverlay(proxy: proxy,
+                                    geometry: geometry,
+                                    spans: spans,
+                                    emptyMessage: stressEmptyMessage)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Stress and activity timeline")
+        .accessibilityValue(stressAccessibilityValue(spans: spans))
+    }
+
+    @AxisContentBuilder
+    private func timelineXAxis(
+        _ axisTicks: [AtriaActivityTimelineAxisTick]
+    ) -> some AxisContent {
+        AxisMarks(values: axisTicks.map(\.date)) { value in
+            AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
+            AxisValueLabel {
+                if let date = value.as(Date.self),
+                   let tick = AtriaActivityTimelineAxis.tick(at: date, in: axisTicks) {
+                    Text(tick.label)
+                        .font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel(tick.accessibilityLabel)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func timelinePlotOverlay(
+        proxy: ChartProxy,
+        geometry: GeometryProxy,
+        spans: [TimelineSpan],
+        emptyMessage: String?
+    ) -> some View {
+        if let plotFrame = proxy.plotFrame {
+            let frame = geometry[plotFrame]
+            ZStack(alignment: .topLeading) {
+                if let emptyMessage {
+                    Text(emptyMessage)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(width: max(0, frame.width - 24))
+                        .position(x: frame.midX, y: frame.midY + 8)
+                }
+                ForEach(spans) { span in
+                    if let rawStart = proxy.position(forX: span.start),
+                       let rawEnd = proxy.position(forX: span.end) {
+                        let start = min(max(rawStart, 0), frame.width)
+                        let end = min(max(rawEnd, 0), frame.width)
+                        let width = max(1, end - start)
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(span.tint.opacity(0.28))
+                            .overlay {
+                                if width >= 54 {
+                                    Label(span.label, systemImage: span.icon)
+                                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                                        .lineLimit(1)
+                                        .padding(.horizontal, 4)
+                                } else if width >= 16 {
+                                    Image(systemName: span.icon)
+                                        .font(.system(size: 8, weight: .bold))
+                                }
+                            }
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .stroke(span.tint.opacity(0.42), lineWidth: 0.75)
+                            }
+                            .frame(width: width, height: 19)
+                            .position(x: frame.minX + start + width / 2,
+                                      y: frame.minY + 11)
+                            .accessibilityHidden(true)
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    private var timelineSignalValueText: String {
+        switch selectedSignal {
+        case .heartRate:
+            if currentDisplayWindow.isCurrentPhysiologicalDay,
+               let live = stressMonitorStore.liveHeartRate,
+               live.isFresh(), live.at >= currentDisplayWindow.interval.start {
+                return "\(live.bpm) bpm"
+            }
+            return timelineHeartRatePoints.last.map { "\($0.bpm) bpm" } ?? "-- bpm"
+        case .stress:
+            guard let latest = stressProjection.points.last else { return "--" }
+            let level = latest.level?.title ?? "Observed"
+            return "\(level) \(String(format: "%.1f", latest.score))"
+        }
+    }
+
+    private var timelineSignalUpdatedText: String {
+        let date: Date?
+        switch selectedSignal {
+        case .heartRate: date = timelineHeartRatePoints.last?.t
+        case .stress: date = stressProjection.points.last?.t
+        }
+        if let date { return "Last updated \(date.formatted(date: .omitted, time: .shortened))" }
+        if selectedSignal == .heartRate, heartRateLoadState == .loading {
+            return "Loading recorded signal"
+        }
+        return currentDisplayWindow.isCurrentPhysiologicalDay ? "Since waking" : "Selected day"
+    }
+
+    private var heartRateEmptyMessage: String? {
+        guard timelineHeartRatePoints.isEmpty else { return nil }
+        switch heartRateLoadState {
+        case .idle, .loading: return "Loading recorded heart rate…"
+        case .loaded: return "No heart-rate samples were captured in this window."
+        case .unavailable: return "Heart-rate history couldn’t be read for this window."
+        }
+    }
+
+    private var stressEmptyMessage: String? {
+        guard stressProjection.points.isEmpty else { return nil }
+        if currentDisplayWindow.isCurrentPhysiologicalDay {
+            let presentation = AtriaStressPresentation.make(state: stressMonitorStore.state)
+            return presentation.detail.isEmpty
+                ? "Stress needs continuous live wear before a trace appears."
+                : presentation.detail
+        }
+        return "Stress history is session-only; no saved readings are available for this day."
+    }
+
+    private func heartRateAccessibilityValue(spans: [TimelineSpan]) -> String {
+        let signal: String
+        if let low = timelineHeartRatePoints.map(\.bpm).min(),
+           let high = timelineHeartRatePoints.map(\.bpm).max() {
+            signal = "\(heartRateProjection.measuredSampleCount + liveHeartRateTail.count) measured samples, \(low) to \(high) beats per minute."
+        } else {
+            signal = heartRateEmptyMessage ?? "No measured heart rate."
+        }
+        return signal + activityAccessibilityValue(spans)
+    }
+
+    private func stressAccessibilityValue(spans: [TimelineSpan]) -> String {
+        let signal: String
+        if let low = stressProjection.points.map(\.score).min(),
+           let high = stressProjection.points.map(\.score).max() {
+            signal = String(format: "%d measured readings, %.1f to %.1f on a 0 to 3 scale.",
+                            stressProjection.measuredSampleCount, low, high)
+        } else {
+            signal = stressEmptyMessage ?? "No measured stress."
+        }
+        return signal + activityAccessibilityValue(spans)
+    }
+
+    private func activityAccessibilityValue(_ spans: [TimelineSpan]) -> String {
+        guard !spans.isEmpty else { return " No activity markers." }
+        return " Activities: " + spans.map {
+            "\($0.label), \(Self.timeRange(start: $0.start, end: $0.end))"
+        }.joined(separator: "; ")
+    }
+
+    private var timelineSignalInspector: AtriaInspectableGraph? {
+        let subtitle = currentDisplayWindow.isCurrentPhysiologicalDay
+            ? "Since waking"
+            : currentDisplayWindow.labelDay.formatted(date: .long, time: .omitted)
+        switch selectedSignal {
+        case .heartRate:
+            guard !timelineHeartRatePoints.isEmpty else { return nil }
+            return AtriaInspectableGraph(
+                title: "Heart rate",
+                subtitle: subtitle,
+                content: .timeSeries([.init(title: "Heart rate",
+                                            unit: "bpm",
+                                            tint: .red,
+                                            points: timelineHeartRatePoints.map {
+                                                .init(id: "activity-hr-\($0.id)",
+                                                      date: $0.t,
+                                                      value: Double($0.bpm),
+                                                      segment: $0.segment)
+                                            })])
+            )
+        case .stress:
+            guard !stressProjection.points.isEmpty else { return nil }
+            return AtriaInspectableGraph(
+                title: "Stress",
+                subtitle: subtitle,
+                content: .timeSeries([.init(title: "Stress",
+                                            unit: "score",
+                                            tint: Metrics.electricStress,
+                                            points: stressProjection.points.map {
+                                                .init(id: "activity-stress-\($0.id)",
+                                                      date: $0.t,
+                                                      value: $0.score,
+                                                      segment: $0.segment)
+                                            })])
+            )
+        }
     }
 
     private var addActivityMenu: some View {
@@ -1684,21 +2305,39 @@ struct AtriaActivityMonitorTab: View {
                              label: $0.label,
                              icon: $0.icon)
             })
-            // Repack every category together for presentation. Separate
-            // sleep/workout/review prefixes previously forced non-overlapping
-            // events into stacked vertical bands and made an ordinary day
-            // consume far more space than its actual overlap required.
-            let compactAssignments = AtriaActivityTimelineLanePacker.assignments(for: spans.map {
-                AtriaActivityTimelineLaneInterval(id: $0.id, start: $0.start, end: $0.end)
-            })
-            let compacted = spans.map {
-                TimelineSpan(id: $0.id,
-                             lane: "timeline-\(compactAssignments[$0.id] ?? 0)",
-                             start: $0.start,
-                             end: $0.end,
-                             tint: $0.tint,
-                             label: $0.label,
-                             icon: $0.icon)
+            // A person has one activity state at a time, so the monitor uses
+            // one translucent marker lane. Confirmed workouts own conflicts,
+            // then saved sleep, then unsaved review evidence. Lower-priority
+            // events are clipped only where they conflict; their remaining
+            // real time and their tappable row stay visible.
+            let sourceByID = Dictionary(uniqueKeysWithValues: spans.map { ($0.id, $0) })
+            let slices = AtriaActivityTimelineMarkerProjection.nonOverlappingSlices(
+                spans.map { span in
+                    let priority: Int
+                    if span.id.hasPrefix("workout-") && !span.id.hasPrefix("workout-review-") {
+                        priority = 400
+                    } else if span.id.hasPrefix("sleep-") {
+                        priority = 300
+                    } else if span.id.hasPrefix("workout-review-") {
+                        priority = 200
+                    } else {
+                        priority = 100
+                    }
+                    return AtriaActivityTimelineMarkerInterval(id: span.id,
+                                                               start: span.start,
+                                                               end: span.end,
+                                                               priority: priority)
+                }
+            )
+            let compacted = slices.compactMap { slice -> TimelineSpan? in
+                guard let source = sourceByID[slice.sourceID] else { return nil }
+                return TimelineSpan(id: slice.id,
+                                    lane: "activity",
+                                    start: slice.start,
+                                    end: slice.end,
+                                    tint: source.tint,
+                                    label: source.label,
+                                    icon: source.icon)
             }
             timelineKey = key
             timelineValue = compacted

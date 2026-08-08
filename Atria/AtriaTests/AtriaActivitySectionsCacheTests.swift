@@ -835,6 +835,80 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(Set(assignments.values), [0, 1])
     }
 
+    func testActivityHeartRateProjectionPreservesRealExtremaAndCaptureGaps() {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        var samples = (0..<300).map { index in
+            HistoricalArchive.HeartRatePoint(t: start.addingTimeInterval(Double(index) * 30),
+                                             bpm: 80 + index % 7)
+        }
+        samples[74] = .init(t: samples[74].t, bpm: 42)
+        samples[225] = .init(t: samples[225].t, bpm: 211)
+        let secondRunStart = start.addingTimeInterval(300 * 30 + 5 * 60)
+        samples.append(.init(t: secondRunStart, bpm: 91))
+        samples.append(.init(t: secondRunStart.addingTimeInterval(30), bpm: 94))
+        let interval = DateInterval(start: start,
+                                    end: secondRunStart.addingTimeInterval(31))
+
+        let projection = AtriaActivityTimelineSignalProjection.heartRate(
+            samples: samples,
+            interval: interval,
+            targetPointCount: 24
+        )
+
+        XCTAssertEqual(projection.measuredSampleCount, samples.count)
+        XCTAssertTrue(projection.points.contains { $0.bpm == 42 },
+                      "A short real trough must survive bounded display reduction")
+        XCTAssertTrue(projection.points.contains { $0.bpm == 211 },
+                      "A short real peak must survive bounded display reduction")
+        XCTAssertEqual(Set(projection.points.map(\.segment)), [0, 1])
+        XCTAssertTrue(projection.points.allSatisfy { point in
+            samples.contains { $0.t == point.t && $0.bpm == point.bpm }
+        }, "Every plotted heart-rate point must be an actual archived sample")
+    }
+
+    func testActivityStressProjectionKeepsSessionGapsAndNeverSynthesizesReadings() {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let samples = [
+            AtriaActivityTimelineStressSample(t: start, score: 0.4, levelRawValue: 0),
+            .init(t: start.addingTimeInterval(30), score: 0.8, levelRawValue: 1),
+            .init(t: start.addingTimeInterval(7 * 60), score: 2.4, levelRawValue: 2),
+            .init(t: start.addingTimeInterval(7 * 60 + 30), score: 2.8, levelRawValue: 3)
+        ]
+        let projection = AtriaActivityTimelineSignalProjection.stress(
+            samples: samples,
+            interval: DateInterval(start: start,
+                                   end: start.addingTimeInterval(8 * 60))
+        )
+
+        XCTAssertEqual(projection.measuredSampleCount, 4)
+        XCTAssertEqual(projection.points.map(\.segment), [0, 0, 1, 1])
+        XCTAssertTrue(projection.points.allSatisfy { point in
+            samples.contains { $0.t == point.t && $0.score == point.score }
+        })
+    }
+
+    func testActivityMarkerProjectionUsesOneNonOverlappingTruthfulLane() {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        let slices = AtriaActivityTimelineMarkerProjection.nonOverlappingSlices([
+            .init(id: "sleep", start: start, end: start.addingTimeInterval(30), priority: 300),
+            .init(id: "workout", start: start.addingTimeInterval(10),
+                  end: start.addingTimeInterval(20), priority: 400),
+            .init(id: "review", start: start.addingTimeInterval(12),
+                  end: start.addingTimeInterval(18), priority: 100)
+        ])
+
+        XCTAssertEqual(slices.filter { $0.sourceID == "sleep" }.map { [$0.start, $0.end] }, [
+            [start, start.addingTimeInterval(10)],
+            [start.addingTimeInterval(20), start.addingTimeInterval(30)]
+        ])
+        XCTAssertEqual(slices.filter { $0.sourceID == "workout" }.count, 1)
+        XCTAssertFalse(slices.contains { $0.sourceID == "review" },
+                       "Fully covered lower-trust evidence must not overlap a confirmed marker")
+        for pair in zip(slices, slices.dropFirst()) {
+            XCTAssertLessThanOrEqual(pair.0.end, pair.1.start)
+        }
+    }
+
     func testCrossMidnightWorkoutIsSelectableOnBothDaysExactlyLikeTimeline() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))

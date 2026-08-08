@@ -3553,6 +3553,29 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
+    func testConnectedSliceHoldRequiresRecentDurableProgress() {
+        XCTAssertTrue(AtriaBLEManager.historicalSyncHasRecentDurableProgress(
+            lastDurableProgressUptime: 10_000,
+            nowUptime: 10_044.999,
+            silenceLimit: 45
+        ))
+        XCTAssertFalse(AtriaBLEManager.historicalSyncHasRecentDurableProgress(
+            lastDurableProgressUptime: 10_000,
+            nowUptime: 10_045,
+            silenceLimit: 45
+        ), "a stalled row stream must release at the live-silence boundary")
+        XCTAssertFalse(AtriaBLEManager.historicalSyncHasRecentDurableProgress(
+            lastDurableProgressUptime: nil,
+            nowUptime: 10_010,
+            silenceLimit: 45
+        ), "protocol activity without a durable row boundary cannot pin the hold")
+        XCTAssertFalse(AtriaBLEManager.historicalSyncHasRecentDurableProgress(
+            lastDurableProgressUptime: 10_011,
+            nowUptime: 10_010,
+            silenceLimit: 45
+        ), "invalid monotonic ordering fails closed")
+    }
+
     func testConnectedHistorySliceReleasesOnlyAfterUsefulSliceAndLiveSilence() {
         let started = Date(timeIntervalSince1970: 10_000)
 

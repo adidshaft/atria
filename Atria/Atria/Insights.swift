@@ -715,14 +715,6 @@ struct RestingTrendChart: View {
                                   y: .value("Resting", point.resting))
                             .foregroundStyle(.teal)
                     }
-                    if let b = baseline {
-                        RuleMark(y: .value("Baseline", b))
-                            .lineStyle(.init(lineWidth: 1, dash: [4, 4]))
-                            .foregroundStyle(.secondary)
-                            .annotation(position: .top, alignment: .leading) {
-                                Text("baseline \(b)").font(.caption2).foregroundStyle(.secondary)
-                            }
-                    }
                 }
                 .frame(height: 160)
                 .atriaInspectableGraph(
