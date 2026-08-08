@@ -316,3 +316,43 @@ route. Either the Overview charts should migrate to the shared inspector, or
 this assertion is stale and should drop AtriaOverviewSections from its list.
 Decide deliberately; do not weaken the test to silence it. Unrelated to the
 user's reported issues.
+
+---
+
+## Stress rescoring — adversarial review outcome (2026-08-08)
+
+The awake-referenced rescoring (299c426a) was adversarially reviewed (4 lenses).
+Verdict: direction right, first cut not shippable. Fixed in the follow-up commit:
+- **B1** noisy-OR replaced with a symmetric-weight corroboration model
+  (`stressCorroborationWeight` 0.6): a lone HR OR lone HRV signal caps at Medium;
+  only both together reach High. Kills HR-alone→High (contract break),
+  lone-HRV→High, and moderate+moderate→High.
+- **B2/#9 (partial)** awake buffer now admits only quiet-awake HR
+  (`> rest + 8` and `<= rest + 40`, zone < 2), so overnight sleeping HR can no
+  longer collapse the learned reference and cause the post-wake false Medium.
+- **B4** buffer append now mirrors the scorer's activity exclusions.
+- **B6** file header, scored narrative, chip, and AtriaAboutMetricSheet copy
+  rewritten to describe awake-reference + corroboration (were factually wrong).
+
+**KNOWN LIMITATIONS still open (documented, not silently shipped):**
+- **B3 — sustained stress absorption.** The awake reference is a 45-min trailing
+  median, so a genuine sustained stressor (>~15-30 min) is gradually absorbed
+  into the reference and drifts toward Calm. Real fix: a slower multi-day /
+  sleep-gated awake baseline (PersonalBaseline-style tiers) or a slow EMA, plus
+  an absolute-elevation term. The quiet-awake buffer filter mitigates but does
+  not eliminate this. HR-only mode (the common state pre-HRV-trust) has no HRV
+  term to hold the band up, so the miss is largest there.
+- **B5 — workout-suppression cliff.** `hrNow > rest + 40` returns `.active`
+  (no level) while the rescored HR term can read High just below that boundary,
+  and it anchors to rest while the HR term anchors to awake HR. Pre-existing
+  heuristic, now more consequential. Fix: require a second activity signal
+  (isRecording / zone≥2 / cadence / sustained duration, not one sample) before
+  suppressing, and scale the delta to the awake reference.
+- **#9 (scoring-during-sleep).** `hasActiveSleepEvidence` is still hardcoded
+  false at both callers (AtriaHomeView.swift:10123/:9443), so the store still
+  SCORES/records stress bands during sleep. The buffer filter stops sleep from
+  contaminating the awake reference, but wiring a real active-sleep authority (or
+  a low-HR proxy) into those two call sites is the proper fix and remains open.
+- **Minors:** persist the awake reference across launches; blend learned→default
+  spread (floor 5 vs default 12 step-change); scope the ~65/20 validation claim
+  to the HR-only path; cold-start offset/spread don't scale with fitness.

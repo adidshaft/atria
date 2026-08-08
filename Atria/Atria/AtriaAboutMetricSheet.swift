@@ -141,10 +141,12 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // baseline prefers overnight/sleep samples.
             return "Clean beat-to-beat intervals from overnight wear — 300–2000 ms, with any beat more than 20% off its neighbors dropped — then the beat-to-beat variation is measured over the most stable stretch of sleep."
         case .stress:
-            // AtriaStressMonitor.swift: 0.6*HR + 0.4*HRV activation z-scores vs
-            // resting patterns → Calm/Low/Medium/High; HR-only capped at Medium;
-            // noSignal when contact is lost.
-            return "A short rolling window of heart rate and beat-to-beat variability is compared with your own resting patterns as z-scores, weighted about 60% heart rate and 40% variability, then mapped to a Calm / Low / Medium / High band. Without a trusted variability baseline it is capped at Medium — \u{201c}High\u{201d} needs the HRV signal to corroborate. It needs continuous, well-seated contact: a loose fit, movement noise, or the strap being off pauses the read as \u{201c}No signal\u{201d} rather than guessing."
+            // AtriaStressMonitor.swift: HR z-scored vs the wearer's own AWAKE HR
+            // reference (learned median, or resting + offset until learned), HRV
+            // z-scored vs the overnight baseline; each term caps a lone signal at
+            // Medium, both together reach High. HR-only capped at Medium; noSignal
+            // when contact is lost.
+            return "Your live heart rate is compared with your own typical awake heart rate, and your beat-to-beat variability with your overnight baseline, then mapped to a Calm / Low / Medium / High band. Comparing heart rate against your awake baseline — not your sleeping rate — is what keeps ordinary wakefulness from reading as stress. Either signal on its own reads at most Medium; \u{201c}High\u{201d} needs elevated heart rate and suppressed variability together, and until a variability baseline is trusted the score is capped at Medium. It needs continuous, well-seated contact: a loose fit, movement noise, or the strap being off pauses the read as \u{201c}No signal\u{201d} rather than guessing."
         case .recovery:
             // AtriaAnalytics.swift: z-blend HRV 0.60 / RHR 0.20 (inverted) / sleep
             // 0.15 / respiration 0.05, logistic → 1–99%.
