@@ -309,3 +309,30 @@ after a drain slice.
 - Sleep-stage model: invest in validating a stage model (real project) or keep
   honest "no stages" until references exist?
 - Journal notification: what time / trigger (post-wake? fixed hour?)
+
+---
+
+## CORRECTION (2026-08-08, user field observation): foreground + UNLOCKED is the fastest sync, not background
+
+Earlier notes advised "keep it backgrounded so it syncs." That is WRONG for
+throughput and contradicted our own measurement (foreground 2.12x vs
+background 1.44x). User confirmed: keeping the phone screen ON + unlocked +
+Atria foregrounded overnight was the BEST catch-up they've had.
+
+Mechanism: iOS grants a foreground + physically-unlocked app fast BLE
+connection intervals; locked/background throttles BLE → slow drain. Projection
+(raw→readings) is additionally foreground-only. So screen-on + unlocked +
+Atria open = fast drain AND projection = best.
+
+Important nuance: iPhone **Mirroring runs with the phone's own screen off**, so
+iOS treats it as locked and throttles BLE even though Atria looks foreground in
+the mirror. "Foreground in the mirror" ≠ "screen on + unlocked in hand." When
+measuring or advising, the lever is the PHONE's screen/lock state, not the app's
+apparent foreground in the mirror.
+
+Implication for the backlog: the "foreground trickle drain" idea was premised on
+"foreground defers the drain." Reframe — foreground already drains fast; the real
+gap is BACKGROUND/LOCKED being slow (BLE throttle) + projection being
+foreground-only. The durable fix is background BLE throughput + background
+projection, OR simply telling users "open it unlocked for a few minutes to catch
+up," which genuinely works.
