@@ -107,6 +107,15 @@ struct AtriaStrainRecoveryComboChart: View {
                     .interpolationMethod(.linear)
                     .lineStyle(StrokeStyle(lineWidth: 2))
             }
+            // A dot on each real strain day so an isolated day (a length-1 run
+            // that a LineMark cannot draw) still renders — mirrors the recovery
+            // dots below and prevents a single-day window looking empty.
+            ForEach(strainWindow) { point in
+                PointMark(x: .value("Day", point.day, unit: .day),
+                          y: .value("Strain", min(point.value, strainAxisMax)))
+                    .foregroundStyle(Metrics.electricStrain)
+                    .symbolSize(36)
+            }
             ForEach(recoveryWindow.contiguousDayRuns(), id: \.point.day) { entry in
                 LineMark(x: .value("Day", entry.point.day, unit: .day),
                          y: .value("Recovery", entry.point.value / 100.0 * strainAxisMax),

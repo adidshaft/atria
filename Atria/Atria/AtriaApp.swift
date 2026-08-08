@@ -536,6 +536,19 @@ struct AtriaApp: App {
                 completion.complete(task, success: false)
                 return
             }
+            // Arm the daily journal check-ins from the background too (2026-08-08):
+            // these were scheduled only from the foreground scene-active path, so
+            // an overnight with no app-open left the next morning's honest
+            // no-metric nudge unarmed — the user got no journal notification at
+            // all. Pure local-notification scheduling, idempotent per day via the
+            // scheduler's own scheduledDayKey; runs after the deferred session
+            // load so journal activity is in memory.
+            let lastJournalActivity = [store.behaviorJournalEntries.map(\.day).max(),
+                                       store.journalAnswers.latestActivityDay()]
+                .compactMap { $0 }
+                .max()
+            LocalNotificationScheduler.scheduleEveningJournalCheckIn(lastJournalActivity: lastJournalActivity)
+            LocalNotificationScheduler.scheduleMorningJournalCheckIn(lastJournalActivity: lastJournalActivity)
             WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: reason)
             completion.complete(task,
                                 success: backupSucceeded

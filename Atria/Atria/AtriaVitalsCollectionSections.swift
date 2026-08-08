@@ -4718,12 +4718,29 @@ struct AtriaHeartRateExplorer: View {
         selectedRange = nil
     }
 
+    /// True when the chart is currently pinned at the live (right) edge rather
+    /// than scrolled back into history. Tolerance is a fraction of the visible
+    /// window so a single just-arrived sample doesn't read as "scrolled away".
+    private var isFollowingLiveEdge: Bool {
+        guard let latest = points.last?.t else { return true }
+        let leading = Self.leadingScrollPosition(latest: latest,
+                                                 visibleDomain: currentWindow.seconds)
+        return abs(scrollPosition.timeIntervalSince(leading)) <= currentWindow.seconds * 0.15
+    }
+
     private func refreshSeries(_ source: [AtriaHomeModel.HeartRateChartPoint]) {
+        let followingBefore = isFollowingLiveEdge
+        // Always rebuild the data...
         series = AtriaHeartRateChartSeries.make(
             points: AtriaVitalsHeartRateTimeline.windowed(source, window: .hour24, displayBudget: 1_200),
             zoom: 1)
+        // ...but only FOLLOW the live edge when the user is neither inspecting a
+        // selection nor scrolled back into history. A new sample arrives ~1×/sec;
+        // re-anchoring + clearing the selection on every one is what made the
+        // chart "jump" and wiped the point/range the user was reading
+        // (2026-08-08 field report). Their selection and scroll are preserved.
+        guard selectedTime == nil, selectedRange == nil, followingBefore else { return }
         anchorChartToLatest(source.last?.t)
-        clearSelection()
     }
 
     private func anchorChartToLatest(_ latest: Date? = nil) {
