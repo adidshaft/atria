@@ -505,7 +505,10 @@ struct AtriaApp: App {
             var recoveredPublicationSucceeded = true
             if reason == "bg_processing" {
                 let priorArchiveRevision = store.recoveredDataArchiveRevisionSnapshot
-                if ble.rangeLossBackfillPending {
+                // Robust backlog signal, not the raw ticket (2026-08-08): a
+                // background window must drain whenever records still sit on the
+                // strap, even after publication falsely cleared the ticket.
+                if ble.hasDrainableStrapBacklog {
                     historicalRecoverySucceeded = await ble
                         .requestOfflineHistoricalSyncAwaitingCompletion(
                             reason: reason,
@@ -693,10 +696,11 @@ struct AtriaApp: App {
         let request = BGProcessingTaskRequest(identifier: processingTaskIdentifier)
         request.requiresNetworkConnectivity = false
         request.requiresExternalPower = false
-        // Mirrors OfflineSyncDefaults.rangeLossBackfillPending (persisted key).
-        let backlogPending = UserDefaults.standard.bool(
-            forKey: "atria.offlineSync.rangeLossBackfillPending"
-        )
+        // Robust backlog signal (2026-08-08): ticket OR fresh non-caught-up
+        // flush debt OR a >=30 min stale frontier, so a falsely-cleared ticket
+        // with residual strap records still requests the tight 60s cadence
+        // instead of parking the next window 2h out.
+        let backlogPending = AtriaBLEManager.drainableStrapBacklogPendingFromDefaults()
         request.earliestBeginDate = Date(
             timeIntervalSinceNow: backgroundProcessingEarliestDelay(
                 backlogPending: backlogPending

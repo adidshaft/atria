@@ -13607,21 +13607,57 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// count, which then either drives convergence or honestly reads caught-up.
     nonisolated static let frontierBacklogFloorSeconds: TimeInterval = 30 * 60
 
-    private func strapBacklogPendingForCatchUp(now: Date = Date()) -> Bool {
-        if UserDefaults.standard.bool(
-            forKey: OfflineSyncDefaults.rangeLossBackfillPending
-        ) {
-            return true
+    /// UserDefaults-only backlog signal shared by the instance check AND static
+    /// scheduling contexts (no `self`): ticket OR fresh non-caught-up flush debt
+    /// OR a drain frontier >= 30 min stale. (2026-08-08 background-stall fix:
+    /// wake-driven lanes must use THIS robust signal, not the raw
+    /// `rangeLossBackfillPending` ticket — publication can falsely clear the
+    /// ticket while records still sit on the strap, and every background wake
+    /// then thinks there is nothing to drain.)
+    nonisolated static func drainableStrapBacklogPendingFromDefaults(
+        now: Date = Date(),
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) { return true }
+        if let observedAt = defaults.object(forKey: OfflineSyncDefaults.flushDebtObservedAt) as? Double,
+           observedAt.isFinite,
+           now.timeIntervalSince1970 - observedAt <= 15 * 60 {
+            let records = defaults.integer(forKey: OfflineSyncDefaults.flushDebtPendingRecords)
+            if flushDebtLevel(pendingRecords: records) != .caughtUp { return true }
         }
-        if let level = currentFlushDebtLevel(now: now) {
-            return level != .caughtUp
-        }
-        let frontier = UserDefaults.standard.double(
-            forKey: OfflineSyncDefaults.drainedThroughUnix
-        )
+        let frontier = defaults.double(forKey: OfflineSyncDefaults.drainedThroughUnix)
         return frontier > 0
-            && now.timeIntervalSince1970 - frontier
-                >= Self.frontierBacklogFloorSeconds
+            && now.timeIntervalSince1970 - frontier >= frontierBacklogFloorSeconds
+    }
+
+    /// Robust "is there strap backlog to drain" accessor for wake-driven lanes
+    /// (BGProcessing handler, accepted-HR catch-up).
+    var hasDrainableStrapBacklog: Bool { Self.drainableStrapBacklogPendingFromDefaults() }
+
+    private func strapBacklogPendingForCatchUp(now: Date = Date()) -> Bool {
+        Self.drainableStrapBacklogPendingFromDefaults(now: now)
+    }
+
+    /// Accepted-HR wake path for BACKGROUND catch-up (2026-08-08). BGProcessing
+    /// windows are scarce; on a connected strap, accepted-HR BLE callbacks
+    /// survive suspension+lock and are frequent, so this is where most
+    /// background drain progress actually comes from. Fires only in the
+    /// background, only when not already syncing, and only on the robust backlog
+    /// signal — NOT the raw ticket, which publication can falsely clear while
+    /// records remain on the strap (the observed background-stall). It routes
+    /// through the ordinary autonomous admission (`force:false`, no handoff), so
+    /// `shouldAdmitAutonomousCursorAnchoredCatchUpStart` (connection age >= 60s,
+    /// HR freshness <= 45s, 120s attempt cooldown) still decides — no fence is
+    /// relaxed and it can never enter full drain. Sibling to the ticket-gated
+    /// `attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded`.
+    private func attemptAutonomousBackgroundCatchUpAfterAcceptedHRIfNeeded(now: Date = Date()) {
+        guard !foregroundInteractiveMode,
+              !offlineHistoricalSyncInProgress,
+              strapBacklogPendingForCatchUp(now: now) else { return }
+        _ = requestOfflineHistoricalSyncIfNeeded(
+            reason: "accepted_hr_autonomous_catchup",
+            force: false,
+            allowConnectedAutomaticHandoff: false)
     }
 
     /// The current flush-debt level, or nil when the last observation is missing
@@ -20685,6 +20721,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 reason: "accepted_hr"
             )
             attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded(
+                now: sampleTime
+            )
+            attemptAutonomousBackgroundCatchUpAfterAcceptedHRIfNeeded(
                 now: sampleTime
             )
         }
