@@ -88,8 +88,26 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         ))
         let sheetHost = String(source[sheetHostStart.lowerBound..<sheetStart.lowerBound])
         XCTAssertTrue(sheetHost.contains(
+            "let stressMonitorStore: AtriaStressMonitorStore"
+        ))
+        XCTAssertFalse(sheetHost.contains(
             "@ObservedObject var stressMonitorStore: AtriaStressMonitorStore"
-        ), "Workout stress history should update only while its sheet is mounted")
+        ), "Unrelated pulse/state publications must not refilter restored workout history")
+        XCTAssertTrue(sheetHost.contains(
+            ".onReceive(stressMonitorStore.$historyRevision.removeDuplicates())"
+        ))
+        XCTAssertTrue(sheetHost.contains(
+            ".onReceive(stressMonitorStore.$historyLoadState.removeDuplicates())"
+        ))
+        XCTAssertTrue(timelineHost.contains(
+            "AtriaActivityTimelineStressSourceSnapshot"
+        ))
+        XCTAssertTrue(timelineHost.contains(
+            "Task.detached(priority: .utility)"
+        ))
+        XCTAssertTrue(timelineHost.contains(
+            "if stressProjectionWindowKey != requestKey.window"
+        ), "Same-window live revisions should preserve the visible projection")
     }
 
     @MainActor
@@ -113,6 +131,67 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(readings.count, 2)
         XCTAssertEqual(readings[0].score, 0.6, accuracy: 0.000_001)
         XCTAssertEqual(readings[1].score, 1.2, accuracy: 0.000_001)
+    }
+
+    func testActivityStressEmptyStateDistinguishesRestoreFailureRetentionAndNoReadings() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let recent = DateInterval(start: now.addingTimeInterval(-12 * 3_600),
+                                  end: now.addingTimeInterval(-11 * 3_600))
+        let expired = DateInterval(start: now.addingTimeInterval(-72 * 3_600),
+                                   end: now.addingTimeInterval(-71 * 3_600))
+
+        XCTAssertEqual(AtriaActivityStressHistoryPresentation.emptyTimelineMessage(
+            loadState: .loading,
+            interval: recent,
+            isCurrentPhysiologicalDay: false,
+            currentState: .noSignal,
+            now: now
+        ), "Loading saved stress readings…")
+        XCTAssertTrue(AtriaActivityStressHistoryPresentation.emptyTimelineMessage(
+            loadState: .unavailable,
+            interval: recent,
+            isCurrentPhysiologicalDay: false,
+            currentState: .noSignal,
+            now: now
+        ).contains("couldn’t be read"))
+        XCTAssertTrue(AtriaActivityStressHistoryPresentation.emptyTimelineMessage(
+            loadState: .loaded,
+            interval: expired,
+            isCurrentPhysiologicalDay: false,
+            currentState: .noSignal,
+            now: now
+        ).contains("past two days"))
+        XCTAssertEqual(AtriaActivityStressHistoryPresentation.emptyTimelineMessage(
+            loadState: .loaded,
+            interval: recent,
+            isCurrentPhysiologicalDay: false,
+            currentState: .noSignal,
+            now: now
+        ), "No measured stress readings were recorded in this window.")
+    }
+
+    func testWorkoutStressEmptyStateUsesTheSameLoadAndRetentionAuthority() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(AtriaActivityStressHistoryPresentation.workoutEmptyMessage(
+            loadState: .loading,
+            workoutEnd: now,
+            now: now
+        ), "Loading saved stress readings…")
+        XCTAssertTrue(AtriaActivityStressHistoryPresentation.workoutEmptyMessage(
+            loadState: .unavailable,
+            workoutEnd: now,
+            now: now
+        ).contains("couldn’t be read"))
+        XCTAssertTrue(AtriaActivityStressHistoryPresentation.workoutEmptyMessage(
+            loadState: .loaded,
+            workoutEnd: now.addingTimeInterval(-72 * 3_600),
+            now: now
+        ).contains("outside that window"))
+        XCTAssertEqual(AtriaActivityStressHistoryPresentation.workoutEmptyMessage(
+            loadState: .loaded,
+            workoutEnd: now,
+            now: now
+        ), "No measured stress readings were recorded during this workout.")
     }
 
     func testDetectedActivityPresentationUsesOnlyExplicitClassifierHint() {
@@ -925,6 +1004,63 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertFalse(window.isCurrentPhysiologicalDay)
     }
 
+    func testActivityNextDayNavigationAdvancesUntilActualPhysiologicalTodayBoundary() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let currentDay = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 7,
+            day: 12
+        )))
+        let threeDaysAgo = try XCTUnwrap(calendar.date(byAdding: .day,
+                                                       value: -3,
+                                                       to: currentDay))
+
+        let nextHistorical = AtriaActivityDayNavigation.next(
+            from: threeDaysAgo,
+            currentPhysiologicalDisplayDay: currentDay,
+            calendar: calendar
+        )
+        XCTAssertEqual(nextHistorical.day,
+                       try XCTUnwrap(calendar.date(byAdding: .day,
+                                                  value: -2,
+                                                  to: currentDay)))
+        XCTAssertFalse(nextHistorical.viewsCurrentPhysiologicalDay)
+
+        let yesterday = try XCTUnwrap(calendar.date(byAdding: .day,
+                                                    value: -1,
+                                                    to: currentDay))
+        let today = AtriaActivityDayNavigation.next(
+            from: yesterday,
+            currentPhysiologicalDisplayDay: currentDay,
+            calendar: calendar
+        )
+        XCTAssertEqual(today.day, currentDay)
+        XCTAssertTrue(today.viewsCurrentPhysiologicalDay)
+    }
+
+    func testActivityNextDayNavigationDefensivelySnapsFutureSelectionToToday() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let currentDay = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 7,
+            day: 12
+        )))
+        let future = try XCTUnwrap(calendar.date(byAdding: .day,
+                                                 value: 3,
+                                                 to: currentDay))
+
+        let destination = AtriaActivityDayNavigation.next(
+            from: future,
+            currentPhysiologicalDisplayDay: currentDay,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(destination.day, currentDay)
+        XCTAssertTrue(destination.viewsCurrentPhysiologicalDay)
+    }
+
     func testTimelineLanePackingIsMinimalDeterministicAndReusesHalfOpenEnds() {
         let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
         let intervals = [
@@ -975,13 +1111,14 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         }, "Every plotted heart-rate point must be an actual archived sample")
     }
 
-    func testActivityStressProjectionKeepsSessionGapsAndNeverSynthesizesReadings() {
+    func testActivityStressProjectionKeepsRestoredGapsAndNeverSynthesizesReadings() {
         let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
         let samples = [
             AtriaActivityTimelineStressSample(t: start, score: 0.4, levelRawValue: 0),
             .init(t: start.addingTimeInterval(30), score: 0.8, levelRawValue: 1),
             .init(t: start.addingTimeInterval(7 * 60), score: 2.4, levelRawValue: 2),
-            .init(t: start.addingTimeInterval(7 * 60 + 30), score: 2.8, levelRawValue: 3)
+            .init(t: start.addingTimeInterval(7 * 60 + 30), score: 2.8, levelRawValue: 3),
+            .init(t: start.addingTimeInterval(8 * 60), score: 1.2, levelRawValue: 1)
         ]
         let projection = AtriaActivityTimelineSignalProjection.stress(
             samples: samples,
@@ -989,11 +1126,35 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                                    end: start.addingTimeInterval(8 * 60))
         )
 
-        XCTAssertEqual(projection.measuredSampleCount, 4)
+        XCTAssertEqual(projection.measuredSampleCount, 4,
+                       "A sample exactly at the next civil-day boundary belongs to the next window")
         XCTAssertEqual(projection.points.map(\.segment), [0, 0, 1, 1])
         XCTAssertTrue(projection.points.allSatisfy { point in
             samples.contains { $0.t == point.t && $0.score == point.score }
         })
+    }
+
+    func testWorkoutStressChartUsesNonOvershootingLineAndRendersSingletonRuns() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaActivityMonitor.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let chartStart = try XCTUnwrap(source.range(
+            of: "struct AtriaWorkoutStressTraceChart: View"
+        ))
+        let chartEnd = try XCTUnwrap(source.range(
+            of: "/// Review-first sleep sheet",
+            range: chartStart.upperBound..<source.endIndex
+        ))
+        let chart = String(source[chartStart.lowerBound..<chartEnd.lowerBound])
+
+        XCTAssertTrue(chart.contains(".interpolationMethod(.linear)"))
+        XCTAssertFalse(chart.contains(".interpolationMethod(.monotone)"),
+                       "Spline overshoot can imply an unmeasured stress peak")
+        XCTAssertTrue(chart.contains("PointMark("),
+                      "An isolated measured run must remain visible as a point")
+        XCTAssertTrue(chart.contains("gaps contain no recorded stress score"))
     }
 
     func testActivityMarkerProjectionUsesOneNonOverlappingTruthfulLane() {

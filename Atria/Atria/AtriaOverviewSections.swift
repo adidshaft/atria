@@ -11907,7 +11907,7 @@ private struct AtriaMetricMeaningInline: View {
         case .strain:
             return "Strain is your day-load target, not a score to max out every day."
         case .stress:
-            return "This is a live autonomic-load read, not a lab measurement. Atria doesn't yet save a daily stress history to trend."
+            return "This is an autonomic-load estimate, not a lab measurement. Atria saves recent measured readings for detailed timelines and measured daily bands for longer patterns; collection gaps stay blank."
         case .vo2max:
             return "VO2max is estimated from your resting baseline and measured heart-rate max, not a lab gas-exchange test."
         case .sleepPerformance:
@@ -12248,7 +12248,7 @@ private struct AtriaMetricMeaningSheet: View {
         case .strain:
             return "Strain is your day-load target, not a score to max out every day."
         case .stress:
-            return "Stress is a live autonomic-load read, not a saved daily trend."
+            return "Stress is a moment-to-moment autonomic-load estimate with recent measured history."
         case .vo2max:
             return "VO2max estimates your aerobic capacity from resting and max heart rate."
         case .sleepPerformance:
@@ -12282,7 +12282,7 @@ private struct AtriaMetricMeaningSheet: View {
         case .strain:
             return "The blue arc shows today’s accumulated load. The target arc and notch show where today’s plan says to land."
         case .stress:
-            return "There's no chart here yet because Atria doesn't save a day-by-day stress history \u{2014} only today's live read."
+            return "Recent measured readings form the detailed timeline, while saved daily bands show longer patterns. Days without enough readings stay blank."
         case .vo2max:
             return "Treat the number and its trend as an estimate, sharpening over more sessions, not a lab VO2 test result."
         case .sleepPerformance:

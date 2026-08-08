@@ -4182,6 +4182,10 @@ struct AtriaHomeView: View {
             connectionDiagnosisPromotionTask?.cancel()
             connectionDiagnosisPromotionTask = nil
             if phase == .background {
+                // Schedule the small current/previous-hour stress checkpoint;
+                // its protected encoding + fsynced atomic replacement stays on
+                // the persistence utility queue and never blocks this edge.
+                model.stressMonitorStore.flushHistoryCheckpoint()
                 // This view owns the workout's exact type, sets, pause state
                 // and route. Checkpoint those at the true background edge;
                 // AtriaApp independently owns the broader lifecycle flush.
@@ -9476,7 +9480,9 @@ final class AtriaHomeModel {
                                                        recentRRSamples: initialRRSamples)
         let initialPulseSparkline = Self.makePulseSparklineState(ble: ble)
         let initialCollectionLive = Self.makeCollectionLiveState(ble: ble)
-        let sharedStressStore = AtriaStressMonitorStore()
+        let sharedStressStore = AtriaStressMonitorStore(
+            historyPersistence: AtriaStressHistoryPersistence.production()
+        )
         sharedStressStore.update(heartRate: initialPulseLive.heartRate,
                                  hasContact: initialPulseLive.hasContact,
                                  recentRRSamples: initialPulseLive.recentRRSamples,

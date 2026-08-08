@@ -260,6 +260,27 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
         XCTAssertTrue(source.contains(".accessibilityHint(backupPathAccessibilityHint)"))
     }
 
+    func testDataStorageDisclosureSeparatesDurableRecordsFromTemporaryStressCache() throws {
+        let source = try source("AtriaSettingsView.swift")
+
+        XCTAssertTrue(source.contains(
+            "Saved sensor sessions and health summaries can be backed up or exported. The local two-day Stress display cache is excluded from both."
+        ))
+    }
+
+    func testDataPagePresentsBoundedBackupAndExportDisclosure() throws {
+        let source = try source("AtriaSettingsView.swift")
+        let start = try XCTUnwrap(source.range(of: "private var storageFootprintRow"))
+        let end = try XCTUnwrap(source.range(of: "private struct StorageFootprint",
+                                              range: start.upperBound..<source.endIndex))
+        let row = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(row.contains("detail: DataCopy.storageDisclosure"),
+                      "The Data page must visibly present the durable-versus-cache boundary")
+        XCTAssertFalse(source.contains("Stored locally and exportable."),
+                       "Settings must not imply every local derived cache is backed up or exportable")
+    }
+
     func testActiveOnboardingUsesCompactVisualHierarchyAndShortConsentCopy() throws {
         let flow = try source("AtriaOnboardingFlow.swift")
         let content = try source("ContentView.swift")

@@ -101,6 +101,13 @@ enum AtriaManualHistorySyncFeedback: Equatable {
 /// community-requested differentiators (no subscription, data ownership/export,
 /// custom HR-zone & strain alerts).
 struct AtriaSettingsView: View {
+    /// One user-facing boundary for local storage ownership. The backup and raw
+    /// export paths preserve durable session evidence and summaries; short-lived
+    /// derived timelines remain display state rather than a second health archive.
+    private enum DataCopy {
+        static let storageDisclosure = "Saved sensor sessions and health summaries can be backed up or exported. The local two-day Stress display cache is excluded from both."
+    }
+
     private enum BackupFeedbackTone {
         case neutral
         case success
@@ -950,7 +957,7 @@ struct AtriaSettingsView: View {
             icon: "internaldrive.fill",
             tint: .blue,
             title: "Storage" + (storageFootprintTotal.map { " · \($0)" } ?? ""),
-            detail: "Stored locally and exportable."
+            detail: DataCopy.storageDisclosure
         )
     }
 
