@@ -622,6 +622,36 @@ enum LocalNotificationScheduler {
         }
     }
 
+    /// Background review-notification pass (2026-08-08, audit §1 #4). The
+    /// overnight BGAppRefresh/Processing handler must run the SAME production
+    /// notification decisions the foreground launch path runs — critically the
+    /// sleep-review banner. A suspended app gets no scene-active pass, so
+    /// `makeSleepReviewDecision` never ran until the user next opened the app,
+    /// and the "review last night's sleep" nudge "only appears after opening."
+    ///
+    /// The flags mirror the production launch cadence EXACTLY (the same
+    /// `Identifier.removable` rebuild inside `schedule`), so nothing scheduled
+    /// at launch is orphaned — a trimmed sleep-review-only pass would wipe the
+    /// pending workout-review / connection notifications that `schedule` clears
+    /// but would then not re-add. The sleep-review debounce keys
+    /// (`sleepReviewNotifiedEndByStart`, per-candidate schedule cap, cooldown)
+    /// keep a repeated background pass from re-firing an already-notified
+    /// candidate. No launch delay — the background execution window is short.
+    ///
+    /// Runtime efficacy depends on the overnight sleep candidate actually being
+    /// materialized before this runs (audit §5); when no candidate exists this
+    /// pass is a harmless no-op that reschedules the same pending set.
+    static func scheduleBackgroundReviewPass(store: SessionStore, ble: AtriaBLEManager) async {
+        await schedule(store: store,
+                       ble: ble,
+                       includeMetricDecisions: false,
+                       includeSleepReviewDecisions: true,
+                       includeWorkoutReviewDecisions: true,
+                       includeActionableConnectionDecisions: true,
+                       includeDiagnostic: false,
+                       productionCadence: true)
+    }
+
     static func scheduleFastLaunchHealthDeviationDebugFixtureIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard arguments.contains("--atria-test-health-deviation-notification") else { return }
         configureDeliveryLogger()
