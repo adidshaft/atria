@@ -9842,6 +9842,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
     }
 
+    /// Await variant of the motion-bank offload for the BGProcessing window
+    /// (2026-08-08). Starts a pending motion offload (which rides the same shared
+    /// offline-historical-sync transport) and awaits that generation, exactly
+    /// like `requestOfflineHistoricalSyncAwaitingCompletion` does for HR — so the
+    /// background task stays alive while motion drains. Returns false immediately
+    /// when nothing started (e.g. the bank is armed/capturing, or no ticket).
+    func resumePendingWorkoutHistoricalMotionBankOffloadAwaitingCompletion(
+        reason: String,
+        maintenanceWindow: Bool = false
+    ) async -> Bool {
+        let started = resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
+            reason: reason,
+            maintenanceWindow: maintenanceWindow)
+        guard started || offlineHistoricalSyncInProgress else { return false }
+        let generation = offlineHistoricalSyncGeneration
+        while lastCompletedHistoricalSyncGeneration < generation {
+            guard !Task.isCancelled else { return false }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        return lastCompletedHistoricalSyncGeneration == generation
+    }
+
     nonisolated static func onboardingHistoryTransportAuthorityIsValid(
         terminalReceived: Bool,
         durableTerminalAuthority: Bool,
@@ -13614,25 +13636,61 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// `rangeLossBackfillPending` ticket — publication can falsely clear the
     /// ticket while records still sit on the strap, and every background wake
     /// then thinks there is nothing to drain.)
-    nonisolated static func drainableStrapBacklogPendingFromDefaults(
+    /// Why a wake-driven lane should treat the strap as having HR-history
+    /// backlog. `.frontierStale` is the SOFT reason (forward frontier >= 30 min
+    /// behind, but no range-loss ticket and flush debt reads caught-up): the HR
+    /// catch-up lane yields on this one when a motion offload is waiting, so the
+    /// single shared transport isn't perpetually re-seized by HR while motion
+    /// tickets starve (2026-08-08 motion-offload fix).
+    enum StrapBacklogReason: Equatable { case none, ticket, freshDebt, frontierStale }
+
+    nonisolated static func strapBacklogReason(
         now: Date = Date(),
         defaults: UserDefaults = .standard
-    ) -> Bool {
-        if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) { return true }
+    ) -> StrapBacklogReason {
+        if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) { return .ticket }
         if let observedAt = defaults.object(forKey: OfflineSyncDefaults.flushDebtObservedAt) as? Double,
            observedAt.isFinite,
            now.timeIntervalSince1970 - observedAt <= 15 * 60 {
             let records = defaults.integer(forKey: OfflineSyncDefaults.flushDebtPendingRecords)
-            if flushDebtLevel(pendingRecords: records) != .caughtUp { return true }
+            if flushDebtLevel(pendingRecords: records) != .caughtUp { return .freshDebt }
         }
         let frontier = defaults.double(forKey: OfflineSyncDefaults.drainedThroughUnix)
-        return frontier > 0
-            && now.timeIntervalSince1970 - frontier >= frontierBacklogFloorSeconds
+        if frontier > 0, now.timeIntervalSince1970 - frontier >= frontierBacklogFloorSeconds {
+            return .frontierStale
+        }
+        return .none
+    }
+
+    nonisolated static func drainableStrapBacklogPendingFromDefaults(
+        now: Date = Date(),
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        strapBacklogReason(now: now, defaults: defaults) != .none
     }
 
     /// Robust "is there strap backlog to drain" accessor for wake-driven lanes
     /// (BGProcessing handler, accepted-HR catch-up).
     var hasDrainableStrapBacklog: Bool { Self.drainableStrapBacklogPendingFromDefaults() }
+
+    /// True when the MOTION bank has a resumable (non-exhausted, not over-age)
+    /// offload ticket. Motion/step coverage lags HR because the motion offload
+    /// rides the same shared transport but had no dedicated background wake; this
+    /// signal lets the BGProcessing lane drive a motion offload once HR is caught
+    /// up (2026-08-08). Pure ledger/UserDefaults read.
+    nonisolated static func resumableMotionBankOffloadPending(
+        now: Date = Date(),
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        guard let strap = defaults.string(forKey: OfflineSyncDefaults.verifiedHistoryPeripheralID),
+              let ticket = AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+                strapIdentifier: strap, defaults: defaults)
+        else { return false }
+        return ticket.attempts < workoutHistoricalMotionBankMaximumOffloadAttempts
+            && now.timeIntervalSince(ticket.end) < workoutHistoricalMotionBankMaximumBlockingAge
+    }
+
+    var hasResumableMotionBankOffload: Bool { Self.resumableMotionBankOffloadPending() }
 
     private func strapBacklogPendingForCatchUp(now: Date = Date()) -> Bool {
         Self.drainableStrapBacklogPendingFromDefaults(now: now)
@@ -13654,6 +13712,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard !foregroundInteractiveMode,
               !offlineHistoricalSyncInProgress,
               strapBacklogPendingForCatchUp(now: now) else { return }
+        // First refusal (2026-08-08): if HR is only SOFT-behind (frontier stale,
+        // but no range-loss ticket and flush debt caught-up) and a motion offload
+        // is waiting, yield THIS callback so the HR lane doesn't perpetually
+        // re-seize the one shared transport while motion tickets starve. The next
+        // accepted-HR callback re-evaluates, so HR is interleaved, never starved.
+        if Self.strapBacklogReason(now: now) == .frontierStale, hasResumableMotionBankOffload {
+            return
+        }
         _ = requestOfflineHistoricalSyncIfNeeded(
             reason: "accepted_hr_autonomous_catchup",
             force: false,

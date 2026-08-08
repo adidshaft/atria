@@ -68,4 +68,45 @@ final class AtriaBackgroundDrainBacklogTests: XCTestCase {
         let (s, n) = try makeSuite(); defer { s.removePersistentDomain(forName: n) }
         XCTAssertFalse(pending(s), "no ticket, no debt, no frontier -> not backlog")
     }
+
+    // MARK: - strapBacklogReason (drives the HR->motion yield, 2026-08-08)
+    // The HR autonomous catch-up lane yields the shared transport to a waiting
+    // motion offload ONLY when the reason is `.frontierStale` (soft). A `.ticket`
+    // or `.freshDebt` (hard) must never yield — latest-data reliability wins.
+
+    private func reason(_ s: UserDefaults) -> AtriaBLEManager.StrapBacklogReason {
+        AtriaBLEManager.strapBacklogReason(now: now, defaults: s)
+    }
+
+    func testReasonTicketIsHardAndNeverYields() throws {
+        let (s, n) = try makeSuite(); defer { s.removePersistentDomain(forName: n) }
+        s.set(true, forKey: ticketKey)
+        XCTAssertEqual(reason(s), .ticket)
+    }
+
+    func testReasonFreshDebtIsHardAndNeverYields() throws {
+        let (s, n) = try makeSuite(); defer { s.removePersistentDomain(forName: n) }
+        s.set(now.timeIntervalSince1970 - 5 * 60, forKey: debtObservedKey)
+        s.set(267, forKey: debtRecordsKey)
+        XCTAssertEqual(reason(s), .freshDebt)
+    }
+
+    func testReasonFrontierStaleIsSoftAndYields() throws {
+        let (s, n) = try makeSuite(); defer { s.removePersistentDomain(forName: n) }
+        s.set(now.timeIntervalSince1970 - 40 * 60, forKey: frontierKey)
+        XCTAssertEqual(reason(s), .frontierStale,
+                       "soft-behind frontier is the only reason that yields to motion")
+    }
+
+    func testReasonNoneWhenCaughtUp() throws {
+        let (s, n) = try makeSuite(); defer { s.removePersistentDomain(forName: n) }
+        XCTAssertEqual(reason(s), .none)
+    }
+
+    func testTicketOutranksStaleFrontier_staysHard() throws {
+        let (s, n) = try makeSuite(); defer { s.removePersistentDomain(forName: n) }
+        s.set(true, forKey: ticketKey)
+        s.set(now.timeIntervalSince1970 - 40 * 60, forKey: frontierKey) // also stale
+        XCTAssertEqual(reason(s), .ticket, "a real ticket must win over a stale frontier -> no yield")
+    }
 }
