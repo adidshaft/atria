@@ -138,7 +138,11 @@ struct AtriaSleepNeedLedgerCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
-            Text("How we got \(AtriaMetricFormat.sleepHours(components.totalHours))")
+            // "How we got 8h 10m" read as a sleep-stage/onset breakdown and so
+            // looked hardcoded/broken (2026-08-08 field report). This is the
+            // sleep-NEED ledger (baseline + strain + debt − nap credit), all
+            // computed — name it so it can't be mistaken for stages.
+            Text("Tonight's sleep need · \(AtriaMetricFormat.sleepHours(components.totalHours))")
                 .font(.headline.weight(.semibold))
 
             stackedBar
