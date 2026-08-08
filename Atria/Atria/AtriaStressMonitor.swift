@@ -482,6 +482,18 @@ struct AtriaStressDistributionArchive: Codable, Equatable {
     }
 }
 
+/// A learned awake-HR reference persisted across launches. The live buffer takes
+/// ~8 min of quiet-awake wear to warm up; without this, every cold start throws
+/// the reference away and the first stress readings fall back to the fixed
+/// physiological default (resting + offset). Seeding from the last learned
+/// reference makes the first scored reading reflect the wearer's own awake HR,
+/// and the live buffer supersedes it as soon as it warms up.
+struct AtriaAwakeReferenceSnapshot: Codable, Equatable {
+    var center: Double
+    var spread: Double
+    var updatedAt: Date
+}
+
 /// Thin store that owns the rolling buffers, activation EMA, hysteresis, and
 /// post-workout cooldown; recomputes `AtriaStressMonitor.score(...)` on each
 /// pulse update. All the actual scoring logic lives in the pure function above
@@ -547,6 +559,27 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// so sleeping/resting HR can't collapse the learned reference (bug #9 makes
     /// the sleep guard inert; this floor is the robust proxy).
     private static let awakeReferenceMinDeltaAboveRest = 8
+    /// Last learned awake reference, restored at launch so scoring starts from
+    /// the wearer's own awake HR instead of the fixed default while the live
+    /// buffer warms up. Superseded in memory the moment the live buffer is warm.
+    private var persistedAwakeReference: AtriaAwakeReferenceSnapshot?
+    private var lastAwakeReferencePersistAt: Date?
+    /// UserDefaults suite backing the awake-reference seed. Injectable so tests
+    /// can exercise persistence without touching the shared standard suite.
+    private let awakeReferenceDefaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.awakeReferenceDefaults = defaults
+        self.persistedAwakeReference = Self.loadPersistedAwakeReference(defaults: defaults)
+    }
+
+    private static let awakeReferenceDefaultsKey = "atria.stress.awakeReference.v1"
+    /// A persisted reference older than this is discarded: awake HR drifts with
+    /// fitness, illness, and season, so a stale seed is worse than the default.
+    private static let awakeReferenceSeedMaxAge: TimeInterval = 14 * 24 * 3600
+    /// Throttle disk writes; the reference changes slowly and is re-derived every
+    /// tick, so persisting more often buys nothing.
+    private static let awakeReferencePersistInterval: TimeInterval = 5 * 60
     private var contactStartedAt: Date?
     /// Clock of the last tick that carried live contact. Used to distinguish a
     /// brief flicker (single zero-contact sample, one missed ~6s freshness
@@ -616,6 +649,21 @@ final class AtriaStressMonitorStore: ObservableObject {
         return sortedValues.count.isMultiple(of: 2)
             ? (sortedValues[mid - 1] + sortedValues[mid]) / 2
             : sortedValues[mid]
+    }
+
+    /// One-shot, tiny (three-field) decode at launch — deliberately not on the
+    /// high-frequency `Record` path that the JSONDecoder retention issue touched.
+    static func loadPersistedAwakeReference(defaults: UserDefaults = .standard) -> AtriaAwakeReferenceSnapshot? {
+        guard let data = defaults.data(forKey: awakeReferenceDefaultsKey),
+              let snapshot = try? JSONDecoder().decode(AtriaAwakeReferenceSnapshot.self, from: data) else {
+            return nil
+        }
+        return snapshot
+    }
+
+    private func persistAwakeReference(_ snapshot: AtriaAwakeReferenceSnapshot) {
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        awakeReferenceDefaults.set(data, forKey: Self.awakeReferenceDefaultsKey)
     }
 
     private func recordHistory(now: Date) {
@@ -725,7 +773,28 @@ final class AtriaStressMonitorStore: ObservableObject {
             awakeHRBuffer.append((t: now, bpm: heartRate))
         }
         awakeHRBuffer.removeAll { now.timeIntervalSince($0.t) > Self.awakeReferenceWindowSeconds }
-        let awakeReference = Self.awakeReference(from: awakeHRBuffer, now: now)
+        let liveAwakeReference = Self.awakeReference(from: awakeHRBuffer, now: now)
+        // A freshly learned reference is authoritative and gets persisted (write
+        // throttled) so the next launch can seed from it. Until the live buffer
+        // warms up, fall back to a recently persisted reference; only if that is
+        // missing or stale does the scorer drop to its physiological default.
+        let awakeReference: (center: Double, spread: Double)?
+        if let liveAwakeReference {
+            let snapshot = AtriaAwakeReferenceSnapshot(center: liveAwakeReference.center,
+                                                       spread: liveAwakeReference.spread,
+                                                       updatedAt: now)
+            persistedAwakeReference = snapshot
+            if lastAwakeReferencePersistAt.map({ now.timeIntervalSince($0) >= Self.awakeReferencePersistInterval }) ?? true {
+                persistAwakeReference(snapshot)
+                lastAwakeReferencePersistAt = now
+            }
+            awakeReference = liveAwakeReference
+        } else if let seed = persistedAwakeReference,
+                  now.timeIntervalSince(seed.updatedAt) <= Self.awakeReferenceSeedMaxAge {
+            awakeReference = (center: seed.center, spread: seed.spread)
+        } else {
+            awakeReference = nil
+        }
 
         let rrWindow = recentRRSamples
             .filter {
