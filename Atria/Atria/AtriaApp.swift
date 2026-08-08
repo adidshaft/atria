@@ -549,6 +549,15 @@ struct AtriaApp: App {
                 .max()
             LocalNotificationScheduler.scheduleEveningJournalCheckIn(lastJournalActivity: lastJournalActivity)
             LocalNotificationScheduler.scheduleMorningJournalCheckIn(lastJournalActivity: lastJournalActivity)
+            // Run the production review-notification pass from the background too
+            // (2026-08-08, audit §1 #4). makeSleepReviewDecision previously ran
+            // only from the foreground scene-active/launch path, so an overnight
+            // with no app-open left the "review last night's sleep" banner
+            // unscheduled until the user next opened the app. Placed after the
+            // deferred session load + maintenance so any overnight sleep candidate
+            // is materialized; mirrors the launch cadence exactly and the
+            // scheduler's own debounce prevents duplicate fires.
+            await LocalNotificationScheduler.scheduleBackgroundReviewPass(store: store, ble: ble)
             WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: reason)
             completion.complete(task,
                                 success: backupSucceeded
