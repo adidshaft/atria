@@ -195,7 +195,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .respiration:
             return "Compared with your own typical nights only. A missing night stays missing — no interpolated breaths."
         case .sleep:
-            return "A duration and consistency estimate from heart-rate evidence, not a clinical sleep study. On heart-rate-only nights the hypnogram is shown as a clearly-labeled estimate that never changes your saved sleep numbers; validated motion upgrades it to a measured timeline. Manually added sleep has no stage breakdown. Unworn time is never counted as sleep."
+            return "A duration and consistency estimate from heart-rate evidence, not a clinical sleep study. On heart-rate-only nights, the hypnogram is clearly labeled as an estimate and never changes your saved sleep numbers. When the strap also records enough motion, Atria can draw the fuller stage timeline. Manually added sleep has no stage breakdown. Unworn time is never counted as sleep."
         case .vo2max:
             // AtriaFitnessAge.swift footnote + thresholds; VO2max needs a measured
             // HRmax. There is no "Medium" confidence literal in source, so this

@@ -14,9 +14,9 @@ import SwiftUI
 //
 // Honesty (hard constraint): the timeline renders ONLY from motion-validated
 // display segments — `SleepHistorySnapshot.Night.displayStageSegments` is
-// already empty for `.hrOnlyEstimate`/`.none` nights, and this card renders
-// the existing "Stages need motion data" honest state for them instead of a
-// fabricated band.
+// already empty for `.hrOnlyEstimate`/`.none` nights. HR-only nights render a
+// single generic estimated-asleep window plus measured HR context — never a
+// fabricated Awake/REM/Light/Deep lane or stage distribution.
 
 /// Pure segment→lane / legend / axis math, unit-testable without SwiftUI.
 enum AtriaSleepHypnogramPresentation {
@@ -148,10 +148,10 @@ enum AtriaSleepHypnogramPresentation {
 struct AtriaSleepHypnogramCard: View, Equatable {
     enum DisplayState: Equatable {
         case timeline
-        /// HR-only night rendered as a clearly-labeled ESTIMATE (2026-08-08):
-        /// the stage model ran on heart rate, but no validated motion backs it.
+        /// HR-only night rendered as one generic estimated-asleep window. No
+        /// stage epochs or stage-level precision are permitted in this state.
         case estimate
-        /// HR-only night: segments exist in storage but lack validated motion.
+        /// HR-only night without a usable time window.
         case needsMotion
         /// Hand-typed window: stages will never arrive without sensor data,
         /// so "building"/"calibrating" copy would be a false promise
@@ -168,6 +168,7 @@ struct AtriaSleepHypnogramCard: View, Equatable {
     let provenanceText: String
     let eventTimeZoneIdentifier: String?
     let isManualEntry: Bool
+    let measuredHeartRate: Int?
 
     init(segments: [SleepStageSegment],
          start: Date?,
@@ -175,19 +176,23 @@ struct AtriaSleepHypnogramCard: View, Equatable {
          stageEvidence: SleepStageEvidence,
          provenanceText: String,
          eventTimeZoneIdentifier: String? = nil,
-         isManualEntry: Bool = false) {
-        self.segments = segments
+         isManualEntry: Bool = false,
+         measuredHeartRate: Int? = nil) {
+        // Enforce the truth boundary even for direct/test initializers. The
+        // estimate UI is a generic window and must never retain stage input.
+        self.segments = stageEvidence == .hrOnlyEstimate ? [] : segments
         self.start = start
         self.end = end
         self.stageEvidence = stageEvidence
         self.provenanceText = provenanceText
         self.eventTimeZoneIdentifier = eventTimeZoneIdentifier
         self.isManualEntry = isManualEntry
+        self.measuredHeartRate = measuredHeartRate
     }
 
     /// The canonical feed: `displayStageSegments` is already honesty-gated
     /// (empty for `.hrOnlyEstimate`/`.none`), so this card can never render a
-    /// band that motion evidence does not back.
+    /// stage lane that motion evidence does not back.
     init(night: SleepHistorySnapshot.Night) {
         // For withheld-stage states the honest body already names the state,
         // so the provenance line carries confirmation provenance only.
@@ -195,11 +200,10 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         let feedSegments: [SleepStageSegment]
         switch night.stageEvidence {
         case .hrOnlyEstimate:
-            // Surface the HR-only stage estimate (labeled) instead of an empty
-            // "unavailable" state. Display-only: `estimatedDisplayStageSegments`
-            // never feeds persisted metrics or efficiency.
+            // Defense in depth: never pass raw HR-derived stage segments into
+            // the card. The estimate state draws its own non-stage window.
             provenance = "\(night.confirmationText) · Estimate"
-            feedSegments = night.estimatedDisplayStageSegments
+            feedSegments = []
         case .none:
             provenance = night.confirmationText
             feedSegments = night.displayStageSegments
@@ -213,7 +217,8 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                   stageEvidence: night.stageEvidence,
                   provenanceText: provenance,
                   eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
-                  isManualEntry: night.isManualEntry)
+                  isManualEntry: night.isManualEntry,
+                  measuredHeartRate: night.restingHR)
     }
 
     static func displayState(segments: [SleepStageSegment],
@@ -225,13 +230,18 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         // segments must say "manual entry", not promise motion or building.
         if isManualEntry, segments.isEmpty { return .manualEntry }
         if stageEvidence == .hrOnlyEstimate {
-            // A labeled estimate when the HR-only stage model produced usable
-            // segments; otherwise fall back to the honest "needs motion" state.
-            if !segments.isEmpty, let start, let end, end > start { return .estimate }
+            // Segment availability is deliberately irrelevant: raw HR-derived
+            // stages must never decide or populate the estimate presentation.
+            if let start, let end, end > start { return .estimate }
             return .needsMotion
         }
         guard !segments.isEmpty, let start, let end, end > start else { return .building }
         return .timeline
+    }
+
+    static func measuredHeartRateText(_ beatsPerMinute: Int?) -> String? {
+        guard let beatsPerMinute, (20...300).contains(beatsPerMinute) else { return nil }
+        return "Measured resting HR · \(beatsPerMinute) bpm"
     }
 
     /// Stage hues from the design file's stage table (dark-first palette).
@@ -260,7 +270,7 @@ struct AtriaSleepHypnogramCard: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
             HStack(alignment: .firstTextBaseline, spacing: AtriaDesignTokens.Spacing.sm) {
-                Text("Stages · Hypnogram")
+                Text(sectionTitle)
                     .font(.caption2.weight(.semibold))
                     .textCase(.uppercase)
                     .foregroundStyle(.secondary)
@@ -281,13 +291,7 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                 }
             case .estimate:
                 if let start, let end {
-                    lanes(windowStart: start, windowEnd: end)
-                    axis(windowStart: start, windowEnd: end)
-                    legendTiles
-                    Text("Estimate · not a validated stage model. Inferred from heart rate; does not change your saved sleep metrics.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    estimatedAsleepWindow(windowStart: start, windowEnd: end)
                 }
             case .needsMotion:
                 honestState(title: "Stage analysis unavailable for this night",
@@ -297,7 +301,7 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                             detail: "You entered this window by hand. Atria draws stage timelines only from sensor data. Duration and any overnight vitals for this window are kept.")
             case .building:
                 honestState(title: "Stage analysis unavailable for this night",
-                            detail: "Your sleep duration is saved. Stages require qualified motion evidence and a validated stage model — hours asleep alone do not create a hypnogram.")
+                            detail: "Your sleep duration is saved. Stages require enough qualified motion evidence — hours asleep alone do not create a hypnogram.")
             }
         }
         .padding(14)
@@ -306,7 +310,61 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         .accessibilityLabel(accessibilityText)
     }
 
-    // MARK: - Timeline
+    // MARK: - Estimate + timeline
+
+    private var sectionTitle: String {
+        state == .estimate ? "Estimated asleep window" : "Stages · Hypnogram"
+    }
+
+    /// HR-only presentation intentionally has no lane/stage input. The single
+    /// band communicates the estimated window; the copy states exactly which
+    /// signal was measured and which stage claims are withheld.
+    private func estimatedAsleepWindow(windowStart: Date, windowEnd: Date) -> some View {
+        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.sm) {
+            HStack(alignment: .firstTextBaseline, spacing: AtriaDesignTokens.Spacing.sm) {
+                Text("Estimated asleep")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Metrics.electricSleep)
+                Spacer(minLength: 0)
+                if let heartRateText = Self.measuredHeartRateText(measuredHeartRate) {
+                    Text(heartRateText)
+                        .font(.caption2.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                }
+            }
+
+            ZStack {
+                Capsule(style: .continuous)
+                    .fill(Color.primary.opacity(0.055))
+                Capsule(style: .continuous)
+                    .fill(Metrics.electricSleep.opacity(0.62))
+            }
+            .frame(height: 16)
+            .accessibilityHidden(true)
+
+            HStack {
+                Text(AtriaSleepHypnogramPresentation.clockLabel(windowStart, calendar: eventCalendar))
+                Spacer(minLength: 0)
+                Text(AtriaSleepHypnogramPresentation.clockLabel(windowEnd, calendar: eventCalendar))
+            }
+            .font(.system(size: 10, weight: .medium).monospacedDigit())
+            .foregroundStyle(.tertiary)
+
+            Text(estimateDetail)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var estimateDetail: String {
+        if Self.measuredHeartRateText(measuredHeartRate) != nil {
+            return "Estimate from the saved sleep window and measured heart rate. Awake, REM, Light, and Deep are not shown because heart rate alone cannot distinguish sleep stages."
+        }
+        return "Estimate from the saved sleep window. A measured resting-HR value is unavailable, and Awake, REM, Light, and Deep are not shown without qualified motion evidence."
+    }
 
     private func lanes(windowStart: Date, windowEnd: Date) -> some View {
         let spans = AtriaSleepHypnogramPresentation.spans(for: segments,
@@ -409,17 +467,15 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                 .joined(separator: ", ")
             return "Sleep stages hypnogram. \(provenanceText). \(stages)."
         case .estimate:
-            let legend = AtriaSleepHypnogramPresentation.legend(for: segments)
-            let stages = legend
-                .map { "\($0.stage.label) \(AtriaSleepHypnogramPresentation.durationText(minutes: $0.minutes))" }
-                .joined(separator: ", ")
-            return "Estimated sleep stages hypnogram, not a validated stage model, inferred from heart rate and not affecting your saved sleep metrics. \(provenanceText). \(stages)."
+            let heartRate = Self.measuredHeartRateText(measuredHeartRate)
+                .map { ". \($0)" } ?? ""
+            return "Estimated asleep window. \(provenanceText)\(heartRate). Awake, REM, Light, and Deep are not shown because heart rate alone cannot distinguish sleep stages."
         case .needsMotion:
             return "\(provenanceText). Stage analysis unavailable for this night. Your sleep duration is saved; heart rate alone cannot separate stages, so continuous motion evidence is required."
         case .manualEntry:
             return "\(provenanceText). No stages — this window was entered by hand; stage timelines come only from sensor data."
         case .building:
-            return "\(provenanceText). Stage analysis unavailable for this night. Sleep duration is saved; stages require qualified motion evidence and a validated stage model."
+            return "\(provenanceText). Stage analysis unavailable for this night. Sleep duration is saved; stages require enough qualified motion evidence."
         }
     }
 

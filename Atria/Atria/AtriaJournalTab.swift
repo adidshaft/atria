@@ -49,6 +49,53 @@ enum AtriaTrackedBehaviors {
     }
 }
 
+/// Day-scoped progress shared by Journal's deck and Today's Daily Brief.
+/// Boolean `No` answers live only in the typed answer store, so counting tags
+/// alone would incorrectly call a partially completed check-in "not started."
+struct AtriaJournalCheckInProgress: Equatable {
+    static let scaleQuestions: [AtriaJournalTypedQuestion] = [
+        .moodScale, .stressScale, .energyScale, .focusScale, .windDownScale
+    ]
+
+    let answeredCount: Int
+    let totalCount: Int
+
+    var isComplete: Bool { totalCount > 0 && answeredCount >= totalCount }
+    var isStarted: Bool { answeredCount > 0 }
+
+    var actionLabel: String {
+        if isComplete { return "Review check-in" }
+        if isStarted { return "Resume check-in · \(answeredCount) of \(totalCount)" }
+        return "Start check-in"
+    }
+
+    var statusLabel: String {
+        if isComplete { return "Done" }
+        if isStarted { return "\(answeredCount) of \(totalCount)" }
+        return "Not started"
+    }
+
+    static func booleanQuestionID(for tag: BehaviorJournalEntry.Tag) -> String {
+        "tag.\(tag.rawValue)"
+    }
+
+    static func resolve(trackedTags: [BehaviorJournalEntry.Tag],
+                        todayEntry: BehaviorJournalEntry?,
+                        answersByQuestion: [String: AtriaJournalAnswer]) -> Self {
+        let answeredTags = trackedTags.reduce(into: 0) { count, tag in
+            if todayEntry?.tags.contains(tag) == true
+                || answersByQuestion[booleanQuestionID(for: tag)] != nil {
+                count += 1
+            }
+        }
+        let answeredScales = scaleQuestions.reduce(into: 0) { count, question in
+            if answersByQuestion[question.rawValue] != nil { count += 1 }
+        }
+        return Self(answeredCount: answeredTags + answeredScales,
+                    totalCount: trackedTags.count + scaleQuestions.count)
+    }
+}
+
 /// Equality-gated bridge between the retained Journal tab and SessionStore.
 /// It may hear a broad dashboard revision, but the Journal root only invalidates
 /// when one of its own value-semantic inputs actually changes.
@@ -558,7 +605,9 @@ private struct AtriaJournalCheckInDeck: View {
     @AtriaDefault(AtriaTrackedBehaviors.storageKey) private var trackedBehaviorsRaw: String = ""
     private var tags: [BehaviorJournalEntry.Tag] { AtriaTrackedBehaviors.parse(trackedBehaviorsRaw) }
     /// Standalone typed cards appended after the boolean tags.
-    private var scaleQuestions: [AtriaJournalTypedQuestion] { [.moodScale, .stressScale, .energyScale, .focusScale, .windDownScale] }
+    private var scaleQuestions: [AtriaJournalTypedQuestion] {
+        AtriaJournalCheckInProgress.scaleQuestions
+    }
     private var cardCount: Int { tags.count + scaleQuestions.count }
     private var answeredCount: Int { answeredTagCount + answeredScaleCount }
     private var deckProgressFraction: Double {
@@ -574,13 +623,18 @@ private struct AtriaJournalCheckInDeck: View {
         return scaleQuestions.filter { answers[$0.rawValue] != nil }.count
     }
     private var deckComplete: Bool { deckIndex >= cardCount }
+    private var allQuestionsAnswered: Bool {
+        cardCount > 0 && answeredCount >= cardCount
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 AtriaPanelSectionHeader(title: "Morning check-in",
                                         subtitle: deckComplete
-                                            ? "Done for today"
+                                            ? (allQuestionsAnswered
+                                               ? "Done for today"
+                                               : "Skipped questions remain")
                                             : "\(answeredCount) of \(cardCount) logged")
 
                 Spacer(minLength: 0)
@@ -669,7 +723,7 @@ private struct AtriaJournalCheckInDeck: View {
     }
 
     static func booleanQuestionID(for tag: BehaviorJournalEntry.Tag) -> String {
-        "tag.\(tag.rawValue)"
+        AtriaJournalCheckInProgress.booleanQuestionID(for: tag)
     }
 
     private func tagAnswered(_ tag: BehaviorJournalEntry.Tag) -> Bool {
@@ -1011,6 +1065,7 @@ private struct AtriaJournalCheckInDeck: View {
             }
             .font(.caption.weight(.medium))
             .foregroundStyle(.secondary)
+            .frame(minHeight: 44)
         }
         .padding(.horizontal, 18)
         .frame(maxWidth: .infinity)
@@ -1018,22 +1073,37 @@ private struct AtriaJournalCheckInDeck: View {
 
     private var completedCard: some View {
         VStack(spacing: 10) {
-            Image(systemName: "checkmark.seal.fill")
-                .font(.system(size: 34, weight: .medium))
-                .foregroundStyle(.cyan)
-            Text("Check-in done")
-                .font(.headline)
+            VStack(spacing: 8) {
+                Image(systemName: allQuestionsAnswered
+                      ? "checkmark.seal.fill"
+                      : "arrow.uturn.backward.circle.fill")
+                    .font(.system(size: 34, weight: .medium))
+                    .foregroundStyle(.cyan)
+                Text(allQuestionsAnswered ? "Check-in done" : "Check-in paused")
+                    .font(.headline)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(allQuestionsAnswered
+                                ? "Check-in done."
+                                : "Check-in paused. Skipped questions remain unanswered.")
+
             if answeredCount > 0 {
-                Button("Review answers") {
-                    withAnimation(reduceMotion ? nil : .snappy) { deckIndex = 0 }
+                Button {
+                    withAnimation(reduceMotion ? nil : .snappy) {
+                        deckIndex = allQuestionsAnswered ? 0 : firstUnansweredIndex
+                    }
+                } label: {
+                    Text(allQuestionsAnswered ? "Review answers" : "Answer skipped questions")
+                        .font(.caption.weight(.semibold))
+                        .frame(minHeight: 44)
+                        .padding(.horizontal, 14)
                 }
-                .font(.caption.weight(.semibold))
+                .buttonStyle(.glass)
+                .buttonBorderShape(.capsule)
             }
         }
         .padding(.horizontal, 18)
         .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Check-in done. Skipped questions stay unanswered.")
     }
 
     private func question(for tag: BehaviorJournalEntry.Tag) -> String {

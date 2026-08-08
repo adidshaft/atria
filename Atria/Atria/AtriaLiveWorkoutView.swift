@@ -2850,7 +2850,7 @@ struct AtriaLiveWorkoutView: View {
                 .padding(.horizontal, 18)
                 .padding(.top, 10)
                 .padding(.bottom, 8)
-                .background(.ultraThinMaterial)
+                .background(Color(uiColor: .systemBackground))
         }
         .sheet(isPresented: $showExerciseCatalog) {
             AtriaStrengthCatalogView(projection: strengthHistory) { exercise in

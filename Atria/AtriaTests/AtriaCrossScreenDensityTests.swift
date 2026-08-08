@@ -7,14 +7,40 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         return try String(contentsOf: appURL.appendingPathComponent(relativePath), encoding: .utf8)
     }
 
-    func testTodayCardsKeepRationaleAccessibleWithoutRepeatingItVisually() throws {
+    func testPrimaryDailyTabUsesTodayLanguageAndKeepsLegacyDeepLinks() throws {
+        let source = try source("AtriaHomeView.swift")
+        let tabStart = try XCTUnwrap(source.range(of: "private enum HomeTab"))
+        let tabEnd = try XCTUnwrap(source.range(of: "fileprivate enum WorkoutReviewHoldState",
+                                                range: tabStart.upperBound..<source.endIndex))
+        let tabs = String(source[tabStart.lowerBound..<tabEnd.lowerBound])
+
+        XCTAssertTrue(tabs.contains("case .overview: return \"Today\""))
+        XCTAssertTrue(tabs.contains("case \"overview\", \"today\": return .overview"),
+                      "Renaming the visible tab must not break existing overview links")
+    }
+
+    func testTrendAdviceRequiresQualifiedCurrentAndPriorSamplesForEveryInput() throws {
+        let source = try source("AtriaTrendChart.swift")
+
+        XCTAssertTrue(source.contains("periodReadout.hasCompleteComparison("))
+        XCTAssertTrue(source.contains("minimumSamples: range.confidenceTargetPoints"))
+        XCTAssertTrue(source.contains("$0.currentCount >= required"))
+        XCTAssertTrue(source.contains("$0.previousCount >= required"))
+        XCTAssertTrue(source.contains("currentCount: currentHRV.count"))
+        XCTAssertTrue(source.contains("previousCount: priorStrain.count"))
+    }
+
+    func testTodayDailyBriefKeepsGuidanceVisibleAndCheckInActionable() throws {
         let source = try source("AtriaTodayScreen.swift")
         let planStart = try XCTUnwrap(source.range(of: "private struct AtriaTodayPlanCard"))
         let planEnd = try XCTUnwrap(source.range(of: "private struct AtriaStrainTargetCard", range: planStart.upperBound..<source.endIndex))
         let plan = String(source[planStart.lowerBound..<planEnd.lowerBound])
 
-        XCTAssertFalse(plan.contains("Text(detail)"))
-        XCTAssertTrue(plan.contains(".accessibilityLabel(\"Today's Plan. \\(title). \\(detail). \\(target).\")"))
+        XCTAssertTrue(plan.contains("Label(\"Daily brief\""))
+        XCTAssertTrue(plan.contains("Text(detail)"))
+        XCTAssertTrue(plan.contains(".buttonStyle(.glass)"))
+        XCTAssertTrue(plan.contains("minHeight: 44"))
+        XCTAssertTrue(plan.contains("checkIn.actionLabel"))
 
         let weeklyStart = try XCTUnwrap(source.range(of: "private struct AtriaTodayWeeklyPlanTargetRow"))
         let weeklyEnd = try XCTUnwrap(source.range(of: "private struct AtriaTodayGlanceTile", range: weeklyStart.upperBound..<source.endIndex))
@@ -29,7 +55,9 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(source.contains("Unlocks after roughly 2–3 weeks of detailed answers."))
         XCTAssertTrue(source.contains("Text(\"About 2–3 weeks of answers\")"))
         XCTAssertFalse(source.contains("Text(\"Skipped questions stay unanswered.\")"))
-        XCTAssertTrue(source.contains(".accessibilityLabel(\"Check-in done. Skipped questions stay unanswered.\")"))
+        XCTAssertTrue(source.contains("Text(allQuestionsAnswered ? \"Check-in done\" : \"Check-in paused\")"))
+        XCTAssertTrue(source.contains("Text(allQuestionsAnswered ? \"Review answers\" : \"Answer skipped questions\")"))
+        XCTAssertTrue(source.contains(".buttonStyle(.glass)"))
         XCTAssertFalse(source.contains("Log today to start your pattern — the full 90-day view builds as history grows."))
         // 2026-08-04: the "full 90-day pattern appears..." empty-state line was
         // retired with the 7x13 heat-strip redesign (ed4cdac8) — sparse days
@@ -417,7 +445,8 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         let menu = String(today[menuStart.lowerBound..<menuEnd.lowerBound])
         XCTAssertTrue(menu.contains(".frame(width: 32, height: 32)"))
         XCTAssertTrue(menu.contains(".controlSize(.small)"))
-        XCTAssertFalse(menu.contains("frame(width: 44, height: 44)"))
+        XCTAssertTrue(menu.contains(".frame(width: 44, height: 44)"),
+                      "Compact glass visuals still need native 44-point hit targets")
         XCTAssertTrue(today.contains(".sheet(item: $ringShareRoute)"))
         XCTAssertTrue(today.contains("AtriaShareSheet(snapshot: route.snapshot)"))
 

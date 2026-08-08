@@ -26,12 +26,18 @@ struct AtriaTodaySessionState: Equatable {
     let skinTemperatureDeviationSummary: IMUAuditSummary.SkinTemperatureDeviationSummary
     let behaviorJournalEntries: [BehaviorJournalEntry]
     let behaviorJournalRevision: Int
+    let journalAnswersRevision: Int
+    let todayJournalAnswers: [String: AtriaJournalAnswer]
+    let localDay: Date
     let restingTrend14: [Int]
     let weeklyPlan: WeeklyPlan
     private let baselineSamplesKey: [BaselineSampleKey]
 
     @MainActor
-    init(store: SessionStore) {
+    init(store: SessionStore,
+         now: Date = Date(),
+         calendar: Calendar = .current) {
+        localDay = calendar.startOfDay(for: now)
         dailyRollupHistory = store.dailyRollupHistory
         dailyRollupHistoryRevision = store.dailyRollupHistoryRevision
         confirmedWorkouts = store.confirmedWorkouts
@@ -51,6 +57,9 @@ struct AtriaTodaySessionState: Equatable {
         skinTemperatureDeviationSummary = store.skinTemperatureDeviationSummary
         behaviorJournalEntries = store.behaviorJournalEntries
         behaviorJournalRevision = store.behaviorJournalRevision
+        journalAnswersRevision = store.journalAnswersRevision
+        todayJournalAnswers = store.journalAnswers.answersByQuestion(for: localDay,
+                                                                     calendar: calendar)
         restingTrend14 = store.restingTrend14
         weeklyPlan = store.currentWeeklyPlan()
     }
@@ -68,6 +77,8 @@ struct AtriaTodaySessionState: Equatable {
             && lhs.maxHeartRate == rhs.maxHeartRate
             && lhs.skinTemperatureDeviationSummary == rhs.skinTemperatureDeviationSummary
             && lhs.behaviorJournalRevision == rhs.behaviorJournalRevision
+            && lhs.journalAnswersRevision == rhs.journalAnswersRevision
+            && lhs.localDay == rhs.localDay
             && lhs.restingTrend14 == rhs.restingTrend14
             && lhs.weeklyPlan == rhs.weeklyPlan
     }
@@ -94,6 +105,7 @@ final class AtriaTodaySessionProjectionStore: ObservableObject {
             store.$profile.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$imuAuditSummary.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$restingTrend14.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            store.$journalAnswersRevision.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             NotificationCenter.default.publisher(for: .NSCalendarDayChanged)
                 .map { _ in () }
                 .eraseToAnyPublisher(),
@@ -233,6 +245,7 @@ struct AtriaTodayScreen: View {
     /// Optional display name set elsewhere in the app. Empty -- the default
     /// -- means no greeting is shown; never a fabricated name.
     @AtriaDefault("atria.user.nickname") private var nickname: String = ""
+    @AtriaDefault(AtriaTrackedBehaviors.storageKey) private var trackedBehaviorsRaw: String = ""
     // Glance layout: false = 2-up box grid (default), true = one full-width
     // horizontal bar per metric. The "boxes vs bars" user choice.
     @AtriaDefault("atria.overview.glanceLayoutBars") private var glanceLayoutBars: Bool = false
@@ -274,7 +287,9 @@ struct AtriaTodayScreen: View {
             // Shown only when the system route could not deliver this morning's
             // nudge. A notification the user switched off deliberately does NOT
             // reach here -- honouring that toggle is the point of it.
-            journalFallbackPrompt
+            if !layoutConfig.showPlan {
+                journalFallbackPrompt
+            }
 
             if layoutConfig.showLiveStrip {
                 AtriaTodayLiveStatusHost(liveStore: liveStore,
@@ -635,7 +650,10 @@ struct AtriaTodayScreen: View {
                     AtriaTodayPlanCard(title: planTitle,
                                        detail: planDetail,
                                        target: planTargetText,
-                                       tint: displayHero.guidance.color)
+                                       tint: displayHero.guidance.color,
+                                       checkIn: journalCheckInProgress,
+                                       notificationFallback: morningCheckInNeedsFallback,
+                                       onOpenJournal: onOpenJournal)
                 }
             }
         case .shortcuts:
@@ -714,6 +732,8 @@ struct AtriaTodayScreen: View {
                 Image(systemName: "arrow.up.arrow.down")
                     .font(.caption.weight(.bold))
                     .frame(width: 32, height: 32)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
@@ -789,6 +809,7 @@ struct AtriaTodayScreen: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .frame(width: 32, height: 32)
+                        .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.glass)
@@ -909,6 +930,7 @@ struct AtriaTodayScreen: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: 32, height: 32)
+                .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .accessibilityLabel("Share Atria ring")
@@ -1995,10 +2017,23 @@ struct AtriaTodayScreen: View {
         return String(format: "Target %.1f \u{00b7} met", target)
     }
 
-    private var journalValue: String {
-        sessionProjectionStore.state.behaviorJournalEntries.isEmpty
-            ? "Ready"
-            : "\(sessionProjectionStore.state.behaviorJournalEntries.count) tags"
+    private var journalCheckInProgress: AtriaJournalCheckInProgress {
+        let calendar = Calendar.current
+        let localDay = sessionProjectionStore.state.localDay
+        let todayEntry = sessionProjectionStore.state.behaviorJournalEntries.first {
+            calendar.isDate($0.day, inSameDayAs: localDay)
+        }
+        return AtriaJournalCheckInProgress.resolve(
+            trackedTags: AtriaTrackedBehaviors.parse(trackedBehaviorsRaw),
+            todayEntry: todayEntry,
+            answersByQuestion: sessionProjectionStore.state.todayJournalAnswers
+        )
+    }
+
+    private var morningCheckInNeedsFallback: Bool {
+        AtriaNotificationAttemptStore.needsInAppFallback(
+            kind: LocalNotificationScheduler.morningCheckInKind
+        )
     }
 
     private var coachContext: AtriaCoachContext {
@@ -3103,44 +3138,105 @@ private struct AtriaTodayPlanCard: View, Equatable {
     let detail: String
     let target: String
     let tint: Color
+    let checkIn: AtriaJournalCheckInProgress
+    let notificationFallback: Bool
+    let onOpenJournal: () -> Void
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.title == rhs.title
+            && lhs.detail == rhs.detail
+            && lhs.target == rhs.target
+            && lhs.tint == rhs.tint
+            && lhs.checkIn == rhs.checkIn
+            && lhs.notificationFallback == rhs.notificationFallback
+    }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "point.topleft.down.curvedto.point.bottomright.up")
-                .font(.headline.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 38, height: 38)
-                .background(AtriaIconTileBackground(cornerRadius: 12, tint: tint))
+        VStack(alignment: .leading, spacing: 12) {
+            dailyBriefHeader
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Today's Plan")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 5) {
                 Text(title)
-                    .font(.headline.weight(.bold))
+                    .font(.title3.weight(.bold))
                     .foregroundStyle(.primary)
                     .lineLimit(2)
-                    .minimumScaleFactor(0.78)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(2)
+
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            Spacer(minLength: 0)
+            Button(action: onOpenJournal) {
+                HStack(spacing: 10) {
+                    Image(systemName: checkIn.isComplete ? "checkmark.circle.fill" : "square.and.pencil")
+                        .font(.subheadline.weight(.bold))
 
-            Text(target)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.85)
-                .layoutPriority(1)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
-                .background(tint.opacity(0.12),
-                            in: Capsule())
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(checkIn.actionLabel)
+                            .font(.subheadline.weight(.semibold))
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(notificationFallback
+                             ? "In-app reminder · \(checkIn.statusLabel)"
+                             : checkIn.statusLabel)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .padding(.horizontal, 12)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.roundedRectangle(radius: 16))
+            .tint(tint)
+            .accessibilityLabel("\(checkIn.actionLabel). \(notificationFallback ? "In-app reminder. " : "")\(checkIn.statusLabel).")
+            .accessibilityHint("Opens today's Journal check-in.")
         }
-        .padding(12)
-        .background(Color(uiColor: .tertiarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Today's Plan. \(title). \(detail). \(target).")
+        .padding(14)
+        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var dailyBriefHeader: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 4) {
+                dailyBriefLabel
+                targetLabel
+            }
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                dailyBriefLabel
+                Spacer(minLength: 8)
+                targetLabel
+            }
+        }
+    }
+
+    private var dailyBriefLabel: some View {
+        Label("Daily brief", systemImage: "sun.max.fill")
+            .font(.caption.weight(.bold))
+            .foregroundStyle(.secondary)
+    }
+
+    private var targetLabel: some View {
+        Text(target)
+            .font(.caption.weight(.bold))
+            .foregroundStyle(tint)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
     }
 }
 
@@ -3222,11 +3318,9 @@ private struct AtriaStrainTargetCard: View, Equatable {
             }
         }
         .padding(12)
-        // Prominent full-width card: subtle Liquid Glass + the shared `tile` radius,
-        // matching the weekly-plan card so the big cards read as one intentional tier
-        // (dense glance tiles stay flat for scroll perf). Verified legible on-sim in
-        // light and dark before applying to the sibling prominent cards.
-        .atriaGlassCard(cornerRadius: AtriaDesignTokens.Radius.tile)
+        // Static guidance stays on a quiet readable surface. Liquid Glass is
+        // reserved for the controls that act on it.
+        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile)
         .overlay {
             // Keep the per-metric tint stroke (its identity) on top of the glass --
             // same tint-stroke chrome as the glance tiles it sits beside.
@@ -3273,10 +3367,9 @@ private struct AtriaTodayWeeklyPlanCard: View, Equatable {
                 }
             }
             .padding(12)
-            // Prominent full-width card: subtle Liquid Glass + the shared `tile`
-            // radius, matching the strain-target card so the big cards read as one
-            // intentional tier (dense glance tiles stay flat for scroll perf).
-            .atriaGlassCard(cornerRadius: AtriaDesignTokens.Radius.tile)
+            // This is reading content, not a control surface; keep it calm and
+            // reserve Liquid Glass for the interactive button itself.
+            .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile)
             .overlay {
                 RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.tile, style: .continuous)
                     .stroke(Metrics.electricStrain.opacity(0.16), lineWidth: 1)
@@ -3532,17 +3625,14 @@ private struct AtriaTodayShortcutStrip: View, Equatable {
         Button(action: onStartWorkout) {
             HStack(spacing: 8) {
                 Image(systemName: "plus")
-                    .foregroundStyle(.blue)
                 Text("Start activity")
-                    .foregroundStyle(.primary)
             }
             .font(.subheadline.weight(.semibold))
-                .frame(maxWidth: .infinity, minHeight: 54)
-                .background(Color(uiColor: .tertiarySystemGroupedBackground),
-                            in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip,
-                                                style: .continuous))
+            .frame(maxWidth: .infinity, minHeight: 54)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.glassProminent)
+        .buttonBorderShape(.roundedRectangle(radius: AtriaDesignTokens.Radius.chip))
+        .tint(.blue)
         .accessibilityLabel("Start activity")
     }
 }

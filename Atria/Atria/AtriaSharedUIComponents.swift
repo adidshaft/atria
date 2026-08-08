@@ -997,19 +997,22 @@ struct AtriaTextSelector<Item: Hashable>: View {
     @Binding var selection: Item
 
     @Namespace private var highlight
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 4) {
             ForEach(items, id: \.self) { item in
                 let isSelected = item == selection
                 Button {
-                    withAnimation(.snappy(duration: 0.28)) { selection = item }
+                    withAnimation(reduceMotion ? nil : .snappy(duration: 0.28)) {
+                        selection = item
+                    }
                 } label: {
                     Text(title(item))
                         .font(.subheadline.weight(isSelected ? .semibold : .regular))
                         .foregroundStyle(isSelected ? Color.primary : Color.secondary)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
+                        .frame(minHeight: 44)
                         .contentShape(Capsule())
                         .background {
                             if isSelected {
