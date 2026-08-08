@@ -3,12 +3,12 @@ import XCTest
 
 final class AtriaExperimentalSensorCopyTests: XCTestCase {
     func testBloodOxygenStatusDistinguishesSupportedAndUnsupportedHardware() {
-        // strap-4 carries the SpO2 sensor but has no validated decoder yet: this
-        // is a genuinely TIME-BASED state, so it keeps its transient wording.
+        // Strap 4 carries the SpO2 sensor; the blocker is Atria's decoder, not
+        // elapsed time or an absent sensor.
         XCTAssertEqual(AtriaExperimentalSensorCopy.bloodOxygenStatus(
             strapModel: .strap4,
             decoderAvailable: false),
-            "Not available yet")
+            AtriaSpO2Copy.decoderNotVerified)
         // strap-3 has no SpO2 sensor at all: a true hardware limitation, so it
         // routes through the canonical AtriaSpO2Copy copy (2026-08-01).
         XCTAssertEqual(AtriaExperimentalSensorCopy.bloodOxygenStatus(
@@ -54,7 +54,7 @@ final class AtriaExperimentalSensorCopyTests: XCTestCase {
         XCTAssertEqual(AtriaExperimentalSensorCopy.bloodOxygenStatus(
             strapModel: .unknown,
             decoderAvailable: false),
-            "Not available yet")
+            AtriaSpO2Copy.decoderNotVerified)
     }
 
     func testAvailableBloodOxygenDecoderDoesNotUseLabValidationLanguage() {
@@ -82,11 +82,15 @@ final class AtriaExperimentalSensorCopyTests: XCTestCase {
         XCTAssertEqual(AtriaExperimentalSensorCopy.skinTemperatureStatus(
             summary: summary,
             decoderAvailable: false),
-            "Not available yet")
+            "Decoder not verified")
         XCTAssertEqual(AtriaExperimentalSensorCopy.skinTemperatureDetail(
             summary: summary,
             decoderAvailable: false),
-            "Not available yet. Atria does not show raw sensor data as wrist temperature.")
+            "Decoder not verified. Atria does not show raw sensor data as wrist temperature.")
+        XCTAssertEqual(AtriaExperimentalSensorCopy.skinTemperatureValue(
+            summary: summary,
+            decoderAvailable: false),
+            AtriaCompactMetricPresentation.noValue)
         XCTAssertFalse(AtriaExperimentalSensorCopy.skinTemperatureDetail(
             summary: summary,
             decoderAvailable: false).contains("building a sleep baseline"))

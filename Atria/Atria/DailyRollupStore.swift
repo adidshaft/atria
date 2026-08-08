@@ -162,7 +162,9 @@ struct FrozenRecoverySummary: Codable, Equatable {
     /// This is intentionally separate from the storage schema. Bump it only
     /// when Recovery v2's calculation semantics change, never for a UI-only
     /// presentation adjustment.
-    static let recoveryV2ModelVersion = 2
+    // v3 makes the scoring input authority match the Sleep UI: HR-only
+    // capture/span coverage can no longer masquerade as sleep efficiency.
+    static let recoveryV2ModelVersion = 3
     static let savedDailyMetricSource = "saved_daily_metric"
     static let legacyRollupSource = "legacy_rollup"
     static let legacyWidgetSource = "legacy_widget_snapshot"

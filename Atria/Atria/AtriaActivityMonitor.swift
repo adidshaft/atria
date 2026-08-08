@@ -117,6 +117,44 @@ enum AtriaActivityTimelineRefreshPolicy {
     }
 }
 
+/// Stable identity for one Activity signal window. The current wake-to-wake
+/// window intentionally has no moving end, so a foreground/completeness refresh
+/// can preserve the trace already on screen while it refreshes its backing data.
+struct AtriaActivityHeartRateWindowIdentity: Equatable, Sendable {
+    let start: Date
+    let historicalEnd: Date?
+    let isCurrent: Bool
+}
+
+enum AtriaActivityHeartRateLoadState: Equatable, Sendable {
+    case idle
+    case loading
+    case loaded
+    case unavailable
+    case interrupted
+}
+
+/// Pure request-lifecycle policy used by the SwiftUI leaf and pinned in tests.
+/// An old request may finish after a newer one, but it never owns the newer
+/// request's state. Cancellation is terminal for the request that still owns the
+/// view; a visible trace remains usable rather than being blanked.
+enum AtriaActivityHeartRateRefreshPolicy {
+    static func preservesProjection(
+        previous: AtriaActivityHeartRateWindowIdentity?,
+        next: AtriaActivityHeartRateWindowIdentity
+    ) -> Bool {
+        previous == next
+    }
+
+    static func terminalState(readSucceeded: Bool) -> AtriaActivityHeartRateLoadState {
+        readSucceeded ? .loaded : .unavailable
+    }
+
+    static func cancellationState(hasVisiblePoints: Bool) -> AtriaActivityHeartRateLoadState {
+        hasVisiblePoints ? .loaded : .interrupted
+    }
+}
+
 /// Keeps sensor suggestions visible without duplicating an already-saved
 /// workout or showing the same physiological window twice through the general
 /// detector and the higher-quality workout-review cache.
@@ -652,6 +690,21 @@ struct AtriaActivityTimelineStressSample: Equatable, Sendable {
     let t: Date
     let score: Double
     let levelRawValue: Int
+    /// True when a non-Stress evidence point (currently HR-only cardiac
+    /// arousal) occurred since the previous numeric Stress sample. The compact
+    /// chart must leave that interval blank even when it is shorter than the
+    /// ordinary telemetry-gap threshold.
+    let startsNewSegment: Bool
+
+    init(t: Date,
+         score: Double,
+         levelRawValue: Int,
+         startsNewSegment: Bool = false) {
+        self.t = t
+        self.score = score
+        self.levelRawValue = levelRawValue
+        self.startsNewSegment = startsNewSegment
+    }
 }
 
 /// Immutable COW snapshot transferred to the utility task. Stress history is a
@@ -686,16 +739,21 @@ enum AtriaActivityStressHistoryPresentation {
             return "Detailed stress readings are kept for the past two days; this day is outside that window."
         }
         if isCurrentPhysiologicalDay {
+            if currentState.evidenceMode == .cardiacArousal {
+                return "HR-only cardiac arousal is available; numeric Stress needs qualified HR + HRV."
+            }
             if currentState.kind == .scored {
-                return "No measured stress reading has been recorded in this window yet."
+                return "No measured stress reading has been recorded since waking."
             }
             let detail = AtriaStressPresentation.make(state: currentState).detail
-            return detail.isEmpty ? "Waiting for a measured stress reading." : detail
+            return detail.isEmpty
+                ? "Waiting for a measured stress reading since waking."
+                : "Since waking: \(detail)"
         }
         if interval.start < cutoff {
-            return "No retained stress readings were recorded in this window."
+            return "No retained stress readings were recorded in the selected day range."
         }
-        return "No measured stress readings were recorded in this window."
+        return "No measured stress readings were recorded in the selected day range."
     }
 
     static func workoutEmptyMessage(
@@ -799,7 +857,7 @@ enum AtriaActivityTimelineSignalProjection {
                 if $0.t != $1.t { return $0.t < $1.t }
                 return $0.score < $1.score
             }
-        let runs = segmented(measured, date: \.t, gapThreshold: stressGapThreshold)
+        let runs = segmentedStress(measured)
         var points: [AtriaActivityTimelineStressPoint] = []
         points.reserveCapacity(min(measured.count, max(targetPointCount, runs.count * 2)))
         var id = 0
@@ -820,6 +878,25 @@ enum AtriaActivityTimelineSignalProjection {
             }
         }
         return .init(points: points, measuredSampleCount: measured.count)
+    }
+
+    private static func segmentedStress(
+        _ samples: [AtriaActivityTimelineStressSample]
+    ) -> [[AtriaActivityTimelineStressSample]] {
+        guard !samples.isEmpty else { return [] }
+        var runs: [[AtriaActivityTimelineStressSample]] = []
+        var current: [AtriaActivityTimelineStressSample] = []
+        for sample in samples {
+            if let previous = current.last,
+               sample.startsNewSegment
+                    || sample.t.timeIntervalSince(previous.t) > stressGapThreshold {
+                runs.append(current)
+                current = []
+            }
+            current.append(sample)
+        }
+        if !current.isEmpty { runs.append(current) }
+        return runs
     }
 
     private static func segmented<Sample>(
@@ -1076,13 +1153,6 @@ struct AtriaActivityMonitorTab: View {
     private enum TimelineSignal: String, CaseIterable, Hashable {
         case heartRate = "Heart rate"
         case stress = "Stress"
-    }
-
-    private enum HeartRateLoadState: Equatable {
-        case idle
-        case loading
-        case loaded
-        case unavailable
     }
 
     /// Current-day windows advance each minute, but re-scanning the raw archive
@@ -1581,7 +1651,9 @@ struct AtriaActivityMonitorTab: View {
         @State private var selectedSignal: TimelineSignal = .heartRate
         @State private var heartRateProjection = AtriaActivityTimelineHeartRateProjection.empty
         @State private var liveHeartRateTail: [AtriaActivityTimelineHeartRatePoint] = []
-        @State private var heartRateLoadState: HeartRateLoadState = .idle
+        @State private var heartRateLoadState: AtriaActivityHeartRateLoadState = .idle
+        @State private var heartRateProjectionWindow: AtriaActivityHeartRateWindowIdentity?
+        @State private var heartRateRequestID: UUID?
         @State private var stressProjection = AtriaActivityTimelineStressProjection.empty
         @State private var stressProjectionWindowKey: TimelineSignalWindowKey?
         /// Advances only at a foreground boundary or after SessionStore has
@@ -1685,33 +1757,204 @@ struct AtriaActivityMonitorTab: View {
         )
     }
 
+    private enum TimelineHeartRateReadResult: Sendable {
+        case loaded(AtriaActivityTimelineHeartRateProjection)
+        case unavailable
+    }
+
+    /// `SavedSession` predates strict Sendable annotations. Capture the resident
+    /// value/COW image on MainActor, then read only that immutable image on the
+    /// utility worker. The current-cycle path combines it with a bounded recent
+    /// archive tail; completed historical days retain the exact-window reader.
+    private struct TimelineHeartRateSourceSnapshot: @unchecked Sendable {
+        let sessions: [SavedSession]
+        let interval: DateInterval
+        let isCurrent: Bool
+    }
+
+    private nonisolated static func readTimelineHeartRate(
+        _ snapshot: TimelineHeartRateSourceSnapshot
+    ) -> TimelineHeartRateReadResult {
+        if snapshot.isCurrent {
+            let prepared = snapshot.sessions
+                .filter {
+                    $0.end > snapshot.interval.start
+                        && $0.start < snapshot.interval.end
+                }
+                .flatMap { session in
+                    session.points.compactMap { point -> HistoricalArchive.HeartRatePoint? in
+                        let date = session.start.addingTimeInterval(point.t)
+                        guard date >= snapshot.interval.start,
+                              date < snapshot.interval.end,
+                              (25...240).contains(point.bpm) else { return nil }
+                        return .init(t: date, bpm: point.bpm)
+                    }
+                }
+            // The resident session image is the primary current-cycle source.
+            // A small recent tail fills live/offline rows that have reached the
+            // archive but not the next settled SessionStore publication. Unlike
+            // the exact lifetime scanner, this read is byte- and row-bounded.
+            let recent = HistoricalArchive.metricHeartRatePoints(
+                since: snapshot.interval.start,
+                limit: 12_000
+            )
+            let merged = deduplicatedHeartRatePoints(prepared + recent)
+            return .loaded(AtriaActivityTimelineSignalProjection.heartRate(
+                samples: merged,
+                interval: snapshot.interval
+            ))
+        }
+
+        guard let read = HistoricalArchive.metricHeartRatePoints(
+            start: snapshot.interval.start,
+            end: snapshot.interval.end,
+            maximumPoints: 100_000
+        ) else {
+            return .unavailable
+        }
+        return .loaded(AtriaActivityTimelineSignalProjection.heartRate(
+            samples: read.points,
+            interval: snapshot.interval
+        ))
+    }
+
+    private nonisolated static func deduplicatedHeartRatePoints(
+        _ points: [HistoricalArchive.HeartRatePoint]
+    ) -> [HistoricalArchive.HeartRatePoint] {
+        let sorted = points.sorted {
+            if $0.t != $1.t { return $0.t < $1.t }
+            return $0.bpm < $1.bpm
+        }
+        var result: [HistoricalArchive.HeartRatePoint] = []
+        result.reserveCapacity(sorted.count)
+        for point in sorted where result.last != point {
+            result.append(point)
+        }
+        return result
+    }
+
     @MainActor
     private func refreshTimelineHeartRate(window: AtriaActivityDisplayWindow,
                                           requestKey: TimelineSignalWindowKey) async {
+        let requestID = UUID()
+        let windowIdentity = AtriaActivityHeartRateWindowIdentity(
+            start: requestKey.start,
+            historicalEnd: requestKey.historicalEnd,
+            isCurrent: requestKey.isCurrent
+        )
+        let preservesProjection = AtriaActivityHeartRateRefreshPolicy.preservesProjection(
+            previous: heartRateProjectionWindow,
+            next: windowIdentity
+        )
+        if !preservesProjection {
+            heartRateProjection = .empty
+            liveHeartRateTail = []
+        }
+        heartRateProjectionWindow = windowIdentity
+        heartRateRequestID = requestID
         heartRateLoadState = .loading
-        heartRateProjection = .empty
-        liveHeartRateTail = []
+        // Do this before any archive await: an already-observed fresh reading is
+        // useful immediately and must not be hidden behind history preparation.
+        appendFreshLiveHeartRate(stressMonitorStore.liveHeartRate)
+
         let end = window.isCurrentPhysiologicalDay ? max(window.interval.end, Date()) : window.interval.end
         let interval = DateInterval(start: window.interval.start,
                                     end: max(end, window.interval.start.addingTimeInterval(1)))
-        let result = await Task.detached(priority: .utility) {
-            guard let read = HistoricalArchive.metricHeartRatePoints(start: interval.start,
-                                                                      end: interval.end,
-                                                                      maximumPoints: 100_000) else {
-                return Optional<AtriaActivityTimelineHeartRateProjection>.none
+        let snapshot = TimelineHeartRateSourceSnapshot(
+            sessions: window.isCurrentPhysiologicalDay ? store.sessions : [],
+            interval: interval,
+            isCurrent: window.isCurrentPhysiologicalDay
+        )
+        let reader = Task.detached(priority: .utility) {
+            Self.readTimelineHeartRate(snapshot)
+        }
+        let result = await withTaskCancellationHandler {
+            await reader.value
+        } onCancel: {
+            reader.cancel()
+            Task { @MainActor in
+                finishCancelledHeartRateRequest(requestID)
             }
-            return AtriaActivityTimelineSignalProjection.heartRate(samples: read.points,
-                                                                    interval: interval)
-        }.value
-        guard !Task.isCancelled, requestKey == timelineSignalWindowKey else { return }
-        if let result {
-            heartRateProjection = result
-            heartRateLoadState = .loaded
-        } else {
-            heartRateProjection = .empty
-            heartRateLoadState = .unavailable
+        }
+
+        guard heartRateRequestID == requestID else { return }
+        if Task.isCancelled || requestKey != timelineSignalWindowKey {
+            finishCancelledHeartRateRequest(requestID)
+            return
+        }
+
+        heartRateRequestID = nil
+        switch result {
+        case .loaded(let projection):
+            heartRateProjection = projection
+            reconcileLiveHeartRateTail(after: projection)
+            heartRateLoadState = AtriaActivityHeartRateRefreshPolicy.terminalState(
+                readSucceeded: true
+            )
+        case .unavailable:
+            // Same-window refreshes intentionally retain the last visible trace;
+            // the state still says the new history read was unavailable.
+            heartRateLoadState = AtriaActivityHeartRateRefreshPolicy.terminalState(
+                readSucceeded: false
+            )
         }
         appendFreshLiveHeartRate(stressMonitorStore.liveHeartRate)
+    }
+
+    @MainActor
+    private func finishCancelledHeartRateRequest(_ requestID: UUID) {
+        guard heartRateRequestID == requestID else { return }
+        heartRateRequestID = nil
+        heartRateLoadState = AtriaActivityHeartRateRefreshPolicy.cancellationState(
+            hasVisiblePoints: !timelineHeartRatePoints.isEmpty
+        )
+    }
+
+    @MainActor
+    private func reconcileLiveHeartRateTail(
+        after projection: AtriaActivityTimelineHeartRateProjection
+    ) {
+        let archiveEnd = projection.points.last?.t ?? .distantPast
+        let retained = liveHeartRateTail
+            .filter { $0.t > archiveEnd }
+            .sorted { $0.t < $1.t }
+        guard !retained.isEmpty else {
+            liveHeartRateTail = []
+            return
+        }
+
+        var rebuilt: [AtriaActivityTimelineHeartRatePoint] = []
+        rebuilt.reserveCapacity(retained.count)
+        var previous = projection.points.last
+        var nextID = (projection.points.last?.id ?? -1) + 1
+        for point in retained {
+            let startsNewSegment = previous.map {
+                point.t.timeIntervalSince($0.t)
+                    > AtriaActivityTimelineSignalProjection.heartRateGapThreshold
+            } ?? true
+            let segment = startsNewSegment ? (previous?.segment ?? -1) + 1 : (previous?.segment ?? 0)
+            if let lastIndex = rebuilt.indices.last,
+               rebuilt[lastIndex].segment == segment,
+               rebuilt[lastIndex].isOnlyPointInSegment {
+                let last = rebuilt[lastIndex]
+                rebuilt[lastIndex] = .init(id: last.id,
+                                           t: last.t,
+                                           bpm: last.bpm,
+                                           segment: last.segment,
+                                           isOnlyPointInSegment: false)
+            }
+            let next = AtriaActivityTimelineHeartRatePoint(
+                id: nextID,
+                t: point.t,
+                bpm: point.bpm,
+                segment: segment,
+                isOnlyPointInSegment: startsNewSegment
+            )
+            rebuilt.append(next)
+            previous = next
+            nextID += 1
+        }
+        liveHeartRateTail = rebuilt
     }
 
     @MainActor
@@ -1731,13 +1974,25 @@ struct AtriaActivityMonitorTab: View {
             history: stressMonitorStore.history
         )
         let result = await Task.detached(priority: .utility) {
-            let samples = Array(snapshot.history.lazy
-                .filter { $0.t >= interval.start && $0.t < interval.end }
-                .map {
-                    AtriaActivityTimelineStressSample(t: $0.t,
-                                                      score: $0.activation * 3,
-                                                      levelRawValue: $0.level.rawValue)
-                })
+            var samples: [AtriaActivityTimelineStressSample] = []
+            var omittedEvidenceSincePreviousStress = false
+            var hasStressSample = false
+            for point in snapshot.history where point.t >= interval.start && point.t < interval.end {
+                guard let score = point.evidenceProjection.numericStressScore else {
+                    if hasStressSample {
+                        omittedEvidenceSincePreviousStress = true
+                    }
+                    continue
+                }
+                samples.append(AtriaActivityTimelineStressSample(
+                    t: point.t,
+                    score: score,
+                    levelRawValue: point.level.rawValue,
+                    startsNewSegment: omittedEvidenceSincePreviousStress
+                ))
+                hasStressSample = true
+                omittedEvidenceSincePreviousStress = false
+            }
             return AtriaActivityTimelineSignalProjection.stress(samples: samples,
                                                                 interval: interval)
         }.value
@@ -2025,9 +2280,11 @@ struct AtriaActivityMonitorTab: View {
     private var heartRateEmptyMessage: String? {
         guard timelineHeartRatePoints.isEmpty else { return nil }
         switch heartRateLoadState {
-        case .idle, .loading: return "Loading recorded heart rate…"
+        case .idle: return "Heart-rate history has not loaded yet."
+        case .loading: return "Loading recorded heart rate…"
         case .loaded: return "No heart-rate samples were captured in this window."
         case .unavailable: return "Heart-rate history couldn’t be read for this window."
+        case .interrupted: return "Heart-rate history refresh stopped before this window was available."
         }
     }
 
@@ -2601,6 +2858,22 @@ enum AtriaActivityWorkoutStressProjection {
             return AtriaStressDetailReading(historyPoint: point)
         }
     }
+
+    static func evidence(
+        history: [AtriaStressMonitorStore.StressHistoryPoint],
+        start: Date,
+        end: Date
+    ) -> AtriaStressTimelineEvidenceProjection {
+        AtriaStressTimelineEvidenceProjection.make(
+            readings: readings(history: history, start: start, end: end)
+        )
+    }
+
+    static func evidence(
+        readings: [AtriaStressDetailReading]
+    ) -> AtriaStressTimelineEvidenceProjection {
+        AtriaStressTimelineEvidenceProjection.make(readings: readings)
+    }
 }
 
 /// Stress history is relevant only while a workout detail is presented. Retain
@@ -2762,6 +3035,25 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         return PreparedHeartRateTrace(points: points)
     }
 
+    private var workoutStressProjection: AtriaStressTimelineEvidenceProjection {
+        AtriaActivityWorkoutStressProjection.evidence(readings: stressReadings)
+    }
+
+    private var hasWorkoutStressEvidence: Bool {
+        workoutStressProjection.presentation != .empty
+    }
+
+    private var workoutStressAccessibilityLabel: String {
+        switch workoutStressProjection.presentation {
+        case .physiologicalStress:
+            return "Stress trace, \(workoutStressProjection.stressPoints.count) HR plus HRV readings during this workout."
+        case .cardiacArousal:
+            return "Cardiac arousal trace, \(workoutStressProjection.cardiacArousalPoints.count) qualitative HR-only readings during this workout; no numeric Stress score."
+        case .empty:
+            return "No measured Stress or cardiac-arousal readings during this workout."
+        }
+    }
+
     /// Per-workout HR trace (design backlog item 6). Reuses the shared axis
     /// chart, which auto-smooths dense windows into an average + min-max
     /// band per the 2026-07-07 feedback.
@@ -2773,7 +3065,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 .controlSize(.small)
                 .frame(maxWidth: .infinity, minHeight: 36)
                 .accessibilityLabel("Preparing heart-rate trace")
-        } else if points.count >= 30 || !stressReadings.isEmpty {
+        } else if points.count >= 30 || hasWorkoutStressEvidence {
             VStack(alignment: .leading, spacing: 8) {
                 // Native-clean (design 2026-08-05): plain-text selector replaces
                 // the boxed segmented control, matching the app-wide style.
@@ -2797,12 +3089,33 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                             .frame(maxWidth: .infinity, minHeight: 120)
                     }
                 case .stress:
-                    if !stressReadings.isEmpty {
-                        AtriaWorkoutStressTraceChart(readings: stressReadings)
+                    switch workoutStressProjection.presentation {
+                    case .physiologicalStress:
+                        AtriaWorkoutStressTraceChart(
+                            readings: workoutStressProjection.stressPoints.map(\.reading)
+                        )
                             .frame(height: 150)
                             // Full-bleed plot (2026-08-05 width audit).
                             .padding(.horizontal, -12)
-                    } else {
+
+                    case .cardiacArousal:
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Cardiac arousal · HR only")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.secondary)
+                            AtriaCardiacArousalTimelineChart(
+                                points: workoutStressProjection.cardiacArousalPoints,
+                                referenceDate: workout.end,
+                                window: max(1, workout.end.timeIntervalSince(workout.start))
+                            )
+                            Text("Qualitative Calm / Low / Medium bands · no 0–3 Stress score or High claim")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(height: 150)
+                        .padding(.horizontal, -12)
+
+                    case .empty:
                         Text(AtriaActivityStressHistoryPresentation.workoutEmptyMessage(
                             loadState: stressHistoryLoadState,
                             workoutEnd: workout.end
@@ -2818,7 +3131,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel(traceChartMode == .heartRate
                 ? "Heart-rate trace, \(points.count) samples during this workout."
-                : "Stress trace, \(stressReadings.count) readings during this workout.")
+                : workoutStressAccessibilityLabel)
         }
     }
 
@@ -4020,19 +4333,33 @@ struct AtriaAddWorkoutSheet: View {
     }
 }
 
+struct AtriaWorkoutStressTraceSummary: Equatable {
+    let points: [AtriaStressTimelinePoint]
+
+    init(readings: [AtriaStressDetailReading]) {
+        self.points = AtriaStressTimelinePoint.segment(readings)
+    }
+
+    var readingCount: Int { points.count }
+    var low: Double? { points.map(\.reading.score).min() }
+    var high: Double? { points.map(\.reading.score).max() }
+}
+
 /// WHOOP-style in-activity stress trace (2026-08-05 user directive, screenshot
 /// reference): 0–3 scale, min/max annotations, line colored by height so the
-/// band reads directly off the chart. Renders only real monitor readings —
-/// gaps split the line via the shared segmenting rule.
+/// band reads directly off the chart. Renders only real qualified HR+HRV Stress
+/// readings — HR-only cardiac arousal is omitted and breaks the line via the
+/// shared segmenting rule.
 struct AtriaWorkoutStressTraceChart: View {
     let readings: [AtriaStressDetailReading]
 
-    private var points: [AtriaStressTimelinePoint] {
-        AtriaStressTimelinePoint.segment(readings)
+    private var summary: AtriaWorkoutStressTraceSummary {
+        AtriaWorkoutStressTraceSummary(readings: readings)
     }
 
-    private var low: Double { readings.map(\.score).min() ?? 0 }
-    private var high: Double { readings.map(\.score).max() ?? 0 }
+    private var points: [AtriaStressTimelinePoint] { summary.points }
+    private var low: Double { summary.low ?? 0 }
+    private var high: Double { summary.high ?? 0 }
     private var singletonSegmentIDs: Set<Int> {
         Set(Dictionary(grouping: points, by: \.segment)
             .filter { $0.value.count == 1 }
@@ -4051,30 +4378,42 @@ struct AtriaWorkoutStressTraceChart: View {
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.orange)
             }
-            Chart(points) { point in
-                LineMark(x: .value("Time", point.reading.date),
-                         y: .value("Stress", point.reading.score),
-                         series: .value("Segment", point.segment))
-                    // Linear cannot overshoot the two real endpoint scores;
-                    // monotone splines can imply a peak/trough never measured.
-                    .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                    // Height-mapped color: the gradient spans the fixed 0–3
-                    // axis, so a point's color IS its band — low blue, mid
-                    // green, high amber (the WHOOP reading of the same axis).
-                    .foregroundStyle(
-                        .linearGradient(colors: [.blue, .green, .orange],
-                                        startPoint: .bottom,
-                                        endPoint: .top)
-                    )
-                if singletonSegments.contains(point.segment) {
-                    PointMark(x: .value("Time", point.reading.date),
-                              y: .value("Stress", point.reading.score))
-                        .foregroundStyle(point.reading.score >= 2 ? .orange : .blue)
-                        .symbolSize(20)
+            Chart {
+                RuleMark(y: .value("Low starts", AtriaStressEvidenceProjection.lowStartsAt))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    .foregroundStyle(.secondary.opacity(0.24))
+                RuleMark(y: .value("Medium starts", AtriaStressEvidenceProjection.mediumStartsAt))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    .foregroundStyle(.secondary.opacity(0.24))
+                RuleMark(y: .value("High starts", AtriaStressEvidenceProjection.highStartsAt))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    .foregroundStyle(.secondary.opacity(0.24))
+
+                ForEach(points) { point in
+                    LineMark(x: .value("Time", point.reading.date),
+                             y: .value("Stress", point.reading.score),
+                             series: .value("Segment", point.segment))
+                        // Linear cannot overshoot the two real endpoint scores;
+                        // monotone splines can imply a peak/trough never measured.
+                        .interpolationMethod(.linear)
+                        .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                        // Height-mapped color: the gradient spans the fixed 0–3
+                        // axis, so a point's color IS its band — low blue, mid
+                        // green, high amber (the WHOOP reading of the same axis).
+                        .foregroundStyle(
+                            .linearGradient(colors: [.blue, .green, .orange],
+                                            startPoint: .bottom,
+                                            endPoint: .top)
+                        )
+                    if singletonSegments.contains(point.segment) {
+                        PointMark(x: .value("Time", point.reading.date),
+                                  y: .value("Stress", point.reading.score))
+                            .foregroundStyle(point.reading.score >= 2 ? .orange : .blue)
+                            .symbolSize(20)
+                    }
                 }
             }
-            .chartYScale(domain: 0...3)
+            .chartYScale(domain: 0...AtriaStressEvidenceProjection.maximumDisplayValue)
             .chartYAxis {
                 AxisMarks(values: [0, 1, 2, 3]) { _ in
                     AxisGridLine().foregroundStyle(.secondary.opacity(0.15))
@@ -4099,7 +4438,7 @@ struct AtriaWorkoutStressTraceChart: View {
             ? " \(runCount) measured runs; gaps contain no recorded stress score."
             : ""
         return String(format: "%d measured stress readings during this workout, %.1f to %.1f on a 0 to 3 scale.",
-                      readings.count, low, high) + gapText
+                      summary.readingCount, low, high) + gapText
     }
 }
 
@@ -4238,13 +4577,11 @@ struct AtriaSleepActivityReviewSheet: View {
         }
         let resting = restingBaseline ?? night.restingHR
         let projection = await Task.detached(priority: .utility) {
-            let raw = HistoricalArchive.metricHeartRatePoints(start: start,
-                                                              end: end,
-                                                              maximumPoints: 50_000)?.points ?? []
-            return AtriaSleepStressProjection.make(points: raw,
-                                                   sleepStart: start,
-                                                   sleepEnd: end,
-                                                   restingHeartRate: resting)
+            AtriaSleepStressArchiveProjection.load(
+                sleepStart: start,
+                sleepEnd: end,
+                restingHeartRate: resting
+            )
         }.value
         guard !Task.isCancelled else { return }
         overnightHRProjection = projection

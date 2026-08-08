@@ -35,6 +35,65 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertFalse(source.contains(
             "publisher(for: HistoricalArchive.didUpdateNotification)"
         ), "Per-row archive writes must not trigger repeated whole-day scans")
+        XCTAssertTrue(source.contains("sessions: window.isCurrentPhysiologicalDay ? store.sessions : []"),
+                      "The current wake cycle should start from the resident prepared session image")
+        XCTAssertTrue(source.contains("since: snapshot.interval.start"),
+                      "The current wake cycle should use the bounded recent reader")
+        XCTAssertTrue(source.contains("maximumPoints: 100_000"),
+                      "Completed historical days must keep the exact-window reader")
+        XCTAssertTrue(source.contains("withTaskCancellationHandler"))
+        XCTAssertTrue(source.contains("finishCancelledHeartRateRequest"))
+
+        let refreshStart = try XCTUnwrap(source.range(
+            of: "private func refreshTimelineHeartRate(window:"
+        ))
+        let refreshEnd = try XCTUnwrap(source.range(
+            of: "private func finishCancelledHeartRateRequest",
+            range: refreshStart.upperBound..<source.endIndex
+        ))
+        let refresh = String(source[refreshStart.lowerBound..<refreshEnd.lowerBound])
+        let initialLive = try XCTUnwrap(refresh.range(
+            of: "appendFreshLiveHeartRate(stressMonitorStore.liveHeartRate)"
+        ))
+        let archiveAwait = try XCTUnwrap(refresh.range(of: "await withTaskCancellationHandler"))
+        XCTAssertLessThan(initialLive.lowerBound, archiveAwait.lowerBound,
+                          "A current live reading must render before archive preparation completes")
+    }
+
+    func testActivityHeartRateRefreshLifecyclePreservesOneWindowAndTerminalizes() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let current = AtriaActivityHeartRateWindowIdentity(
+            start: start,
+            historicalEnd: nil,
+            isCurrent: true
+        )
+        let sameCurrent = AtriaActivityHeartRateWindowIdentity(
+            start: start,
+            historicalEnd: nil,
+            isCurrent: true
+        )
+        let priorDay = AtriaActivityHeartRateWindowIdentity(
+            start: start.addingTimeInterval(-86_400),
+            historicalEnd: start,
+            isCurrent: false
+        )
+
+        XCTAssertTrue(AtriaActivityHeartRateRefreshPolicy.preservesProjection(
+            previous: current,
+            next: sameCurrent
+        ))
+        XCTAssertFalse(AtriaActivityHeartRateRefreshPolicy.preservesProjection(
+            previous: current,
+            next: priorDay
+        ))
+        XCTAssertEqual(AtriaActivityHeartRateRefreshPolicy.terminalState(readSucceeded: true),
+                       .loaded)
+        XCTAssertEqual(AtriaActivityHeartRateRefreshPolicy.terminalState(readSucceeded: false),
+                       .unavailable)
+        XCTAssertEqual(AtriaActivityHeartRateRefreshPolicy.cancellationState(hasVisiblePoints: true),
+                       .loaded)
+        XCTAssertEqual(AtriaActivityHeartRateRefreshPolicy.cancellationState(hasVisiblePoints: false),
+                       .interrupted)
     }
 
     func testHighFrequencyStressObservationIsConfinedToActivityLeaves() throws {
@@ -115,10 +174,10 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let end = start.addingTimeInterval(600)
         let history: [AtriaStressMonitorStore.StressHistoryPoint] = [
-            .init(t: start.addingTimeInterval(-1), activation: 0.1, level: .calm),
-            .init(t: start, activation: 0.2, level: .low),
-            .init(t: end, activation: 0.4, level: .medium),
-            .init(t: end.addingTimeInterval(1), activation: 0.8, level: .high),
+            .init(t: start.addingTimeInterval(-1), activation: 0.1, level: .calm, hrvAvailable: true),
+            .init(t: start, activation: 0.2, level: .low, hrvAvailable: true),
+            .init(t: end, activation: 0.4, level: .medium, hrvAvailable: true),
+            .init(t: end.addingTimeInterval(1), activation: 0.8, level: .high, hrvAvailable: true),
         ]
 
         let readings = AtriaActivityWorkoutStressProjection.readings(
@@ -131,6 +190,71 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(readings.count, 2)
         XCTAssertEqual(readings[0].score, 0.6, accuracy: 0.000_001)
         XCTAssertEqual(readings[1].score, 1.2, accuracy: 0.000_001)
+    }
+
+    @MainActor
+    func testWorkoutHROnlyEvidenceUsesQualitativeCardiacArousalFallback() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let history: [AtriaStressMonitorStore.StressHistoryPoint] = [
+            .init(t: start,
+                  activation: 0.1,
+                  level: .calm,
+                  hrvAvailable: false),
+            .init(t: start.addingTimeInterval(30),
+                  activation: AtriaStressMonitor.mediumUpperBound,
+                  level: .medium,
+                  hrvAvailable: false),
+        ]
+
+        let projection = AtriaActivityWorkoutStressProjection.evidence(
+            history: history,
+            start: start,
+            end: start.addingTimeInterval(60)
+        )
+        let summary = AtriaWorkoutStressTraceSummary(
+            readings: projection.cardiacArousalPoints.map(\.reading)
+        )
+
+        XCTAssertEqual(projection.presentation, .cardiacArousal)
+        XCTAssertTrue(projection.stressPoints.isEmpty)
+        XCTAssertEqual(projection.cardiacArousalPoints.map(\.level), [.calm, .medium])
+        XCTAssertEqual(summary.readingCount, 0,
+                       "HR-only evidence cannot enter numeric workout Stress min/max/count")
+        XCTAssertNil(summary.low)
+        XCTAssertNil(summary.high)
+    }
+
+    @MainActor
+    func testWorkoutMixedEvidenceCannotContaminateNumericStressSummary() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let readings = [
+            AtriaStressDetailReading(date: start,
+                                     score: 2.1,
+                                     evidenceMode: .cardiacArousal,
+                                     level: .medium),
+            AtriaStressDetailReading(date: start.addingTimeInterval(30),
+                                     score: 0.9,
+                                     evidenceMode: .physiologicalStress,
+                                     level: .low),
+            AtriaStressDetailReading(date: start.addingTimeInterval(60),
+                                     score: 1.8,
+                                     evidenceMode: .cardiacArousal,
+                                     level: .medium),
+            AtriaStressDetailReading(date: start.addingTimeInterval(90),
+                                     score: 1.5,
+                                     evidenceMode: .physiologicalStress,
+                                     level: .medium),
+        ]
+
+        let projection = AtriaActivityWorkoutStressProjection.evidence(readings: readings)
+        let summary = AtriaWorkoutStressTraceSummary(readings: readings)
+
+        XCTAssertEqual(projection.presentation, .physiologicalStress)
+        XCTAssertEqual(summary.readingCount, 2)
+        XCTAssertEqual(try XCTUnwrap(summary.low), 0.9, accuracy: 1e-12)
+        XCTAssertEqual(try XCTUnwrap(summary.high), 1.5, accuracy: 1e-12)
+        XCTAssertEqual(summary.points.map(\.segment), [0, 1],
+                       "intervening cardiac arousal must remain a visible gap")
     }
 
     func testActivityStressEmptyStateDistinguishesRestoreFailureRetentionAndNoReadings() {
@@ -167,7 +291,104 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
             isCurrentPhysiologicalDay: false,
             currentState: .noSignal,
             now: now
-        ), "No measured stress readings were recorded in this window.")
+        ), "No measured stress readings were recorded in the selected day range.")
+        XCTAssertEqual(AtriaActivityStressHistoryPresentation.emptyTimelineMessage(
+            loadState: .loaded,
+            interval: recent,
+            isCurrentPhysiologicalDay: true,
+            currentState: AtriaStressState(level: .low,
+                                           label: "Low",
+                                           detail: "Personal HR + HRV",
+                                           kind: .scored,
+                                           confidence: 1,
+                                           rawActivation: 0.4,
+                                           hrvAvailable: true),
+            now: now
+        ), "No measured stress reading has been recorded since waking.")
+    }
+
+    func testOvernightHeartRateArchiveReadDistinguishesFailureWearAndBaseline() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let end = start.addingTimeInterval(8 * 3_600)
+
+        let unreadable = AtriaSleepStressArchiveProjection.make(
+            read: nil,
+            sleepStart: start,
+            sleepEnd: end,
+            restingHeartRate: 55
+        )
+        XCTAssertEqual(unreadable.availability, .unavailable)
+
+        let emptyRead = HistoricalArchive.HeartRateWindowRead(
+            points: [],
+            scannedFileCount: 1,
+            scannedByteCount: 128
+        )
+        let insufficientWear = AtriaSleepStressArchiveProjection.make(
+            read: emptyRead,
+            sleepStart: start,
+            sleepEnd: end,
+            restingHeartRate: 55
+        )
+        XCTAssertEqual(insufficientWear.availability, .insufficientWear)
+
+        let shortReadableWindow = AtriaSleepStressArchiveProjection.make(
+            read: emptyRead,
+            sleepStart: start,
+            sleepEnd: start.addingTimeInterval(45 * 60),
+            restingHeartRate: 55
+        )
+        XCTAssertEqual(shortReadableWindow.availability, .insufficientWear,
+                       "A successful short-window read is insufficient wear, not unavailable history")
+
+        let missingBaseline = AtriaSleepStressArchiveProjection.make(
+            read: nil,
+            sleepStart: start,
+            sleepEnd: end,
+            restingHeartRate: nil
+        )
+        XCTAssertEqual(missingBaseline.availability, .baselineNeeded)
+
+        let coveredPoints = (0..<12).map { index in
+            HistoricalArchive.HeartRatePoint(
+                t: start.addingTimeInterval(Double(index * 20 * 60)),
+                bpm: 62
+            )
+        }
+        let coveredRead = HistoricalArchive.HeartRateWindowRead(
+            points: coveredPoints,
+            scannedFileCount: 1,
+            scannedByteCount: 1_024
+        )
+        let ready = AtriaSleepStressArchiveProjection.make(
+            read: coveredRead,
+            sleepStart: start,
+            sleepEnd: end,
+            restingHeartRate: 55
+        )
+        XCTAssertEqual(ready.availability, .ready)
+    }
+
+    func testHealthAndActivityOvernightLoadUseOneTypedArchiveBoundary() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let health = try String(
+            contentsOf: sourceDirectory.appendingPathComponent("AtriaHealthScreen.swift"),
+            encoding: .utf8
+        )
+        let activity = try String(
+            contentsOf: sourceDirectory.appendingPathComponent("AtriaActivityMonitor.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(health.contains("AtriaSleepStressArchiveProjection.load("))
+        XCTAssertTrue(activity.contains("AtriaSleepStressArchiveProjection.load("))
+        XCTAssertFalse(health.contains(
+            "maximumPoints: 50_000)?.points ?? []"
+        ), "An unreadable exact window must not be collapsed into insufficient wear")
+        XCTAssertFalse(activity.contains(
+            "maximumPoints: 50_000)?.points ?? []"
+        ), "Health and Activity must preserve the same typed overnight read failure")
     }
 
     func testWorkoutStressEmptyStateUsesTheSameLoadAndRetentionAuthority() {

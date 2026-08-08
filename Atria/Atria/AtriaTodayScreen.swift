@@ -1301,6 +1301,8 @@ struct AtriaTodayScreen: View {
                                            stressValue: "1/3",
                                            stressDetail: "steady",
                                            stressNarrative: "Debug fixture stress stays neutral while strain target state changes.",
+                                           stressEvidenceMode: .physiologicalStress,
+                                           stressMetricTitle: "Stress",
                                            rrPackageText: "Personal",
                                            nextAction: guidance.detail,
                                            headline: guidance.headline,
@@ -2065,6 +2067,8 @@ struct AtriaTodayScreen: View {
                           recoveryText: displayHero.recoveryValue,
                           hrvText: displayHero.hrvValue,
                           stressText: displayHero.stressValue,
+                          stressMetricTitle: displayHero.stressMetricTitle,
+                          stressEvidenceMode: displayHero.stressEvidenceMode,
                           baselineSamples: displayHero.baselineSamples,
                           sessionsCount: displayHero.sessionsCount)
     }
@@ -2217,7 +2221,7 @@ struct AtriaTodayScreen: View {
                                         tint: Metrics.electricHRV,
                                         layoutSize: layoutSize(for: metric))
         case .stress:
-            return AtriaTodayGlanceItem(title: metric.label,
+            return AtriaTodayGlanceItem(title: displayHero.stressMetricTitle,
                                         metricKey: metric.rawValue,
                                         value: displayHero.stressValue,
                                         detail: legendDetail(displayHero.stressDetail),

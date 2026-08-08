@@ -7,11 +7,11 @@ final class AtriaVitalsProjectionStoreTests: XCTestCase {
     func testVitalsStressTimelineEndsAtNowAndKeepsRestoredCollectionGaps() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let history: [AtriaStressMonitorStore.StressHistoryPoint] = [
-            .init(t: now.addingTimeInterval(-13 * 3_600), activation: 0.2, level: .low),
-            .init(t: now.addingTimeInterval(-11 * 3_600), activation: 0.3, level: .low),
-            .init(t: now.addingTimeInterval(-11 * 3_600 + 60), activation: 0.4, level: .medium),
-            .init(t: now.addingTimeInterval(-5 * 3_600), activation: 0.8, level: .high),
-            .init(t: now.addingTimeInterval(1), activation: 0.5, level: .medium),
+            .init(t: now.addingTimeInterval(-13 * 3_600), activation: 0.2, level: .low, hrvAvailable: true),
+            .init(t: now.addingTimeInterval(-11 * 3_600), activation: 0.3, level: .low, hrvAvailable: true),
+            .init(t: now.addingTimeInterval(-11 * 3_600 + 60), activation: 0.4, level: .medium, hrvAvailable: true),
+            .init(t: now.addingTimeInterval(-5 * 3_600), activation: 0.8, level: .high, hrvAvailable: true),
+            .init(t: now.addingTimeInterval(1), activation: 0.5, level: .medium, hrvAvailable: true),
         ]
 
         let points = AtriaVitalsStressTimelineProjection.points(
@@ -27,6 +27,36 @@ final class AtriaVitalsProjectionStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.segment), [0, 0, 1])
     }
 
+    func testVitalsHROnlyHistoryUsesQualitativeCardiacArousalInsteadOfBlankStress() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let history: [AtriaStressMonitorStore.StressHistoryPoint] = [
+            .init(t: now.addingTimeInterval(-60),
+                  activation: 0,
+                  level: .calm,
+                  hrvAvailable: false),
+            .init(t: now.addingTimeInterval(-30),
+                  activation: 0.3,
+                  level: .low,
+                  hrvAvailable: false),
+            .init(t: now,
+                  activation: AtriaStressMonitor.mediumUpperBound,
+                  level: .medium,
+                  hrvAvailable: false),
+        ]
+
+        let projection = AtriaVitalsStressTimelineProjection.evidence(
+            history: history,
+            referenceDate: now
+        )
+
+        XCTAssertEqual(projection.presentation, .cardiacArousal)
+        XCTAssertTrue(projection.stressPoints.isEmpty)
+        XCTAssertEqual(projection.cardiacArousalPoints.map(\.level),
+                       [.calm, .low, .medium])
+        XCTAssertEqual(projection.cardiacArousalPoints.map(\.reading.date),
+                       history.map(\.t))
+    }
+
     func testVitalsStressCopyNeverCallsAGappedTimelineContinuous() {
         XCTAssertTrue(AtriaVitalsStressTimelineCopy.gapNote.contains(
             "no stress score was recorded"
@@ -38,6 +68,9 @@ final class AtriaVitalsProjectionStoreTests: XCTestCase {
             .localizedCaseInsensitiveContains("continuous"))
         XCTAssertTrue(AtriaVitalsStressTimelineCopy.accessibilityLabel.contains(
             "Collection gaps remain blank"
+        ))
+        XCTAssertTrue(AtriaVitalsStressTimelineCopy.accessibilityLabel.contains(
+            "High at 2.16"
         ))
     }
 

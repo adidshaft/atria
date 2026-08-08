@@ -1974,7 +1974,7 @@ private struct AtriaTrendRangeAssessmentCard: View, Equatable {
                 assessmentBar(label: "Change",
                               value: assessment.movementText,
                               progress: assessment.movementProgress)
-                assessmentBar(label: "Rhythm",
+                assessmentBar(label: "Consistency",
                               value: assessment.consistencyText,
                               progress: assessment.consistencyProgress)
             }

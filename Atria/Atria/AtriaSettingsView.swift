@@ -1451,17 +1451,17 @@ struct AtriaSettingsView: View {
             settingsInfoRow(icon: "waveform.path.ecg",
                             tint: .secondary,
                             title: "ECG not supported",
-                            detail: "WHOOP 4.0 has no electrodes, so Atria does not fake an ECG.")
+                            detail: "WHOOP 4.0 has no electrodes, so Atria cannot measure an ECG or classify sinus rhythm — and does not fake either.")
             settingsInfoRow(icon: "gauge.with.dots.needle.50percent",
                             tint: .secondary,
                             title: "Blood pressure not supported",
                             detail: "WHOOP 4.0 is not cuff-calibrated, so Atria does not estimate BP.")
-                // SpO2 copy consolidation (2026-08-01): canonical hardware
-                // limitation copy, matching the About sheet and vitals surfaces.
+                // This is an app decoder limitation on supported straps, not a
+                // fabricated blood-oxygen value or a claim that the sensor is absent.
                 settingsInfoRow(icon: "drop.degreesign",
                             tint: .cyan,
                             title: "Blood oxygen signal",
-                            detail: "\(AtriaSpO2Copy.notAvailableOnStrap) \(AtriaSpO2Copy.wontFakeAPercentage)")
+                            detail: "\(AtriaSpO2Copy.decoderNotVerified). \(AtriaSpO2Copy.wontFakeAPercentage)")
                 settingsInfoRow(icon: "thermometer.variable",
                             tint: .teal,
                             title: "Wrist temperature signal",

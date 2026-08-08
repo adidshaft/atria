@@ -452,6 +452,54 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
         XCTAssertTrue(qualified.usesHRV)
     }
 
+    func testPendingHROnlyCaptureCoverageCannotBoostPresentationRecovery() throws {
+        let now = start.addingTimeInterval(60)
+        let cycle = makeCycle(start: start)
+        let rawCoverage = pendingNight(end: start,
+                                       duration: 4 * 60 * 60,
+                                       sleepEfficiency: 1,
+                                       motionValidated: false)
+        let noEfficiency = pendingNight(end: start,
+                                        duration: 4 * 60 * 60,
+                                        sleepEfficiency: nil,
+                                        motionValidated: false)
+        let validated = pendingNight(end: start,
+                                     duration: 4 * 60 * 60,
+                                     sleepEfficiency: 0.91,
+                                     motionValidated: true)
+
+        let rawCoverageEstimate = try XCTUnwrap(SessionStore.pendingSleepRecoveryEstimate(
+            rawCoverage,
+            baseline: PersonalBaseline(),
+            respiratoryBaseline: nil,
+            now: now,
+            physiologicalCycle: cycle
+        ))
+        let noEfficiencyEstimate = try XCTUnwrap(SessionStore.pendingSleepRecoveryEstimate(
+            noEfficiency,
+            baseline: PersonalBaseline(),
+            respiratoryBaseline: nil,
+            now: now,
+            physiologicalCycle: cycle
+        ))
+
+        XCTAssertNil(rawCoverage.displaySleepEfficiency)
+        XCTAssertEqual(rawCoverageEstimate.percent, noEfficiencyEstimate.percent,
+                       "HR-only capture/span coverage must not raise the preview")
+        XCTAssertEqual(try XCTUnwrap(validated.displaySleepEfficiency),
+                       0.91,
+                       accuracy: 0.000_001)
+        XCTAssertNotEqual(try XCTUnwrap(SessionStore.pendingSleepRecoveryEstimate(
+            validated,
+            baseline: PersonalBaseline(),
+            respiratoryBaseline: nil,
+            now: now,
+            physiologicalCycle: cycle
+        )).percent,
+                          noEfficiencyEstimate.percent,
+                          "validated efficiency remains a real Recovery input")
+    }
+
     func testProductionRollupPreservesLegacyUnknownAndActualOneTwoThreeHRVWindowGate() throws {
         let now = start.addingTimeInterval(60)
         let baseline = trustedBaseline(now: now)
@@ -632,7 +680,9 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
     private func pendingNight(end: Date,
                               duration: TimeInterval,
                               source: String = "sleep_window",
-                              hrvWindowCount: Int = 0) -> SleepHistorySnapshot.Night {
+                              hrvWindowCount: Int = 0,
+                              sleepEfficiency: Double? = 0.91,
+                              motionValidated: Bool? = nil) -> SleepHistorySnapshot.Night {
         SleepHistorySnapshot.Night(
             id: "pending-\(source)-\(Int(end.timeIntervalSince1970))",
             day: Calendar.current.startOfDay(for: end),
@@ -643,11 +693,12 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
             hrv: 61,
             hrvWindowCount: hrvWindowCount,
             respiratoryRate: nil,
-            sleepEfficiency: 0.91,
+            sleepEfficiency: sleepEfficiency,
             confidence: "review_needed",
             source: source,
             confirmed: false,
-            stageSegments: []
+            stageSegments: [],
+            motionValidated: motionValidated
         )
     }
 

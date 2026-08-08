@@ -1876,11 +1876,13 @@ final class AtriaPerfFixesTests: XCTestCase {
     private func stressHistory(count: Int,
                                start: Date,
                                cadence: TimeInterval = 30,
+                               hrvAvailable: Bool = true,
                                activation: (Int) -> Double) -> [AtriaStressMonitorStore.StressHistoryPoint] {
         (0..<count).map { i in
             AtriaStressMonitorStore.StressHistoryPoint(t: start.addingTimeInterval(Double(i) * cadence),
                                                        activation: activation(i),
-                                                       level: .low)
+                                                       level: .low,
+                                                       hrvAvailable: hrvAvailable)
         }
     }
 
@@ -1947,6 +1949,31 @@ final class AtriaPerfFixesTests: XCTestCase {
         for (i, point) in reduced.enumerated() {
             XCTAssertEqual(point.value, Double(i % 3) / 3.0 * 3, accuracy: 1e-9)
         }
+    }
+
+    func testReduceStressStrip_excludesHROnlyAndBreaksNumericLineAcrossIt() {
+        let history = [
+            AtriaStressMonitorStore.StressHistoryPoint(t: t0,
+                                                       activation: 0.3,
+                                                       level: .low,
+                                                       hrvAvailable: true),
+            AtriaStressMonitorStore.StressHistoryPoint(t: t0.addingTimeInterval(30),
+                                                       activation: 0.7,
+                                                       level: .medium,
+                                                       hrvAvailable: false),
+            AtriaStressMonitorStore.StressHistoryPoint(t: t0.addingTimeInterval(60),
+                                                       activation: 0.5,
+                                                       level: .medium,
+                                                       hrvAvailable: true),
+        ]
+
+        let reduced = AtriaHealthScreen.reduceStressStrip(history)
+
+        XCTAssertEqual(reduced.count, 2)
+        XCTAssertEqual(reduced[0].value, 0.9, accuracy: 1e-12)
+        XCTAssertEqual(reduced[1].value, 1.5, accuracy: 1e-12)
+        XCTAssertEqual(reduced.map(\.segment), [0, 1],
+                       "numeric Stress cannot bridge an intervening cardiac-arousal point")
     }
 
     /// Empty / single-point history yields nothing (matches the >1 guard).

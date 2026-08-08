@@ -4503,6 +4503,8 @@ struct AtriaHomeView: View {
                                  recoveryText: hero.recoveryValue,
                                  hrvText: hero.hrvValue,
                                  stressText: hero.stressValue,
+                                 stressMetricTitle: hero.stressMetricTitle,
+                                 stressEvidenceMode: hero.stressEvidenceMode,
                                  baselineSamples: hero.baselineSamples,
                                  sessionsCount: hero.sessionsCount)
     }
@@ -8909,6 +8911,10 @@ final class AtriaHomeModel {
         let stressValue: String
         let stressDetail: String
         let stressNarrative: String
+        /// Compact consumers must preserve the scorer's evidence coordinate.
+        /// A qualitative HR-only band is Cardiac arousal, never a Stress score.
+        let stressEvidenceMode: AtriaStressEvidenceMode?
+        let stressMetricTitle: String
         let rrPackageText: String
         let nextAction: String
         let headline: String
@@ -9052,6 +9058,8 @@ final class AtriaHomeModel {
                 && lhs.stressValue == rhs.stressValue
                 && lhs.stressDetail == rhs.stressDetail
                 && lhs.stressNarrative == rhs.stressNarrative
+                && lhs.stressEvidenceMode == rhs.stressEvidenceMode
+                && lhs.stressMetricTitle == rhs.stressMetricTitle
                 && lhs.rrPackageText == rhs.rrPackageText
                 && lhs.nextAction == rhs.nextAction
                 && lhs.headline == rhs.headline
@@ -10906,6 +10914,8 @@ final class AtriaHomeModel {
                             stressValue: stress.value,
                             stressDetail: stress.detail,
                             stressNarrative: stress.narrative,
+                            stressEvidenceMode: stress.evidenceMode,
+                            stressMetricTitle: stress.metricTitle,
                             rrPackageText: deferredDetails?.rrPackageText ?? fallbackHrv.packageText,
                             nextAction: nextAction,
                             headline: headline,
@@ -11006,6 +11016,8 @@ final class AtriaHomeModel {
                             stressValue: "0/3",
                             stressDetail: "personal baseline",
                             stressNarrative: "Debug fixture stress is neutral while provisional recovery is shown.",
+                            stressEvidenceMode: .physiologicalStress,
+                            stressMetricTitle: "Stress",
                             rrPackageText: "Personal",
                             nextAction: "Confirming sleep will reconcile this recovery without a modal.",
                             headline: "Provisional recovery is ready.",
@@ -11203,6 +11215,8 @@ final class AtriaHomeModel {
                             stressValue: AtriaCompactMetricPresentation.noValue,
                             stressDetail: "Beat-to-beat window",
                             stressNarrative: "Stress appears after the strap reconnects and beat-to-beat data is ready.",
+                            stressEvidenceMode: nil,
+                            stressMetricTitle: "Stress",
                             rrPackageText: fallbackHrv.packageText,
                             nextAction: nextAction,
                             headline: headline,
