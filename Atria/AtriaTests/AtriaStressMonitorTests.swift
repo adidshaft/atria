@@ -389,6 +389,53 @@ final class AtriaStressMonitorTests: XCTestCase {
                           "a seed past the max-age must be ignored in favour of the default")
     }
 
+    // Audit §1 #7: in HR-only mode the emitted level is capped at Medium, but
+    // the store used to publish the uncapped activation EMA — so the detail
+    // gauge and the history timeline (both score = activation × 3) could render
+    // "High" while the label read "Medium". Both the published activation and
+    // the recorded history point must be capped to the Medium ceiling.
+    @MainActor
+    func testHROnlyModeCapsPublishedActivationToMediumCeiling() {
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4, hrvSampleDays: 0)
+        let store = AtriaStressMonitorStore()
+
+        // 98 bpm: high enough that the HR-only activation lands in the High band
+        // against the default awake reference, yet at/below rest+40 (100) so it
+        // is not suppressed as activity. Only a few ticks → the awake buffer
+        // stays cold → the default reference (not a learned ~98) drives scoring.
+        for offset in [0.0, 50.0, 100.0, 125.0] {
+            store.update(heartRate: 98,
+                         hasContact: true,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 1,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: now.addingTimeInterval(offset))
+        }
+
+        XCTAssertEqual(store.state.kind, .scored)
+        XCTAssertEqual(store.state.level, .medium, "HR-only caps the level at Medium")
+        XCTAssertFalse(store.state.hrvAvailable)
+        XCTAssertLessThanOrEqual(store.state.rawActivation,
+                                 AtriaStressMonitor.mediumUpperBound + 1e-9,
+                                 "published activation must not exceed the Medium ceiling")
+        // Guard against a regression where the cap silently zeroes the reading:
+        // this is a genuine top-of-Medium reading, so it should sit near the cap.
+        XCTAssertGreaterThan(store.state.rawActivation, AtriaStressMonitor.lowUpperBound,
+                             "a genuinely elevated HR-only reading should still fill the Medium band")
+
+        // The timeline reads the recorded history point — the same cap must apply.
+        guard let recorded = store.history.last else {
+            return XCTFail("a scored tick must record a history point")
+        }
+        XCTAssertLessThanOrEqual(recorded.activation,
+                                 AtriaStressMonitor.mediumUpperBound + 1e-9,
+                                 "recorded timeline activation must also be capped")
+    }
+
     // MARK: Suppression
 
     func testSuppressedWhileRecording() {
