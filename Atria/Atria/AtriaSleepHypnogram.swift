@@ -148,6 +148,9 @@ enum AtriaSleepHypnogramPresentation {
 struct AtriaSleepHypnogramCard: View, Equatable {
     enum DisplayState: Equatable {
         case timeline
+        /// HR-only night rendered as a clearly-labeled ESTIMATE (2026-08-08):
+        /// the stage model ran on heart rate, but no validated motion backs it.
+        case estimate
         /// HR-only night: segments exist in storage but lack validated motion.
         case needsMotion
         /// Hand-typed window: stages will never arrive without sensor data,
@@ -189,13 +192,22 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         // For withheld-stage states the honest body already names the state,
         // so the provenance line carries confirmation provenance only.
         let provenance: String
+        let feedSegments: [SleepStageSegment]
         switch night.stageEvidence {
-        case .hrOnlyEstimate, .none:
+        case .hrOnlyEstimate:
+            // Surface the HR-only stage estimate (labeled) instead of an empty
+            // "unavailable" state. Display-only: `estimatedDisplayStageSegments`
+            // never feeds persisted metrics or efficiency.
+            provenance = "\(night.confirmationText) · Estimate"
+            feedSegments = night.estimatedDisplayStageSegments
+        case .none:
             provenance = night.confirmationText
+            feedSegments = night.displayStageSegments
         default:
             provenance = "\(night.confirmationText) · \(night.stageEvidence.label)"
+            feedSegments = night.displayStageSegments
         }
-        self.init(segments: night.displayStageSegments,
+        self.init(segments: feedSegments,
                   start: night.start,
                   end: night.end,
                   stageEvidence: night.stageEvidence,
@@ -212,7 +224,12 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         // Manual wins over the sensor states: a hand-typed window without
         // segments must say "manual entry", not promise motion or building.
         if isManualEntry, segments.isEmpty { return .manualEntry }
-        if stageEvidence == .hrOnlyEstimate { return .needsMotion }
+        if stageEvidence == .hrOnlyEstimate {
+            // A labeled estimate when the HR-only stage model produced usable
+            // segments; otherwise fall back to the honest "needs motion" state.
+            if !segments.isEmpty, let start, let end, end > start { return .estimate }
+            return .needsMotion
+        }
         guard !segments.isEmpty, let start, let end, end > start else { return .building }
         return .timeline
     }
@@ -261,6 +278,16 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                     lanes(windowStart: start, windowEnd: end)
                     axis(windowStart: start, windowEnd: end)
                     legendTiles
+                }
+            case .estimate:
+                if let start, let end {
+                    lanes(windowStart: start, windowEnd: end)
+                    axis(windowStart: start, windowEnd: end)
+                    legendTiles
+                    Text("Estimate · not a validated stage model. Inferred from heart rate; does not change your saved sleep metrics.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             case .needsMotion:
                 honestState(title: "Stage analysis unavailable for this night",
@@ -381,6 +408,12 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                 .map { "\($0.stage.label) \(AtriaSleepHypnogramPresentation.durationText(minutes: $0.minutes))" }
                 .joined(separator: ", ")
             return "Sleep stages hypnogram. \(provenanceText). \(stages)."
+        case .estimate:
+            let legend = AtriaSleepHypnogramPresentation.legend(for: segments)
+            let stages = legend
+                .map { "\($0.stage.label) \(AtriaSleepHypnogramPresentation.durationText(minutes: $0.minutes))" }
+                .joined(separator: ", ")
+            return "Estimated sleep stages hypnogram, not a validated stage model, inferred from heart rate and not affecting your saved sleep metrics. \(provenanceText). \(stages)."
         case .needsMotion:
             return "\(provenanceText). Stage analysis unavailable for this night. Your sleep duration is saved; heart rate alone cannot separate stages, so continuous motion evidence is required."
         case .manualEntry:
