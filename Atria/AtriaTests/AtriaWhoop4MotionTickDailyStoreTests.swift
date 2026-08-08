@@ -37,6 +37,61 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         )
     }
 
+    // Prior-day lower-bound lane (2026-08-08). The enumeration must exclude
+    // today's civil day AND the open physiological cycle's civil day, so this
+    // lane never keys the same civil date as the wake-to-wake current-cycle
+    // receipt.
+    func testCompletedPriorCivilDayWindowsExcludeTodayAndOpenCycleDay() throws {
+        let cal = utcCalendar
+        let now = try XCTUnwrap(cal.date(from: DateComponents(year: 2026, month: 8, day: 8, hour: 14)))
+        // Case 1: cycle woke this morning (same civil day as `now`).
+        let cycleToday = try XCTUnwrap(cal.date(from: DateComponents(year: 2026, month: 8, day: 8, hour: 6)))
+        let windows = SessionStore.completedPriorCivilDayWindows(
+            now: now, cycleStart: cycleToday, calendar: cal, backfillDays: 3
+        )
+        XCTAssertEqual(windows.count, 3)
+        let yesterday = try XCTUnwrap(cal.date(from: DateComponents(year: 2026, month: 8, day: 7)))
+        XCTAssertEqual(windows.first?.start, yesterday, "newest window is yesterday at civil midnight")
+        let todayStart = cal.startOfDay(for: now)
+        for window in windows {
+            XCTAssertEqual(window.duration, 86400, accuracy: 1)
+            XCTAssertEqual(window.start, cal.startOfDay(for: window.start), "midnight-aligned")
+            XCTAssertLessThan(window.start, todayStart, "never today")
+        }
+        for i in 1..<windows.count {
+            XCTAssertEqual(windows[i].end, windows[i - 1].start, "contiguous, descending")
+        }
+        // Case 2: cycle crossed midnight (woke yesterday). The open-cycle civil
+        // day (yesterday) must ALSO be excluded — newest is the day before it.
+        let cycleCrossed = try XCTUnwrap(cal.date(from: DateComponents(year: 2026, month: 8, day: 7, hour: 23)))
+        let crossed = SessionStore.completedPriorCivilDayWindows(
+            now: now, cycleStart: cycleCrossed, calendar: cal, backfillDays: 3
+        )
+        let aug6 = try XCTUnwrap(cal.date(from: DateComponents(year: 2026, month: 8, day: 6)))
+        XCTAssertEqual(crossed.first?.start, aug6,
+                       "open-cycle civil day (Aug 7) excluded; newest is Aug 6")
+    }
+
+    // A civil-midnight prior-day receipt (what the lane saves) must surface on
+    // the week-chart source exactly as the current-cycle receipt does.
+    func testPriorDayCivilMidnightReceiptsSurfaceViaRecentReceipts() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let cal = utcCalendar
+        let fri = try XCTUnwrap(cal.date(from: DateComponents(year: 2026, month: 8, day: 7)))
+        let sat = try XCTUnwrap(cal.date(from: DateComponents(year: 2026, month: 8, day: 8)))
+        XCTAssertTrue(try store.save(makeEvidence(start: fri, ticks: 200, steps: 2200), strapIdentifier: strap))
+        XCTAssertTrue(try store.save(makeEvidence(start: sat, ticks: 100, steps: 900), strapIdentifier: strap))
+        // Reproduce the week-chart collapse (AtriaStrapStepsDetailSheet.loadWeekSteps).
+        var map: [Date: Int] = [:]
+        for receipt in store.recentReceipts(strapIdentifier: strap, limit: 14) {
+            let day = cal.startOfDay(for: receipt.windowStart)
+            map[day] = max(map[day] ?? 0, receipt.steps)
+        }
+        XCTAssertEqual(map[fri], 2200, "Friday lower bound surfaces")
+        XCTAssertEqual(map[sat], 900, "Saturday lower bound surfaces")
+    }
+
     func testV16ReceiptCannotMasqueradeAsV17Authority() throws {
         let strap = UUID().uuidString
         let start = Date(timeIntervalSince1970: 10_000)

@@ -7140,6 +7140,8 @@ final class SessionStore: ObservableObject {
         // were migrated into the compact store. Reusing the v1 lease would
         // incorrectly skip that one-time migration after an app upgrade.
         "atria.currentCycleStepReceipt.attempt.v2"
+    nonisolated private static let priorCivilDayStepReceiptsAttemptKey =
+        "atria.priorCivilDayStepReceipts.attempt.v1"
     nonisolated private static let currentCycleStepCompactMigrationKey =
         "atria.currentCycleStepReceipt.compactMigration.v1"
     private var pendingWorkoutStepEvidenceWorkItem: DispatchWorkItem?
@@ -7972,6 +7974,162 @@ final class SessionStore: ObservableObject {
     /// runs. The scan stays on the existing serial utility queue, and the
     /// daily store posts the one lightweight Home/widget invalidation only
     /// after its atomic receipt is durable.
+    /// Completed prior civil-day windows `[midnight, next-midnight)`,
+    /// newest-first, EXCLUDING today's civil day AND the open physiological
+    /// cycle's civil day — so this lane can never key the same civil date as
+    /// the wake-to-wake current-cycle receipt. Bounded to `backfillDays`. Pure
+    /// and `nonisolated static` so it is directly unit-testable.
+    nonisolated static func completedPriorCivilDayWindows(
+        now: Date,
+        cycleStart: Date,
+        calendar: Calendar,
+        backfillDays: Int
+    ) -> [DateInterval] {
+        guard backfillDays > 0 else { return [] }
+        let todayStart = calendar.startOfDay(for: now)
+        let openCycleCivilDay = calendar.startOfDay(for: cycleStart)
+        guard
+            let dayBeforeToday = calendar.date(byAdding: .day, value: -1, to: todayStart),
+            let dayBeforeCycle = calendar.date(byAdding: .day, value: -1, to: openCycleCivilDay)
+        else { return [] }
+        let newest = min(dayBeforeToday, dayBeforeCycle)
+        var windows: [DateInterval] = []
+        var cursor = newest
+        for _ in 0..<backfillDays {
+            guard let end = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
+            windows.append(DateInterval(start: cursor, end: end))
+            guard let prev = calendar.date(byAdding: .day, value: -1, to: cursor) else { break }
+            cursor = prev
+        }
+        return windows
+    }
+
+    /// Option-B prior-day lower-bound step lane (2026-08-08). The five
+    /// historical consumers share ONE joint coverage proof whose required
+    /// window's upper bound is driven by sleep's 4h look-ahead, so a completed
+    /// prior civil day whose steps ARE fully banked still never publishes
+    /// jointly — `completionCoverageMismatch` parks all five atomically. This
+    /// sibling of `refreshCurrentCycleStrapStepReceipt` publishes each covered
+    /// prior civil day's decoded strap steps directly to the week-chart store
+    /// as an HONEST LOWER BOUND, WITHOUT touching the joint proof / requiredRange
+    /// / receipt ledger / sync fence. Because it writes only an
+    /// `AtriaWhoop4MotionTickDailyStore` record (not a `consumer-receipt-`
+    /// projection) it cannot authorize raw retirement or claim cutover, so every
+    /// guarantee the joint proof protects is preserved. `save()` accepts only
+    /// strictly-stronger evidence, and a canonical exact `StepDay` always wins
+    /// the merge, so this is monotonic and cannot override a verified total.
+    private func refreshPriorCivilDayStrapStepReceipts(
+        reason: String,
+        backfillDays: Int = 7
+    ) {
+        guard AtriaWhoop4GravityCadenceStepModel.releaseDailyAuthorityQualified else { return }
+        // Same heavy-lane defer contract as the current-cycle writer: never scan
+        // the archive while an exact-recovery lease or a recompute cycle owns it.
+        guard !nonExactArchiveConsumerShouldDefer,
+              !recoveredProjectionScanActive else {
+            currentCycleStepReceiptDeferredUntilForeground = true
+            return
+        }
+        guard let strapIdentifier =
+            AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers().first
+        else { return }
+
+        let now = Date()
+        let calendar = Calendar.current
+        let cycleStart = AtriaPhysiologicalCycle.current(
+            now: now,
+            confirmedSleeps: cachedConfirmedSleeps,
+            calendar: calendar
+        ).start
+        let windows = Self.completedPriorCivilDayWindows(
+            now: now,
+            cycleStart: cycleStart,
+            calendar: calendar,
+            backfillDays: backfillDays
+        )
+        guard !windows.isEmpty else { return }
+
+        // Attempt-lease: skip the (heavy, on a large archive) prior-day re-scan
+        // when the covered set is unchanged since the last pass. `stableIdentifier`
+        // deliberately excludes `now`, so a mere clock tick does not bust it while
+        // new drained coverage or a rolled-over day does. `save()`'s monotonic
+        // no-op already prevents any DATA harm — this only avoids re-scanning.
+        let fingerprint = windows.map { window -> String in
+            let authority = AtriaWhoop4MotionBankCoverageLedger.projectionAuthority(
+                intersecting: window,
+                strapIdentifier: strapIdentifier
+            )
+            return "\(Int(window.start.timeIntervalSince1970)):\(authority?.stableIdentifier ?? "none")"
+        }.joined(separator: "|")
+        if UserDefaults.standard.string(
+            forKey: Self.priorCivilDayStepReceiptsAttemptKey
+        ) == fingerprint {
+            return
+        }
+
+        Self.currentCycleStepReceiptQueue.async {
+            var wroteAny = false
+            for window in windows {
+                let coverage = AtriaWhoop4MotionBankCoverageLedger.intervals(
+                    intersecting: window,
+                    strapIdentifier: strapIdentifier,
+                    now: now
+                )
+                // No banked coverage for this civil day => NO publishable lower
+                // bound. Emit nothing (never a fabricated zero).
+                guard !coverage.isEmpty else { continue }
+                let read = HistoricalArchive.motionTickDayEvidenceRead(
+                    start: window.start,
+                    end: window.end,
+                    bankCoverage: coverage,
+                    strapIdentifier: strapIdentifier
+                )
+                // Only `.qualified` carries evidence. `.incomplete` (scan not
+                // gapless/finished) and `.completeNoQualifiedEvidence` (finished
+                // but too little gait) both mean: no receipt this pass.
+                guard case .qualified(let evidence) = read else { continue }
+                do {
+                    let changed = try AtriaWhoop4MotionTickDailyStore.shared.save(
+                        evidence,
+                        strapIdentifier: strapIdentifier
+                    )
+                    wroteAny = wroteAny || changed
+                    AtriaDebugLog(
+                        "ATRIADBG whoop4_daily_steps status=prior_day_receipt_saved reason=%@ day=%.3f changed=%d steps=%d known_s=%d",
+                        reason,
+                        window.start.timeIntervalSince1970,
+                        changed ? 1 : 0,
+                        evidence.steps,
+                        evidence.knownCoverageSeconds
+                    )
+                } catch {
+                    // save() throws on knownCoverageSeconds<=0 / <2 decoded rows
+                    // (a completed but stationary/sleep-only day): a valid "no
+                    // publishable lower bound", not an error to surface.
+                    AtriaDebugLog(
+                        "ATRIADBG whoop4_daily_steps status=prior_day_receipt_unpublishable reason=%@ day=%.3f",
+                        reason,
+                        window.start.timeIntervalSince1970
+                    )
+                }
+            }
+            // Store the lease only after a full pass, so an interrupted pass
+            // (app killed mid-scan) re-runs rather than being skipped.
+            UserDefaults.standard.set(
+                fingerprint,
+                forKey: Self.priorCivilDayStepReceiptsAttemptKey
+            )
+            if wroteAny {
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(
+                        name: AtriaWhoop4MotionTickDailyStore.didSaveNotification,
+                        object: nil
+                    )
+                }
+            }
+        }
+    }
+
     private func refreshCurrentCycleStrapStepReceipt(
         reason: String,
         allowNegativeAttemptPersistence: Bool = true
@@ -7996,6 +8154,11 @@ final class SessionStore: ObservableObject {
             )
             return
         }
+        // Publish covered PRIOR civil days too (2026-08-08). Placed after the
+        // shared heavy-lane gates but BEFORE the current-cycle-only coverage
+        // guard below, so a freshly-rolled cycle with no banked current-cycle
+        // coverage still backfills covered prior days parked by the joint proof.
+        refreshPriorCivilDayStrapStepReceipts(reason: reason)
         let applicationIsActive =
             UIApplication.shared.applicationState == .active
         let identifiers =
