@@ -601,6 +601,18 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(source.contains("case .bodyTemp: return \"+0.1\""))
     }
 
+    func testCustomizePreviewVisiblyLabelsItsSampleValues() throws {
+        let source = try source("AtriaCustomizeSheet.swift")
+        let start = try XCTUnwrap(source.range(of: "private struct AtriaCustomizePreview"))
+        let preview = String(source[start.lowerBound...])
+
+        XCTAssertTrue(preview.contains("Text(\"Layout preview\")"))
+        XCTAssertTrue(preview.contains("Text(\"Example data\")"),
+                      "Sample health values must be visibly qualified, not only described to VoiceOver")
+        XCTAssertEqual(preview.components(separatedBy: ".atriaInsetCard(").count - 1, 1,
+                       "The qualifier should not add another card or glass layer")
+    }
+
     func testTodayDistinguishesSettledMorningHRVFromLivePersonalHRV() throws {
         let source = try source("AtriaTodayScreen.swift")
         let start = try XCTUnwrap(source.range(of: "case .hrv:"))

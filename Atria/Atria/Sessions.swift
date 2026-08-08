@@ -6630,7 +6630,9 @@ final class SessionStore: ObservableObject {
     /// every unrelated SessionStore publish.
     private(set) var behaviorInsightsRevision = 0
     /// Typed journal answers (Journal phase 2); file-backed, loads lazily.
-    let journalAnswers = AtriaJournalAnswerStore()
+    /// The injectable store keeps insight-refresh tests isolated from the
+    /// production Documents directory; production uses the default below.
+    let journalAnswers: AtriaJournalAnswerStore
     /// Bumped when a typed answer is recorded so journal views refresh.
     @Published private(set) var journalAnswersRevision = 0
     /// Insight-engine v2 results (threshold splits, rank correlations); computed
@@ -6639,6 +6641,13 @@ final class SessionStore: ObservableObject {
     /// Guards against out-of-order recompute completions (concurrent utility-queue
     /// jobs are unordered; only the newest generation may publish).
     private var behaviorInsightsGeneration = 0
+    /// A daily metric can publish after the session-boundary insight pass that
+    /// requested it. Coalesce that authoritative publication into one follow-up
+    /// pass instead of attaching insight work to the hot `sessions.didSet` path.
+    private var pendingDailyMetricInsightRefreshTask: Task<Void, Never>?
+    private var pendingDailyMetricInsightRevision: Int?
+    private var behaviorInsightsLastStartedDailyMetricRevision = -1
+    private var behaviorInsightsLastPublishedDailyMetricRevision = -1
 
     func recordJournalAnswer(questionID: String, value: AtriaJournalValue, day: Date = Date()) {
         journalAnswers.record(questionID: questionID, day: day, value: value)
@@ -6717,23 +6726,30 @@ final class SessionStore: ObservableObject {
     /// Derived off the render path and saved locally so the UI never rebuilds it.
     @Published private(set) var dailyMetricHistory: [SavedDailyMetric] = [] {
         didSet {
+            let contentChanged = oldValue != dailyMetricHistory
             backupCanonicalRevision &+= 1
             dailyMetricHistoryGeneration &+= 1
-            dailyMetricHistoryRevision &+= 1
+            if contentChanged {
+                dailyMetricHistoryRevision &+= 1
+            }
             if let prepared = pendingPreparedDailyMetricSparklines {
                 dailyMetricSparklines = prepared
                 pendingPreparedDailyMetricSparklines = nil
             } else {
                 dailyMetricSparklines = Self.makeDailyMetricSparklines(from: dailyMetricHistory)
             }
+            if contentChanged {
+                scheduleBehaviorInsightsAfterDailyMetricPublication()
+            }
         }
     }
     /// Orders the asynchronous persisted-history load against newer in-memory
     /// publishes. A disk result may publish only if no newer source has won.
     private var dailyMetricHistoryGeneration = 0
-    /// Bumped whenever `dailyMetricHistory` is reassigned so UI memoizers can
+    /// Bumped whenever `dailyMetricHistory` content changes so UI memoizers can
     /// avoid rebuilding slow-moving VO2/biological-age summaries on unrelated
-    /// dashboard publishes.
+    /// or value-identical dashboard publishes. Source ordering for every
+    /// assignment remains independently tracked by `dailyMetricHistoryGeneration`.
     private(set) var dailyMetricHistoryRevision = 0
     @Published private(set) var cachedMaxHRSuggestion: AtriaMaxHRSuggestion?
     @Published private(set) var dailyMetricSparklines = DailyMetricSparklineCache.empty
@@ -14068,6 +14084,13 @@ final class SessionStore: ObservableObject {
         let metricDays = dailyMetricHistory.map {
             AtriaBehaviorImpact.Day(day: $0.day, recoveryPercent: $0.recoveryPercent)
         }
+        let sourceDailyMetricRevision = dailyMetricHistoryRevision
+        behaviorInsightsLastStartedDailyMetricRevision = sourceDailyMetricRevision
+        if pendingDailyMetricInsightRevision == sourceDailyMetricRevision {
+            pendingDailyMetricInsightRefreshTask?.cancel()
+            pendingDailyMetricInsightRefreshTask = nil
+            pendingDailyMetricInsightRevision = nil
+        }
         journalAnswers.loadIfNeeded()
         let typedAnswers = journalAnswers.answers
         behaviorInsightsGeneration &+= 1
@@ -14087,10 +14110,17 @@ final class SessionStore: ObservableObject {
                 labels: SessionStore.journalQuestionLabels,
                 days: metricDays)
             DispatchQueue.main.async {
-                guard let self, generation == self.behaviorInsightsGeneration else {
+                guard let self,
+                      Self.behaviorInsightPublicationIsCurrent(
+                        generation: generation,
+                        currentGeneration: self.behaviorInsightsGeneration,
+                        sourceDailyMetricRevision: sourceDailyMetricRevision,
+                        currentDailyMetricRevision: self.dailyMetricHistoryRevision
+                      ) else {
                     completion?(false)
                     return
                 }
+                self.behaviorInsightsLastPublishedDailyMetricRevision = sourceDailyMetricRevision
                 self.behaviorInsightsRevision &+= 1
                 self.behaviorCorrelationSummariesCache = summaries
                 self.behaviorImpactSummariesCache = impacts
@@ -14100,6 +14130,61 @@ final class SessionStore: ObservableObject {
             }
         }
     }
+
+    /// Daily metrics are slow-moving, authoritative values. Their history worker
+    /// can finish after an earlier session-boundary insight computation, so one
+    /// short coalescing lease recomputes from the accepted revision. The engine
+    /// itself remains on the utility queue inside `recomputeBehaviorInsights`.
+    private func scheduleBehaviorInsightsAfterDailyMetricPublication() {
+        guard hasCompletedDeferredSessionLoad,
+              canonicalMutationAllowed else { return }
+        let revision = dailyMetricHistoryRevision
+        guard revision != behaviorInsightsLastStartedDailyMetricRevision,
+              revision != behaviorInsightsLastPublishedDailyMetricRevision,
+              revision != pendingDailyMetricInsightRevision else { return }
+
+        pendingDailyMetricInsightRefreshTask?.cancel()
+        pendingDailyMetricInsightRevision = revision
+        pendingDailyMetricInsightRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled,
+                  let self,
+                  self.pendingDailyMetricInsightRevision == revision else { return }
+            self.pendingDailyMetricInsightRefreshTask = nil
+            self.pendingDailyMetricInsightRevision = nil
+            guard self.hasCompletedDeferredSessionLoad,
+                  self.canonicalMutationAllowed,
+                  self.dailyMetricHistoryRevision == revision else { return }
+            self.recomputeBehaviorInsights()
+        }
+    }
+
+    nonisolated static func behaviorInsightPublicationIsCurrent(
+        generation: Int,
+        currentGeneration: Int,
+        sourceDailyMetricRevision: Int,
+        currentDailyMetricRevision: Int
+    ) -> Bool {
+        generation == currentGeneration
+            && sourceDailyMetricRevision == currentDailyMetricRevision
+    }
+
+    #if DEBUG
+    /// Isolated fixture seam for the daily-metric/insight publication contract.
+    /// It deliberately bypasses persistence and never exists in release builds.
+    func configureBehaviorInsightRefreshForTesting(
+        journalEntries: [BehaviorJournalEntry]
+    ) {
+        restoreInitializationBlocked = false
+        restorePersistenceFenceActive = false
+        hasCompletedDeferredSessionLoad = true
+        cachedBehaviorJournalEntries = journalEntries
+    }
+
+    func publishDailyMetricHistoryForInsightTesting(_ metrics: [SavedDailyMetric]) {
+        dailyMetricHistory = metrics
+    }
+    #endif
 
     /// Turn per-tag correlation deltas into ranked, plain-language findings.
     /// Only surfaces a meaningful effect (recovery ≥2 pts, HRV ≥2 ms); the deltas
@@ -14205,7 +14290,9 @@ final class SessionStore: ObservableObject {
         return dir.appendingPathComponent("biological-age-cache.json")
     }()
 
-    init(restoreInitialization: RestoreInitialization = .live) {
+    init(restoreInitialization: RestoreInitialization = .live,
+         journalAnswers: AtriaJournalAnswerStore = AtriaJournalAnswerStore()) {
+        self.journalAnswers = journalAnswers
         // Resolve an interrupted multi-destination restore before baseline,
         // profile, rollups, or any cached canonical array touches persistence.
         let recovery = restoreInitialization.recover()
@@ -14452,6 +14539,7 @@ final class SessionStore: ObservableObject {
         pendingWorkoutStepEvidenceWorkItem?.cancel()
         physiologicalCycleRolloverTask?.cancel()
         deferredLaunchCardSettlementRetryTask?.cancel()
+        pendingDailyMetricInsightRefreshTask?.cancel()
         pendingSleepReadinessRetry?.cancel()
         pendingSleepSettlementRetry?.cancel()
         pendingForegroundSleepSettlementWorkItem?.cancel()
@@ -32930,6 +33018,7 @@ final class SessionStore: ObservableObject {
         markSessionPersistenceDirty()
         scheduleSessionFilePersist(reason: "restore_fence_release", delay: 0)
         scheduleDailyMetricPersist(reason: "restore_fence_release", delay: 0)
+        scheduleBehaviorInsightsAfterDailyMetricPublication()
     }
 
     private func enterRetainedRestoreMarkerBlock() {

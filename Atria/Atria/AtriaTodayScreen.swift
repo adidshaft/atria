@@ -19,6 +19,7 @@ struct AtriaTodaySessionState: Equatable {
     /// `sleepHistorySnapshotRevision`, which every confirmed-sleep write bumps.
     let confirmedSleeps: [UserConfirmedSleep]
     let behaviorImpactSummaries: [BehaviorImpactSummary]
+    let behaviorInsights: [AtriaInsight]
     let baseline: PersonalBaseline
     let sleepHistorySnapshot: SleepHistorySnapshot
     let sleepHistorySnapshotRevision: Int
@@ -44,6 +45,7 @@ struct AtriaTodaySessionState: Equatable {
         confirmedWorkoutsRevision = store.confirmedWorkoutsRevision
         confirmedSleeps = store.confirmedSleeps
         behaviorImpactSummaries = store.behaviorImpactSummariesCache
+        behaviorInsights = store.behaviorInsights
         baseline = store.baseline
         baselineSamplesKey = store.baseline.samples.map {
             BaselineSampleKey(date: $0.date,
@@ -68,6 +70,7 @@ struct AtriaTodaySessionState: Equatable {
         lhs.dailyRollupHistoryRevision == rhs.dailyRollupHistoryRevision
             && lhs.confirmedWorkoutsRevision == rhs.confirmedWorkoutsRevision
             && lhs.behaviorImpactSummaries == rhs.behaviorImpactSummaries
+            && lhs.behaviorInsights == rhs.behaviorInsights
             && lhs.baselineSamplesKey == rhs.baselineSamplesKey
             && lhs.baseline.restingHR == rhs.baseline.restingHR
             && lhs.baseline.hrvEMA == rhs.baseline.hrvEMA
@@ -101,6 +104,7 @@ final class AtriaTodaySessionProjectionStore: ObservableObject {
             store.$dailyRollupHistory.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$sleepHistorySnapshot.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$behaviorImpactSummariesCache.dropFirst().map { _ in () }.eraseToAnyPublisher(),
+            store.$behaviorInsights.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$baseline.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$profile.dropFirst().map { _ in () }.eraseToAnyPublisher(),
             store.$imuAuditSummary.dropFirst().map { _ in () }.eraseToAnyPublisher(),
@@ -209,6 +213,7 @@ struct AtriaTodayScreen: View {
     // write, so the ring layout switches from any of the three surfaces.
     @AtriaDefault(AtriaRingLayoutStyle.defaultsKey) private var ringLayoutRaw: String = "concentric"
     @State private var showWeeklyReport = false
+    @State private var showInsights = false
     @State private var showBreathworkSession = false
     // Dedicated sheet for the Strap-steps tile (2026-08-08): the steps tile is
     // rendered by AtriaTodayLiveGlanceTileHost, which had no tap affordance, so
@@ -350,6 +355,14 @@ struct AtriaTodayScreen: View {
                     .presentationDragIndicator(.visible)
             }
         }
+        .sheet(isPresented: $showInsights) {
+            ScrollView {
+                AtriaInsightsCardHost(store: store)
+                    .padding(AtriaDesignTokens.Spacing.lg)
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
         .sheet(isPresented: $showStrapStepsDetail) {
             AtriaStrapStepsDetailSheet(count: liveStore.state.strapStepResearchCount,
                                        validationState: liveStore.state.strapStepResearchState,
@@ -448,9 +461,10 @@ struct AtriaTodayScreen: View {
     /// Route audit (visibilitySpec §3, 2026-07-05): every glance tile used to
     /// dead-end on tap except Stress -- and even that was broken (see below),
     /// so in practice ALL of them dead-ended. Maps each metric to the detail
-    /// kind it should open; tiles with no honest detail yet (load, workouts,
-    /// steps, calories, trend, insights) are intentionally left out rather
-    /// than routed to a placeholder.
+    /// kind it should open. Stress, Strap steps, and Insights use the dedicated
+    /// routes immediately below; tiles with no honest detail yet (load,
+    /// workouts, calories, trend) are intentionally left out rather than routed
+    /// to a placeholder.
     private static let glanceDetailRoutes: [AtriaTodayMetric: AtriaMetricDetailKind] = [
         .recovery: .recovery,
         .strain: .strain,
@@ -474,9 +488,10 @@ struct AtriaTodayScreen: View {
     /// broken `item.id == "Stress"` string check -- `AtriaTodayMetric.stress`
     /// raw-values to `"stress"`, never the capitalized literal, so that
     /// branch never actually ran and Stress dead-ended along with everything
-    /// else). Everything else that has a real or honest-partial detail opens
-    /// `metricDetail`; anything without one renders as a plain, non-tappable
-    /// tile rather than a fake affordance.
+    /// else). Insights opens the canonical ranked-insights card. Everything else
+    /// that has a real or honest-partial detail opens `metricDetail`; anything
+    /// without one renders as a plain, non-tappable tile rather than a fake
+    /// affordance.
     @ViewBuilder
     private func glanceTile(for item: AtriaTodayGlanceItem, isBar: Bool = false) -> some View {
         let metric = AtriaTodayMetric(rawValue: item.metricKey)
@@ -487,6 +502,14 @@ struct AtriaTodayScreen: View {
                 AtriaTodayGlanceTile(item: item, isBar: isBar)
             }
             .buttonStyle(.plain)
+        } else if metric == .insights {
+            Button {
+                showInsights = true
+            } label: {
+                AtriaTodayGlanceTile(item: item, isBar: isBar)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Shows ranked local insights.")
         } else if let metric, let detail = Self.glanceDetailRoutes[metric] {
             Button {
                 metricDetail = detail
@@ -2346,10 +2369,11 @@ struct AtriaTodayScreen: View {
                                         tint: layoutConfig.accent.color,
                                         layoutSize: layoutSize(for: metric))
         case .insights:
+            let insights = sessionProjectionStore.state.behaviorInsights
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
-                                        value: "\(highlights.count)",
-                                        detail: legendDetail("Highlights"),
+                                        value: "\(insights.count)",
+                                        detail: legendDetail(insights.first?.tagLabel ?? "Keep tagging"),
                                         systemImage: metric.systemImage,
                                         tint: layoutConfig.accent.color,
                                         layoutSize: layoutSize(for: metric))

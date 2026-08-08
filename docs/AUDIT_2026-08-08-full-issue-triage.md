@@ -304,18 +304,15 @@ No `cannot_determine` findings. The medium-confidence code claims to re-verify b
 
 ---
 
-## Pre-existing test failure noted (2026-08-08, NOT from this session's edits)
+## Graph-inspector gate reconciled (2026-08-09)
 
-`AtriaGraphInspectorTests.testMeaningfulGraphSurfacesUseSharedInspector` fails:
-it requires `.atriaInspectableGraph(` in `AtriaOverviewSections.swift`, which
-has been absent since at least commit `02458279` (before this session).
-`testEverySavedMetricTrendCanOpenLandscapeInspector` (the `expandedChartConfig`
-+ `onExpand` mechanism) still passes, so Overview detail charts DO have a
-landscape expand — just not via the newer shared `.atriaInspectableGraph`
-route. Either the Overview charts should migrate to the shared inspector, or
-this assertion is stale and should drop AtriaOverviewSections from its list.
-Decide deliberately; do not weaken the test to silence it. Unrelated to the
-user's reported issues.
+The earlier `testMeaningfulGraphSurfacesUseSharedInspector` failure was a stale,
+contradictory source-shape assertion and is now resolved deliberately. Standalone
+graph surfaces remain required to use `.atriaInspectableGraph`, while Overview's
+richer period/comparison charts are separately required to expose
+`expandedChartConfig` + `onExpand` for every saved metric trend. The current
+`AtriaGraphInspectorTests` suite passes 7/7; no graph capability was removed or
+silenced to make the gate pass.
 
 ---
 
@@ -424,11 +421,30 @@ landed; #9 remains split —**
 - **#9(a)** (score/record stress during sleep) is BLOCKED on a live-sleep
   authority that does not exist (see prior note); harm already neutralized by
   the awake-buffer floor.
-- **#9(b)** (compact stress tile has no freshness gating → a stale daytime
-  "Medium" can persist visually overnight) is actionable but requires threading
-  `lastMeasuredAt` through `makeHeroSnapshot` in **AtriaHomeView** (UI-session
-  lane), so it is deferred here to avoid a merge collision. Lower impact now that
-  daytime readings mostly resolve Calm/Low rather than Medium.
+- **DONE — #9(b) compact-tile freshness (98189b56).** `lastMeasuredAt` and the
+  current physiological-cycle boundary now reach the hero resolver. Readings
+  fail closed after 90 seconds or when they belong to a prior cycle, and the UI
+  schedules the earliest deterministic expiry instead of waiting for an
+  unrelated render. `AtriaStressReadingFreshnessTests` passes 13/13.
 
 **Next engine target: B3**, using the user's real strap HR (standing sanction).
 No safe confirmed-list engine grinds remain after this.
+
+## Final code-audit addendum (2026-08-09)
+
+- **DONE — morning insight publication ordering.** An accepted replacement of
+  `dailyMetricHistory` now coalesces a generation- and metric-revision-fenced
+  behavior/journal insight refresh. The expensive engine remains off-main, an
+  older worker cannot overwrite a newer recovery day, and the hot
+  `sessions.didSet` path is unchanged.
+- **DONE — Today Insights route.** The tile now counts ranked local behavior
+  insights instead of unrelated Today highlights and opens the existing
+  canonical Insights card.
+- **DONE — Customize preview truth.** Synthetic layout-preview values carry a
+  visible `Example data` qualifier without another card or glass layer.
+
+These close the remaining safe code-backed P1s found in this bounded pass. The
+completion auditor still correctly reports `not_complete` until the physical
+long-wear, Accessibility/performance, strict physical-qualification, and
+independent external-reference evidence gates are supplied; those gates were
+not weakened or relabeled as code-complete.
