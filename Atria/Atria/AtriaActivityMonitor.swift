@@ -949,12 +949,18 @@ private enum AtriaWorkoutRouteTransactionRecovery {
 /// Activity projection; nothing here is fabricated — a metric only renders
 /// when the underlying session actually recorded it.
 struct AtriaActivityMonitorTab: View {
+    // Scene phase remains a low-frequency root dependency so returning from the
+    // background recomputes the minute-bounded day-section request. The actual
+    // timeline completeness action lives in the narrow timeline leaf below.
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var activityStore: AtriaHomeModel.ActivityStore
     /// Live stress monitor for the intraday (past-24h) card at the top of the
     /// Activity view — Activity is the intraday + log surface (heart/stress +
     /// today's timeline + activities), not the weekly-trend surface.
-    @ObservedObject var stressMonitorStore: AtriaStressMonitorStore
+    // Lifetime reference only. The high-frequency stress store is observed by
+    // `AtriaActivityTimelineHost`, so live pulse/stress publications invalidate
+    // only the monitor canvas rather than this whole activity-log hierarchy.
+    let stressMonitorStore: AtriaStressMonitorStore
     /// Retained without observation for action sheets, which observe it only
     /// while presented.
     let store: SessionStore
@@ -972,18 +978,7 @@ struct AtriaActivityMonitorTab: View {
     /// days can be changed").
     @State private var timelineDay: Date = Calendar.current.startOfDay(for: Date())
     @State private var viewingCurrentPhysiologicalDay = true
-    @State private var activityMemo = AtriaActivityMonitorMemo()
     @State private var daySectionsCache = AtriaActivitySectionsCache<[DaySection]>()
-    @State private var selectedSignal: TimelineSignal = .heartRate
-    @State private var heartRateProjection = AtriaActivityTimelineHeartRateProjection.empty
-    @State private var liveHeartRateTail: [AtriaActivityTimelineHeartRatePoint] = []
-    @State private var heartRateLoadState: HeartRateLoadState = .idle
-    @State private var stressProjection = AtriaActivityTimelineStressProjection.empty
-    /// Advances only at a foreground boundary or after SessionStore has
-    /// published one complete recovered-data revision. Including this in the
-    /// task key backfills signal rows captured while the app was suspended,
-    /// without turning per-row archive writes into repeated whole-window scans.
-    @State private var timelineCompletenessRevision: UInt64 = 0
 
     private enum TimelineSignal: String, CaseIterable, Hashable {
         case heartRate = "Heart rate"
@@ -1072,6 +1067,7 @@ struct AtriaActivityMonitorTab: View {
     }
 
     var body: some View {
+        let _ = scenePhase
         let calendar = Calendar.current
         let activity = activityStore.state
         let displayWindow = viewingCurrentPhysiologicalDay
@@ -1099,7 +1095,11 @@ struct AtriaActivityMonitorTab: View {
             // one monitor mounted for the selected window; its localized empty
             // state distinguishes no captured HR, session-only stress history,
             // and an unreadable archive instead of presenting a blank plot.
-            dayTimelineCard
+            AtriaActivityTimelineHost(activity: activity,
+                                      timelineDay: timelineDay,
+                                      viewingCurrentPhysiologicalDay: viewingCurrentPhysiologicalDay,
+                                      stressMonitorStore: stressMonitorStore,
+                                      store: store)
 
             if daySectionsCache.publishedKey != requestKey {
                 activityLoadingState
@@ -1124,13 +1124,9 @@ struct AtriaActivityMonitorTab: View {
             }
         }
         .sheet(item: $workoutDetail) { workout in
-            AtriaActivityWorkoutDetailSheet(
-                store: store,
-                workout: workout,
-                stressReadings: stressMonitorStore.history
-                    .filter { $0.t >= workout.start && $0.t <= workout.end }
-                    .map(AtriaStressDetailReading.init(historyPoint:))
-            )
+            AtriaActivityWorkoutDetailSheetHost(store: store,
+                                                workout: workout,
+                                                stressMonitorStore: stressMonitorStore)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -1160,37 +1156,6 @@ struct AtriaActivityMonitorTab: View {
             await refreshDaySections(for: requestKey,
                                      activity: activity,
                                      calendar: calendar)
-        }
-        .task(id: timelineSignalWindowKey) {
-            let window = currentDisplayWindow
-            await refreshTimelineHeartRate(window: window,
-                                           requestKey: timelineSignalWindowKey)
-        }
-        .task(id: timelineStressRequestKey) {
-            let window = currentDisplayWindow
-            await refreshTimelineStress(window: window,
-                                        requestKey: timelineStressRequestKey)
-        }
-        .onChange(of: stressMonitorStore.liveHeartRate) { _, reading in
-            appendFreshLiveHeartRate(reading)
-        }
-        .onChange(of: scenePhase) { previous, current in
-            guard AtriaActivityTimelineRefreshPolicy.shouldRefresh(
-                previousScenePhase: previous,
-                scenePhase: current
-            ) else { return }
-            advanceTimelineCompletenessRevision()
-        }
-        .onReceive(
-            NotificationCenter.default.publisher(
-                for: SessionStore.recoveredDataRecomputeDidPublishNotification
-            )
-        ) { notification in
-            // Multiple SessionStore instances exist in tests/previews. Only the
-            // store backing this Activity tab may invalidate its selected day.
-            guard let publishingStore = notification.object as? SessionStore,
-                  publishingStore === store else { return }
-            advanceTimelineCompletenessRevision()
         }
         .onAppear {
             #if DEBUG
@@ -1488,23 +1453,6 @@ struct AtriaActivityMonitorTab: View {
         }
     }
 
-    private var timelineSpans: [TimelineSpan] {
-        let activity = activityStore.state
-        let window = currentDisplayWindow
-        return activityMemo.timelineSpans(sleepRevision: activity.sleepHistorySnapshotRevision,
-                                          workoutsRevision: activity.confirmedWorkoutsRevision,
-                                          detectionsRevision: activity.historySnapshotRevision,
-                                          reviewFingerprint: activity.reviewFingerprint,
-                                          displayWindow: window,
-                                          sleepSnapshot: activity.sleepHistorySnapshot,
-                                          pendingSleepReview: activity.pendingSleepReview,
-                                          napReviewCandidates: activity.napReviewCandidates,
-                                          workouts: activity.confirmedWorkouts,
-                                          workoutReview: activity.workoutReviewCandidate,
-                                          detections: activity.activityDetections,
-                                          calendar: .current)
-    }
-
     private var canGoToNextDay: Bool {
         !viewingCurrentPhysiologicalDay
     }
@@ -1518,7 +1466,93 @@ struct AtriaActivityMonitorTab: View {
             : AtriaActivityDisplayWindow.historical(day: timelineDay, calendar: calendar)
     }
 
-    private var timelineSignalWindowKey: TimelineSignalWindowKey {
+    /// Owns every high-frequency stress/heart-rate dependency used by the
+    /// selected-day signal canvas. Keeping the observation and live-tail state
+    /// inside this leaf prevents a pulse tick from rebuilding the surrounding
+    /// activity toolbar, async day grouping, and saved activity rows.
+    private struct AtriaActivityTimelineHost: View {
+        @Environment(\.scenePhase) private var scenePhase
+
+        let activity: AtriaHomeModel.ActivityState
+        let timelineDay: Date
+        let viewingCurrentPhysiologicalDay: Bool
+        @ObservedObject var stressMonitorStore: AtriaStressMonitorStore
+        let store: SessionStore
+
+        @State private var activityMemo = AtriaActivityMonitorMemo()
+        @State private var selectedSignal: TimelineSignal = .heartRate
+        @State private var heartRateProjection = AtriaActivityTimelineHeartRateProjection.empty
+        @State private var liveHeartRateTail: [AtriaActivityTimelineHeartRatePoint] = []
+        @State private var heartRateLoadState: HeartRateLoadState = .idle
+        @State private var stressProjection = AtriaActivityTimelineStressProjection.empty
+        /// Advances only at a foreground boundary or after SessionStore has
+        /// published one complete recovered-data revision. Including this in the
+        /// task key backfills signal rows captured while the app was suspended,
+        /// without turning per-row archive writes into repeated whole-window scans.
+        @State private var timelineCompletenessRevision: UInt64 = 0
+
+        var body: some View {
+            dayTimelineCard
+                .task(id: timelineSignalWindowKey) {
+                    let window = currentDisplayWindow
+                    await refreshTimelineHeartRate(window: window,
+                                                   requestKey: timelineSignalWindowKey)
+                }
+                .task(id: timelineStressRequestKey) {
+                    let window = currentDisplayWindow
+                    await refreshTimelineStress(window: window,
+                                                requestKey: timelineStressRequestKey)
+                }
+                .onChange(of: stressMonitorStore.liveHeartRate) { _, reading in
+                    appendFreshLiveHeartRate(reading)
+                }
+                .onChange(of: scenePhase) { previous, current in
+                    guard AtriaActivityTimelineRefreshPolicy.shouldRefresh(
+                        previousScenePhase: previous,
+                        scenePhase: current
+                    ) else { return }
+                    advanceTimelineCompletenessRevision()
+                }
+                .onReceive(
+                    NotificationCenter.default.publisher(
+                        for: SessionStore.recoveredDataRecomputeDidPublishNotification
+                    )
+                ) { notification in
+                    // Multiple SessionStore instances exist in tests/previews.
+                    // Only the store backing this Activity tab may invalidate
+                    // its selected physiological day.
+                    guard let publishingStore = notification.object as? SessionStore,
+                          publishingStore === store else { return }
+                    advanceTimelineCompletenessRevision()
+                }
+        }
+
+        private var timelineSpans: [TimelineSpan] {
+            let window = currentDisplayWindow
+            return activityMemo.timelineSpans(sleepRevision: activity.sleepHistorySnapshotRevision,
+                                              workoutsRevision: activity.confirmedWorkoutsRevision,
+                                              detectionsRevision: activity.historySnapshotRevision,
+                                              reviewFingerprint: activity.reviewFingerprint,
+                                              displayWindow: window,
+                                              sleepSnapshot: activity.sleepHistorySnapshot,
+                                              pendingSleepReview: activity.pendingSleepReview,
+                                              napReviewCandidates: activity.napReviewCandidates,
+                                              workouts: activity.confirmedWorkouts,
+                                              workoutReview: activity.workoutReviewCandidate,
+                                              detections: activity.activityDetections,
+                                              calendar: .current)
+        }
+
+        private var currentDisplayWindow: AtriaActivityDisplayWindow {
+            let calendar = Calendar.current
+            return viewingCurrentPhysiologicalDay
+                ? AtriaActivityDisplayWindow.current(now: Date(),
+                                                     sleepHistory: activity.sleepHistorySnapshot,
+                                                     calendar: calendar)
+                : AtriaActivityDisplayWindow.historical(day: timelineDay, calendar: calendar)
+        }
+
+        private var timelineSignalWindowKey: TimelineSignalWindowKey {
         let window = currentDisplayWindow
         return TimelineSignalWindowKey(start: window.interval.start,
                                        historicalEnd: window.isCurrentPhysiologicalDay ? nil : window.interval.end,
@@ -1908,7 +1942,7 @@ struct AtriaActivityMonitorTab: View {
     private func activityAccessibilityValue(_ spans: [TimelineSpan]) -> String {
         guard !spans.isEmpty else { return " No activity markers." }
         return " Activities: " + spans.map {
-            "\($0.label), \(Self.timeRange(start: $0.start, end: $0.end))"
+            "\($0.label), \(AtriaActivityMonitorTab.timeRange(start: $0.start, end: $0.end))"
         }.joined(separator: "; ")
     }
 
@@ -1948,6 +1982,8 @@ struct AtriaActivityMonitorTab: View {
                                             })])
             )
         }
+    }
+
     }
 
     private var addActivityMenu: some View {
@@ -2408,6 +2444,44 @@ struct AtriaActivityMonitorTab: View {
                       calendarIdentifier: String(describing: calendar.identifier),
                       timeZoneIdentifier: calendar.timeZone.identifier)
         }
+    }
+}
+
+/// Converts only readings measured inside one confirmed workout. Kept pure so
+/// the sheet-only observer can refresh without leaking stress observation back
+/// into the Activity tab root, and so the inclusive boundary semantics remain
+/// regression-testable.
+enum AtriaActivityWorkoutStressProjection {
+    static func readings(
+        history: [AtriaStressMonitorStore.StressHistoryPoint],
+        start: Date,
+        end: Date
+    ) -> [AtriaStressDetailReading] {
+        history.compactMap { point in
+            guard point.t >= start, point.t <= end else { return nil }
+            return AtriaStressDetailReading(historyPoint: point)
+        }
+    }
+}
+
+/// Stress history is relevant only while a workout detail is presented. This
+/// leaf preserves the prior live-refresh behavior without making the retained
+/// Activity tab observe every pulse and stress publication.
+private struct AtriaActivityWorkoutDetailSheetHost: View {
+    let store: SessionStore
+    let workout: UserConfirmedWorkout
+    @ObservedObject var stressMonitorStore: AtriaStressMonitorStore
+
+    var body: some View {
+        AtriaActivityWorkoutDetailSheet(
+            store: store,
+            workout: workout,
+            stressReadings: AtriaActivityWorkoutStressProjection.readings(
+                history: stressMonitorStore.history,
+                start: workout.start,
+                end: workout.end
+            )
+        )
     }
 }
 
