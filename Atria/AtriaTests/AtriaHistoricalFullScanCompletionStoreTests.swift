@@ -259,7 +259,7 @@ final class AtriaHistoricalFullScanCompletionStoreTests: XCTestCase {
             generation: 1,
             transportGeneration: 1,
             transportNonce: "physical-terminal-attempt",
-            peripheralIdentifier: "C125C62E-C432-53E7-BD19-9761251B2C3E",
+            peripheralIdentifier: "11111111-1111-1111-1111-111111111111",
             strapIdentity: "strap4Class",
             cursorWatermark: cursor,
             terminalAt: terminal,

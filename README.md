@@ -34,12 +34,6 @@ Atria is an open-source iOS app and BLE research toolkit for using a compatible 
 
 This project is independent and unaffiliated with WHOOP. It does not bypass paid cloud features. It talks to your own hardware over Bluetooth LE and keeps data on device.
 
-<p align="center">
-  <img src="assets/atria-today.png" alt="Atria Today overview screen" width="260">
-  <img src="assets/atria-strain-detail.png" alt="Atria strain detail screen" width="260">
-  <img src="assets/atria-ai-coach.png" alt="Atria AI coach screen" width="260">
-</p>
-
 ## App Tour
 
 <p align="center">
@@ -157,9 +151,10 @@ accepted until the final summary reports `acceptance_status=pass` and
 `acceptance_blockers=none`, and the handoff audit confirms the summary is the
 full overnight shape rather than a short custom smoke.
 
-Accessibility/performance acceptance also needs a physical iPhone 15 Pro
-manifest. Start from `docs/evidence/accessibility-performance/summary.template.json`
-and fill it only from measured device results.
+Accessibility/performance acceptance also needs measured physical-device
+results. Capture them with `tools/capture_accessibility_visual_evidence.sh` and
+`tools/capture_dashboard_scroll_performance.sh`, then create the local manifest
+with `tools/prepare_accessibility_performance_evidence.py`.
 
 To summarize the current handoff evidence without running the device:
 
@@ -182,12 +177,12 @@ python3 tools/audit_handoff_status.py \
 |---|---|
 | `Atria/` | Native SwiftUI iOS app, widget, HealthKit, BLE, and local metrics code. |
 | `tools/` | Analysis helpers for captures, references, and protocol evidence. |
-| `docs/` | Technical notes, gate plans, evidence summaries, and protocol research. |
+| `docs/` | Technical notes, validation plans, and protocol research. |
 | `scan.py`, `probe.py`, `listen.py`, `whoop_codec.py` | macOS BLE exploration and decode tooling. |
 | `live_device_debug.sh` | Physical-iPhone build/install/launch/log harness. |
 | `assets/` | Logo and README screenshots. |
 
-- [Research & validation audit](docs/22-research-and-validation.md) — accuracy vs WHOOP, data completeness, open research questions.
+- [Research validation corpus](docs/research-validation-corpus.md) — the rules and fixtures used for reproducible sensor validation.
 
 ## Contributing
 

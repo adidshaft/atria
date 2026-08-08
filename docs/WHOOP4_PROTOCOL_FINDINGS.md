@@ -4,6 +4,12 @@ This is Atria's living, append-only notebook for WHOOP 4.0 ("Harvard") protocol 
 
 Last updated: 2026-07-31 (Asia/Kolkata)
 
+Raw physical captures stay local and are intentionally ignored because they
+can contain health and device identifiers. Historical `evidence/...` paths in
+this notebook are provenance labels, not public links; reusable redacted
+fixtures and verification code live under `Atria/AtriaTests/Fixtures/` and
+`tools/`.
+
 ## Evidence labels
 
 - **PHYSICAL** — observed on the current WHOOP 4.0, physical iPhone, and Atria build. This is the highest-confidence evidence for this product.
@@ -3568,9 +3574,8 @@ POSITIVE STILL REQUIRED**
   persistent-write guard remains unclaimed. A nonexistent key will not be
   written speculatively. The evidence-backed next research path is the
   firmware's actual R19 family and false-step-detection behavior.
-- The isolated research harness
-  `tools/whoop4_walk_detector_probe.py` has two independent command
-  firewalls. Enumeration can emit only `0x75` and `0x76`. A persistent
+- The isolated research harness had two independent command firewalls.
+  Enumeration could emit only `0x75` and `0x76`. A persistent
   `0x78` write is unreachable without two exact acknowledgements, is limited
   to one `enable_sigproc_walk_detector=1` attempt, and is never retried.
 - Optional banked observation first requires a CRC-valid physical-shape
@@ -3624,22 +3629,19 @@ POSITIVE STILL REQUIRED**
   reported, never as activity truth proven by the harness. The current offline
   safety suite is 49/49. No hardware write has
   been made from this harness.
-- The Bluetooth runtime is isolated and pinned in
-  `tools/requirements-whoop4-walk-detector-probe.txt` (`bleak==3.0.2`).
-  Import/API compatibility and all 49 tests passed in
-  `/tmp/atria-whoop-probe-venv-v1`; the durable target-attempt guard remains
-  unclaimed.
+- The Bluetooth runtime was isolated on `bleak==3.0.2`.
+  Import/API compatibility and all 49 tests passed in an isolated temporary
+  environment; the durable target-attempt guard remained unclaimed.
 - The first physical Mac-side **read-only** enumeration attempt on
-  2026-07-30 resolved CoreBluetooth peripheral
-  `837560C0-5B6C-C520-95EF-B1E713358D33` at `-61 dBm`, but CoreBluetooth
+  2026-07-30 resolved the selected CoreBluetooth peripheral at `-61 dBm`, but CoreBluetooth
   rejected the connection with `CBErrorDomain Code=14`
   (`peerRemovedPairingInformation`). The failure occurred before notification
   subscription and before either allowlisted `0x75` or `0x76` command. Its
   corpus therefore contains zero notifications, zero frames, and zero rows;
   it is transport evidence only and cannot support any detector conclusion.
-  The exact failed manifest is
-  `evidence/2026-07-30-native-walk-detector-readonly-enumeration/walk-detector-20260730T041222Z-manifest.json`.
-- The Mac still exposes `ADIDSHAFT'S WHO` as a paired-but-disconnected device
+  The exact failed manifest remains local because it contains device-specific
+  transport identifiers.
+- The Mac still exposed the strap as a paired-but-disconnected device
   even after `blueutil --unpair` reports success. This is a stale host bond:
   the strap no longer accepts the Mac's retained encryption key after being
   bonded to the iPhone. Bleak/CoreBluetooth has no explicit pairing API;
@@ -3659,14 +3661,12 @@ POSITIVE STILL REQUIRED**
   or CoreBluetooth initialization removed that ownership race without
   uninstalling, changing its container, or launching a different binary. The
   next read-only run completed all 13 replies with zero discarded bytes and
-  no write. Exact evidence is
-  `evidence/2026-07-30-native-walk-detector-readonly-enumeration-v4/`.
+  no write. The device-specific capture remains local.
 - No physical R19 frame has yet been captured. An exact structured scan found
   zero `0x2f` version-19 (`2f13`) records in repository evidence/fixtures or
   the retained Atria runtime artifacts. The only R19-shaped payload is
-  synthetic recorder-test input in
-  `tools/test_whoop4_walk_detector_probe.py`; it validates version/length
-  bookkeeping only and is not packet-layout or native-step evidence. A
+  synthetic recorder-test input; it validates version/length bookkeeping only
+  and is not packet-layout or native-step evidence. A
   production R19 decoder must remain fail-closed until a CRC-valid physical
   frame and matched quiet/walk/planted-feet controls establish its layout and
   semantics.
@@ -3976,8 +3976,7 @@ POSITIVE STILL REQUIRED**
 ### 2026-07-30 — v17 closes the held-out 90-step slow-walk alias
 
 - A later recovered physical walk supplied a genuinely held-out quantity
-  check: strap `C125C62E-C432-53E7-BD19-9761251B2C3E`, WHOOP seconds
-  `1785417551...1785417641`, 90 user-counted steps, and 89/90 seconds of
+  check: 90 user-counted steps and 89/90 seconds of
   qualified strap coverage. The preserved compact source SHA-256 is
   `e49a6a6bd42742d27e51a125c4a36e9ab533363dd093e342b6cfa21633e9d9fe`.
   V16 returned 105 steps, a 16.7% overcount, so that result was not accepted.
@@ -4004,10 +4003,8 @@ POSITIVE STILL REQUIRED**
   `whoop4-impact-gait-ensemble-v17`; persisted v16 receipts fail validation
   and are quarantined for recomputation instead of masquerading as current
   authority after relaunch.
-- Reproducer:
-  `tools/verify_whoop4_autonomous_step_corpus.swift` against
-  `evidence/2026-07-29-autonomous-day-model/raw-v2`, with the exact held-out
-  rows preserved in
+- Reproducer: `tools/verify_whoop4_autonomous_step_corpus.swift`, with the
+  exact held-out rows preserved in
   `Atria/AtriaTests/Fixtures/whoop4-v15-physical-gait-corpus.jsonl`.
   At verification time, model SHA-256 was
   `b82e94a4c7591afb2b5ee9f50367dd28364a6b064cb631337825b948f1123d64`;
@@ -4044,8 +4041,8 @@ POSITIVE STILL REQUIRED**
   the compact-store verifier alone may resolve that ticket after its exact
   window reaches the existing threshold. No deferred second is counted,
   extrapolated, or marked recovered.
-- Evidence:
-  `evidence/2026-07-30-final-v17-release/cadence-final.json`.
+- The autonomous re-arm and pending-ticket behavior remains covered by
+  `AtriaBLERecoveryCadenceTests.swift`.
 
 ### 2026-07-30 — WHOOP 4 charging-state transport and truthful fallback
 

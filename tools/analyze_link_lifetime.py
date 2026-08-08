@@ -12,7 +12,7 @@ device have different fixes:
     -> strap-side power saving. Not fixable from the app.
 
 Usage:
-    analyze_link_lifetime.py CAPTURE [--address E0:29:C0:AC:D2:75]
+    analyze_link_lifetime.py CAPTURE --address <strap-bluetooth-address>
 """
 
 from __future__ import annotations
@@ -22,8 +22,6 @@ import re
 import statistics
 import sys
 from datetime import datetime
-
-DEFAULT_ADDRESS = "E0:29:C0:AC:D2:75"
 
 TS = re.compile(r"^(\w{3} +\d+ \d{2}:\d{2}:\d{2}\.\d+)")
 TOPOLOGY = re.compile(
@@ -55,7 +53,7 @@ def parse_ts(line: str):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("capture")
-    ap.add_argument("--address", default=DEFAULT_ADDRESS)
+    ap.add_argument("--address", required=True)
     args = ap.parse_args()
 
     connects: list[datetime] = []

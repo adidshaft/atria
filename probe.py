@@ -10,11 +10,12 @@ Run via Terminal: echo "probe.py" > which_script.txt && open whoop_run.command
 """
 import argparse
 import asyncio
+import os
 import time
 from bleak import BleakClient, BleakScanner
 from whoop_codec import encode, decode
 
-TARGET = "837560C0-5B6C-C520-95EF-B1E713358D33"
+TARGET = os.environ.get("WHOOP_TARGET")
 TX  = "61080002-8d6d-82b8-614a-1c8cb0f8dcc6"
 HR_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
 NOTIFY = [HR_UUID,                                  # subscribe HR too — may gate the rest
@@ -165,7 +166,10 @@ def args():
         default=0,
         help="Send only the validated 0x03 enable command, then listen this long.",
     )
-    return parser.parse_args()
+    options = parser.parse_args()
+    if not options.target:
+        parser.error("pass --target or set WHOOP_TARGET to a discovered CoreBluetooth identifier")
+    return options
 
 async def main():
     options = args()

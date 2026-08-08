@@ -1,9 +1,12 @@
 import asyncio
+import os
 from bleak import BleakClient, BleakScanner
 
-TARGET = "837560C0-5B6C-C520-95EF-B1E713358D33"
+TARGET = os.environ.get("WHOOP_TARGET")
 
 async def main():
+    if not TARGET:
+        raise SystemExit("Set WHOOP_TARGET to the CoreBluetooth identifier discovered by scan.py")
     print(f"Connecting to {TARGET} ...")
     dev = await BleakScanner.find_device_by_address(TARGET, timeout=15.0)
     if dev is None:
