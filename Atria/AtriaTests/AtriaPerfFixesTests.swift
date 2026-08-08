@@ -1385,7 +1385,17 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertTrue(merged.isEmpty)
     }
 
-    func testRecoveredSkinTemperatureRequiresDenseSameDeviceAnchorAndStoresMinuteMeans() throws {
+    func testRecoveredSkinTemperatureStaysBehindDecoderValidationGate() {
+        // GAP-14: skin temperature stays behind a decoder-validation gate.
+        // `productionSkinTemperatureDecoder` is deliberately nil until a
+        // generation-specific decoder passes external-reference validation, so
+        // full-drain recovery must never turn dense raw candidate frames into a
+        // displayed temperature ("no temperature is displayed from candidate
+        // frames alone"). When that decoder is validated, restore the minute-mean
+        // decode expectations (anchor 910 → 32.5/33.5 °C) preserved in Git history.
+        XCTAssertFalse(AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable)
+        XCTAssertNil(AtriaResearchProbe.productionSkinTemperatureDecoder)
+
         let session = canonicalCacheSession(startOffset: 0, pointCount: 4)
         let points = (0..<120).map { index in
             HistoricalArchive.SkinTemperatureRawPoint(
@@ -1395,19 +1405,18 @@ final class AtriaPerfFixesTests: XCTestCase {
             )
         }
 
-        let attached = SessionStore.attachRecoveredSkinTemperature(points, to: [session])
+        // The same-device anchor density gate is decoder-independent and still
+        // live: a dense same-device series clears the 100-sample floor, a sparse
+        // one does not.
+        XCTAssertNotNil(AtriaResearchProbe.whoop4SkinTemperatureAnchorRaw(points.map(\.raw)))
+        XCTAssertNil(AtriaResearchProbe.whoop4SkinTemperatureAnchorRaw(
+            Array(points.prefix(99)).map(\.raw)))
 
-        XCTAssertEqual(attached.first?.skinTempResearchCandidateValueCount, 120)
-        XCTAssertEqual(attached.first?.decodedSkinTemperatureCelsius?.count, 2)
-        let decoded = try XCTUnwrap(attached.first?.decodedSkinTemperatureCelsius)
-        XCTAssertEqual(try XCTUnwrap(decoded.first).celsius,
-                       32.5,
-                       accuracy: 1e-9)
-        XCTAssertEqual(try XCTUnwrap(decoded.last).celsius,
-                       33.5,
-                       accuracy: 1e-9)
-        XCTAssertTrue(attached.first?.decodedSkinTemperatureCelsius?
-            .allSatisfy(\.isAggregationEligible) == true)
+        // ...but recovery attaches no decoded temperature and no research
+        // aggregates while the decoder is ungated, for dense or sparse input.
+        let attached = SessionStore.attachRecoveredSkinTemperature(points, to: [session])
+        XCTAssertNil(attached.first?.decodedSkinTemperatureCelsius)
+        XCTAssertNil(attached.first?.skinTempResearchCandidateValueCount)
 
         let sparse = SessionStore.attachRecoveredSkinTemperature(
             Array(points.prefix(99)),
