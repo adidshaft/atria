@@ -12349,6 +12349,12 @@ private struct AtriaDetailPeriodSummary: Equatable, Sendable {
     let rangeText: String
     let changeText: String
     let latestPosition: Double
+    /// True only when the window actually spans a range (`high > low`). A flat
+    /// or single-point window has no meaningful position on a min↔max rail, so
+    /// the rail must be hidden rather than asserting a fabricated mid-range dot
+    /// (2026-08-08: strain-ring and sleep-ring "latest" strips rendered a
+    /// centered pointer on a single point, which reads as broken/meaningless).
+    let hasSpread: Bool
     let changeDirection: AtriaDetailPeriodChangeDirection
     let unit: String
     let averageRaw: Double
@@ -12366,6 +12372,7 @@ private struct AtriaDetailPeriodSummary: Equatable, Sendable {
         self.rangeText = Self.rangeText(low: low, high: high, unit: unit)
         self.changeText = Self.changeText(change, unit: unit)
         self.latestPosition = spread > 0 ? min(max((latest.value - low) / spread, 0), 1) : 0.5
+        self.hasSpread = spread > 0
         self.changeDirection = AtriaDetailPeriodChangeDirection(change: change)
         self.unit = unit
         self.averageRaw = average
@@ -12823,11 +12830,15 @@ private struct AtriaDetailPeriodSummaryStrip: View {
                 .layoutPriority(1)
             }
 
-            summaryRangeRail
+            if summary.hasSpread {
+                summaryRangeRail
+            }
 
             HStack(spacing: 8) {
                 summaryMiniStat(label: "Avg", value: summary.averageText)
-                summaryMiniStat(label: "Range", value: summary.rangeText)
+                if summary.hasSpread {
+                    summaryMiniStat(label: "Range", value: summary.rangeText)
+                }
             }
         }
         .padding(12)
