@@ -6179,7 +6179,7 @@ struct AtriaStrapStepLiveStatus: Equatable {
     }
 }
 
-private struct AtriaStrapStepsDetailSheet: View {
+struct AtriaStrapStepsDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 

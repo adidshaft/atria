@@ -301,3 +301,18 @@ No `cannot_determine` findings. The medium-confidence code claims to re-verify b
   - evidence: AtriaOverviewSections.swift:9415-9422 stress branch: 'This compact sheet stays chart-free and points there' and body copy directs the user to the Stress monitor. The actual daily trend exists at AtriaStressDetailView.swift:657-819 ('Stress by day', bars gated to measured days from the persisted distribution archive; header text at 708 and gating at 817-819).
   - location: `Atria/Atria/AtriaOverviewSections.swift:9415-9422 (redirect) vs Atria/Atria/AtriaStressDetailView.swift:657-819 (existing Stress-by-day trend)`
   - fix: Embed a compact 7-day 'Stress by day' bar strip in the stress detail sheet's chart slot (reuse the AtriaStressDetailView day-bar view or a trimmed version) instead of only redirecting, so the tapped tile carries the trend like the other metrics. Keep the same honest 'measured days only' gating.
+
+---
+
+## Pre-existing test failure noted (2026-08-08, NOT from this session's edits)
+
+`AtriaGraphInspectorTests.testMeaningfulGraphSurfacesUseSharedInspector` fails:
+it requires `.atriaInspectableGraph(` in `AtriaOverviewSections.swift`, which
+has been absent since at least commit `02458279` (before this session).
+`testEverySavedMetricTrendCanOpenLandscapeInspector` (the `expandedChartConfig`
++ `onExpand` mechanism) still passes, so Overview detail charts DO have a
+landscape expand — just not via the newer shared `.atriaInspectableGraph`
+route. Either the Overview charts should migrate to the shared inspector, or
+this assertion is stale and should drop AtriaOverviewSections from its list.
+Decide deliberately; do not weaken the test to silence it. Unrelated to the
+user's reported issues.

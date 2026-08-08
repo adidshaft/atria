@@ -198,6 +198,13 @@ struct AtriaTodayScreen: View {
     @AtriaDefault(AtriaRingLayoutStyle.defaultsKey) private var ringLayoutRaw: String = "concentric"
     @State private var showWeeklyReport = false
     @State private var showBreathworkSession = false
+    // Dedicated sheet for the Strap-steps tile (2026-08-08): the steps tile is
+    // rendered by AtriaTodayLiveGlanceTileHost, which had no tap affordance, so
+    // tapping it dead-ended and there was no way to view step history. Reuses
+    // the existing AtriaStrapStepsDetailSheet — no new AtriaMetricDetailKind
+    // case (that enum is switched on ~30 sites). Mirrors showBreathworkSession.
+    @State private var showStrapStepsDetail = false
+    @AtriaDefault("atria.target.steps.goal") private var stepsGoal: Int = 8_000
     @State private var isEditingGlance = false
     @State private var showAddGlanceMetrics = false
     @State private var ringShareRoute: AtriaRingShareRoute?
@@ -327,6 +334,14 @@ struct AtriaTodayScreen: View {
                     .presentationDetents([.large])
                     .presentationDragIndicator(.visible)
             }
+        }
+        .sheet(isPresented: $showStrapStepsDetail) {
+            AtriaStrapStepsDetailSheet(count: liveStore.state.strapStepResearchCount,
+                                       validationState: liveStore.state.strapStepResearchState,
+                                       presentation: liveStore.state.dailyStepPresentation,
+                                       goal: stepsGoal)
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showWeeklyReport) {
             AtriaWeeklyReportSheet(report: weeklyReport,
@@ -472,7 +487,19 @@ struct AtriaTodayScreen: View {
     @ViewBuilder
     private func glanceTile(for metric: AtriaTodayMetric, isBar: Bool = false) -> some View {
         switch metric {
-        case .steps, .calories:
+        case .steps:
+            // Tappable → opens the strap-step detail/history sheet.
+            Button {
+                showStrapStepsDetail = true
+            } label: {
+                AtriaTodayLiveGlanceTileHost(metric: metric,
+                                             liveStore: liveStore,
+                                             layoutSize: layoutSize(for: metric),
+                                             showsDetail: layoutConfig.legendStatStyle != .value,
+                                             isBar: isBar)
+            }
+            .buttonStyle(.plain)
+        case .calories:
             AtriaTodayLiveGlanceTileHost(metric: metric,
                                          liveStore: liveStore,
                                          layoutSize: layoutSize(for: metric),
