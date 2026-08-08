@@ -7,7 +7,11 @@
 # Usage: scripts/ship-device.sh [--no-launch]
 set -euo pipefail
 
-DEVICE="3803F5B6-1666-56D3-A71A-62F131F6CE3B"   # Aman's iPhone (devicectl)
+DEVICE="${ATRIA_DEVICE_ID:-}"
+if [[ -z "$DEVICE" ]]; then
+  echo "Set ATRIA_DEVICE_ID to the devicectl identifier of the target iPhone." >&2
+  exit 2
+fi
 BUNDLE="com.adidshaft.atria"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DERIVED="$ROOT/Atria/build-device"

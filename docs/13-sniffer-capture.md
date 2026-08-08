@@ -38,7 +38,7 @@ Do not skip Step 0 — it determines whether the rest is possible.
 
 1. Open Wireshark, select the **nRF Sniffer** interface.
 2. In the sniffer toolbar, set it to **follow the WHOOP device** (pick it by name/
-   address `E0:29:C0:AC:D2:75` so you capture its connection, not all traffic).
+   address shown for your strap so you capture its connection, not all traffic).
 3. Start capture.
 4. In the **official WHOOP app**: disconnect/reconnect the strap so you capture a
    **fresh connection from scratch** (the init handshake is the prize).

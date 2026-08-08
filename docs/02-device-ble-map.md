@@ -4,14 +4,14 @@
 
 | Field | Value |
 |---|---|
-| Name | `ADIDSHAFT'S WHO…` (truncated WHOOP) |
-| Bluetooth MAC (macOS `system_profiler`) | `E0:29:C0:AC:D2:75` |
-| CoreBluetooth UUID (this Mac) | `837560C0-5B6C-C520-95EF-B1E713358D33` |
+| Advertised name | `WHOOP…` (device-specific suffix omitted) |
+| Bluetooth address | Host- and strap-specific; discover at runtime |
+| CoreBluetooth identifier | Per-host; discover at runtime |
 | Manufacturer (`0x2A29`) | `WHOOP Inc.` |
 
-> ⚠️ **CoreBluetooth peripheral UUIDs are per-host.** The `837560C0…` UUID is what
-> *this Mac* assigns; the iPhone assigns a different one. So the iOS app cannot
-> hardcode that UUID. Gate A uses a fresh advertisement scan and connect path.
+> ⚠️ **CoreBluetooth peripheral UUIDs are per-host.** A Mac and iPhone assign
+> different identifiers to the same strap, so the app must never hardcode one.
+> Gate A uses a fresh advertisement scan and connect path.
 
 ## GATT map
 

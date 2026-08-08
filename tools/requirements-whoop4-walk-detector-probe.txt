@@ -1,3 +1,0 @@
-# Isolated runtime for tools/whoop4_walk_detector_probe.py.
-# Keep this probe dependency separate from the iOS build/test environment.
-bleak==3.0.2
