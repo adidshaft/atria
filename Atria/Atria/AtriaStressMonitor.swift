@@ -151,6 +151,19 @@ enum AtriaStressMonitor {
     static let hrActivationWeight = 0.6
     static let hrvActivationWeight = 0.4
 
+    // Awake HR reference (2026-08-08 rescoring). Live awake HR was z-scored
+    // against the RESTING/sleep baseline, so ordinary wakefulness saturated
+    // activation to 1.0 — validated on 4 real days of this wearer's HR, the old
+    // math pinned 90-98% of every waking day to "Medium". Awake HR sits ~15 bpm
+    // above resting (measured median 69-79 vs resting 56.5), so the HR term is
+    // now referenced to the wearer's own recent AWAKE HR when known, else a
+    // physiological default of resting + offset. Divisor/thresholds unchanged,
+    // which reproduces a sensible ~65% Calm / ~20% Medium day on the real data.
+    static let defaultAwakeOffsetBPM = 15.0
+    static let defaultAwakeSpreadBPM = 12.0
+    static let awakeActivationFloorSD = 5.0
+    static let awakeActivationDivisor = 2.0
+
     static let calmUpperBound = 0.20
     static let lowUpperBound = 0.45
     static let mediumUpperBound = 0.72
@@ -169,6 +182,7 @@ enum AtriaStressMonitor {
                       inSleepWindow: Bool,
                       hasContact: Bool,
                       contactAgeSeconds: TimeInterval,
+                      awakeReference: (center: Double, spread: Double)? = nil,
                       now: Date = Date()) -> AtriaStressState {
 
         // MARK: Suppression, checked in order.
@@ -215,7 +229,7 @@ enum AtriaStressMonitor {
 
         // MARK: Scoring — normalize vs personal baseline (z-scores).
 
-        let hrActivation = hrActivationFraction(hrNow: hrNow, baseline: baseline, restingMaxHR: restingMaxHR, now: now)
+        let hrActivation = hrActivationFraction(hrNow: hrNow, baseline: baseline, restingMaxHR: restingMaxHR, awakeReference: awakeReference, now: now)
 
         let hrvTrusted = baseline.hasTrustedHRVBaseline(now: now)
         var hrvActivation: Double?
@@ -232,7 +246,12 @@ enum AtriaStressMonitor {
         let activation: Double
         let hrvAvailable: Bool
         if let hrvActivation {
-            activation = hrActivationWeight * hrActivation + hrvActivationWeight * hrvActivation
+            // Probabilistic OR: either strong signal — elevated HR OR suppressed
+            // HRV — drives activation up, and both together drive it higher.
+            // Replaces a fixed weighted sum whose HR weight, calibrated back
+            // when HR saturated easily, could no longer let a genuine HRV drop
+            // reach High once the HR term was correctly referenced to awake HR.
+            activation = 1 - (1 - hrActivation) * (1 - hrvActivation)
             hrvAvailable = true
         } else {
             activation = hrActivation
@@ -267,20 +286,30 @@ enum AtriaStressMonitor {
             .min() ?? calmUpperBound
     }
 
+    /// HR contribution to stress activation, z-scored against the wearer's
+    /// AWAKE heart-rate reference — never their resting/sleep baseline. Uses the
+    /// person's own observed recent awake HR (`awakeReference`) when the store
+    /// has learned it, otherwise a physiological default of
+    /// `restingMean + defaultAwakeOffsetBPM`. Being at one's typical awake HR
+    /// yields ~0 activation (Calm); only genuine elevation above it climbs.
     private static func hrActivationFraction(hrNow: Int,
                                              baseline: PersonalBaseline,
                                              restingMaxHR: (rest: Int, max: Int),
+                                             awakeReference: (center: Double, spread: Double)?,
                                              now: Date) -> Double {
-        if let restingStats = baseline.restingStats(now: now), restingStats.count > 1 {
-            let sd = max(restingStats.sd, hrActivationFloorSD)
-            let hrZ = (Double(hrNow) - restingStats.mean) / sd
-            return clamp01(max(hrZ, 0) / 3)
+        let center: Double
+        let spread: Double
+        if let awakeReference {
+            center = awakeReference.center
+            spread = max(awakeReference.spread, awakeActivationFloorSD)
+        } else {
+            let restMean = baseline.restingStats(now: now)?.mean
+                ?? Double(baseline.restingInt ?? restingMaxHR.rest)
+            center = restMean + defaultAwakeOffsetBPM
+            spread = defaultAwakeSpreadBPM
         }
-        // Soft ramp fallback when per-sample stats aren't available yet: 0 at
-        // <=5 bpm above baseline, 1.0 at >=25 bpm above baseline.
-        let restBaseline = baseline.restingInt ?? restingMaxHR.rest
-        let delta = Double(hrNow - restBaseline)
-        return clamp01((delta - 5) / 20)
+        let z = (Double(hrNow) - center) / spread
+        return clamp01(max(z, 0) / awakeActivationDivisor)
     }
 
     /// Short-window RMSSD from consecutive RR (ms) beats, only trusted once the
@@ -487,6 +516,16 @@ final class AtriaStressMonitorStore: ObservableObject {
     }
 
     private var hrBuffer: [(t: Date, bpm: Int)] = []
+    /// Longer trailing buffer of AWAKE, non-workout HR, from which a robust
+    /// awake reference (median + spread) is learned so the HR term is scored
+    /// against the wearer's own typical awake HR rather than a fixed default
+    /// (2026-08-08 rescoring). Separate from the 60 s smoothing `hrBuffer`.
+    private var awakeHRBuffer: [(t: Date, bpm: Int)] = []
+    private static let awakeReferenceWindowSeconds: TimeInterval = 45 * 60
+    /// Minimum awake samples and time span before the learned reference is
+    /// trusted; until then the scorer uses its physiological default.
+    private static let awakeReferenceMinSamples = 60
+    private static let awakeReferenceMinSpanSeconds: TimeInterval = 8 * 60
     private var contactStartedAt: Date?
     /// Clock of the last tick that carried live contact. Used to distinguish a
     /// brief flicker (single zero-contact sample, one missed ~6s freshness
@@ -529,6 +568,33 @@ final class AtriaStressMonitorStore: ObservableObject {
         guard let lastEvaluatedAt else { return true }
         if isNoSignal { return false }
         return now.timeIntervalSince(lastEvaluatedAt) >= minimumInterval
+    }
+
+    /// Robust awake HR reference (median + MAD-derived spread) from the trailing
+    /// awake buffer, or nil until it has enough samples over enough time — the
+    /// scorer then falls back to its physiological default. Median/MAD (not
+    /// mean/SD) so a brief spike or a stray beat can't drag the reference.
+    nonisolated static func awakeReference(from buffer: [(t: Date, bpm: Int)],
+                               now: Date) -> (center: Double, spread: Double)? {
+        guard buffer.count >= awakeReferenceMinSamples,
+              let first = buffer.first?.t, let last = buffer.last?.t,
+              last.timeIntervalSince(first) >= awakeReferenceMinSpanSeconds else {
+            return nil
+        }
+        let sorted = buffer.map { Double($0.bpm) }.sorted()
+        let median = Self.median(of: sorted)
+        let deviations = sorted.map { abs($0 - median) }.sorted()
+        let mad = Self.median(of: deviations)
+        // 1.4826 makes MAD a consistent estimator of SD for normal data.
+        return (center: median, spread: mad * 1.4826)
+    }
+
+    nonisolated private static func median(of sortedValues: [Double]) -> Double {
+        guard !sortedValues.isEmpty else { return 0 }
+        let mid = sortedValues.count / 2
+        return sortedValues.count.isMultiple(of: 2)
+            ? (sortedValues[mid - 1] + sortedValues[mid]) / 2
+            : sortedValues[mid]
     }
 
     private func recordHistory(now: Date) {
@@ -618,6 +684,16 @@ final class AtriaStressMonitorStore: ObservableObject {
         }
         hrBuffer.removeAll { now.timeIntervalSince($0.t) > Self.hrWindowSeconds }
 
+        // Learn the wearer's awake HR reference from AWAKE, non-workout wear.
+        let cooldownForReference = lastWorkoutEndAt
+            .map { now.timeIntervalSince($0) < AtriaStressMonitor.postWorkoutCooldownSeconds } ?? false
+        if hasContact, heartRate > 0,
+           !isRecording, !cooldownForReference, !hasActiveSleepEvidence {
+            awakeHRBuffer.append((t: now, bpm: heartRate))
+        }
+        awakeHRBuffer.removeAll { now.timeIntervalSince($0.t) > Self.awakeReferenceWindowSeconds }
+        let awakeReference = Self.awakeReference(from: awakeHRBuffer, now: now)
+
         let rrWindow = recentRRSamples
             .filter {
                 let age = now.timeIntervalSince($0.date)
@@ -661,6 +737,7 @@ final class AtriaStressMonitorStore: ObservableObject {
                                            inSleepWindow: hasActiveSleepEvidence,
                                            hasContact: hasContact,
                                            contactAgeSeconds: contactAge,
+                                           awakeReference: awakeReference,
                                            now: now)
 
         guard raw.kind == .scored, let rawLevel = raw.level else {
