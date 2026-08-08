@@ -4236,8 +4236,14 @@ struct AtriaHeartRateChartSeries: Equatable {
             minimumBPM = min(minimumBPM ?? point.bpm, point.bpm)
             maximumBPM = max(maximumBPM ?? point.bpm, point.bpm)
         }
-        let low = max((minimumBPM ?? 60) - 8, 35)
-        let high = min((maximumBPM ?? 120) + 8, 220)
+        let paddedLow = max((minimumBPM ?? 60) - 8, 35)
+        let paddedHigh = min((maximumBPM ?? 120) + 8, 220)
+        // Snap the domain to a 10-bpm grid so a new sample nudging the min/max
+        // by a beat or two doesn't continuously re-scale the whole chart
+        // (2026-08-08: "the graph drastically changes at times"). The y-axis now
+        // only shifts when the padded range actually crosses a decade boundary.
+        let low = max(35, (paddedLow / 10) * 10)
+        let high = min(220, ((paddedHigh + 9) / 10) * 10)
         return low...max(high, low + 20)
     }
 
@@ -4589,21 +4595,35 @@ struct AtriaHeartRateExplorer: View {
     @ViewBuilder
     private var compactSelectionSummary: some View {
         if selectionMode == .range, let summary = selectedRangeSummary {
+            // Range: the average over the selection AND the clock span it covers
+            // (2026-08-08: "when selecting a range it should tell the average
+            // heart rate during my range").
             HStack(alignment: .firstTextBaseline, spacing: 5) {
                 Text("\(summary.average)")
                     .font(.title3.weight(.bold).monospacedDigit())
-                Text("bpm · \(summary.durationText)")
+                Text("bpm avg · \(summary.start, format: .dateTime.hour().minute())–\(summary.end, format: .dateTime.hour().minute())")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
         } else {
+            // Point: the bpm AND the time at that point (2026-08-08: "it should
+            // show the time I am selecting, not just the heart rate").
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(selectedPoint.map { "\($0.bpm)" } ?? (currentBPM > 0 ? "\(currentBPM)" : "--"))
                     .font(.title3.weight(.bold).monospacedDigit())
-                Text("bpm")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                if let selectedPoint {
+                    Text("bpm · \(selectedPoint.t, format: .dateTime.hour().minute().second())")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                } else {
+                    Text("bpm")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }
