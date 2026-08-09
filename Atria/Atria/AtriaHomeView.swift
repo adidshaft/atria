@@ -11555,27 +11555,36 @@ final class AtriaHomeModel {
                                       activeCalories: nil)
         }
 
-        let span = Double(maxHR - rest)
+        let strainParameters = AtriaAnalytics.Strain.banisterParameters(for: profile.biologicalSex)
+        let strainConfiguration = AtriaStrainLoadModel.Configuration(
+            restingBPM: Double(rest),
+            maximumBPM: Double(maxHR),
+            intensityMultiplier: strainParameters.multiplier,
+            intensityCoefficient: strainParameters.coefficient,
+            mode: .continuousDay,
+            maximumGap: AtriaAnalytics.Strain.maximumLoadEvidenceGap
+        )
         var total = previous.trimp
         var activeCalories = previous.activeCalories ?? 0
         for index in previous.sampleCount..<samples.count {
-            let dtSeconds = samples[index].t.timeIntervalSince(samples[index - 1].t)
             // Match the canonical SavedSession/Metrics TRIMP boundary. A short
             // telemetry gap is integrated from the mean of its two real HR
             // endpoints; a longer gap remains unknown and contributes nothing.
             guard samples[index - 1].t >= cycleStart,
-                  samples[index].t >= cycleStart,
-                  dtSeconds > 0,
-                  dtSeconds <= AtriaAnalytics.Strain.maximumLoadEvidenceGap else { continue }
-            let dtMin = dtSeconds / 60.0
-            let meanBPM = (Double(samples[index - 1].bpm) + Double(samples[index].bpm)) / 2
-            guard meanBPM >= Double(maxHR)
-                    * AtriaAnalytics.Strain.minimumDailyLoadFractionOfMaxHR else {
-                continue
-            }
-            let hrr = Swift.min(Swift.max((meanBPM - Double(rest)) / span, 0), 1)
-            let coefficient = AtriaAnalytics.Strain.banisterCoefficient(for: profile.biologicalSex)
-            total += dtMin * hrr * 0.64 * exp(coefficient * hrr)
+                  samples[index].t >= cycleStart else { continue }
+            let evaluation = AtriaStrainLoadModel.evaluateInterval(
+                from: AtriaStrainLoadModel.Sample(
+                    timestamp: samples[index - 1].t.timeIntervalSinceReferenceDate,
+                    bpm: Double(samples[index - 1].bpm)
+                ),
+                to: AtriaStrainLoadModel.Sample(
+                    timestamp: samples[index].t.timeIntervalSinceReferenceDate,
+                    bpm: Double(samples[index].bpm)
+                ),
+                configuration: strainConfiguration
+            )
+            guard evaluation.isAccepted else { continue }
+            total += evaluation.load
             if profile.hasEnergyProfile {
                 activeCalories += Metrics.dayCalories([
                     Metrics.HeartRateEnergySample(t: samples[index - 1].t, bpm: samples[index - 1].bpm),

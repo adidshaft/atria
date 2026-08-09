@@ -149,14 +149,24 @@ struct AtriaColdSessionFact: Codable, Equatable, Sendable {
             guard loadEligible else {
                 return .knownEmpty("session is excluded from cardiovascular load")
             }
-            let span = Double(maxHR - rest)
-            let coefficient = AtriaAnalytics.Strain.banisterCoefficient(for: biologicalSex)
+            let parameters = AtriaAnalytics.Strain.banisterParameters(for: biologicalSex)
+            let configuration = AtriaStrainLoadModel.Configuration(
+                restingBPM: Double(rest),
+                maximumBPM: Double(maxHR),
+                intensityMultiplier: parameters.multiplier,
+                intensityCoefficient: parameters.coefficient,
+                mode: .workout,
+                maximumGap: AtriaAnalytics.Strain.maximumLoadEvidenceGap
+            )
             var total = 0.0
             for minute in minutes where Self.includes(minute.minuteStart, in: interval) {
                 for (twiceMeanBPM, seconds) in minute.transitionHalfBPMSeconds where seconds > 0 {
                     let meanBPM = Double(twiceMeanBPM) / 2
-                    let reserve = min(max((meanBPM - Double(rest)) / span, 0), 1)
-                    total += seconds / 60 * reserve * 0.64 * exp(coefficient * reserve)
+                    total += AtriaStrainLoadModel.load(
+                        forQualifiedMeanBPM: meanBPM,
+                        duration: seconds,
+                        configuration: configuration
+                    )
                 }
             }
             return .available(total)

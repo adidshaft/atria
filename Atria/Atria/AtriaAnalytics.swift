@@ -634,10 +634,11 @@ enum AtriaAnalytics {
     }
 
     enum Strain {
-        /// Bump only when the public 0–21 presentation curve changes. Persisted
-        /// workout cards use this to re-score from their original HR evidence
-        /// exactly once, without pretending a metadata-only workout had data.
-        static let displayCalibrationVersion = 2
+        /// Bump whenever stored HR evidence can produce a different public
+        /// 0–21 score, whether the evidence kernel or display curve changes.
+        /// Persisted workout cards use this to re-score from their original HR
+        /// samples exactly once, without inventing data for metadata-only rows.
+        static let displayCalibrationVersion = 3
 
         /// Shared evidence boundary for every cardiovascular-load integrator.
         /// This matches `SavedSession.workoutContinuityGapLimit`: standard
@@ -645,13 +646,6 @@ enum AtriaAnalytics {
         /// not become strain, zone time, or calories. Validated archive rows
         /// are integrated from their own timestamps, not held across a gap.
         static let maximumLoadEvidenceGap: TimeInterval = 15
-
-        /// Banister TRIMP was designed for exercise windows, not continuous
-        /// all-day wear. Treating every beat above resting HR as training load
-        /// lets ten quiet hours at 80–90 bpm overwhelm a real workout. Daily
-        /// strain therefore starts at the same 50%-of-max boundary used by the
-        /// product's standard Z0/rest band. Workout TRIMP remains unchanged.
-        static let minimumDailyLoadFractionOfMaxHR = 0.50
 
         struct MaxHeartRateZoneSeconds: Equatable {
             let rest: TimeInterval
@@ -760,27 +754,40 @@ enum AtriaAnalytics {
         }
 
         /// Banister TRIMP over a series of (secondsFromStart, bpm) samples.
-        /// Each sample contributes dt · HRr · 0.64 · e^(b·HRr).
+        /// Each interval contributes dt · HRr · a · e^(b·HRr), using the
+        /// published sex-specific multiplier and exponent when available.
         static func trimp(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> Double {
-            trimp(series, rest: rest, max: max, coefficient: 1.92)
+            cardiovascularLoad(series,
+                               rest: rest,
+                               max: max,
+                               multiplier: 0.64,
+                               coefficient: 1.92,
+                               mode: .workout)
         }
 
         static func trimp(_ series: [(t: Double, bpm: Int)],
                           rest: Int,
                           max: Int,
                           sex: AthleteProfile.BiologicalSex) -> Double {
-            trimp(series, rest: rest, max: max, coefficient: banisterCoefficient(for: sex))
+            let parameters = banisterParameters(for: sex)
+            return cardiovascularLoad(series,
+                                      rest: rest,
+                                      max: max,
+                                      multiplier: parameters.multiplier,
+                                      coefficient: parameters.coefficient,
+                                      mode: .workout)
         }
 
         static func trimp(_ series: [(t: Double, bpm: Int)],
                           rest: Int,
                           max: Int,
                           coefficient: Double) -> Double {
-            trimp(series,
-                  rest: rest,
-                  max: max,
-                  coefficient: coefficient,
-                  minimumMeanBPM: nil)
+            cardiovascularLoad(series,
+                               rest: rest,
+                               max: max,
+                               multiplier: 0.64,
+                               coefficient: coefficient,
+                               mode: .workout)
         }
 
         static func dailyTRIMP(
@@ -789,40 +796,38 @@ enum AtriaAnalytics {
             max: Int,
             sex: AthleteProfile.BiologicalSex
         ) -> Double {
-            trimp(
-                series,
-                rest: rest,
-                max: max,
-                coefficient: banisterCoefficient(for: sex),
-                minimumMeanBPM: Double(max) * minimumDailyLoadFractionOfMaxHR
-            )
+            let parameters = banisterParameters(for: sex)
+            return cardiovascularLoad(series,
+                                      rest: rest,
+                                      max: max,
+                                      multiplier: parameters.multiplier,
+                                      coefficient: parameters.coefficient,
+                                      mode: .continuousDay)
         }
 
-        private static func trimp(
+        private static func cardiovascularLoad(
             _ series: [(t: Double, bpm: Int)],
             rest: Int,
             max: Int,
+            multiplier: Double,
             coefficient: Double,
-            minimumMeanBPM: Double?
+            mode: AtriaStrainLoadModel.Mode
         ) -> Double {
-            guard series.count > 1, max > rest else { return 0 }
-            let span = Double(max - rest)
-            let safeCoefficient = Swift.min(Swift.max(coefficient, 1.0), 2.5)
-            var total = 0.0
-            for index in 1..<series.count {
-                let dtSeconds = series[index].t - series[index - 1].t
-                // Do not turn an ordinary telemetry gap into several minutes
-                // of high effort by holding the later BPM backward in time.
-                // Short gaps use a trapezoidal HR estimate; longer gaps carry
-                // no defensible exertion evidence and are excluded.
-                guard dtSeconds > 0, dtSeconds <= maximumLoadEvidenceGap else { continue }
-                let dtMin = dtSeconds / 60.0
-                let meanBPM = (Double(series[index - 1].bpm) + Double(series[index].bpm)) / 2
-                if let minimumMeanBPM, meanBPM < minimumMeanBPM { continue }
-                let hrr = Swift.min(Swift.max((meanBPM - Double(rest)) / span, 0), 1)
-                total += dtMin * hrr * 0.64 * exp(safeCoefficient * hrr)
-            }
-            return total
+            guard series.count > 1 else { return 0 }
+            let configuration = AtriaStrainLoadModel.Configuration(
+                restingBPM: Double(rest),
+                maximumBPM: Double(max),
+                intensityMultiplier: multiplier,
+                intensityCoefficient: coefficient,
+                mode: mode,
+                maximumGap: maximumLoadEvidenceGap
+            )
+            return AtriaStrainLoadModel.calculate(
+                series.lazy.map {
+                    AtriaStrainLoadModel.Sample(timestamp: $0.t, bpm: Double($0.bpm))
+                },
+                configuration: configuration
+            ).load
         }
 
         /// Standard max-HR zone seconds for day/workout rollups.
@@ -882,11 +887,20 @@ enum AtriaAnalytics {
             }
         }
 
-        static func banisterCoefficient(for sex: AthleteProfile.BiologicalSex) -> Double {
+        struct BanisterParameters: Equatable {
+            let multiplier: Double
+            let coefficient: Double
+        }
+
+        static func banisterParameters(for sex: AthleteProfile.BiologicalSex) -> BanisterParameters {
             switch sex {
-            case .female: return 1.67
-            case .male, .unspecified: return 1.92
+            case .female: return BanisterParameters(multiplier: 0.86, coefficient: 1.67)
+            case .male, .unspecified: return BanisterParameters(multiplier: 0.64, coefficient: 1.92)
             }
+        }
+
+        static func banisterCoefficient(for sex: AthleteProfile.BiologicalSex) -> Double {
+            banisterParameters(for: sex).coefficient
         }
 
         /// Edwards load over HR-reserve zones: 50/60/70/80/90% HRR, weights 1...5.
@@ -1065,8 +1079,7 @@ enum AtriaAnalytics {
         /// This changes only how measured TRIMP is *presented*; it neither fills
         /// telemetry gaps nor adds activity-specific or estimated load.
         static func score(fromTRIMP trimp: Double) -> Double {
-            guard trimp > 0 else { return 0 }
-            return min(21.0 * (1 - exp(-trimp / 150.0)), 21.0)
+            AtriaStrainLoadModel.displayScore(fromLoad: trimp)
         }
 
     }
