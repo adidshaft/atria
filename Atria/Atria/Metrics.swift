@@ -3,9 +3,9 @@ import UIKit
 
 /// Industry-style headline metrics computed locally from strap data.
 ///
-/// These are honest approximations of the proprietary scores:
-/// - **Strain** supports Banister TRIMP and Edwards zone-weighted load,
-///   each mapped to the 0–21 scale.
+/// These are independent local metrics, not replicas of proprietary scores:
+/// - **Strain** is Atria's personalized cardiovascular-load model, with
+///   Banister TRIMP and Edwards zone load mapped onto Atria's 0–21 display.
 /// - **Recovery** uses the user's own ready RR/HRV data once enough personal
 ///   baseline exists, and labels the result honestly until reference validated.
 enum Metrics {
@@ -28,8 +28,8 @@ enum Metrics {
 
     // MARK: Strain (0–21)
 
-    /// Banister TRIMP over a series of (secondsFromStart, bpm) samples.
-    /// Each sample contributes dt · HRr · 0.64 · e^(1.92·HRr).
+    /// Banister TRIMP over a series of (secondsFromStart, bpm) samples, using
+    /// the legacy male parameters when biological sex is unavailable.
     static func trimp(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> Double {
         AtriaAnalytics.Strain.trimp(series, rest: rest, max: max)
     }
@@ -122,7 +122,8 @@ enum Metrics {
         }
     }
 
-    /// Map cumulative TRIMP to the 0–21 strain scale (saturating exponential).
+    /// Map cumulative cardiovascular load through Atria's monotonic, bounded
+    /// 0–21 display calibration. This is not WHOOP's proprietary equation.
     static func strain(fromTRIMP trimp: Double) -> Double {
         AtriaAnalytics.Strain.score(fromTRIMP: trimp)
     }

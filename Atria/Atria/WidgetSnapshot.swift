@@ -1102,27 +1102,33 @@ enum WidgetSnapshotPublisher {
             && liveTRIMPSampleCount > 0
             && liveTRIMPSampleCount <= samples.count
             && liveTRIMPLastTimestamp == samples[liveTRIMPSampleCount - 1].t
-        let span = Double(max - rest)
+        let strainParameters = AtriaAnalytics.Strain.banisterParameters(for: sex)
+        let strainConfiguration = AtriaStrainLoadModel.Configuration(
+            restingBPM: Double(rest),
+            maximumBPM: Double(max),
+            intensityMultiplier: strainParameters.multiplier,
+            intensityCoefficient: strainParameters.coefficient,
+            mode: .continuousDay,
+            maximumGap: AtriaAnalytics.Strain.maximumLoadEvidenceGap
+        )
         var total = canExtend ? liveTRIMPValue : 0
         var index = canExtend ? liveTRIMPSampleCount : 1
         while index < samples.count {
-            let dtSeconds = samples[index].t.timeIntervalSince(samples[index - 1].t)
             let insideCycle = cycleStart.map {
                 samples[index - 1].t >= $0 && samples[index].t >= $0
             } ?? true
-            if insideCycle,
-               dtSeconds > 0,
-               dtSeconds <= AtriaAnalytics.Strain.maximumLoadEvidenceGap {
-                let dtMin = dtSeconds / 60.0
-                let meanBPM = (Double(samples[index - 1].bpm) + Double(samples[index].bpm)) / 2
-                guard meanBPM >= Double(max)
-                        * AtriaAnalytics.Strain.minimumDailyLoadFractionOfMaxHR else {
-                    index += 1
-                    continue
-                }
-                let hrr = Swift.min(Swift.max((meanBPM - Double(rest)) / span, 0), 1)
-                let coefficient = AtriaAnalytics.Strain.banisterCoefficient(for: sex)
-                total += dtMin * hrr * 0.64 * exp(coefficient * hrr)
+            if insideCycle {
+                total += AtriaStrainLoadModel.evaluateInterval(
+                    from: AtriaStrainLoadModel.Sample(
+                        timestamp: samples[index - 1].t.timeIntervalSinceReferenceDate,
+                        bpm: Double(samples[index - 1].bpm)
+                    ),
+                    to: AtriaStrainLoadModel.Sample(
+                        timestamp: samples[index].t.timeIntervalSinceReferenceDate,
+                        bpm: Double(samples[index].bpm)
+                    ),
+                    configuration: strainConfiguration
+                ).load
             }
             index += 1
         }

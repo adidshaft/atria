@@ -440,7 +440,7 @@ final class AtriaStrainConsistencyTests: XCTestCase {
         let male = workout(start: start, bpm: 160, minutes: 30, biologicalSex: .male)
         let legacy = workout(start: start, bpm: 160, minutes: 30)
 
-        XCTAssertLessThan(female.trimp(rest: 60, max: 190), male.trimp(rest: 60, max: 190))
+        XCTAssertGreaterThan(female.trimp(rest: 60, max: 190), male.trimp(rest: 60, max: 190))
         XCTAssertEqual(legacy.trimp(rest: 60, max: 190),
                        male.trimp(rest: 60, max: 190),
                        accuracy: 0.000_001)
@@ -453,7 +453,7 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                        accuracy: 0.000_001)
     }
 
-    func testIdenticalHeartRateUsesIdenticalSexCoefficientAcrossSavedConfirmedAndArchivePaths() {
+    func testIdenticalHeartRateUsesIdenticalSexParametersAcrossSavedConfirmedAndArchivePaths() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let points = stride(from: 0, through: 30 * 60, by: 10).map {
             SavedSession.Point(t: Double($0), bpm: 160)
@@ -506,7 +506,7 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                                                  rest: 60,
                                                  maxHR: 190,
                                                  biologicalSex: .male)
-        XCTAssertLessThan(female, male)
+        XCTAssertGreaterThan(female, male)
     }
 
     @MainActor
@@ -523,7 +523,7 @@ final class AtriaStrainConsistencyTests: XCTestCase {
                                                                  rest: 60,
                                                                  max: 190,
                                                                  sex: .male)
-        XCTAssertLessThan(female, male)
+        XCTAssertGreaterThan(female, male)
         XCTAssertEqual(male,
                        Metrics.trimp(samples.map { ($0.t.timeIntervalSince(start), $0.bpm) },
                                      rest: 60,

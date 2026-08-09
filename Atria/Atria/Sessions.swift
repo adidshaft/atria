@@ -12066,6 +12066,7 @@ final class SessionStore: ObservableObject {
                 sources: canonicalHistory,
                 rest: rest,
                 maxHR: maxHR,
+                biologicalSex: biologicalSex,
                 calendar: calendar)
         }
         let trends = AtriaTransientWorkThread.run(name: "atria.hist-trends",
@@ -12348,6 +12349,33 @@ final class SessionStore: ObservableObject {
                           bytes[12], bytes[13], bytes[14], bytes[15]))
     }
 
+    /// Replays already-qualified compact HR transitions through the same
+    /// profile-specific continuous-day kernel used by raw/live projections.
+    nonisolated static func canonicalHistoricalStrain(
+        transitionHalfBPMSeconds: [Int: Double],
+        rest: Int,
+        maxHR: Int,
+        biologicalSex: AthleteProfile.BiologicalSex
+    ) -> Double {
+        let parameters = AtriaAnalytics.Strain.banisterParameters(for: biologicalSex)
+        let configuration = AtriaStrainLoadModel.Configuration(
+            restingBPM: Double(rest),
+            maximumBPM: Double(maxHR),
+            intensityMultiplier: parameters.multiplier,
+            intensityCoefficient: parameters.coefficient,
+            mode: .continuousDay,
+            maximumGap: AtriaAnalytics.Strain.maximumLoadEvidenceGap
+        )
+        let load = transitionHalfBPMSeconds.reduce(0.0) { total, pair in
+            total + AtriaStrainLoadModel.load(
+                forQualifiedMeanBPM: Double(pair.key) / 2,
+                duration: pair.value,
+                configuration: configuration
+            )
+        }
+        return Metrics.strain(fromTRIMP: load)
+    }
+
     /// Merges only evidence the canonical artifact can fully support. Existing
     /// nonzero/live values and detected sleep always win. A partial HR day never
     /// becomes a full-day strain, and unavailable steps never become zero.
@@ -12356,6 +12384,7 @@ final class SessionStore: ObservableObject {
         sources: [HistoricalArchive.VerifiedCanonicalConsumerSource],
         rest: Int,
         maxHR: Int,
+        biologicalSex: AthleteProfile.BiologicalSex = .unspecified,
         calendar: Calendar
     ) -> [DailyRollup] {
         var byDay = Dictionary(uniqueKeysWithValues: live.map {
@@ -12395,13 +12424,12 @@ final class SessionStore: ObservableObject {
                       metric.missingMinuteCount == 0,
                       let distribution = metric.observedHeartRate,
                       maxHR > rest else { return nil }
-                let span = Double(maxHR - rest)
-                let trimp = distribution.transitionHalfBPMSeconds.reduce(0.0) { total, pair in
-                    let meanBPM = Double(pair.key) / 2
-                    let reserve = min(max((meanBPM - Double(rest)) / span, 0), 1)
-                    return total + pair.value / 60 * reserve * 0.64 * exp(1.92 * reserve)
-                }
-                return Metrics.strain(fromTRIMP: trimp)
+                return canonicalHistoricalStrain(
+                    transitionHalfBPMSeconds: distribution.transitionHalfBPMSeconds,
+                    rest: rest,
+                    maxHR: maxHR,
+                    biologicalSex: biologicalSex
+                )
             }
             byDay[day] = DailyRollup(
                 day: day,

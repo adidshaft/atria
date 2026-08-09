@@ -568,31 +568,46 @@ struct AtriaLiveWorkoutTRIMPAccumulator {
             index = continuationIndex
                 ?? Self.firstIntegrationIndex(samples: samples, startedAt: startedAt)
         }
-        let reserve = Double(maxHR - rest)
-        let coefficient = AtriaAnalytics.Strain.banisterCoefficient(for: sex)
+        let strainParameters = AtriaAnalytics.Strain.banisterParameters(for: sex)
+        let strainConfiguration = AtriaStrainLoadModel.Configuration(
+            restingBPM: Double(rest),
+            maximumBPM: Double(maxHR),
+            intensityMultiplier: strainParameters.multiplier,
+            intensityCoefficient: strainParameters.coefficient,
+            mode: .workout,
+            maximumGap: AtriaAnalytics.Strain.maximumLoadEvidenceGap
+        )
         while index < samples.count {
             let previous = samples[index - 1]
             let current = samples[index]
-            let dt = current.t.timeIntervalSince(previous.t)
             let excluded = normalized.contains { interval in
                 previous.t <= interval.end && current.t >= interval.start
             }
             if previous.t >= startedAt,
                current.t >= startedAt,
-               dt > 0,
-               dt <= AtriaAnalytics.Strain.maximumLoadEvidenceGap,
                !excluded {
-                integratedEvidence = true
-                let meanBPM = (Double(previous.bpm) + Double(current.bpm)) / 2
-                let hrr = min(max((meanBPM - Double(rest)) / reserve, 0), 1)
-                total += (dt / 60) * hrr * 0.64 * exp(coefficient * hrr)
-                if let profile, profile.hasEnergyProfile {
-                    let delta = Metrics.dayCalories([
-                        Metrics.HeartRateEnergySample(t: previous.t, bpm: previous.bpm),
-                        Metrics.HeartRateEnergySample(t: current.t, bpm: current.bpm),
-                    ], rest: rest, profile: profile) ?? 0
-                    if calories != nil {
-                        calories = (calories ?? 0) + delta
+                let evaluation = AtriaStrainLoadModel.evaluateInterval(
+                    from: AtriaStrainLoadModel.Sample(
+                        timestamp: previous.t.timeIntervalSinceReferenceDate,
+                        bpm: Double(previous.bpm)
+                    ),
+                    to: AtriaStrainLoadModel.Sample(
+                        timestamp: current.t.timeIntervalSinceReferenceDate,
+                        bpm: Double(current.bpm)
+                    ),
+                    configuration: strainConfiguration
+                )
+                if evaluation.isAccepted {
+                    integratedEvidence = true
+                    total += evaluation.load
+                    if let profile, profile.hasEnergyProfile {
+                        let delta = Metrics.dayCalories([
+                            Metrics.HeartRateEnergySample(t: previous.t, bpm: previous.bpm),
+                            Metrics.HeartRateEnergySample(t: current.t, bpm: current.bpm),
+                        ], rest: rest, profile: profile) ?? 0
+                        if calories != nil {
+                            calories = (calories ?? 0) + delta
+                        }
                     }
                 }
             }

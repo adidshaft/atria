@@ -3828,7 +3828,16 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(zone(0), 0)
         XCTAssertEqual(AtriaAnalytics.Strain.maxHeartRateZoneRawValue(for: 120, maxHR: 0), 0)
 
-        // Banister TRIMP sex weighting must not drift or swap.
+        // Banister TRIMP sex parameters must not drift or swap.
+        XCTAssertEqual(AtriaAnalytics.Strain.banisterParameters(for: .female).multiplier,
+                       0.86,
+                       accuracy: 1e-9)
+        XCTAssertEqual(AtriaAnalytics.Strain.banisterParameters(for: .male).multiplier,
+                       0.64,
+                       accuracy: 1e-9)
+        XCTAssertEqual(AtriaAnalytics.Strain.banisterParameters(for: .unspecified).multiplier,
+                       0.64,
+                       accuracy: 1e-9)
         XCTAssertEqual(AtriaAnalytics.Strain.banisterCoefficient(for: .female), 1.67, accuracy: 1e-9)
         XCTAssertEqual(AtriaAnalytics.Strain.banisterCoefficient(for: .male), 1.92, accuracy: 1e-9)
         XCTAssertEqual(AtriaAnalytics.Strain.banisterCoefficient(for: .unspecified), 1.92, accuracy: 1e-9)
