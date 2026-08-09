@@ -9,9 +9,10 @@ enum AtriaOnboardingHistoryBootstrapPolicy {
     /// prove (and could lose a user's only copy of a night).
     enum FreshStartPolicy {
         static let title = "Start a new Atria timeline"
-        static let summary = "Atria reconciles any records the strap serves before starting live collection."
-        static let disclosure = "Your new Atria timeline starts after setup. Records already on the strap are saved on this iPhone before their verified replay pages are acknowledged. Atria does not send a physical-erase command: the current verified strap protocol does not provide one."
-        static let interruptionDisclosure = "If setup is interrupted, Atria resumes the same safe import. It never discards unseen strap data to force a fresh start."
+        static let summary = "Atria starts live collection first and queues existing strap records for a safe idle window."
+        static let disclosure = "Live collection starts as soon as Atria verifies a secure strap signal. Existing records stay on the strap until they can be imported without interrupting current heart-rate or motion transmission; verified replay pages are acknowledged only after they are saved on this iPhone. Atria does not send a physical-erase command."
+        static let interruptionDisclosure = "If the queued import is interrupted, Atria resumes it later. It never disconnects live tracking or discards unseen strap data to force a fresh start."
+        static let liveReadyDetail = "Ready · live tracking stays on while existing history waits for a safe idle window"
 
         static func completionDetail(importedRows: Int) -> String {
             importedRows > 0
@@ -154,6 +155,36 @@ final class AtriaOnboardingHistoryBootstrap: ObservableObject {
         }
 
         let nextAttempt = snapshot.attempt + 1
+        // First use is complete once this exact strap has passed the read-only
+        // secure preflight and delivered fresh HR. Historical replay shares the
+        // proprietary command pipe with realtime motion; a physical Build 5
+        // soak proved that making it an onboarding prerequisite disconnected
+        // the just-established link. Queue the import, preserve its intent, and
+        // let a natural transport boundary service it without blocking setup.
+        if ble.status == .connected {
+            _ = ble.requestOfflineHistoricalSyncIfNeeded(
+                reason: "onboarding_initial_import",
+                force: false
+            )
+            guard transition(
+                to: .complete,
+                peripheralIdentifier: peripheralIdentifier,
+                importedRows: 0,
+                attempt: nextAttempt,
+                detail: AtriaOnboardingHistoryBootstrapPolicy
+                    .FreshStartPolicy.liveReadyDetail
+            ) else {
+                snapshot.phase = .failed
+                snapshot.detail = "Atria connected to your strap but could not save setup progress. Free storage space, then retry; live tracking remains unaffected."
+                return
+            }
+            AtriaDebugLog(
+                "ATRIADBG onboarding_history status=live_ready_history_deferred peripheral=%@ attempt=%d action=complete_setup_preserve_realtime_queue_import",
+                peripheralIdentifier,
+                nextAttempt
+            )
+            return
+        }
         guard transition(to: .importing,
                          peripheralIdentifier: peripheralIdentifier,
                          importedRows: 0,

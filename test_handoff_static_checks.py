@@ -2907,7 +2907,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "completion: ((Bool) -> Void)? = nil",
             "private var historicalArchiveStatusObserver: NSObjectProtocol?",
             "NotificationCenter.default.addObserver(forName: HistoricalArchive.didUpdateNotification",
-            "requestRecoveredDataRecomputation(reason: \"archive_did_update\")",
+            "reserveAutomaticRecoveredProjectionFreshness(\n                    reason: \"archive_did_update\"",
             "if reason.hasPrefix(\"archive_did_update\")",
             "scheduleConfirmedWorkoutArchiveRehydration(reason: reason)",
             "historicalArchiveStatusRevision &+= 1",
@@ -2940,6 +2940,19 @@ class HandoffStaticChecks(unittest.TestCase):
             "requestRecoveredDataRecomputation(reason: \"deferred_session_load\")",
         ]:
             assert_contains(self, sessions, needle)
+
+        observer_start = sessions.index("self.historicalArchiveStatusObserver =")
+        observer_end = sessions.index("self.motionBankOffloadObserver =", observer_start)
+        observer = sessions[observer_start:observer_end]
+        for forbidden in [
+            "scheduleAutomaticArchiveUpdateProjectionAdmission(",
+            "requestRecoveredDataRecomputation(",
+            "automaticRecoveredDataProjectionHasBoundedIncrementalPlan(",
+            "HistoricalArchive.metricHeartRatePoints(",
+            "HistoricalArchive.diagnostics()",
+            "scheduleConfirmedWorkoutArchiveRehydration(",
+        ]:
+            self.assertNotIn(forbidden, observer)
 
         for needle in [
             "AtriaCollectionStatusCardHost(coreLiveStore: coreLiveStore,",
@@ -7003,13 +7016,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "static func trimp(_ series: [(t: Double, bpm: Int)],",
             "sex: AthleteProfile.BiologicalSex",
             "static func banisterCoefficient(for sex: AthleteProfile.BiologicalSex) -> Double",
-            "case .female: return 1.67",
-            "case .male, .unspecified: return 1.92",
+            "case .female: return BanisterParameters(multiplier: 0.86, coefficient: 1.67)",
+            "case .male, .unspecified: return BanisterParameters(multiplier: 0.64, coefficient: 1.92)",
             "static func edwardsLoad(_ series: [(t: Double, bpm: Int)], rest: Int, max: Int) -> Double",
             "static func edwardsWeight(forHRReserve reserve: Double) -> Int",
             "struct MaxHeartRateZoneSeconds: Equatable",
             "static func maxHeartRateZoneSeconds(_ series: [(t: Double, bpm: Int)],",
-            "static func maxHeartRateZoneRawValue(for bpm: Int, maxHR: Int) -> Int",
+            "static func maxHeartRateZoneRawValue(for bpm: Int, maxHR: Int, restingHR: Int? = nil) -> Int",
             "case 0.90...: return 5",
             "case 0.80..<0.90: return 4",
             "case 0.70..<0.80: return 3",
@@ -7043,7 +7056,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "AtriaAnalytics.Strain.edwardsLoad(series, rest: rest, max: max)",
             "AtriaAnalytics.Strain.activeCalories(samples, rest: rest, profile: profile)",
             "typealias MaxHeartRateZoneSeconds = AtriaAnalytics.Strain.MaxHeartRateZoneSeconds",
-            "AtriaAnalytics.Strain.maxHeartRateZoneSeconds(series, maxHR: maxHR, maxGap: maxGap)",
+            "AtriaAnalytics.Strain.maxHeartRateZoneSeconds(series, maxHR: maxHR, restingHR: restingHR, maxGap: maxGap)",
             "AtriaAnalytics.Strain.zoneSummary(series, rest: rest, max: max)",
             "AtriaAnalytics.Strain.score(fromTRIMP: trimp)",
             "AtriaAnalytics.Strain.score(fromEdwardsLoad: load)",
@@ -8196,9 +8209,9 @@ class HandoffStaticChecks(unittest.TestCase):
             r"reason: String,\s*"
             r"force: Bool = false,\s*"
             r"allowConnectedAutomaticHandoff: Bool = false,\s*"
-            r"freshOwnerCutoverCompleted: Bool = false,\s*"
             r"explicitResearchRequest: Bool = false,\s*"
-            r"explicitPostWorkoutBankRequest: Bool = false\s*"
+            r"explicitPostWorkoutBankRequest: Bool = false,\s*"
+            r"preserveConnectedRealtimeOwner: Bool = false\s*"
             r"\) -> Bool \{(?P<body>.*?)\n    \}",
             ble,
             re.S,
@@ -8240,7 +8253,11 @@ class HandoffStaticChecks(unittest.TestCase):
             1,
             "live restoration may issue only one bounded reconnect repair",
         )
-        assert_contains(self, finish_body, "if !reconnectRequested,")
+        assert_contains(
+            self,
+            finish_body,
+            "if !preservesConnectedRealtimeOwner,\n                   !reconnectRequested,",
+        )
         assert_contains(self, finish_body, "Date().timeIntervalSince(restorationRequestedAt) >= 10")
         assert_contains(self, finish_body, 'reason: "offline_sync_live_restore_rebuild_\\(reason)"')
 
@@ -8268,7 +8285,7 @@ class HandoffStaticChecks(unittest.TestCase):
         assert_contains(
             self,
             ble,
-            "detail=transaction_boundary_reconnect_in_flight action=no_attempt_no_lease_no_cancel",
+            "status=deferred_realtime_owner_at_atomic_claim reason=%@ action=no_attempt_no_generation_no_phase_no_history_command_no_cancel",
         )
 
         protect_helper = re.search(
@@ -8301,16 +8318,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "private var missedDataBackfillIsDeferredForLiveStream: Bool",
             "model.statusStore.state.status == .connected",
             "&& model.coreLiveStore.state.sessionSampleCount > 0",
-            "Text(protectsLiveStream ? \"Saved data protected\" : \"Sync ready\")",
-            "Live HR stays protected while Atria waits for the best sync moment.",
-            "Pull missed strap data when you are ready.",
+            "return Copy(title: \"Live HR protected\"",
+            "subtitle: \"Catching up \\(amount) when idle\"",
             "missedDataBannerDismissedUntil = Date().addingTimeInterval(60 * 60)",
-            "Button(action: onSync)",
-            "Sync missed data now; live heart rate may pause during recovery",
-            "Check strap for missed data",
+            "Button(action: handleSyncTap)",
+            "Queued · live tracking stays on",
+            "Queue missed data sync; live tracking stays uninterrupted",
             ".atriaCardAction(prominent: false, tint: .cyan)",
-            ".atriaCardAction(prominent: false, tint: .secondary)",
-            "Text(protectsLiveStream ? \"Live protected\" : \"Check strap history\")",
             ".background(Color(uiColor: .secondarySystemBackground),",
             "requestOfflineHistoricalSyncIfNeeded(reason: \"home_missed_data_banner\",\n                                                             force: true)",
         ]:
@@ -8836,9 +8850,15 @@ class HandoffStaticChecks(unittest.TestCase):
             "ATRIADBG ble_restore status=reuse_restored reason=fresh_scan_deferred",
             "ATRIADBG ble_restore status=reuse_restored reason=standard_hr_only",
             "recordLinkObservedConnected(reason: \"state_restore_connected\"",
-            "central.connect(restoredPeripheral, options: nil)",
+            "issueSingleFlightConnect(",
         ]:
             assert_contains(self, text, needle)
+
+        self.assertEqual(
+            text.count("callbackCentral.connect(target, options: nil)"),
+            1,
+            "every production connect issuer must use the single-flight gateway",
+        )
 
         restore_method = re.search(
             r"nonisolated func centralManager\(_ central: CBCentralManager, willRestoreState dict: \[String: Any\]\) \{(?P<body>.*?)\n    \}",
@@ -10653,13 +10673,17 @@ class HandoffStaticChecks(unittest.TestCase):
             ".refreshable { await refresh() }",
             "private func handleConnectivityRefresh() async",
             "ble.requestStrapStatusRead(reason: \"pull_to_refresh\")",
-            "requestOfflineHistoricalSyncIfNeeded(reason: \"pull_to_refresh\", force: true)",
             "showConnectivityPill = true",
             "return \"Refreshing strap…\"",
             "Self.debugLaunchFixtureValue(arguments: arguments) == \"refresh-connectivity-pill\"",
             "await handleConnectivityRefresh()",
         ]:
             assert_contains(self, home, needle)
+        assert_not_contains(
+            self,
+            home,
+            "requestOfflineHistoricalSyncIfNeeded(reason: \"pull_to_refresh\", force: true)",
+        )
         refresh_start = home.index("private var connectivityPillText")
         refresh_end = home.index("private func handleConnectivityRefresh", refresh_start)
         refresh_feedback = home[refresh_start:refresh_end]
@@ -13614,7 +13638,7 @@ class HandoffStaticChecks(unittest.TestCase):
         for needle in [
             "enum FailedConnectRecoveryDisposition: Equatable",
             "nonisolated static func failedConnectRecoveryDisposition(isSavedPeripheral: Bool,",
-            "guard target.state != .connecting else {",
+            "guard target.state != .connecting,\n                  target.state != .disconnecting else {",
             "isSavedPeripheral: savedUUID == peripheral.identifier",
             "case .reconnectKnownAfterBackoff:",
             "self.requestFreshScanReconnect(peripheral: peripheral,",

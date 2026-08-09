@@ -47,6 +47,11 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         case startDerived(Ticket, Set<Component>)
         /// The run was intentionally discarded because newer durable input won.
         case superseded(Ticket)
+        /// An automatic freshness ticket was admitted from cheap metadata, but
+        /// its authoritative worker plan was no longer reuse/small-incremental.
+        /// The durable archive remains queued for the guarded BGProcessing lane;
+        /// this is an intentional retirement, not a recovery failure.
+        case reservedForSafeBackground(Ticket)
         /// No dashboard/widget publication is authorized for this run.
         case failed(Ticket, Failure)
         /// The sole effect that authorizes one dashboard/widget publication.
@@ -179,6 +184,25 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         }
         phase = .deriving(ticket, pending: requiredComponents)
         return [.startDerived(ticket, requiredComponents)]
+    }
+
+    /// Retires one exact projecting ticket whose authoritative pre-scan plan
+    /// exceeded the automatic freshness budget. No scan or mutation has run,
+    /// so there is no allocator-rest penalty; a newer coalesced request may
+    /// start immediately. Late callbacks are rejected by the usual ticket
+    /// identity check because `phase` has already moved on.
+    mutating func projectionReservedForSafeBackground(
+        ticket: Ticket
+    ) -> [Effect] {
+        guard case let .projecting(active) = phase, active == ticket else {
+            return []
+        }
+        let retired = Effect.reservedForSafeBackground(ticket)
+        phase = .idle
+        restingUntil = nil
+        guard let trailingRequest else { return [retired] }
+        self.trailingRequest = nil
+        return [retired] + start(trailingRequest)
     }
 
     /// Records one real derived completion. Duplicate, out-of-order, and stale

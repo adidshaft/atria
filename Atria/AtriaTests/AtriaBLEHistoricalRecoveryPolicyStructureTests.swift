@@ -155,14 +155,15 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         let readiness = try XCTUnwrap(request.range(
             of: "prepareHistoricalAdmissionLedgerIfNeeded(reason: reason)"
         ))
-        let cutover = try XCTUnwrap(request.range(
-            of: "beginFreshHistoryOwnerCutover(reason: reason)"
+        let transportAdmission = try XCTUnwrap(request.range(
+            of: "return startOfflineHistoricalSync("
         ))
         XCTAssertLessThan(
             readiness.lowerBound,
-            cutover.lowerBound,
+            transportAdmission.lowerBound,
             "the live owner must remain intact until durable admission authority is ready"
         )
+        XCTAssertFalse(request.contains("beginFreshHistoryOwnerCutover(reason: reason)"))
         XCTAssertTrue(request.contains("preparing_durable_history_ledger"))
         XCTAssertTrue(request.contains("retainPendingOfflineHistoricalSyncRequest("))
         let terminalFence = try XCTUnwrap(request.range(
@@ -590,7 +591,7 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
             of: "shouldDeferAutomaticOfflineSyncForThermalPressure"
         ))
         let transportAdmission = try XCTUnwrap(request.range(
-            of: "beginFreshHistoryOwnerCutover(reason: reason)"
+            of: "return startOfflineHistoricalSync("
         ))
         XCTAssertLessThan(terminalPassThrough.lowerBound, thermalGate.lowerBound)
         XCTAssertLessThan(terminalPassThrough.lowerBound, transportAdmission.lowerBound)
@@ -1300,15 +1301,25 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
             return XCTFail("expected bounded history-arm implementation")
         }
         let body = String(manager[start..<end])
-        let fence = try XCTUnwrap(body.range(of: "guard peripheral?.state != .connecting")?.lowerBound)
+        let fence = try XCTUnwrap(body.range(
+            of: "let historyTransportClaimed: Bool"
+        )?.lowerBound)
+        let refusal = try XCTUnwrap(body.range(
+            of: "guard historyTransportClaimed else {"
+        )?.lowerBound)
         let attempts = try XCTUnwrap(body.range(of: "OfflineSyncDefaults.attempts")?.lowerBound)
         let lease = try XCTUnwrap(body.range(of: "beginOfflineHistoricalSyncBackgroundLease")?.lowerBound)
         XCTAssertLessThan(fence, attempts, "reconnect fence must precede attempt mutation")
         XCTAssertLessThan(fence, lease, "reconnect fence must precede background lease acquisition")
+        XCTAssertLessThan(refusal, attempts, "atomic refusal must precede attempt mutation")
+        XCTAssertLessThan(refusal, lease, "atomic refusal must precede background lease acquisition")
         XCTAssertFalse(body.contains("cancelPeripheralConnection"),
                        "history arm must never cancel a reconnecting realtime transport")
-        XCTAssertTrue(body.contains("action=no_attempt_no_lease_no_cancel"))
-        XCTAssertTrue(body.contains("action=unwind_no_cancel"))
+        XCTAssertTrue(body.contains("claimHistoryTransportIfNoRetainedConnect"))
+        XCTAssertTrue(body.contains(
+            "action=no_attempt_no_generation_no_phase_no_history_command_no_cancel"
+        ))
+        XCTAssertFalse(body.contains("deferred_realtime_owner_after_generation_arm"))
     }
 
     func testEveryConnectedHistoryExitReassertsStandardHRBeforeOptionalRealtimeArm() throws {

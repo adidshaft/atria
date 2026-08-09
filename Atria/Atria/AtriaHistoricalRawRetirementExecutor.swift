@@ -28,6 +28,7 @@ struct AtriaHistoricalRawRetirementExecutor {
         case consumerAuthorityIncomplete
         case replayIndexVerificationFailed
         case invalidRecoveryIntent
+        case maintenanceAuthorityRevoked
     }
 
     private struct Intent: Codable, Equatable {
@@ -68,7 +69,14 @@ struct AtriaHistoricalRawRetirementExecutor {
             .appendingPathComponent("exact-identities-v3.sqlite")
     }
 
-    func retire(chunkID: String, recoveredPendingIntent: Bool = false) throws -> Result {
+    func retire(
+        chunkID: String,
+        recoveredPendingIntent: Bool = false,
+        shouldContinue: @escaping () -> Bool = { true }
+    ) throws -> Result {
+        guard shouldContinue() else {
+            throw ExecutorError.maintenanceAuthorityRevoked
+        }
         let catalog = try catalogStore.snapshot()
         guard let chunk = catalog.chunks.first(where: { $0.id == chunkID }) else {
             throw ExecutorError.chunkUnavailable
@@ -100,6 +108,9 @@ struct AtriaHistoricalRawRetirementExecutor {
         // matching aggregate (+ any boundary-adjacent neighbors, filtered out
         // below by chunkID). `rejectedManifests` now scopes to this window,
         // which is the only region relevant to retiring this chunk.
+        guard shouldContinue() else {
+            throw ExecutorError.maintenanceAuthorityRevoked
+        }
         let snapshot = reader.load(
             since: firstTimestamp,
             until: Date(timeIntervalSinceReferenceDate:
@@ -118,6 +129,9 @@ struct AtriaHistoricalRawRetirementExecutor {
             throw ExecutorError.committedAggregateUnavailable
         }
 
+        guard shouldContinue() else {
+            throw ExecutorError.maintenanceAuthorityRevoked
+        }
         let manifestURL = manifestDirectory.appendingPathComponent("manifest-\(chunkID).json")
         let manifest = try decodeManifest(at: manifestURL)
         guard manifest.sourceChunkID == chunkID,
@@ -135,6 +149,9 @@ struct AtriaHistoricalRawRetirementExecutor {
 
         let sourceURL = archiveRoot.appendingPathComponent(chunk.relativePath)
         if fileManager.fileExists(atPath: sourceURL.path) {
+            guard shouldContinue() else {
+                throw ExecutorError.maintenanceAuthorityRevoked
+            }
             let values = try sourceURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
             guard values.isRegularFile == true,
                   UInt64(values.fileSize ?? -1) == chunk.byteCount,
@@ -147,8 +164,14 @@ struct AtriaHistoricalRawRetirementExecutor {
             }
         }
 
+        guard shouldContinue() else {
+            throw ExecutorError.maintenanceAuthorityRevoked
+        }
         let authority = try loadAuthority(aggregate: aggregate, sourceURL: sourceURL)
         let replayIndex = try AtriaHistoricalRetiredReplayIndex(databaseURL: replayIndexURL)
+        guard shouldContinue() else {
+            throw ExecutorError.maintenanceAuthorityRevoked
+        }
         let importReceipt = try replayIndex.importAndVerify(
             shard: authority.replayShard,
             source: aggregate.source,
@@ -163,6 +186,9 @@ struct AtriaHistoricalRawRetirementExecutor {
                             rawSHA256: importReceipt.sourceRawSHA256,
                             identityCount: importReceipt.identityCount,
                             orderedKeysSHA256: importReceipt.orderedKeysSHA256)
+        guard shouldContinue() else {
+            throw ExecutorError.maintenanceAuthorityRevoked
+        }
         let intentURL = try publishIntent(intent)
 
         let authorityMatches: (AtriaHistoricalAggregateChunk) throws -> Bool = { candidate in
@@ -180,11 +206,15 @@ struct AtriaHistoricalRawRetirementExecutor {
         }
         let transaction = AtriaHistoricalRetentionTransaction(
             now: now,
+            shouldContinue: shouldContinue,
             consumerProjectionVerifier: authorityMatches,
             consumerApplicationVerifier: applicationMatches,
             externalRawRetirementAuthorizer: authorityMatches,
             semanticVerifier: AtriaHistoricalAggregateBuilder.verify
         )
+        guard shouldContinue() else {
+            throw ExecutorError.maintenanceAuthorityRevoked
+        }
         let committed = try transaction.commit(.init(
             transactionID: chunkID,
             sourceURL: sourceURL,
@@ -199,6 +229,9 @@ struct AtriaHistoricalRawRetirementExecutor {
         }
         try checkpoint(.sourceDeleted)
 
+        guard shouldContinue() else {
+            throw ExecutorError.maintenanceAuthorityRevoked
+        }
         if chunk.state != .retired {
             try catalogStore.markRetired(chunkID: chunkID,
                                          manifestURL: committed.manifestURL,
@@ -207,6 +240,9 @@ struct AtriaHistoricalRawRetirementExecutor {
         try checkpoint(.catalogRetired)
         // This follows catalog publication. If it fails, the durable intent is
         // deliberately retained and recovery replays this idempotent update.
+        guard shouldContinue() else {
+            throw ExecutorError.maintenanceAuthorityRevoked
+        }
         try replayIndex.markCatalogRetired(receipt: importReceipt, retiredAt: now())
         try checkpoint(.replayIndexMarked)
         try fileManager.removeItem(at: intentURL)
@@ -219,7 +255,12 @@ struct AtriaHistoricalRawRetirementExecutor {
 
     /// Completes at most one interrupted retirement before verified catalog
     /// scans encounter a sealed row whose source was already unlinked.
-    func recoverFirstPendingIntent() throws -> Result? {
+    func recoverFirstPendingIntent(
+        shouldContinue: @escaping () -> Bool = { true }
+    ) throws -> Result? {
+        guard shouldContinue() else {
+            throw ExecutorError.maintenanceAuthorityRevoked
+        }
         guard fileManager.fileExists(atPath: intentDirectory.path) else { return nil }
         let urls = try fileManager.contentsOfDirectory(at: intentDirectory,
                                                        includingPropertiesForKeys: nil)
@@ -232,7 +273,11 @@ struct AtriaHistoricalRawRetirementExecutor {
               url.lastPathComponent == "retirement-intent-\(intent.chunkID).json" else {
             throw ExecutorError.invalidRecoveryIntent
         }
-        return try retire(chunkID: intent.chunkID, recoveredPendingIntent: true)
+        return try retire(
+            chunkID: intent.chunkID,
+            recoveredPendingIntent: true,
+            shouldContinue: shouldContinue
+        )
     }
 
     private func loadAuthority(

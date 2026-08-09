@@ -1317,11 +1317,12 @@ struct AtriaHomeView: View {
             // Let the shared Atria backdrop/content continue beneath the native
             // glass control instead.
             .toolbarBackground(.hidden, for: .tabBar)
-            // Keep the primary destinations visible on a real phone. On-device,
-            // the iOS 26 minimized treatment collapsed this to the selected
-            // Today bubble plus an opaque affordance, leaving Vitals, Journal,
-            // and Activity undiscoverable. These are core daily destinations,
-            // not secondary actions that can safely hide behind a control.
+            // Follow the dashboard's real ScrollView direction: swiping content
+            // upward collapses the native glass bar to its selected-tab button,
+            // and reversing direction restores all four destinations. The
+            // system owns the transition, hit targets, and VoiceOver behavior;
+            // no parallel drag or duplicated compact-navigation state is needed.
+            .tabBarMinimizeBehavior(.onScrollDown)
             .tabViewBottomAccessory(isEnabled: shouldShowLiveAccessory) {
                 AtriaLiveTabAccessoryHost(pulseStore: model.pulseLiveStore,
                                           heroStore: model.heroStore,
@@ -4587,7 +4588,6 @@ struct AtriaHomeView: View {
     private func handleConnectivityRefresh() async {
         await MainActor.run {
             ble.requestStrapStatusRead(reason: "pull_to_refresh")
-            _ = ble.requestOfflineHistoricalSyncIfNeeded(reason: "pull_to_refresh", force: true)
             model.forceRefresh()
             showConnectivityPill = true
             connectivityPillTask?.cancel()
@@ -5069,7 +5069,10 @@ struct AtriaHomeView: View {
             }
             // Live strap catch-up progress, always the last row of Overview.
             if !debugShowsNorthStarTodayFixture {
-                AtriaSyncProgressFooter()
+                AtriaSyncProgressFooter(
+                    liveHeartRateIsCurrent:
+                        model.coreLiveStore.state.hasRecentHeartRateSample
+                )
             }
         }
     }
@@ -5655,6 +5658,7 @@ enum AtriaSyncProgressFooterPresentation {
                        debtObservedAgeSeconds: TimeInterval?,
                        secondsSinceLastFlush: TimeInterval?,
                        backgroundLeaseActive: Bool,
+                       liveHeartRateIsCurrent: Bool = false,
                        now: Date,
                        calendar: Calendar = .current) -> Footer? {
         let debtFresh = debtObservedAgeSeconds.map {
@@ -5689,11 +5693,15 @@ enum AtriaSyncProgressFooterPresentation {
         let stateText = active
             ? "catching up now"
             : "paused · resumes in the background"
+        let liveText = liveHeartRateIsCurrent
+            ? "live HR current · "
+            : ""
         guard let drainedThroughUnix, drainedThroughUnix > 0,
               drainedThroughUnix <= now.timeIntervalSince1970 else {
             // No trustworthy frontier yet — state only, never a made-up time.
-            return Footer(headline: "Strap sync",
-                          detail: stateText.prefix(1).uppercased() + stateText.dropFirst(),
+            let detail = liveText + stateText
+            return Footer(headline: "Strap history backfill",
+                          detail: detail.prefix(1).uppercased() + detail.dropFirst(),
                           active: active)
         }
         let frontier = Date(timeIntervalSince1970: drainedThroughUnix)
@@ -5717,14 +5725,15 @@ enum AtriaSyncProgressFooterPresentation {
         }
         let behind = now.timeIntervalSince(frontier)
         return Footer(
-            headline: "Synced through \(timeFormatter.string(from: frontier))\(dayText)",
-            detail: "\(behindText(behind)) behind · \(stateText)",
+            headline: "Strap history through \(timeFormatter.string(from: frontier))\(dayText)",
+            detail: "\(behindText(behind)) history backlog · \(liveText)\(stateText)",
             active: active
         )
     }
 }
 
 private struct AtriaSyncProgressFooter: View {
+    let liveHeartRateIsCurrent: Bool
     @State private var now = Date()
     private let refresh = Timer.publish(every: 30, on: .main, in: .common)
         .autoconnect()
@@ -5793,6 +5802,7 @@ private struct AtriaSyncProgressFooter: View {
             backgroundLeaseActive: defaults.string(
                 forKey: AtriaBLEManager.OfflineSyncDefaults.backgroundLeaseStatus
             ) == "active",
+            liveHeartRateIsCurrent: liveHeartRateIsCurrent,
             now: now
         )
     }
@@ -5999,6 +6009,10 @@ private struct AtriaMissedDataBanner: View, Equatable {
     @State private var syncTapFeedback: String?
 
     private func handleSyncTap() {
+        if protectsLiveStream {
+            syncTapFeedback = "Queued · live tracking stays on"
+            return
+        }
         onSync()
         let defaults = UserDefaults.standard
         let lastFlushAt = defaults.object(
@@ -6051,7 +6065,7 @@ private struct AtriaMissedDataBanner: View, Equatable {
             }
             .atriaCardAction(prominent: false, tint: .cyan)
             .accessibilityLabel(protectsLiveStream
-                                ? "Sync missed data now; live heart rate may pause during recovery"
+                                ? "Queue missed data sync; live tracking stays uninterrupted"
                                 : "Catch up recoverable strap data now")
         }
     }

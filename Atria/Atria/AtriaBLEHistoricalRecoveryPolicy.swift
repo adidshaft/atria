@@ -399,9 +399,6 @@ extension AtriaBLEManager {
 
     nonisolated static func isExplicitUserOfflineSyncReason(_ reason: String) -> Bool {
         reason == "manual_user_request"
-            || reason == "pull_to_refresh"
-            || reason == "home_missed_data_banner"
-            || reason == "onboarding_initial_import"
     }
 
     /// The exact-recovery fence refuses to START a history transport while the
@@ -560,14 +557,17 @@ extension AtriaBLEManager {
         reason: String,
         force: Bool,
         explicitRequest: Bool,
-        explicitPostWorkoutBankRequest: Bool = false
+        explicitPostWorkoutBankRequest: Bool = false,
+        preserveConnectedRealtimeOwner: Bool = false
     ) -> PendingOfflineHistoricalSyncRequest {
         guard let existing else {
             return .init(reason: reason,
                          force: force,
                          explicitRequest: explicitRequest,
                          explicitPostWorkoutBankRequest:
-                            explicitPostWorkoutBankRequest)
+                            explicitPostWorkoutBankRequest,
+                         preserveConnectedRealtimeOwner:
+                            preserveConnectedRealtimeOwner)
         }
         let incomingPriority = (explicitRequest ? 2 : 0) + (force ? 1 : 0)
         let existingPriority = (existing.explicitRequest ? 2 : 0)
@@ -580,8 +580,41 @@ extension AtriaBLEManager {
             explicitRequest: existing.explicitRequest || explicitRequest,
             explicitPostWorkoutBankRequest:
                 existing.explicitPostWorkoutBankRequest
-                    || explicitPostWorkoutBankRequest
+                    || explicitPostWorkoutBankRequest,
+            preserveConnectedRealtimeOwner:
+                existing.preserveConnectedRealtimeOwner
+                    || preserveConnectedRealtimeOwner
         )
+    }
+
+    enum WorkoutHistoricalTransportPreemptionDisposition: Equatable {
+        case noHistoryOwner
+        case finishPreservingRealtimeOwner
+        case disconnectConnectedHistoryOwner
+        case interruptOfflineHistoryOwner
+    }
+
+    /// Starting a workout outranks history commands, but it does not outrank
+    /// the healthy standard-HR connection used by a non-destructive motion-bank
+    /// generation. That generation is ended locally; only a genuinely
+    /// exclusive connected history owner requires a physical disconnect.
+    nonisolated static func workoutHistoricalTransportPreemptionDisposition(
+        syncInProgress: Bool,
+        historyProbeActive: Bool,
+        preservesConnectedRealtimeOwner: Bool,
+        linkConnected: Bool
+    ) -> WorkoutHistoricalTransportPreemptionDisposition {
+        guard syncInProgress || historyProbeActive else {
+            return .noHistoryOwner
+        }
+        if syncInProgress,
+           preservesConnectedRealtimeOwner,
+           linkConnected {
+            return .finishPreservingRealtimeOwner
+        }
+        return linkConnected
+            ? .disconnectConnectedHistoryOwner
+            : .interruptOfflineHistoryOwner
     }
 
     /// Retry is a state marker, not a recursion trace. Normalize any legacy
@@ -649,15 +682,30 @@ extension AtriaBLEManager {
         // handoff": the aged gap retry cancelled an in-flight CoreBluetooth
         // reconnect, entered history twice, and left standard 2A37 stalled.
         // Connecting is never a safe history state, even for an explicit user
-        // request; queue it until didConnect finishes. Once connected, only a
-        // deliberate user action may take ownership of the shared command pipe.
-        // Automatic recovery remains durable in the gap ledger and waits for a
-        // genuinely disconnected maintenance opportunity.
+        // request. This subordinate policy still distinguishes explicit intent
+        // from automatic work, but the global realtime-continuity gate queues
+        // both until a genuinely disconnected maintenance opportunity.
         let verifiedAutomaticHandoff = automaticConnectedHandoffAllowed
             && exactGapPending
             && verifiedMetricRecovery
         return linkConnecting
             || (linkConnected && !explicitUserRequest && !verifiedAutomaticHandoff)
+    }
+
+    /// History recovery may retain and coalesce work while realtime owns (or
+    /// is establishing) the physical link, but it must not start commands or
+    /// manufacture a disconnect from that owner. This invariant also covers
+    /// attended Sync actions and motion-bank work: user intent changes request
+    /// priority, not the continuity contract. Only a history generation that
+    /// is already active may continue; callback-local cutover state is never
+    /// transport authority and cannot bypass a retained realtime connection.
+    nonisolated static func shouldDeferHistoricalTransportForRealtimeContinuity(
+        linkConnected: Bool,
+        linkConnecting: Bool,
+        syncInProgress: Bool
+    ) -> Bool {
+        (linkConnected || linkConnecting)
+            && !syncInProgress
     }
 
     /// Admits one journal-checkpointed owner handoff from a proven healthy

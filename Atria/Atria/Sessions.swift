@@ -7046,6 +7046,8 @@ final class SessionStore: ObservableObject {
         ((_ isExactRecoveryPublication: Bool) -> Bool)?
     private var deferredRecoveredDataRecomputationReason: String?
     private var deferredRecoveredDataRecomputationIsExact = false
+    private static let automaticRecoveredProjectionFreshnessIntentKey =
+        "atria.recoveredProjection.automaticFreshnessRequestedAt.v1"
     var onRecoveredDataRecomputePublished: ((UInt64, String) -> Void)?
     /// Fired only after the deferred canonical-session load has rebuilt and
     /// verified the persisted confirmed-sleep -> daily metric -> rollup chain.
@@ -7132,12 +7134,14 @@ final class SessionStore: ObservableObject {
         "atria.confirmedWorkoutHR.rehydrationAttempt.v1"
     nonisolated private static let workoutHRRehydrationAlgorithmVersion =
         "confirmed-workout-hr-rehydration-v1"
-    /// Receipt decoding shares the archive-consumer lane so a step refresh
-    /// cannot multiply memory/CPU with broader history reads. Home loads the
-    /// already-durable receipt directly, so this serialization delays only a
-    /// stronger re-decode—not launch-time publication.
-    private static let workoutStepEvidenceQueue =
-        HistoricalArchive.consumerProjectionQueue
+    /// Confirmed-workout steps now read only the fixed-width compact shards.
+    /// Keep that bounded freshness path independent of every lifetime archive
+    /// consumer so launch/scene/BLE callbacks can neither queue nor trigger a
+    /// JSONL scan.
+    private static let workoutStepEvidenceQueue = DispatchQueue(
+        label: "com.adidshaft.atria.confirmed-workout-step-compact",
+        qos: .utility
+    )
     /// Current-cycle publication normally reads only the bounded compact v24
     /// shard. Keeping that small receipt refresh behind lifetime archive
     /// projections made a durably appended step subtotal remain stale on Home
@@ -7151,20 +7155,14 @@ final class SessionStore: ObservableObject {
     nonisolated private static let workoutStepNegativeAttemptsKey =
         "atria.confirmedWorkoutSteps.negativeAttempts.v1"
     nonisolated private static let maximumWorkoutStepNegativeAttempts = 64
-    nonisolated private static let currentCycleStepReceiptAttemptKey =
-        // v2 invalidates attempt receipts written before canonical v24 rows
-        // were migrated into the compact store. Reusing the v1 lease would
-        // incorrectly skip that one-time migration after an app upgrade.
-        "atria.currentCycleStepReceipt.attempt.v2"
-    nonisolated private static let priorCivilDayStepReceiptsAttemptKey =
-        "atria.priorCivilDayStepReceipts.attempt.v1"
     nonisolated private static let currentCycleStepCompactMigrationKey =
         "atria.currentCycleStepReceipt.compactMigration.v1"
     private var pendingWorkoutStepEvidenceWorkItem: DispatchWorkItem?
+    private var workoutStepEvidenceRescheduleRequested = false
     private var workoutStepEvidenceGeneration = 0
     private var currentCycleStepReceiptGeneration = 0
     private var currentCycleStepCompactMigrationInFlight = false
-    private var currentCycleStepCompactMigrationNeedsRerun = false
+    private var currentCycleStepCompactMigrationGeneration = 0
     private var currentCycleStepReceiptDeferredUntilForeground = false
     /// 2026-07-31: cancellable sleep-until-boundary task for the no-sleep
     /// physiological rollover. The fallback moves the wake boundary with no
@@ -7172,9 +7170,19 @@ final class SessionStore: ObservableObject {
     /// on the pre-rollover projection until an unrelated event fired.
     private var physiologicalCycleRolloverTask: Task<Void, Never>?
     private var scheduledPhysiologicalCycleRolloverBoundary: Date?
-    private var workoutStepEvidenceDeferredUntilForeground = false
     private var workoutRehydrationDeferredUntilForeground = false
-    private var archiveCompactionDeferredUntilForeground = false
+    /// Retention is durability-preserving maintenance over an already-fsynced
+    /// archive. Foreground archive notifications retain only this intent; a
+    /// guarded BGProcessing window is the sole automatic owner that may mint a
+    /// short-lived scan/compaction authority.
+    private var archiveCompactionReservedForSafeBackground = false
+    private var archiveCompactionSafeBackgroundIntentRevision = 0
+    private var archiveCompactionSafeBackgroundGeneration = 0
+    private var archiveCompactionBGProcessingLeaseGeneration = 0
+    private var activeArchiveCompactionBGProcessingLease:
+        ArchiveCompactionBGProcessingLease?
+    private var pendingArchiveCompactionLeaseCompletion:
+        (generation: Int, handler: (Bool) -> Void)?
     private var pendingSleepReadinessRetry: Task<Void, Never>?
     private var pendingSleepSettlementRetry: Task<Void, Never>?
     /// Foreground sleep settlement reads and aggregates the growing live journal
@@ -7771,34 +7779,74 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    /// Migrates canonical v24 rows retained by pre-compact app versions exactly
-    /// once for the current source/cycle/coverage authority. This work always
-    /// runs on the shared archive-consumer lane; the compact receipt path below
-    /// remains independent and never reopens lifetime JSONL from a BLE,
-    /// foreground, or UI callback.
-    private func prepareCurrentCycleStrapStepReceipt(reason: String) {
-        guard AtriaWhoop4GravityCadenceStepModel
-                .releaseDailyAuthorityQualified else {
-            currentCycleStepReceiptDeferredUntilForeground = false
-            return
-        }
-        guard !nonExactArchiveConsumerShouldDefer else {
-            currentCycleStepReceiptDeferredUntilForeground = true
+    private struct CurrentCycleStepLegacyMigrationAdmission {
+        let generation: Int
+        let expiresAt: Date
+        let budget: HistoricalArchive.MotionTickDayEvidenceMigrationBudget
+    }
+
+    nonisolated static let currentCycleStepLegacyMigrationMaximumFileCount = 4
+    nonisolated static let currentCycleStepLegacyMigrationMaximumTotalBytes:
+        UInt64 = 32 * 1024 * 1024
+
+    /// Legacy migration is optional freshness work over already-durable rows.
+    /// It may run only during a real background-maintenance window under the
+    /// same power/thermal guard as generic background projection and while no
+    /// exact/recovered archive owner is active.
+    nonisolated static func shouldAdmitBoundedLegacyCurrentCycleStepMigration(
+        isBackgroundMaintenance: Bool,
+        thermalState: ProcessInfo.ThermalState,
+        isLowPowerModeEnabled: Bool,
+        batteryState: UIDevice.BatteryState,
+        batteryLevel: Float,
+        exactRecoveryOwnsPriority: Bool,
+        recoveredCycleEngaged: Bool
+    ) -> Bool {
+        isBackgroundMaintenance
+            && !exactRecoveryOwnsPriority
+            && !recoveredCycleEngaged
+            && shouldStartBackgroundArchiveProjection(
+                thermalState: thermalState,
+                isLowPowerModeEnabled: isLowPowerModeEnabled,
+                batteryState: batteryState,
+                batteryLevel: batteryLevel
+            )
+    }
+
+    /// Mints the sole one-shot authority for canonical v24 -> compact migration.
+    /// Hot BLE, launch, foreground, rollover, and UI callbacks call the compact
+    /// refresh directly and cannot construct this private admission.
+    @discardableResult
+    func scheduleBoundedLegacyCurrentCycleStepMigrationIfSafe(
+        reason: String
+    ) -> Bool {
+        let isBackgroundMaintenance =
+            UIApplication.shared.applicationState == .background
+        guard Self.shouldAdmitBoundedLegacyCurrentCycleStepMigration(
+            isBackgroundMaintenance: isBackgroundMaintenance,
+            thermalState: ProcessInfo.processInfo.thermalState,
+            isLowPowerModeEnabled:
+                ProcessInfo.processInfo.isLowPowerModeEnabled,
+            batteryState: UIDevice.current.batteryState,
+            batteryLevel: UIDevice.current.batteryLevel,
+            exactRecoveryOwnsPriority:
+                nonExactArchiveConsumerShouldDefer,
+            recoveredCycleEngaged: recoveredProjectionScanActive
+        ) else {
             AtriaDebugLog(
-                "ATRIADBG whoop4_daily_steps status=migration_deferred reason=%@ detail=exact_recovery_archive_priority action=coalesce_until_terminal_projection",
+                "ATRIADBG whoop4_daily_steps status=migration_reserved reason=%@ action=wait_for_safe_background",
                 reason
             )
-            return
+            return false
         }
-        guard UIApplication.shared.applicationState == .active else {
-            refreshCurrentCycleStrapStepReceipt(reason: reason)
-            return
+        guard AtriaWhoop4GravityCadenceStepModel
+                .releaseDailyAuthorityQualified else {
+            return false
         }
         let identifiers =
             AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers()
         guard let strapIdentifier = identifiers.first else {
-            refreshCurrentCycleStrapStepReceipt(reason: reason)
-            return
+            return false
         }
         let now = Date()
         let cycleStart = AtriaPhysiologicalCycle.current(
@@ -7817,27 +7865,42 @@ final class SessionStore: ObservableObject {
                     intersecting: .init(start: cycleStart, end: now),
                     strapIdentifier: strapIdentifier
                 ) else {
-            refreshCurrentCycleStrapStepReceipt(reason: reason)
-            return
+            return false
         }
         guard !currentCycleStepCompactMigrationInFlight else {
-            currentCycleStepCompactMigrationNeedsRerun = true
-            return
+            return false
         }
         currentCycleStepCompactMigrationInFlight = true
+        currentCycleStepCompactMigrationGeneration &+= 1
+        let admission = CurrentCycleStepLegacyMigrationAdmission(
+            generation: currentCycleStepCompactMigrationGeneration,
+            expiresAt: Date().addingTimeInterval(30),
+            budget: .init(
+                maximumFileCount:
+                    Self.currentCycleStepLegacyMigrationMaximumFileCount,
+                maximumTotalBytes:
+                    Self.currentCycleStepLegacyMigrationMaximumTotalBytes
+            )
+        )
         let completedSignature = UserDefaults.standard.string(
             forKey: Self.currentCycleStepCompactMigrationKey
         )
 
         Self.historySnapshotProjectionQueue.async { [weak self] in
-            guard !HistoricalArchive
-                .exactRecoveryProjectionOwnsArchivePriority() else {
+            guard Date() <= admission.expiresAt,
+                  ProcessInfo.processInfo.thermalState != .serious,
+                  ProcessInfo.processInfo.thermalState != .critical,
+                  !ProcessInfo.processInfo.isLowPowerModeEnabled,
+                  !HistoricalArchive
+                    .exactRecoveryProjectionOwnsArchivePriority() else {
                 DispatchQueue.main.async { [weak self] in
-                    self?.currentCycleStepCompactMigrationInFlight = false
-                    self?.currentCycleStepReceiptDeferredUntilForeground = true
+                    guard let self,
+                          self.currentCycleStepCompactMigrationGeneration
+                            == admission.generation else { return }
+                    self.currentCycleStepCompactMigrationInFlight = false
                 }
                 AtriaDebugLog(
-                    "ATRIADBG whoop4_daily_steps status=migration_deferred reason=%@ detail=exact_recovery_became_active action=yield_shared_archive_lane",
+                    "ATRIADBG whoop4_daily_steps status=migration_reserved reason=%@ detail=worker_admission_expired_or_unsafe action=wait_for_next_background_maintenance",
                     reason
                 )
                 return
@@ -7865,14 +7928,16 @@ final class SessionStore: ObservableObject {
 
             if !migrationResolved,
                signatureBefore != completedSignature {
-                canonicalRead = HistoricalArchive.motionTickDayEvidenceRead(
-                    start: cycleStart,
-                    end: now,
-                    bankCoverage: coverage,
-                    strapIdentifier: strapIdentifier,
-                    compactMigrationStore:
-                        AtriaWhoop4MotionTickCompactStore.shared
-                )
+                canonicalRead = HistoricalArchive
+                    .boundedLegacyMotionTickDayEvidenceMigrationRead(
+                        start: cycleStart,
+                        end: now,
+                        bankCoverage: coverage,
+                        strapIdentifier: strapIdentifier,
+                        budget: admission.budget,
+                        compactMigrationStore:
+                            AtriaWhoop4MotionTickCompactStore.shared
+                    )
                 let sourceAfter =
                     HistoricalArchive.consumerSourceFingerprint()
                 let compactAfter =
@@ -7917,23 +7982,16 @@ final class SessionStore: ObservableObject {
             }
 
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self,
+                      self.currentCycleStepCompactMigrationGeneration
+                        == admission.generation else { return }
                 self.currentCycleStepCompactMigrationInFlight = false
-                if self.currentCycleStepCompactMigrationNeedsRerun {
-                    self.currentCycleStepCompactMigrationNeedsRerun = false
-                    self.prepareCurrentCycleStrapStepReceipt(
-                        reason: "coalesced_\(reason)"
-                    )
-                    return
-                }
-                self.currentCycleStepReceiptDeferredUntilForeground =
-                    !migrationResolved
                 self.refreshCurrentCycleStrapStepReceipt(
-                    reason: reason,
-                    allowNegativeAttemptPersistence: migrationResolved
+                    reason: "bounded_migration_\(reason)"
                 )
             }
         }
+        return true
     }
 
     /// 2026-07-31: schedules one cancellable check at the next no-sleep
@@ -7977,7 +8035,7 @@ final class SessionStore: ObservableObject {
             "ATRIADBG whoop4_daily_steps status=cycle_rollover_fired reason=%@",
             reason
         )
-        prepareCurrentCycleStrapStepReceipt(
+        refreshCurrentCycleStrapStepReceipt(
             reason: "physiological_cycle_rollover"
         )
         schedulePhysiologicalCycleRolloverCheck(reason: reason)
@@ -7986,15 +8044,27 @@ final class SessionStore: ObservableObject {
     /// Publishes the current physiological cycle's strap-only step receipt
     /// without waiting for the much broader recovered-history transaction.
     ///
-    /// A verified 0x69 offload has already released BLE ownership before this
-    /// runs. The scan stays on the existing serial utility queue, and the
-    /// daily store posts the one lightweight Home/widget invalidation only
-    /// after its atomic receipt is durable.
-    /// Completed prior civil-day windows `[midnight, next-midnight)`,
-    /// newest-first, EXCLUDING today's civil day AND the open physiological
-    /// cycle's civil day — so this lane can never key the same civil date as
-    /// the wake-to-wake current-cycle receipt. Bounded to `backfillDays`. Pure
-    /// and `nonisolated static` so it is directly unit-testable.
+    /// A verified compact durability checkpoint may publish before the broader
+    /// BLE transaction releases ownership. The bounded read stays on its own
+    /// serial utility queue, and the daily store posts one lightweight
+    /// Home/widget invalidation only after its atomic receipt is durable.
+    /// No canonical archive or prior-day reader is reachable from this hot
+    /// lane. Missing compact evidence waits for a later durable checkpoint or
+    /// the separately admitted bounded background migration.
+    enum CurrentCycleStepReceiptReadPlan: Equatable {
+        case publishCompact
+        case compactOnlyMissing
+    }
+
+    /// Every interactive/current-link caller is compact-only. A miss is not
+    /// authority to enumerate canonical JSONL; the separately admitted bounded
+    /// background migration may populate the shard on a later maintenance run.
+    nonisolated static func currentCycleStepReceiptReadPlan(
+        compactReadQualified: Bool
+    ) -> CurrentCycleStepReceiptReadPlan {
+        compactReadQualified ? .publishCompact : .compactOnlyMissing
+    }
+
     nonisolated static func completedPriorCivilDayWindows(
         now: Date,
         cycleStart: Date,
@@ -8020,163 +8090,12 @@ final class SessionStore: ObservableObject {
         return windows
     }
 
-    /// Option-B prior-day lower-bound step lane (2026-08-08). The five
-    /// historical consumers share ONE joint coverage proof whose required
-    /// window's upper bound is driven by sleep's 4h look-ahead, so a completed
-    /// prior civil day whose steps ARE fully banked still never publishes
-    /// jointly — `completionCoverageMismatch` parks all five atomically. This
-    /// sibling of `refreshCurrentCycleStrapStepReceipt` publishes each covered
-    /// prior civil day's decoded strap steps directly to the week-chart store
-    /// as an HONEST LOWER BOUND, WITHOUT touching the joint proof / requiredRange
-    /// / receipt ledger / sync fence. Because it writes only an
-    /// `AtriaWhoop4MotionTickDailyStore` record (not a `consumer-receipt-`
-    /// projection) it cannot authorize raw retirement or claim cutover, so every
-    /// guarantee the joint proof protects is preserved. `save()` accepts only
-    /// strictly-stronger evidence, and a canonical exact `StepDay` always wins
-    /// the merge, so this is monotonic and cannot override a verified total.
-    private func refreshPriorCivilDayStrapStepReceipts(
-        reason: String,
-        backfillDays: Int = 7
-    ) {
-        guard AtriaWhoop4GravityCadenceStepModel.releaseDailyAuthorityQualified else { return }
-        // Same heavy-lane defer contract as the current-cycle writer: never scan
-        // the archive while an exact-recovery lease or a recompute cycle owns it.
-        guard !nonExactArchiveConsumerShouldDefer,
-              !recoveredProjectionScanActive else {
-            currentCycleStepReceiptDeferredUntilForeground = true
-            return
-        }
-        guard let strapIdentifier =
-            AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers().first
-        else { return }
-
-        let now = Date()
-        let calendar = Calendar.current
-        let cycleStart = AtriaPhysiologicalCycle.current(
-            now: now,
-            confirmedSleeps: cachedConfirmedSleeps,
-            calendar: calendar
-        ).start
-        let windows = Self.completedPriorCivilDayWindows(
-            now: now,
-            cycleStart: cycleStart,
-            calendar: calendar,
-            backfillDays: backfillDays
-        )
-        guard !windows.isEmpty else { return }
-
-        // Attempt-lease: skip the (heavy, on a large archive) prior-day re-scan
-        // when the covered set is unchanged since the last pass. `stableIdentifier`
-        // deliberately excludes `now`, so a mere clock tick does not bust it while
-        // new drained coverage or a rolled-over day does. `save()`'s monotonic
-        // no-op already prevents any DATA harm — this only avoids re-scanning.
-        let fingerprint = windows.map { window -> String in
-            let authority = AtriaWhoop4MotionBankCoverageLedger.projectionAuthority(
-                intersecting: window,
-                strapIdentifier: strapIdentifier
-            )
-            return "\(Int(window.start.timeIntervalSince1970)):\(authority?.stableIdentifier ?? "none")"
-        }.joined(separator: "|")
-        if UserDefaults.standard.string(
-            forKey: Self.priorCivilDayStepReceiptsAttemptKey
-        ) == fingerprint {
-            return
-        }
-
-        Self.currentCycleStepReceiptQueue.async {
-            var wroteAny = false
-            for window in windows {
-                let coverage = AtriaWhoop4MotionBankCoverageLedger.intervals(
-                    intersecting: window,
-                    strapIdentifier: strapIdentifier,
-                    now: now
-                )
-                // No banked coverage for this civil day => NO publishable lower
-                // bound. Emit nothing (never a fabricated zero).
-                guard !coverage.isEmpty else { continue }
-                let read = HistoricalArchive.motionTickDayEvidenceRead(
-                    start: window.start,
-                    end: window.end,
-                    bankCoverage: coverage,
-                    strapIdentifier: strapIdentifier
-                )
-                // Only `.qualified` carries evidence. `.incomplete` (scan not
-                // gapless/finished) and `.completeNoQualifiedEvidence` (finished
-                // but too little gait) both mean: no receipt this pass.
-                guard case .qualified(let evidence) = read else { continue }
-                do {
-                    let changed = try AtriaWhoop4MotionTickDailyStore.shared.save(
-                        evidence,
-                        strapIdentifier: strapIdentifier
-                    )
-                    wroteAny = wroteAny || changed
-                    AtriaDebugLog(
-                        "ATRIADBG whoop4_daily_steps status=prior_day_receipt_saved reason=%@ day=%.3f changed=%d steps=%d known_s=%d",
-                        reason,
-                        window.start.timeIntervalSince1970,
-                        changed ? 1 : 0,
-                        evidence.steps,
-                        evidence.knownCoverageSeconds
-                    )
-                } catch {
-                    // save() throws on knownCoverageSeconds<=0 / <2 decoded rows
-                    // (a completed but stationary/sleep-only day): a valid "no
-                    // publishable lower bound", not an error to surface.
-                    AtriaDebugLog(
-                        "ATRIADBG whoop4_daily_steps status=prior_day_receipt_unpublishable reason=%@ day=%.3f",
-                        reason,
-                        window.start.timeIntervalSince1970
-                    )
-                }
-            }
-            // Store the lease only after a full pass, so an interrupted pass
-            // (app killed mid-scan) re-runs rather than being skipped.
-            UserDefaults.standard.set(
-                fingerprint,
-                forKey: Self.priorCivilDayStepReceiptsAttemptKey
-            )
-            if wroteAny {
-                DispatchQueue.main.async {
-                    NotificationCenter.default.post(
-                        name: AtriaWhoop4MotionTickDailyStore.didSaveNotification,
-                        object: nil
-                    )
-                }
-            }
-        }
-    }
-
-    private func refreshCurrentCycleStrapStepReceipt(
-        reason: String,
-        allowNegativeAttemptPersistence: Bool = true
-    ) {
+    private func refreshCurrentCycleStrapStepReceipt(reason: String) {
         guard AtriaWhoop4GravityCadenceStepModel
                 .releaseDailyAuthorityQualified else {
             currentCycleStepReceiptDeferredUntilForeground = false
             return
         }
-        // Single heavy lane (2026-08-05 climber fix): this arm lacked the
-        // defer guard its sibling `prepareCurrentCycleStrapStepReceipt` has,
-        // so the day-evidence archive scan could start the moment a recovery
-        // cycle released priority — stacking onto the retained recovered
-        // working set. Defer during exact-recovery priority AND any active
-        // recompute cycle; resumeDeferredForegroundArchiveWork re-arms it.
-        guard !nonExactArchiveConsumerShouldDefer,
-              !recoveredProjectionScanActive else {
-            currentCycleStepReceiptDeferredUntilForeground = true
-            AtriaDebugLog(
-                "ATRIADBG whoop4_daily_steps status=receipt_refresh_deferred reason=%@ detail=heavy_lane_active action=resume_on_release",
-                reason
-            )
-            return
-        }
-        // Publish covered PRIOR civil days too (2026-08-08). Placed after the
-        // shared heavy-lane gates but BEFORE the current-cycle-only coverage
-        // guard below, so a freshly-rolled cycle with no banked current-cycle
-        // coverage still backfills covered prior days parked by the joint proof.
-        refreshPriorCivilDayStrapStepReceipts(reason: reason)
-        let applicationIsActive =
-            UIApplication.shared.applicationState == .active
         let identifiers =
             AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers()
         guard let strapIdentifier = identifiers.first else {
@@ -8199,12 +8118,7 @@ final class SessionStore: ObservableObject {
             strapIdentifier: strapIdentifier,
             now: now
         )
-        let coverageAuthority =
-            AtriaWhoop4MotionBankCoverageLedger.projectionAuthority(
-                intersecting: .init(start: cycleStart, end: now),
-                strapIdentifier: strapIdentifier
-            )
-        guard !coverage.isEmpty, let coverageAuthority else {
+        guard !coverage.isEmpty else {
             AtriaDebugLog(
                 "ATRIADBG whoop4_daily_steps status=receipt_refresh_skipped reason=%@ detail=no_bank_coverage_this_cycle cycle_start=%.3f",
                 reason,
@@ -8224,41 +8138,12 @@ final class SessionStore: ObservableObject {
             return
         }
         Self.currentCycleStepReceiptQueue.async { [weak self] in
-            let fingerprintBefore =
-                HistoricalArchive.consumerSourceFingerprint()
             let compactFingerprintBefore =
                 AtriaWhoop4MotionTickCompactStore.shared.sourceFingerprint(
                     start: cycleStart,
                     end: now,
                     strapIdentifier: strapIdentifier
                 )
-            let attemptSignature =
-                Self.currentCycleStepReceiptAttemptSignature(
-                    strapIdentifier: strapIdentifier,
-                    cycleStart: cycleStart,
-                    coverageAuthority: coverageAuthority,
-                    sourceFingerprint: fingerprintBefore,
-                    compactSourceIdentifier: compactFingerprintBefore
-                )
-            if let attemptSignature,
-               UserDefaults.standard.string(
-                    forKey: Self.currentCycleStepReceiptAttemptKey
-               ) == attemptSignature {
-                DispatchQueue.main.async {
-                    NotificationCenter.default.post(
-                        name: AtriaWhoop4MotionTickDailyStore
-                            .didSaveNotification,
-                        object: nil
-                    )
-                }
-                AtriaDebugLog(
-                    "ATRIADBG whoop4_daily_steps status=receipt_refresh_unchanged_skipped reason=%@ generation=%d coverage_intervals=%d",
-                    reason,
-                    generation,
-                    coverage.count
-                )
-                return
-            }
             let compactRead = AtriaWhoop4MotionTickCompactStore.shared
                 .motionTickDayEvidenceRead(
                     start: cycleStart,
@@ -8266,120 +8151,108 @@ final class SessionStore: ObservableObject {
                     bankCoverage: coverage,
                     strapIdentifier: strapIdentifier
                 )
-            // The compact v24 shard is the durable fast path and is preferred
-            // whenever it already covers the cycle. But when the shard has not
-            // yet been migrated for the CURRENT cycle, relying on it alone froze
-            // today's strap steps at "--" for the whole day (the shard could lag
-            // a full day behind banked motion). On a compact miss we now fall
-            // back to `HistoricalArchive.motionTickDayEvidenceRead`, which is
-            // WINDOWED to the current cycle only ([cycleStart, now] — it scans
-            // just the recent motion files intersecting that window, off the
-            // main thread). This is bounded (no whole-archive reopen, so it does
-            // not reintroduce the foreground memory balloon) and uses the exact
-            // same decode that produces the verified prior-day count — so today
-            // surfaces a real "today so far" partial within the refresh cadence
-            // instead of waiting for the shard migration.
-            let read: HistoricalArchive.MotionTickDayEvidenceRead
-            if case .qualified = compactRead {
-                read = compactRead
-            } else {
-                read = HistoricalArchive.motionTickDayEvidenceRead(
-                    start: cycleStart,
-                    end: now,
-                    bankCoverage: coverage,
-                    strapIdentifier: strapIdentifier
-                )
-            }
-            let fingerprintAfter =
-                HistoricalArchive.consumerSourceFingerprint()
             let compactFingerprintAfter =
                 AtriaWhoop4MotionTickCompactStore.shared.sourceFingerprint(
                     start: cycleStart,
                     end: now,
                     strapIdentifier: strapIdentifier
                 )
-            let stableCompleteRead =
-                fingerprintBefore == fingerprintAfter
-                    && compactFingerprintBefore == compactFingerprintAfter
-                    && read != .incomplete
-            let completedAttemptSignature =
-                Self.currentCycleStepReceiptAttemptSignature(
+            let compactQualified: Bool
+            if case .qualified = compactRead {
+                compactQualified = true
+            } else {
+                compactQualified = false
+            }
+            switch Self.currentCycleStepReceiptReadPlan(
+                compactReadQualified: compactQualified
+            ) {
+            case .publishCompact:
+                Self.completeCurrentCycleStrapStepReceiptRead(
+                    compactRead,
+                    stableCompleteRead:
+                        compactFingerprintBefore == compactFingerprintAfter,
+                    reason: reason,
+                    generation: generation,
+                    coverageCount: coverage.count,
                     strapIdentifier: strapIdentifier,
-                    cycleStart: cycleStart,
-                    coverageAuthority: coverageAuthority,
-                    sourceFingerprint: fingerprintAfter,
-                    compactSourceIdentifier: compactFingerprintAfter
+                    owner: self
                 )
-            guard case .qualified(let evidence) = read else {
-                if !applicationIsActive {
-                    DispatchQueue.main.async { [weak self] in
-                        self?.currentCycleStepReceiptDeferredUntilForeground =
-                            true
-                    }
-                }
-                if allowNegativeAttemptPersistence,
-                   stableCompleteRead,
-                   let completedAttemptSignature {
-                    UserDefaults.standard.set(
-                        completedAttemptSignature,
-                        forKey: Self.currentCycleStepReceiptAttemptKey
-                    )
-                }
-                AtriaDebugLog(
-                    "ATRIADBG whoop4_daily_steps status=receipt_refresh_missing reason=%@ generation=%d coverage_intervals=%d complete=%d",
-                    reason,
-                    generation,
-                    coverage.count,
-                    stableCompleteRead ? 1 : 0
-                )
-                return
-            }
-            do {
-                let changed = try AtriaWhoop4MotionTickDailyStore.shared.save(
-                    evidence,
-                    strapIdentifier: strapIdentifier
-                )
+            case .compactOnlyMissing:
                 DispatchQueue.main.async { [weak self] in
-                    self?.currentCycleStepReceiptDeferredUntilForeground =
-                        false
-                }
-                if stableCompleteRead, let completedAttemptSignature {
-                    UserDefaults.standard.set(
-                        completedAttemptSignature,
-                        forKey: Self.currentCycleStepReceiptAttemptKey
-                    )
-                }
-                // On relaunch the strongest receipt may already be durable.
-                // `save` correctly performs no write in that case, but Home
-                // can have rendered before CoreBluetooth republished the saved
-                // strap identity. Emit one lightweight availability event so
-                // every surface re-resolves the existing receipt immediately.
-                if !changed {
-                    DispatchQueue.main.async {
-                        NotificationCenter.default.post(
-                            name: AtriaWhoop4MotionTickDailyStore
-                                .didSaveNotification,
-                            object: nil
-                        )
-                    }
+                    guard let self,
+                          self.currentCycleStepReceiptGeneration
+                            == generation else { return }
+                    self.currentCycleStepReceiptDeferredUntilForeground = false
                 }
                 AtriaDebugLog(
-                    "ATRIADBG whoop4_daily_steps status=receipt_refresh_complete reason=%@ generation=%d changed=%d steps=%d known_s=%d missing_s=%d",
+                    "ATRIADBG whoop4_daily_steps status=compact_only_missing reason=%@ generation=%d coverage_intervals=%d action=wait_for_compact_checkpoint_or_safe_bounded_migration",
                     reason,
                     generation,
-                    changed ? 1 : 0,
-                    evidence.steps,
-                    evidence.knownCoverageSeconds,
-                    evidence.missingCoverageSeconds
-                )
-            } catch {
-                AtriaDebugLog(
-                    "ATRIADBG whoop4_daily_steps status=receipt_save_failed reason=%@ generation=%d error=%@",
-                    reason,
-                    generation,
-                    error.localizedDescription
+                    coverage.count
                 )
             }
+        }
+    }
+
+    nonisolated private static func
+        completeCurrentCycleStrapStepReceiptRead(
+            _ read: HistoricalArchive.MotionTickDayEvidenceRead,
+            stableCompleteRead: Bool,
+            reason: String,
+            generation: Int,
+            coverageCount: Int,
+            strapIdentifier: String,
+            owner: SessionStore?
+        ) {
+        guard case .qualified(let evidence) = read else {
+            AtriaDebugLog(
+                "ATRIADBG whoop4_daily_steps status=receipt_refresh_missing reason=%@ generation=%d coverage_intervals=%d complete=%d",
+                reason,
+                generation,
+                coverageCount,
+                stableCompleteRead ? 1 : 0
+            )
+            return
+        }
+        do {
+            let changed = try AtriaWhoop4MotionTickDailyStore.shared.save(
+                evidence,
+                strapIdentifier: strapIdentifier
+            )
+            DispatchQueue.main.async { [weak owner] in
+                guard let owner,
+                      owner.currentCycleStepReceiptGeneration
+                        == generation else { return }
+                owner.currentCycleStepReceiptDeferredUntilForeground = false
+            }
+            // On relaunch the strongest receipt may already be durable. `save`
+            // correctly performs no write in that case, but Home can have
+            // rendered before CoreBluetooth republished the saved strap identity.
+            if !changed {
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(
+                        name: AtriaWhoop4MotionTickDailyStore
+                            .didSaveNotification,
+                        object: nil
+                    )
+                }
+            }
+            AtriaDebugLog(
+                "ATRIADBG whoop4_daily_steps status=receipt_refresh_complete reason=%@ generation=%d changed=%d steps=%d known_s=%d missing_s=%d",
+                reason,
+                generation,
+                changed ? 1 : 0,
+                evidence.steps,
+                evidence.knownCoverageSeconds,
+                evidence.missingCoverageSeconds
+            )
+        } catch {
+            AtriaDebugLog(
+                "ATRIADBG whoop4_daily_steps status=receipt_save_failed reason=%@ generation=%d error=%@",
+                reason,
+                generation,
+                error.localizedDescription
+            )
         }
     }
 
@@ -9640,10 +9513,32 @@ final class SessionStore: ObservableObject {
 
         let policy = AtriaRecoveredDataTimeoutPolicy.physicalSessionStore
         let confirmedSleeps = cachedConfirmedSleeps
+        let requiresBackgroundProjectionLease =
+            ticket.reason.hasPrefix("bg_projection")
+        let backgroundProjectionLease = requiresBackgroundProjectionLease
+            ? AtriaBackgroundProjectionThrottle.shared.captureActiveLease()
+            : nil
         var lastOfferedProgressBytes = 0
         var lastOfferedProgressUptime = DispatchTime.now().uptimeNanoseconds
         let workItem = DispatchWorkItem {
             [weak self, livePoints, cutoff, ticket, confirmedSleeps] in
+            func reserveForSafeBackground() {
+                DispatchQueue.main.async { [weak self, ticket] in
+                    guard let self else { return }
+                    self.handleRecoveredDataRecomputeEffects(
+                        self.recoveredDataRecompute
+                            .projectionReservedForSafeBackground(ticket: ticket)
+                    )
+                }
+            }
+            guard !requiresBackgroundProjectionLease
+                    || backgroundProjectionLease != nil else {
+                reserveForSafeBackground()
+                return
+            }
+            // Ordinary automatic requests are fenced before ticket creation.
+            // This global diagnostic is therefore reachable only by the
+            // separately authorized exact/manual projection lane.
             let diagnostics = HistoricalArchive.diagnostics()
             guard !diagnostics.exists || diagnostics.parseOK else {
                 DispatchQueue.main.async { [weak self, ticket] in
@@ -9667,9 +9562,9 @@ final class SessionStore: ObservableObject {
             let recoveredSnapshot = AtriaTransientWorkThread.run(
                 name: "atria.recompute-snapshot",
                 qualityOfService: .userInitiated
-            ) { HistoricalArchive.makeRecoveredDataSnapshot(
-                since: cutoff,
-                onScanProgress: { [weak self] statistics in
+            ) { () -> HistoricalArchive.RecoveredDataSnapshot? in
+                let onScanProgress: (AtriaHistoricalJSONLRecentScanner.Statistics) -> Void = {
+                    [weak self] statistics in
                     let now = DispatchTime.now().uptimeNanoseconds
                     let elapsed = Double(now - lastOfferedProgressUptime)
                         / 1_000_000_000
@@ -9689,7 +9584,23 @@ final class SessionStore: ObservableObject {
                         )
                     }
                 }
-            ) }
+                if let backgroundProjectionLease {
+                    return HistoricalArchive
+                        .makeBackgroundRecoveredDataSnapshot(
+                            since: cutoff,
+                            lease: backgroundProjectionLease,
+                            onScanProgress: onScanProgress
+                        )
+                }
+                return HistoricalArchive.makeRecoveredDataSnapshot(
+                    since: cutoff,
+                    onScanProgress: onScanProgress
+                )
+            }
+            guard let recoveredSnapshot else {
+                reserveForSafeBackground()
+                return
+            }
             Task { @MainActor [weak self, ticket] in
                 self?.renewRecoveredProjectionLease(
                     ticket: ticket,
@@ -10104,6 +10015,12 @@ final class SessionStore: ObservableObject {
         let pendingIsExact = deferredRecoveredDataRecomputationIsExact
         deferredRecoveredDataRecomputationReason = nil
         deferredRecoveredDataRecomputationIsExact = false
+        if pendingReason.hasPrefix("archive_did_update"), !pendingIsExact {
+            reserveAutomaticRecoveredProjectionFreshness(
+                reason: "\(pendingReason)_after_\(reason)"
+            )
+            return
+        }
         guard requestRecoveredDataRecomputation(
             reason: "\(pendingReason)_after_\(reason)",
             allowsIncompleteOnboarding: pendingIsExact,
@@ -10113,6 +10030,19 @@ final class SessionStore: ObservableObject {
             "ATRIADBG recovered_projection status=resumed reason=%@ exact=%d",
             reason,
             pendingIsExact ? 1 : 0
+        )
+    }
+
+    private func reserveAutomaticRecoveredProjectionFreshness(
+        reason: String
+    ) {
+        UserDefaults.standard.set(
+            Date().timeIntervalSince1970,
+            forKey: Self.automaticRecoveredProjectionFreshnessIntentKey
+        )
+        AtriaDebugLog(
+            "ATRIADBG recovered_projection status=automatic_intent_reserved reason=%@ action=reuse_persisted_projection_until_explicit_recovery",
+            reason
         )
     }
 
@@ -10137,6 +10067,23 @@ final class SessionStore: ObservableObject {
         backgroundProjectionAllowed: Bool = false
     ) -> Bool {
         guard !restoreInitializationBlocked else { return false }
+        if Self.shouldReserveAutomaticRecoveredDataProjectionForSafeBackground(
+            reason: reason,
+            isExactRecoveryPublication: isExactRecoveryPublication,
+            backgroundProjectionAllowed: backgroundProjectionAllowed
+        ) {
+            // Raw history and app-facing caches are already durable. Ordinary
+            // cold-load/archive-update freshness therefore persists intent and
+            // reuses the last projection; it never mints a coordinator ticket.
+            // Exact/manual completion-fenced recovery remains separately
+            // authorized and is not weakened by this release safety fence.
+            reserveAutomaticRecoveredProjectionFreshness(reason: reason)
+            AtriaDebugLog(
+                "ATRIADBG recovered_projection status=reserved_for_safe_background reason=%@ action=reuse_persisted_projection",
+                reason
+            )
+            return false
+        }
         if Self.shouldDeferRecoveredDataRecomputationForExactRecovery(
             exactRecoveryOwnsPriority:
                 HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(),
@@ -10189,9 +10136,6 @@ final class SessionStore: ObservableObject {
         }
         deferredRecoveredDataRecomputationReason = nil
         deferredRecoveredDataRecomputationIsExact = false
-        if reason.hasPrefix("archive_did_update") {
-            scheduleConfirmedWorkoutArchiveRehydration(reason: reason)
-        }
         let archiveRevision = recoveredDataPublicationFence.recordArchiveUpdate()
         if isExactRecoveryPublication {
             // Reserve the archive lane before the coordinator starts so
@@ -10207,7 +10151,31 @@ final class SessionStore: ObservableObject {
             reason: reason
         )
         handleRecoveredDataRecomputeEffects(effects)
+        // Establish the coordinator's projection ownership before offering
+        // workout rehydration. With a cold recovered-HR cache, the automatic
+        // archive-update consumer then waits for that exact projection instead
+        // of racing it with a 1.5M-point raw archive scan.
+        if reason.hasPrefix("archive_did_update") {
+            scheduleConfirmedWorkoutArchiveRehydration(reason: reason)
+        }
         return true
+    }
+
+    /// Ordinary launch/cache invalidations are freshness requests, not terminal
+    /// recovery authorities. They retain durable intent but create no projection
+    /// revision/ticket, because every ticket fans out into global derived
+    /// consumers. Exact/manual recovery remains completion-fenced.
+    nonisolated static func
+        shouldReserveAutomaticRecoveredDataProjectionForSafeBackground(
+            reason: String,
+            isExactRecoveryPublication: Bool,
+            backgroundProjectionAllowed: Bool
+        ) -> Bool {
+        guard !isExactRecoveryPublication else { return false }
+        if reason == "deferred_session_load" { return true }
+        if reason.hasPrefix("archive_did_update") { return true }
+        guard !backgroundProjectionAllowed else { return false }
+        return false
     }
 
     nonisolated static func shouldStartAutomaticArchiveProjection(
@@ -10237,16 +10205,37 @@ final class SessionStore: ObservableObject {
         return true
     }
 
-    /// Start ONE background projection cycle iff the environment is safe, arming
-    /// the CPU duty-cycle throttle for its scan. Additive: it passes
-    /// `backgroundProjectionAllowed` to relax ONLY the foreground gate; the
-    /// exact-recovery / transport-owns-link deferrals still apply, so an active
-    /// drain automatically parks it. Returns whether a cycle was started.
+    nonisolated static func shouldExecuteAutomaticFullBackgroundProjection()
+        -> Bool {
+        false
+    }
+
+    private static let backgroundRecoveredProjectionMaintenanceIntentKey =
+        "atria.recoveredProjection.fullMaintenanceRequestedAt.v1"
+
+    /// The full automatic BG projection is release-disabled before a ticket or
+    /// throttle exists. The retained body documents the future guarded lane;
+    /// exact/manual completion-fenced projection uses its separate entry point.
     @discardableResult
     func requestBackgroundArchiveProjectionIfSafe(
         reason: String,
         budgetSeconds: TimeInterval = 240
     ) -> Bool {
+        guard Self.shouldExecuteAutomaticFullBackgroundProjection() else {
+            // The raw archive is already durable. Persist freshness intent and
+            // reuse the last app-facing projection without entering the
+            // unbounded rebuild/projector graph.
+            UserDefaults.standard.set(
+                Date().timeIntervalSince1970,
+                forKey: Self
+                    .backgroundRecoveredProjectionMaintenanceIntentKey
+            )
+            AtriaDebugLog(
+                "ATRIADBG bg_projection status=reserved_automatic_full_disabled reason=%@ action=reuse_cache_or_bounded_incremental_only",
+                reason
+            )
+            return false
+        }
         let allowed = Self.shouldStartBackgroundArchiveProjection(
             thermalState: ProcessInfo.processInfo.thermalState,
             isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled,
@@ -10384,6 +10373,7 @@ final class SessionStore: ObservableObject {
         pendingConfirmedWorkoutRehydrationWorkItem = nil
         pendingWorkoutStepEvidenceWorkItem?.cancel()
         pendingWorkoutStepEvidenceWorkItem = nil
+        workoutStepEvidenceRescheduleRequested = false
         pendingForegroundSleepSettlementWorkItem?.cancel()
         pendingForegroundSleepSettlementWorkItem = nil
         pendingSleepReviewCacheWorkItem?.cancel()
@@ -10632,7 +10622,9 @@ final class SessionStore: ObservableObject {
                     ticket.generation,
                     ticket.archiveRevision
                 )
-                runRecoveredHeartRateProjection(ticket: ticket)
+                runRecoveredHeartRateProjection(
+                    ticket: ticket
+                )
 
             case .startDerived(let ticket, _):
                 // Projection and derived fan-out are separate bounded phases.
@@ -10670,6 +10662,38 @@ final class SessionStore: ObservableObject {
                 AtriaDebugLog("ATRIADBG recovered_derived status=superseded generation=%llu archive_revision=%llu",
                               ticket.generation,
                               ticket.archiveRevision)
+
+            case .reservedForSafeBackground(let ticket):
+                recoveredDataRecomputeTimeoutTask?.cancel()
+                recoveredDataRecomputeTimeoutTask = nil
+                recoveredDataRecomputeTimeoutContext = nil
+                recoveredDataRecomputeLeaseSuspendedForBackground = false
+                recoveredDataProjectionLeaseRenewals.removeValue(
+                    forKey: ticket.generation
+                )
+                recoveredDataProjectionCompletedStages.removeValue(
+                    forKey: ticket.generation
+                )
+                recoveredDataDerivedLeaseRenewals.removeValue(
+                    forKey: ticket.generation
+                )
+                recoveredDataDerivedCompletedStages.removeValue(
+                    forKey: ticket.generation
+                )
+                // Authoritative admission runs before the first recovered
+                // mutation is registered. Discard the empty transaction
+                // directly: the general rollback helper intentionally replays
+                // pending history work, which would defeat this no-scan exit.
+                let rolledBack = recoveredDataMutationTransaction.rollback(
+                    ticket: ticket
+                )
+                AtriaDebugLog(
+                    "ATRIADBG recovered_projection status=reserved_for_safe_background reason=%@ generation=%llu archive_revision=%llu rollback=%d action=reuse_persisted_projection",
+                    ticket.reason,
+                    ticket.generation,
+                    ticket.archiveRevision,
+                    rolledBack ? 1 : 0
+                )
 
             case .failed(let ticket, let failure):
                 recoveredDataRecomputeTimeoutTask?.cancel()
@@ -11244,6 +11268,19 @@ final class SessionStore: ObservableObject {
     /// Re-evaluates only confirmed workouts whose saved HR coverage is incomplete.
     /// Archive parsing and metric derivation stay off the main actor; the final
     /// compare-and-swap is one atomic confirmed-workout persistence revision.
+    nonisolated static func
+        shouldDeferAutomaticWorkoutRehydrationUntilRecoveredProjection(
+            reason: String,
+            isRequiredRecoveredPublication: Bool,
+            recoveredProjectionWasSupplied: Bool,
+            cachedRecoveredProjectionAvailable: Bool
+        ) -> Bool {
+        !isRequiredRecoveredPublication
+            && reason.hasPrefix("archive_did_update")
+            && !recoveredProjectionWasSupplied
+            && !cachedRecoveredProjectionAvailable
+    }
+
     private func scheduleConfirmedWorkoutArchiveRehydration(
         reason: String,
         recoveredArchiveHeartRatePoints:
@@ -11252,6 +11289,23 @@ final class SessionStore: ObservableObject {
         completion: ((Bool) -> Void)? = nil
     ) {
         let isRequiredRecoveredPublication = completion != nil
+        if Self
+            .shouldDeferAutomaticWorkoutRehydrationUntilRecoveredProjection(
+                reason: reason,
+                isRequiredRecoveredPublication:
+                    isRequiredRecoveredPublication,
+                recoveredProjectionWasSupplied:
+                    recoveredArchiveHeartRatePoints != nil,
+                cachedRecoveredProjectionAvailable:
+                    !cachedRecoveredArchiveHeartRatePoints.isEmpty
+            ) {
+            workoutRehydrationDeferredUntilForeground = true
+            AtriaDebugLog(
+                "ATRIADBG confirmed_workout_rehydration status=deferred reason=%@ detail=automatic_archive_update_awaiting_bounded_projection action=never_raw_fallback",
+                reason
+            )
+            return
+        }
         if !isRequiredRecoveredPublication,
            nonExactArchiveConsumerShouldDefer {
             workoutRehydrationDeferredUntilForeground = true
@@ -11566,30 +11620,12 @@ final class SessionStore: ObservableObject {
     ) {
         guard AtriaWhoop4GravityCadenceStepModel
                 .releaseDailyAuthorityQualified else {
-            workoutStepEvidenceDeferredUntilForeground = false
             return
         }
-        guard Self.shouldStartAutomaticArchiveProjection(
-            applicationIsActive:
-                UIApplication.shared.applicationState == .active
-        ) else {
-            workoutStepEvidenceDeferredUntilForeground = true
-            AtriaDebugLog(
-                "ATRIADBG confirmed_workout_steps status=deferred reason=%@ app_active=0 action=wait_for_foreground",
-                reason
-            )
+        guard pendingWorkoutStepEvidenceWorkItem == nil else {
+            workoutStepEvidenceRescheduleRequested = true
             return
         }
-        workoutStepEvidenceDeferredUntilForeground = false
-        guard !nonExactArchiveConsumerShouldDefer else {
-            workoutStepEvidenceDeferredUntilForeground = true
-            AtriaDebugLog(
-                "ATRIADBG confirmed_workout_steps status=deferred reason=%@ detail=exact_recovery_archive_priority action=coalesce_until_terminal_projection",
-                reason
-            )
-            return
-        }
-        guard pendingWorkoutStepEvidenceWorkItem == nil else { return }
         let originals = cachedConfirmedWorkouts.filter {
             ($0.workoutSteps == nil
                 || $0.workoutStepsAreEstimated == true)
@@ -11598,7 +11634,7 @@ final class SessionStore: ObservableObject {
                     subtype: $0.activitySubtype,
                     label: $0.label
                 ) == .walking
-        }
+        }.sorted { $0.end > $1.end }
         guard !originals.isEmpty,
               let strapIdentifier = UserDefaults.standard.string(
                 forKey: AtriaBLEManager.OfflineSyncDefaults
@@ -11608,42 +11644,47 @@ final class SessionStore: ObservableObject {
         let generation = workoutStepEvidenceGeneration
         let workItem = DispatchWorkItem { [weak self, originals,
                                            strapIdentifier, reason] in
-            guard !HistoricalArchive
-                .exactRecoveryProjectionOwnsArchivePriority() else {
-                Task { @MainActor [weak self] in
-                    self?.pendingWorkoutStepEvidenceWorkItem = nil
-                    self?.workoutStepEvidenceDeferredUntilForeground = true
-                }
-                return
-            }
-            let fingerprintBefore =
-                HistoricalArchive.consumerSourceFingerprint()
-            let fingerprintIdentifier =
-                fingerprintBefore.stableIdentifier
             let cachedNegatives =
                 Self.readWorkoutStepNegativeAttempts()
-            let eligible = originals.first { workout in
+            var eligible: (
+                workout: UserConfirmedWorkout,
+                fingerprint: String?
+            )?
+            for workout in originals {
+                let compactFingerprint =
+                    AtriaWhoop4MotionTickCompactStore.shared
+                        .sourceFingerprint(
+                            start: workout.start,
+                            end: workout.end,
+                            strapIdentifier: strapIdentifier
+                        )
+                        .map { "compact:\($0)" }
                 let key = Self.workoutStepNegativeAttemptKey(
                     workout: workout,
                     strapIdentifier: strapIdentifier
                 )
-                return Self.shouldScanWorkoutStepEvidence(
+                if Self.shouldScanWorkoutStepEvidence(
                     cachedFingerprint: cachedNegatives[key],
-                    currentFingerprint: fingerprintIdentifier
-                )
+                    currentFingerprint: compactFingerprint
+                ) {
+                    eligible = (workout, compactFingerprint)
+                    break
+                }
             }
 
             var attempted = 0
             var cacheRecorded = false
             var replacements:
                 [(UserConfirmedWorkout, UserConfirmedWorkout)] = []
-            if let old = eligible {
+            if let eligible {
+                let old = eligible.workout
                 attempted = 1
-                let read = HistoricalArchive.motionTickWindowRead(
-                    start: old.start,
-                    end: old.end,
-                    strapIdentifier: strapIdentifier
-                )
+                let read = AtriaWhoop4MotionTickCompactStore.shared
+                    .motionTickWindowRead(
+                        start: old.start,
+                        end: old.end,
+                        strapIdentifier: strapIdentifier
+                    )
                 switch read {
                 case .qualified(let tickWindow):
                     let replacement =
@@ -11660,26 +11701,29 @@ final class SessionStore: ObservableObject {
                         workoutStepsCapturedAt: tickWindow.endCapturedAt
                     )
                     replacements = [(old, replacement)]
-                case .completeNoQualifiedEvidence:
+                case .completeNoQualifiedEvidence, .incomplete:
                     let fingerprintAfter =
-                        HistoricalArchive.consumerSourceFingerprint()
-                    if Self.shouldCacheWorkoutStepNegative(
-                        read: read,
-                        fingerprintBefore: fingerprintBefore,
-                        fingerprintAfter: fingerprintAfter
-                    ),
-                       let fingerprintIdentifier {
+                        AtriaWhoop4MotionTickCompactStore.shared
+                            .sourceFingerprint(
+                                start: old.start,
+                                end: old.end,
+                                strapIdentifier: strapIdentifier
+                            )
+                            .map { "compact:\($0)" }
+                    // This is only an attempt lease, never negative evidence.
+                    // A compact append changes the shard-size fingerprint and
+                    // immediately makes the workout eligible again.
+                    if eligible.fingerprint == fingerprintAfter,
+                       let fingerprintAfter {
                         Self.recordWorkoutStepNegativeAttempt(
                             key: Self.workoutStepNegativeAttemptKey(
                                 workout: old,
                                 strapIdentifier: strapIdentifier
                             ),
-                            fingerprint: fingerprintIdentifier
+                            fingerprint: fingerprintAfter
                         )
                         cacheRecorded = true
                     }
-                case .incomplete:
-                    break
                 }
             }
             Task { @MainActor [weak self, replacements, reason,
@@ -11689,6 +11733,9 @@ final class SessionStore: ObservableObject {
                     return
                 }
                 self.pendingWorkoutStepEvidenceWorkItem = nil
+                let needsTrailingRefresh =
+                    self.workoutStepEvidenceRescheduleRequested
+                self.workoutStepEvidenceRescheduleRequested = false
                 var updated = self.cachedConfirmedWorkouts
                 var applied = 0
                 for (original, replacement) in replacements {
@@ -11705,14 +11752,19 @@ final class SessionStore: ObservableObject {
                 }
                 guard applied > 0 else {
                     AtriaDebugLog(
-                        "ATRIADBG confirmed_workout_steps status=%@ reason=%@ attempted=%d cached_negative=%d",
+                        "ATRIADBG confirmed_workout_steps status=%@ reason=%@ attempted=%d cached_compact_attempt=%d action=wait_for_compact_checkpoint_or_safe_bounded_migration",
                         attempted == 0
-                            ? "unchanged_negative_skipped"
+                            ? "unchanged_compact_skipped"
                             : "no_qualified_window",
                         reason,
                         attempted,
                         cacheRecorded ? 1 : 0
                     )
+                    if needsTrailingRefresh {
+                        self.scheduleConfirmedWorkoutStepEvidencePublication(
+                            reason: "compact_trailing_refresh"
+                        )
+                    }
                     return
                 }
                 let saved = await self.saveConfirmedWorkouts(updated)
@@ -11722,6 +11774,11 @@ final class SessionStore: ObservableObject {
                     reason,
                     applied
                 )
+                if needsTrailingRefresh {
+                    self.scheduleConfirmedWorkoutStepEvidencePublication(
+                        reason: "compact_trailing_refresh"
+                    )
+                }
             }
         }
         pendingWorkoutStepEvidenceWorkItem = workItem
@@ -11830,13 +11887,8 @@ final class SessionStore: ObservableObject {
                     Date().addingTimeInterval(-14 * 24 * 60 * 60)
             )
         }
-        if workoutStepEvidenceDeferredUntilForeground {
-            scheduleConfirmedWorkoutStepEvidencePublication(
-                reason: "foreground_\(reason)"
-            )
-        }
         if currentCycleStepReceiptDeferredUntilForeground {
-            prepareCurrentCycleStrapStepReceipt(
+            refreshCurrentCycleStrapStepReceipt(
                 reason: "foreground_\(reason)"
             )
         }
@@ -11848,12 +11900,6 @@ final class SessionStore: ObservableObject {
             handlePhysiologicalCycleRollover(reason: "foreground_\(reason)")
         } else {
             schedulePhysiologicalCycleRolloverCheck(
-                reason: "foreground_\(reason)"
-            )
-        }
-        if archiveCompactionDeferredUntilForeground {
-            archiveCompactionDeferredUntilForeground = false
-            compactHistoricalArchiveIfUseful(
                 reason: "foreground_\(reason)"
             )
         }
@@ -14367,14 +14413,22 @@ final class SessionStore: ObservableObject {
                                                                                       queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.requestRecoveredDataRecomputation(reason: "archive_did_update")
+                // Ordinary archive updates persist freshness intent only.
+                // Even a small raw tail would enter whole-archive derived
+                // consumers after projection, so it may not mint a coordinator
+                // ticket in the release path.
+                self.reserveAutomaticRecoveredProjectionFreshness(
+                    reason: "archive_did_update"
+                )
                 // A terminal history drain can seal a raw chunk while the app
-                // stays in the foreground for days. Do not rely only on a
-                // future launch or opportunistic BGTask to notice the 14-day /
-                // 512-MiB policy. The compactor's daily lease and in-flight
-                // guard make this notification-path check cheap; actual work
-                // remains off-main and is still fully verification-gated.
-                self.compactHistoricalArchiveIfUseful(reason: "archive_did_update")
+                // stays in the foreground for days. Retain that maintenance
+                // intent, but never let this live/archive callback enumerate
+                // the archive for pressure accounting. Only a guarded
+                // BGProcessing call can mint the worker authority below.
+                self.reserveArchiveCompactionForSafeBackground()
+                AtriaDebugLog(
+                    "ATRIADBG archive_compaction_driver status=reserved_for_safe_background reason=archive_did_update action=wait_for_guarded_bg_processing"
+                )
             }
         }
         self.motionBankOffloadObserver = NotificationCenter.default.addObserver(
@@ -14385,9 +14439,9 @@ final class SessionStore: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in
                 // Exact verification and honest bounded exhaustion both change
-                // the transport queue. Recompute from durable rows + retained
-                // bank intervals; the notification itself grants no coverage.
-                self?.prepareCurrentCycleStrapStepReceipt(
+                // the transport queue. Publish from the bounded compact shard;
+                // this hot same-link callback can never enumerate JSONL.
+                self?.refreshCurrentCycleStrapStepReceipt(
                     reason: "finalized_bank_offload"
                 )
             }
@@ -14405,6 +14459,9 @@ final class SessionStore: ObservableObject {
                     // stronger lower bound once at the durable compact
                     // boundary instead of waiting for full ticket resolution.
                     self?.refreshCurrentCycleStrapStepReceipt(
+                        reason: "compact_generation_durable"
+                    )
+                    self?.scheduleConfirmedWorkoutStepEvidencePublication(
                         reason: "compact_generation_durable"
                     )
                 }
@@ -14450,15 +14507,15 @@ final class SessionStore: ObservableObject {
         sleepHistorySnapshot = SleepHistorySnapshot(rollups: [],
                                                     confirmedSleeps: cachedConfirmedSleeps,
                                                     dismissedCandidates: dismissedSleepCandidates)
-        // Defer one MainActor turn so AtriaApp can install the BLE ownership
-        // provider before a large archive scan starts. Normal launches still
-        // begin on the next turn; history/onboarding launches coalesce instead.
+        // Defer one MainActor turn so the initial bounded compact receipt read
+        // does not share the store initializer's render turn. Legacy JSONL
+        // migration is admitted only by safe BGProcessing maintenance.
         Task { @MainActor [weak self] in
             guard let self else { return }
             self.scheduleConfirmedWorkoutStepEvidencePublication(
                 reason: "session_store_init_workout_evidence"
             )
-            self.prepareCurrentCycleStrapStepReceipt(
+            self.refreshCurrentCycleStrapStepReceipt(
                 reason: "session_store_init"
             )
             // 2026-07-31: arm the no-sleep rollover boundary check; nothing
@@ -16136,53 +16193,417 @@ final class SessionStore: ObservableObject {
     private static var archiveCompactionInFlight = false
     private static var archiveCompactionPressureProbeInFlight = false
 
-    func compactHistoricalArchiveIfUseful(reason: String,
-                                          now: Date = Date(),
-                                          bypassDailyLease: Bool = false) {
-        guard Self.shouldStartAutomaticArchiveProjection(
-            applicationIsActive:
-                UIApplication.shared.applicationState == .active
+    /// Unforgeable outside `SessionStore`: AtriaApp receives this only from the
+    /// real BGProcessing handler after the BLE drain has settled. Normal task
+    /// completion and expiration revoke it, so merely remaining in
+    /// `UIApplication.State.background` is never enough authority to start a
+    /// later retention scan.
+    final class ArchiveCompactionCancellationToken: @unchecked Sendable {
+        private let lock = NSLock()
+        private var revoked = false
+
+        func revoke() {
+            lock.lock()
+            revoked = true
+            lock.unlock()
+        }
+
+        func shouldContinue(
+            thermalState: ProcessInfo.ThermalState,
+            isLowPowerModeEnabled: Bool
+        ) -> Bool {
+            lock.lock()
+            let isRevoked = revoked
+            lock.unlock()
+            return !isRevoked
+                && thermalState != .serious
+                && thermalState != .critical
+                && !isLowPowerModeEnabled
+        }
+    }
+
+    struct ArchiveCompactionBGProcessingLease: Sendable {
+        fileprivate let generation: Int
+        fileprivate let expiresAt: Date
+        fileprivate let cancellationToken:
+            ArchiveCompactionCancellationToken
+    }
+
+    private struct ArchiveCompactionSafeBackgroundAdmission {
+        let generation: Int
+        let intentRevision: Int
+        let reason: String
+        let expiresAt: Date
+        let explicitDebugOverride: Bool
+        let backgroundLease: ArchiveCompactionBGProcessingLease?
+    }
+
+    private enum ArchiveCompactionSafeBackgroundOperation {
+        case pressureProbe
+        case compaction
+    }
+
+    /// Retention accounting itself walks the complete archive, even when the
+    /// resulting plan says there is nothing to compact. Automatic callers may
+    /// therefore enter only from the real BGProcessing handler under the same
+    /// power/thermal fence as background projection. The cap-pressure
+    /// continuation must retain the same live lease; yielded work is reserved
+    /// for a future task instead of arming a timer. Foreground archive
+    /// notifications can never manufacture this authority.
+    nonisolated static func shouldAdmitAutomaticArchiveCompaction(
+        reason: String,
+        applicationIsBackground: Bool,
+        thermalState: ProcessInfo.ThermalState,
+        isLowPowerModeEnabled: Bool,
+        batteryState: UIDevice.BatteryState,
+        batteryLevel: Float,
+        exactRecoveryOwnsPriority: Bool,
+        recoveredCycleEngaged: Bool
+    ) -> Bool {
+        let isBackgroundProcessingReason = reason == "bg_processing"
+            || reason == "bg_processing_cap_pressure"
+        return isBackgroundProcessingReason
+            && applicationIsBackground
+            && !exactRecoveryOwnsPriority
+            && !recoveredCycleEngaged
+            && shouldStartBackgroundArchiveProjection(
+                thermalState: thermalState,
+                isLowPowerModeEnabled: isLowPowerModeEnabled,
+                batteryState: batteryState,
+                batteryLevel: batteryLevel
+            )
+    }
+
+    /// Release fence for the archive-wide graph. Environmental admission is
+    /// still modeled above so it can be reused once every composite reader and
+    /// publisher is cooperatively cancellable, but production automatic work
+    /// remains disabled until that proof is complete.
+    nonisolated static func shouldExecuteArchiveWideMaintenance(
+        explicitDebugOverride: Bool
+    ) -> Bool {
+        explicitDebugOverride
+    }
+
+    nonisolated static func archiveCompactionWorkerLeaseIsCurrent(
+        leaseGeneration: Int,
+        activeLeaseGeneration: Int?,
+        now: Date,
+        leaseExpiresAt: Date
+    ) -> Bool {
+        activeLeaseGeneration == leaseGeneration
+            && now <= leaseExpiresAt
+    }
+
+    nonisolated static func archiveCompactionWorkerShouldContinue(
+        _ lease: ArchiveCompactionBGProcessingLease?
+    ) -> Bool {
+        guard let lease, Date() <= lease.expiresAt else { return false }
+        return lease.cancellationToken.shouldContinue(
+            thermalState: ProcessInfo.processInfo.thermalState,
+            isLowPowerModeEnabled:
+                ProcessInfo.processInfo.isLowPowerModeEnabled
+        )
+    }
+
+    nonisolated static func shouldConsumeArchiveCompactionLeaseCompletion(
+        pendingGeneration: Int?,
+        requestedGeneration: Int
+    ) -> Bool {
+        pendingGeneration == requestedGeneration
+    }
+
+    /// Minted only by the live BGProcessing task after motion/HR recovery has
+    /// finished. The environment is checked again for the operation admission
+    /// and once more on the archive worker; this lease supplies the missing
+    /// system-task lifetime authority that app state alone cannot prove.
+    func beginArchiveCompactionBGProcessingLeaseIfSafe(
+        reason: String
+    ) -> ArchiveCompactionBGProcessingLease? {
+        guard reason == "bg_processing" else {
+            reserveArchiveCompactionForSafeBackground()
+            return nil
+        }
+        if let active = activeArchiveCompactionBGProcessingLease {
+            if Date() <= active.expiresAt { return nil }
+            active.cancellationToken.revoke()
+            activeArchiveCompactionBGProcessingLease = nil
+            finishArchiveCompactionLeaseCompletion(
+                lease: active,
+                fallback: nil,
+                succeeded: false
+            )
+            reserveArchiveCompactionForSafeBackground()
+        }
+        let exactRecoveryOwnsPriority = exactRecoveryArchivePriorityLeaseActive
+            || HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority()
+        guard Self.shouldAdmitAutomaticArchiveCompaction(
+            reason: reason,
+            applicationIsBackground:
+                UIApplication.shared.applicationState == .background,
+            thermalState: ProcessInfo.processInfo.thermalState,
+            isLowPowerModeEnabled:
+                ProcessInfo.processInfo.isLowPowerModeEnabled,
+            batteryState: UIDevice.current.batteryState,
+            batteryLevel: UIDevice.current.batteryLevel,
+            exactRecoveryOwnsPriority: exactRecoveryOwnsPriority,
+            recoveredCycleEngaged: recoveredProjectionScanActive
         ) else {
-            archiveCompactionDeferredUntilForeground = true
-            AtriaDebugLog(
-                "ATRIADBG archive_compaction_driver status=deferred_background reason=%@ action=preserve_archive_until_foreground",
-                reason
-            )
+            reserveArchiveCompactionForSafeBackground()
+            return nil
+        }
+        archiveCompactionBGProcessingLeaseGeneration &+= 1
+        let lease = ArchiveCompactionBGProcessingLease(
+            generation: archiveCompactionBGProcessingLeaseGeneration,
+            expiresAt: Date().addingTimeInterval(10 * 60),
+            cancellationToken: ArchiveCompactionCancellationToken()
+        )
+        activeArchiveCompactionBGProcessingLease = lease
+        return lease
+    }
+
+    func endArchiveCompactionBGProcessingLease(
+        _ lease: ArchiveCompactionBGProcessingLease,
+        reason: String
+    ) {
+        guard activeArchiveCompactionBGProcessingLease?.generation
+                == lease.generation else { return }
+        lease.cancellationToken.revoke()
+        activeArchiveCompactionBGProcessingLease = nil
+        finishArchiveCompactionLeaseCompletion(
+            lease: lease,
+            fallback: nil,
+            succeeded: false
+        )
+        if Self.archiveCompactionInFlight
+            || Self.archiveCompactionPressureProbeInFlight {
+            reserveArchiveCompactionForSafeBackground()
+        }
+        AtriaDebugLog(
+            "ATRIADBG archive_compaction_lease status=ended reason=%@ generation=%d",
+            reason,
+            lease.generation
+        )
+    }
+
+    /// Expiration may arrive while the task body is suspended in another
+    /// await. Revoke the one live lease immediately; queued worker tickets then
+    /// fail closed even if the process remains in the background.
+    func invalidateArchiveCompactionBGProcessingLease(reason: String) {
+        guard let active = activeArchiveCompactionBGProcessingLease else {
             return
         }
-        archiveCompactionDeferredUntilForeground = false
-        guard !Self.archiveCompactionInFlight else { return }
-        guard !HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority() else {
-            AtriaDebugLog(
-                "ATRIADBG archive_compaction_driver status=deferred_exact_recovery_projection reason=%@ action=preserve_shared_projection_lane",
-                reason
+        active.cancellationToken.revoke()
+        activeArchiveCompactionBGProcessingLease = nil
+        finishArchiveCompactionLeaseCompletion(
+            lease: active,
+            fallback: nil,
+            succeeded: false
+        )
+        reserveArchiveCompactionForSafeBackground()
+        AtriaDebugLog(
+            "ATRIADBG archive_compaction_lease status=invalidated reason=%@ generation=%d",
+            reason,
+            active.generation
+        )
+    }
+
+    private func archiveCompactionBGProcessingLeaseIsCurrent(
+        _ lease: ArchiveCompactionBGProcessingLease
+    ) -> Bool {
+        UIApplication.shared.applicationState == .background
+            && Self.archiveCompactionWorkerLeaseIsCurrent(
+            leaseGeneration: lease.generation,
+            activeLeaseGeneration:
+                activeArchiveCompactionBGProcessingLease?.generation,
+            now: Date(),
+            leaseExpiresAt: lease.expiresAt
+        )
+            && lease.cancellationToken.shouldContinue(
+                thermalState: ProcessInfo.processInfo.thermalState,
+                isLowPowerModeEnabled:
+                    ProcessInfo.processInfo.isLowPowerModeEnabled
             )
+    }
+
+    private func installArchiveCompactionLeaseCompletionIfNeeded(
+        lease: ArchiveCompactionBGProcessingLease?,
+        completion: ((Bool) -> Void)?
+    ) {
+        guard let lease, let completion else { return }
+        if pendingArchiveCompactionLeaseCompletion?.generation
+            == lease.generation {
             return
         }
-        // HEAVY LANE (2026-08-05, forced-gauntlet round 5 — THE cold-launch
-        // killer): on this over-cap archive the cap-pressure probe re-admits
-        // compaction at every flush, and its full-archive rewrite passes ran
-        // on the long-lived projection queue CONCURRENTLY with recompute
-        // cycles — 1108→2234MB of compactor climb plus the trailing cycle's
-        // projection crossed the ceiling at +68s (pid 12457). Compaction
-        // defers while any recompute cycle is running or queued; every flush
-        // notification re-offers it, so deferral costs only latency.
-        guard !recoveredProjectionScanActive else {
-            AtriaDebugLog(
-                "ATRIADBG archive_compaction_driver status=deferred_recompute_cycle reason=%@ action=retry_on_next_flush",
-                reason
-            )
+        pendingArchiveCompactionLeaseCompletion = (
+            generation: lease.generation,
+            handler: completion
+        )
+    }
+
+    private func finishArchiveCompactionLeaseCompletion(
+        lease: ArchiveCompactionBGProcessingLease?,
+        fallback: ((Bool) -> Void)?,
+        succeeded: Bool
+    ) {
+        guard let lease else {
+            fallback?(succeeded)
             return
         }
-        let forced = ProcessInfo.processInfo.arguments.contains("--atria-compact-archive")
-        let defaults = UserDefaults.standard
-        if !forced, !bypassDailyLease {
-            let lastRun = defaults.double(forKey: Self.archiveCompactionLastRunKey)
-            guard now.timeIntervalSince1970 - lastRun >= 24 * 60 * 60 else {
-                scheduleArchiveCapPressureProbe(reason: reason)
-                return
+        guard Self.shouldConsumeArchiveCompactionLeaseCompletion(
+            pendingGeneration:
+                pendingArchiveCompactionLeaseCompletion?.generation,
+            requestedGeneration: lease.generation
+        ) else { return }
+        let handler = pendingArchiveCompactionLeaseCompletion?.handler
+        pendingArchiveCompactionLeaseCompletion = nil
+        handler?(succeeded)
+    }
+
+    private func reserveArchiveCompactionForSafeBackground() {
+        archiveCompactionReservedForSafeBackground = true
+        archiveCompactionSafeBackgroundIntentRevision &+= 1
+    }
+
+    private func makeArchiveCompactionSafeBackgroundAdmission(
+        reason: String,
+        explicitDebugOverride: Bool,
+        backgroundLease: ArchiveCompactionBGProcessingLease?
+    ) -> ArchiveCompactionSafeBackgroundAdmission {
+        archiveCompactionSafeBackgroundGeneration &+= 1
+        return .init(
+            generation: archiveCompactionSafeBackgroundGeneration,
+            intentRevision: archiveCompactionSafeBackgroundIntentRevision,
+            reason: reason,
+            expiresAt: Date().addingTimeInterval(30),
+            explicitDebugOverride: explicitDebugOverride,
+            backgroundLease: backgroundLease
+        )
+    }
+
+    /// Revalidated on MainActor from the serial archive worker immediately
+    /// before its first archive-wide read. A queued ticket cannot retain a
+    /// stale background/power/owner decision after the app foregrounds, heats
+    /// up, or an exact/recovered publication takes the shared heavy lane.
+    private func archiveCompactionAdmissionRemainsValidAtWorkerBoundary(
+        _ admission: ArchiveCompactionSafeBackgroundAdmission,
+        operation: ArchiveCompactionSafeBackgroundOperation
+    ) -> Bool {
+        guard archiveCompactionSafeBackgroundGeneration
+                == admission.generation,
+              Date() <= admission.expiresAt else { return false }
+        switch operation {
+        case .pressureProbe:
+            guard Self.archiveCompactionPressureProbeInFlight else {
+                return false
             }
+        case .compaction:
+            guard Self.archiveCompactionInFlight else { return false }
         }
+        let exactRecoveryOwnsPriority = exactRecoveryArchivePriorityLeaseActive
+            || HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority()
+        if admission.explicitDebugOverride {
+            return !exactRecoveryOwnsPriority && !recoveredProjectionScanActive
+        }
+        guard let backgroundLease = admission.backgroundLease,
+              archiveCompactionBGProcessingLeaseIsCurrent(
+                backgroundLease
+              ) else { return false }
+        return Self.shouldAdmitAutomaticArchiveCompaction(
+            reason: admission.reason,
+            applicationIsBackground:
+                UIApplication.shared.applicationState == .background,
+            thermalState: ProcessInfo.processInfo.thermalState,
+            isLowPowerModeEnabled:
+                ProcessInfo.processInfo.isLowPowerModeEnabled,
+            batteryState: UIDevice.current.batteryState,
+            batteryLevel: UIDevice.current.batteryLevel,
+            exactRecoveryOwnsPriority: exactRecoveryOwnsPriority,
+            recoveredCycleEngaged: recoveredProjectionScanActive
+        )
+    }
+
+    private func retireArchiveCompactionAdmissionAsReserved(
+        _ admission: ArchiveCompactionSafeBackgroundAdmission,
+        operation: ArchiveCompactionSafeBackgroundOperation
+    ) {
+        guard archiveCompactionSafeBackgroundGeneration
+                == admission.generation else { return }
+        switch operation {
+        case .pressureProbe:
+            Self.archiveCompactionPressureProbeInFlight = false
+        case .compaction:
+            Self.archiveCompactionInFlight = false
+        }
+        reserveArchiveCompactionForSafeBackground()
+    }
+
+    func compactHistoricalArchiveIfUseful(
+        reason: String,
+        backgroundLease: ArchiveCompactionBGProcessingLease? = nil,
+        now: Date = Date(),
+        bypassDailyLease: Bool = false,
+        completion: ((Bool) -> Void)? = nil
+    ) {
+        installArchiveCompactionLeaseCompletionIfNeeded(
+            lease: backgroundLease,
+            completion: completion
+        )
+        let explicitDebugOverride = reason == "debug_launch_arg"
+            && ProcessInfo.processInfo.arguments.contains(
+                "--atria-compact-archive"
+            )
+        // Release fail-closed fence: the archive-wide retention graph still
+        // contains composite readers/publishers whose individual inner loops
+        // cannot all be revoked atomically when a BGProcessing task expires or
+        // the app becomes active. Keep the durable maintenance intent, but do
+        // not enter that graph from any automatic BG/scene/BLE/archive-update
+        // path. The explicit developer launch argument remains the sole
+        // execution authority until every composite stage is cooperative.
+        guard Self.shouldExecuteArchiveWideMaintenance(
+            explicitDebugOverride: explicitDebugOverride
+        ) else {
+            reserveArchiveCompactionForSafeBackground()
+            AtriaDebugLog(
+                "ATRIADBG archive_compaction_driver status=reserved_automatic_execution_disabled reason=%@ action=preserve_durable_archive_for_explicit_maintenance",
+                reason
+            )
+            finishArchiveCompactionLeaseCompletion(
+                lease: backgroundLease,
+                fallback: completion,
+                succeeded: false
+            )
+            return
+        }
+        let exactRecoveryOwnsPriority = exactRecoveryArchivePriorityLeaseActive
+            || HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority()
+        guard !exactRecoveryOwnsPriority,
+              !recoveredProjectionScanActive else {
+            reserveArchiveCompactionForSafeBackground()
+            AtriaDebugLog(
+                "ATRIADBG archive_compaction_driver status=reserved_for_safe_background reason=%@ action=preserve_shared_archive_owner",
+                reason
+            )
+            finishArchiveCompactionLeaseCompletion(
+                lease: backgroundLease,
+                fallback: completion,
+                succeeded: false
+            )
+            return
+        }
+        guard !Self.archiveCompactionInFlight,
+              !Self.archiveCompactionPressureProbeInFlight else {
+            finishArchiveCompactionLeaseCompletion(
+                lease: backgroundLease,
+                fallback: completion,
+                succeeded: false
+            )
+            return
+        }
+        let admission = makeArchiveCompactionSafeBackgroundAdmission(
+            reason: reason,
+            explicitDebugOverride: explicitDebugOverride,
+            backgroundLease: backgroundLease
+        )
         Self.archiveCompactionInFlight = true
         var pinned: [(start: Date, end: Date)] = confirmedSleeps.map { ($0.start, $0.end) }
         pinned.append(contentsOf: confirmedWorkouts.map { ($0.start, $0.end) })
@@ -16194,15 +16615,58 @@ final class SessionStore: ObservableObject {
                 timeZoneIdentifier: TimeZone.current.identifier
             )
         Self.historySnapshotProjectionQueue.async { [weak self] in
+            let shouldContinue = {
+                admission.explicitDebugOverride
+                    || Self.archiveCompactionWorkerShouldContinue(
+                        admission.backgroundLease
+                    )
+            }
+            let workerAdmissionAllowed = DispatchQueue.main.sync {
+                guard let self else {
+                    Self.archiveCompactionInFlight = false
+                    return false
+                }
+                guard self
+                        .archiveCompactionAdmissionRemainsValidAtWorkerBoundary(
+                            admission,
+                            operation: .compaction
+                        ) else {
+                    self.retireArchiveCompactionAdmissionAsReserved(
+                        admission,
+                        operation: .compaction
+                    )
+                    return false
+                }
+                return true
+            }
+            guard workerAdmissionAllowed else {
+                AtriaDebugLog(
+                    "ATRIADBG archive_compaction_driver status=reserved_worker_boundary reason=%@ action=wait_for_next_guarded_bg_processing",
+                    admission.reason
+                )
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else {
+                        completion?(false)
+                        return
+                    }
+                    self.finishArchiveCompactionLeaseCompletion(
+                        lease: admission.backgroundLease,
+                        fallback: completion,
+                        succeeded: false
+                    )
+                }
+                return
+            }
             let result = HistoricalArchive.compactArchiveConverging(
                 pinnedWindows: pinnedWindows,
-                reason: reason,
+                reason: admission.reason,
                 configuration: historicalConsumerConfiguration,
-                now: now
+                now: now,
+                shouldContinue: shouldContinue
             )
             AtriaDebugLog("ATRIADBG archive_compaction_driver status=%@ reason=%@ scanned=%d kept=%d compacted=%d summaries=%d bytes_before=%d bytes_after=%d",
                           result.status,
-                          reason,
+                          admission.reason,
                           result.scannedRows,
                           result.keptRows,
                           result.compactedRows,
@@ -16214,52 +16678,38 @@ final class SessionStore: ObservableObject {
                 // Only measured stable states earn the daily lease. In
                 // particular, a consumer-cutover deferral or bounded yield must
                 // not leave an over-cap install untouched for another day.
-                if result.status == "noop_nothing_to_compact"
+                let reachedStableState = result.status == "noop_nothing_to_compact"
                     || result.status == "noop_retention_within_bounds"
-                    || result.status == "noop_retention_protected_active_exception" {
+                    || result.status == "noop_retention_protected_active_exception"
+                if reachedStableState {
                     UserDefaults.standard.set(now.timeIntervalSince1970, forKey: Self.archiveCompactionLastRunKey)
                 }
-                guard let self else { return }
-                self.refreshHistoricalArchiveStatus(reason: "archive_compaction")
-                if result.status == "yielded_retention_progress"
-                    || result.status == "deferred_retention_cap_unresolved"
-                    || result.status == "deferred_verified_consumer_cutover_required"
-                    || result.status == "deferred_retention_reader_limit" {
-                    Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
-                        self.compactHistoricalArchiveIfUseful(
-                            reason: "\(reason)_retention_retry",
-                            now: Date()
-                        )
-                    }
+                guard let self else {
+                    completion?(false)
+                    return
                 }
-            }
-        }
-    }
-
-    /// The normal daily lease avoids repeatedly scanning a healthy archive.
-    /// Once the exact, read-only accounting reports pressure, however, keep
-    /// producing one proof-gated retention transaction at a time. A purely
-    /// active-writer overage cannot be reclaimed yet, so wait for its next seal
-    /// instead of scheduling an expensive no-op scan on every live append.
-    private func scheduleArchiveCapPressureProbe(reason: String) {
-        guard !Self.archiveCompactionPressureProbeInFlight,
-              !Self.archiveCompactionInFlight else { return }
-        Self.archiveCompactionPressureProbeInFlight = true
-        Self.historySnapshotProjectionQueue.async { [weak self] in
-            let report = HistoricalArchive.highVolumeMaintenancePressure()
-            let bypass = report.map { Self.shouldBypassDailyArchiveCompactionLease(
-                highVolumeBytes: $0.accounting.highVolumeBytes,
-                maximumHighVolumeBytes: $0.plan.maximumHighVolumeBytes,
-                state: $0.plan.state
-            ) } ?? false
-            DispatchQueue.main.async {
-                Self.archiveCompactionPressureProbeInFlight = false
-                guard let self, bypass else { return }
-                self.compactHistoricalArchiveIfUseful(
-                    reason: "\(reason)_cap_pressure",
-                    now: Date(),
-                    bypassDailyLease: true
+                if reachedStableState,
+                   self.archiveCompactionSafeBackgroundIntentRevision
+                    == admission.intentRevision {
+                    self.archiveCompactionReservedForSafeBackground = false
+                } else if !reachedStableState {
+                    self.reserveArchiveCompactionForSafeBackground()
+                }
+                // `refreshHistoricalArchiveStatus` is another whole-archive
+                // diagnostics walk on a separate queue. Do not chain it from
+                // retention: the BG task may have expired or the app may have
+                // foregrounded while this transaction was in flight. The
+                // independently guarded background projection owns eventual
+                // app-facing status/metric freshness.
+                // A delayed timer is not a BGProcessing authority: after 60s
+                // the app may merely be backgrounded for BLE delivery, or the
+                // original system task may have expired. Any yielded/deferred
+                // result remains reserved and is re-offered by the next real
+                // BGProcessing lease instead.
+                self.finishArchiveCompactionLeaseCompletion(
+                    lease: admission.backgroundLease,
+                    fallback: completion,
+                    succeeded: true
                 )
             }
         }
@@ -16340,7 +16790,6 @@ final class SessionStore: ObservableObject {
         }
         generateWeeklyReportIfNeeded(now: now, calendar: calendar, reason: reason)
         generateWeeklyPlanIfNeeded(now: now, calendar: calendar, reason: reason)
-        compactHistoricalArchiveIfUseful(reason: reason, now: now)
         compactColdSessionsInShadowIfUseful(reason: reason, now: now)
         materializeMorningMetricForSummaryInBackgroundIfNeeded(now: now, calendar: calendar)
         let healthSessions = sessions
@@ -26261,7 +26710,7 @@ final class SessionStore: ObservableObject {
             if deferDerivedPublication {
                 currentCycleStepReceiptDeferredUntilForeground = true
             } else {
-                prepareCurrentCycleStrapStepReceipt(
+                refreshCurrentCycleStrapStepReceipt(
                     reason: "confirmed_sleep_cycle_changed"
                 )
             }
@@ -34429,7 +34878,7 @@ final class SessionStore: ObservableObject {
         // shadow-only retention queue after launch content has landed so the
         // 14-day / 512-MiB policy is not dependent on iOS granting background
         // maintenance time.
-        compactHistoricalArchiveIfUseful(reason: "deferred_session_load")
+        reserveArchiveCompactionForSafeBackground()
 
         reapplyConfirmedWorkoutStrainCalibrationIfNeeded(sourceSessions: merged)
 

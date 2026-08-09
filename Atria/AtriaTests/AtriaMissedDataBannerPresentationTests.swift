@@ -199,7 +199,9 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
                         debtRecords: Int? = nil,
                         debtAge: TimeInterval? = nil,
                         flushAgo: TimeInterval? = nil,
-                        lease: Bool = false) -> AtriaSyncProgressFooterPresentation.Footer? {
+                        lease: Bool = false,
+                        liveHeartRateIsCurrent: Bool = false)
+        -> AtriaSyncProgressFooterPresentation.Footer? {
         AtriaSyncProgressFooterPresentation.footer(
             drainedThroughUnix: drainedAgo.map { now.timeIntervalSince1970 - $0 },
             backlogPending: backlogPending,
@@ -207,6 +209,7 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
             debtObservedAgeSeconds: debtAge,
             secondsSinceLastFlush: flushAgo,
             backgroundLeaseActive: lease,
+            liveHeartRateIsCurrent: liveHeartRateIsCurrent,
             now: now,
             calendar: calendar)
     }
@@ -229,16 +232,17 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         // show; a stale count must not hide it.
         let f = footer(backlogPending: false, debtRecords: 4_867, debtAge: 41 * 60)
         XCTAssertNotNil(f)
-        XCTAssertTrue(f!.detail.contains("behind"))
+        XCTAssertTrue(f!.detail.contains("history backlog"))
     }
 
     func testBehindFrontierAndActivityAreHonest() {
-        let f = footer(flushAgo: 120)
+        let f = footer(flushAgo: 120, liveHeartRateIsCurrent: true)
         XCTAssertNotNil(f)
         XCTAssertTrue(f!.active)
-        XCTAssertTrue(f!.detail.contains("19h 0m behind"))
+        XCTAssertTrue(f!.detail.contains("19h 0m history backlog"))
+        XCTAssertTrue(f!.detail.contains("live HR current"))
         XCTAssertTrue(f!.detail.contains("catching up now"))
-        XCTAssertTrue(f!.headline.contains("Synced through"))
+        XCTAssertTrue(f!.headline.contains("Strap history through"))
         XCTAssertTrue(f!.headline.contains("yesterday"),
                       "a 19h-old frontier at 5 AM lands yesterday morning")
     }
@@ -258,14 +262,14 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
     func testMissingFrontierNeverInventsATime() {
         let f = footer(drainedAgo: nil)
         XCTAssertNotNil(f)
-        XCTAssertEqual(f!.headline, "Strap sync")
-        XCTAssertFalse(f!.detail.contains("behind"))
+        XCTAssertEqual(f!.headline, "Strap history backfill")
+        XCTAssertFalse(f!.detail.contains("history backlog"))
     }
 
     func testTodayFrontierOmitsDayLabel() {
         let f = footer(drainedAgo: 30 * 60, flushAgo: 60)
         XCTAssertNotNil(f)
         XCTAssertFalse(f!.headline.contains("yesterday"))
-        XCTAssertTrue(f!.detail.contains("30m behind"))
+        XCTAssertTrue(f!.detail.contains("30m history backlog"))
     }
 }

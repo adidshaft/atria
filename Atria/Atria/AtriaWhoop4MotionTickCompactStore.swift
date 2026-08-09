@@ -420,6 +420,108 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
         )
     }
 
+    /// Projects one exact confirmed-workout window from the fixed-width
+    /// compact shards. These points already carry their accepted corrected
+    /// wall timestamps, so one zero offset governs the whole candidate. A
+    /// missing boundary remains incomplete: it is never authority to fall back
+    /// to lifetime JSONL from a launch, scene, or BLE callback.
+    func motionTickWindowRead(
+        start: Date,
+        end: Date,
+        strapIdentifier: String
+    ) -> HistoricalArchive.MotionTickWindowRead {
+        precondition(!Thread.isMainThread)
+        guard end > start,
+              !strapIdentifier.isEmpty else { return .incomplete }
+        let tolerance: TimeInterval = 3
+        let firstBucket = Self.bucket(
+            for: start.addingTimeInterval(-tolerance).timeIntervalSince1970
+        )
+        let lastBucket = Self.bucket(
+            for: end.addingTimeInterval(tolerance).timeIntervalSince1970
+        )
+        guard firstBucket <= lastBucket,
+              lastBucket - firstBucket + 1
+                <= Self.retainedBucketCount else {
+            return .incomplete
+        }
+        let points = read(
+            start: start.addingTimeInterval(-tolerance),
+            end: end.addingTimeInterval(tolerance),
+            strapIdentifier: strapIdentifier
+        )
+        guard points.count >= 2,
+              let first = points.min(by: {
+                  abs($0.timestamp - start.timeIntervalSince1970)
+                      < abs($1.timestamp - start.timeIntervalSince1970)
+              }),
+              let last = points.min(by: {
+                  abs($0.timestamp - end.timeIntervalSince1970)
+                      < abs($1.timestamp - end.timeIntervalSince1970)
+              }),
+              last.timestamp > first.timestamp,
+              abs(first.timestamp - start.timeIntervalSince1970)
+                <= tolerance,
+              abs(last.timestamp - end.timeIntervalSince1970)
+                <= tolerance,
+              (last.timestamp - first.timestamp)
+                / end.timeIntervalSince(start) >= 0.9 else {
+            return .incomplete
+        }
+        let cadencePoints = points.map {
+            AtriaWhoop4GravityCadenceStepModel.Point(
+                timestamp: $0.timestamp,
+                flash: $0.flash,
+                tick: $0.tick,
+                gravityX: $0.gravityX,
+                gravityY: $0.gravityY,
+                gravityZ: $0.gravityZ,
+                unknownMotionScalar32: $0.unknownMotionScalar32,
+                identity: $0.identity
+            )
+        }
+        guard let selected =
+            AtriaWhoop4GravityCadenceStepModel.estimateAlignedWindow(
+                points: cadencePoints,
+                requestedStart: start.timeIntervalSince1970,
+                requestedEnd: end.timeIntervalSince1970,
+                clockOffsetByIdentity: Dictionary(
+                    uniqueKeysWithValues: cadencePoints.map {
+                        ($0.identity, 0)
+                    }
+                ),
+                boundaryTolerance: tolerance
+            ) else {
+            return .completeNoQualifiedEvidence
+        }
+        let modulus = 65_536
+        let delta = selected.last.tick >= selected.first.tick
+            ? selected.last.tick - selected.first.tick
+            : selected.last.tick + modulus - selected.first.tick
+        guard Double(delta) <= max(
+            12,
+            (selected.last.timestamp - selected.first.timestamp) * 12
+        ) else {
+            return .completeNoQualifiedEvidence
+        }
+        return .qualified(
+            .init(
+                startTick: selected.first.tick,
+                endTick: selected.last.tick,
+                delta: delta,
+                steps: selected.estimate.steps,
+                startCapturedAt: Date(
+                    timeIntervalSince1970: selected.first.timestamp
+                ),
+                endCapturedAt: Date(
+                    timeIntervalSince1970: selected.last.timestamp
+                ),
+                coverageFraction: selected.coverageFraction,
+                decodedRows: selected.decodedRows
+            )
+        )
+    }
+
     /// Projects only compact current-cycle points. It performs no canonical
     /// archive enumeration or JSON decoding and is safe on a utility queue
     /// during a locked/background BLE restoration lease.

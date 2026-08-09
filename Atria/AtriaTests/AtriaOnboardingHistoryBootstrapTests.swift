@@ -33,10 +33,12 @@ final class AtriaOnboardingHistoryBootstrapTests: XCTestCase {
         let policy = AtriaOnboardingHistoryBootstrapPolicy.FreshStartPolicy.self
 
         XCTAssertEqual(policy.title, "Start a new Atria timeline")
-        XCTAssertTrue(policy.summary.contains("reconciles"))
+        XCTAssertTrue(policy.summary.contains("live collection first"))
         XCTAssertTrue(policy.disclosure.contains("does not send a physical-erase command"))
         XCTAssertTrue(policy.disclosure.contains("verified replay pages are acknowledged"))
-        XCTAssertTrue(policy.interruptionDisclosure.contains("never discards unseen strap data"))
+        XCTAssertTrue(policy.disclosure.contains("without interrupting"))
+        XCTAssertTrue(policy.interruptionDisclosure.contains("discards unseen strap data"))
+        XCTAssertTrue(policy.interruptionDisclosure.contains("never disconnects live tracking"))
         XCTAssertEqual(policy.completionDetail(importedRows: 4),
                        "Existing strap records were saved. Your new Atria timeline has started.")
         XCTAssertEqual(policy.completionDetail(importedRows: 0),
@@ -65,8 +67,8 @@ final class AtriaOnboardingHistoryBootstrapTests: XCTestCase {
         XCTAssertEqual(AtriaOnboardingHistoryBootstrap.load(from: url), snapshot)
     }
 
-    func testOnboardingReasonIsAnExplicitHistoryRequest() {
-        XCTAssertTrue(AtriaBLEManager.isExplicitUserOfflineSyncReason(
+    func testOnboardingImportNeverReceivesConnectedCutoverAuthority() {
+        XCTAssertFalse(AtriaBLEManager.isExplicitUserOfflineSyncReason(
             "onboarding_initial_import"
         ))
     }
@@ -140,8 +142,8 @@ final class AtriaOnboardingHistoryBootstrapTests: XCTestCase {
         let freshGate = try XCTUnwrap(bootstrap.range(
             of: "guard ble.currentConnectionHasFreshHeartRate else"
         )?.lowerBound)
-        let historyRequest = try XCTUnwrap(bootstrap.range(
-            of: ".requestOfflineHistoricalSyncAwaitingCompletion("
+        let continuityCompletion = try XCTUnwrap(bootstrap.range(
+            of: "if ble.status == .connected"
         )?.lowerBound)
         XCTAssertLessThan(request, freshGate)
         XCTAssertTrue(bootstrap.contains("ble.$onboardingPairingPreflightInFlight"))
@@ -151,7 +153,17 @@ final class AtriaOnboardingHistoryBootstrapTests: XCTestCase {
         )?.lowerBound)
         XCTAssertLessThan(request, inFlightReturn)
         XCTAssertLessThan(inFlightReturn, freshGate)
-        XCTAssertLessThan(request, historyRequest)
+        XCTAssertLessThan(freshGate, continuityCompletion)
+        let safeBranchEnd = try XCTUnwrap(bootstrap.range(
+            of: "guard transition(to: .importing",
+            range: continuityCompletion..<bootstrap.endIndex
+        )?.lowerBound)
+        let safeBranch = String(bootstrap[continuityCompletion..<safeBranchEnd])
+        XCTAssertTrue(safeBranch.contains("requestOfflineHistoricalSyncIfNeeded("))
+        XCTAssertTrue(safeBranch.contains("force: false"))
+        XCTAssertTrue(safeBranch.contains("to: .complete"))
+        XCTAssertFalse(safeBranch.contains("requestOfflineHistoricalSyncAwaitingCompletion"))
+        XCTAssertFalse(safeBranch.contains("cancelPeripheralConnection"))
         XCTAssertTrue(String(bootstrap[inFlightReturn..<freshGate]).contains("return"),
                       "pairing preflight must finish before fresh-HR import admission")
     }

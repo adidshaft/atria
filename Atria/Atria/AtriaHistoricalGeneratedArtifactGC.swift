@@ -30,13 +30,17 @@ struct AtriaHistoricalGeneratedArtifactGC {
         case corruptPointer(String)
         case missingReachableTarget(String)
         case byteCountOverflow
+        case maintenanceAuthorityRevoked
     }
 
     let archiveRoot: URL
     var fileManager: FileManager = .default
     var now: Date = Date()
 
-    func prune() throws -> Result {
+    func prune(shouldContinue: () -> Bool = { true }) throws -> Result {
+        guard shouldContinue() else {
+            throw GCError.maintenanceAuthorityRevoked
+        }
         let root = archiveRoot.standardizedFileURL
         guard !root.path.isEmpty else { throw GCError.unsafeDirectory }
         let receiptDirectory = root.appendingPathComponent(
@@ -53,6 +57,9 @@ struct AtriaHistoricalGeneratedArtifactGC {
         )
 
         let receiptPlan = try planReceiptDirectory(receiptDirectory)
+        guard shouldContinue() else {
+            throw GCError.maintenanceAuthorityRevoked
+        }
         let destinationPlan = try planPointerDirectory(
             destinationDirectory,
             pointerPattern: #"^canonical-(sleep|workoutAndActivity|dailyStrainAndRecovery|steps|replayIdentity)-current-[0-9a-f]{64}\.json$"#,
@@ -83,6 +90,9 @@ struct AtriaHistoricalGeneratedArtifactGC {
         var before: UInt64 = 0
         for plan in plans {
             for candidate in plan.candidates {
+                guard shouldContinue() else {
+                    throw GCError.maintenanceAuthorityRevoked
+                }
                 let value = (try? candidate.resourceValues(forKeys: [.fileSizeKey]))?
                     .fileSize ?? 0
                 before = try adding(before, UInt64(max(0, value)))
@@ -94,6 +104,9 @@ struct AtriaHistoricalGeneratedArtifactGC {
         for plan in plans {
             var directoryChanged = false
             for url in plan.candidates {
+                guard shouldContinue() else {
+                    throw GCError.maintenanceAuthorityRevoked
+                }
                 let values = try url.resourceValues(forKeys: [
                     .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey,
                 ])
@@ -101,12 +114,20 @@ struct AtriaHistoricalGeneratedArtifactGC {
                       url.deletingLastPathComponent().standardizedFileURL
                         == plan.directory.standardizedFileURL else { continue }
                 let bytes = UInt64(max(0, values.fileSize ?? 0))
+                guard shouldContinue() else {
+                    throw GCError.maintenanceAuthorityRevoked
+                }
                 try fileManager.removeItem(at: url)
                 removedFiles += 1
                 removedBytes = try adding(removedBytes, bytes)
                 directoryChanged = true
             }
-            if directoryChanged { try synchronizeDirectory(plan.directory) }
+            if directoryChanged {
+                guard shouldContinue() else {
+                    throw GCError.maintenanceAuthorityRevoked
+                }
+                try synchronizeDirectory(plan.directory)
+            }
         }
         let after = before >= removedBytes ? before - removedBytes : 0
         return .init(removedFiles: removedFiles,

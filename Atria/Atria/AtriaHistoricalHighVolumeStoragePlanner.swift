@@ -55,6 +55,7 @@ struct AtriaHistoricalHighVolumeStorageAccounting {
         case symbolicLinkDetected(String)
         case enumerationFailed(String)
         case catalogRawMissing(String)
+        case maintenanceAuthorityRevoked
         case byteCountOverflow
         case fileCountOverflow
     }
@@ -101,7 +102,12 @@ struct AtriaHistoricalHighVolumeStorageAccounting {
         self.fileManager = fileManager
     }
 
-    func measure() throws -> Snapshot {
+    func measure(
+        shouldContinue: () -> Bool = { true }
+    ) throws -> Snapshot {
+        guard shouldContinue() else {
+            throw AccountingError.maintenanceAuthorityRevoked
+        }
         let rootValues: URLResourceValues
         do {
             rootValues = try archiveRoot.resourceValues(forKeys: [
@@ -134,6 +140,9 @@ struct AtriaHistoricalHighVolumeStorageAccounting {
         }
         var facts: [FileFact] = []
         while let url = enumerator.nextObject() as? URL {
+            guard shouldContinue() else {
+                throw AccountingError.maintenanceAuthorityRevoked
+            }
             let relative = relativePath(for: url)
             let values: URLResourceValues
             do {
@@ -412,7 +421,8 @@ struct AtriaHistoricalHighVolumeDiagnosticsCoordinator {
         archiveRoot: URL,
         catalog: AtriaHistoricalArchiveCatalog,
         planner: AtriaHistoricalHighVolumeStoragePlanner = .production,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        shouldContinue: () -> Bool = { true }
     ) throws -> Report {
         let retainedRaw = catalog.chunks.filter { $0.state != .retired }
         // A freshly rotated active chunk is registered in the catalog before its
@@ -422,6 +432,10 @@ struct AtriaHistoricalHighVolumeDiagnosticsCoordinator {
         // recorded bytes whose file is missing continues to fail closed.
         var rawPaths = Set<String>()
         for chunk in retainedRaw {
+            guard shouldContinue() else {
+                throw AtriaHistoricalHighVolumeStorageAccounting
+                    .AccountingError.maintenanceAuthorityRevoked
+            }
             if chunk.state == .active, chunk.storedByteCount == 0 {
                 let url = archiveRoot.appendingPathComponent(chunk.relativePath)
                 if !fileManager.fileExists(atPath: url.path) { continue }
@@ -432,6 +446,10 @@ struct AtriaHistoricalHighVolumeDiagnosticsCoordinator {
         // JSONL and compressed artifact are retained raw evidence. Count both
         // until a later catalog-authorized cleanup actually removes the source.
         for chunk in retainedRaw {
+            guard shouldContinue() else {
+                throw AtriaHistoricalHighVolumeStorageAccounting
+                    .AccountingError.maintenanceAuthorityRevoked
+            }
             guard let sourcePath = chunk.compressedStorage?.sourceRelativePath else { continue }
             let sourceURL = archiveRoot.appendingPathComponent(sourcePath)
             if fileManager.fileExists(atPath: sourceURL.path) { rawPaths.insert(sourcePath) }
@@ -440,12 +458,16 @@ struct AtriaHistoricalHighVolumeDiagnosticsCoordinator {
             archiveRoot: archiveRoot,
             catalogRawRelativePaths: rawPaths,
             fileManager: fileManager
-        ).measure()
+        ).measure(shouldContinue: shouldContinue)
         let adapter = canonicalAdapter(archiveRoot: archiveRoot,
                                        fileManager: fileManager)
         var verifiedCount = 0
         var incompleteCount = 0
         let chunks = try retainedRaw.map { chunk -> AtriaHistoricalHighVolumeStoragePlanner.Chunk in
+            guard shouldContinue() else {
+                throw AtriaHistoricalHighVolumeStorageAccounting
+                    .AccountingError.maintenanceAuthorityRevoked
+            }
             let verified: Bool
             if chunk.state == .sealed {
                 verified = verifiedReplayEvidence(

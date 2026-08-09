@@ -767,6 +767,85 @@ final class AtriaR10MotionTests: XCTestCase {
         XCTAssertTrue(repeatedRelease, "force release must be safe to repeat after recovery")
     }
 
+    func testBufferedR10FrameRevalidatesLinkAtDetectorMutationBoundary() async throws {
+        let fence = AtriaBLECallbackEpochFence()
+        let strapID = UUID()
+        let peripheral = NSObject()
+        _ = fence.activate(
+            peripheralID: strapID,
+            peripheralObjectID: ObjectIdentifier(peripheral)
+        )
+        let source = try XCTUnwrap(fence.captureIfAccepted(
+            peripheralID: strapID,
+            peripheralObjectID: ObjectIdentifier(peripheral),
+            peripheralConnected: true
+        ))
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100,
+                                              gain: 1,
+                                              snapshotMinimumInterval: 60)
+        let token = await pipeline.prepareBoundary()
+        let published = AtriaR10SnapshotBox()
+
+        pipeline.ingest(
+            gaitFrame(timestamp: 87_000, sampleOffset: 0),
+            receivedAt: Date(timeIntervalSinceReferenceDate: 800_600_000),
+            sourceIsValid: { fence.owns(source: source) }
+        ) { snapshot in
+            published.store(snapshot)
+        }
+        // `queue.sync` is a deterministic FIFO barrier proving the frame has
+        // passed its initial source check and is now buffered for release.
+        XCTAssertNil(pipeline.currentSnapshotSynchronously())
+
+        fence.invalidate(
+            ifMatching: strapID,
+            peripheralObjectID: ObjectIdentifier(peripheral)
+        )
+        let aborted = await pipeline.abortBoundary(token)
+        XCTAssertTrue(aborted)
+        XCTAssertNil(
+            pipeline.currentSnapshotSynchronously(),
+            "retiring the link while a frame is buffered must prevent detector mutation on release"
+        )
+        XCTAssertNil(published.load())
+    }
+
+    func testDirectCallbackSubmissionPrecedesImmediatelyFollowingBoundary() async throws {
+        let fence = AtriaBLECallbackEpochFence()
+        let strapID = UUID()
+        let peripheral = NSObject()
+        _ = fence.activate(
+            peripheralID: strapID,
+            peripheralObjectID: ObjectIdentifier(peripheral)
+        )
+        let source = try XCTUnwrap(fence.captureIfAccepted(
+            peripheralID: strapID,
+            peripheralObjectID: ObjectIdentifier(peripheral),
+            peripheralConnected: true
+        ))
+        let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100,
+                                              gain: 1,
+                                              snapshotMinimumInterval: 60)
+
+        // Production submits directly from CoreBluetooth's serial delegate
+        // lane. Dispatch FIFO therefore places this frame before the boundary
+        // marker enqueued immediately afterward; an extra ingress queue would
+        // break that ordering guarantee.
+        pipeline.ingest(
+            gaitFrame(timestamp: 87_100, sampleOffset: 0),
+            receivedAt: Date(timeIntervalSinceReferenceDate: 800_700_000),
+            sourceIsValid: { fence.owns(source: source) }
+        ) { _ in }
+        let token = await pipeline.enqueueBoundaryPreparation().value()
+
+        XCTAssertEqual(token.finalSnapshot?.frames, 1)
+        XCTAssertEqual(token.finalSnapshot?.deviceTimestamp, 87_100)
+        XCTAssertEqual(token.markerRawSteps,
+                       token.finalSnapshot?.rawSteps ?? 0)
+        let aborted = await pipeline.abortBoundary(token)
+        XCTAssertTrue(aborted)
+    }
+
     func testGyroShadowExactFiveHundredStepCalibrationIsResearchOnlyAndRestStable() throws {
         let pipeline = AtriaR10MotionPipeline(sampleRateHz: 100, gain: 1)
         for second in 0..<250 { // exact control truth: 250 s × 2 Hz = 500 steps
