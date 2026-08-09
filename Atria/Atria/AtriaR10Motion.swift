@@ -941,6 +941,12 @@ struct AtriaStrapGaitQualityChallenger: Sendable {
 /// trailing evaluation guarantees that a final/batched frame cannot leave a
 /// newer internal state stranded behind the cadence gate.
 final class AtriaR10MotionPipeline: @unchecked Sendable {
+    /// Rechecked on the pipeline's serial queue immediately before detector
+    /// state can change. The pipeline deliberately knows nothing about BLE
+    /// epochs or CoreBluetooth object identity; its caller supplies the exact
+    /// source-ownership decision for the submitted frame.
+    typealias IngressSourceValidator = @Sendable () -> Bool
+
     struct Snapshot: Equatable, Sendable {
         /// Identifies the pipeline accounting segment that produced this
         /// snapshot. Main-actor consumers must reject snapshots from an older
@@ -1084,6 +1090,7 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
     private struct BufferedFrame {
         let frame: AtriaR10MotionFrame
         let receivedAt: Date
+        let sourceIsValid: IngressSourceValidator
         let onUpdate: @Sendable (Snapshot) -> Void
     }
     private var preparedBoundary: BoundaryToken?
@@ -1102,23 +1109,37 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
 
     func ingest(_ frame: AtriaR10MotionFrame,
                 receivedAt: Date,
+                sourceIsValid: @escaping IngressSourceValidator = { true },
                 onUpdate: @escaping @Sendable (Snapshot) -> Void) {
         queue.async { [self] in
             if preparedBoundary != nil || committedBoundaryAwaitingRelease != nil {
+                // Do not retain already-retired work behind a long-lived
+                // persistence boundary. It is checked again on release because
+                // a source that is live now may be retired before mutation.
+                guard sourceIsValid() else { return }
                 bufferedBoundaryFrames.append(BufferedFrame(frame: frame,
                                                             receivedAt: receivedAt,
+                                                            sourceIsValid: sourceIsValid,
                                                             onUpdate: onUpdate))
                 return
             }
-            ingestLocked(frame, receivedAt: receivedAt, onUpdate: onUpdate)
+            ingestLocked(frame,
+                         receivedAt: receivedAt,
+                         sourceIsValid: sourceIsValid,
+                         onUpdate: onUpdate)
         }
     }
 
     private func ingestLocked(
         _ frame: AtriaR10MotionFrame,
         receivedAt: Date,
+        sourceIsValid: IngressSourceValidator,
         onUpdate: @escaping @Sendable (Snapshot) -> Void
     ) {
+        // This is the detector mutation boundary, not merely an earlier BLE
+        // callback or manager-ingress boundary. A frame may have waited behind
+        // other R10 work or a session boundary while its link was retired.
+        guard sourceIsValid() else { return }
         guard accept(frame, receivedAt: receivedAt) else { return }
         let firstFrame = totalFrames == 1
         guard Self.shouldEvaluateSnapshot(firstFrame: firstFrame,
@@ -1332,6 +1353,7 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
         for item in buffered {
             ingestLocked(item.frame,
                          receivedAt: item.receivedAt,
+                         sourceIsValid: item.sourceIsValid,
                          onUpdate: item.onUpdate)
         }
     }
@@ -1350,6 +1372,7 @@ final class AtriaR10MotionPipeline: @unchecked Sendable {
                 for item in buffered {
                     ingestLocked(item.frame,
                                  receivedAt: item.receivedAt,
+                                 sourceIsValid: item.sourceIsValid,
                                  onUpdate: item.onUpdate)
                 }
                 continuation.resume(returning: true)

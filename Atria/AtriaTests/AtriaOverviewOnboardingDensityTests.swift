@@ -160,12 +160,18 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
 
         XCTAssertTrue(status.contains("Text(subtitle)"),
                       "Bluetooth and pairing guidance must not be VoiceOver-only")
-        XCTAssertTrue(status.contains("Turn on Bluetooth in Settings to connect."))
+        XCTAssertTrue(status.contains("Bluetooth access needed"))
+        XCTAssertTrue(status.contains("Allow Atria to use Bluetooth in Settings"))
+        XCTAssertTrue(status.contains("Turn on Bluetooth in Control Center or Settings to connect."))
+        XCTAssertTrue(status.contains("ble.bluetoothPermissionDenied"),
+                      "Permission denial must not be presented as a powered-off radio")
         XCTAssertTrue(status.contains("if dynamicTypeSize.isAccessibilitySize"))
         XCTAssertTrue(status.contains("VStack(alignment: .leading, spacing: 10)"))
-        XCTAssertTrue(flow.contains("ble.status == .poweredOff { return \"Turn on Bluetooth\" }"))
-        XCTAssertTrue(flow.contains("|| ble.status == .poweredOff"),
-                      "A button cannot turn Bluetooth on and should not pretend it can")
+        XCTAssertTrue(flow.contains("if bluetoothRecovery == .permissionDenied { return false }"),
+                      "Denied users need an enabled recovery action, not a permanent dead end")
+        XCTAssertTrue(flow.contains("onboardingBluetoothRecovery == .permissionDenied"))
+        XCTAssertTrue(flow.contains("UIApplication.openSettingsURLString"),
+                      "Permission recovery must use the supported per-app Settings URL")
     }
 
     func testOverviewRemovesDuplicateVisibleConnectionDetailButKeepsVoiceOverHint() throws {

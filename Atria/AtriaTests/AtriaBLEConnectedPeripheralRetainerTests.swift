@@ -36,6 +36,83 @@ final class AtriaBLEConnectedPeripheralRetainerTests: XCTestCase {
         XCTAssertEqual(retainer.retainedCount(peripheralID: id), 1)
     }
 
+    func testStandingDisconnectedConnectAtomicallyBlocksHistoryClaim() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let standing = StubPeripheral(
+            identifier: id,
+            state: .disconnected
+        )
+        retainer.retain(standing)
+
+        var claimRan = false
+        XCTAssertTrue(retainer.hasRetainedConnectInterest(
+            peripheralIDs: [id]
+        ))
+        XCTAssertFalse(retainer.claimHistoryTransportIfNoRetainedConnect(
+            peripheralIDs: [id]
+        ) {
+            claimRan = true
+            return true
+        })
+        XCTAssertFalse(claimRan)
+
+        XCTAssertTrue(retainer.release(standing))
+        XCTAssertTrue(retainer.claimHistoryTransportIfNoRetainedConnect(
+            peripheralIDs: [id]
+        ) {
+            claimRan = true
+            return true
+        })
+        XCTAssertTrue(claimRan)
+    }
+
+    func testRetainedConnectingSavedIdentityBlocksHistoryClaim() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let savedID = UUID()
+        let standing = StubPeripheral(
+            identifier: savedID,
+            state: .connecting
+        )
+        retainer.retain(standing)
+
+        var claimRan = false
+        XCTAssertTrue(retainer.hasRetainedConnectInterest(
+            peripheralIDs: [savedID]
+        ))
+        XCTAssertFalse(retainer.claimHistoryTransportIfNoRetainedConnect(
+            peripheralIDs: [savedID]
+        ) {
+            claimRan = true
+            return true
+        })
+        XCTAssertFalse(
+            claimRan,
+            "the saved strap's retained connecting request owns transport before didConnect"
+        )
+    }
+
+    func testRetainedConnectingPeripheralBlocksHistoryClaimWithEmptyIdentitySet() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let standing = StubPeripheral(state: .connecting)
+        retainer.retain(standing)
+
+        var claimRan = false
+        XCTAssertTrue(retainer.hasRetainedConnectInterest(
+            peripheralIDs: []
+        ))
+        XCTAssertFalse(retainer.claimHistoryTransportIfNoRetainedConnect(
+            peripheralIDs: []
+        ) {
+            claimRan = true
+            return true
+        })
+        XCTAssertFalse(
+            claimRan,
+            "an empty saved/current identity set must fail closed behind any retained connect"
+        )
+    }
+
     func testUnretainedConnectedPeripheralIsTheDeallocationThisPrevents() {
         // Guards the test itself: without the retainer the object goes away,
         // which on CoreBluetooth is the forced-disconnect path.
@@ -102,6 +179,282 @@ final class AtriaBLEConnectedPeripheralRetainerTests: XCTestCase {
         retainer.retain(peripheral)
         retainer.retain(peripheral)
         XCTAssertEqual(retainer.count, 1)
+    }
+
+    func testPendingConnectClaimIsSingleFlightForExactObject() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let peripheral = StubPeripheral(state: .disconnected)
+
+        XCTAssertTrue(retainer.retainAndClaimConnectRequest(peripheral))
+        XCTAssertFalse(retainer.retainAndClaimConnectRequest(peripheral))
+        XCTAssertEqual(retainer.pendingConnectCount, 1)
+        XCTAssertTrue(retainer.hasPendingConnectRequest(
+            peripheralID: peripheral.identifier
+        ))
+
+        XCTAssertTrue(retainer.completeConnectRequest(peripheral))
+        XCTAssertFalse(retainer.completeConnectRequest(peripheral))
+        XCTAssertEqual(retainer.pendingConnectCount, 0)
+        XCTAssertTrue(
+            retainer.retainAndClaimConnectRequest(peripheral),
+            "an exact terminal/success completion must permit the next legitimate reconnect"
+        )
+    }
+
+    func testObjectDistinctClaimAndCallbackCannotClearExactPendingOwner() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let owner = StubPeripheral(identifier: id, state: .disconnected)
+        let twin = StubPeripheral(identifier: id, state: .disconnected)
+
+        XCTAssertTrue(retainer.retainAndClaimConnectRequest(owner))
+        XCTAssertFalse(retainer.retainAndClaimConnectRequest(twin))
+        XCTAssertFalse(retainer.completeConnectRequest(twin))
+        XCTAssertTrue(retainer.hasPendingConnectRequest(peripheralID: id))
+        XCTAssertEqual(
+            retainer.beginTerminalCallback(twin),
+            .ignorePassiveDuplicate,
+            "a stale same-UUID terminal callback must not release the newer standing request"
+        )
+        XCTAssertTrue(retainer.hasPendingConnectRequest(peripheralID: id))
+        XCTAssertTrue(retainer.completeConnectRequest(owner))
+        XCTAssertFalse(retainer.hasPendingConnectRequest(peripheralID: id))
+    }
+
+    func testRestoredTransitionTransfersPendingAuthorityToExactObject() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let poweredOnRepresentation = StubPeripheral(
+            identifier: id,
+            state: .disconnected
+        )
+        let restoredRepresentation = StubPeripheral(
+            identifier: id,
+            state: .connecting
+        )
+
+        XCTAssertTrue(retainer.retainAndClaimConnectRequest(
+            poweredOnRepresentation
+        ))
+        XCTAssertTrue(retainer.adoptRestoredConnectTransition(
+            restoredRepresentation
+        ))
+        XCTAssertFalse(retainer.completeConnectRequest(
+            poweredOnRepresentation
+        ))
+        XCTAssertTrue(retainer.hasPendingConnectRequest(peripheralID: id))
+        XCTAssertTrue(retainer.completeConnectRequest(
+            restoredRepresentation
+        ))
+        XCTAssertFalse(retainer.hasPendingConnectRequest(peripheralID: id))
+    }
+
+    func testRestoredConnectedObjectSupersedesObjectDistinctPendingPrecheck() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let poweredOnRepresentation = StubPeripheral(
+            identifier: id,
+            state: .disconnected
+        )
+        let restoredRepresentation = StubPeripheral(
+            identifier: id,
+            state: .connected
+        )
+
+        XCTAssertTrue(retainer.retainAndClaimConnectRequest(
+            poweredOnRepresentation
+        ))
+        XCTAssertEqual(
+            retainer.adoptRestoredConnected(restoredRepresentation),
+            .acceptCanonical
+        )
+        XCTAssertFalse(retainer.hasPendingConnectRequest(peripheralID: id))
+        XCTAssertEqual(
+            retainer.beginTerminalCallback(poweredOnRepresentation),
+            .ignorePassiveDuplicate,
+            "the superseded precheck object must not run a second recovery lane"
+        )
+        XCTAssertEqual(
+            retainer.beginTerminalCallback(restoredRepresentation),
+            .processCanonical,
+            "the already-connected restored object must own the live link"
+        )
+    }
+
+    func testRestoredConnectedObjectDoesNotDisplaceLiveCanonicalOwner() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let canonical = StubPeripheral(identifier: id, state: .connected)
+        let restoredTwin = StubPeripheral(identifier: id, state: .connected)
+
+        XCTAssertEqual(retainer.admitConnected(canonical), .acceptCanonical)
+        XCTAssertEqual(
+            retainer.adoptRestoredConnected(restoredTwin),
+            .retainPassiveDuplicate
+        )
+        XCTAssertEqual(
+            retainer.beginTerminalCallback(restoredTwin),
+            .ignorePassiveDuplicate
+        )
+        XCTAssertEqual(
+            retainer.beginTerminalCallback(canonical),
+            .processCanonical
+        )
+    }
+
+    func testTerminalCallbackClearsExactPendingOwnerBeforeReconnectClaim() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let peripheral = StubPeripheral(state: .disconnected)
+
+        XCTAssertTrue(retainer.retainAndClaimConnectRequest(peripheral))
+        XCTAssertEqual(
+            retainer.beginTerminalCallback(peripheral),
+            .processCanonical
+        )
+        XCTAssertFalse(retainer.hasPendingConnectRequest(
+            peripheralID: peripheral.identifier
+        ))
+        XCTAssertTrue(retainer.retainAndClaimConnectRequest(peripheral))
+    }
+
+    func testConcurrentDelegateAndMainActorClaimsIssueExactlyOnce() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let peripheral = StubPeripheral(state: .disconnected)
+        let resultLock = NSLock()
+        var admitted = 0
+
+        DispatchQueue.concurrentPerform(iterations: 128) { _ in
+            if retainer.retainAndClaimConnectRequest(peripheral) {
+                resultLock.withLock { admitted += 1 }
+            }
+        }
+
+        XCTAssertEqual(admitted, 1)
+        XCTAssertEqual(retainer.pendingConnectCount, 1)
+        XCTAssertEqual(retainer.retainedCount(
+            peripheralID: peripheral.identifier
+        ), 1)
+    }
+
+    func testCentralRetirementClearsPendingClaims() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let peripheral = StubPeripheral(state: .disconnected)
+        XCTAssertTrue(retainer.retainAndClaimConnectRequest(peripheral))
+
+        XCTAssertEqual(retainer.releaseEverything(), 1)
+        XCTAssertEqual(retainer.pendingConnectCount, 0)
+        XCTAssertTrue(retainer.retainAndClaimConnectRequest(peripheral))
+    }
+
+    func testExclusiveConnectedCanonicalClaimRejectsPendingAndDuplicates() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let canonical = StubPeripheral(identifier: id, state: .connected)
+        XCTAssertEqual(retainer.admitConnected(canonical), .acceptCanonical)
+
+        var claimCount = 0
+        XCTAssertTrue(retainer.claimExclusiveConnectedCanonicalTransport(
+            canonical
+        ) {
+            claimCount += 1
+            return true
+        })
+        XCTAssertEqual(claimCount, 1)
+
+        XCTAssertTrue(retainer.retainAndClaimConnectRequest(canonical))
+        XCTAssertFalse(retainer.claimExclusiveConnectedCanonicalTransport(
+            canonical
+        ) {
+            claimCount += 1
+            return true
+        })
+        XCTAssertEqual(claimCount, 1)
+        XCTAssertTrue(retainer.completeConnectRequest(canonical))
+
+        let duplicate = StubPeripheral(identifier: id, state: .connected)
+        retainer.retainPassiveDuplicate(duplicate)
+        XCTAssertFalse(retainer.claimExclusiveConnectedCanonicalTransport(
+            canonical
+        ) {
+            claimCount += 1
+            return true
+        })
+        XCTAssertEqual(claimCount, 1)
+    }
+
+    func testManagerRoutesEveryProductionConnectThroughSingleFlightGateway() throws {
+        let managerURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: managerURL, encoding: .utf8)
+
+        XCTAssertEqual(
+            source.components(separatedBy: ".connect(").count - 1,
+            3,
+            "only the gateway call plus two explanatory comments may mention raw CoreBluetooth connect syntax"
+        )
+        let gatewayStart = try XCTUnwrap(source.range(
+            of: "nonisolated private func issueSingleFlightConnect("
+        ))
+        let gatewayEnd = try XCTUnwrap(source.range(
+            of: "/// A CoreBluetooth-disconnected peripheral",
+            range: gatewayStart.upperBound..<source.endIndex
+        ))
+        let gateway = String(
+            source[gatewayStart.lowerBound..<gatewayEnd.lowerBound]
+        )
+        XCTAssertTrue(gateway.contains("retainAndClaimConnectRequest"))
+        XCTAssertEqual(
+            gateway.components(separatedBy: ".connect(").count - 1,
+            1,
+            "the audited gateway must be the sole radio issuer"
+        )
+
+        let restore = try XCTUnwrap(source.range(
+            of: "nonisolated func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any])"
+        ))
+        let discover = try XCTUnwrap(source.range(
+            of: "didDiscover peripheral: CBPeripheral",
+            range: restore.upperBound..<source.endIndex
+        ))
+        let restoreBody = String(source[restore.lowerBound..<discover.lowerBound])
+        XCTAssertTrue(restoreBody.contains("adoptRestoredConnectTransition"))
+        XCTAssertTrue(restoreBody.contains("adoptRestoredConnected"))
+        let firstDeferredTask = try XCTUnwrap(
+            restoreBody.range(of: "Task { @MainActor in")
+        )
+        XCTAssertTrue(
+            restoreBody[..<firstDeferredTask.lowerBound].contains(
+                "adoptRestoredConnectTransition"
+            ),
+            "restored pending authority must publish before deferred lifecycle work"
+        )
+        XCTAssertTrue(
+            restoreBody[..<firstDeferredTask.lowerBound].contains(
+                "adoptRestoredConnected"
+            ),
+            "restored connected authority must replace a pending precheck before deferred work"
+        )
+
+        let didConnect = try XCTUnwrap(source.range(
+            of: "didConnect peripheral: CBPeripheral"
+        ))
+        let didDisconnect = try XCTUnwrap(source.range(
+            of: "didDisconnectPeripheral peripheral: CBPeripheral",
+            range: didConnect.upperBound..<source.endIndex
+        ))
+        let didConnectBody = String(
+            source[didConnect.lowerBound..<didDisconnect.lowerBound]
+        )
+        XCTAssertLessThan(
+            try XCTUnwrap(didConnectBody.range(
+                of: "completeConnectRequest(peripheral)"
+            )).lowerBound,
+            try XCTUnwrap(didConnectBody.range(
+                of: "duplicate_connect_ignored"
+            )).lowerBound
+        )
     }
 
     func testFailedConnectReleaseDropsTheExactConnectingInstance() {
@@ -346,35 +699,29 @@ final class AtriaBLEConnectedPeripheralRetainerTests: XCTestCase {
         return try String(contentsOf: sourceURL, encoding: .utf8)
     }
 
-    func testEveryConnectCallSiteRetainsThePeripheralItConnects() throws {
-        let lines = try managerSource().split(separator: "\n", omittingEmptySubsequences: false)
-        var unguarded: [Int] = []
-        for (index, line) in lines.enumerated() {
-            let text = line.trimmingCharacters(in: .whitespaces)
-            guard text.hasPrefix("central.connect(")
-                    || text.hasPrefix("self.central.connect(")
-                    || text.hasPrefix("callbackCentral.connect(")
-            else { continue }
-            guard let open = text.firstIndex(of: "("),
-                  let comma = text[open...].firstIndex(of: ",") else {
-                unguarded.append(index + 1)
-                continue
-            }
-            let argument = text[text.index(after: open)..<comma]
-                .trimmingCharacters(in: .whitespaces)
-            let guardWindowStart = max(0, index - 24)
-            let guardWindow = lines[guardWindowStart..<index].joined(
-                separator: "\n"
-            )
-            if !guardWindow.contains(
-                "connectedPeripheralRetainer.retain(\(argument))"
-            ) {
-                unguarded.append(index + 1)
-            }
-        }
-        XCTAssertTrue(unguarded.isEmpty,
-                      "CoreBluetooth connect without an adjacent retain at line(s) \(unguarded); "
-                        + "an unreferenced connected peripheral is force-disconnected by CoreBluetooth")
+    func testEveryConnectCallSiteUsesAtomicRetainAndPendingClaim() throws {
+        let source = try managerSource()
+        let gatewayStart = try XCTUnwrap(source.range(
+            of: "nonisolated private func issueSingleFlightConnect("
+        ))
+        let gatewayEnd = try XCTUnwrap(source.range(
+            of: "/// A CoreBluetooth-disconnected peripheral",
+            range: gatewayStart.upperBound..<source.endIndex
+        ))
+        let gateway = String(
+            source[gatewayStart.lowerBound..<gatewayEnd.lowerBound]
+        )
+        XCTAssertTrue(gateway.contains("retainAndClaimConnectRequest(target)"))
+        XCTAssertEqual(
+            gateway.components(separatedBy: ".connect(").count - 1,
+            1,
+            "the only raw CoreBluetooth connect must sit behind the atomic retain-and-claim"
+        )
+        XCTAssertEqual(
+            source.components(separatedBy: ".connect(").count - 1,
+            3,
+            "no production path may bypass the gateway (two occurrences are explanatory comments)"
+        )
     }
 
     func testDisconnectAndFailurePathsReleaseWhatTheyStoppedConnecting() throws {

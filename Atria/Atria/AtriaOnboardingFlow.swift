@@ -306,6 +306,7 @@ struct AtriaOnboardingFlow: View {
     let onRestoreBackup: ((URL) async -> Bool)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.openURL) private var openURL
     @State private var step: Step = .whatThisIs
     @State private var focusMetric: OnboardingFocusMetric = .recovery
     // Design-parity slice 6 (2026-08-01) page state. Each is seeded from — and
@@ -418,6 +419,11 @@ struct AtriaOnboardingFlow: View {
 
         private var strapIsReady: Bool { historyBootstrap.isCompleteForCurrentStrap }
 
+        private var bluetoothRecovery: AtriaOnboardingBluetoothRecovery {
+            AtriaOnboardingBluetoothRecovery(status: ble.status,
+                                              permissionDenied: ble.bluetoothPermissionDenied)
+        }
+
         var body: some View {
             Button(action: action) {
                 Text(title)
@@ -431,9 +437,13 @@ struct AtriaOnboardingFlow: View {
         }
 
         private var strapActionIsUnavailable: Bool {
-            historyBootstrap.isWorking
+            // Permission denial is persistent and needs a user-owned recovery
+            // action. Keep Open Settings tappable even if transport work was
+            // interrupted while CoreBluetooth changed to unauthorized.
+            if bluetoothRecovery == .permissionDenied { return false }
+            return historyBootstrap.isWorking
                 || ble.onboardingPairingPreflightInFlight
-                || ble.status == .poweredOff
+                || bluetoothRecovery.disablesPrimaryAction
         }
 
         private var title: String {
@@ -441,8 +451,11 @@ struct AtriaOnboardingFlow: View {
             case .whatThisIs: return "Get started"
             case .nickname: return "Continue"
             case .strap:
+                if bluetoothRecovery == .permissionDenied { return "Open Settings" }
                 if strapIsReady { return "Continue" }
-                if ble.status == .poweredOff { return "Turn on Bluetooth" }
+                if let recoveryTitle = bluetoothRecovery.primaryActionTitle {
+                    return recoveryTitle
+                }
                 if ble.onboardingPairingPreflightInFlight { return "Verifying secure access…" }
                 if historyBootstrap.isWorking { return "Preparing your strap…" }
                 if historyBootstrap.snapshot.phase == .failed { return "Retry secure import" }
@@ -543,7 +556,10 @@ struct AtriaOnboardingFlow: View {
                     PrimaryActionButton(ble: ble,
                                         historyBootstrap: historyBootstrap,
                                         step: step) {
-                        if step == .strap, !onboardingStrapIsReady {
+                        if step == .strap,
+                           onboardingBluetoothRecovery == .permissionDenied {
+                            openApplicationSettings()
+                        } else if step == .strap, !onboardingStrapIsReady {
                             // “Connect” must be an honest action. A transport
                             // connection can precede bond completion and the
                             // first usable sample, so never advance until this
@@ -583,6 +599,16 @@ struct AtriaOnboardingFlow: View {
     }
 
     private var onboardingStrapIsReady: Bool { historyBootstrap.isCompleteForCurrentStrap }
+
+    private var onboardingBluetoothRecovery: AtriaOnboardingBluetoothRecovery {
+        AtriaOnboardingBluetoothRecovery(status: ble.status,
+                                          permissionDenied: ble.bluetoothPermissionDenied)
+    }
+
+    private func openApplicationSettings() {
+        guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else { return }
+        openURL(settingsURL)
+    }
 
     /// The three design-adopted personalization pages are optional: each persists
     /// continuously with a sensible default (blank nickname, default ring layout,
@@ -1015,7 +1041,7 @@ struct AtriaOnboardingFlow: View {
             if historyBootstrap.isCompleteForCurrentStrap {
                 Label(historyBootstrap.snapshot.importedRows > 0
                       ? "Ready · \(historyBootstrap.snapshot.importedRows) records safely added"
-                      : "Ready · strap history verified",
+                      : historyBootstrap.snapshot.detail,
                       systemImage: "checkmark.seal.fill")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(.green)

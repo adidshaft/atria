@@ -165,6 +165,95 @@ final class AtriaWhoop4MotionTickCompactStoreTests: XCTestCase {
         XCTAssertTrue(passing.satisfiesNinetyPercentExactWindow)
     }
 
+    func testConfirmedWorkoutWindowPublishesFromCompactCorrectedTimeline()
+        async throws {
+        let base = UInt32(Date().timeIntervalSince1970.rounded(.down)) - 180
+        let duration: TimeInterval = 92.3
+        let count = 97
+        let sampleRate = Double(count - 1) / duration
+        let points = (0..<count).map { index in
+            let elapsed = Double(index) / sampleRate
+            let phase = 2 * Double.pi * 0.42 * elapsed
+            let textureScale = 0.55
+            return AtriaWhoop4MotionTickCompactStore.MigrationPoint(
+                timestamp: TimeInterval(base) + elapsed,
+                flash: UInt32(index),
+                tick: index * 2,
+                gravityX: textureScale * (
+                    0.073 * sin(phase)
+                        + 0.16 * pseudoNoise(index, channel: 1)
+                ),
+                gravityY: textureScale * (
+                    0.073 * cos(phase)
+                        + 0.16 * pseudoNoise(index, channel: 2)
+                ),
+                gravityZ: 1 + textureScale * 0.16
+                    * pseudoNoise(index, channel: 3),
+                unknownMotionScalar32: 0.12,
+                rawPayload: payloadIdentity(
+                    unix: base + UInt32(index),
+                    tick: index * 2
+                )
+            )
+        }
+        let store = try XCTUnwrap(store)
+        let strapIdentifier = try XCTUnwrap(strapIdentifier)
+        try await Task.detached(priority: .utility) {
+            _ = try store.appendMigrated(
+                points,
+                strapIdentifier: strapIdentifier
+            )
+            try store.synchronize()
+        }.value
+
+        let read = await Task.detached(priority: .utility) {
+            store.motionTickWindowRead(
+                start: Date(timeIntervalSince1970: TimeInterval(base)),
+                end: Date(
+                    timeIntervalSince1970: TimeInterval(base) + duration
+                ),
+                strapIdentifier: strapIdentifier
+            )
+        }.value
+        guard case .qualified(let window) = read else {
+            return XCTFail("expected the compact workout window to qualify")
+        }
+        XCTAssertEqual(window.steps, 133)
+        XCTAssertEqual(window.delta, 192)
+        XCTAssertEqual(window.coverageFraction, 1, accuracy: 0.000_001)
+        XCTAssertEqual(window.decodedRows, count)
+    }
+
+    func testMissingCompactWorkoutBoundaryNeverClaimsNegativeEvidence()
+        async throws {
+        let store = try XCTUnwrap(store)
+        let strapIdentifier = try XCTUnwrap(strapIdentifier)
+        let start = Date().addingTimeInterval(-120)
+        let read = await Task.detached(priority: .utility) {
+            store.motionTickWindowRead(
+                start: start,
+                end: start.addingTimeInterval(90),
+                strapIdentifier: strapIdentifier
+            )
+        }.value
+        XCTAssertEqual(read, .incomplete)
+    }
+
+    func testCompactWorkoutWindowRefusesMoreThanRetainedFourBuckets()
+        async throws {
+        let store = try XCTUnwrap(store)
+        let strapIdentifier = try XCTUnwrap(strapIdentifier)
+        let start = Date().addingTimeInterval(-5 * 86_400)
+        let read = await Task.detached(priority: .utility) {
+            store.motionTickWindowRead(
+                start: start,
+                end: Date(),
+                strapIdentifier: strapIdentifier
+            )
+        }.value
+        XCTAssertEqual(read, .incomplete)
+    }
+
     func testStrapIdentityCannotReadAnotherStrapsShard() async throws {
         let unix = UInt32(Date().timeIntervalSince1970.rounded(.down)) - 10
         try appendPoint(base: unix, second: 0)
@@ -375,6 +464,96 @@ final class AtriaWhoop4MotionTickCompactStoreTests: XCTestCase {
         )
     }
 
+    func testConfirmedWorkoutLaunchAndForegroundPathsAreCompactOnly() throws {
+        let sourcesURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        let sessions = try String(
+            contentsOf: sourcesURL.appendingPathComponent("Sessions.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(sessions.range(
+            of: "private func scheduleConfirmedWorkoutStepEvidencePublication("
+        ))
+        let end = try XCTUnwrap(sessions.range(
+            of: "nonisolated static func workoutStepNegativeAttemptKey(",
+            range: start.upperBound..<sessions.endIndex
+        ))
+        let publication = String(
+            sessions[start.lowerBound..<end.lowerBound]
+        )
+
+        XCTAssertTrue(publication.contains(
+            "AtriaWhoop4MotionTickCompactStore.shared"
+        ))
+        XCTAssertTrue(publication.contains(
+            ".motionTickWindowRead("
+        ))
+        XCTAssertTrue(publication.contains(
+            "Self.workoutStepEvidenceQueue.async"
+        ))
+        for forbidden in [
+            "HistoricalArchive.motionTickWindowRead(",
+            "HistoricalArchive.consumerSourceFingerprint()",
+            "HistoricalArchive.consumerProjectionQueue",
+            "exactRecoveryProjectionOwnsArchivePriority()",
+            "UIApplication.shared.applicationState",
+        ] {
+            XCTAssertFalse(
+                publication.contains(forbidden),
+                "hot workout-step publication must not contain \(forbidden)"
+            )
+        }
+        XCTAssertTrue(sessions.contains(
+            "reason: \"session_store_init_workout_evidence\""
+        ))
+        XCTAssertTrue(sessions.contains(
+            "reason: \"compact_generation_durable\""
+        ))
+        XCTAssertFalse(sessions.contains(
+            "workoutStepEvidenceDeferredUntilForeground"
+        ))
+
+        let resumeStart = try XCTUnwrap(sessions.range(
+            of: "func resumeDeferredForegroundArchiveWork(reason: String)"
+        ))
+        let resumeEnd = try XCTUnwrap(sessions.range(
+            of: "private func finishConfirmedWorkoutRehydrationCompletions(",
+            range: resumeStart.upperBound..<sessions.endIndex
+        ))
+        let resume = String(
+            sessions[resumeStart.lowerBound..<resumeEnd.lowerBound]
+        )
+        XCTAssertFalse(resume.contains(
+            "scheduleConfirmedWorkoutStepEvidencePublication("
+        ), "scene-active replay must never re-arm canonical workout motion")
+
+        let app = try String(
+            contentsOf: sourcesURL.appendingPathComponent("AtriaApp.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(app.contains(
+            "scheduleBoundedLegacyCurrentCycleStepMigrationIfSafe("
+        ), "guarded BGProcessing must retain eventual recent-workout compact migration")
+
+        let productionSources = try FileManager.default.contentsOfDirectory(
+            at: sourcesURL,
+            includingPropertiesForKeys: nil
+        ).filter {
+            $0.pathExtension == "swift"
+                && $0.lastPathComponent != "HistoricalArchive.swift"
+        }
+        for sourceURL in productionSources {
+            let source = try String(contentsOf: sourceURL, encoding: .utf8)
+            XCTAssertFalse(
+                source.contains("HistoricalArchive.motionTickWindowRead(")
+                    || source.contains("HistoricalArchive.motionTickWindow("),
+                "\(sourceURL.lastPathComponent) must not call the legacy workout JSONL reader"
+            )
+        }
+    }
+
     private func appendPoint(base: UInt32, second: Int) throws {
         let unix = base + UInt32(second)
         XCTAssertTrue(
@@ -482,5 +661,14 @@ final class AtriaWhoop4MotionTickCompactStoreTests: XCTestCase {
                 Array(unixBytes) + Array(tickBytes)
             }
         }
+    }
+
+    private func pseudoNoise(_ index: Int, channel: Int) -> Double {
+        let raw = sin(
+            Double(index + 1)
+                * (12.9898 + Double(channel) * 78.233)
+        ) * 43_758.5453
+        let fraction = raw - floor(raw)
+        return fraction * 2 - 1
     }
 }

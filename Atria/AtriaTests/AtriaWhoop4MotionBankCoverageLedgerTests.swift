@@ -438,6 +438,74 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         )
     }
 
+    func testPreStartTransportDeferralRetainsAttemptZeroTicketAndRearmsSuccessor()
+        throws
+    {
+        let start = Date(timeIntervalSince1970: 5_500)
+        let end = start.addingTimeInterval(15 * 60)
+        AtriaWhoop4MotionBankCoverageLedger.open(
+            at: start,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        AtriaWhoop4MotionBankCoverageLedger.close(
+            at: end,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        let ticket = try XCTUnwrap(
+            AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+
+        // Mirror the manager's durable pre-start reservation. This marker is
+        // present-capture authority only: it must not spend the BLE attempt or
+        // manufacture a cadence timestamp.
+        defaults.set(
+            ticket.id,
+            forKey: "atria.workoutHistoricalMotionBank.activeTicketID.v1"
+        )
+        defaults.set(
+            ticket.id,
+            forKey:
+                "atria.workoutHistoricalMotionBank.transportDeferredTicketID.v1"
+        )
+        let retained = try XCTUnwrap(
+            AtriaWhoop4MotionBankCoverageLedger.pendingOffload(
+                id: ticket.id,
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+        XCTAssertEqual(retained.attempts, 0)
+        XCTAssertNil(retained.lastAttemptAt)
+        XCTAssertNil(defaults.object(
+            forKey: "atria.workoutHistoricalMotionBank.lastOffloadStartedAt.v1"
+        ))
+
+        let exactDeferred = AtriaBLEManager
+            .historicalMotionBankFirstAttemptTransportDeferred(
+                pendingTicketID: retained.id,
+                pendingOffloadAttempts: retained.attempts,
+                boundTicketID: defaults.string(
+                    forKey:
+                        "atria.workoutHistoricalMotionBank.activeTicketID.v1"
+                ),
+                deferredTransportTicketID: defaults.string(
+                    forKey:
+                        "atria.workoutHistoricalMotionBank.transportDeferredTicketID.v1"
+                )
+            )
+        XCTAssertTrue(exactDeferred)
+        XCTAssertTrue(AtriaBLEManager.historicalMotionBankArmEligible(
+            manualWorkoutActive: false,
+            pendingOffloadAttempts: retained.attempts,
+            firstAttemptTransportDeferred: exactDeferred
+        ))
+    }
+
     func testRepairsLegacyWorkoutSuffixTicketToFullClosedBank() throws {
         let bankStart = Date(timeIntervalSince1970: 8_000)
         let workoutStart = bankStart.addingTimeInterval(600)
@@ -984,6 +1052,15 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         XCTAssertFalse(body.contains(
             "HistoricalArchive.motionBankTransportCoverage("
         ))
+        XCTAssertFalse(body.contains("requestRecoveredDataRecomputation("))
+        XCTAssertFalse(body.contains("motionTickDayEvidenceRead("))
+        let backgroundRead = try XCTUnwrap(body.range(
+            of: "historicalArchiveQueue.async"
+        ))
+        let mainPublication = try XCTUnwrap(body.range(
+            of: "Task { @MainActor"
+        ))
+        XCTAssertLessThan(backgroundRead.lowerBound, mainPublication.lowerBound)
     }
 
     func testNewGenerationPreservesAttemptedBindingAheadOfNewerTicket() {
@@ -1217,7 +1294,7 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
             of: "if Self.shouldDeferAutomaticOfflineSyncForThermalPressure("
         ))
         let end = try XCTUnwrap(source.range(
-            of: "// Never turn a pending CoreBluetooth reconnect",
+            of: "// Realtime owns the physical link until a natural disconnect.",
             range: start.upperBound..<source.endIndex
         ))
         let body = String(source[start.lowerBound..<end.lowerBound])

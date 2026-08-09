@@ -124,6 +124,7 @@ final class AtriaHistoricalArchiveCatalogStore {
         case sealedMetadataConflict
         case sealedContentMismatch
         case catalogFileMismatch
+        case maintenanceAuthorityRevoked
         case invalidCompressedStorage
         case compressedStorageConflict
     }
@@ -289,12 +290,20 @@ final class AtriaHistoricalArchiveCatalogStore {
     /// repair) lands mid-verification, the recheck fails value equality and
     /// the whole verification retries on a fresh copy — bounded, then the
     /// existing verification error is thrown rather than looping forever.
-    func snapshotVerifiedAgainstFiles() throws -> AtriaHistoricalArchiveCatalog {
+    func snapshotVerifiedAgainstFiles(
+        shouldContinue: () -> Bool = { true }
+    ) throws -> AtriaHistoricalArchiveCatalog {
         let maximumAttempts = 3
         for attempt in 1...maximumAttempts {
+            guard shouldContinue() else {
+                throw StoreError.maintenanceAuthorityRevoked
+            }
             let candidate = try snapshot()
             do {
-                try verifyFiles(match: candidate)
+                try verifyFiles(
+                    match: candidate,
+                    shouldContinue: shouldContinue
+                )
             } catch {
                 // A mutation racing the unlocked verification can make files
                 // legitimately disagree with the stale copy — a state the
@@ -329,8 +338,14 @@ final class AtriaHistoricalArchiveCatalogStore {
     /// immutable configuration — so callers may (and do) run the expensive
     /// hashing outside the critical section. Verification semantics are
     /// identical to the pre-2026-08-01 in-lock loop.
-    private func verifyFiles(match catalog: AtriaHistoricalArchiveCatalog) throws {
+    private func verifyFiles(
+        match catalog: AtriaHistoricalArchiveCatalog,
+        shouldContinue: () -> Bool
+    ) throws {
         for chunk in catalog.chunks where chunk.state != .retired {
+            guard shouldContinue() else {
+                throw StoreError.maintenanceAuthorityRevoked
+            }
             let url = rootURL.appendingPathComponent(chunk.relativePath)
             let actualBytes = ((try? fileManager.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?
                 .uint64Value ?? 0

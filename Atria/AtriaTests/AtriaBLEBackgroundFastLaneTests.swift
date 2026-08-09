@@ -365,12 +365,17 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
         let disconnect = String(source[disconnectStart.lowerBound..<disconnectEnd.lowerBound])
         let disposition = try XCTUnwrap(disconnect.range(of: "consumeDisposition("))
         let synchronousConnect = try XCTUnwrap(disconnect.range(
-            of: "central.connect(peripheral, options: nil)",
+            of: "issueSingleFlightConnect(",
             range: disposition.upperBound..<disconnect.endIndex
         ))
         let mainActor = try XCTUnwrap(disconnect.range(of: "Task { @MainActor in"))
         XCTAssertLessThan(synchronousConnect.lowerBound, mainActor.lowerBound)
-        XCTAssertTrue(disconnect.contains("if peripheral.state == .disconnected"))
+        XCTAssertTrue(disconnect.contains(
+            "let synchronousReconnectIssued =\n            fastLaneDisposition.requestsRealtimeReconnect"
+        ))
+        XCTAssertTrue(disconnect.contains(
+            "&& peripheral.state == .disconnected\n        if synchronousReconnectIssued"
+        ))
         XCTAssertTrue(disconnect.contains("action=keep_existing_standing_request"))
 
         let restoreStart = try XCTUnwrap(source.range(
@@ -522,7 +527,7 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
             of: "retireForRealtimeRestore("
         ))
         let disconnectConnect = try XCTUnwrap(disconnect.range(
-            of: "central.connect(peripheral, options: nil)",
+            of: "issueSingleFlightConnect(",
             range: disconnectRetire.upperBound..<disconnect.endIndex
         ))
         let disconnectMainActor = try XCTUnwrap(disconnect.range(
@@ -549,7 +554,7 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
             of: "retireForRealtimeRestore("
         ))
         let failedConnect = try XCTUnwrap(failed.range(
-            of: "central.connect(peripheral, options: nil)",
+            of: "issueSingleFlightConnect(",
             range: failedRetire.upperBound..<failed.endIndex
         ))
         let failedMainActor = try XCTUnwrap(failed.range(

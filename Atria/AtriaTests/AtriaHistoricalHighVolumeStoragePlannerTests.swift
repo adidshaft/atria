@@ -96,6 +96,41 @@ final class AtriaHistoricalHighVolumeStoragePlannerTests: XCTestCase {
         }
     }
 
+    func testAccountingRevocationStopsBetweenFilesWithoutMutation() throws {
+        let root = try makeRoot()
+        try write(bytes: 8, relativePath: "segments/raw-v2/a.jsonl", root: root)
+        try write(bytes: 8, relativePath: "segments/raw-v2/b.jsonl", root: root)
+        let accounting = try AtriaHistoricalHighVolumeStorageAccounting(
+            archiveRoot: root,
+            catalogRawRelativePaths: [
+                "segments/raw-v2/a.jsonl",
+                "segments/raw-v2/b.jsonl",
+            ]
+        )
+        var checks = 0
+
+        XCTAssertThrowsError(try accounting.measure {
+            checks += 1
+            return checks < 3
+        }) { error in
+            XCTAssertEqual(
+                error as? AtriaHistoricalHighVolumeStorageAccounting
+                    .AccountingError,
+                .maintenanceAuthorityRevoked
+            )
+        }
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(
+                "segments/raw-v2/a.jsonl"
+            ).path
+        ))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent(
+                "segments/raw-v2/b.jsonl"
+            ).path
+        ))
+    }
+
     func testPureAccountingOverflowFailsClosed() throws {
         let facts = [
             AtriaHistoricalHighVolumeStorageAccounting.FileFact(
@@ -274,6 +309,7 @@ final class AtriaHistoricalHighVolumeStoragePlannerTests: XCTestCase {
         XCTAssertTrue(compactBody.contains(
             "AtriaHistoricalHighVolumeDiagnosticsCoordinator"
         ))
+        XCTAssertTrue(compactBody.contains("shouldContinue:"))
         XCTAssertTrue(compactBody.contains("mutation_authority=0 raw_retained=1"))
         XCTAssertFalse(compactBody.contains("markRetired"))
         XCTAssertFalse(compactBody.contains("deleteSourceAfterCommit: true"))
@@ -281,9 +317,29 @@ final class AtriaHistoricalHighVolumeStoragePlannerTests: XCTestCase {
         XCTAssertFalse(diagnosticsSource.contains("markRetired"))
         XCTAssertFalse(diagnosticsSource.contains("deleteSourceAfterCommit"))
         XCTAssertFalse(diagnosticsSource.contains("removeItem"))
+
+        let pressureStart = try XCTUnwrap(archiveSource.range(
+            of: "static func highVolumeMaintenancePressure("
+        ))
+        let pressureEnd = try XCTUnwrap(archiveSource.range(
+            of: "static func recoverTerminalCatalogSeal(",
+            range: pressureStart.upperBound..<archiveSource.endIndex
+        ))
+        let pressure = String(
+            archiveSource[pressureStart.lowerBound..<pressureEnd.lowerBound]
+        )
+        XCTAssertTrue(pressure.contains(
+            "catalogStoreLocked().snapshot()"
+        ))
+        XCTAssertFalse(pressure.contains(
+            "snapshotVerifiedAgainstFiles()"
+        ), "the advisory probe must not hash every sealed raw source")
+        XCTAssertTrue(pressure.contains(
+            "shouldContinue: shouldContinue"
+        ))
     }
 
-    func testArchiveUpdatesAlsoEvaluateRetentionDuringLongForegroundCollection() throws {
+    func testArchiveUpdatesOnlyReserveRetentionForSafeBackground() throws {
         let testsURL = URL(fileURLWithPath: #filePath)
         let projectRoot = testsURL.deletingLastPathComponent().deletingLastPathComponent()
         let sessionsSource = try String(
@@ -301,6 +357,9 @@ final class AtriaHistoricalHighVolumeStoragePlannerTests: XCTestCase {
 
         XCTAssertTrue(observerBody.contains("HistoricalArchive.didUpdateNotification"))
         XCTAssertTrue(observerBody.contains(
+            "reserveArchiveCompactionForSafeBackground()"
+        ))
+        XCTAssertFalse(observerBody.contains(
             "compactHistoricalArchiveIfUseful(reason: \"archive_did_update\")"
         ))
     }

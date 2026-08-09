@@ -588,6 +588,41 @@ struct AtriaDashboardBackdrop: View {
     }
 }
 
+/// Recovery action for Bluetooth states that CoreBluetooth folds into the
+/// transport's `.poweredOff` presentation. Permission denial is persistent until
+/// the user changes Atria's system setting, while a powered-off radio is a
+/// transient device state; onboarding must never present them as the same fault.
+enum AtriaOnboardingBluetoothRecovery: Equatable {
+    case none
+    case radioPoweredOff
+    case permissionDenied
+
+    init(status: AtriaBLEManager.Status, permissionDenied: Bool) {
+        if permissionDenied {
+            self = .permissionDenied
+        } else if status == .poweredOff {
+            self = .radioPoweredOff
+        } else {
+            self = .none
+        }
+    }
+
+    var primaryActionTitle: String? {
+        switch self {
+        case .none: return nil
+        case .radioPoweredOff: return "Turn on Bluetooth"
+        case .permissionDenied: return "Open Settings"
+        }
+    }
+
+    /// A radio-off state resolves when Bluetooth is turned back on. Permission
+    /// denial cannot resolve inside CoreBluetooth, so its primary action must stay
+    /// enabled and route to the app's system settings instead of becoming a dead end.
+    var disablesPrimaryAction: Bool {
+        self == .radioPoweredOff
+    }
+}
+
 /// Live, observed connection state for the onboarding "Connect your strap" step.
 /// A dedicated `@ObservedObject` subview so heart-rate ticks only re-render this
 /// card, not the whole onboarding screen.
@@ -599,6 +634,11 @@ struct OnboardingConnectionStatusView: View {
     private var isHealthyContact: Bool { ble.hasContact || ble.heartRate > 0 }
 
     private var hasFreshHeartRate: Bool { ble.currentConnectionHasFreshHeartRate }
+
+    private var bluetoothRecovery: AtriaOnboardingBluetoothRecovery {
+        AtriaOnboardingBluetoothRecovery(status: ble.status,
+                                          permissionDenied: ble.bluetoothPermissionDenied)
+    }
 
     var body: some View {
         Group {
@@ -679,6 +719,9 @@ struct OnboardingConnectionStatusView: View {
     }
 
     private var title: String {
+        if bluetoothRecovery == .permissionDenied {
+            return "Bluetooth access needed"
+        }
         switch ble.status {
         case .poweredOff: return "Bluetooth is off"
         case .scanning, .disconnected: return "Searching for your strap…"
@@ -690,8 +733,11 @@ struct OnboardingConnectionStatusView: View {
     }
 
     private var subtitle: String {
+        if bluetoothRecovery == .permissionDenied {
+            return "Allow Atria to use Bluetooth in Settings, then return to connect your strap."
+        }
         switch ble.status {
-        case .poweredOff: return "Turn on Bluetooth in Settings to connect."
+        case .poweredOff: return "Turn on Bluetooth in Control Center or Settings to connect."
         case .scanning, .disconnected: return "Make sure the strap is on your wrist."
         case .connecting: return "Linking to your strap."
         case .connected:
@@ -703,6 +749,9 @@ struct OnboardingConnectionStatusView: View {
     }
 
     private var symbol: String {
+        if bluetoothRecovery == .permissionDenied {
+            return "hand.raised.fill"
+        }
         switch ble.status {
         case .poweredOff: return "bolt.slash.fill"
         case .scanning, .disconnected, .connecting: return "dot.radiowaves.left.and.right"

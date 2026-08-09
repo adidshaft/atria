@@ -71,6 +71,40 @@ final class AtriaHistoricalRetentionTransactionTests: XCTestCase {
         }
     }
 
+    func testRevocationAfterVerificationPreventsIrreversibleRawDeletion()
+        throws {
+        let fixture = try makeFixture()
+        var revoked = false
+        var checkpoints: [AtriaHistoricalRetentionTransaction.Checkpoint] = []
+        let transaction = AtriaHistoricalRetentionTransaction(
+            now: { self.fixedNow },
+            checkpoint: { checkpoint in
+                checkpoints.append(checkpoint)
+                if checkpoint == .committedArtifactsVerified {
+                    revoked = true // scene-active / heat arrived mid-pass
+                }
+            },
+            shouldContinue: { !revoked },
+            consumerProjectionVerifier: { _ in true },
+            consumerApplicationVerifier: { _ in true },
+            semanticVerifier: { _, _, _ in true }
+        )
+
+        XCTAssertThrowsError(
+            try transaction.commit(fixture.request(deleteSource: true))
+        ) { error in
+            XCTAssertEqual(
+                error as? AtriaHistoricalRetentionTransaction
+                    .TransactionError,
+                .maintenanceAuthorityRevoked
+            )
+        }
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: fixture.source.path
+        ))
+        XCTAssertFalse(checkpoints.contains(.sourceDeleted))
+    }
+
     func testCrashAfterAggregatePublishRetriesIdempotentlyAndThenDeletesRaw() throws {
         let fixture = try makeFixture()
         enum Injected: Error { case crash }

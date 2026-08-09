@@ -53,6 +53,16 @@ final class AtriaBLEConnectedPeripheralRetainer: @unchecked Sendable {
     private let lock = NSLock()
     private var retained: [ObjectIdentifier: AtriaBLERetainablePeripheral] = [:]
     private var canonicalByPeripheralID: [UUID: ObjectIdentifier] = [:]
+    /// Exact app-side owner of the one outstanding `central.connect` request
+    /// for a physical peripheral. CoreBluetooth can continue to report a just-
+    /// issued request as `.disconnected`, so neither `CBPeripheral.state` nor
+    /// ordinary object retention can make connect issuance single-flight.
+    ///
+    /// This claim intentionally spans delegate/MainActor/lifecycle lanes. It is
+    /// cleared only by a terminal/success callback for the exact object, or by
+    /// retiring the owning central. A stale same-UUID callback therefore cannot
+    /// clear a newer request and manufacture another queued radio request.
+    private var pendingConnectOwnerByPeripheralID: [UUID: ObjectIdentifier] = [:]
     private var passiveDuplicateKeys: Set<ObjectIdentifier> = []
 
     static func classifyConnectedAdmission(
@@ -84,6 +94,131 @@ final class AtriaBLEConnectedPeripheralRetainer: @unchecked Sendable {
         lock.lock()
         retained[ObjectIdentifier(peripheral)] = peripheral
         lock.unlock()
+    }
+
+    /// Atomically retains `peripheral` and grants the sole app-side permission
+    /// to call `central.connect(_:)` for its physical identifier.
+    ///
+    /// Callers must issue the CoreBluetooth request only when this returns
+    /// `true`. Repeated claims for the exact object and object-distinct claims
+    /// for the same UUID both return `false` while preserving strong retention.
+    @discardableResult
+    func retainAndClaimConnectRequest(
+        _ peripheral: AtriaBLERetainablePeripheral
+    ) -> Bool {
+        let key = ObjectIdentifier(peripheral)
+        let peripheralID = peripheral.identifier
+        return lock.withLock {
+            retained[key] = peripheral
+            if let pendingKey = pendingConnectOwnerByPeripheralID[peripheralID] {
+                if pendingKey != key,
+                   canonicalByPeripheralID[peripheralID] != key {
+                    passiveDuplicateKeys.insert(key)
+                }
+                return false
+            }
+            if let canonicalKey = canonicalByPeripheralID[peripheralID],
+               canonicalKey != key,
+               retained[canonicalKey]?.state == .connected {
+                passiveDuplicateKeys.insert(key)
+                return false
+            }
+            pendingConnectOwnerByPeripheralID[peripheralID] = key
+            passiveDuplicateKeys.remove(key)
+            return true
+        }
+    }
+
+    /// Adopts a CoreBluetooth-restored `.connecting`/`.disconnecting` object as
+    /// the exact owner of the already-existing OS request/transition without
+    /// issuing another `central.connect` call.
+    ///
+    /// Restoration is authoritative for the current process. If a powered-on
+    /// precheck published an object-distinct representation first, transfer the
+    /// claim to the restored object and keep the earlier representation passive
+    /// until its own callback or central retirement.
+    @discardableResult
+    func adoptRestoredConnectTransition(
+        _ peripheral: AtriaBLERetainablePeripheral
+    ) -> Bool {
+        let key = ObjectIdentifier(peripheral)
+        let peripheralID = peripheral.identifier
+        return lock.withLock {
+            retained[key] = peripheral
+            if let canonicalKey = canonicalByPeripheralID[peripheralID],
+               canonicalKey != key,
+               retained[canonicalKey]?.state == .connected {
+                passiveDuplicateKeys.insert(key)
+                return false
+            }
+            if let previousKey = pendingConnectOwnerByPeripheralID[peripheralID],
+               previousKey != key,
+               retained[previousKey] != nil {
+                passiveDuplicateKeys.insert(previousKey)
+            }
+            pendingConnectOwnerByPeripheralID[peripheralID] = key
+            passiveDuplicateKeys.remove(key)
+            return true
+        }
+    }
+
+    /// Atomically adopts a CoreBluetooth-restored already-connected object.
+    ///
+    /// Unlike an ordinary `didConnect`, restoration is authoritative for the
+    /// OS-owned link carried into this process. A powered-on precheck may have
+    /// retrieved an object-distinct representation and claimed a connect just
+    /// before `willRestoreState` runs. Transfer that pending identity to the
+    /// restored object, fence the earlier representation as passive, and
+    /// publish the restored object as canonical without issuing or cancelling
+    /// a radio request. An already-connected canonical owner still wins.
+    func adoptRestoredConnected(
+        _ peripheral: AtriaBLERetainablePeripheral
+    ) -> ConnectedAdmission {
+        let restoredKey = ObjectIdentifier(peripheral)
+        let peripheralID = peripheral.identifier
+        return lock.withLock {
+            retained[restoredKey] = peripheral
+            if let canonicalKey = canonicalByPeripheralID[peripheralID],
+               canonicalKey != restoredKey,
+               retained[canonicalKey]?.state == .connected {
+                passiveDuplicateKeys.insert(restoredKey)
+                return .retainPassiveDuplicate
+            }
+
+            if let pendingKey = pendingConnectOwnerByPeripheralID[peripheralID],
+               pendingKey != restoredKey,
+               retained[pendingKey] != nil {
+                passiveDuplicateKeys.insert(pendingKey)
+            }
+            pendingConnectOwnerByPeripheralID.removeValue(forKey: peripheralID)
+
+            if let canonicalKey = canonicalByPeripheralID[peripheralID],
+               canonicalKey != restoredKey,
+               retained[canonicalKey] != nil {
+                passiveDuplicateKeys.insert(canonicalKey)
+            }
+            canonicalByPeripheralID[peripheralID] = restoredKey
+            passiveDuplicateKeys.remove(restoredKey)
+            return .acceptCanonical
+        }
+    }
+
+    /// Completes only the request owned by this exact CoreBluetooth object.
+    /// A late callback from an object-distinct twin cannot release a newer
+    /// pending request for the same physical UUID.
+    @discardableResult
+    func completeConnectRequest(
+        _ peripheral: AtriaBLERetainablePeripheral
+    ) -> Bool {
+        let key = ObjectIdentifier(peripheral)
+        return lock.withLock {
+            guard pendingConnectOwnerByPeripheralID[peripheral.identifier]
+                    == key else { return false }
+            pendingConnectOwnerByPeripheralID.removeValue(
+                forKey: peripheral.identifier
+            )
+            return true
+        }
     }
 
     /// Retain an object-distinct representation that is already known to be a
@@ -124,6 +259,11 @@ final class AtriaBLEConnectedPeripheralRetainer: @unchecked Sendable {
         }
         for key in doomed.keys {
             retained.removeValue(forKey: key)
+            if pendingConnectOwnerByPeripheralID[peripheralID] == key {
+                pendingConnectOwnerByPeripheralID.removeValue(
+                    forKey: peripheralID
+                )
+            }
         }
         if let canonicalKey = canonicalByPeripheralID[peripheralID],
            doomed[canonicalKey] != nil {
@@ -150,6 +290,11 @@ final class AtriaBLEConnectedPeripheralRetainer: @unchecked Sendable {
                 forKey: peripheral.identifier
             )
         }
+        if pendingConnectOwnerByPeripheralID[peripheral.identifier] == key {
+            pendingConnectOwnerByPeripheralID.removeValue(
+                forKey: peripheral.identifier
+            )
+        }
         lock.unlock()
         return removed != nil
     }
@@ -167,12 +312,24 @@ final class AtriaBLEConnectedPeripheralRetainer: @unchecked Sendable {
         let peripheralID = peripheral.identifier
         lock.lock()
         retained[callbackKey] = peripheral
+        if pendingConnectOwnerByPeripheralID[peripheralID] == callbackKey {
+            pendingConnectOwnerByPeripheralID.removeValue(forKey: peripheralID)
+        }
         let canonicalKey = canonicalByPeripheralID[peripheralID]
         let canonical = canonicalKey.flatMap { retained[$0] }
-        let admission = Self.classifyConnectedAdmission(
-            callbackIsCanonical: canonicalKey == callbackKey,
-            canonicalIsConnected: canonical?.state == .connected
-        )
+        let pendingOwnedByDifferentObject =
+            pendingConnectOwnerByPeripheralID[peripheralID].map {
+                $0 != callbackKey
+            } ?? false
+        let admission: ConnectedAdmission
+        if pendingOwnedByDifferentObject && canonicalKey == nil {
+            admission = .retainPassiveDuplicate
+        } else {
+            admission = Self.classifyConnectedAdmission(
+                callbackIsCanonical: canonicalKey == callbackKey,
+                canonicalIsConnected: canonical?.state == .connected
+            )
+        }
         if admission == .acceptCanonical {
             if let canonicalKey,
                canonicalKey != callbackKey,
@@ -205,15 +362,28 @@ final class AtriaBLEConnectedPeripheralRetainer: @unchecked Sendable {
         let peripheralID = peripheral.identifier
         lock.lock()
         let canonicalKey = canonicalByPeripheralID[peripheralID]
-        let hasCanonical = canonicalKey != nil
-        let admission = Self.classifyTerminalAdmission(
-            hasCanonical: hasCanonical,
-            callbackIsCanonical: canonicalKey == callbackKey,
-            callbackIsKnownPassiveDuplicate:
-                passiveDuplicateKeys.contains(callbackKey)
-        )
-        if admission == .processCanonical || !hasCanonical {
+        let pendingKey = pendingConnectOwnerByPeripheralID[peripheralID]
+        let admission: TerminalAdmission
+        if let canonicalKey {
+            admission = canonicalKey == callbackKey
+                ? .processCanonical
+                : .ignorePassiveDuplicate
+        } else if let pendingKey {
+            admission = pendingKey == callbackKey
+                ? .processCanonical
+                : .ignorePassiveDuplicate
+        } else {
+            admission = passiveDuplicateKeys.contains(callbackKey)
+                ? .ignorePassiveDuplicate
+                : .processUnclaimed
+        }
+        if admission == .processCanonical {
             canonicalByPeripheralID.removeValue(forKey: peripheralID)
+            if pendingKey == callbackKey {
+                pendingConnectOwnerByPeripheralID.removeValue(
+                    forKey: peripheralID
+                )
+            }
         }
         lock.unlock()
         return admission
@@ -227,6 +397,7 @@ final class AtriaBLEConnectedPeripheralRetainer: @unchecked Sendable {
         let count = retained.count
         retained.removeAll()
         canonicalByPeripheralID.removeAll()
+        pendingConnectOwnerByPeripheralID.removeAll()
         passiveDuplicateKeys.removeAll()
         lock.unlock()
         return count
@@ -245,5 +416,76 @@ final class AtriaBLEConnectedPeripheralRetainer: @unchecked Sendable {
         let value = retained.values.filter { $0.identifier == peripheralID }.count
         lock.unlock()
         return value
+    }
+
+    func hasPendingConnectRequest(peripheralID: UUID) -> Bool {
+        lock.withLock {
+            pendingConnectOwnerByPeripheralID[peripheralID] != nil
+        }
+    }
+
+    var pendingConnectCount: Int {
+        lock.withLock { pendingConnectOwnerByPeripheralID.count }
+    }
+
+    /// Atomically admits a non-destructive same-link transport claim only when
+    /// `peripheral` is the sole retained, canonical, already-connected object
+    /// and no connect request is outstanding. The claim closure must publish
+    /// its transport generation/phase before returning so a connect issuer
+    /// cannot enter between validation and publication.
+    func claimExclusiveConnectedCanonicalTransport(
+        _ peripheral: AtriaBLERetainablePeripheral,
+        claim: () -> Bool
+    ) -> Bool {
+        let key = ObjectIdentifier(peripheral)
+        return lock.withLock {
+            guard canonicalByPeripheralID[peripheral.identifier] == key,
+                  retained[key] != nil,
+                  peripheral.state == .connected,
+                  pendingConnectOwnerByPeripheralID.isEmpty,
+                  retained.count == 1,
+                  !passiveDuplicateKeys.contains(key) else {
+                return false
+            }
+            return claim()
+        }
+    }
+
+    /// Whether a retained object represents a standing realtime connection
+    /// interest for any candidate strap identity. Retention is published before
+    /// every production `central.connect`, so this remains true during the
+    /// CoreBluetooth window where a just-issued request still reports
+    /// `.disconnected` and no callback epoch exists yet.
+    func hasRetainedConnectInterest(peripheralIDs: Set<UUID>) -> Bool {
+        lock.withLock {
+            if peripheralIDs.isEmpty { return !retained.isEmpty }
+            return retained.values.contains {
+                peripheralIDs.contains($0.identifier)
+            }
+        }
+    }
+
+    /// Atomically grants a history transport claim only when no standing
+    /// realtime connect is retained for the candidate strap. The claim closure
+    /// publishes the history phase while this same lock still excludes every
+    /// production retain-before-connect path; a connect issued after unlock
+    /// therefore belongs to the already-published history owner rather than
+    /// racing it as an unseen realtime request.
+    func claimHistoryTransportIfNoRetainedConnect(
+        peripheralIDs: Set<UUID>,
+        claim: () -> Bool
+    ) -> Bool {
+        lock.withLock {
+            let hasStandingConnect: Bool
+            if peripheralIDs.isEmpty {
+                hasStandingConnect = !retained.isEmpty
+            } else {
+                hasStandingConnect = retained.values.contains {
+                    peripheralIDs.contains($0.identifier)
+                }
+            }
+            guard !hasStandingConnect else { return false }
+            return claim()
+        }
     }
 }

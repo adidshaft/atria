@@ -83,11 +83,13 @@ struct AtriaHistoricalRetentionTransaction {
         case manifestConflict
         case verificationFailed
         case rawRetirementNotAuthorized
+        case maintenanceAuthorityRevoked
     }
 
     private let fileManager: FileManager
     private let now: () -> Date
     private let checkpoint: (Checkpoint) throws -> Void
+    private let shouldContinue: () -> Bool
     /// Recomputes canonical metric/projection parity directly from the raw
     /// source. Returning false prevents manifest publication and raw deletion.
     private let semanticVerifier: (URL, AtriaHistoricalAggregateChunk, String) throws -> Bool
@@ -110,6 +112,7 @@ struct AtriaHistoricalRetentionTransaction {
     init(fileManager: FileManager = .default,
          now: @escaping () -> Date = Date.init,
          checkpoint: @escaping (Checkpoint) throws -> Void = { _ in },
+         shouldContinue: @escaping () -> Bool = { true },
          consumerProjectionVerifier: @escaping (AtriaHistoricalAggregateChunk) throws -> Bool = { _ in false },
          consumerApplicationVerifier: @escaping (AtriaHistoricalAggregateChunk) throws -> Bool = { _ in false },
          externalRawRetirementAuthorizer: @escaping (AtriaHistoricalAggregateChunk) throws -> Bool = { _ in false },
@@ -117,6 +120,7 @@ struct AtriaHistoricalRetentionTransaction {
         self.fileManager = fileManager
         self.now = now
         self.checkpoint = checkpoint
+        self.shouldContinue = shouldContinue
         self.consumerProjectionVerifier = consumerProjectionVerifier
         self.consumerApplicationVerifier = consumerApplicationVerifier
         self.externalRawRetirementAuthorizer = externalRawRetirementAuthorizer
@@ -130,6 +134,9 @@ struct AtriaHistoricalRetentionTransaction {
     func commitRetainedRawShadow(
         _ shadow: RetainedRawShadowRequest
     ) throws -> Result {
+        guard shouldContinue() else {
+            throw TransactionError.maintenanceAuthorityRevoked
+        }
         guard AtriaHistoricalAggregateBuilder.validateRetainedRawShadowProof(
             shadow.proof
         ) else {
@@ -156,6 +163,9 @@ struct AtriaHistoricalRetentionTransaction {
         // The generic transaction already checks identity before publication
         // and again before its commit marker. Seal the shadow API return as
         // well, including committed-retry paths that find a prior manifest.
+        guard shouldContinue() else {
+            throw TransactionError.maintenanceAuthorityRevoked
+        }
         guard try AtriaHistoricalJSONLInput.identity(at: shadow.sourceURL)
             == shadow.proof.sourceIdentity else {
             throw TransactionError.sourceDigestMismatch
@@ -168,6 +178,9 @@ struct AtriaHistoricalRetentionTransaction {
         semanticVerification:
             (URL, AtriaHistoricalAggregateChunk, String) throws -> Bool
     ) throws -> Result {
+        guard shouldContinue() else {
+            throw TransactionError.maintenanceAuthorityRevoked
+        }
         guard Self.validIdentifier(request.transactionID) else {
             throw TransactionError.invalidTransactionID
         }
@@ -191,6 +204,9 @@ struct AtriaHistoricalRetentionTransaction {
         // This is byte-identical to a plain source and transparently inflates
         // an immutable compressed source. Comparing the physical DEFLATE bytes
         // with a logical raw receipt would otherwise strand compressed chunks.
+        guard shouldContinue() else {
+            throw TransactionError.maintenanceAuthorityRevoked
+        }
         let sourceIdentity = try AtriaHistoricalJSONLInput.identity(
             at: request.sourceURL
         )
@@ -236,6 +252,9 @@ struct AtriaHistoricalRetentionTransaction {
         let aggregateData = try encoder.encode(request.aggregate)
         let aggregateDigest = Self.sha256(of: aggregateData)
 
+        guard shouldContinue() else {
+            throw TransactionError.maintenanceAuthorityRevoked
+        }
         try writeAndSynchronize(aggregateData, to: aggregateTemporaryURL)
         try checkpoint(.aggregateTemporaryDurable)
 
@@ -260,6 +279,9 @@ struct AtriaHistoricalRetentionTransaction {
             semanticParityReceipt: request.semanticParityReceipt
         )
         let manifestData = try encoder.encode(manifest)
+        guard shouldContinue() else {
+            throw TransactionError.maintenanceAuthorityRevoked
+        }
         try writeAndSynchronize(manifestData, to: manifestTemporaryURL)
         try checkpoint(.manifestTemporaryDurable)
         try Self.synchronizeDirectory(request.aggregateDirectoryURL)
@@ -267,6 +289,9 @@ struct AtriaHistoricalRetentionTransaction {
             try Self.synchronizeDirectory(request.manifestDirectoryURL)
         }
 
+        guard shouldContinue() else {
+            throw TransactionError.maintenanceAuthorityRevoked
+        }
         guard try verifyAggregate(at: aggregateTemporaryURL,
                                   expectedDigest: aggregateDigest,
                                   expected: request.aggregate),
@@ -293,6 +318,9 @@ struct AtriaHistoricalRetentionTransaction {
             throw TransactionError.sourceDigestMismatch
         }
 
+        guard shouldContinue() else {
+            throw TransactionError.maintenanceAuthorityRevoked
+        }
         try publish(temporaryURL: aggregateTemporaryURL,
                     finalURL: aggregateURL,
                     expectedDigest: aggregateDigest,
@@ -300,6 +328,9 @@ struct AtriaHistoricalRetentionTransaction {
         try Self.synchronizeDirectory(request.aggregateDirectoryURL)
         try checkpoint(.aggregatePublished)
 
+        guard shouldContinue() else {
+            throw TransactionError.maintenanceAuthorityRevoked
+        }
         try publish(temporaryURL: manifestTemporaryURL,
                     finalURL: manifestURL,
                     expectedDigest: Self.sha256(of: manifestData),
@@ -317,6 +348,9 @@ struct AtriaHistoricalRetentionTransaction {
 
         var sourceDeleted = false
         if request.deleteSourceAfterCommit {
+            guard shouldContinue() else {
+                throw TransactionError.maintenanceAuthorityRevoked
+            }
             // Verify once more immediately before the irreversible step.
             guard try rawRetirementAuthorized(request.aggregate),
                   try consumerProjectionVerifier(request.aggregate),
@@ -329,6 +363,9 @@ struct AtriaHistoricalRetentionTransaction {
             guard identity.sha256 == manifest.sourceSHA256,
                   identity.byteCount == manifest.sourceByteCount else {
                 throw TransactionError.sourceDigestMismatch
+            }
+            guard shouldContinue() else {
+                throw TransactionError.maintenanceAuthorityRevoked
             }
             try fileManager.removeItem(at: request.sourceURL)
             try Self.synchronizeDirectory(request.sourceURL.deletingLastPathComponent())
@@ -348,6 +385,9 @@ struct AtriaHistoricalRetentionTransaction {
         var sourceDeleted = false
         if request.deleteSourceAfterCommit,
            fileManager.fileExists(atPath: request.sourceURL.path) {
+            guard shouldContinue() else {
+                throw TransactionError.maintenanceAuthorityRevoked
+            }
             let manifest = try decodeManifest(at: manifestURL)
             guard try rawRetirementAuthorized(request.aggregate),
                   try consumerProjectionVerifier(request.aggregate),
@@ -360,6 +400,9 @@ struct AtriaHistoricalRetentionTransaction {
             guard identity.sha256 == manifest.sourceSHA256,
                   identity.byteCount == manifest.sourceByteCount else {
                 throw TransactionError.sourceDigestMismatch
+            }
+            guard shouldContinue() else {
+                throw TransactionError.maintenanceAuthorityRevoked
             }
             try fileManager.removeItem(at: request.sourceURL)
             try Self.synchronizeDirectory(request.sourceURL.deletingLastPathComponent())
@@ -484,10 +527,19 @@ struct AtriaHistoricalRetentionTransaction {
                          finalURL: URL,
                          expectedDigest: String,
                          conflict: TransactionError) throws {
+        guard shouldContinue() else {
+            throw TransactionError.maintenanceAuthorityRevoked
+        }
         if fileManager.fileExists(atPath: finalURL.path) {
             guard try Self.sha256(of: finalURL) == expectedDigest else { throw conflict }
+            guard shouldContinue() else {
+                throw TransactionError.maintenanceAuthorityRevoked
+            }
             try? fileManager.removeItem(at: temporaryURL)
             return
+        }
+        guard shouldContinue() else {
+            throw TransactionError.maintenanceAuthorityRevoked
         }
         try fileManager.moveItem(at: temporaryURL, to: finalURL)
     }

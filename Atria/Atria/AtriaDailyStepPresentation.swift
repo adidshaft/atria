@@ -282,25 +282,13 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                 && $0.knownEpochCount > 0
                 && $0.knownCoverageSeconds == 0
         }
-        // A durable receipt, including a partial lower bound, remains the
-        // authority wherever one exists. Live detector state is considered
-        // only when no receipt has been published for the active cycle.
-        if let partial {
-            let total = partial.knownCoverageSeconds + partial.missingCoverageSeconds
-            return .init(day: dayStart,
-                         count: partial.knownStepDeltaSum,
-                         completeness: .partial,
-                         source: .verifiedCanonical,
-                         isValidated: true,
-                         capturedAt: partial.dayEnd,
-                         coverageFraction: total > 0
-                            ? Double(partial.knownCoverageSeconds) / Double(total) : nil,
-                         isOpenCycle: isOpenDay)
-        }
         // A live strap subtotal is only an open-day source while its
         // detector-applied coordinate is fresh. A restored prefix is retained
         // in the strap detail view as "Not live", but it cannot silently
-        // masquerade as today's current count.
+        // masquerade as today's current count. Once validated, this exact
+        // current-cycle coordinate outranks an older partial archive lower
+        // bound (without summing them); a complete canonical receipt and an
+        // exact-receipt conflict still retain precedence above.
         if liveAuthorityQualified,
            isOpenDay,
            liveBelongsToDay,
@@ -312,6 +300,20 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          isValidated: true,
                          capturedAt: liveCapturedAt,
                          coverageFraction: nil,
+                         isOpenCycle: isOpenDay)
+        }
+        // Without a fresh validated live coordinate, the best durable partial
+        // remains the honest lower bound for the active cycle.
+        if let partial {
+            let total = partial.knownCoverageSeconds + partial.missingCoverageSeconds
+            return .init(day: dayStart,
+                         count: partial.knownStepDeltaSum,
+                         completeness: .partial,
+                         source: .verifiedCanonical,
+                         isValidated: true,
+                         capturedAt: partial.dayEnd,
+                         coverageFraction: total > 0
+                            ? Double(partial.knownCoverageSeconds) / Double(total) : nil,
                          isOpenCycle: isOpenDay)
         }
         let emptyReason: UnavailabilityReason =

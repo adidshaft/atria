@@ -19,6 +19,10 @@ import Foundation
 final class AtriaBackgroundProjectionThrottle {
     static let shared = AtriaBackgroundProjectionThrottle()
 
+    struct ActiveLease: Equatable, Sendable {
+        fileprivate let generation: UInt64
+    }
+
     private let lock = NSLock()
     private var active = false
     private var cancelled = false
@@ -26,6 +30,7 @@ final class AtriaBackgroundProjectionThrottle {
     private var deadline: TimeInterval = 0
     private var sliceStart: TimeInterval = 0
     private var sliceFrames = 0
+    private var generation: UInt64 = 0
 
     /// Matches the orphan-replay cooperative batch (AtriaBLEManager) so both
     /// heavy off-main scans yield on the same cadence.
@@ -38,6 +43,7 @@ final class AtriaBackgroundProjectionThrottle {
     func begin(budgetSeconds: TimeInterval) {
         lock.lock(); defer { lock.unlock() }
         let now = ProcessInfo.processInfo.systemUptime
+        generation &+= 1
         active = true
         cancelled = false
         beginUptime = now
@@ -54,12 +60,33 @@ final class AtriaBackgroundProjectionThrottle {
     }
 
     func end() {
-        lock.lock(); active = false; cancelled = false; lock.unlock()
+        lock.lock()
+        generation &+= 1
+        active = false
+        cancelled = false
+        lock.unlock()
+    }
+
+    /// Captures the exact background pass. A later `end()` must abort work
+    /// that already captured this lease even though the throttle becomes
+    /// inactive for new foreground work.
+    func captureActiveLease() -> ActiveLease? {
+        lock.lock(); defer { lock.unlock() }
+        return active ? .init(generation: generation) : nil
     }
 
     var isActive: Bool {
         lock.lock(); defer { lock.unlock() }
         return active
+    }
+
+    static func environmentRequiresAbort(
+        thermalState: ProcessInfo.ThermalState,
+        isLowPowerModeEnabled: Bool
+    ) -> Bool {
+        thermalState == .serious
+            || thermalState == .critical
+            || isLowPowerModeEnabled
     }
 
     /// MUST be called only off the main thread (the projection scan runs on a
@@ -70,11 +97,55 @@ final class AtriaBackgroundProjectionThrottle {
     /// when its BGTask window ends, and CPU stays bounded until then.
     @discardableResult
     func cooperativeCheckpointShouldAbort(processedDelta: Int = 1) -> Bool {
+        checkpointShouldAbort(
+            requiredGeneration: nil,
+            inactiveMeansAbort: false,
+            processedDelta: processedDelta
+        )
+    }
+
+    /// Exact-pass checkpoint used by archive scanners. Unlike the legacy
+    /// inactive no-op above, a generation mismatch or `end()` means the
+    /// captured BG authority was revoked and therefore must abort.
+    @discardableResult
+    func cooperativeCheckpointShouldAbort(
+        lease: ActiveLease?,
+        processedDelta: Int = 1
+    ) -> Bool {
+        guard let lease else { return false }
+        return checkpointShouldAbort(
+            requiredGeneration: lease.generation,
+            inactiveMeansAbort: true,
+            processedDelta: processedDelta
+        )
+    }
+
+    private func checkpointShouldAbort(
+        requiredGeneration: UInt64?,
+        inactiveMeansAbort: Bool,
+        processedDelta: Int
+    ) -> Bool {
         // Never sleep the main thread, even if some future scan path is on-main:
         // the duty cycle is only ever meant for the dying snapshot thread.
         if Thread.isMainThread { return false }
         lock.lock()
-        guard active else { lock.unlock(); return false }
+        if let requiredGeneration,
+           requiredGeneration != generation {
+            lock.unlock()
+            return true
+        }
+        guard active else {
+            lock.unlock()
+            return inactiveMeansAbort
+        }
+        if Self.environmentRequiresAbort(
+            thermalState: ProcessInfo.processInfo.thermalState,
+            isLowPowerModeEnabled:
+                ProcessInfo.processInfo.isLowPowerModeEnabled
+        ) {
+            lock.unlock()
+            return true
+        }
         let now = ProcessInfo.processInfo.systemUptime
         // Leaked-state backstop: stop throttling rather than throttle forever.
         if now - beginUptime > Self.maximumActiveWindow {

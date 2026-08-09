@@ -487,6 +487,42 @@ final class AtriaHistoricalJSONLRecentScannerTests: XCTestCase {
                      "an untouched source must carry no state so it is re-offered whole")
     }
 
+    func testCancellationStopsInsideOneChunkWithoutPublishingCompleteState() throws {
+        let directory = temporaryDirectory()
+        let file = directory.appendingPathComponent("cancelled.jsonl")
+        let lineCount = 512
+        let content = (0..<lineCount).map {
+            "{\"unix7\":\(1000 + $0),\"subsec11\":0}\n"
+        }.joined()
+        try Data(content.utf8).write(to: file)
+        let descriptor = try XCTUnwrap(
+            AtriaHistoricalJSONLRecentScanner.descriptors(for: [file]).first
+        )
+        var authorityChecks = 0
+        var consumed = 0
+        let result = AtriaHistoricalJSONLRecentScanner.scan(
+            sources: [.init(descriptor: descriptor, startOffset: 0)],
+            cutoff: 0,
+            chunkSize: content.utf8.count,
+            shouldContinue: {
+                authorityChecks += 1
+                return authorityChecks < 4
+            },
+            consumeCandidate: { _ in consumed += 1 }
+        )
+
+        XCTAssertTrue(result.cancelled)
+        XCTAssertFalse(result.complete)
+        XCTAssertFalse(result.exhaustedByteBudget)
+        XCTAssertGreaterThan(consumed, 0)
+        XCTAssertLessThan(consumed, lineCount)
+        XCTAssertLessThanOrEqual(
+            consumed,
+            128,
+            "the inner-line checkpoint must bound work inside one large chunk"
+        )
+    }
+
     func testScanPlanReusesGrowthAndFailsClosedOnReplacementOrRemoval() {
         let firstURL = URL(fileURLWithPath: "/tmp/archive-a.jsonl")
         let secondURL = URL(fileURLWithPath: "/tmp/archive-b.jsonl")

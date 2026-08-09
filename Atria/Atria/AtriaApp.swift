@@ -163,9 +163,6 @@ private final class AtriaAppDependencies {
                     timeout: .seconds(120)
                 )
             }
-            ble.resumePendingFullDrainPublicationIfNeeded(
-                reason: "app_dependencies_ready"
-            )
         }
         self.ble = ble
         self.store = store
@@ -320,6 +317,9 @@ struct AtriaApp: App {
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = true
                     case .active:
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = false
+                        store.invalidateArchiveCompactionBGProcessingLease(
+                            reason: "scene_active"
+                        )
                         // Defensively release the background-projection CPU
                         // throttle on foreground, so a pass that was suspended
                         // mid-scan (BGTask window ended before end() ran) can
@@ -407,9 +407,6 @@ struct AtriaApp: App {
                             store.resumeDeferredForegroundArchiveWork(
                                 reason: "scene_active_after_interactive_frame"
                             )
-                            ble.resumePendingFullDrainPublicationIfNeeded(
-                                reason: "scene_active_after_interactive_frame"
-                            )
                             ble.resumeDeferredWorkoutMotionBankCoverageEvaluationIfNeeded(
                                 reason: "scene_active_after_interactive_frame"
                             )
@@ -481,6 +478,16 @@ struct AtriaApp: App {
         scheduleBackgroundProcessing(reason: "\(reason)_reschedule")
         let completion = AtriaBackgroundTaskCompletionGate()
         let work = Task { @MainActor in
+            var archiveCompactionLease:
+                SessionStore.ArchiveCompactionBGProcessingLease?
+            defer {
+                if let archiveCompactionLease {
+                    store.endArchiveCompactionBGProcessingLease(
+                        archiveCompactionLease,
+                        reason: "\(reason)_task_exit"
+                    )
+                }
+            }
             // A suspended app on a stable-but-idle link gets no BLE wakes, so
             // this window is the only chance to notice a silent stream or a
             // stale HR subscription before the user next opens the app.
@@ -534,9 +541,13 @@ struct AtriaApp: App {
                             maintenanceWindow: true
                         )
                     if motionDrained {
-                        recoveredPublicationSucceeded = await store.awaitRecoveredDataPublication(
-                            after: priorArchiveRevision,
-                            timeout: .seconds(25)
+                        // Motion checkpoints already fsync and notify the bounded
+                        // compact step shard. Do not turn that fast path into a
+                        // synchronous generic full-archive projection; the guarded
+                        // power/thermal background lane below offers eventual
+                        // projection freshness without delaying step publication.
+                        AtriaDebugLog(
+                            "ATRIADBG bg_processing_motion status=compact_durable action=publish_steps_then_offer_safe_projection"
                         )
                     }
                 }
@@ -610,6 +621,13 @@ struct AtriaApp: App {
             // link deferral). Placed after drain/steps/maintenance + the deferred
             // session load so the store is populated and there is no CPU overlap.
             if reason == "bg_processing", !Task.isCancelled {
+                // Pre-compact v24 migration is optional maintenance, never an
+                // interactive/cold-link fallback. Its private admission applies
+                // the same power/thermal fence plus strict file/byte ceilings,
+                // and it enters the shared archive lane before generic projection.
+                _ = store.scheduleBoundedLegacyCurrentCycleStepMigrationIfSafe(
+                    reason: "bg_processing"
+                )
                 let priorProjectionRevision = store.recoveredDataArchiveRevisionSnapshot
                 if store.requestBackgroundArchiveProjectionIfSafe(reason: "bg_projection") {
                     // The timeout arg clamps up to the pipeline fence; the real
@@ -618,6 +636,27 @@ struct AtriaApp: App {
                         after: priorProjectionRevision,
                         timeout: .seconds(1))
                     store.endBackgroundArchiveProjectionThrottle()
+                }
+                // Retention accounting is a whole-archive pass even when no
+                // bytes are reclaimed. Offer it last: motion/HR recovery and
+                // app-facing projection have already settled, and this exact
+                // lease exists only until the live BGProcessing task exits.
+                if !ble.historicalRadioTransportOwnsLink,
+                   let lease = store
+                    .beginArchiveCompactionBGProcessingLeaseIfSafe(
+                        reason: reason
+                    ) {
+                    archiveCompactionLease = lease
+                    _ = await withCheckedContinuation {
+                        (continuation:
+                            CheckedContinuation<Bool, Never>) in
+                        store.compactHistoricalArchiveIfUseful(
+                            reason: reason,
+                            backgroundLease: lease
+                        ) { completed in
+                            continuation.resume(returning: completed)
+                        }
+                    }
                 }
             }
             WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: reason)
@@ -629,6 +668,11 @@ struct AtriaApp: App {
         task.expirationHandler = {
             work.cancel()
             AtriaBackgroundProjectionThrottle.shared.cancel()
+            Task { @MainActor in
+                store.invalidateArchiveCompactionBGProcessingLease(
+                    reason: "\(reason)_task_expired"
+                )
+            }
             completion.complete(task, success: false)
         }
     }

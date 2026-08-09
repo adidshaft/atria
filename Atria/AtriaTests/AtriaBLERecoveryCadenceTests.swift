@@ -742,10 +742,77 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         let services = String(source[servicesStart.lowerBound..<characteristicsStart.lowerBound])
         let characteristics = String(source[characteristicsStart.lowerBound..<updateNotificationStart.lowerBound])
-        XCTAssertTrue(services.contains("bleCallbackEpochFence.accepts"))
+        XCTAssertTrue(services.contains("bleCallbackEpochFence.captureIfAccepted"))
+        XCTAssertTrue(services.contains("peripheralObjectID: ObjectIdentifier(peripheral)"))
         XCTAssertTrue(services.contains("stale_service_callback"))
-        XCTAssertTrue(characteristics.contains("bleCallbackEpochFence.accepts"))
+        XCTAssertTrue(characteristics.contains("bleCallbackEpochFence.captureIfAccepted"))
+        XCTAssertTrue(characteristics.contains("peripheralObjectID: ObjectIdentifier(peripheral)"))
         XCTAssertTrue(characteristics.contains("stale_characteristic_callback"))
+    }
+
+    func testValueAndNotificationCallbacksCarryExactSourceThroughDeferredWork() throws {
+        let managerURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: managerURL, encoding: .utf8)
+        let notificationStart = try XCTUnwrap(source.range(
+            of: "didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?"
+        ))
+        let valueStart = try XCTUnwrap(source.range(
+            of: "didUpdateValueFor characteristic: CBCharacteristic, error: Error?",
+            range: notificationStart.upperBound..<source.endIndex
+        ))
+        let valueEnd = try XCTUnwrap(source.range(
+            of: "/// Applies complete proprietary callback batches in delegate-entry order.",
+            range: valueStart.upperBound..<source.endIndex
+        ))
+        let notification = String(
+            source[notificationStart.lowerBound..<valueStart.lowerBound]
+        )
+        let value = String(source[valueStart.lowerBound..<valueEnd.lowerBound])
+
+        for callback in [notification, value] {
+            XCTAssertTrue(callback.contains("bleCallbackEpochFence.captureIfAccepted"))
+            XCTAssertTrue(callback.contains(
+                "peripheralObjectID: ObjectIdentifier(peripheral)"
+            ))
+            XCTAssertTrue(callback.contains("source: callbackSource"))
+        }
+        XCTAssertLessThan(
+            try XCTUnwrap(notification.range(of: "captureIfAccepted")).lowerBound,
+            try XCTUnwrap(notification.range(of: "let short =")).lowerBound
+        )
+        XCTAssertLessThan(
+            try XCTUnwrap(value.range(of: "captureIfAccepted")).lowerBound,
+            try XCTUnwrap(value.range(of: "historyTransportPhaseFence.snapshot()")).lowerBound
+        )
+        XCTAssertTrue(value.contains("callbackSource: callbackSource"),
+                      "HR and realtime queue elements must retain callback source")
+        let r10Start = try XCTUnwrap(value.range(
+            of: "if let r10Frame = AtriaR10MotionDecoder.decode(frame: completeFrame)"
+        ))
+        let r10End = try XCTUnwrap(value.range(
+            of: "if !storesProprietaryFrames",
+            range: r10Start.upperBound..<value.endIndex
+        ))
+        let r10Ingress = String(value[r10Start.lowerBound..<r10End.lowerBound])
+        let sourceGuard = try XCTUnwrap(r10Ingress.range(
+            of: "if bleCallbackEpochFence.owns(source: callbackSource)"
+        ))
+        let pipelineIngress = try XCTUnwrap(r10Ingress.range(
+            of: "r10MotionPipeline.ingest("
+        ))
+        XCTAssertLessThan(sourceGuard.lowerBound, pipelineIngress.lowerBound)
+        XCTAssertFalse(value.contains("r10CallbackIngressQueue.async"),
+                       "an intermediate queue lets a later boundary marker overtake an admitted callback")
+        XCTAssertTrue(r10Ingress.contains("sourceIsValid:"),
+                      "R10 detector mutation must revalidate the exact callback source")
+        XCTAssertGreaterThanOrEqual(
+            r10Ingress.components(separatedBy: "bleCallbackEpochFence.owns").count - 1,
+            3,
+            "R10 ingress, pipeline publication, and MainActor publication must each remain fenced"
+        )
     }
 
     func testEveryProductionHeartRateWatchdogEnableUsesSharedGate() throws {
@@ -2014,9 +2081,20 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertEqual(cutoverBody.components(separatedBy: "CBCentralManager(").count - 1, 0)
         XCTAssertTrue(cutoverBody.contains("protectedR10PureHRV10InProcessCutoverKey"))
         XCTAssertTrue(cutoverBody.contains("fallbackActive.rawValue"))
-        XCTAssertTrue(cutoverBody.contains(
-            "callbackCentral.connect(disconnectedPeripheral"
+        let standingRequestGate = try XCTUnwrap(cutoverBody.range(
+            of: "if !standingReconnectAlreadyIssued {"
         ))
+        let gatewayConnect = try XCTUnwrap(cutoverBody.range(
+            of: "issueSingleFlightConnect(",
+            range: standingRequestGate.upperBound..<cutoverBody.endIndex
+        ))
+        let retainedStandingRequest = try XCTUnwrap(cutoverBody.range(
+            of: "connectedPeripheralRetainer.retain(disconnectedPeripheral)",
+            range: gatewayConnect.upperBound..<cutoverBody.endIndex
+        ))
+        XCTAssertLessThan(standingRequestGate.lowerBound, gatewayConnect.lowerBound)
+        XCTAssertLessThan(gatewayConnect.lowerBound, retainedStandingRequest.lowerBound)
+        XCTAssertTrue(cutoverBody.contains("standingReconnectAlreadyIssued: Bool"))
         XCTAssertFalse(cutoverBody.contains("cancelPeripheralConnection"))
         XCTAssertFalse(cutoverBody.contains("writeValue"))
         XCTAssertFalse(cutoverBody.contains("startOfflineHistoricalSync"))
@@ -2111,7 +2189,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(AtriaBLEManager.shouldDeferAutomaticOfflineSyncForProtectedR10Continuity(
             standardHROnlyMode: true,
             explicitUserRequest: true
-        ), "a deliberate user request may proceed through the later capability gates")
+        ), "the legacy protected-R10 prefilter may pass attended intent; the universal realtime-owner gate still defers every new live transport")
         XCTAssertFalse(AtriaBLEManager.shouldDeferAutomaticOfflineSyncForProtectedR10Continuity(
             standardHROnlyMode: false,
             explicitUserRequest: false
@@ -2704,7 +2782,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), "recovery must actively retry the durable gap, not merely reconcile metadata")
     }
 
-    func testConnectedAutomaticHistoryRunsOnlyForVerifiedExactGapRecovery() {
+    func testLegacyConnectedHistoryPrefilterRemainsSubordinateToUniversalGate() {
         XCTAssertTrue(AtriaBLEManager.shouldDeferAutomaticOfflineSyncForConnectedLink(
             linkConnected: true,
             explicitUserRequest: false
@@ -2726,7 +2804,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(AtriaBLEManager.shouldDeferAutomaticOfflineSyncForConnectedLink(
             linkConnected: true,
             explicitUserRequest: true
-        ), "a deliberate user sync remains authoritative")
+        ), "the legacy prefilter records attended intent, but it does not authorize bypassing the universal realtime-owner gate")
         XCTAssertTrue(AtriaBLEManager.shouldDeferAutomaticOfflineSyncForConnectedLink(
             linkConnected: true,
             explicitUserRequest: false,
@@ -2739,7 +2817,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             exactGapPending: true,
             verifiedMetricRecovery: true,
             automaticConnectedHandoffAllowed: true
-        ), "a separately qualified handoff must reach the journaled fresh-owner cutover")
+        ), "the legacy qualified-handoff prefilter may pass, but the universal gate still retains it behind current realtime ownership")
         XCTAssertTrue(AtriaBLEManager.shouldDeferAutomaticOfflineSyncForConnectedLink(
             linkConnected: true,
             explicitUserRequest: false,
@@ -2748,7 +2826,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), "an unverified decoder must never seize the live pipe")
     }
 
-    func testAutomaticConnectedHistoryHandoffRequiresHealthyLiveOwnerAndBackoff() {
+    func testAutomaticHistoryQualificationRequiresHealthyLiveOwnerAndBackoff() {
         let now = Date(timeIntervalSince1970: 50_000)
         let eligible: (Bool, Bool, Date?, Date?, Date?, Date?) -> Bool = {
             workout, verified, connectedAt, acceptedAt, requestedAt, lastAttemptAt in
@@ -2773,7 +2851,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                                 now.addingTimeInterval(-5),
                                 now.addingTimeInterval(-91),
                                 now.addingTimeInterval(-121)),
-                      "a stable fresh live epoch may admit one bounded history slice")
+                      "a stable fresh live epoch may qualify durable debt; the live-continuity fence still owns transport admission")
         XCTAssertFalse(eligible(true, true,
                                 now.addingTimeInterval(-61),
                                 now.addingTimeInterval(-5),
@@ -2798,7 +2876,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                                 now.addingTimeInterval(-30)))
     }
 
-    func testAcceptedHRQualifiesPendingRecoveryWithoutTimerReliance() throws {
+    func testAcceptedHRKeepsQualifiedAutomaticRecoveryBehindLiveContinuityFence() throws {
         let source = try leaseManagerSource()
         let methodStart = try XCTUnwrap(source.range(
             of: "private func attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded"
@@ -2810,7 +2888,9 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let method = String(source[methodStart.lowerBound..<methodEnd.lowerBound])
         XCTAssertTrue(method.contains("!foregroundInteractiveMode"))
         XCTAssertTrue(method.contains("automaticConnectedHistoricalHandoffIsEligible(now: now)"))
-        XCTAssertTrue(method.contains("allowConnectedAutomaticHandoff: true"))
+        XCTAssertTrue(method.contains("allowConnectedAutomaticHandoff: false"))
+        XCTAssertFalse(method.contains("allowConnectedAutomaticHandoff: true"),
+                       "accepted HR must retain backlog work without authorizing a connected cutover")
         XCTAssertTrue(method.contains("rangeLossBackfillTask?.cancel()"),
                       "the accepted-HR event must replace a suspended retry timer")
 
@@ -2827,8 +2907,9 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
 
     func testOnlyDeliberateUIActionsCountAsConnectedHistoricalSyncIntent() {
         XCTAssertTrue(AtriaBLEManager.isExplicitUserOfflineSyncReason("manual_user_request"))
-        XCTAssertTrue(AtriaBLEManager.isExplicitUserOfflineSyncReason("pull_to_refresh"))
-        XCTAssertTrue(AtriaBLEManager.isExplicitUserOfflineSyncReason("home_missed_data_banner"))
+        XCTAssertFalse(AtriaBLEManager.isExplicitUserOfflineSyncReason("pull_to_refresh"))
+        XCTAssertFalse(AtriaBLEManager.isExplicitUserOfflineSyncReason("home_missed_data_banner"))
+        XCTAssertFalse(AtriaBLEManager.isExplicitUserOfflineSyncReason("onboarding_initial_import"))
         XCTAssertFalse(AtriaBLEManager.isExplicitUserOfflineSyncReason("confirmed_workout_archive_gap"))
         XCTAssertFalse(AtriaBLEManager.isExplicitUserOfflineSyncReason("sleep_auto_confirm_retry"))
         XCTAssertFalse(AtriaBLEManager.isExplicitUserOfflineSyncReason("bg_processing"))
@@ -3940,7 +4021,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(retained.explicitRequest)
     }
 
-    func testFreshHistoryOwnerCutoverRequiresConnectedExplicitForce() {
+    func testLegacyFreshHistoryOwnerCutoverPolicyRequiresConnectedExplicitForce() {
+        // This helper now describes only the bounded compatibility handoff for
+        // an already-started cutover. New requests encounter the universal
+        // realtime-owner gate before this policy and cannot cancel a live link.
         XCTAssertTrue(AtriaBLEManager.shouldUseFreshHistoryOwnerCutover(
             linkConnected: true,
             force: true,
@@ -4020,12 +4104,35 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
     }
 
     func testColdLedgerResumeKeepsExactMotionBankAuthorityNarrow() {
-        XCTAssertTrue(
+        for _ in 0..<60 {
+            XCTAssertFalse(
+                AtriaBLEManager
+                    .pendingForcedHistoricalSyncMayResumeAfterLivePersistence(
+                        force: true,
+                        explicitRequest: false,
+                        explicitPostWorkoutBankRequest: true,
+                        preserveConnectedRealtimeOwner: true
+                    ),
+                "sixty accepted-HR callbacks must produce zero generic bank reissues"
+            )
+        }
+        XCTAssertFalse(
             AtriaBLEManager
                 .pendingForcedHistoricalSyncMayResumeAfterLivePersistence(
                     force: true,
                     explicitRequest: false,
-                    explicitPostWorkoutBankRequest: true
+                    explicitPostWorkoutBankRequest: true,
+                    preserveConnectedRealtimeOwner: false
+                ),
+            "a Boolean bank label cannot recreate exact ticket/object/epoch authority"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager
+                .pendingForcedHistoricalSyncMayResumeAfterLivePersistence(
+                    force: true,
+                    explicitRequest: true,
+                    explicitPostWorkoutBankRequest: false,
+                    preserveConnectedRealtimeOwner: false
                 )
         )
         XCTAssertTrue(
@@ -4033,15 +4140,18 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 .pendingForcedHistoricalSyncMayResumeAfterLivePersistence(
                     force: true,
                     explicitRequest: true,
-                    explicitPostWorkoutBankRequest: false
-                )
+                    explicitPostWorkoutBankRequest: true,
+                    preserveConnectedRealtimeOwner: true
+                ),
+            "coalescing must not erase a distinct user/research authorization"
         )
         XCTAssertFalse(
             AtriaBLEManager
                 .pendingForcedHistoricalSyncMayResumeAfterLivePersistence(
                     force: true,
                     explicitRequest: false,
-                    explicitPostWorkoutBankRequest: false
+                    explicitPostWorkoutBankRequest: false,
+                    preserveConnectedRealtimeOwner: false
                 )
         )
         XCTAssertFalse(
@@ -4049,7 +4159,33 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 .pendingForcedHistoricalSyncMayResumeAfterLivePersistence(
                     force: false,
                     explicitRequest: true,
-                    explicitPostWorkoutBankRequest: true
+                    explicitPostWorkoutBankRequest: true,
+                    preserveConnectedRealtimeOwner: true
+                )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager
+                .pendingForcedHistoricalSyncUsesLiveHotPathCadence(
+                    trigger: "accepted_hr"
+                )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager
+                .pendingForcedHistoricalSyncUsesLiveHotPathCadence(
+                    trigger: "accepted_hr_batch"
+                )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .pendingForcedHistoricalSyncUsesLiveHotPathCadence(
+                    trigger: "history_admission_ledger_ready"
+                ),
+            "the exact blocker-cleared event must bypass the HR cadence fence"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .pendingForcedHistoricalSyncUsesLiveHotPathCadence(
+                    trigger: "historical_archive_warm_ready"
                 )
         )
     }
@@ -4082,6 +4218,15 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         let resumeBody = String(source[resumeStart.lowerBound..<resumeEnd.lowerBound])
         XCTAssertTrue(resumeBody.contains("lastAcceptedHRAt >= connectedAt"))
+        XCTAssertTrue(resumeBody.contains(
+            "preserveConnectedRealtimeOwner:\n                        pending.preserveConnectedRealtimeOwner"
+        ))
+        XCTAssertTrue(resumeBody.contains(
+            "pendingForcedHistoricalSyncUsesLiveHotPathCadence("
+        ))
+        XCTAssertTrue(resumeBody.contains(
+            "pendingForcedHistoricalSyncLiveResumeRetryNotBefore"
+        ))
         XCTAssertTrue(resumeBody.contains(
             "shouldDeferInterruptedFullDrainRelaunchAfterLivePersistence"
         ))
@@ -4851,7 +4996,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(base(true, now.addingTimeInterval(-5 * 60)),
                        "a failed automatic attempt must not repeat on the next reconnect")
         XCTAssertTrue(base(true, now.addingTimeInterval(-(6 * 60 * 60 + 1))),
-                      "a verified exact gap must receive one bounded automatic handoff after the six-hour anti-churn cooldown")
+                      "a verified exact gap may qualify a queued retry after cooldown without bypassing live-continuity admission")
     }
 
     func testFullHistoryDumpCannotBindArbitraryExactGapAuthority() {
@@ -8241,7 +8386,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             range: immediateClaim.upperBound..<body.endIndex
         ))
         let standingConnect = try XCTUnwrap(body.range(
-            of: "central.connect(peripheral, options: nil)",
+            of: "issueSingleFlightConnect(",
             range: disconnectedRace.upperBound..<body.endIndex
         ))
 
@@ -8288,7 +8433,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         XCTAssertLessThan(pendingCutover.lowerBound, genericCancellation.lowerBound)
         XCTAssertTrue(disconnectBody.contains(
-            "central.connect(peripheral, options: nil)"
+            "issueSingleFlightConnect("
         ))
         XCTAssertTrue(disconnectBody.contains(
             "read_only_history_restored_direct_reconnect"
@@ -8397,6 +8542,35 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             manualWorkoutActive: false,
             pendingOffloadAttempts: 0
         ))
+        XCTAssertTrue(
+            AtriaBLEManager
+                .historicalMotionBankFirstAttemptTransportDeferred(
+                    pendingTicketID: "ticket-a",
+                    pendingOffloadAttempts: 0,
+                    boundTicketID: "ticket-a",
+                    deferredTransportTicketID: "ticket-a"
+                )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .historicalMotionBankFirstAttemptTransportDeferred(
+                    pendingTicketID: "ticket-a",
+                    pendingOffloadAttempts: 0,
+                    boundTicketID: "ticket-a",
+                    deferredTransportTicketID: "ticket-b"
+                ),
+            "A stale reservation for another ticket cannot reopen capture"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .historicalMotionBankFirstAttemptTransportDeferred(
+                    pendingTicketID: "ticket-a",
+                    pendingOffloadAttempts: 1,
+                    boundTicketID: "ticket-a",
+                    deferredTransportTicketID: "ticket-a"
+                ),
+            "A spent attempt already uses the ordinary retry rearm policy"
+        )
         XCTAssertTrue(AtriaBLEManager.historicalMotionBankArmEligible(
             manualWorkoutActive: false,
             pendingOffloadAttempts: 0,
@@ -8897,7 +9071,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
-    func testProcessInterruptedMotionBankRetryIsReservedBeforeTransport()
+    func testMotionBankTransportDeferralReservationPrecedesRequestAndCadenceFollowsStart()
         throws
     {
         let source = try leaseManagerSource()
@@ -8915,21 +9089,263 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let retryGate = try XCTUnwrap(body.range(
             of: "historicalMotionBankRetryEligible("
         ))
-        let reservation = try XCTUnwrap(body.range(
-            of: "defaults.set(\n            now.timeIntervalSince1970,"
+        let deferralReservation = try XCTUnwrap(body.range(
+            of: "workoutHistoricalMotionBankTransportDeferredTicketIDKey"
         ))
         let request = try XCTUnwrap(body.range(
             of: "requestOfflineHistoricalSyncIfNeeded("
         ))
+        let cadencePersistence = try XCTUnwrap(body.range(
+            of: "workoutHistoricalMotionBankLastOffloadStartedAtKey",
+            range: request.upperBound..<body.endIndex
+        ))
+        let deferredRearm = try XCTUnwrap(body.range(
+            of: "transport_deferred_\\(reason)",
+            range: request.upperBound..<body.endIndex
+        ))
+        let successfulStartBranch = try XCTUnwrap(body.range(
+            of: "if started || generationStarted {",
+            range: request.upperBound..<body.endIndex
+        ))
+        let preStartDeferralBranch = try XCTUnwrap(body.range(
+            of: "} else {",
+            range: successfulStartBranch.upperBound..<body.endIndex
+        ))
+        let branchTail = try XCTUnwrap(body.range(
+            of: "let retainedAuthorizedRequest =",
+            range: preStartDeferralBranch.upperBound..<body.endIndex
+        ))
+        let successfulStartBody = String(body[
+            successfulStartBranch.lowerBound..<preStartDeferralBranch.lowerBound
+        ])
+        let preStartDeferralBody = String(body[
+            preStartDeferralBranch.lowerBound..<branchTail.lowerBound
+        ])
 
         XCTAssertLessThan(interrupted.lowerBound, retryGate.lowerBound)
-        XCTAssertLessThan(retryGate.lowerBound, reservation.lowerBound)
-        XCTAssertLessThan(reservation.lowerBound, request.lowerBound)
+        XCTAssertLessThan(retryGate.lowerBound, deferralReservation.lowerBound)
+        XCTAssertLessThan(deferralReservation.lowerBound, request.lowerBound)
+        XCTAssertLessThan(request.lowerBound, cadencePersistence.lowerBound)
+        XCTAssertLessThan(request.lowerBound, deferredRearm.lowerBound)
+        XCTAssertTrue(body.contains("if started || generationStarted"))
+        XCTAssertTrue(body.contains(
+            "armWorkoutHistoricalMotionBankIfPossible("
+        ))
+        XCTAssertTrue(successfulStartBody.contains(
+            "workoutHistoricalMotionBankLastOffloadStartedAtKey"
+        ))
+        XCTAssertFalse(preStartDeferralBody.contains(
+            "workoutHistoricalMotionBankLastOffloadStartedAtKey"
+        ))
+        XCTAssertTrue(preStartDeferralBody.contains(
+            "armWorkoutHistoricalMotionBankIfPossible("
+        ))
         XCTAssertTrue(body.contains(
             "persistedActiveTicketID == ticket.id"
         ) || body.contains(
             "historicalMotionBankProcessInterruptedRetryEligible("
         ))
+        XCTAssertTrue(body.contains(
+            "expectedArchiveWarmTicketID: String? = nil"
+        ))
+        XCTAssertTrue(body.contains(
+            "ticket?.id != expectedArchiveWarmTicketID"
+        ))
+        XCTAssertTrue(body.contains(
+            "requestResult.warmDeferredTicketID == ticket.id"
+        ))
+        XCTAssertTrue(body.contains("|| warmFirstRefusalHeld"))
+        XCTAssertTrue(body.contains(
+            "expectedAdmissionLedgerTicketID: String? = nil"
+        ))
+        XCTAssertTrue(body.contains(
+            "ticket?.id != expectedAdmissionLedgerTicketID"
+        ))
+        XCTAssertTrue(body.contains(
+            "requestResult.admissionLedgerDeferredTicketID == ticket.id"
+        ))
+        XCTAssertTrue(body.contains("|| admissionLedgerFirstRefusalHeld"))
+        XCTAssertTrue(body.contains(
+            "expectedLocalDependencyTicketID: String? = nil"
+        ))
+        XCTAssertTrue(body.contains(
+            "ticket?.id != expectedLocalDependencyTicketID"
+        ))
+        XCTAssertTrue(body.contains("requestResult.localDependency"))
+        XCTAssertTrue(body.contains("|| localDependencyFirstRefusal != nil"))
+    }
+
+    func testArchiveWarmExactMotionFirstRefusalAvoidsHotPathAndGenericAuthority()
+        throws
+    {
+        let source = try leaseManagerSource()
+        let acceptedStart = try XCTUnwrap(source.range(
+            of: "private func acceptHeartRate(_ rate: Int, at sampleTime: Date)"
+        ))
+        let acceptedEnd = try XCTUnwrap(source.range(
+            of: "private func beginAcceptedHeartRateBatch()",
+            range: acceptedStart.upperBound..<source.endIndex
+        ))
+        let accepted = String(
+            source[acceptedStart.lowerBound..<acceptedEnd.lowerBound]
+        )
+        let holdGate = try XCTUnwrap(accepted.range(
+            of: "!connectedMotionBankArchiveWarmRetryGate.isHolding"
+        ))
+        let admissionLedgerHoldGate = try XCTUnwrap(accepted.range(
+            of: "!connectedMotionBankAdmissionLedgerRetryGate.isHolding"
+        ))
+        let localDependencyHoldGate = try XCTUnwrap(accepted.range(
+            of: "!connectedMotionBankLocalDependencyRetryGate.isHolding"
+        ))
+        let ledgerHint = try XCTUnwrap(accepted.range(
+            of: "persistNextUnattemptedMotionBankMaintenanceTicketIfNeeded("
+        ))
+        let selector = try XCTUnwrap(accepted.range(
+            of: "resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded("
+        ))
+        XCTAssertLessThan(holdGate.lowerBound, ledgerHint.lowerBound)
+        XCTAssertLessThan(
+            admissionLedgerHoldGate.lowerBound,
+            ledgerHint.lowerBound
+        )
+        XCTAssertLessThan(
+            localDependencyHoldGate.lowerBound,
+            ledgerHint.lowerBound
+        )
+        XCTAssertLessThan(ledgerHint.lowerBound, selector.lowerBound)
+
+        let warmGateStart = try XCTUnwrap(source.range(
+            of: "if Self.shouldDeferHistoricalSyncUntilArchiveWarmReady("
+        ))
+        let warmGate = String(source[warmGateStart.lowerBound...].prefix(2_000))
+        XCTAssertTrue(warmGate.contains(
+            "historicalArchiveWarmState == .warming"
+        ))
+        XCTAssertTrue(warmGate.contains(
+            "transientConnectedMotionBankHistoryRequestAuthority"
+        ))
+        XCTAssertTrue(warmGate.contains(
+            "transientConnectedMotionBankArchiveWarmDeferredTicketID"
+        ))
+
+        let genericStart = try XCTUnwrap(source.range(
+            of: "private func pendingForcedHistoricalSyncMayResumeAfterLivePersistence("
+        ))
+        let generic = String(source[genericStart.lowerBound...].prefix(1_200))
+        XCTAssertTrue(generic.contains("force && explicitRequest"))
+        XCTAssertFalse(generic.contains("explicitPostWorkoutBankRequest &&"))
+    }
+
+    func testExactGenerationClearsOnlyMatchingMotionSchedulingTuple() throws {
+        let source = try leaseManagerSource()
+        let claim = try XCTUnwrap(source.range(
+            of: "guard historyTransportClaimed else {"
+        ))
+        let attempt = try XCTUnwrap(source.range(
+            of: "defaults.set(attemptAt, forKey: OfflineSyncDefaults.lastAttemptAt)",
+            range: claim.upperBound..<source.endIndex
+        ))
+        let start = String(source[claim.lowerBound..<attempt.lowerBound])
+        XCTAssertTrue(start.contains(
+            "pendingConnectedMotionBankSchedulingTicketID"
+        ))
+        XCTAssertTrue(start.contains(
+            "== connectedMotionBankRequestAuthority?.ticketID"
+        ))
+        XCTAssertTrue(start.contains("pending.explicitPostWorkoutBankRequest"))
+        XCTAssertTrue(start.contains("pending.preserveConnectedRealtimeOwner"))
+        XCTAssertTrue(start.contains("!pending.explicitRequest"))
+        XCTAssertTrue(start.contains("pendingOfflineHistoricalSyncRequest = nil"))
+
+        let retainStart = try XCTUnwrap(source.range(
+            of: "private func retainPendingOfflineHistoricalSyncRequest("
+        ))
+        let takeStart = try XCTUnwrap(source.range(
+            of: "private func takePendingOfflineHistoricalSyncRequest()",
+            range: retainStart.upperBound..<source.endIndex
+        ))
+        let retain = String(source[retainStart.lowerBound..<takeStart.lowerBound])
+        XCTAssertTrue(retain.contains(
+            "transientConnectedMotionBankHistoryRequestAuthority"
+        ))
+        XCTAssertTrue(retain.contains(
+            "pendingConnectedMotionBankSchedulingTicketID"
+        ))
+    }
+
+    func testCapabilityQualificationFailureClearsLatchBeforeExactRearm()
+        throws
+    {
+        let source = try leaseManagerSource()
+        let delegateStart = try XCTUnwrap(source.range(
+            of: "nonisolated func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?)"
+        ))
+        let delegateEnd = try XCTUnwrap(source.range(
+            of: "didDiscoverCharacteristicsFor service: CBService",
+            range: delegateStart.upperBound..<source.endIndex
+        ))
+        let delegate = String(
+            source[delegateStart.lowerBound..<delegateEnd.lowerBound]
+        )
+        let errorDisposition = try XCTUnwrap(delegate.range(
+            of: "historyCapabilityQualificationCallbackDisposition("
+        ))
+        let errorCleanup = try XCTUnwrap(delegate.range(
+            of: "clearHistoryCapabilityQualification(",
+            range: errorDisposition.upperBound..<delegate.endIndex
+        ))
+        let errorRelease = try XCTUnwrap(delegate.range(
+            of: "releaseConnectedMotionBankLocalDependencyFirstRefusal(",
+            range: errorCleanup.upperBound..<delegate.endIndex
+        ))
+        XCTAssertLessThan(errorDisposition.lowerBound, errorCleanup.lowerBound)
+        XCTAssertLessThan(errorCleanup.lowerBound, errorRelease.lowerBound)
+
+        let releaseStart = try XCTUnwrap(source.range(
+            of: "private func releaseConnectedMotionBankLocalDependencyFirstRefusal("
+        ))
+        let holdStart = try XCTUnwrap(source.range(
+            of: "private func holdConnectedMotionBankForLocalDependencyFirstRefusal(",
+            range: releaseStart.upperBound..<source.endIndex
+        ))
+        let release = String(
+            source[releaseStart.lowerBound..<holdStart.lowerBound]
+        )
+        XCTAssertTrue(release.contains(
+            "if dependency == .capabilityQualification"
+        ))
+        let cleanup = try XCTUnwrap(release.range(
+            of: "clearHistoryCapabilityQualification()"
+        ))
+        let rearm = try XCTUnwrap(release.range(
+            of: "armWorkoutHistoricalMotionBankIfPossible("
+        ))
+        XCTAssertLessThan(cleanup.lowerBound, rearm.lowerBound)
+
+        let cleanupStart = try XCTUnwrap(source.range(
+            of: "private func clearHistoryCapabilityQualification("
+        ))
+        let armStart = try XCTUnwrap(source.range(
+            of: "private func armHistoryCapabilityQualification(",
+            range: cleanupStart.upperBound..<source.endIndex
+        ))
+        let cleanupBody = String(
+            source[cleanupStart.lowerBound..<armStart.lowerBound]
+        )
+        XCTAssertTrue(cleanupBody.contains(
+            "historyCapabilityQualificationFallbackTask = nil"
+        ))
+        XCTAssertTrue(cleanupBody.contains(
+            "historyCapabilityQualificationPeripheralID = nil"
+        ))
+        XCTAssertTrue(cleanupBody.contains(
+            "historyCapabilityQualificationDiscoveryIssued = false"
+        ))
+        XCTAssertFalse(release.contains("requestOfflineHistoricalSyncIfNeeded("))
+        XCTAssertFalse(release.contains("startOfflineHistoricalSync("))
+        XCTAssertFalse(release.contains("cancelPeripheralConnection("))
+        XCTAssertFalse(release.contains("rebuildCentralForWedgedSessionOnce("))
     }
 
     func testProcessInterruptedRetryDefersPresentBankRearmUntilFirstRefusal()
@@ -9458,7 +9874,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(handler.contains("abortHistorical"))
     }
 
-    func testBackgroundProcessingUsesTheSameAuditedConnectedHandoffGate() throws {
+    func testBackgroundProcessingQualificationCannotBypassLiveContinuityFence() throws {
         let manager = try leaseManagerSource()
         let awaitStart = try XCTUnwrap(manager.range(
             of: "func requestOfflineHistoricalSyncAwaitingCompletion"
@@ -9478,12 +9894,16 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             .appendingPathComponent("Atria/AtriaApp.swift")
         let app = try String(contentsOf: appURL, encoding: .utf8)
         let handler = try XCTUnwrap(app.range(of: "private static func handleBackgroundTask"))
-        let body = String(app[handler.lowerBound...].prefix(5_000))
+        let handlerEnd = try XCTUnwrap(app.range(
+            of: "private func scheduleBackgroundMaintenance",
+            range: handler.upperBound..<app.endIndex
+        ))
+        let body = String(app[handler.lowerBound..<handlerEnd.lowerBound])
         XCTAssertTrue(body.contains("admitAutomaticConnectedHandoffIfEligible: true"),
-                      "BGProcessing must not depend on a foreground-only timer to authorize exact-gap recovery")
+                      "BGProcessing may qualify pending debt, while the request-level live-continuity fence retains it until transport is non-destructive")
     }
 
-    func testSceneBackgroundUsesTheSameAuditedConnectedHandoffGate() throws {
+    func testSceneBackgroundQualificationCannotBypassLiveContinuityFence() throws {
         let appURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -9496,7 +9916,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         let body = String(app[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(body.contains("admitAutomaticConnectedHandoffIfEligible: true"),
-                      "scene backgrounding must use the audited exact-gap handoff before deferring to a later BGProcessing window")
+                      "scene backgrounding may qualify pending debt; request-level continuity policy still retains destructive work")
     }
 
     func testAutomaticConnectedHistoryHandoffUsesEvidenceGatesAtAnyHour() throws {
@@ -9540,9 +9960,26 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             range: start.upperBound..<source.endIndex
         ))
         let body = String(source[start.lowerBound..<end.lowerBound])
+        let exactHistoryGuard = try XCTUnwrap(body.range(
+            of: "activeConnectedMotionBankHistoryAuthority("
+        ))
         let immediate = try XCTUnwrap(body.range(
             of: "let replaceWedgedSession = immediateConnectedRebuild"
         ))
+        XCTAssertLessThan(
+            exactHistoryGuard.lowerBound,
+            immediate.lowerBound,
+            "an exact same-link motion-bank generation must retire locally before any rebuild policy"
+        )
+        let exactHistoryFinish = try XCTUnwrap(body.range(
+            of: "packet_stall_recovery_preempted_connected_motion_bank_preserve_realtime",
+            range: exactHistoryGuard.upperBound..<immediate.lowerBound
+        ))
+        XCTAssertTrue(
+            String(body[exactHistoryFinish.lowerBound..<immediate.lowerBound])
+                .contains("return"),
+            "the exact same-link lane must not fall through to central replacement or delayed reconnect"
+        )
         XCTAssertTrue(body.contains("if !replaceWedgedSession,"),
                       "A previously deferred watchdog request must not cooldown-block the BGTask's immediate repair")
         let replacement = try XCTUnwrap(body.range(
@@ -10001,7 +10438,19 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             range: start.upperBound..<source.endIndex
         ))
         let body = String(source[start.lowerBound..<end.lowerBound])
-        XCTAssertTrue(body.contains("callbackCentral.connect(disconnectedPeripheral"))
+        let standingRequest = try XCTUnwrap(body.range(
+            of: "markPendingKnownReconnect(reason: \"manual_workout_fresh_v9_connection\")"
+        ))
+        let gatewayConnect = try XCTUnwrap(body.range(
+            of: "issueSingleFlightConnect(",
+            range: standingRequest.upperBound..<body.endIndex
+        ))
+        let watchdog = try XCTUnwrap(body.range(
+            of: "startReconnectWatchdog(",
+            range: gatewayConnect.upperBound..<body.endIndex
+        ))
+        XCTAssertLessThan(standingRequest.lowerBound, gatewayConnect.lowerBound)
+        XCTAssertLessThan(gatewayConnect.lowerBound, watchdog.lowerBound)
         XCTAssertTrue(body.contains("protectedR10ResponseEventDataConnectionCutoverKey"))
         XCTAssertFalse(body.contains("central = CBCentralManager("),
                        "a completed physical disconnect is already the fresh-link boundary")
@@ -10413,8 +10862,12 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             range: start.upperBound..<source.endIndex
         ))
         let didConnect = String(source[start.lowerBound..<end.lowerBound])
+        let mainActorTask = try XCTUnwrap(didConnect.range(
+            of: "Task { @MainActor in"
+        ))
         let acceptedGuard = try XCTUnwrap(didConnect.range(
-            of: "guard self.acceptsBLECallback("
+            of: "self.acceptsBLECallback(",
+            range: mainActorTask.upperBound..<didConnect.endIndex
         ))
         let retain = try XCTUnwrap(didConnect.range(
             of: "self.connectedPeripheralRetainer.retain(peripheral)"
@@ -10528,7 +10981,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(branch.contains("rebuildCentralForWedgedSessionOnce(trigger: trigger)"))
 
         let rebuild = try XCTUnwrap(source.range(
-            of: "private func rebuildCentralForWedgedSessionOnce(trigger: String) {"
+            of: "private func rebuildCentralForWedgedSessionOnce("
         ))
         let rebuildEnd = try XCTUnwrap(source.range(
             of: "private func completePostReconnectStreamRecoveryIfNeeded()",
@@ -10539,24 +10992,37 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             of: "rotateSilentStreamRecoveryExecutionLeaseIfNeeded(trigger: trigger)"
         ))
         let oldCentralFence = try XCTUnwrap(body.range(
-            of: "central.delegate = nil"
+            of: "centralEventFence.retire(\n            retiredCentral,\n            afterDraining: centralDelegateQueue,"
         ))
+        XCTAssertTrue(body.contains("synchronizedTeardown: {"))
         let awaitPower = try XCTUnwrap(body.range(
-            of: "bleCallbackEpochFence.markAwaitingPowerOn("
+            of: "centralEventFence.markAwaitingPowerOn("
         ))
         let replacement = try XCTUnwrap(body.range(
             of: "central = CBCentralManager(delegate: self"
         ))
+        let replacementFence = try XCTUnwrap(body.range(
+            of: "centralEventFence.install(central)"
+        ))
         XCTAssertLessThan(lease.lowerBound, replacement.lowerBound,
                           "the background execution assertion must exist before async central initialization")
-        XCTAssertLessThan(oldCentralFence.lowerBound, awaitPower.lowerBound,
-                          "the obsolete central must be fenced before replacement power-on markers are armed")
-        XCTAssertLessThan(awaitPower.lowerBound, replacement.lowerBound,
-                          "the powered-on callback must own the saved-strap standing connect")
-        // Fresh XPC session with the SAME restore identifier so state
-        // restoration and relaunch semantics are unchanged.
+        XCTAssertLessThan(oldCentralFence.lowerBound, replacement.lowerBound,
+                          "the obsolete central must be fenced before replacement construction")
+        XCTAssertLessThan(replacement.lowerBound, replacementFence.lowerBound,
+                          "the replacement object must exist before it claims callback authority")
+        XCTAssertLessThan(replacementFence.lowerBound, awaitPower.lowerBound,
+                          "the replacement generation must own its power-on markers")
+        // A poisoned CoreBluetooth session must not be rebuilt into the same
+        // restoration namespace. Persist slot B before construction so a kill
+        // during the handoff relaunches into the replacement owner.
         XCTAssertTrue(body.contains("central = CBCentralManager(delegate: self"))
-        XCTAssertTrue(body.contains("CBCentralManagerOptionRestoreIdentifierKey: centralRestoreIdentifier"))
+        XCTAssertTrue(body.contains("nextCentralRecoveryRestoreIdentifier("))
+        XCTAssertTrue(body.contains("persistCentralRecoveryRestoreIdentifier("))
+        XCTAssertTrue(body.contains("if centralUnavailableRecoveryAttempt"))
+        XCTAssertTrue(body.contains("centralUnavailableRecoveryAttempt: true"),
+                      "only the unavailable-state timer may consume the persisted one-shot")
+        XCTAssertTrue(body.contains("CBCentralManagerOptionRestoreIdentifierKey:"))
+        XCTAssertTrue(body.contains("replacementRestoreIdentifier"))
         XCTAssertTrue(body.contains("UIApplication.shared.beginBackgroundTask("))
         XCTAssertTrue(body.contains("self?.handleReconnectLeaseExpiry()"))
         XCTAssertTrue(body.contains("silent_stream_lease_rotated"))
@@ -10606,7 +11072,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         let synchronousPrefix = String(source[start.lowerBound..<hop.lowerBound])
         XCTAssertTrue(synchronousPrefix.contains("central_rebuild_state_"))
-        XCTAssertTrue(synchronousPrefix.contains("central.connect(saved, options: nil)"))
+        XCTAssertTrue(synchronousPrefix.contains("issueSingleFlightConnect("))
         XCTAssertTrue(synchronousPrefix.contains("central_rebuild_standing_connect_issued"))
         XCTAssertTrue(synchronousPrefix.contains("consumePowerOnMarkers()"))
     }
@@ -10669,20 +11135,19 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
     }
 
-    func testFreshOwnerReconnectRaceCannotReenterConnectedDeferralLoop() throws {
+    func testFreshOwnerCompatibilityBypassCannotReenterCutoverLoop() throws {
         let source = try leaseManagerSource()
-        XCTAssertTrue(source.contains(
-            "freshOwnerCutoverCompleted: Bool = false"
+        XCTAssertFalse(source.contains("freshOwnerCutoverCompleted"))
+        let requestStart = try XCTUnwrap(source.range(
+            of: "func requestOfflineHistoricalSyncIfNeeded("
         ))
-        XCTAssertTrue(source.contains(
-            "automaticConnectedHandoffAllowed: allowConnectedAutomaticHandoff\n                || freshOwnerCutoverCompleted"
+        let requestEnd = try XCTUnwrap(source.range(
+            of: "private func armHistoryCapabilityQualification(",
+            range: requestStart.upperBound..<source.endIndex
         ))
-        XCTAssertTrue(source.contains(
-            "if !freshOwnerCutoverCompleted,\n           Self.shouldUseFreshHistoryOwnerCutover"
-        ))
-        XCTAssertTrue(source.contains(
-            "freshOwnerCutoverCompleted: true,\n                        explicitResearchRequest: pending.explicitRequest"
-        ))
+        let request = source[requestStart.lowerBound..<requestEnd.lowerBound]
+        XCTAssertFalse(request.contains("shouldUseFreshHistoryOwnerCutover("))
+        XCTAssertFalse(request.contains("beginFreshHistoryOwnerCutover("))
         XCTAssertTrue(source.contains(
             "freshHistoryOwnerAdmissionPending = true"
         ))
@@ -10690,7 +11155,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             "status=fresh_owner_admitted_on_did_connect"
         ))
         XCTAssertTrue(source.contains(
-            "if !freshOwnerCutoverCompleted,\n           Self.shouldDeferAutomaticOfflineSyncForConnectedLink"
+            "let historyTransportClaimed = connectedPeripheralRetainer"
+        ))
+        XCTAssertTrue(source.contains(
+            ".claimHistoryTransportIfNoRetainedConnect("
         ))
     }
 

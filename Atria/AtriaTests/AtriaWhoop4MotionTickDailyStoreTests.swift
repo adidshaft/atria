@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import Atria
 
 final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
@@ -905,6 +906,109 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         XCTAssertEqual(merged.first?.stepCount, 0)
     }
 
+    func testCompactReceiptPlanNeverAdmitsCanonicalFallback() {
+        XCTAssertEqual(
+            SessionStore.currentCycleStepReceiptReadPlan(
+                compactReadQualified: true
+            ),
+            .publishCompact,
+            "a durable compact subtotal must not wait behind exact or recovered work"
+        )
+        XCTAssertEqual(
+            SessionStore.currentCycleStepReceiptReadPlan(
+                compactReadQualified: false
+            ),
+            .compactOnlyMissing,
+            "a compact miss must not authorize JSONL from a hot caller"
+        )
+    }
+
+    func testLegacyMigrationAdmissionRequiresSafeBackgroundMaintenance() {
+        func admitted(
+            background: Bool = true,
+            thermal: ProcessInfo.ThermalState = .nominal,
+            lowPower: Bool = false,
+            battery: UIDevice.BatteryState = .charging,
+            level: Float = 0.8,
+            exactOwner: Bool = false,
+            recoveredOwner: Bool = false
+        ) -> Bool {
+            SessionStore.shouldAdmitBoundedLegacyCurrentCycleStepMigration(
+                isBackgroundMaintenance: background,
+                thermalState: thermal,
+                isLowPowerModeEnabled: lowPower,
+                batteryState: battery,
+                batteryLevel: level,
+                exactRecoveryOwnsPriority: exactOwner,
+                recoveredCycleEngaged: recoveredOwner
+            )
+        }
+
+        XCTAssertTrue(admitted())
+        XCTAssertFalse(admitted(background: false))
+        XCTAssertFalse(admitted(thermal: .serious))
+        XCTAssertFalse(admitted(thermal: .critical))
+        XCTAssertFalse(admitted(lowPower: true))
+        XCTAssertFalse(admitted(exactOwner: true))
+        XCTAssertFalse(admitted(recoveredOwner: true))
+        XCTAssertFalse(admitted(battery: .unknown, level: -1))
+        XCTAssertFalse(admitted(battery: .unplugged, level: 0.49))
+    }
+
+    func testLegacyMigrationSourceBudgetIsExactAndFailsClosed() {
+        let mebibyte = UInt64(1_024 * 1_024)
+        let budget = HistoricalArchive.MotionTickDayEvidenceMigrationBudget(
+            maximumFileCount: 4,
+            maximumTotalBytes: 32 * mebibyte
+        )
+        func descriptor(
+            index: Int,
+            size: UInt64,
+            compressed: Bool = false
+        ) -> AtriaHistoricalJSONLRecentScanner.FileDescriptor {
+            let suffix = compressed
+                ? AtriaHistoricalSealedJSONLCompression.artifactExtension
+                : "jsonl"
+            return .init(
+                url: URL(fileURLWithPath: "/tmp/migration-\(index).\(suffix)"),
+                size: size,
+                modificationTime: TimeInterval(index),
+                resourceIdentifier: "migration-\(index)"
+            )
+        }
+
+        let exactBoundary = (0..<4).map {
+            descriptor(index: $0, size: 8 * mebibyte)
+        }
+        XCTAssertTrue(
+            HistoricalArchive.motionTickDayEvidenceMigrationSourcesFitBudget(
+                exactBoundary,
+                budget: budget
+            )
+        )
+        XCTAssertFalse(
+            HistoricalArchive.motionTickDayEvidenceMigrationSourcesFitBudget(
+                exactBoundary + [descriptor(index: 4, size: 0)],
+                budget: budget
+            ),
+            "the file-count boundary plus one must be refused"
+        )
+        XCTAssertFalse(
+            HistoricalArchive.motionTickDayEvidenceMigrationSourcesFitBudget(
+                [descriptor(index: 0, size: 32 * mebibyte + 1)],
+                budget: budget
+            ),
+            "the byte boundary plus one must be refused"
+        )
+        XCTAssertFalse(
+            HistoricalArchive.motionTickDayEvidenceMigrationSourcesFitBudget(
+                [descriptor(index: 0, size: 1, compressed: true)],
+                budget: budget
+            ),
+            "compressed sources can expand beyond their admitted disk size"
+        )
+    }
+
     func testVerifiedOffloadRefreshBypassesUnrelatedHistoryPriorityFence() throws {
         let testsURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -926,29 +1030,29 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             range: start.upperBound..<sessions.endIndex
         ))
         let body = String(sessions[start.lowerBound..<end.lowerBound])
-        // Pin migrated 2026-08-05: the fallback arm DOES read day evidence
-        // from the lifetime archive (present since e9ccf347), so the absolute
-        // "never reopen" pin was stale. The enforceable safety properties now:
-        // the refresh defers behind the heavy lane, and the day read itself
-        // runs as budgeted dying-thread passes (the 2026-08-05 climber fix) —
-        // pin those instead.
+        // Every interactive/current-link callback is compact-only. Neither a
+        // compact miss nor a prior-day refresh can reach canonical JSONL.
         XCTAssertTrue(body.contains(
-            "recoveredProjectionScanActive"
-        ), "the automatic refresh must defer while a recompute cycle is engaged")
-        let archive = try String(
-            contentsOf: testsURL.deletingLastPathComponent()
-                .appendingPathComponent("Atria/HistoricalArchive.swift"),
-            encoding: .utf8
-        )
-        XCTAssertTrue(archive.contains(
-            "atria.step-receipt-day.pass"
-        ), "the day-evidence read must run as budgeted dying-thread passes")
+            "case .publishCompact"
+        ))
+        XCTAssertTrue(body.contains(
+            "case .compactOnlyMissing"
+        ))
+        XCTAssertNotNil(body.range(
+            of: "AtriaWhoop4MotionTickCompactStore.shared\n                .motionTickDayEvidenceRead("
+        ))
         XCTAssertTrue(body.contains(
             "Self.currentCycleStepReceiptQueue.async"
-        ), "bounded compact receipt work must not wait behind lifetime archive projections")
+        ), "compact receipt work must not wait behind lifetime archive projections")
         XCTAssertFalse(body.contains(
-            "Self.historySnapshotProjectionQueue.sync"
-        ), "legacy migration must be explicit, not a launch or reconnect fallback")
+            "HistoricalArchive.motionTickDayEvidenceRead("
+        ))
+        XCTAssertFalse(body.contains(
+            "Self.historySnapshotProjectionQueue"
+        ))
+        XCTAssertFalse(body.contains(
+            "refreshPriorCivilDayStrapStepReceipts"
+        ))
         XCTAssertTrue(body.contains(
             "AtriaWhoop4MotionTickDailyStore.shared.save("
         ))
@@ -960,6 +1064,9 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         ))
         XCTAssertTrue(sessions.contains(
             "reason: \"session_store_init\""
+        ))
+        XCTAssertFalse(sessions.contains(
+            "prepareCurrentCycleStrapStepReceipt"
         ))
         XCTAssertTrue(sessions.contains(
             "reason: \"compact_generation_durable\""
@@ -981,17 +1088,18 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         ), "an unchanged durable receipt must still refresh relaunch surfaces")
     }
 
-    func testLegacyCanonicalMotionMigratesOnceOffMainBeforeNegativeCaching()
+    func testLegacyCanonicalMotionMigratesOnlyThroughBoundedBackgroundLane()
         throws {
         let testsURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
+        let sourcesURL = testsURL.deletingLastPathComponent()
+            .appendingPathComponent("Atria")
         let sessions = try String(
-            contentsOf: testsURL.deletingLastPathComponent()
-                .appendingPathComponent("Atria/Sessions.swift"),
+            contentsOf: sourcesURL.appendingPathComponent("Sessions.swift"),
             encoding: .utf8
         )
         let migrationStart = try XCTUnwrap(sessions.range(
-            of: "private func prepareCurrentCycleStrapStepReceipt"
+            of: "func scheduleBoundedLegacyCurrentCycleStepMigrationIfSafe("
         ))
         let refreshStart = try XCTUnwrap(sessions.range(
             of: "private func refreshCurrentCycleStrapStepReceipt",
@@ -1000,44 +1108,79 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         let migration = String(
             sessions[migrationStart.lowerBound..<refreshStart.lowerBound]
         )
-        let refreshEnd = try XCTUnwrap(sessions.range(
-            of: "nonisolated static func currentCycleStepReceiptAttemptSignature",
-            range: refreshStart.upperBound..<sessions.endIndex
-        ))
-        let refresh = String(
-            sessions[refreshStart.lowerBound..<refreshEnd.lowerBound]
-        )
 
+        XCTAssertTrue(sessions.contains(
+            "private struct CurrentCycleStepLegacyMigrationAdmission"
+        ))
+        XCTAssertTrue(migration.contains(
+            "shouldAdmitBoundedLegacyCurrentCycleStepMigration("
+        ))
         XCTAssertTrue(migration.contains(
             "Self.historySnapshotProjectionQueue.async"
         ))
         XCTAssertTrue(migration.contains(
-            "HistoricalArchive.motionTickDayEvidenceRead("
+            ".boundedLegacyMotionTickDayEvidenceMigrationRead("
         ))
         XCTAssertTrue(migration.contains(
-            "compactMigrationStore:"
+            "Self.currentCycleStepLegacyMigrationMaximumFileCount"
         ))
         XCTAssertTrue(migration.contains(
-            "currentCycleStepCompactMigrationKey"
+            "Self.currentCycleStepLegacyMigrationMaximumTotalBytes"
         ))
         XCTAssertTrue(migration.contains(
             "sourceBefore == sourceAfter"
         ))
+        XCTAssertTrue(migration.contains(
+            "Date() <= admission.expiresAt"
+        ))
+        XCTAssertTrue(migration.contains(
+            "currentCycleStepCompactMigrationGeneration"
+        ))
+        XCTAssertTrue(migration.contains(
+            "== admission.generation"
+        ))
         XCTAssertFalse(migration.contains(
             "Self.historySnapshotProjectionQueue.sync"
         ))
-        XCTAssertTrue(refresh.contains(
-            "allowNegativeAttemptPersistence"
-        ))
-        XCTAssertTrue(refresh.contains(
-            "if allowNegativeAttemptPersistence,"
+        XCTAssertFalse(migration.contains(
+            "HistoricalArchive.motionTickDayEvidenceRead("
         ))
         XCTAssertTrue(sessions.contains(
-            "prepareCurrentCycleStrapStepReceipt(\n                reason: \"session_store_init\""
+            "UIApplication.shared.applicationState == .background"
         ))
-        XCTAssertTrue(sessions.contains(
-            "prepareCurrentCycleStrapStepReceipt(\n                    reason: \"finalized_bank_offload\""
+
+        let archive = try String(
+            contentsOf: sourcesURL.appendingPathComponent(
+                "HistoricalArchive.swift"
+            ),
+            encoding: .utf8
+        )
+        XCTAssertTrue(archive.contains(
+            "func boundedLegacyMotionTickDayEvidenceMigrationRead("
         ))
+        XCTAssertTrue(archive.contains(
+            "motionTickDayEvidenceMigrationSourcesFitBudget("
+        ))
+        XCTAssertTrue(archive.contains(
+            "guard !descriptor.isCompressed"
+        ))
+
+        let app = try String(
+            contentsOf: sourcesURL.appendingPathComponent("AtriaApp.swift"),
+            encoding: .utf8
+        )
+        let backgroundMigration = try XCTUnwrap(app.range(
+            of: "scheduleBoundedLegacyCurrentCycleStepMigrationIfSafe("
+        ))
+        let eventualProjection = try XCTUnwrap(app.range(
+            of: "requestBackgroundArchiveProjectionIfSafe(",
+            range: backgroundMigration.upperBound..<app.endIndex
+        ))
+        XCTAssertLessThan(
+            backgroundMigration.lowerBound,
+            eventualProjection.lowerBound,
+            "bounded migration must preserve the eventual guarded full projection"
+        )
     }
 
     func testArchiveWideMotionReadersShareOneSerialConsumerLane() throws {
@@ -1060,8 +1203,8 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             "historySnapshotProjectionQueue =\n        HistoricalArchive.consumerProjectionQueue"
         ))
         XCTAssertTrue(sessions.contains(
-            "workoutStepEvidenceQueue =\n        HistoricalArchive.consumerProjectionQueue"
-        ))
+            "workoutStepEvidenceQueue = DispatchQueue("
+        ), "confirmed-workout compact reads must not queue a lifetime archive consumer")
         XCTAssertTrue(sessions.contains(
             "private static let currentCycleStepReceiptQueue = DispatchQueue("
         ))

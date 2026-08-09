@@ -390,7 +390,10 @@ final class AtriaPerfFixesTests: XCTestCase {
         let dequeueStart = try XCTUnwrap(source.range(of: "private nonisolated func dequeuePendingHeartRateUpdateBatch",
                                                        range: enqueueStart.upperBound..<source.endIndex))
         let enqueue = String(source[enqueueStart.lowerBound..<dequeueStart.lowerBound])
-        XCTAssertTrue(enqueue.contains("pendingHeartRateIngressOverflow"))
+        XCTAssertTrue(enqueue.contains("pendingHeartRateIngressOverflows"))
+        XCTAssertTrue(enqueue.contains("heartRateIngressDropAttributions(receipts)"))
+        XCTAssertTrue(enqueue.contains("callbackSource: $0.callbackSource"),
+                      "overflow ownership must come from each evicted receipt")
         XCTAssertTrue(enqueue.contains("firstDroppedAt"))
         XCTAssertTrue(enqueue.contains("lastDroppedAt"))
 
@@ -402,6 +405,56 @@ final class AtriaPerfFixesTests: XCTestCase {
         XCTAssertTrue(marker.contains("markRangeLossBackfillRequired"))
         XCTAssertTrue(marker.contains("persistActiveSessionJournalIfNeeded"))
         XCTAssertTrue(marker.contains("no_interpolation"))
+    }
+
+    func testHeartRateOverflowDebtRemainsAttributedToItsProducingLink() throws {
+        let fence = AtriaBLECallbackEpochFence()
+        let strapID = UUID()
+        let retiredPeripheral = NSObject()
+        let activePeripheral = NSObject()
+        _ = fence.activate(
+            peripheralID: strapID,
+            peripheralObjectID: ObjectIdentifier(retiredPeripheral)
+        )
+        let retiredSource = try XCTUnwrap(fence.captureIfAccepted(
+            peripheralID: strapID,
+            peripheralObjectID: ObjectIdentifier(retiredPeripheral),
+            peripheralConnected: true
+        ))
+        fence.invalidate(
+            ifMatching: strapID,
+            peripheralObjectID: ObjectIdentifier(retiredPeripheral)
+        )
+        _ = fence.activate(
+            peripheralID: strapID,
+            peripheralObjectID: ObjectIdentifier(activePeripheral)
+        )
+        let activeSource = try XCTUnwrap(fence.captureIfAccepted(
+            peripheralID: strapID,
+            peripheralObjectID: ObjectIdentifier(activePeripheral),
+            peripheralConnected: true
+        ))
+        let anchor = Date(timeIntervalSinceReferenceDate: 800_700_000)
+
+        // Model the exact overflow edge: two retired-link receipts and one
+        // active-link receipt are evicted when a newly appended active packet
+        // pushes the queue beyond its bound.
+        let attributed = AtriaBLEManager.heartRateIngressDropAttributions([
+            .init(receivedAt: anchor, callbackSource: retiredSource),
+            .init(receivedAt: anchor.addingTimeInterval(1), callbackSource: activeSource),
+            .init(receivedAt: anchor.addingTimeInterval(2), callbackSource: retiredSource)
+        ])
+
+        XCTAssertEqual(attributed.count, 2)
+        XCTAssertEqual(attributed[0].callbackSource, retiredSource)
+        XCTAssertEqual(attributed[0].droppedCount, 2)
+        XCTAssertEqual(attributed[0].firstDroppedAt, anchor)
+        XCTAssertEqual(attributed[0].lastDroppedAt, anchor.addingTimeInterval(2))
+        XCTAssertEqual(attributed[1].callbackSource, activeSource)
+        XCTAssertEqual(attributed[1].droppedCount, 1)
+        XCTAssertFalse(fence.owns(source: attributed[0].callbackSource),
+                       "retired-link debt must be rejected, not charged to the current epoch")
+        XCTAssertTrue(fence.owns(source: attributed[1].callbackSource))
     }
 
     func testLiveStrapStepResearchPublishesEveryChangedPipelineSnapshot() {

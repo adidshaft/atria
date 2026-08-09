@@ -136,8 +136,13 @@ final class AtriaWhoop4HistoryRecoveryTransactionTests: XCTestCase {
 
     func testDisconnectWaitingForACKCannotAdvanceReconnectGeneration() {
         let strapID = UUID()
+        let deadPeripheral = NSObject()
+        let livePeripheral = NSObject()
         var epochFence = AtriaBLECallbackEpochFence()
-        let deadEpoch = epochFence.activate(peripheralID: strapID)
+        let deadEpoch = epochFence.activate(
+            peripheralID: strapID,
+            peripheralObjectID: ObjectIdentifier(deadPeripheral)
+        )
 
         var drain = AtriaWhoop4HistoryDrainState()
         drain.begin(generation: 10)
@@ -157,13 +162,20 @@ final class AtriaWhoop4HistoryRecoveryTransactionTests: XCTestCase {
             attempt: 1
         )])
 
-        epochFence.invalidate(ifMatching: strapID)
-        let liveEpoch = epochFence.activate(peripheralID: strapID)
+        epochFence.invalidate(
+            ifMatching: strapID,
+            peripheralObjectID: ObjectIdentifier(deadPeripheral)
+        )
+        let liveEpoch = epochFence.activate(
+            peripheralID: strapID,
+            peripheralObjectID: ObjectIdentifier(livePeripheral)
+        )
         drain.begin(generation: 11)
 
         XCTAssertFalse(epochFence.accepts(
             callbackEpoch: deadEpoch,
             peripheralID: strapID,
+            peripheralObjectID: ObjectIdentifier(deadPeripheral),
             peripheralConnected: true
         ))
         XCTAssertTrue(drain.ackCompleted(
@@ -176,6 +188,7 @@ final class AtriaWhoop4HistoryRecoveryTransactionTests: XCTestCase {
         XCTAssertTrue(epochFence.accepts(
             callbackEpoch: liveEpoch,
             peripheralID: strapID,
+            peripheralObjectID: ObjectIdentifier(livePeripheral),
             peripheralConnected: true
         ))
         XCTAssertEqual(drain.historyComplete(generation: 11), [

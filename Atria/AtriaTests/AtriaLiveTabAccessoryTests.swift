@@ -39,6 +39,45 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
                        "the native tab bar already owns its safe area; an extra clear inset becomes a black shelf")
     }
 
+    func testHomeTabBarUsesNativeScrollDrivenSingleButtonTreatment() throws {
+        let source = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaHomeView.swift"),
+                                encoding: .utf8)
+        let tabView = try XCTUnwrap(source.range(of: "TabView(selection: $selectedTab)"))
+        let observers = try XCTUnwrap(source.range(of: "AtriaHomeObservers(",
+                                                    range: tabView.upperBound..<source.endIndex))
+        let shell = String(source[tabView.lowerBound..<observers.lowerBound])
+
+        XCTAssertTrue(shell.contains(".tabBarMinimizeBehavior(.onScrollDown)"),
+                      "an upward content swipe should return the native selected-tab-only glass treatment")
+        XCTAssertEqual(shell.components(separatedBy: ".tabBarMinimizeBehavior(").count - 1, 1,
+                       "the tab shell should have one scroll-minimization policy")
+        XCTAssertFalse(shell.contains("DragGesture"),
+                       "the native ScrollView/tab-bar relationship must remain the single gesture authority")
+    }
+
+    func testScrollMinimizationKeepsExpandedDestinationsAndAccessoryAdaptive() throws {
+        let source = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaHomeView.swift"),
+                                encoding: .utf8)
+        let tabView = try XCTUnwrap(source.range(of: "TabView(selection: $selectedTab)"))
+        let observers = try XCTUnwrap(source.range(of: "AtriaHomeObservers(",
+                                                    range: tabView.upperBound..<source.endIndex))
+        let shell = String(source[tabView.lowerBound..<observers.lowerBound])
+
+        for destination in ["overview", "vitals", "journal", "plan"] {
+            XCTAssertTrue(shell.contains("Label(HomeTab.\(destination).title"),
+                          "the expanded bar must preserve the \(destination) destination label")
+        }
+        XCTAssertTrue(shell.contains(".tabViewBottomAccessory(isEnabled: shouldShowLiveAccessory)"))
+        XCTAssertTrue(source.contains("placement == .inline"),
+                      "the minimized workout control must continue adapting to the native compact placement")
+
+        let background = try XCTUnwrap(shell.range(of: ".toolbarBackground(.hidden, for: .tabBar)"))
+        let minimize = try XCTUnwrap(shell.range(of: ".tabBarMinimizeBehavior(.onScrollDown)"))
+        let accessory = try XCTUnwrap(shell.range(of: ".tabViewBottomAccessory(isEnabled: shouldShowLiveAccessory)"))
+        XCTAssertLessThan(background.lowerBound, minimize.lowerBound)
+        XCTAssertLessThan(minimize.lowerBound, accessory.lowerBound)
+    }
+
     func testHomeChromeDefersWorkoutStatusToActivityKitAndStacksForLargeType() {
         XCTAssertTrue(AtriaHomeChromeLayout.showsHomeStatusChip(workoutIsActive: false))
         XCTAssertFalse(AtriaHomeChromeLayout.showsHomeStatusChip(workoutIsActive: true))

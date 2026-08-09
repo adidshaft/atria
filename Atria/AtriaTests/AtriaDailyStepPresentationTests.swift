@@ -94,7 +94,10 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
 
         XCTAssertEqual(value.valueText, "3210")
         XCTAssertEqual(value.completeness, .partial)
-        XCTAssertEqual(value.detailText, "Partial archive · 50% covered")
+        XCTAssertEqual(
+            value.detailText,
+            "Today so far · 50% synced from strap"
+        )
     }
 
     func testConflictingExactCanonicalTotalsFailClosed() {
@@ -294,7 +297,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.valueText, "1234")
     }
 
-    func testPartialDurableReceiptOutranksFreshValidatedLiveOnOpenDay() {
+    func testFreshValidatedLiveOutranksPartialDurableReceiptWithoutSumming() {
         let wake = day.addingTimeInterval(7 * 3_600)
         let now = wake.addingTimeInterval(5 * 3_600)
         let receipt = AtriaHistoricalDailyConsumerProjection.StepDay(
@@ -321,11 +324,11 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        XCTAssertEqual(value.count, 1_234)
-        XCTAssertEqual(value.source, .verifiedCanonical)
+        XCTAssertEqual(value.count, 1_301)
+        XCTAssertEqual(value.source, .live)
         XCTAssertEqual(value.completeness, .partial)
         XCTAssertTrue(value.isValidated)
-        XCTAssertEqual(value.valueText, "1234")
+        XCTAssertEqual(value.valueText, "1301")
     }
 
     func testStaleValidatedLiveDoesNotOutrankPartialOpenDayReceipt() {

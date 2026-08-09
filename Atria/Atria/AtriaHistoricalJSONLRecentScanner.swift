@@ -55,6 +55,14 @@ struct AtriaHistoricalJSONLRecentScanner {
         /// RESUMABLE: re-plan the remaining sources from `states` and call
         /// again. Callers distinguish this from corruption via this flag.
         var exhaustedByteBudget: Bool = false
+        /// True only for an explicit lifecycle/thermal/power cancellation.
+        /// Callers must discard partial projection state rather than publish it
+        /// or mistake it for a resumable byte-budget boundary.
+        var cancelled: Bool = false
+    }
+
+    private enum ScanControl: Error {
+        case cancelled
     }
 
     static func descriptors(for urls: [URL]) -> [FileDescriptor] {
@@ -124,6 +132,7 @@ struct AtriaHistoricalJSONLRecentScanner {
         chunkSize: Int = 64 * 1024,
         byteBudget: Int? = nil,
         onProgress: ((Statistics) -> Void)? = nil,
+        shouldContinue: () -> Bool = { true },
         consumeCandidate: (Data) -> Void
     ) -> Result {
         precondition(chunkSize > 0)
@@ -139,8 +148,22 @@ struct AtriaHistoricalJSONLRecentScanner {
         // per-archive. Compressed sources are all-or-nothing, so their
         // budget check happens before the file starts.
         var exhaustedByteBudget = false
+        var cancelled = false
+
+        func requireAuthority() throws {
+            guard shouldContinue() else {
+                cancelled = true
+                complete = false
+                throw ScanControl.cancelled
+            }
+        }
 
         for source in sources {
+            do {
+                try requireAuthority()
+            } catch {
+                break
+            }
             if let byteBudget, statistics.byteCount >= byteBudget {
                 exhaustedByteBudget = true
                 complete = false
@@ -157,7 +180,8 @@ struct AtriaHistoricalJSONLRecentScanner {
                 var processedOffset = source.startOffset
                 var carry = Data()
 
-                func process(_ chunk: Data) {
+                func process(_ chunk: Data) throws {
+                    try requireAuthority()
                     readOffset += UInt64(chunk.count)
                     statistics.byteCount += chunk.count
                     let precedingByteCount = carry.count
@@ -165,8 +189,14 @@ struct AtriaHistoricalJSONLRecentScanner {
                     var lineStart = carry.startIndex
                     var scanIndex = carry.index(carry.startIndex,
                                                 offsetBy: precedingByteCount)
+                    var linesUntilAuthorityCheck = 64
                     while scanIndex < carry.endIndex {
                         if carry[scanIndex] == 0x0A {
+                            linesUntilAuthorityCheck -= 1
+                            if linesUntilAuthorityCheck <= 0 {
+                                try requireAuthority()
+                                linesUntilAuthorityCheck = 64
+                            }
                             // Foundation's Data/JSON decoder temporaries are
                             // Objective-C backed on device. A lifetime scan can
                             // process hundreds of thousands of rows on one
@@ -198,6 +228,7 @@ struct AtriaHistoricalJSONLRecentScanner {
                     // from the monotonic byte count; a queued or stalled scan
                     // therefore cannot manufacture progress.
                     onProgress?(statistics)
+                    try requireAuthority()
                 }
 
                 if source.descriptor.isCompressed {
@@ -205,7 +236,9 @@ struct AtriaHistoricalJSONLRecentScanner {
                         at: source.descriptor.url,
                         chunkSize: chunkSize,
                         // Same per-chunk drain as the uncompressed path below.
-                        consume: { chunk in autoreleasepool { process(chunk) } }
+                        consume: { chunk in
+                            try autoreleasepool { try process(chunk) }
+                        }
                     )
                     guard carry.isEmpty else {
                         complete = false
@@ -243,12 +276,12 @@ struct AtriaHistoricalJSONLRecentScanner {
                         // full mode) until the per-process limit killed the
                         // app. The existing per-LINE pool inside process()
                         // could not release objects autoreleased OUTSIDE it.
-                        let readComplete = autoreleasepool {
+                        let readComplete = try autoreleasepool {
                             guard let chunk = try? handle.read(upToCount: count),
                                   !chunk.isEmpty else {
                                 return false
                             }
-                            process(chunk)
+                            try process(chunk)
                             return true
                         }
                         guard readComplete else {
@@ -270,11 +303,13 @@ struct AtriaHistoricalJSONLRecentScanner {
             } catch {
                 complete = false
             }
+            if cancelled { break }
         }
         return Result(states: states,
                       statistics: statistics,
                       complete: complete,
-                      exhaustedByteBudget: exhaustedByteBudget)
+                      exhaustedByteBudget: exhaustedByteBudget,
+                      cancelled: cancelled)
     }
 
     static func timestamp(in jsonLine: Data) -> TimeInterval? {
