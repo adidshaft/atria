@@ -1529,6 +1529,23 @@ struct AtriaTodayScreen: View {
         } else {
             detail = sleepNeedDetailText(performance: performance)
         }
+        // Hours-vs-goal fallback fill (2026-08-10, user request): when the
+        // need-based performance percent can't be computed yet, the ring used to
+        // fall through to the generic "awaiting-data" dotted track even though a
+        // full night of measured hours exists. Fall back to a real
+        // slept/goal fraction so the ring shows an honest proportional arc from
+        // measured sleep. The need-based percent still owns the fill and color
+        // once available; the closure marker (`targetFraction`) stays gated on a
+        // real computed need, so nothing is fabricated.
+        let sleptHoursForFill = latestDisplaySleep?.durationHours
+            ?? latestRollup?.sleepSeconds.map { Double($0) / 3600.0 }
+        let goalFraction = sleptHoursForFill.map {
+            min(max($0 / max(sleepGoalHours, 1), 0), 1)
+        }
+        let fillFraction = performance.map { min(max(Double($0) / 100.0, 0), 1) } ?? goalFraction
+        let ringTint = performance.map { AtriaTriRing.zoneTint(.sleep, percent: Double($0)) }
+            ?? goalFraction.map { AtriaTriRing.zoneTint(.sleep, percent: $0 * 100) }
+            ?? .secondary
         return AtriaTriRingMetric(title: "Sleep",
                                   value: value,
                                   detail: detail,
@@ -1540,10 +1557,10 @@ struct AtriaTodayScreen: View {
                                   // generic exact-closure achievement rule. Otherwise a rounded
                                   // 99% night displays a yellow ring while its state dot and
                                   // sleep-performance card correctly say green.
-                                  tint: performance.map { AtriaTriRing.zoneTint(.sleep, percent: Double($0)) }
-                                      ?? .secondary,
-                                  fill: performance.map { min(max(Double($0) / 100.0, 0), 1) },
-                                  stateTint: performance.map { AtriaTriRing.zoneTint(.sleep, percent: Double($0)) },
+                                  tint: ringTint,
+                                  fill: fillFraction,
+                                  stateTint: performance.map { AtriaTriRing.zoneTint(.sleep, percent: Double($0)) }
+                                      ?? goalFraction.map { AtriaTriRing.zoneTint(.sleep, percent: $0 * 100) },
                                   // A marker at 1.0 (ring closure) exactly when there's a real,
                                   // computed nightly need to close against -- never a fabricated
                                   // target when `sleepNeedHoursValue` can't be computed yet.
