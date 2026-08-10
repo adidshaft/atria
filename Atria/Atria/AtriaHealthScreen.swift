@@ -2066,6 +2066,7 @@ private struct AtriaHealthTimelineProofCard: View, Equatable {
             AtriaHeartRateAxisChart(points: series.visiblePoints,
                                      yDomain: series.yDomain,
                                      buckets: series.buckets,
+                                     displayContinuity: series.displayContinuity,
                                      selectedTime: $selectedTime)
                 .frame(height: 430)
                 .background(Color(uiColor: .tertiarySystemGroupedBackground),

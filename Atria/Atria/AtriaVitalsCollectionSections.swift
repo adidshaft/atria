@@ -4384,6 +4384,7 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
                 AtriaHeartRateAxisChart(points: series.visiblePoints,
                                         yDomain: series.yDomain,
                                         buckets: series.buckets,
+                                        displayContinuity: series.displayContinuity,
                                         selectedTime: .constant(nil),
                                         showsXAxis: true)
                     // This is a preview inside one large button, not an
@@ -4422,8 +4423,13 @@ struct AtriaHeartRateChartSeries: Equatable {
     let visiblePoints: [AtriaHomeModel.HeartRateChartPoint]
     let yDomain: ClosedRange<Int>
     let buckets: [AtriaHeartRateBucket]?
+    let displayContinuity: AtriaHeartRateDisplayContinuity
 
-    static func make(points: [AtriaHomeModel.HeartRateChartPoint], zoom: Double) -> AtriaHeartRateChartSeries {
+    static func make(
+        points: [AtriaHomeModel.HeartRateChartPoint],
+        zoom: Double,
+        displayContinuity: AtriaHeartRateDisplayContinuity = .ambient
+    ) -> AtriaHeartRateChartSeries {
         let visiblePoints: [AtriaHomeModel.HeartRateChartPoint]
         if zoom > 1, points.count > 8 {
             let keep = max(8, Int(Double(points.count) / zoom))
@@ -4433,7 +4439,11 @@ struct AtriaHeartRateChartSeries: Equatable {
         }
         return AtriaHeartRateChartSeries(visiblePoints: visiblePoints,
                                          yDomain: yDomain(for: visiblePoints),
-                                         buckets: smoothedBuckets(points: visiblePoints))
+                                         buckets: smoothedBuckets(
+                                            points: visiblePoints,
+                                            displayContinuity: displayContinuity
+                                         ),
+                                         displayContinuity: displayContinuity)
     }
 
     static func yDomain(for points: [AtriaHomeModel.HeartRateChartPoint]) -> ClosedRange<Int> {
@@ -4480,21 +4490,20 @@ struct AtriaHeartRateChartSeries: Equatable {
     /// below that the raw line is already legible. Each bucket keeps the REAL
     /// min/max and average of its samples -- nothing synthesized.
     ///
-    /// The stream is first split into runs at a material capture gap (one shared
-    /// honesty threshold with the Activity timeline). Buckets are then formed
-    /// *within* each run and tagged with that run's segment id, so a smoothed
-    /// line never averages — and Charts never connects — two observations across
-    /// a window when the strap was not read. Buckets that would otherwise fall
-    /// inside a hole are never created because no run spans it.
-    static func smoothedBuckets(points: [AtriaHomeModel.HeartRateChartPoint],
-                                targetBuckets: Int = 72) -> [AtriaHeartRateBucket]? {
+    /// The stream is first split into runs using the selected display-continuity
+    /// policy. Buckets are then formed *within* each run and tagged with that
+    /// run's segment id, so a smoothed line never averages — and Charts never
+    /// connects — two observations across a material hole. Buckets that would
+    /// otherwise fall inside a hole are never created because no run spans it.
+    static func smoothedBuckets(
+        points: [AtriaHomeModel.HeartRateChartPoint],
+        targetBuckets: Int = 72,
+        displayContinuity: AtriaHeartRateDisplayContinuity = .ambient
+    ) -> [AtriaHeartRateBucket]? {
         guard points.count > 150, targetBuckets > 0 else { return nil }
         let runs = segmentedRuns(
             points,
-            // Display-only continuity: brief sample dropouts (≤5 min) stay one
-            // smooth run; a real gap still breaks into its own segment. The
-            // stricter data/coverage `heartRateGapThreshold` is unchanged.
-            gapThreshold: AtriaChartVisualGrammar.traceDisplayContinuityGap
+            displayContinuity: displayContinuity
         )
         guard !runs.isEmpty else { return nil }
         let total = points.count
@@ -4511,14 +4520,16 @@ struct AtriaHeartRateChartSeries: Equatable {
 
     /// Splits a time-ordered sample stream into runs, breaking whenever the gap
     /// between two consecutive real samples exceeds the honesty threshold.
-    static func segmentedRuns(_ points: [AtriaHomeModel.HeartRateChartPoint],
-                              gapThreshold: TimeInterval) -> [[AtriaHomeModel.HeartRateChartPoint]] {
+    static func segmentedRuns(
+        _ points: [AtriaHomeModel.HeartRateChartPoint],
+        displayContinuity: AtriaHeartRateDisplayContinuity
+    ) -> [[AtriaHomeModel.HeartRateChartPoint]] {
         guard !points.isEmpty else { return [] }
         var runs: [[AtriaHomeModel.HeartRateChartPoint]] = []
         var current: [AtriaHomeModel.HeartRateChartPoint] = []
         for point in points {
             if let previous = current.last,
-               point.t.timeIntervalSince(previous.t) > gapThreshold {
+               point.t.timeIntervalSince(previous.t) > displayContinuity.gapThreshold {
                 runs.append(current)
                 current = []
             }
@@ -4552,6 +4563,24 @@ struct AtriaHeartRateChartSeries: Equatable {
                 centeredAt: first.addingTimeInterval((Double(index) + 0.5) * width),
                 segment: segment
             )
+        }
+    }
+}
+
+/// Rendering policy for heart-rate traces. Ambient/all-day charts may visually
+/// join a brief telemetry hiccup, while an in-workout hole is meaningful and
+/// therefore keeps the stricter fact-continuity boundary. This changes only
+/// Charts run membership; capture, coverage, and stored samples are untouched.
+enum AtriaHeartRateDisplayContinuity: Equatable {
+    case ambient
+    case workout
+
+    var gapThreshold: TimeInterval {
+        switch self {
+        case .ambient:
+            return AtriaChartVisualGrammar.traceDisplayContinuityGap
+        case .workout:
+            return AtriaActivityTimelineSignalProjection.heartRateGapThreshold
         }
     }
 }
@@ -4782,6 +4811,7 @@ struct AtriaHeartRateExplorer: View {
         AtriaHeartRateAxisChart(points: series.visiblePoints,
                                 yDomain: series.yDomain,
                                 buckets: series.buckets,
+                                displayContinuity: series.displayContinuity,
                                 selectedTime: $selectedTime,
                                 selectedRange: $selectedRange,
                                 selectionMode: selectionMode,
@@ -5348,6 +5378,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
     let points: [AtriaHomeModel.HeartRateChartPoint]
     let yDomain: ClosedRange<Int>
     let buckets: [AtriaHeartRateBucket]?
+    let displayContinuity: AtriaHeartRateDisplayContinuity
     @Binding var selectedTime: Date?
     @Binding var selectedRange: ClosedRange<Date>?
     let selectionMode: AtriaHeartRateExplorer.SelectionMode
@@ -5358,6 +5389,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
     init(points: [AtriaHomeModel.HeartRateChartPoint],
          yDomain: ClosedRange<Int>,
          buckets: [AtriaHeartRateBucket]? = nil,
+         displayContinuity: AtriaHeartRateDisplayContinuity = .ambient,
          selectedTime: Binding<Date?>,
          selectedRange: Binding<ClosedRange<Date>?> = .constant(nil),
          selectionMode: AtriaHeartRateExplorer.SelectionMode = .point,
@@ -5367,6 +5399,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         self.points = points
         self.yDomain = yDomain
         self.buckets = buckets
+        self.displayContinuity = displayContinuity
         self._selectedTime = selectedTime
         self._selectedRange = selectedRange
         self.selectionMode = selectionMode
@@ -5377,6 +5410,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
 
     static func == (lhs: AtriaHeartRateAxisChart, rhs: AtriaHeartRateAxisChart) -> Bool {
         lhs.points == rhs.points && lhs.yDomain == rhs.yDomain && lhs.buckets == rhs.buckets
+            && lhs.displayContinuity == rhs.displayContinuity
             && lhs.selectionMode == rhs.selectionMode && lhs.visibleDomain == rhs.visibleDomain
             && lhs.showsXAxis == rhs.showsXAxis
     }
@@ -5427,31 +5461,26 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         return Set(counts.filter { $0.value == 1 }.keys)
     }
 
-    /// The raw fallback path (≤150 samples) segmented at the same shared honesty
-    /// threshold as the smoothed path and the Activity timeline.
+    /// The raw fallback path (≤150 samples) uses the same explicit continuity
+    /// policy as the precomputed bucket path.
     private var segmentedPoints: [SegmentedRawEntry] {
         guard !points.isEmpty else { return [] }
-        // Display-only continuity (matches the smoothed path): short dropouts
-        // read continuous, real gaps still break. Strict data threshold intact.
-        let threshold = AtriaChartVisualGrammar.traceDisplayContinuityGap
-        var assigned: [(AtriaHomeModel.HeartRateChartPoint, Int)] = []
-        var counts: [Int: Int] = [:]
-        var segment = 0
-        var previous: AtriaHomeModel.HeartRateChartPoint?
-        for point in points {
-            if let previous, point.t.timeIntervalSince(previous.t) > threshold {
-                segment += 1
+        let runs = AtriaHeartRateChartSeries.segmentedRuns(
+            points,
+            displayContinuity: displayContinuity
+        )
+        var output: [SegmentedRawEntry] = []
+        output.reserveCapacity(points.count)
+        for (segment, run) in runs.enumerated() {
+            let singleton = run.count == 1
+            for point in run {
+                output.append(SegmentedRawEntry(id: output.count,
+                                                point: point,
+                                                segment: segment,
+                                                isOnlyPointInSegment: singleton))
             }
-            assigned.append((point, segment))
-            counts[segment, default: 0] += 1
-            previous = point
         }
-        return assigned.enumerated().map { index, entry in
-            SegmentedRawEntry(id: index,
-                              point: entry.0,
-                              segment: entry.1,
-                              isOnlyPointInSegment: counts[entry.1] == 1)
-        }
+        return output
     }
 
     private var baseChart: some View {

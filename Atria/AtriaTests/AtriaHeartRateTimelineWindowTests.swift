@@ -328,6 +328,90 @@ final class AtriaHeartRateTimelineWindowTests: XCTestCase {
         XCTAssertNil(AtriaHeartRateChartSeries.smoothedBuckets(points: Array(dense.prefix(150)), targetBuckets: 3))
     }
 
+    func testHeartRateDisplayContinuityKeepsAmbientHiccupsButSplitsWorkoutAndRealGaps() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = AtriaHomeModel.HeartRateChartPoint(t: start, bpm: 70)
+        let afterThreeMinutes = AtriaHomeModel.HeartRateChartPoint(
+            t: start.addingTimeInterval(3 * 60),
+            bpm: 75
+        )
+        let afterExactlyFiveMinutes = AtriaHomeModel.HeartRateChartPoint(
+            t: start.addingTimeInterval(5 * 60),
+            bpm: 77
+        )
+        let afterFiveMinutesAndOneSecond = AtriaHomeModel.HeartRateChartPoint(
+            t: start.addingTimeInterval(5 * 60 + 1),
+            bpm: 78
+        )
+
+        XCTAssertEqual(AtriaHeartRateChartSeries.segmentedRuns(
+            [first, afterThreeMinutes],
+            displayContinuity: .ambient
+        ).count, 1, "Ambient traces should join a brief three-minute hiccup.")
+        XCTAssertEqual(AtriaHeartRateChartSeries.segmentedRuns(
+            [first, afterThreeMinutes],
+            displayContinuity: .workout
+        ).count, 2, "A three-minute in-workout hole must remain blank.")
+        XCTAssertEqual(AtriaHeartRateChartSeries.segmentedRuns(
+            [first, afterExactlyFiveMinutes],
+            displayContinuity: .ambient
+        ).count, 1, "The ambient five-minute continuity boundary is inclusive.")
+        XCTAssertEqual(AtriaHeartRateChartSeries.segmentedRuns(
+            [first, afterFiveMinutesAndOneSecond],
+            displayContinuity: .ambient
+        ).count, 2, "An ambient dropout beyond five minutes must remain blank.")
+    }
+
+    func testDenseBucketSegmentationUsesTheSelectedDisplayContinuity() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let firstRun = (0..<90).map { index in
+            AtriaHomeModel.HeartRateChartPoint(
+                t: start.addingTimeInterval(TimeInterval(index)),
+                bpm: 70 + index % 4
+            )
+        }
+        let secondStart = firstRun[firstRun.count - 1].t.addingTimeInterval(3 * 60)
+        let secondRun = (0..<90).map { index in
+            AtriaHomeModel.HeartRateChartPoint(
+                t: secondStart.addingTimeInterval(TimeInterval(index)),
+                bpm: 80 + index % 4
+            )
+        }
+        let points = firstRun + secondRun
+
+        let ambient = try XCTUnwrap(AtriaHeartRateChartSeries.smoothedBuckets(
+            points: points,
+            targetBuckets: 12,
+            displayContinuity: .ambient
+        ))
+        let workout = try XCTUnwrap(AtriaHeartRateChartSeries.smoothedBuckets(
+            points: points,
+            targetBuckets: 12,
+            displayContinuity: .workout
+        ))
+
+        XCTAssertEqual(Set(ambient.map(\.segment)).count, 1)
+        XCTAssertEqual(Set(workout.map(\.segment)).count, 2)
+    }
+
+    func testWorkoutHeartRateCardSelectsStrictDisplayContinuity() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaActivityMonitor.swift"),
+            encoding: .utf8
+        )
+        let cardStart = try XCTUnwrap(source.range(of: "private var heartRateTraceCard"))
+        let cardEnd = try XCTUnwrap(source.range(
+            of: "private var trimmedLabel",
+            range: cardStart.upperBound..<source.endIndex
+        ))
+        let card = String(source[cardStart.lowerBound..<cardEnd.lowerBound])
+
+        XCTAssertTrue(card.contains("displayContinuity: .workout"))
+    }
+
     func testSmoothedBucketsSplitRunsAtAMultiHourHole() throws {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let morning = (0..<120).map { index in
