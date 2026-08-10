@@ -2489,9 +2489,12 @@ struct AtriaSleepStressCard: View {
     }
 
     private var points: [AtriaStressTimelinePoint] {
+        // Ambient stress trace: brief hiccups (≤5 min) stay one smooth run; a
+        // genuine dropout still breaks and stays blank. Strict fact-continuity
+        // is kept for workouts and coverage accounting.
         AtriaStressTimelinePoint.segment(projection.samples.map {
             AtriaStressDetailReading(date: $0.date, score: $0.score)
-        })
+        }, gapThreshold: AtriaChartVisualGrammar.traceDisplayContinuityGap)
     }
 
     private struct HRTracePoint: Identifiable {
@@ -2501,16 +2504,19 @@ struct AtriaSleepStressCard: View {
         var id: TimeInterval { date.timeIntervalSinceReferenceDate }
     }
 
-    /// Raw overnight BPM, segmented around real gaps (the same 5-minute rule the
-    /// load trace uses). It must NOT go through AtriaStressDetailReading, whose
-    /// initializer clamps score to 0...3 — that silently collapsed every bpm to
-    /// 3 and rendered the heart-rate line far below the axis (invisible).
+    /// Raw overnight BPM, segmented around real gaps (the same display-continuity
+    /// rule the load trace now uses — `AtriaChartVisualGrammar.traceDisplayContinuityGap`).
+    /// It must NOT go through AtriaStressDetailReading, whose initializer clamps
+    /// score to 0...3 — that silently collapsed every bpm to 3 and rendered the
+    /// heart-rate line far below the axis (invisible).
     private var heartRatePoints: [HRTracePoint] {
         let sorted = projection.heartRateSamples.sorted { $0.date < $1.date }
         var segment = 0
         var previousDate: Date?
         return sorted.map { sample in
-            if let previousDate, sample.date.timeIntervalSince(previousDate) > 5 * 60 {
+            if let previousDate,
+               sample.date.timeIntervalSince(previousDate)
+                > AtriaChartVisualGrammar.traceDisplayContinuityGap {
                 segment += 1
             }
             previousDate = sample.date
