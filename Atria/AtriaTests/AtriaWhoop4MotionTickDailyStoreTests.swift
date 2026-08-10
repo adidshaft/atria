@@ -68,6 +68,76 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         )
     }
 
+    func testLaterCaptureWithLowerCoverageMergesPriorVerifiedSubtotal() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let start = Date(timeIntervalSince1970: 10_000)
+        let firstCapturedThrough = start.addingTimeInterval(65_150)
+        let first = HistoricalArchive.MotionTickDayEvidence(
+            windowStart: start,
+            windowEnd: start.addingTimeInterval(85_420),
+            motionTicks: 2_635,
+            steps: 1_299,
+            knownCoverageSeconds: 44_058,
+            missingCoverageSeconds: 41_362,
+            decodedRows: 47_809,
+            capturedThrough: firstCapturedThrough
+        )
+        let candidate = HistoricalArchive.MotionTickDayEvidence(
+            windowStart: start,
+            windowEnd: start.addingTimeInterval(95_000),
+            motionTicks: 2_900,
+            steps: 1_340,
+            knownCoverageSeconds: 43_000,
+            missingCoverageSeconds: 52_000,
+            decodedRows: 50_000,
+            capturedThrough: firstCapturedThrough.addingTimeInterval(9_554)
+        )
+
+        XCTAssertTrue(try store.save(first, strapIdentifier: strap))
+        XCTAssertTrue(try store.save(candidate, strapIdentifier: strap))
+        XCTAssertEqual(
+            store.load(strapIdentifier: strap, windowStart: start),
+            .init(
+                windowStart: candidate.windowStart,
+                windowEnd: candidate.windowEnd,
+                motionTicks: first.motionTicks,
+                steps: first.steps,
+                knownCoverageSeconds: first.knownCoverageSeconds,
+                missingCoverageSeconds: 95_000 - 44_058,
+                decodedRows: candidate.decodedRows,
+                capturedThrough: candidate.capturedThrough
+            )
+        )
+    }
+
+    func testLowerCoverageWithoutLaterCaptureCannotReplaceReceipt() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let start = Date(timeIntervalSince1970: 20_000)
+        let first = makeEvidence(
+            start: start,
+            ticks: 2_635,
+            steps: 1_299,
+            capturedAfter: 240,
+            known: 220
+        )
+        let candidate = makeEvidence(
+            start: start,
+            ticks: 2_900,
+            steps: 1_340,
+            capturedAfter: 240,
+            known: 200
+        )
+
+        XCTAssertTrue(try store.save(first, strapIdentifier: strap))
+        XCTAssertFalse(try store.save(candidate, strapIdentifier: strap))
+        XCTAssertEqual(
+            store.load(strapIdentifier: strap, windowStart: start),
+            first
+        )
+    }
+
     func testSameClockCorrectionChangesPublicationContentRevision() throws {
         let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
         let strap = UUID().uuidString

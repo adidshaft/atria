@@ -190,7 +190,9 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
 
     /// Saves only stronger cumulative coverage evidence. Step totals may move
     /// downward when a later, more complete replay correctly rejects motion
-    /// that an earlier partial window classified as gait.
+    /// that an earlier partial window classified as gait. A later capture whose
+    /// reshaped coverage is temporarily smaller still advances the durable
+    /// receipt clock without discarding already-verified cumulative evidence.
     @discardableResult
     func save(
         _ evidence: HistoricalArchive.MotionTickDayEvidence,
@@ -241,21 +243,49 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
                     evidence.windowStart
                 )) < 1
         }
+        var receipt = evidence
         if let strongest = matching.map({ records[$0] }).max(by: {
             if $0.knownCoverageSeconds != $1.knownCoverageSeconds {
                 return $0.knownCoverageSeconds < $1.knownCoverageSeconds
             }
             return $0.capturedThrough < $1.capturedThrough
         }) {
-            guard evidence.knownCoverageSeconds
-                    >= strongest.knownCoverageSeconds,
-                  evidence.capturedThrough >= strongest.capturedThrough,
-                  evidence.knownCoverageSeconds
-                        > strongest.knownCoverageSeconds
-                    || evidence.capturedThrough > strongest.capturedThrough
-                    || evidence.motionTicks != strongest.motionTicks
-                    || evidence.steps != strongest.steps else {
-                return false
+            if evidence.knownCoverageSeconds
+                    < strongest.knownCoverageSeconds {
+                guard evidence.capturedThrough
+                        > strongest.capturedThrough else { return false }
+                let windowSeconds = max(
+                    0,
+                    Int(evidence.windowEnd.timeIntervalSince(
+                        evidence.windowStart
+                    ).rounded())
+                )
+                receipt = .init(
+                    windowStart: evidence.windowStart,
+                    windowEnd: evidence.windowEnd,
+                    motionTicks: strongest.motionTicks,
+                    steps: strongest.steps,
+                    knownCoverageSeconds: strongest.knownCoverageSeconds,
+                    missingCoverageSeconds: max(
+                        0,
+                        windowSeconds - strongest.knownCoverageSeconds
+                    ),
+                    decodedRows: max(
+                        strongest.decodedRows,
+                        evidence.decodedRows
+                    ),
+                    capturedThrough: evidence.capturedThrough
+                )
+            } else {
+                guard evidence.capturedThrough >= strongest.capturedThrough,
+                      evidence.knownCoverageSeconds
+                            > strongest.knownCoverageSeconds
+                        || evidence.capturedThrough
+                            > strongest.capturedThrough
+                        || evidence.motionTicks != strongest.motionTicks
+                        || evidence.steps != strongest.steps else {
+                    return false
+                }
             }
         }
         for index in matching.reversed() {
@@ -267,14 +297,14 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
                 algorithmVersion:
                     AtriaWhoop4GravityCadenceStepModel.algorithmVersion,
                 strapIdentifier: strapIdentifier,
-                windowStart: evidence.windowStart,
-                windowEnd: evidence.windowEnd,
-                motionTicks: evidence.motionTicks,
-                steps: evidence.steps,
-                knownCoverageSeconds: evidence.knownCoverageSeconds,
-                missingCoverageSeconds: evidence.missingCoverageSeconds,
-                decodedRows: evidence.decodedRows,
-                capturedThrough: evidence.capturedThrough
+                windowStart: receipt.windowStart,
+                windowEnd: receipt.windowEnd,
+                motionTicks: receipt.motionTicks,
+                steps: receipt.steps,
+                knownCoverageSeconds: receipt.knownCoverageSeconds,
+                missingCoverageSeconds: receipt.missingCoverageSeconds,
+                decodedRows: receipt.decodedRows,
+                capturedThrough: receipt.capturedThrough
             )
         )
         records.sort { $0.windowStart > $1.windowStart }
