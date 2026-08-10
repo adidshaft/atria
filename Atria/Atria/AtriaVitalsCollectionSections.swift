@@ -4491,7 +4491,10 @@ struct AtriaHeartRateChartSeries: Equatable {
         guard points.count > 150, targetBuckets > 0 else { return nil }
         let runs = segmentedRuns(
             points,
-            gapThreshold: AtriaActivityTimelineSignalProjection.heartRateGapThreshold
+            // Display-only continuity: brief sample dropouts (≤5 min) stay one
+            // smooth run; a real gap still breaks into its own segment. The
+            // stricter data/coverage `heartRateGapThreshold` is unchanged.
+            gapThreshold: AtriaChartVisualGrammar.traceDisplayContinuityGap
         )
         guard !runs.isEmpty else { return nil }
         let total = points.count
@@ -5428,7 +5431,9 @@ struct AtriaHeartRateAxisChart: View, Equatable {
     /// threshold as the smoothed path and the Activity timeline.
     private var segmentedPoints: [SegmentedRawEntry] {
         guard !points.isEmpty else { return [] }
-        let threshold = AtriaActivityTimelineSignalProjection.heartRateGapThreshold
+        // Display-only continuity (matches the smoothed path): short dropouts
+        // read continuous, real gaps still break. Strict data threshold intact.
+        let threshold = AtriaChartVisualGrammar.traceDisplayContinuityGap
         var assigned: [(AtriaHomeModel.HeartRateChartPoint, Int)] = []
         var counts: [Int: Int] = [:]
         var segment = 0

@@ -1268,8 +1268,17 @@ struct AtriaStressTimelineEvidenceProjection: Equatable {
     let cardiacArousalPoints: [AtriaCardiacArousalTimelinePoint]
 
     static func make(readings: [AtriaStressDetailReading]) -> Self {
-        Self(stressPoints: AtriaStressTimelinePoint.segment(readings),
-             cardiacArousalPoints: AtriaCardiacArousalTimelinePoint.segment(readings))
+        // Ambient / live stress card (Health + Vitals): brief signal hiccups
+        // (≤5 min) read as one smooth run, while a genuine dropout still breaks
+        // and stays blank. Focused workout traces keep the stricter
+        // fact-continuity gap (the `segment` default), where a short hole is
+        // meaningful.
+        Self(stressPoints: AtriaStressTimelinePoint.segment(
+                readings,
+                gapThreshold: AtriaChartVisualGrammar.traceDisplayContinuityGap),
+             cardiacArousalPoints: AtriaCardiacArousalTimelinePoint.segment(
+                readings,
+                gapThreshold: AtriaChartVisualGrammar.traceDisplayContinuityGap))
     }
 
     var presentation: AtriaStressTimelineEvidencePresentation {
@@ -1527,7 +1536,7 @@ private struct AtriaStressHeartRateTimelineChart: View {
         return points.sorted { $0.t < $1.t }.map { point in
             if let previous,
                point.t.timeIntervalSince(previous)
-                > AtriaPhysiologicalStressModel.maximumFactContinuityGap {
+                > AtriaChartVisualGrammar.traceDisplayContinuityGap {
                 segment += 1
             }
             previous = point.t

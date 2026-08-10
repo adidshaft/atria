@@ -4,10 +4,25 @@ import Charts
 /// Shared rendering grammar for every chart surface.
 ///
 /// Atria deliberately distinguishes visual smoothness from data smoothing:
-/// trend charts may use a shape-preserving curve between their real anchors,
-/// while high-frequency physiological traces keep their exact linear segments.
-/// Neither mode drops, averages, nor manufactures a recorded sample.
+/// trend charts curve between their real anchors, and high-frequency
+/// physiological traces (live Heart-rate, Stress) join samples inside a short
+/// continuity window with a shape-preserving curve while breaking hard across a
+/// genuine dropout (see `traceDisplayContinuityGap`). Neither mode drops,
+/// averages, nor manufactures a recorded sample.
 enum AtriaChartVisualGrammar {
+    /// Display-only continuity window for high-frequency physiological traces
+    /// (live Heart-rate, Stress). Consecutive real samples closer than this are
+    /// treated as one continuous run and joined with a shape-preserving
+    /// `.monotone` curve, so a couple of dropped samples read as a smooth line
+    /// instead of a jagged break. A gap LONGER than this is a real dropout: the
+    /// run ends, the next sample opens a new Charts `series`, and the interval
+    /// is left blank — never bridged. Deliberately tight (five minutes, not a
+    /// multi-hour bridge) so it smooths only brief signal hiccups, and the
+    /// strict data/coverage thresholds (`heartRateGapThreshold`,
+    /// `maximumFactContinuityGap`) are left untouched, so telemetry-integrity
+    /// and coverage accounting keep their exact meaning.
+    static let traceDisplayContinuityGap: TimeInterval = 5 * 60
+
     static let trendLine = StrokeStyle(
         lineWidth: 2.25,
         lineCap: .round,

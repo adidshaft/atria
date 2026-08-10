@@ -116,6 +116,40 @@ final class AtriaStressDetailViewTests: XCTestCase {
         XCTAssertEqual(AtriaStressTimelinePoint.segment(readings).map(\.segment), [0, 0])
     }
 
+    /// Two-tier display continuity for the ambient / live stress card: under
+    /// `AtriaChartVisualGrammar.traceDisplayContinuityGap` a short signal hiccup
+    /// (a few dropped samples, ≤5 min) reads as one smooth run, while a genuine
+    /// dropout still breaks into its own segment so Charts never bridges it.
+    /// Guards the display policy against a silent regression, and confirms the
+    /// stricter fact-continuity default still breaks the same short hiccup (so
+    /// workout traces, which use the default, keep their exact behavior).
+    func testAmbientStressTraceConnectsAShortHiccupButBreaksARealDropout() {
+        let displayGap = AtriaChartVisualGrammar.traceDisplayContinuityGap
+
+        let connected = AtriaStressTimelinePoint.segment([
+            AtriaStressDetailReading(date: now, score: 0.4),
+            AtriaStressDetailReading(date: now.addingTimeInterval(3 * 60), score: 0.9)
+        ], gapThreshold: displayGap)
+        XCTAssertEqual(connected.map(\.segment), [0, 0],
+                       "A 3-minute hiccup should stay one continuous ambient run.")
+
+        let broken = AtriaStressTimelinePoint.segment([
+            AtriaStressDetailReading(date: now, score: 0.4),
+            AtriaStressDetailReading(date: now.addingTimeInterval(5 * 60 + 1), score: 0.9)
+        ], gapThreshold: displayGap)
+        XCTAssertEqual(broken.map(\.segment), [0, 1],
+                       "A dropout longer than five minutes must break the run.")
+
+        // The default (fact-continuity) threshold is stricter: the same
+        // 3-minute hiccup breaks, so workout traces are unaffected.
+        let strictDefault = AtriaStressTimelinePoint.segment([
+            AtriaStressDetailReading(date: now, score: 0.4),
+            AtriaStressDetailReading(date: now.addingTimeInterval(3 * 60), score: 0.9)
+        ])
+        XCTAssertEqual(strictDefault.map(\.segment), [0, 1],
+                       "The strict default must still break a 3-minute gap.")
+    }
+
     func testTimelineKeepsHROnlyEstimateOnTheContinuousScale() {
         let readings = [
             AtriaStressDetailReading(date: now, score: 0.7),
