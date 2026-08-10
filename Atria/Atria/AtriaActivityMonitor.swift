@@ -3126,6 +3126,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                     if points.count >= 30 {
                         AtriaHeartRateAxisChart(points: points,
                                                 yDomain: AtriaHeartRateChartSeries.yDomain(for: points),
+                                                displayContinuity: .workout,
                                                 selectedTime: .constant(nil))
                             .frame(height: 150)
                             .clipped()
