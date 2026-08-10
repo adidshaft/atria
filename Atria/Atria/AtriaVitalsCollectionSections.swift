@@ -4121,7 +4121,7 @@ private struct AtriaVitalsStressTimelineChart: View {
                 AreaMark(x: .value("Time", point.reading.date),
                          y: .value("Stress", point.reading.score),
                          series: .value("Segment", point.segment))
-                    .interpolationMethod(.linear)
+                    .interpolationMethod(.monotone)
                     .foregroundStyle(.linearGradient(colors: [Metrics.electricGreen.opacity(0.04),
                                                                Metrics.electricYellow.opacity(0.10),
                                                                Metrics.electricRed.opacity(0.16)],
@@ -4130,7 +4130,7 @@ private struct AtriaVitalsStressTimelineChart: View {
                 LineMark(x: .value("Time", point.reading.date),
                          y: .value("Stress", point.reading.score),
                          series: .value("Segment", point.segment))
-                    .interpolationMethod(.linear)
+                    .interpolationMethod(.monotone)
                     .lineStyle(AtriaChartVisualGrammar.traceLine)
                     .foregroundStyle(.linearGradient(colors: [Metrics.electricGreen,
                                                                Metrics.electricYellow,
@@ -5485,12 +5485,12 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                              yStart: .value("Visible floor", yDomain.lowerBound),
                              yEnd: .value("BPM", entry.point.bpm),
                              series: .value("HR run", entry.segment))
-                        .interpolationMethod(.linear)
+                        .interpolationMethod(.monotone)
                         .foregroundStyle(heartRateAreaGradient)
                     LineMark(x: .value("Time", entry.point.t),
                              y: .value("BPM", entry.point.bpm),
                              series: .value("HR run", entry.segment))
-                        .interpolationMethod(.linear)
+                        .interpolationMethod(.monotone)
                         .foregroundStyle(heartRateGradient)
                         .lineStyle(AtriaChartVisualGrammar.traceLine)
                     if entry.isOnlyPointInSegment {

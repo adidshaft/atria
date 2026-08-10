@@ -1377,7 +1377,7 @@ private struct AtriaStressTimelineChart: View, Equatable {
                 AreaMark(x: .value("Time", point.reading.date),
                          y: .value("Stress", point.reading.score),
                          series: .value("Segment", point.segment))
-                    .interpolationMethod(.linear)
+                    .interpolationMethod(.monotone)
                     .foregroundStyle(.linearGradient(
                         colors: [
                             Metrics.electricGreen.opacity(0.04),
@@ -1391,7 +1391,7 @@ private struct AtriaStressTimelineChart: View, Equatable {
                 LineMark(x: .value("Time", point.reading.date),
                          y: .value("Stress", point.reading.score),
                          series: .value("Segment", point.segment))
-                    .interpolationMethod(.linear)
+                    .interpolationMethod(.monotone)
                     .lineStyle(AtriaChartVisualGrammar.traceLine)
                     .foregroundStyle(.linearGradient(colors: [Metrics.electricGreen,
                                                                Metrics.electricYellow,
@@ -1545,7 +1545,7 @@ private struct AtriaStressHeartRateTimelineChart: View {
             LineMark(x: .value("Time", item.point.t),
                      y: .value("Heart rate", item.point.bpm),
                      series: .value("Segment", item.segment))
-                .interpolationMethod(.linear)
+                .interpolationMethod(.monotone)
                 .lineStyle(AtriaChartVisualGrammar.traceLine)
                 .foregroundStyle(Metrics.electricRed)
         }
@@ -1607,7 +1607,7 @@ struct AtriaCardiacArousalTimelineChart: View, Equatable {
                 LineMark(x: .value("Time", point.reading.date),
                          y: .value("Physiological stress", point.reading.score),
                          series: .value("Segment", point.segment))
-                    .interpolationMethod(.linear)
+                    .interpolationMethod(.monotone)
                     .lineStyle(AtriaChartVisualGrammar.traceLine)
                     .foregroundStyle(.linearGradient(colors: [Metrics.electricGreen,
                                                                Metrics.electricYellow,
