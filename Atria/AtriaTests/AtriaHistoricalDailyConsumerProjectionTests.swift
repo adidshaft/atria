@@ -215,6 +215,71 @@ final class AtriaHistoricalDailyConsumerProjectionTests: XCTestCase {
             completionWatermark: end))
     }
 
+    func testSourceBoundProofExcludesSleepOnlyAdjacentDependencyAndRejectsWidenedProof() throws {
+        let source = aggregate(
+            id: "source-bound",
+            character: "5",
+            first: dayStart.addingTimeInterval(7 * 60 * 60),
+            last: dayStart.addingTimeInterval(8 * 60 * 60),
+            heartRate: [],
+            motion: []
+        )
+        let sleepOnlyPrefix = aggregate(
+            id: "sleep-prefix",
+            character: "6",
+            first: dayStart.addingTimeInterval(-5 * 60 * 60),
+            last: dayStart.addingTimeInterval(-3 * 60 * 60),
+            heartRate: [],
+            motion: []
+        )
+        let allDependencies = [sleepOnlyPrefix, source]
+        let end = dayStart.addingTimeInterval(86_400)
+        let intervals = [
+            AtriaHistoricalDailyConsumerProjection.ClosedCoverageInterval(
+                start: dayStart.addingTimeInterval(-5 * 60 * 60),
+                end: end,
+                recordCount: 2
+            ),
+        ]
+        let sourceBound = try AtriaHistoricalDailyConsumerProjection
+            .makeSourceBoundInspectionProof(
+                source: source,
+                dependencyChunks: allDependencies,
+                configuration: utcConfiguration,
+                generationIdentifier: "source-bound-generation",
+                catalogSnapshot: Data("canonical-catalog".utf8),
+                closedCoverageIntervals: intervals
+            )
+
+        let artifact = try AtriaHistoricalDailyConsumerProjection.buildDailyMetrics(
+            source: source,
+            dependencyChunks: allDependencies,
+            configuration: utcConfiguration,
+            inspectionProof: sourceBound,
+            completionWatermark: end
+        )
+        XCTAssertEqual(artifact.dependencies.map(\.chunkID), [source.source.chunkID])
+
+        let widened = try AtriaHistoricalDailyConsumerProjection.InspectionProof.make(
+            generationIdentifier: "source-bound-generation",
+            catalogSnapshot: Data("canonical-catalog".utf8),
+            dependencyChunks: allDependencies,
+            closedCoverageIntervals: intervals
+        )
+        XCTAssertThrowsError(try AtriaHistoricalDailyConsumerProjection.buildDailyMetrics(
+            source: source,
+            dependencyChunks: allDependencies,
+            configuration: utcConfiguration,
+            inspectionProof: widened,
+            completionWatermark: end
+        )) { error in
+            XCTAssertEqual(
+                error as? AtriaHistoricalDailyConsumerProjection.ProjectionError,
+                .invalidInspectionProof
+            )
+        }
+    }
+
     func testReceiptVerificationRejectsConfigurationAndArtifactTampering() throws {
         let source = aggregate(id: "tamper", character: "3",
                                first: dayStart, last: dayStart.addingTimeInterval(86_399),

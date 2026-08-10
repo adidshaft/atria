@@ -438,6 +438,364 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         )
     }
 
+    func testGlobalFrontierTicketIsDurableButExcludedFromGenericSelector()
+        throws
+    {
+        let frontierStart = Date(timeIntervalSince1970: 5_300)
+        AtriaWhoop4MotionBankCoverageLedger.open(
+            at: frontierStart,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        let frontier = try XCTUnwrap(
+            AtriaWhoop4MotionBankCoverageLedger.close(
+                at: frontierStart.addingTimeInterval(60),
+                strapIdentifier: strap,
+                recoveryMode: .awaitingGlobalFrontier,
+                defaults: defaults
+            )
+        )
+
+        XCTAssertEqual(
+            frontier.effectiveRecoveryMode,
+            .awaitingGlobalFrontier
+        )
+        XCTAssertNil(
+            AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+                strapIdentifier: strap,
+                defaults: defaults
+            ),
+            "a wall-clock ticket cannot target WHOOP's forward-only cursor"
+        )
+        XCTAssertEqual(
+            AtriaWhoop4MotionBankCoverageLedger.pendingOffloads(
+                strapIdentifier: strap,
+                defaults: defaults
+            ),
+            [frontier],
+            "frontier ownership changes scheduling, never durable truth"
+        )
+    }
+
+    func testDirectTicketWinsGenericSelectionBesideFrontierTicket() throws {
+        let frontierStart = Date(timeIntervalSince1970: 5_400)
+        AtriaWhoop4MotionBankCoverageLedger.open(
+            at: frontierStart,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        _ = AtriaWhoop4MotionBankCoverageLedger.close(
+            at: frontierStart.addingTimeInterval(60),
+            strapIdentifier: strap,
+            recoveryMode: .awaitingGlobalFrontier,
+            defaults: defaults
+        )
+        let directStart = frontierStart.addingTimeInterval(120)
+        AtriaWhoop4MotionBankCoverageLedger.open(
+            at: directStart,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        let direct = try XCTUnwrap(
+            AtriaWhoop4MotionBankCoverageLedger.close(
+                at: directStart.addingTimeInterval(60),
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+
+        XCTAssertEqual(
+            AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+                strapIdentifier: strap,
+                defaults: defaults
+            )?.id,
+            direct.id
+        )
+        XCTAssertEqual(
+            AtriaWhoop4MotionBankCoverageLedger.pendingOffloads(
+                strapIdentifier: strap,
+                defaults: defaults
+            ).count,
+            2
+        )
+    }
+
+    func testFrontierTicketSurvivesCrossConnectionRepairAndDedupe()
+        throws
+    {
+        let staleStart = Date(timeIntervalSince1970: 5_600)
+        let connectionEpoch = staleStart.addingTimeInterval(120)
+        let end = connectionEpoch.addingTimeInterval(90)
+        AtriaWhoop4MotionBankCoverageLedger.open(
+            at: staleStart,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        _ = AtriaWhoop4MotionBankCoverageLedger.close(
+            at: end,
+            strapIdentifier: strap,
+            armedConnectionStartedAt: connectionEpoch,
+            recoveryMode: .awaitingGlobalFrontier,
+            defaults: defaults
+        )
+        // A legacy direct ticket already exists at the repaired identity. A
+        // relaunch repair must conservatively keep frontier ownership instead
+        // of making the same wall-clock window seekable by the generic lane.
+        AtriaWhoop4MotionBankCoverageLedger.open(
+            at: connectionEpoch,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        _ = AtriaWhoop4MotionBankCoverageLedger.close(
+            at: end,
+            strapIdentifier: strap,
+            armedConnectionStartedAt: connectionEpoch,
+            defaults: defaults
+        )
+
+        XCTAssertEqual(
+            AtriaWhoop4MotionBankCoverageLedger
+                .repairCrossConnectionCoverage(defaults: defaults),
+            1
+        )
+        let repairedTickets =
+            AtriaWhoop4MotionBankCoverageLedger.pendingOffloads(
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        XCTAssertEqual(repairedTickets.count, 1)
+        let repaired = try XCTUnwrap(
+            repairedTickets.first
+        )
+        XCTAssertEqual(repaired.start, connectionEpoch)
+        XCTAssertEqual(repaired.end, end)
+        XCTAssertEqual(repaired.effectiveRecoveryMode, .awaitingGlobalFrontier)
+        XCTAssertNil(
+            AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+    }
+
+    func testFrontierTicketSurvivesWorkoutPrefixRepairAndDedupe()
+        throws
+    {
+        let fullStart = Date(timeIntervalSince1970: 5_900)
+        let suffixStart = fullStart.addingTimeInterval(600)
+        let end = suffixStart.addingTimeInterval(90)
+        AtriaWhoop4MotionBankCoverageLedger.open(
+            at: suffixStart,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        _ = AtriaWhoop4MotionBankCoverageLedger.close(
+            at: end,
+            strapIdentifier: strap,
+            recoveryMode: .awaitingGlobalFrontier,
+            defaults: defaults
+        )
+        AtriaWhoop4MotionBankCoverageLedger.open(
+            at: fullStart,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        _ = AtriaWhoop4MotionBankCoverageLedger.close(
+            at: end,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+
+        XCTAssertEqual(
+            AtriaWhoop4MotionBankCoverageLedger
+                .repairWorkoutTruncatedOffloadCoverage(defaults: defaults),
+            1
+        )
+        let repairedTickets =
+            AtriaWhoop4MotionBankCoverageLedger.pendingOffloads(
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        XCTAssertEqual(repairedTickets.count, 1)
+        let repaired = try XCTUnwrap(
+            repairedTickets.first
+        )
+        XCTAssertEqual(repaired.start, fullStart)
+        XCTAssertEqual(repaired.end, end)
+        XCTAssertEqual(repaired.effectiveRecoveryMode, .awaitingGlobalFrontier)
+        XCTAssertNil(
+            AtriaWhoop4MotionBankCoverageLedger.nextPendingOffload(
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+    }
+
+    func testFrontierTicketCannotSpendAttemptOrAgeOutWithDirectJobs()
+        throws
+    {
+        let frontierStart = Date(timeIntervalSince1970: 6_700)
+        AtriaWhoop4MotionBankCoverageLedger.open(
+            at: frontierStart,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        let frontier = try XCTUnwrap(
+            AtriaWhoop4MotionBankCoverageLedger.close(
+                at: frontierStart.addingTimeInterval(90),
+                strapIdentifier: strap,
+                recoveryMode: .awaitingGlobalFrontier,
+                defaults: defaults
+            )
+        )
+        let directStart = frontier.end.addingTimeInterval(30)
+        AtriaWhoop4MotionBankCoverageLedger.open(
+            at: directStart,
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        let direct = try XCTUnwrap(
+            AtriaWhoop4MotionBankCoverageLedger.close(
+                at: directStart.addingTimeInterval(90),
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+        )
+
+        XCTAssertNil(
+            AtriaWhoop4MotionBankCoverageLedger.markOffloadAttempt(
+                id: frontier.id,
+                at: direct.end.addingTimeInterval(1),
+                defaults: defaults
+            )
+        )
+        XCTAssertFalse(
+            AtriaWhoop4MotionBankCoverageLedger.exhaustOffload(
+                id: frontier.id,
+                defaults: defaults
+            )
+        )
+        XCTAssertEqual(
+            AtriaWhoop4MotionBankCoverageLedger.exhaustOffloads(
+                endingAtOrBefore: direct.end.addingTimeInterval(1),
+                strapIdentifier: strap,
+                defaults: defaults
+            ),
+            [direct.id]
+        )
+        XCTAssertEqual(
+            AtriaWhoop4MotionBankCoverageLedger.pendingOffloads(
+                strapIdentifier: strap,
+                defaults: defaults
+            ),
+            [frontier]
+        )
+    }
+
+    func testRawCutoverCreatesFrontierTicketWithoutMaintenanceBinding()
+        throws
+    {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(
+            of: "private func closeWorkoutHistoricalMotionBankForHistoryServeCutover("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func sendHistoryCommandAwaitingWriteConfirmation(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(body.contains(
+            "recoveryMode: .awaitingGlobalFrontier"
+        ))
+        XCTAssertTrue(body.contains(
+            "historicalMotionBankIsArmedForCurrentConnection("
+        ))
+        XCTAssertFalse(body.contains(
+            "workoutHistoricalMotionBankMaintenanceTicketIDKey"
+        ))
+    }
+
+    func testRawContinuationCentrallyBlocksEveryGenericTicketSelector()
+        throws
+    {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let selectorStart = try XCTUnwrap(source.range(
+            of: "private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded("
+        ))
+        let selectorEnd = try XCTUnwrap(source.range(
+            of: "private func repairTransportOnlyClearedWorkoutMotionTicketIfNeeded(",
+            range: selectorStart.upperBound..<source.endIndex
+        ))
+        let selector = String(
+            source[selectorStart.lowerBound..<selectorEnd.lowerBound]
+        )
+        let continuationGuard = try XCTUnwrap(selector.range(
+            of: "guard !connectedRawHistoryCatchUpContinuationPending"
+        ))
+        let ledgerMutation = try XCTUnwrap(selector.range(
+            of: "repairTransportOnlyClearedWorkoutMotionTicketIfNeeded()"
+        ))
+        XCTAssertLessThan(
+            continuationGuard.lowerBound,
+            ledgerMutation.lowerBound
+        )
+
+        let queueStart = try XCTUnwrap(source.range(
+            of: "func queueConnectedRawHistoryCatchUpIntent("
+        ))
+        let queueEnd = try XCTUnwrap(source.range(
+            of: "private func attemptConnectedRawHistoryCatchUpAfterAcceptedHRIfNeeded(",
+            range: queueStart.upperBound..<source.endIndex
+        ))
+        XCTAssertFalse(
+            String(source[queueStart.lowerBound..<queueEnd.lowerBound])
+                .contains(
+                    "connectedRawHistoryCatchUpContinuationPending = true"
+                )
+        )
+
+        let attemptEnd = try XCTUnwrap(source.range(
+            of: "private func attemptAutonomousBackgroundCatchUpAfterAcceptedHRIfNeeded(",
+            range: queueEnd.upperBound..<source.endIndex
+        ))
+        let attempt = String(
+            source[queueEnd.lowerBound..<attemptEnd.lowerBound]
+        )
+        let startedGuard = try XCTUnwrap(attempt.range(
+            of: "guard started else {"
+        ))
+        let failedAdmission = String(attempt[startedGuard.lowerBound...])
+        let failedReturn = try XCTUnwrap(failedAdmission.range(
+            of: "return false"
+        ))
+        let failedBranch = String(
+            failedAdmission[..<failedReturn.upperBound]
+        )
+        XCTAssertTrue(failedBranch.contains(
+            "connectedRawNoRadioCaptureDeferral = .init("
+        ))
+        XCTAssertTrue(failedBranch.contains(
+            "connectedRawHistoryCatchUpContinuationPending = false"
+        ))
+        let continuationPublish = try XCTUnwrap(attempt.range(
+            of: "connectedRawHistoryCatchUpContinuationPending = true",
+            range: startedGuard.upperBound..<attempt.endIndex
+        ))
+        XCTAssertLessThan(
+            startedGuard.lowerBound,
+            continuationPublish.lowerBound
+        )
+    }
+
     func testPreStartTransportDeferralRetainsAttemptZeroTicketAndRearmsSuccessor()
         throws
     {
@@ -1291,7 +1649,7 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
             .appendingPathComponent("Atria/AtriaBLEManager.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         let start = try XCTUnwrap(source.range(
-            of: "if Self.shouldDeferAutomaticOfflineSyncForThermalPressure("
+            of: "if connectedRawHistoryCatchUpRequestAuthority == nil,\n           Self.shouldDeferAutomaticOfflineSyncForThermalPressure("
         ))
         let end = try XCTUnwrap(source.range(
             of: "// Realtime owns the physical link until a natural disconnect.",

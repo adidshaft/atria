@@ -27,7 +27,7 @@ final class AtriaVitalsProjectionStoreTests: XCTestCase {
         XCTAssertEqual(points.map(\.segment), [0, 0, 1])
     }
 
-    func testVitalsHROnlyHistoryUsesQualitativeCardiacArousalInsteadOfBlankStress() {
+    func testVitalsHROnlyHistoryUsesNumericStressScaleWithLowerConfidenceProvenance() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let history: [AtriaStressMonitorStore.StressHistoryPoint] = [
             .init(t: now.addingTimeInterval(-60),
@@ -49,8 +49,16 @@ final class AtriaVitalsProjectionStoreTests: XCTestCase {
             referenceDate: now
         )
 
-        XCTAssertEqual(projection.presentation, .cardiacArousal)
-        XCTAssertTrue(projection.stressPoints.isEmpty)
+        XCTAssertEqual(projection.presentation, .physiologicalStress)
+        XCTAssertEqual(projection.stressPoints.map(\.reading.date),
+                       history.map(\.t))
+        XCTAssertEqual(projection.stressPoints.map(\.segment), [0, 0, 0])
+        XCTAssertEqual(projection.stressPoints[0].reading.score, 0, accuracy: 1e-12)
+        XCTAssertEqual(projection.stressPoints[1].reading.score, 0.9, accuracy: 1e-12)
+        XCTAssertEqual(projection.stressPoints[2].reading.score, 2, accuracy: 1e-12)
+        XCTAssertEqual(projection.stressPoints.map(\.reading.evidenceMode),
+                       [.cardiacArousal, .cardiacArousal, .cardiacArousal],
+                       "legacy HR-only provenance remains available for lower-confidence copy")
         XCTAssertEqual(projection.cardiacArousalPoints.map(\.level),
                        [.calm, .low, .medium])
         XCTAssertEqual(projection.cardiacArousalPoints.map(\.reading.date),
@@ -58,8 +66,10 @@ final class AtriaVitalsProjectionStoreTests: XCTestCase {
     }
 
     func testVitalsStressCopyNeverCallsAGappedTimelineContinuous() {
+        XCTAssertTrue(AtriaVitalsStressTimelineCopy.gapNote
+            .localizedCaseInsensitiveContains("gaps remain blank"))
         XCTAssertTrue(AtriaVitalsStressTimelineCopy.gapNote.contains(
-            "no stress score was recorded"
+            "HR-only is lower confidence"
         ))
         XCTAssertFalse(AtriaVitalsStressTimelineCopy.gapNote.contains(
             "strap was not collecting"
@@ -70,7 +80,7 @@ final class AtriaVitalsProjectionStoreTests: XCTestCase {
             "Collection gaps remain blank"
         ))
         XCTAssertTrue(AtriaVitalsStressTimelineCopy.accessibilityLabel.contains(
-            "High at 2.16"
+            "High is 2 to 3"
         ))
     }
 

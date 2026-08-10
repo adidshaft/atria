@@ -197,7 +197,14 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
             range: observerStart.upperBound..<sessions.endIndex))
         let observer = sessions[observerStart.lowerBound..<observerEnd.lowerBound]
         XCTAssertFalse(observer.contains("invalidateSleepReviewCache"))
-        XCTAssertTrue(observer.contains("requestRecoveredDataRecomputation"))
+        XCTAssertTrue(observer.contains("handleAutomaticRecoveredArchiveDidUpdate"))
+        let archiveHandlerStart = try XCTUnwrap(sessions.range(of:
+            "private func handleAutomaticRecoveredArchiveDidUpdate"))
+        let archiveHandlerEnd = try XCTUnwrap(sessions.range(of:
+            "private func requestRecoveredDataRecomputation",
+            range: archiveHandlerStart.upperBound..<sessions.endIndex))
+        let archiveHandler = sessions[archiveHandlerStart.lowerBound..<archiveHandlerEnd.lowerBound]
+        XCTAssertTrue(archiveHandler.contains("requestRecoveredDataRecomputation"))
         let recoveredRequestStart = try XCTUnwrap(sessions.range(of:
             "private func requestRecoveredDataRecomputation"))
         let recoveredRequestEnd = try XCTUnwrap(sessions.range(of:
@@ -756,6 +763,8 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
             source: marker
         )
         let canonical = try XCTUnwrap(canonicalResult)
+        XCTAssertNotNil(canonical.frozenSleepNeed,
+                        "A new main sleep must return its persistence-frozen need receipt")
         addTeardownBlock { @MainActor in
             _ = await store.deleteConfirmedSleep(id: canonical.id)
         }

@@ -6,6 +6,15 @@ import XCTest
 /// would bring it back, when only what is still on the strap ring buffer is
 /// actually recoverable. These pin the honest copy mapping.
 final class AtriaMissedDataBannerPresentationTests: XCTestCase {
+    private func homeSource() throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+            .appendingPathComponent("AtriaHomeView.swift")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
     private func copy(pending: Int,
                       protectsLive: Bool,
                       secondsSinceLastFlush: TimeInterval? = nil,
@@ -179,6 +188,125 @@ final class AtriaMissedDataBannerPresentationTests: XCTestCase {
             debtObservedAgeSeconds: 60,
             backlogPending: true)
         XCTAssertFalse(c.offersRecovery)
+    }
+
+    func testVisibleSyncActionsQueueExactConnectedCatchUpInsteadOfGenericCutover() throws {
+        let source = try homeSource()
+        XCTAssertTrue(source.contains(
+            "ble.queueConnectedRawHistoryCatchUpIntent(\n                reason: \"pull_to_refresh\""
+        ))
+        XCTAssertTrue(source.contains(
+            "ble.queueConnectedRawHistoryCatchUpIntent(\n                    reason: \"home_missed_data_banner\""
+        ))
+        XCTAssertFalse(source.contains(
+            "requestOfflineHistoricalSyncIfNeeded(reason: \"home_missed_data_banner\""
+        ))
+
+        let tapStart = try XCTUnwrap(source.range(
+            of: "private func handleSyncTap()"
+        ))
+        let tapEnd = try XCTUnwrap(source.range(
+            of: "private var copyBlock: some View",
+            range: tapStart.upperBound..<source.endIndex
+        ))
+        let tap = String(source[tapStart.lowerBound..<tapEnd.lowerBound])
+        let queueCall = try XCTUnwrap(tap.range(of: "onSync()"))
+        let protection = try XCTUnwrap(tap.range(
+            of: "if protectsLiveStream"
+        ))
+        XCTAssertLessThan(queueCall.lowerBound, protection.lowerBound)
+        XCTAssertTrue(tap.contains("Queued · live tracking stays on"))
+        XCTAssertFalse(tap.contains("requestOfflineHistoricalSyncIfNeeded("))
+    }
+}
+
+/// The compact recovery chip shows the durable archive frontier without
+/// dropping its existing saved-record progress or inventing a time when the
+/// frontier is unavailable.
+final class AtriaHomeRecoverySyncPresentationTests: XCTestCase {
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        return calendar
+    }
+
+    private var locale: Locale { Locale(identifier: "en_US") }
+
+    private func date(day: Int, hour: Int, minute: Int) -> Date {
+        calendar.date(from: DateComponents(year: 2026,
+                                           month: 8,
+                                           day: day,
+                                           hour: hour,
+                                           minute: minute))!
+    }
+
+    func testSyncingCopyIncludesSavedCountAndDurableThroughTime() {
+        let frontier = date(day: 9, hour: 9, minute: 34)
+        let copy = AtriaHomeRecoverySyncPresentation.copy(
+            savedRecords: 271,
+            drainedThroughUnix: frontier.timeIntervalSince1970,
+            now: date(day: 9, hour: 19, minute: 0),
+            calendar: calendar,
+            locale: locale
+        )
+
+        XCTAssertTrue(copy.title.hasPrefix("Syncing strap history · 271 saved · through "))
+        XCTAssertTrue(copy.title.contains("9:34"))
+        XCTAssertTrue(copy.title.contains("AM"))
+        XCTAssertTrue(copy.accessibilityLabel.contains("271 records durably saved"))
+        XCTAssertTrue(copy.accessibilityLabel.contains("durably synced through"))
+    }
+
+    func testCompactCopyKeepsBothProgressSignalsOnNarrowWidths() {
+        let frontier = date(day: 9, hour: 9, minute: 34)
+        let copy = AtriaHomeRecoverySyncPresentation.copy(
+            savedRecords: 271,
+            drainedThroughUnix: frontier.timeIntervalSince1970,
+            now: date(day: 9, hour: 19, minute: 0),
+            calendar: calendar,
+            locale: locale
+        )
+
+        XCTAssertEqual(copy.compactTitle,
+                       copy.title.replacingOccurrences(of: "Syncing strap history",
+                                                       with: "Syncing"))
+        XCTAssertTrue(copy.compactTitle.contains("271 saved"))
+        XCTAssertTrue(copy.compactTitle.contains("through"))
+        XCTAssertLessThan(copy.compactTitle.count, copy.title.count)
+    }
+
+    func testMissingInvalidOrFutureFrontierNeverInventsThroughTime() {
+        let now = date(day: 9, hour: 19, minute: 0)
+        let invalidFrontiers: [Double?] = [
+            nil,
+            0,
+            .nan,
+            now.addingTimeInterval(60).timeIntervalSince1970
+        ]
+        for frontier in invalidFrontiers {
+            let copy = AtriaHomeRecoverySyncPresentation.copy(
+                savedRecords: 271,
+                drainedThroughUnix: frontier,
+                now: now,
+                calendar: calendar,
+                locale: locale
+            )
+            XCTAssertEqual(copy.title, "Syncing strap history · 271 saved")
+            XCTAssertFalse(copy.accessibilityLabel.contains("synced through"))
+        }
+    }
+
+    func testOlderFrontierDisambiguatesTheDay() {
+        let yesterday = AtriaHomeRecoverySyncPresentation.copy(
+            savedRecords: 0,
+            drainedThroughUnix: date(day: 8, hour: 22, minute: 15).timeIntervalSince1970,
+            now: date(day: 9, hour: 19, minute: 0),
+            calendar: calendar,
+            locale: locale
+        )
+        XCTAssertTrue(yesterday.title.contains("through"))
+        XCTAssertTrue(yesterday.title.contains("yesterday"))
+        XCTAssertFalse(yesterday.title.contains("saved"))
     }
 }
 

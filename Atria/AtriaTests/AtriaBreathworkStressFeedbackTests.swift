@@ -30,16 +30,40 @@ final class AtriaBreathworkStressFeedbackTests: XCTestCase {
         XCTAssertNil(AtriaBreathworkStressReading(state: state, measuredAt: Date()))
     }
 
-    func testHROnlyCardiacArousalCannotBecomeNumericBreathworkStress() {
+    func testVersionThreeHROnlyEstimateRemainsNumericAtLowerConfidence() throws {
+        let measuredAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let minuteFact = AtriaPhysiologicalStressModel.MinuteFact(
+            date: measuredAt,
+            score: 2,
+            unsmoothedScore: 2,
+            meanHeartRate: 88,
+            rmssd: nil,
+            hrStress: AtriaStressMonitor.mediumUpperBound,
+            hrvStress: nil,
+            heartRateWeight: 1,
+            motionContext: .unavailable,
+            sleepContext: .awake,
+            confidence: .low,
+            baselineLearning: false
+        )
         let state = AtriaStressState(level: .medium,
                                      label: "Medium",
-                                     detail: "HR-only",
+                                     detail: "HR-only estimate · lower confidence",
                                      kind: .scored,
                                      confidence: 0.55,
                                      rawActivation: AtriaStressMonitor.mediumUpperBound,
-                                     hrvAvailable: false)
+                                     hrvAvailable: false,
+                                     minuteFact: minuteFact)
 
-        XCTAssertNil(AtriaBreathworkStressReading(state: state, measuredAt: Date()))
+        XCTAssertTrue(minuteFact.isHROnly)
+        XCTAssertEqual(minuteFact.confidence, .low)
+        XCTAssertEqual(state.evidenceMode, .physiologicalStress)
+        let reading = try XCTUnwrap(AtriaBreathworkStressReading(
+            state: state,
+            measuredAt: measuredAt
+        ))
+        XCTAssertEqual(reading.score, 2)
+        XCTAssertEqual(reading.measuredAt, measuredAt)
     }
 
     func testFreshnessRejectsStaleAndFutureReadings() {

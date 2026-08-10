@@ -578,6 +578,23 @@ final class AtriaHistoricalJSONLRecentScannerTests: XCTestCase {
         ) else { return XCTFail("removal must rebuild") }
     }
 
+    func testRunOffMainServicesMainRunLoopWithoutMovingBodyOntoMain() {
+        let observation = runOffMain {
+            let bodyWasOnMainThread = Thread.isMainThread
+            let mainRunLoopDelivery = DispatchSemaphore(value: 0)
+            DispatchQueue.main.async {
+                mainRunLoopDelivery.signal()
+            }
+            let mainRunLoopWasServiced = mainRunLoopDelivery.wait(
+                timeout: .now() + 2
+            ) == .success
+            return (bodyWasOnMainThread, mainRunLoopWasServiced)
+        }
+
+        XCTAssertFalse(observation.0, "the production seam must still run off-main")
+        XCTAssertTrue(observation.1, "the test wait must leave the main run loop available")
+    }
+
     private func temporaryDirectory() -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("AtriaHistoricalJSONLRecentScannerTests")
@@ -589,13 +606,13 @@ final class AtriaHistoricalJSONLRecentScannerTests: XCTestCase {
     }
 
     private func runOffMain<T>(_ body: @escaping () -> T) -> T {
-        let semaphore = DispatchSemaphore(value: 0)
+        let completion = expectation(description: "off-main work completed")
         var result: T?
         DispatchQueue.global(qos: .userInitiated).async {
             result = body()
-            semaphore.signal()
+            completion.fulfill()
         }
-        semaphore.wait()
+        wait(for: [completion], timeout: 30)
         return result!
     }
 }

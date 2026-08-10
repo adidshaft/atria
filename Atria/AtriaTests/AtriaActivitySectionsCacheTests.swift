@@ -193,17 +193,43 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
     }
 
     @MainActor
-    func testWorkoutHROnlyEvidenceUsesQualitativeCardiacArousalFallback() {
+    func testWorkoutHROnlyEvidenceRemainsNumericAtExplicitLowerConfidence() throws {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
+        func hrOnlyFact(date: Date,
+                        score: Double,
+                        hrStress: Double) -> AtriaPhysiologicalStressModel.MinuteFact {
+            AtriaPhysiologicalStressModel.MinuteFact(
+                date: date,
+                score: score,
+                unsmoothedScore: score,
+                meanHeartRate: 82,
+                rmssd: nil,
+                hrStress: hrStress,
+                hrvStress: nil,
+                heartRateWeight: 1,
+                motionContext: .unavailable,
+                sleepContext: .awake,
+                confidence: .low,
+                baselineLearning: false
+            )
+        }
         let history: [AtriaStressMonitorStore.StressHistoryPoint] = [
             .init(t: start,
                   activation: 0.1,
                   level: .calm,
-                  hrvAvailable: false),
+                  hrvAvailable: false,
+                  minuteFact: hrOnlyFact(date: start,
+                                         score: 0.3,
+                                         hrStress: 0.1)),
             .init(t: start.addingTimeInterval(30),
                   activation: AtriaStressMonitor.mediumUpperBound,
                   level: .medium,
-                  hrvAvailable: false),
+                  hrvAvailable: false,
+                  minuteFact: hrOnlyFact(
+                    date: start.addingTimeInterval(30),
+                    score: 2,
+                    hrStress: AtriaStressMonitor.mediumUpperBound
+                  )),
         ]
 
         let projection = AtriaActivityWorkoutStressProjection.evidence(
@@ -212,21 +238,27 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
             end: start.addingTimeInterval(60)
         )
         let summary = AtriaWorkoutStressTraceSummary(
-            readings: projection.cardiacArousalPoints.map(\.reading)
+            readings: projection.displayedReadings
         )
 
-        XCTAssertEqual(projection.presentation, .cardiacArousal)
-        XCTAssertTrue(projection.stressPoints.isEmpty)
-        XCTAssertEqual(projection.cardiacArousalPoints.map(\.level), [.calm, .medium])
-        XCTAssertEqual(summary.readingCount, 0,
-                       "HR-only evidence cannot enter numeric workout Stress min/max/count")
-        XCTAssertNil(summary.low)
-        XCTAssertNil(summary.high)
+        XCTAssertEqual(projection.presentation, .physiologicalStress)
+        XCTAssertEqual(projection.stressPoints.count, 2)
+        XCTAssertEqual(projection.stressPoints[0].reading.score, 0.3, accuracy: 1e-12)
+        XCTAssertEqual(projection.stressPoints[1].reading.score, 2, accuracy: 1e-12)
+        XCTAssertEqual(projection.stressPoints.map(\.reading.confidence), [.low, .low])
+        XCTAssertTrue(projection.cardiacArousalPoints.isEmpty,
+                      "Version-3 HR-only facts stay on the physiological-stress line")
+        XCTAssertEqual(summary.readingCount, 2)
+        XCTAssertEqual(try XCTUnwrap(summary.low), 0.3, accuracy: 1e-12)
+        XCTAssertEqual(try XCTUnwrap(summary.high), 2, accuracy: 1e-12)
     }
 
     @MainActor
-    func testWorkoutMixedEvidenceCannotContaminateNumericStressSummary() throws {
+    func testWorkoutMixedProvenanceSharesNumericScaleButRealTimeGapRemainsBlank() throws {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let gapStart = start.addingTimeInterval(
+            30 + AtriaPhysiologicalStressModel.maximumFactContinuityGap + 1
+        )
         let readings = [
             AtriaStressDetailReading(date: start,
                                      score: 2.1,
@@ -236,11 +268,11 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                                      score: 0.9,
                                      evidenceMode: .physiologicalStress,
                                      level: .low),
-            AtriaStressDetailReading(date: start.addingTimeInterval(60),
+            AtriaStressDetailReading(date: gapStart,
                                      score: 1.8,
                                      evidenceMode: .cardiacArousal,
                                      level: .medium),
-            AtriaStressDetailReading(date: start.addingTimeInterval(90),
+            AtriaStressDetailReading(date: gapStart.addingTimeInterval(30),
                                      score: 1.5,
                                      evidenceMode: .physiologicalStress,
                                      level: .medium),
@@ -250,11 +282,11 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         let summary = AtriaWorkoutStressTraceSummary(readings: readings)
 
         XCTAssertEqual(projection.presentation, .physiologicalStress)
-        XCTAssertEqual(summary.readingCount, 2)
+        XCTAssertEqual(summary.readingCount, 4)
         XCTAssertEqual(try XCTUnwrap(summary.low), 0.9, accuracy: 1e-12)
-        XCTAssertEqual(try XCTUnwrap(summary.high), 1.5, accuracy: 1e-12)
-        XCTAssertEqual(summary.points.map(\.segment), [0, 1],
-                       "intervening cardiac arousal must remain a visible gap")
+        XCTAssertEqual(try XCTUnwrap(summary.high), 2.1, accuracy: 1e-12)
+        XCTAssertEqual(summary.points.map(\.segment), [0, 0, 1, 1],
+                       "Only the genuine time hole should split the numeric trace")
     }
 
     func testActivityStressEmptyStateDistinguishesRestoreFailureRetentionAndNoReadings() {

@@ -98,7 +98,7 @@ final class AtriaMetricAuthorityConsistencyTests: XCTestCase {
         )
 
         XCTAssertTrue(home.contains("let sleepProjection = sleepIsConfirmedNight"))
-        XCTAssertTrue(home.contains("sleep.map(adaptiveSleepProjection)"))
+        XCTAssertTrue(home.contains("sleep.flatMap(adaptiveSleepProjection)"))
         XCTAssertTrue(home.contains("adaptiveSleepProjection("))
         XCTAssertTrue(home.contains("yesterdayStrain: yesterdayStrain"))
         XCTAssertFalse(home.contains(

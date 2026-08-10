@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Durable, bounded publication receipt for verified WHOOP 4 v24 daily motion.
@@ -26,6 +27,30 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
         let missingCoverageSeconds: Int
         let decodedRows: Int
         let capturedThrough: Date
+    }
+
+    /// Immutable identity for the exact durable record selected for current-
+    /// cycle publication. `capturedThrough` alone is not a revision: a stronger
+    /// replay may correct motion/steps while retaining the same evidence clock.
+    struct PublicationReceipt: Equatable {
+        let evidence: HistoricalArchive.MotionTickDayEvidence
+        let sourceIdentifier: String
+        let contentRevision: String
+    }
+
+    struct CurrentCyclePublication {
+        let projectedDays: [
+            AtriaHistoricalDailyConsumerProjection.StepDay
+        ]
+        let receipt: PublicationReceipt?
+        /// Non-nil only when the returned current-cycle display row was
+        /// selected from `receipt`. A stronger independently projected
+        /// canonical row deliberately leaves this nil even though receipt
+        /// metadata is still returned for monotonic ordering.
+        let displayedReceiptContentRevision: String?
+        /// Observed motion with no qualified gait subtotal invalidates an
+        /// older partial count even though this receipt displays no number.
+        let receiptInvalidatesIndependentPartial: Bool
     }
 
     private static let schema = 1
@@ -332,39 +357,52 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
         includeUnqualifiedResearchEvidence: Bool = false,
         calendar: Calendar = .current
     ) -> [AtriaHistoricalDailyConsumerProjection.StepDay] {
-        guard AtriaWhoop4GravityCadenceStepModel
-                .releaseDailyAuthorityQualified
-                || includeUnqualifiedResearchEvidence else {
-            return projectedDays
-        }
-        let identifiers = Set(strapIdentifiers.compactMap(
-            Self.canonicalStrapIdentifier
-        ))
-        guard !identifiers.isEmpty else { return projectedDays }
-        lock.lock()
-        let candidates = loadRecordsLocked().filter {
-            identifiers.contains($0.strapIdentifier)
-                && $0.capturedThrough <= now.addingTimeInterval(5)
-        }
-        lock.unlock()
+        currentCyclePublication(
+            into: projectedDays,
+            strapIdentifiers: strapIdentifiers,
+            windowStart: windowStart,
+            now: now,
+            includeUnqualifiedResearchEvidence:
+                includeUnqualifiedResearchEvidence,
+            calendar: calendar
+        ).projectedDays
+    }
 
-        let exact = candidates
-            .filter { abs($0.windowStart.timeIntervalSince(windowStart)) < 1 }
-            .max(by: Self.isWeaker)
-        let contained = candidates
-            .filter {
-                $0.windowStart >= windowStart
-                    && $0.windowStart <= now.addingTimeInterval(5)
-                    && $0.capturedThrough >= $0.windowStart
-            }
-            .max(by: Self.isWeaker)
-        guard let record = exact ?? contained else {
-            return projectedDays
+    /// Returns the presentation merge and the identity of the exact durable
+    /// record that produced it from one locked selection. Callers can therefore
+    /// order equal-clock corrections without racing a second receipt lookup.
+    func currentCyclePublication(
+        into projectedDays: [AtriaHistoricalDailyConsumerProjection.StepDay],
+        strapIdentifiers: [String],
+        windowStart: Date,
+        now: Date,
+        includeUnqualifiedResearchEvidence: Bool = false,
+        calendar: Calendar = .current
+    ) -> CurrentCyclePublication {
+        guard let record = currentCycleRecord(
+            strapIdentifiers: strapIdentifiers,
+            windowStart: windowStart,
+            now: now,
+            includeUnqualifiedResearchEvidence:
+                includeUnqualifiedResearchEvidence
+        ), let revision = Self.contentRevision(record) else {
+            return .init(
+                projectedDays: projectedDays,
+                receipt: nil,
+                displayedReceiptContentRevision: nil,
+                receiptInvalidatesIndependentPartial: false
+            )
         }
+        let evidence = Self.evidence(record)
+        let publicationReceipt = PublicationReceipt(
+            evidence: evidence,
+            sourceIdentifier: record.strapIdentifier,
+            contentRevision: revision
+        )
         let isExactBoundary =
             abs(record.windowStart.timeIntervalSince(windowStart)) < 1
         let receipt = Self.stepDay(
-            evidence: Self.evidence(record),
+            evidence: evidence,
             presentationWindowStart: windowStart,
             forcePartial: !isExactBoundary,
             calendar: calendar
@@ -376,19 +414,86 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
             ($0.state == .available || $0.state == .knownEmpty)
                 && $0.stepCount != nil
         }) {
-            return projectedDays
+            return .init(
+                projectedDays: projectedDays,
+                receipt: publicationReceipt,
+                displayedReceiptContentRevision: nil,
+                receiptInvalidatesIndependentPartial: false
+            )
         }
+        // A stronger cumulative replay can supersede a previously publishable
+        // stationary/partial prefix with observed motion whose gait count is
+        // still unresolved. Do not let the generic "largest known coverage"
+        // comparison resurrect that older row: doing so leaves Home/widgets
+        // advertising its stale capture clock even though the durable receipt
+        // has explicitly invalidated the count. The exact/known-empty canonical
+        // authority above still wins, and `stepDay` keeps the existing fail-
+        // closed motion-observed gate intact.
+        let receiptInvalidatesOlderPartial =
+            record.motionTicks > 0 && record.steps == 0
         let strongestProjected = matching
             .filter { $0.state == .missing && $0.knownCoverageSeconds > 0 }
             .max(by: Self.isWeaker)
-        let strongest = strongestProjected.map {
-            Self.isWeaker($0, receipt) ? receipt : $0
-        } ?? receipt
+        let receiptOwnsDisplayedRow: Bool
+        let strongest: AtriaHistoricalDailyConsumerProjection.StepDay
+        if receiptInvalidatesOlderPartial {
+            strongest = receipt
+            receiptOwnsDisplayedRow = true
+        } else if let strongestProjected {
+            receiptOwnsDisplayedRow = Self.isWeaker(
+                strongestProjected,
+                receipt
+            )
+            strongest = receiptOwnsDisplayedRow
+                ? receipt : strongestProjected
+        } else {
+            strongest = receipt
+            receiptOwnsDisplayedRow = true
+        }
         var merged = projectedDays.filter {
             abs($0.dayStart.timeIntervalSince(windowStart)) >= 1
         }
         merged.append(strongest)
-        return merged.sorted { $0.dayStart > $1.dayStart }
+        return .init(
+            projectedDays: merged.sorted { $0.dayStart > $1.dayStart },
+            receipt: publicationReceipt,
+            displayedReceiptContentRevision: receiptOwnsDisplayedRow
+                ? revision : nil,
+            receiptInvalidatesIndependentPartial:
+                receiptInvalidatesOlderPartial
+        )
+    }
+
+    private func currentCycleRecord(
+        strapIdentifiers: [String],
+        windowStart: Date,
+        now: Date,
+        includeUnqualifiedResearchEvidence: Bool
+    ) -> Record? {
+        guard AtriaWhoop4GravityCadenceStepModel
+                .releaseDailyAuthorityQualified
+                || includeUnqualifiedResearchEvidence else { return nil }
+        let identifiers = Set(strapIdentifiers.compactMap(
+            Self.canonicalStrapIdentifier
+        ))
+        guard !identifiers.isEmpty else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        let candidates = loadRecordsLocked().filter {
+            identifiers.contains($0.strapIdentifier)
+                && $0.capturedThrough <= now.addingTimeInterval(5)
+        }
+        let exact = candidates
+            .filter { abs($0.windowStart.timeIntervalSince(windowStart)) < 1 }
+            .max(by: Self.isWeaker)
+        let contained = candidates
+            .filter {
+                $0.windowStart >= windowStart
+                    && $0.windowStart <= now.addingTimeInterval(5)
+                    && $0.capturedThrough >= $0.windowStart
+            }
+            .max(by: Self.isWeaker)
+        return exact ?? contained
     }
 
     /// Removes only day rows previously synthesized from this store's
@@ -477,6 +582,13 @@ final class AtriaWhoop4MotionTickDailyStore: @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return try encoder.encode(value)
+    }
+
+    private static func contentRevision(_ record: Record) -> String? {
+        guard let data = try? encode(record) else { return nil }
+        return SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     private static func canonicalStrapIdentifier(_ value: String) -> String? {

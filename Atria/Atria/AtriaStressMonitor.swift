@@ -2,25 +2,11 @@ import Darwin
 import Foundation
 import SwiftUI
 
-/// Live physiological Stress and cardiac-arousal evidence built entirely from
-/// signals this codebase already publishes: live HR
-/// (`ble.heartRate` / `PulseLiveState.heartRate`), rolling RR beats
-/// (`recentRRSamples`) for a fast short-window RMSSD, the slower qualified
-/// `HRVSnapshot`, and the wearer's own personal baseline (`PersonalBaseline`)
-/// with its trust tiers. No IMU is used or claimed as motion qualification —
-/// recognized workouts are suppressed rather than scored as Stress.
-///
-/// The HR term is z-scored against the wearer's own recent AWAKE heart rate
-/// (learned median, or resting + a default offset until learned) — NOT their
-/// resting/sleep baseline, which made ordinary wakefulness read as stress. The
-/// HRV term is z-scored against the overnight HRV baseline. Either signal alone
-/// tops out at Medium; only elevated HR AND suppressed HRV together reach High.
-///
-/// Honesty first: until a personal resting-HR baseline is trusted (14 distinct
-/// fresh days), no numeric level is shown at all — only "Calibrating (n/14)".
-/// Until the HRV baseline is *also* trusted, Atria reports a qualitative
-/// HR-only cardiac-arousal band (capped at Medium), not a numeric Stress score.
-/// Elevated HR alone can never be reported as "High" without HRV evidence.
+/// Live physiological-stress state from Atria's single versioned v3 kernel.
+/// The five-minute minute-framed fact preserves qualified HR/RR provenance,
+/// confidence, motion/sleep context and calibration version. Missing qualified
+/// HR creates a gap; unavailable HRV yields an explicit lower-confidence
+/// HR-only estimate rather than a fabricated autonomic measurement.
 enum AtriaStressLevel: Int, Equatable, CaseIterable, Sendable {
     case calm = 0
     case low = 1
@@ -51,27 +37,24 @@ enum AtriaStressLevel: Int, Equatable, CaseIterable, Sendable {
 
 /// The physiological evidence contract behind one scored monitor sample.
 ///
-/// HR-only elevation remains useful evidence, but it is not interchangeable
-/// with a numeric Stress score: heart rate cannot separate psychological
-/// arousal from posture, movement, illness, stimulants, or other metabolic
-/// demand on its own. A numeric 0...3 Stress value is therefore reserved for a
-/// sample that also has a fresh, qualified HRV term.
+/// Version-3 facts share one continuous 0...3 coordinate. When qualified HRV
+/// is unavailable, the numeric value remains an explicitly lower-confidence
+/// HR-only estimate; it is never presented as a psychological diagnosis.
+/// `cardiacArousal` remains only as a compatibility provenance for legacy,
+/// non-versioned in-memory callers.
 enum AtriaStressEvidenceMode: String, Equatable, Sendable {
     case physiologicalStress
     case cardiacArousal
 
     var metricTitle: String {
-        switch self {
-        case .physiologicalStress: return "Stress"
-        case .cardiacArousal: return "Cardiac arousal"
-        }
+        "Physiological stress"
     }
 }
 
 /// Pure shared conversion from the monitor's canonical 0...1 activation into
 /// its product-scale evidence. Consumers should use this projection instead of
-/// multiplying activation by three themselves, because only full HR+HRV
-/// evidence is a numeric Stress score.
+/// multiplying activation by three themselves so v3 HR+HRV and explicitly
+/// lower-confidence HR-only facts stay on one continuous coordinate.
 struct AtriaStressEvidenceProjection: Equatable, Sendable {
     static let maximumDisplayValue = 3.0
 
@@ -84,32 +67,26 @@ struct AtriaStressEvidenceProjection: Equatable, Sendable {
     }
 
     /// A bounded 0...3 value in the evidence mode's own coordinate system.
-    /// This is queryable for both modes so persisted HR-only evidence can later
-    /// power a separate cardiac-arousal surface without being relabelled Stress.
     var displayValue: Double {
         activation * Self.maximumDisplayValue
     }
 
-    /// Numeric physiological Stress exists only with qualified HR+HRV evidence.
+    /// Both evidence modes use Atria's continuous 0...3 scale. HR-only remains
+    /// explicitly lower-confidence in its provenance and user-facing copy.
     var numericStressScore: Double? {
-        mode == .physiologicalStress ? displayValue : nil
+        displayValue
     }
 
-    /// HR-only evidence remains separately queryable, never substituted for a
-    /// numeric Stress score.
+    /// Legacy non-v3 callers remain separately queryable for compatibility.
     var cardiacArousalValue: Double? {
         mode == .cardiacArousal ? displayValue : nil
     }
 
-    /// The bounded qualitative band in this evidence coordinate. Cardiac
-    /// arousal deliberately has no High claim: without HRV, even activation at
-    /// the upper cap remains Medium.
+    /// The bounded qualitative band in this evidence coordinate. Version 3
+    /// uses Calm / Moderate / High at exact 1 and 2 boundaries.
     var qualitativeLevel: AtriaStressLevel {
         let rawBand = AtriaStressMonitor.band(activation)
-        let boundedBand = mode == .cardiacArousal
-            ? min(rawBand, AtriaStressLevel.medium.rawValue)
-            : rawBand
-        return AtriaStressLevel(rawValue: boundedBand) ?? .calm
+        return AtriaStressLevel(rawValue: rawBand) ?? .calm
     }
 
     static var lowStartsAt: Double {
@@ -126,7 +103,7 @@ struct AtriaStressEvidenceProjection: Equatable, Sendable {
 }
 
 /// Emitted state for the live stress monitor. `level` is nil for every
-/// non-scored `kind` (no numeric claim is made while suppressed or learning).
+/// non-scored compatibility `kind` (no numeric claim is made in those states).
 struct AtriaStressState: Equatable {
     enum Kind: Equatable {
         case scored
@@ -148,12 +125,37 @@ struct AtriaStressState: Equatable {
     /// smoothing + hysteresis; not shown to the user directly.
     let rawActivation: Double
     /// True when a fresh qualified HRV term was available for this reading.
-    /// False in every non-scored state and in the HR-only fallback mode, where
-    /// the emitted level is capped at `.medium`.
+    /// False in every non-scored state and in the lower-confidence HR-only
+    /// fallback mode.
     let hrvAvailable: Bool
+    /// Exact minute-level model fact behind the current live state. Legacy
+    /// compatibility calls may leave this nil; production live scoring and
+    /// persisted history use it as the single auditable source of truth.
+    let minuteFact: AtriaPhysiologicalStressModel.MinuteFact?
+
+    init(level: AtriaStressLevel?,
+         label: String,
+         detail: String,
+         kind: Kind,
+         confidence: Double,
+         rawActivation: Double,
+         hrvAvailable: Bool,
+         minuteFact: AtriaPhysiologicalStressModel.MinuteFact? = nil) {
+        self.level = level
+        self.label = label
+        self.detail = detail
+        self.kind = kind
+        self.confidence = confidence
+        self.rawActivation = rawActivation
+        self.hrvAvailable = hrvAvailable
+        self.minuteFact = minuteFact
+    }
 
     var evidenceMode: AtriaStressEvidenceMode? {
         guard kind == .scored, level != nil else { return nil }
+        if minuteFact?.scoringVersion == AtriaPhysiologicalStressModel.scoringVersion {
+            return .physiologicalStress
+        }
         return hrvAvailable ? .physiologicalStress : .cardiacArousal
     }
 
@@ -177,11 +179,11 @@ struct AtriaStressPresentation: Equatable {
     let value: String
     let detail: String
     let narrative: String
-    /// Nil for every unscored state. This is the one shared product contract
-    /// callers use to distinguish numeric Stress from HR-only cardiac arousal.
+    /// Nil for every unscored state. Scored version-3 HR-only estimates retain
+    /// this provenance while using the same continuous numeric coordinate.
     let evidenceMode: AtriaStressEvidenceMode?
     let metricTitle: String
-    /// A bounded 0...3 value only for fresh qualified HR+HRV evidence.
+    /// A bounded 0...3 value for every complete version-3 fact.
     let numericScore: Double?
 
     init(level: AtriaStressLevel?,
@@ -189,7 +191,7 @@ struct AtriaStressPresentation: Equatable {
          detail: String,
          narrative: String,
          evidenceMode: AtriaStressEvidenceMode? = nil,
-         metricTitle: String = "Stress",
+         metricTitle: String = "Physiological stress",
          numericScore: Double? = nil) {
         self.level = level
         self.value = value
@@ -207,29 +209,34 @@ struct AtriaStressPresentation: Equatable {
         switch state.kind {
         case .scored:
             if state.hrvAvailable {
-                detail = state.detail.isEmpty ? "Live HR + HRV evidence" : state.detail
-                narrative = "Measured from live HR versus your typical awake heart rate and qualified HRV versus your overnight baseline. A score of 0 means no positive cardiac elevation was detected; it does not mean zero psychological stress."
+                let evidence = state.detail.isEmpty
+                    ? "HR + HRV"
+                    : state.detail
+                detail = evidence.hasPrefix(state.label)
+                    ? evidence
+                    : "\(state.label) · \(evidence)"
+                narrative = "Physiological stress estimated from a five-minute cardiac window, your personal resting heart rate and qualified HRV distribution. It is not a psychological diagnosis."
             } else {
-                detail = "Cardiac arousal · HR only"
-                narrative = "Heart rate shows a qualitative cardiac-arousal band. Without fresh qualified HRV, Atria does not turn this evidence into a numeric Stress score."
+                let evidence = state.detail.contains("HR-only estimate")
+                    ? state.detail
+                    : "HR-only estimate · lower confidence"
+                detail = evidence.hasPrefix(state.label)
+                    ? evidence
+                    : "\(state.label) · \(evidence)"
+                narrative = "Physiological stress estimated from heart rate only because qualified current HRV was unavailable. This lower-confidence estimate is not a psychological diagnosis."
             }
         case .calibrating:
-            detail = state.detail.isEmpty ? "Building your personal HR baseline" : state.detail
-            // Real-time confusion fix (2026-08-05, user report): live HR was
-            // streaming beside a "--" stress value with no explanation of the
-            // gate. Name the mechanism: HR is live now; scoring needs a
-            // trusted baseline of qualified rest days (one per day, so this
-            // takes days by design, not by lag).
-            narrative = "Live heart rate is streaming now. Stress scoring turns on once \(PersonalBaseline.trustedMinimumSamples) qualified rest days (about two weeks of overnight wear) build your personal baseline."
+            detail = state.detail.isEmpty ? "Learning your personal baseline" : state.detail
+            narrative = "Atria uses a conservative personalized fallback while your baseline learns and labels complete estimates lower confidence."
         case .warmingUp:
-            detail = "2 min of live signal"
-            narrative = "Stress is waiting for enough continuous live signal to make a reliable reading."
+            detail = "5 min of continuous signal"
+            narrative = "Physiological stress is waiting for a complete five-minute live cardiac window."
         case .active:
-            detail = "Paused during activity"
-            narrative = "Stress monitoring pauses during activity and the post-workout recovery window."
+            detail = "Activity context"
+            narrative = "Independently qualified activity can attenuate exercise-driven elevation, but it never erases the physiological-stress estimate."
         case .asleep:
-            detail = "Paused during detected sleep"
-            narrative = "Stress monitoring pauses while sleep is actively detected."
+            detail = "Sleep context"
+            narrative = "Qualified sleep is shown as timeline context; missing or inferred sleep never invents a calm estimate."
         case .noSignal:
             // No signal can mean a connected strap whose next qualified frame
             // has not arrived yet. Do not prescribe reconnecting unless the
@@ -241,12 +248,13 @@ struct AtriaStressPresentation: Equatable {
                     // Value lines carry a real scored band or the one canonical
                     // no-value token. The specific unscored state remains in
                     // `detail`, where it cannot masquerade as a measurement.
-                    value: state.level?.title
-                        ?? AtriaCompactMetricPresentation.noValue,
+                    value: projection?.numericStressScore.map {
+                        "\($0.formatted(.number.precision(.fractionLength(1)))) / 3"
+                    } ?? AtriaCompactMetricPresentation.noValue,
                     detail: detail,
                     narrative: narrative,
                     evidenceMode: projection?.mode,
-                    metricTitle: projection?.mode.metricTitle ?? "Stress",
+                    metricTitle: projection?.mode.metricTitle ?? "Physiological stress",
                     numericScore: projection?.numericStressScore)
     }
 }
@@ -260,61 +268,26 @@ enum AtriaStressMonitor {
     /// Persisted with every derived timeline point. Bump whenever activation,
     /// banding, capping, or hysteresis semantics change so a later build never
     /// silently presents unlike scores as one continuous series.
-    static let scoringVersion = 2
+    static let scoringVersion = AtriaPhysiologicalStressModel.scoringVersion
 
-    /// First N seconds of live contact are "Warming up" — too little data for
-    /// even an HR-only read.
-    static let warmUpSeconds: TimeInterval = 120
-    /// Post-workout cooldown: elevated HR right after a session is recovery
-    /// tachogram, not stress, so scoring stays suppressed for this long after
-    /// the last workout ends.
+    /// A complete five-minute HR horizon is required before the first fact.
+    static let warmUpSeconds = AtriaPhysiologicalStressModel.windowDuration
+    /// Post-workout exclusion used only while learning the quiet-awake HR
+    /// reference. V3 scoring attenuates qualified activity; it does not erase it.
     static let postWorkoutCooldownSeconds: TimeInterval = 10 * 60
-    /// Sustained-elevation workout heuristic when no explicit recording/zone
-    /// signal is present.
+    /// Upper admission bound for the quiet-awake reference learner.
     static let sustainedWorkoutHRDelta = 40
-    /// Minimum coverage (in the RR window) before a short-window RMSSD is
-    /// considered trustworthy enough to feed the HRV term.
-    static let minimumHRVWindowSeconds: TimeInterval = 90
+    static let calmUpperBound = 1.0 / 3.0
+    /// Retained as a source-compatible alias. V3 has no separate Low zone.
+    static let lowUpperBound = calmUpperBound
+    static let mediumUpperBound = 2.0 / 3.0
 
-    static let hrvActivationFloorSD = 0.15
-    /// Corroboration weight for the HR+HRV combination. Each term is multiplied
-    /// by this, so a single term alone tops out at 0.6 — inside the Medium band
-    /// (< the 0.72 High threshold) — and only genuine HR elevation AND HRV
-    /// suppression together clear into High. This keeps the stated contract
-    /// ("elevated HR alone is never High without HRV corroboration"), extends
-    /// the same guarantee symmetrically to a lone HRV drop (which is nonspecific
-    /// — illness/alcohol/dehydration), and avoids the noisy-OR's over-firing
-    /// where two merely-moderate signals combined to High (adversarial review
-    /// 2026-08-08).
-    static let stressCorroborationWeight = 0.6
-
-    // Awake HR reference (2026-08-08 rescoring). Live awake HR was z-scored
-    // against the RESTING/sleep baseline, so ordinary wakefulness saturated
-    // activation to 1.0 — validated on 4 real days of this wearer's HR, the old
-    // math pinned 90-98% of every waking day to "Medium". Awake HR sits ~15 bpm
-    // above resting (measured median 69-79 vs resting 56.5), so the HR term is
-    // now referenced to the wearer's own recent AWAKE HR when known, else a
-    // physiological default of resting + offset. Divisor/thresholds unchanged,
-    // which reproduces a sensible ~65% Calm / ~20% Medium day on the real data.
-    static let defaultAwakeOffsetBPM = 15.0
-    // Widened 12 -> 14 (2026-08-08) after pulling 178k real awake-HR samples
-    // from the device: quiet-awake HR spans ~69-92 (p10-p90) around a ~78
-    // median, so a 12 bpm default spread flagged ordinary up-and-about HR (85+)
-    // as Medium during the cold-start window BEFORE the personal reference
-    // warms. Widening the spread (center unchanged, so genuinely-calm wearers
-    // are not under-read) moves typical active-awake HR back to Low; the learned
-    // reference still supersedes this default the moment it warms.
-    static let defaultAwakeSpreadBPM = 14.0
-    static let awakeActivationFloorSD = 5.0
-    static let awakeActivationDivisor = 2.0
-
-    static let calmUpperBound = 0.20
-    static let lowUpperBound = 0.45
-    static let mediumUpperBound = 0.72
-
-    /// PURE scoring function: same inputs always produce the same output, no
-    /// hidden state, no I/O. Temporal smoothing / hysteresis across calls is
-    /// the store's job (see `AtriaStressMonitorStore`), not this function's.
+    #if DEBUG
+    /// Test-only compatibility adapter for older fixtures. Production live and
+    /// historical paths call `AtriaPhysiologicalStressModel.evaluate` directly;
+    /// keeping this adapter behind DEBUG prevents a second shipping scorer.
+    /// Untimestamped `hrvFallbackRMSSD` cannot prove qualified RR succession and
+    /// is therefore never admitted as current HRV.
     static func score(hrNow: Int,
                       hrWindow: [Int],
                       rrWindowMs: [Int],
@@ -328,156 +301,127 @@ enum AtriaStressMonitor {
                       contactAgeSeconds: TimeInterval,
                       awakeReference: (center: Double, spread: Double)? = nil,
                       now: Date = Date()) -> AtriaStressState {
-
-        // MARK: Suppression, checked in order.
-
         guard hasContact, hrNow > 0 else {
             return AtriaStressState(level: nil, label: "No signal", detail: "",
                                     kind: .noSignal, confidence: 0,
                                     rawActivation: 0, hrvAvailable: false)
         }
-
-        if inSleepWindow {
-            return AtriaStressState(level: nil, label: "Asleep",
-                                    detail: "Stress monitoring pauses during sleep",
-                                    kind: .asleep, confidence: 0,
-                                    rawActivation: 0, hrvAvailable: false)
-        }
-
-        let sustainedElevated = hrNow > restingMaxHR.rest + sustainedWorkoutHRDelta
-        if workoutActive || (zoneIndex ?? 0) >= 2 || sustainedElevated {
-            return AtriaStressState(level: nil, label: "Active", detail: "During workout",
-                                    kind: .active, confidence: 0,
-                                    rawActivation: 0, hrvAvailable: false)
-        }
-
         if contactAgeSeconds < warmUpSeconds {
             return AtriaStressState(level: nil, label: "Warming up",
-                                    detail: "Building a live read",
+                                    detail: "Building a five-minute cardiac window",
                                     kind: .warmingUp, confidence: 0,
                                     rawActivation: 0, hrvAvailable: false)
         }
-
-        guard baseline.hasTrustedRestingBaseline(now: now) else {
-            let n = min(baseline.freshRestingSampleCount(now: now), PersonalBaseline.trustedMinimumSamples)
-            // Progress in the detail line (2026-08-05): the card surfaces
-            // `detail`, not `label`, so the count was invisible — a user
-            // watching live HR stream had no way to tell how far calibration
-            // was or that it advances one qualified rest day at a time.
-            return AtriaStressState(level: nil,
-                                    label: "Calibrating (\(n)/\(PersonalBaseline.trustedMinimumSamples))",
-                                    detail: "Baseline \(n) of \(PersonalBaseline.trustedMinimumSamples) rest days",
-                                    kind: .calibrating, confidence: 0,
-                                    rawActivation: 0, hrvAvailable: false)
-        }
-
-        // MARK: Scoring — normalize vs personal baseline (z-scores).
-
-        let hrActivation = hrActivationFraction(hrNow: hrNow, baseline: baseline, restingMaxHR: restingMaxHR, awakeReference: awakeReference, now: now)
-
-        let hrvTrusted = baseline.hasTrustedHRVBaseline(now: now)
-        var hrvActivation: Double?
-        if hrvTrusted,
-           let lnStats = baseline.lnRMSSDStats(now: now), lnStats.count > 1,
-           let rmssdNow = shortWindowRMSSD(rrWindowMs) ?? hrvFallbackRMSSD,
-           rmssdNow > 0 {
-            let lnNow = log(rmssdNow)
-            let sd = max(lnStats.sd, hrvActivationFloorSD)
-            let hrvZ = (lnStats.mean - lnNow) / sd
-            hrvActivation = clamp01(max(hrvZ, 0) / 3)
-        }
-
-        let activation: Double
-        let hrvAvailable: Bool
-        if let hrvActivation {
-            // Corroboration model (adversarial review 2026-08-08): each term is
-            // weighted by `stressCorroborationWeight` (0.6), so a single elevated
-            // signal — HR alone OR HRV alone — tops out at 0.6, inside Medium and
-            // below the 0.72 High threshold; only genuine HR elevation AND HRV
-            // suppression together clear into High. This keeps the stated
-            // contract (elevated HR alone is never High), extends it symmetric-
-            // ally to a lone (nonspecific) HRV drop, and avoids the noisy-OR that
-            // escalated two merely-moderate signals to High by double-counting
-            // the same arousal.
-            activation = clamp01(stressCorroborationWeight * (hrActivation + hrvActivation))
-            hrvAvailable = true
+        let suppliedHeartRates = hrWindow.isEmpty ? [hrNow] : hrWindow
+        let fixtureMinimumSampleCount = max(
+            AtriaPhysiologicalStressModel.minimumQualifiedHRSamples,
+            Int(ceil(
+                AtriaPhysiologicalStressModel.windowDuration
+                    / AtriaPhysiologicalStressModel.maximumRawHeartRateGap
+            )) + 1
+        )
+        let fixtureHeartRates: [Int]
+        if suppliedHeartRates.count >= fixtureMinimumSampleCount {
+            fixtureHeartRates = suppliedHeartRates
         } else {
-            activation = hrActivation
-            hrvAvailable = false
+            // DEBUG compatibility only: older unit fixtures supplied three
+            // untimestamped values. Expand those values across the requested
+            // five-minute frame so the production kernel still enforces its
+            // real sample-count/continuity contract. Six points are required
+            // across 300 seconds when raw evidence may be at most 60 seconds
+            // apart; the older five-point expansion created four 75-second gaps.
+            fixtureHeartRates = (0..<fixtureMinimumSampleCount)
+                .map { index in
+                    let sourceIndex = min(
+                        suppliedHeartRates.count - 1,
+                        index * suppliedHeartRates.count
+                            / fixtureMinimumSampleCount
+                    )
+                    return suppliedHeartRates[sourceIndex]
+                }
         }
-
-        let rawBand = band(activation)
-        // HR-only mode (HRV not trusted yet) can never claim "High" without
-        // HRV corroboration — cap at Medium.
-        let cappedBand = hrvAvailable ? rawBand : min(rawBand, AtriaStressLevel.medium.rawValue)
-        let level = AtriaStressLevel(rawValue: cappedBand) ?? .calm
-        let detail = hrvAvailable ? "HR + HRV" : "HR-only"
-        let confidence = hrvAvailable ? 0.85 : 0.55
-
-        return AtriaStressState(level: level, label: level.title, detail: detail,
-                                kind: .scored, confidence: confidence,
-                                rawActivation: activation, hrvAvailable: hrvAvailable)
+        let samples = fixtureHeartRates.enumerated().map {
+            index, bpm in
+            let denominator = max(1, fixtureHeartRates.count - 1)
+            let offset = -AtriaPhysiologicalStressModel.windowDuration
+                + Double(index) / Double(denominator)
+                    * AtriaPhysiologicalStressModel.windowDuration
+            return AtriaPhysiologicalStressModel.HeartRateSample(
+                date: now.addingTimeInterval(offset),
+                bpm: bpm
+            )
+        }
+        var rrClock = now.addingTimeInterval(-AtriaPhysiologicalStressModel.windowDuration)
+        let rrSamples = rrWindowMs.map { milliseconds -> AtriaPhysiologicalStressModel.RRSample in
+            rrClock = rrClock.addingTimeInterval(Double(milliseconds) / 1_000)
+            return .init(date: rrClock,
+                         milliseconds: Double(milliseconds),
+                         qualified: true)
+        }
+        let qualifiedLnRMSSD = baseline.freshSamples(now: now)
+            .filter(\.isOvernightSample)
+            .compactMap(\.lnRMSSD)
+        let personalization = AtriaPhysiologicalStressModel.Personalization(
+            restingHeartRate: baseline.restingHR ?? Double(restingMaxHR.rest),
+            maximumHeartRate: Double(restingMaxHR.max),
+            restingBaselineDayCount: baseline.freshRestingSampleCount(now: now),
+            hrvBaseline: AtriaPhysiologicalStressModel.robustHRVBaseline(
+                lnRMSSDValues: qualifiedLnRMSSD,
+                qualifiedDayCount: baseline.freshHRVSampleCount(now: now)
+            )
+        )
+        let motion: AtriaPhysiologicalStressModel.MotionContext = workoutActive
+            ? .qualifiedActivity(intensity: 0.7)
+            : .unavailable
+        _ = zoneIndex
+        _ = hrvFallbackRMSSD
+        _ = awakeReference
+        guard let fact = AtriaPhysiologicalStressModel.evaluate(
+            .init(end: now,
+                  heartRates: samples,
+                  rrIntervals: rrSamples,
+                  personalization: personalization,
+                  motionContext: motion,
+                  sleepContext: inSleepWindow ? .asleep : .unavailable)
+        ) else {
+            return .noSignal
+        }
+        let level: AtriaStressLevel
+        switch fact.zone {
+        case .calm: level = .calm
+        case .moderate: level = .medium
+        case .high: level = .high
+        }
+        let detail = fact.isHROnly
+            ? "HR-only estimate · lower confidence"
+            : "Physiological stress · HR + HRV"
+        return AtriaStressState(
+            level: level,
+            label: fact.zone.rawValue,
+            detail: detail,
+            kind: .scored,
+            confidence: fact.confidence.numericValue,
+            rawActivation: fact.score / 3,
+            hrvAvailable: !fact.isHROnly,
+            minuteFact: fact
+        )
     }
+    #endif
 
     /// Band index for a 0...1 activation using the static thresholds above.
     static func band(_ activation: Double) -> Int {
         if activation < calmUpperBound { return 0 }
-        if activation < lowUpperBound { return 1 }
         if activation < mediumUpperBound { return 2 }
         return 3
     }
 
     /// Distance-to-nearest-boundary helper used by the store's hysteresis.
     static func distanceToNearestBoundary(_ activation: Double) -> Double {
-        [calmUpperBound, lowUpperBound, mediumUpperBound]
+        [calmUpperBound, mediumUpperBound]
             .map { abs($0 - activation) }
             .min() ?? calmUpperBound
     }
 
-    /// HR contribution to cardiac activation, z-scored against the wearer's
-    /// AWAKE heart-rate reference — never their resting/sleep baseline. Uses the
-    /// person's own observed recent awake HR (`awakeReference`) when the store
-    /// has learned it, otherwise a physiological default of
-    /// `restingMean + defaultAwakeOffsetBPM`. Being at one's typical awake HR
-    /// yields ~0 activation (Calm); only genuine elevation above it climbs.
-    private static func hrActivationFraction(hrNow: Int,
-                                             baseline: PersonalBaseline,
-                                             restingMaxHR: (rest: Int, max: Int),
-                                             awakeReference: (center: Double, spread: Double)?,
-                                             now: Date) -> Double {
-        let center: Double
-        let spread: Double
-        if let awakeReference {
-            center = awakeReference.center
-            spread = max(awakeReference.spread, awakeActivationFloorSD)
-        } else {
-            let restMean = baseline.restingStats(now: now)?.mean
-                ?? Double(baseline.restingInt ?? restingMaxHR.rest)
-            center = restMean + defaultAwakeOffsetBPM
-            spread = defaultAwakeSpreadBPM
-        }
-        let z = (Double(hrNow) - center) / spread
-        return clamp01(max(z, 0) / awakeActivationDivisor)
-    }
-
-    /// Short-window RMSSD from consecutive RR (ms) beats, only trusted once the
-    /// window covers at least `minimumHRVWindowSeconds` of real beats (the sum
-    /// of the RR intervals approximates the covered time span).
-    private static func shortWindowRMSSD(_ rrMs: [Int]) -> Double? {
-        guard rrMs.count >= 2 else { return nil }
-        let totalMs = rrMs.reduce(0, +)
-        guard Double(totalMs) >= minimumHRVWindowSeconds * 1000 else { return nil }
-        var sumSquares = 0.0
-        for index in 1..<rrMs.count {
-            let diff = Double(rrMs[index] - rrMs[index - 1])
-            sumSquares += diff * diff
-        }
-        return sqrt(sumSquares / Double(rrMs.count - 1))
-    }
-
-    private static func clamp01(_ value: Double) -> Double {
-        min(max(value, 0), 1)
-    }
 }
 
 struct AtriaStressDistribution: Codable, Equatable {
@@ -531,7 +475,9 @@ struct AtriaStressDistributionArchive: Codable, Equatable {
 
     private(set) var days: [Day]
 
-    static let defaultsKey = "atria.stress.distribution.v2"
+    /// V3 is isolated from v2 categorical/calibration aggregates. Older keys
+    /// are intentionally ignored rather than relabelled or mixed.
+    static let defaultsKey = "atria.stress.distribution.v3"
     private static let retentionDays = 35
     private static let minimumSamplesPerDay = 10
     private static let minimumTypicalDays = 3
@@ -625,6 +571,39 @@ struct AtriaAwakeReferenceSnapshot: Codable, Equatable {
     var updatedAt: Date
 }
 
+/// Acquisition authority for an exact minute fact. A genuine live fact is
+/// immutable against later recovered replay. Replay facts may be enriched by a
+/// later independently-qualified context publication when cardiac evidence does
+/// not regress. Missing provenance in an early v3 file resolves to live—the
+/// conservative choice for already-recorded user data.
+enum AtriaStressHistoryFactSource: String, Codable, Equatable, Sendable {
+    case live
+    case historicalReplay
+}
+
+/// Reproducible authority carried only by recovered replay facts. Cardiac input,
+/// calibration, and confirmed context are versioned independently so a newer
+/// context publication can remove or resize an overlay without treating a
+/// confidence increase as permission to rewrite unrelated HR/RR evidence.
+struct AtriaStressReplayAuthority: Codable, Equatable, Sendable {
+    let cardiacInputRevision: String
+    let calibrationRevision: String
+    let contextRevision: String
+
+    fileprivate var isStructurallyValid: Bool {
+        Self.isRevision(cardiacInputRevision)
+            && Self.isRevision(calibrationRevision)
+            && Self.isRevision(contextRevision)
+    }
+
+    private static func isRevision(_ value: String) -> Bool {
+        guard value.hasPrefix("v1:"), value.count == 19 else { return false }
+        return value.dropFirst(3).allSatisfy { character in
+            character.isNumber || ("a"..."f").contains(character)
+        }
+    }
+}
+
 /// A compact, display-only checkpoint of real scored stress samples. This is
 /// intentionally separate from the daily distribution and awake-HR baseline:
 /// restoring it can repopulate a timeline after relaunch, but it never feeds
@@ -637,35 +616,62 @@ struct AtriaStressHistoryArchive: Codable, Equatable, Sendable {
         let confidence: Double
         let hrvAvailable: Bool
         let scoringVersion: Int
+        let minuteFact: AtriaPhysiologicalStressModel.MinuteFact?
+        /// Optional only for decode compatibility with an early v3 archive.
+        let factSource: AtriaStressHistoryFactSource?
+        /// Optional for decode compatibility with replay points written before
+        /// source/calibration/context authority became independently versioned.
+        let replayAuthority: AtriaStressReplayAuthority?
 
         init(t: Date,
              activation: Double,
              level: AtriaStressLevel,
              confidence: Double,
              hrvAvailable: Bool,
+             minuteFact: AtriaPhysiologicalStressModel.MinuteFact? = nil,
+             factSource: AtriaStressHistoryFactSource = .live,
+             replayAuthority: AtriaStressReplayAuthority? = nil,
              scoringVersion: Int = AtriaStressMonitor.scoringVersion) {
             self.t = t
             self.activation = activation
             self.levelRawValue = level.rawValue
             self.confidence = confidence
             self.hrvAvailable = hrvAvailable
+            self.minuteFact = minuteFact
+            self.factSource = factSource
+            self.replayAuthority = replayAuthority
             self.scoringVersion = scoringVersion
         }
 
         var level: AtriaStressLevel? { AtriaStressLevel(rawValue: levelRawValue) }
+        var resolvedFactSource: AtriaStressHistoryFactSource {
+            factSource ?? .live
+        }
 
         fileprivate var isValid: Bool {
-            let isHRVConsistent = hrvAvailable
-                || (levelRawValue != AtriaStressLevel.high.rawValue
-                    && activation <= AtriaStressMonitor.mediumUpperBound + 1e-9)
+            guard let minuteFact else { return false }
+            let expectedLevelRawValue: Int
+            switch minuteFact.zone {
+            case .calm: expectedLevelRawValue = AtriaStressLevel.calm.rawValue
+            case .moderate: expectedLevelRawValue = AtriaStressLevel.medium.rawValue
+            case .high: expectedLevelRawValue = AtriaStressLevel.high.rawValue
+            }
             return t.timeIntervalSinceReferenceDate.isFinite
+                && minuteFact.isStructurallyValid
                 && activation.isFinite
                 && (0...1).contains(activation)
-                && AtriaStressLevel(rawValue: levelRawValue) != nil
+                && levelRawValue == expectedLevelRawValue
                 && confidence.isFinite
                 && (0...1).contains(confidence)
-                && isHRVConsistent
+                && hrvAvailable == !minuteFact.isHROnly
+                && abs(activation - minuteFact.score / 3) <= 1e-9
+                && abs(confidence - minuteFact.confidence.numericValue) <= 1e-9
                 && scoringVersion == AtriaStressMonitor.scoringVersion
+                && minuteFact.date == t
+                && minuteFact.scoringVersion == scoringVersion
+                && (replayAuthority?.isStructurallyValid ?? true)
+                && (resolvedFactSource == .historicalReplay
+                    || replayAuthority == nil)
         }
 
         private enum CodingKeys: String, CodingKey {
@@ -675,15 +681,18 @@ struct AtriaStressHistoryArchive: Codable, Equatable, Sendable {
             case confidence = "c"
             case hrvAvailable = "h"
             case scoringVersion = "s"
+            case minuteFact = "f"
+            case factSource = "o"
+            case replayAuthority = "r"
         }
     }
 
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 3
     /// Two local days lets Activity restore today or yesterday without growing
-    /// into long-term health storage. At the store's 30-second cadence this is
-    /// bounded again by `maximumPointCount`.
+    /// into long-term health storage. At the store's one-minute cadence this is
+    /// bounded exactly by `maximumPointCount`.
     static let retentionWindow: TimeInterval = 48 * 60 * 60
-    static let maximumPointCount = 5_760
+    static let maximumPointCount = 2_880
     /// Local sample clocks should track wall time. A larger future jump signals
     /// a corrupt archive or clock discontinuity and is rejected rather than
     /// displayed as measured evidence.
@@ -758,7 +767,7 @@ final class AtriaStressHistoryPersistence: @unchecked Sendable {
     }
 
     private struct Shard: Codable, Equatable, Sendable {
-        static let schemaVersion = 2
+        static let schemaVersion = 3
         let version: Int
         let hour: Int64
         let points: [AtriaStressHistoryArchive.Point]
@@ -776,19 +785,17 @@ final class AtriaStressHistoryPersistence: @unchecked Sendable {
         }
     }
 
-    /// A normal hour has at most 120 points at the 30-second producer cadence;
-    /// eight slots tolerate boundary/clock jitter without admitting a large or
-    /// adversarial shard.
-    static let maximumPointsPerShard = 128
+    /// One point per minute plus four slots for boundary/clock jitter.
+    static let maximumPointsPerShard = 64
     /// Measured worst-field 128-point JSON is ~11 KB. A 16 KiB hard ceiling
     /// bounds both corruption exposure and write amplification to <=9 MiB/day
     /// at two shards per five-minute checkpoint (normally substantially less).
-    static let maximumEncodedBytesPerShard = 16 * 1_024
+    static let maximumEncodedBytesPerShard = 64 * 1_024
     private static let secondsPerShard: TimeInterval = 60 * 60
     private static let maximumRelevantShardCount = 50
-    static let filenamePrefix = "stress-hour-v2-"
+    static let filenamePrefix = "stress-minute-v3-"
     private static let filenameSuffix = ".json"
-    static let productionDirectoryName = "Atria/stress-history-v2"
+    static let productionDirectoryName = "Atria/stress-history-v3"
     private let directoryURL: URL
     private let fileManager: FileManager
     private let ioQueue = DispatchQueue(label: "com.adidshaft.atria.stress-history",
@@ -1190,10 +1197,1141 @@ struct AtriaAwakeBaselineArchive: Codable, Equatable {
     }
 }
 
-/// Thin store that owns the rolling buffers, activation EMA, hysteresis, and
-/// post-workout cooldown; recomputes `AtriaStressMonitor.score(...)` on each
-/// pulse update. All the actual scoring logic lives in the pure function above
-/// — this class is I/O-shaped plumbing only.
+/// Immutable, bounded input copied from SessionStore only after its recovered
+/// publication fence completes. The copy is deliberately scalar/Sendable so
+/// five-minute framing, RR qualification, and v3 scoring never run on
+/// MainActor or retain a mutable SessionStore graph.
+enum AtriaHistoricalStressReplay {
+    static let maximumSessionCount = 512
+    static let maximumHeartRateRowCount = 250_000
+    static let maximumRRRowCount = 250_000
+    static let maximumContextSourceCount = 2_048
+    static let maximumContextIntervalCount = 20_000
+    static let maximumManagedRangeCount = 8
+
+    /// Swift's `Hasher` is intentionally process-randomized. Replay authority
+    /// survives relaunch, so use a tiny deterministic FNV-1a builder over only
+    /// bounded scalar inputs instead of persisting a process-local hash value.
+    private struct StableRevisionBuilder {
+        private var value: UInt64 = 14_695_981_039_346_656_037
+
+        mutating func combine(_ byte: UInt8) {
+            value ^= UInt64(byte)
+            value &*= 1_099_511_628_211
+        }
+
+        mutating func combine(_ scalar: UInt64) {
+            var remaining = scalar
+            for _ in 0..<8 {
+                combine(UInt8(truncatingIfNeeded: remaining))
+                remaining >>= 8
+            }
+        }
+
+        mutating func combine(_ scalar: Int) {
+            combine(UInt64(bitPattern: Int64(scalar)))
+        }
+
+        mutating func combine(_ scalar: Double) {
+            combine(scalar.bitPattern)
+        }
+
+        mutating func combine(_ date: Date) {
+            combine(date.timeIntervalSinceReferenceDate)
+        }
+
+        mutating func combine(_ flag: Bool) {
+            combine(flag ? UInt8(1) : UInt8(0))
+        }
+
+        mutating func combine(_ string: String) {
+            combine(string.utf8.count)
+            for byte in string.utf8 { combine(byte) }
+        }
+
+        var revision: String {
+            let hex = String(value, radix: 16)
+            return "v1:" + String(repeating: "0", count: max(0, 16 - hex.count)) + hex
+        }
+    }
+
+    struct HeartRateRow: Equatable, Sendable {
+        let date: Date
+        let bpm: Int
+    }
+
+    struct RRRow: Equatable, Sendable {
+        let date: Date
+        let milliseconds: Int
+        let source: AtriaRRSourceProvenance?
+    }
+
+    struct Session: Equatable, Sendable {
+        let id: UUID
+        let start: Date
+        let end: Date
+        let heartRates: [HeartRateRow]
+        let rrIntervals: [RRRow]
+    }
+
+    struct ActivityContextInterval: Equatable, Sendable {
+        let start: Date
+        let end: Date
+        let intensity: Double
+        let qualified: Bool
+
+        init(start: Date,
+             end: Date,
+             intensity: Double,
+             qualified: Bool = true) {
+            self.start = start
+            self.end = end
+            self.intensity = intensity.isFinite ? min(max(intensity, 0), 1) : 0
+            self.qualified = qualified
+        }
+    }
+
+    struct SleepContextInterval: Equatable, Sendable {
+        let start: Date
+        let end: Date
+        let qualified: Bool
+
+        init(start: Date, end: Date, qualified: Bool = true) {
+            self.start = start
+            self.end = end
+            self.qualified = qualified
+        }
+    }
+
+    struct Snapshot: Equatable, Sendable {
+        let sessions: [Session]
+        let activityContexts: [ActivityContextInterval]
+        let sleepContexts: [SleepContextInterval]
+        let personalization: AtriaPhysiologicalStressModel.Personalization
+        let now: Date
+
+        init(sessions: [Session],
+             activityContexts: [ActivityContextInterval] = [],
+             sleepContexts: [SleepContextInterval] = [],
+             personalization: AtriaPhysiologicalStressModel.Personalization,
+             now: Date) {
+            self.sessions = sessions
+            self.activityContexts = activityContexts
+            self.sleepContexts = sleepContexts
+            self.personalization = personalization
+            self.now = now
+        }
+
+        var heartRateRowCount: Int {
+            var total = 0
+            for session in sessions {
+                guard session.heartRates.count
+                        <= AtriaHistoricalStressReplay.maximumHeartRateRowCount - total else {
+                    return AtriaHistoricalStressReplay.maximumHeartRateRowCount + 1
+                }
+                total += session.heartRates.count
+            }
+            return total
+        }
+
+        var rrRowCount: Int {
+            var total = 0
+            for session in sessions {
+                guard session.rrIntervals.count
+                        <= AtriaHistoricalStressReplay.maximumRRRowCount - total else {
+                    return AtriaHistoricalStressReplay.maximumRRRowCount + 1
+                }
+                total += session.rrIntervals.count
+            }
+            return total
+        }
+    }
+
+    /// A bounded COW snapshot of SessionStore-owned value storage. Copying this
+    /// on MainActor retains the arrays' immutable backing storage; it does not
+    /// materialize hundreds of thousands of scalar HR/RR rows. `SavedSession`
+    /// and the confirmed-record types predate Sendable annotations, so this
+    /// wrapper is the single audited transfer boundary. Mutation of SessionStore
+    /// values triggers Array copy-on-write and cannot alter this captured value.
+    struct StorageSnapshot: @unchecked Sendable {
+        let sessions: [SavedSession]
+        let confirmedWorkouts: [UserConfirmedWorkout]
+        let confirmedSleeps: [UserConfirmedSleep]
+        let personalization: AtriaPhysiologicalStressModel.Personalization
+        let now: Date
+    }
+
+    struct HeartRatePoint: Equatable, Sendable {
+        let date: Date
+        let bpm: Int
+    }
+
+    /// A full replay owns replay-origin points only inside these bounded clock
+    /// ranges. Candidate absence inside a managed range is authoritative (a
+    /// session was deleted/shrunk or a telemetry gap appeared), while genuine
+    /// live acquisition remains immutable. An empty range set preserves the
+    /// additive legacy/test ingestion contract and can never erase history.
+    struct ManagedRange: Equatable, Sendable {
+        let start: Date
+        let end: Date
+
+        init(start: Date, end: Date) {
+            self.start = start
+            self.end = end
+        }
+
+        fileprivate var isStructurallyValid: Bool {
+            start.timeIntervalSinceReferenceDate.isFinite
+                && end.timeIntervalSinceReferenceDate.isFinite
+                && end >= start
+        }
+
+        fileprivate func contains(_ date: Date) -> Bool {
+            date >= start && date <= end
+        }
+    }
+
+    struct Result: Equatable, Sendable {
+        let facts: [AtriaPhysiologicalStressModel.MinuteFact]
+        let heartRates: [HeartRatePoint]
+        /// Per-minute replay authority. Direct legacy/test ingestion may omit
+        /// it and receives the conservative monotonic merge contract.
+        let authorityByDate: [Date: AtriaStressReplayAuthority]
+        /// Non-empty only for a successfully validated full-source replay.
+        /// Failures/cancellation use `.empty` with no destructive authority.
+        let managedRanges: [ManagedRange]
+
+        init(facts: [AtriaPhysiologicalStressModel.MinuteFact],
+             heartRates: [HeartRatePoint],
+             authorityByDate: [Date: AtriaStressReplayAuthority] = [:],
+             managedRanges: [ManagedRange] = []) {
+            self.facts = facts
+            self.heartRates = heartRates
+            self.authorityByDate = authorityByDate
+            self.managedRanges = managedRanges
+        }
+
+        static let empty = Result(facts: [],
+                                  heartRates: [],
+                                  authorityByDate: [:],
+                                  managedRanges: [])
+    }
+
+    private static func calibrationRevision(
+        _ personalization: AtriaPhysiologicalStressModel.Personalization
+    ) -> String {
+        var builder = StableRevisionBuilder()
+        builder.combine("atria-stress-calibration-v1")
+        builder.combine(personalization.restingHeartRate)
+        builder.combine(personalization.maximumHeartRate)
+        builder.combine(personalization.restingBaselineDayCount)
+        if let baseline = personalization.hrvBaseline {
+            builder.combine(true)
+            builder.combine(baseline.medianLnRMSSD)
+            builder.combine(baseline.robustScale)
+            builder.combine(baseline.qualifiedDayCount)
+        } else {
+            builder.combine(false)
+        }
+        return builder.revision
+    }
+
+    private static func contextRevision(
+        activity: [ActivityContextInterval],
+        sleep: [SleepContextInterval]
+    ) -> String {
+        var builder = StableRevisionBuilder()
+        builder.combine("atria-stress-context-v1")
+        builder.combine(activity.count)
+        for interval in activity {
+            builder.combine(interval.start)
+            builder.combine(interval.end)
+            builder.combine(interval.intensity)
+            builder.combine(interval.qualified)
+        }
+        builder.combine(sleep.count)
+        for interval in sleep {
+            builder.combine(interval.start)
+            builder.combine(interval.end)
+            builder.combine(interval.qualified)
+        }
+        return builder.revision
+    }
+
+    private static func cardiacInputRevision(
+        heartRates: [AtriaPhysiologicalStressModel.HeartRateSample],
+        rrIntervals: [AtriaPhysiologicalStressModel.RRSample],
+        previousRevision: String?
+    ) -> String {
+        var builder = StableRevisionBuilder()
+        builder.combine("atria-stress-cardiac-input-v1")
+        if let previousRevision {
+            builder.combine(true)
+            builder.combine(previousRevision)
+        } else {
+            builder.combine(false)
+        }
+        builder.combine(heartRates.count)
+        for sample in heartRates {
+            builder.combine(sample.date)
+            builder.combine(sample.bpm)
+            builder.combine(sample.qualified)
+        }
+        builder.combine(rrIntervals.count)
+        for sample in rrIntervals {
+            builder.combine(sample.date)
+            builder.combine(sample.milliseconds)
+            builder.combine(sample.qualified)
+        }
+        return builder.revision
+    }
+
+    /// Cheap bounds seam used before allocating scalar row copies. A source
+    /// that exceeds any cap fails closed instead of turning a recovery publish
+    /// into unbounded foreground work.
+    static func isWithinSnapshotBounds(sessionCount: Int,
+                                       heartRateRowCount: Int,
+                                       rrRowCount: Int) -> Bool {
+        sessionCount >= 0 && sessionCount <= maximumSessionCount
+            && heartRateRowCount >= 0
+            && heartRateRowCount <= maximumHeartRateRowCount
+            && rrRowCount >= 0
+            && rrRowCount <= maximumRRRowCount
+    }
+
+    /// MainActor retains only bounded COW value-storage references and performs
+    /// O(session/context count) bounds checks. It never walks or materializes the
+    /// high-frequency HR/RR rows. Scalar detachment, context qualification,
+    /// chronological normalization, window framing, and scoring all run in the
+    /// detached `evaluate(_:)` worker.
+    @MainActor
+    static func snapshot(sessions: [SavedSession],
+                         confirmedWorkouts: [UserConfirmedWorkout] = [],
+                         confirmedSleeps: [UserConfirmedSleep] = [],
+                         personalization: AtriaPhysiologicalStressModel.Personalization,
+                         now: Date) -> StorageSnapshot? {
+        guard now.timeIntervalSinceReferenceDate.isFinite else { return nil }
+        let sourceCutoff = now.addingTimeInterval(
+            -AtriaStressHistoryArchive.retentionWindow
+                - AtriaPhysiologicalStressModel.windowDuration
+        )
+        let futureLimit = now.addingTimeInterval(
+            AtriaStressHistoryArchive.maximumFutureSkew
+        )
+        var recentSessions: [SavedSession] = []
+        recentSessions.reserveCapacity(min(sessions.count, maximumSessionCount))
+        var heartRateCount = 0
+        var rrCount = 0
+        var recoveredMotionEpochCount = 0
+        for session in sessions {
+            guard session.start.timeIntervalSinceReferenceDate.isFinite,
+                  session.end.timeIntervalSinceReferenceDate.isFinite,
+                  session.end >= sourceCutoff,
+                  session.start <= futureLimit else { continue }
+            guard recentSessions.count < maximumSessionCount,
+                  session.points.count <= maximumHeartRateRowCount - heartRateCount,
+                  (session.rrPoints?.count ?? 0) <= maximumRRRowCount - rrCount,
+                  (session.recoveredMotionEpochs?.count ?? 0)
+                    <= maximumContextIntervalCount - recoveredMotionEpochCount else {
+                return nil
+            }
+            recentSessions.append(session)
+            heartRateCount += session.points.count
+            rrCount += session.rrPoints?.count ?? 0
+            recoveredMotionEpochCount += session.recoveredMotionEpochs?.count ?? 0
+        }
+        var recentWorkouts: [UserConfirmedWorkout] = []
+        recentWorkouts.reserveCapacity(min(confirmedWorkouts.count,
+                                           maximumContextSourceCount))
+        for workout in confirmedWorkouts where workout.end >= sourceCutoff
+            && workout.start <= futureLimit {
+            guard recentWorkouts.count < maximumContextSourceCount else { return nil }
+            recentWorkouts.append(workout)
+        }
+        var recentSleeps: [UserConfirmedSleep] = []
+        recentSleeps.reserveCapacity(min(confirmedSleeps.count,
+                                         maximumContextSourceCount))
+        for sleep in confirmedSleeps where sleep.end >= sourceCutoff
+            && sleep.start <= futureLimit {
+            guard recentSleeps.count < maximumContextSourceCount else { return nil }
+            recentSleeps.append(sleep)
+        }
+        guard isWithinSnapshotBounds(sessionCount: recentSessions.count,
+                                     heartRateRowCount: heartRateCount,
+                                     rrRowCount: rrCount) else { return nil }
+        return StorageSnapshot(sessions: recentSessions,
+                               confirmedWorkouts: recentWorkouts,
+                               confirmedSleeps: recentSleeps,
+                               personalization: personalization,
+                               now: now)
+    }
+
+    /// Performs the capped high-frequency copy off MainActor. Every context is
+    /// admitted through an independent recovered-motion or explicit-confirmation
+    /// gate; ambiguous hints remain unavailable and cannot attenuate a score.
+    static func materialize(_ source: StorageSnapshot) -> Snapshot? {
+        guard !Task.isCancelled,
+              source.now.timeIntervalSinceReferenceDate.isFinite,
+              source.sessions.count <= maximumSessionCount,
+              source.confirmedWorkouts.count <= maximumContextSourceCount,
+              source.confirmedSleeps.count <= maximumContextSourceCount else {
+            return nil
+        }
+        let sourceCutoff = source.now.addingTimeInterval(
+            -AtriaStressHistoryArchive.retentionWindow
+                - AtriaPhysiologicalStressModel.windowDuration
+        )
+        let futureLimit = source.now.addingTimeInterval(
+            AtriaStressHistoryArchive.maximumFutureSkew
+        )
+        var copied: [Session] = []
+        copied.reserveCapacity(source.sessions.count)
+        var activityContexts: [ActivityContextInterval] = []
+        var heartRateCount = 0
+        var rrCount = 0
+
+        for session in source.sessions {
+            guard !Task.isCancelled else { return nil }
+            var heartRates: [HeartRateRow] = []
+            var rrIntervals: [RRRow] = []
+            heartRates.reserveCapacity(session.points.count)
+            rrIntervals.reserveCapacity(session.rrPoints?.count ?? 0)
+            for point in session.points {
+                let date = session.start.addingTimeInterval(point.t)
+                guard date.timeIntervalSinceReferenceDate.isFinite,
+                      date >= sourceCutoff,
+                      date <= futureLimit else { continue }
+                guard heartRateCount < maximumHeartRateRowCount else { return nil }
+                heartRateCount += 1
+                heartRates.append(HeartRateRow(date: date, bpm: point.bpm))
+            }
+            for point in session.rrPoints ?? [] {
+                let date = session.start.addingTimeInterval(point.t)
+                guard date.timeIntervalSinceReferenceDate.isFinite,
+                      date >= sourceCutoff,
+                      date <= futureLimit else { continue }
+                guard rrCount < maximumRRRowCount else { return nil }
+                rrCount += 1
+                rrIntervals.append(RRRow(date: date,
+                                         milliseconds: point.ms,
+                                         source: point.source))
+            }
+            for epoch in session.recoveredMotionEpochs ?? [] {
+                guard epoch.measurementValidated,
+                      !epoch.lowMotionQualified,
+                      let intensity = epoch.movementIntensity,
+                      intensity.isFinite,
+                      (0...1).contains(intensity),
+                      epoch.start.timeIntervalSinceReferenceDate.isFinite,
+                      epoch.end.timeIntervalSinceReferenceDate.isFinite,
+                      epoch.end > epoch.start,
+                      epoch.end >= sourceCutoff,
+                      epoch.start <= futureLimit else { continue }
+                let independentMovement = epoch.stillnessRatio.flatMap { stillness
+                    -> Double? in
+                    guard stillness.isFinite, (0...1).contains(stillness) else {
+                        return nil
+                    }
+                    return 1 - stillness
+                }
+                guard intensity >= 0.08 || (independentMovement ?? 0) >= 0.35 else {
+                    // A measurement-valid epoch that is merely not qualified as
+                    // sleep-still is not automatically activity authority.
+                    continue
+                }
+                guard activityContexts.count < maximumContextIntervalCount else {
+                    return nil
+                }
+                activityContexts.append(
+                    ActivityContextInterval(start: max(epoch.start, sourceCutoff),
+                                            end: min(epoch.end, futureLimit),
+                                            intensity: max(intensity,
+                                                           independentMovement ?? 0))
+                )
+            }
+            copied.append(Session(id: session.id,
+                                  start: session.start,
+                                  end: session.end,
+                                  heartRates: heartRates,
+                                  rrIntervals: rrIntervals))
+        }
+
+        for workout in source.confirmedWorkouts {
+            guard let contexts = qualifiedActivityContexts(
+                for: workout,
+                sourceCutoff: sourceCutoff,
+                futureLimit: futureLimit
+            ) else { continue }
+            guard contexts.count <= maximumContextIntervalCount - activityContexts.count else {
+                return nil
+            }
+            activityContexts.append(contentsOf: contexts)
+        }
+        var sleepContexts: [SleepContextInterval] = []
+        sleepContexts.reserveCapacity(source.confirmedSleeps.count)
+        for sleep in source.confirmedSleeps {
+            guard isQualifiedHistoricalSleep(sleep),
+                  sleep.start.timeIntervalSinceReferenceDate.isFinite,
+                  sleep.end.timeIntervalSinceReferenceDate.isFinite,
+                  sleep.end > sleep.start,
+                  sleep.end >= sourceCutoff,
+                  sleep.start <= futureLimit else { continue }
+            guard sleepContexts.count < maximumContextIntervalCount else { return nil }
+            sleepContexts.append(
+                SleepContextInterval(start: max(sleep.start, sourceCutoff),
+                                     end: min(sleep.end, futureLimit))
+            )
+        }
+
+        activityContexts.sort {
+            $0.start == $1.start ? $0.end < $1.end : $0.start < $1.start
+        }
+        sleepContexts.sort {
+            $0.start == $1.start ? $0.end < $1.end : $0.start < $1.start
+        }
+        return Snapshot(sessions: copied,
+                        activityContexts: activityContexts,
+                        sleepContexts: sleepContexts,
+                        personalization: source.personalization,
+                        now: source.now)
+    }
+
+    static func evaluate(_ source: StorageSnapshot) -> Result {
+        guard let snapshot = materialize(source) else { return .empty }
+        return evaluate(snapshot)
+    }
+
+    /// Frames exact overlapping five-minute windows at one-minute boundaries
+    /// and calls the same pure v3 kernel used by live scoring. The two sliding
+    /// ranges make framing O(rows + minute windows), with at most five copies of
+    /// a regular one-minute-cadence source row. A missing minute explicitly
+    /// clears the EMA seed, so replay never bridges telemetry gaps.
+    static func evaluate(_ snapshot: Snapshot) -> Result {
+        guard !Task.isCancelled,
+              snapshot.now.timeIntervalSinceReferenceDate.isFinite,
+              isWithinSnapshotBounds(sessionCount: snapshot.sessions.count,
+                                     heartRateRowCount: snapshot.heartRateRowCount,
+                                     rrRowCount: snapshot.rrRowCount),
+              snapshot.activityContexts.count <= maximumContextIntervalCount,
+              snapshot.sleepContexts.count <= maximumContextIntervalCount,
+              isChronological(snapshot.activityContexts, date: { $0.start }),
+              isChronological(snapshot.sleepContexts, date: { $0.start }),
+              snapshot.activityContexts.allSatisfy({
+                  $0.start.timeIntervalSinceReferenceDate.isFinite
+                    && $0.end.timeIntervalSinceReferenceDate.isFinite
+                    && $0.end > $0.start
+                    && $0.intensity.isFinite
+                    && (0...1).contains($0.intensity)
+              }),
+              snapshot.sleepContexts.allSatisfy({
+                  $0.start.timeIntervalSinceReferenceDate.isFinite
+                    && $0.end.timeIntervalSinceReferenceDate.isFinite
+                    && $0.end > $0.start
+              }) else {
+            return .empty
+        }
+
+        guard let orderedSessions = chronologicallyOrderedSessions(snapshot.sessions) else {
+            return .empty
+        }
+        let managedRanges = [ManagedRange(
+            start: snapshot.now.addingTimeInterval(
+                -AtriaStressHistoryArchive.retentionWindow
+            ),
+            end: snapshot.now
+        )]
+        var heartRates: [HeartRateRow] = []
+        heartRates.reserveCapacity(snapshot.heartRateRowCount)
+        var taggedRR: [(sessionID: UUID, row: RRRow)] = []
+        taggedRR.reserveCapacity(snapshot.rrRowCount)
+
+        for session in orderedSessions {
+            guard !Task.isCancelled else { return .empty }
+            guard isChronological(session.heartRates, date: { $0.date }),
+                  isChronological(session.rrIntervals, date: { $0.date }) else {
+                // Managed-range absence is destructive authority. A malformed
+                // session is therefore a replay failure, never evidence that
+                // its previously verified minutes disappeared.
+                return .empty
+            }
+            for row in session.heartRates {
+                if let prior = heartRates.last {
+                    if row.date < prior.date { continue }
+                    if row.date == prior.date {
+                        heartRates[heartRates.count - 1] = row
+                        continue
+                    }
+                }
+                heartRates.append(row)
+            }
+            for row in session.rrIntervals {
+                if let prior = taggedRR.last {
+                    if row.date < prior.row.date { continue }
+                    if row.date == prior.row.date {
+                        taggedRR[taggedRR.count - 1] = (session.id, row)
+                        continue
+                    }
+                }
+                taggedRR.append((session.id, row))
+            }
+        }
+
+        guard let firstHeartRateDate = heartRates.first?.date,
+              let lastHeartRateDate = heartRates.last?.date else {
+            // A successfully validated empty full-source snapshot is
+            // authoritative absence, not a replay failure. Its managed range
+            // removes obsolete replay-owned points while preserving live facts.
+            return Result(facts: [],
+                          heartRates: [],
+                          authorityByDate: [:],
+                          managedRanges: managedRanges)
+        }
+        let retainedStart = snapshot.now.addingTimeInterval(
+            -AtriaStressHistoryArchive.retentionWindow
+        )
+        let firstEnd = minuteCeiling(max(retainedStart, firstHeartRateDate))
+        let lastEnd = minuteFloor(min(snapshot.now, lastHeartRateDate))
+        guard firstEnd <= lastEnd else {
+            return Result(facts: [],
+                          heartRates: [],
+                          authorityByDate: [:],
+                          managedRanges: managedRanges)
+        }
+
+        var facts: [AtriaPhysiologicalStressModel.MinuteFact] = []
+        facts.reserveCapacity(min(AtriaStressHistoryArchive.maximumPointCount,
+                                  Int((lastEnd.timeIntervalSince(firstEnd) / 60) + 1)))
+        var sampledHeartRates: [HeartRatePoint] = []
+        sampledHeartRates.reserveCapacity(facts.capacity)
+        var authorityByDate: [Date: AtriaStressReplayAuthority] = [:]
+        authorityByDate.reserveCapacity(facts.capacity)
+        let calibrationRevision = calibrationRevision(snapshot.personalization)
+        let contextRevision = contextRevision(activity: snapshot.activityContexts,
+                                              sleep: snapshot.sleepContexts)
+        var previousFact: AtriaPhysiologicalStressModel.MinuteFact?
+        var previousCardiacInputRevision: String?
+        var heartRateLower = 0
+        var heartRateUpper = 0
+        var rrLower = 0
+        var rrUpper = 0
+        var activityContextLower = 0
+        var sleepContextLower = 0
+        var end = firstEnd
+
+        while end <= lastEnd {
+            guard !Task.isCancelled else { return .empty }
+            let start = end.addingTimeInterval(
+                -AtriaPhysiologicalStressModel.windowDuration
+            )
+            while heartRateUpper < heartRates.count,
+                  heartRates[heartRateUpper].date <= end {
+                heartRateUpper += 1
+            }
+            while heartRateLower < heartRateUpper,
+                  heartRates[heartRateLower].date < start {
+                heartRateLower += 1
+            }
+            while rrUpper < taggedRR.count,
+                  taggedRR[rrUpper].row.date <= end {
+                rrUpper += 1
+            }
+            while rrLower < rrUpper,
+                  taggedRR[rrLower].row.date < start {
+                rrLower += 1
+            }
+
+            let heartRateWindow = heartRates[heartRateLower..<heartRateUpper].map {
+                AtriaPhysiologicalStressModel.HeartRateSample(
+                    date: $0.date,
+                    bpm: $0.bpm,
+                    qualified: (30...240).contains($0.bpm)
+                )
+            }
+            let rrWindow = Array(taggedRR[rrLower..<rrUpper])
+            let qualifiedRR = qualifiedRRSamples(
+                rrWindow,
+                heartRates: heartRateWindow,
+                start: start,
+                end: end
+            )
+            let cardiacInputRevision = cardiacInputRevision(
+                heartRates: heartRateWindow,
+                rrIntervals: qualifiedRR,
+                previousRevision: previousCardiacInputRevision
+            )
+            var motionContext = qualifiedMotionContext(
+                snapshot.activityContexts,
+                lowerIndex: &activityContextLower,
+                windowStart: start,
+                windowEnd: end
+            )
+            let sleepContext = qualifiedSleepContext(
+                snapshot.sleepContexts,
+                lowerIndex: &sleepContextLower,
+                windowStart: start,
+                windowEnd: end
+            )
+            if sleepContext == .asleep {
+                // Conflicting activity/sleep records must never compound into a
+                // stronger adjustment. Preserve the qualified sleep overlay and
+                // fail motion attenuation closed for that window.
+                motionContext = .unavailable
+            }
+            let input = AtriaPhysiologicalStressModel.WindowInput(
+                end: end,
+                heartRates: heartRateWindow,
+                rrIntervals: qualifiedRR,
+                personalization: snapshot.personalization,
+                motionContext: motionContext,
+                sleepContext: sleepContext
+            )
+            if let fact = AtriaPhysiologicalStressModel.evaluate(
+                input,
+                previous: previousFact
+            ) {
+                facts.append(fact)
+                previousFact = fact
+                previousCardiacInputRevision = cardiacInputRevision
+                authorityByDate[fact.date] = AtriaStressReplayAuthority(
+                    cardiacInputRevision: cardiacInputRevision,
+                    calibrationRevision: calibrationRevision,
+                    contextRevision: contextRevision
+                )
+                if let latest = heartRateWindow.last(where: { $0.qualified }),
+                   latest.date >= retainedStart {
+                    sampledHeartRates.append(
+                        HeartRatePoint(date: latest.date, bpm: latest.bpm)
+                    )
+                }
+            } else {
+                previousFact = nil
+                previousCardiacInputRevision = nil
+            }
+            end = end.addingTimeInterval(
+                AtriaPhysiologicalStressModel.evaluationCadence
+            )
+        }
+
+        return Result(facts: facts,
+                      heartRates: sampledHeartRates,
+                      authorityByDate: authorityByDate,
+                      managedRanges: managedRanges)
+    }
+
+    private static func qualifiedRRSamples(
+        _ tagged: [(sessionID: UUID, row: RRRow)],
+        heartRates: [AtriaPhysiologicalStressModel.HeartRateSample],
+        start: Date,
+        end: Date
+    ) -> [AtriaPhysiologicalStressModel.RRSample] {
+        guard let sessionID = tagged.first?.sessionID,
+              tagged.allSatisfy({ $0.sessionID == sessionID }) else {
+            // Never concatenate a tachogram across a saved/reconnect boundary.
+            return []
+        }
+        let source = tagged.map {
+            AtriaBreathworkSession.RRSample(date: $0.row.date,
+                                            ms: $0.row.milliseconds,
+                                            source: $0.row.source)
+        }
+        let aligned = AtriaStressMonitorStore.timeAlignedRRIntervals(
+            source,
+            heartRates: heartRates.map { (t: $0.date, bpm: $0.bpm) },
+            start: start,
+            end: end
+        )
+        let (quality, corrected) = HRVAnalyzer.analyze(
+            aligned,
+            now: end,
+            includeTachogram: true,
+            provenance: .localRRWindow
+        )
+        // This existing gate accepts only standard 2A37 provenance. Verified
+        // historical v24, mixed, and legacy nil RR therefore remain HR-only.
+        guard quality?.isLiveStressEligible(on: end, maximumAge: 60) == true else {
+            return []
+        }
+        return corrected.map {
+            AtriaPhysiologicalStressModel.RRSample(
+                date: $0.t,
+                milliseconds: $0.ms,
+                qualified: $0.corrected && !$0.interpolated
+            )
+        }
+    }
+
+    /// A confirmed record is independent activity authority only when the user
+    /// explicitly confirmed it, or when its bounded recovered-gravity receipt is
+    /// ready with qualified coverage. Detector labels and HR elevation alone do
+    /// not become motion evidence.
+    private static func qualifiedActivityContexts(
+        for workout: UserConfirmedWorkout,
+        sourceCutoff: Date,
+        futureLimit: Date
+    ) -> [ActivityContextInterval]? {
+        guard workout.start.timeIntervalSinceReferenceDate.isFinite,
+              workout.end.timeIntervalSinceReferenceDate.isFinite,
+              workout.end > workout.start,
+              workout.end >= sourceCutoff,
+              workout.start <= futureLimit else { return nil }
+        let userConfirmed = workout.confidence
+            .localizedCaseInsensitiveContains("user_confirmed")
+        let recoveredMotion = workout.activityCalibrationEvidence.flatMap { evidence
+            -> Double? in
+            guard evidence.status == "ready",
+                  evidence.motion.provenance == AtriaRecoveredMotionEpoch.source,
+                  evidence.motion.validatedCoverageFraction >= 0.80,
+                  let intensity = evidence.motion.meanMovementIntensity,
+                  intensity.isFinite,
+                  (0...1).contains(intensity),
+                  intensity >= 0.08 else { return nil }
+            return min(max(intensity, 0.35), 1)
+        }
+        guard userConfirmed || recoveredMotion != nil else { return nil }
+        let intensity = recoveredMotion ?? 0.65
+        let start = max(workout.start, sourceCutoff)
+        let end = min(workout.end, futureLimit)
+        guard end > start else { return nil }
+
+        var segments: [(start: Date, end: Date)] = [(start, end)]
+        let exclusions = (workout.excludedIntervals ?? [])
+            .filter {
+                $0.start.timeIntervalSinceReferenceDate.isFinite
+                    && $0.end.timeIntervalSinceReferenceDate.isFinite
+                    && $0.end > $0.start
+            }
+            .sorted { $0.start < $1.start }
+        for exclusion in exclusions {
+            var next: [(start: Date, end: Date)] = []
+            next.reserveCapacity(segments.count + 1)
+            for segment in segments {
+                guard exclusion.end > segment.start,
+                      exclusion.start < segment.end else {
+                    next.append(segment)
+                    continue
+                }
+                if exclusion.start > segment.start {
+                    next.append((segment.start, min(exclusion.start, segment.end)))
+                }
+                if exclusion.end < segment.end {
+                    next.append((max(exclusion.end, segment.start), segment.end))
+                }
+            }
+            segments = next
+            if segments.isEmpty { break }
+        }
+        return segments.compactMap { segment in
+            guard segment.end > segment.start else { return nil }
+            return ActivityContextInterval(start: segment.start,
+                                           end: segment.end,
+                                           intensity: intensity)
+        }
+    }
+
+    /// Sleep requires the same durable main-sleep and independent qualification
+    /// gate as live scoring. A low-HR or clock-only inferred sleep never becomes
+    /// a historical overlay or modifier.
+    static func isQualifiedHistoricalSleep(_ sleep: UserConfirmedSleep) -> Bool {
+        guard SessionStore.confirmedSleepIsPhysiologicalMainSleep(sleep) else {
+            return false
+        }
+        let userQualified = sleep.source.hasPrefix("manual_")
+            || sleep.source.hasPrefix("user_adjusted_")
+            || sleep.confidence.hasPrefix("user_confirmed_")
+        return sleep.motionValidated || userQualified
+    }
+
+    /// Requires at least 80% independently qualified context coverage across the
+    /// exact five-minute score window. This prevents a one-beat or one-epoch hint
+    /// from relabelling and attenuating the full fact.
+    private static func qualifiedMotionContext(
+        _ contexts: [ActivityContextInterval],
+        lowerIndex: inout Int,
+        windowStart: Date,
+        windowEnd: Date
+    ) -> AtriaPhysiologicalStressModel.MotionContext {
+        while lowerIndex < contexts.count,
+              contexts[lowerIndex].end <= windowStart {
+            lowerIndex += 1
+        }
+        var cursor = windowStart
+        var covered: TimeInterval = 0
+        var weightedIntensity = 0.0
+        var index = lowerIndex
+        while index < contexts.count, contexts[index].start < windowEnd {
+            let context = contexts[index]
+            if context.qualified {
+                let lower = max(max(windowStart, context.start), cursor)
+                let upper = min(windowEnd, context.end)
+                if upper > lower {
+                    let duration = upper.timeIntervalSince(lower)
+                    covered += duration
+                    weightedIntensity += duration * context.intensity
+                    cursor = max(cursor, upper)
+                }
+            }
+            index += 1
+        }
+        let required = 0.80 * windowEnd.timeIntervalSince(windowStart)
+        guard covered >= required, covered > 0 else { return .unavailable }
+        return .qualifiedActivity(intensity: weightedIntensity / covered)
+    }
+
+    private static func qualifiedSleepContext(
+        _ contexts: [SleepContextInterval],
+        lowerIndex: inout Int,
+        windowStart: Date,
+        windowEnd: Date
+    ) -> AtriaPhysiologicalStressModel.SleepContext {
+        while lowerIndex < contexts.count,
+              contexts[lowerIndex].end <= windowStart {
+            lowerIndex += 1
+        }
+        var cursor = windowStart
+        var covered: TimeInterval = 0
+        var index = lowerIndex
+        while index < contexts.count, contexts[index].start < windowEnd {
+            let context = contexts[index]
+            if context.qualified {
+                let lower = max(max(windowStart, context.start), cursor)
+                let upper = min(windowEnd, context.end)
+                if upper > lower {
+                    covered += upper.timeIntervalSince(lower)
+                    cursor = max(cursor, upper)
+                }
+            }
+            index += 1
+        }
+        let required = 0.80 * windowEnd.timeIntervalSince(windowStart)
+        return covered >= required ? .asleep : .unavailable
+    }
+
+    private static func isChronological<Value>(
+        _ values: [Value],
+        date: (Value) -> Date
+    ) -> Bool {
+        var previous: Date?
+        for value in values {
+            let current = date(value)
+            guard current.timeIntervalSinceReferenceDate.isFinite,
+                  previous.map({ current >= $0 }) ?? true else { return false }
+            previous = current
+        }
+        return true
+    }
+
+    /// SessionStore publishes one monotonic session order (newest-first in the
+    /// normal cache). Accept either monotonic direction and reverse when needed;
+    /// a mixed/corrupt order fails closed instead of paying for an O(n log n)
+    /// reorder that could hide overlapping provenance.
+    private static func chronologicallyOrderedSessions(
+        _ sessions: [Session]
+    ) -> [Session]? {
+        var direction = 0 // 1 ascending, -1 descending
+        var previous: Date?
+        for session in sessions {
+            guard session.start.timeIntervalSinceReferenceDate.isFinite,
+                  session.end.timeIntervalSinceReferenceDate.isFinite else {
+                return nil
+            }
+            if let previous, session.start != previous {
+                let nextDirection = session.start > previous ? 1 : -1
+                if direction != 0, direction != nextDirection { return nil }
+                direction = nextDirection
+            }
+            previous = session.start
+        }
+        return direction == -1 ? Array(sessions.reversed()) : sessions
+    }
+
+    private static func minuteFloor(_ date: Date) -> Date {
+        Date(timeIntervalSince1970:
+            floor(date.timeIntervalSince1970
+                  / AtriaPhysiologicalStressModel.evaluationCadence)
+                * AtriaPhysiologicalStressModel.evaluationCadence)
+    }
+
+    private static func minuteCeiling(_ date: Date) -> Date {
+        Date(timeIntervalSince1970:
+            ceil(date.timeIntervalSince1970
+                 / AtriaPhysiologicalStressModel.evaluationCadence)
+                * AtriaPhysiologicalStressModel.evaluationCadence)
+    }
+}
+
+/// Monotonic coalescing authority for recovered-history notifications. Tests
+/// can deterministically prove that a rapid second publication invalidates the
+/// first worker before either result reaches the archive merge.
+struct AtriaHistoricalStressReplayGenerationGate: Equatable, Sendable {
+    private(set) var current: UInt64 = 0
+
+    mutating func begin() -> UInt64 {
+        current &+= 1
+        if current == 0 { current = 1 }
+        return current
+    }
+
+    func accepts(_ generation: UInt64) -> Bool {
+        generation != 0 && generation == current
+    }
+}
+
+/// O(1) identity of every personalization scalar consumed by the v3 kernel.
+/// Constructing it is bounded by PersonalBaseline's 90-day cap and happens only
+/// when baseline/profile authority publishes—not on the live HR hot loop. Home
+/// retains only this fixed-size value, so equality and replay dedup are O(1).
+struct AtriaHistoricalStressCalibrationFingerprint: Equatable, Sendable {
+    let restingHeartRate: Double
+    let maximumHeartRate: Double
+    let restingBaselineDayCount: Int
+    let medianLnRMSSD: Double?
+    let robustScale: Double?
+    let qualifiedHRVDayCount: Int?
+
+    init(_ personalization: AtriaPhysiologicalStressModel.Personalization) {
+        restingHeartRate = personalization.restingHeartRate
+        maximumHeartRate = personalization.maximumHeartRate
+        restingBaselineDayCount = personalization.restingBaselineDayCount
+        medianLnRMSSD = personalization.hrvBaseline?.medianLnRMSSD
+        robustScale = personalization.hrvBaseline?.robustScale
+        qualifiedHRVDayCount = personalization.hrvBaseline?.qualifiedDayCount
+    }
+}
+
+/// Seeds from Home's initial settled publication, then accepts only a changed
+/// complete calibration. Recovered/restore fences may expose provisional
+/// baseline values while independent profile or fallback-rest changes survive a
+/// rollback. Those observations stay typed as pending until SessionStore emits
+/// an exact terminal edge and Home supplies the final post-fence fingerprint.
+struct AtriaHistoricalStressCalibrationPublicationGate: Equatable, Sendable {
+    private var current: AtriaHistoricalStressCalibrationFingerprint?
+    private var pendingDeferred: AtriaHistoricalStressCalibrationFingerprint?
+    private var pendingSourceReplayRequired = false
+
+    mutating func accepts(
+        _ fingerprint: AtriaHistoricalStressCalibrationFingerprint,
+        publicationDeferred: Bool
+    ) -> Bool {
+        if publicationDeferred
+            || pendingDeferred != nil
+            || pendingSourceReplayRequired {
+            pendingDeferred = fingerprint
+            return false
+        }
+        return settle(fingerprint)
+    }
+
+    /// Records a terminal publication without consuming provisional state.
+    /// Recovery and backup restore own independent fences, so the first edge
+    /// may arrive while the other transaction is still exposing provisional
+    /// authority. A successful source publication is retained as one bit until
+    /// the final fence releases; calibration-only failure edges do not invent a
+    /// replay. Home must call `releaseDeferred(final:)` only when this returns
+    /// true, which also keeps the pre-bounded personalization projection off
+    /// intermediate terminal edges.
+    mutating func recordTerminal(
+        sourceReplayRequired: Bool,
+        publicationDeferred: Bool
+    ) -> Bool {
+        pendingSourceReplayRequired = pendingSourceReplayRequired
+            || sourceReplayRequired
+        guard !publicationDeferred else { return false }
+        return pendingDeferred != nil || pendingSourceReplayRequired
+    }
+
+    /// Releases exactly one deferred transaction against its authoritative
+    /// post-fence state. A rollback callback may arrive after SessionStore has
+    /// cleared its active ticket; because `pendingDeferred` remains set, that
+    /// callback updates only pending state and can never leak a provisional
+    /// replay before this terminal comparison.
+    mutating func releaseDeferred(
+        final fingerprint: AtriaHistoricalStressCalibrationFingerprint
+    ) -> Bool {
+        guard pendingDeferred != nil || pendingSourceReplayRequired else {
+            return false
+        }
+        let sourceReplayRequired = pendingSourceReplayRequired
+        pendingDeferred = nil
+        pendingSourceReplayRequired = false
+        return settle(fingerprint) || sourceReplayRequired
+    }
+
+    private mutating func settle(
+        _ fingerprint: AtriaHistoricalStressCalibrationFingerprint
+    ) -> Bool {
+        guard fingerprint != current else { return false }
+        let hadCurrent = current != nil
+        current = fingerprint
+        return hadCurrent
+    }
+}
+
+/// Exact fact-revision accounting shared by bounded live checkpoints and full
+/// recovered-history saves. Completion order is deliberately irrelevant: a
+/// successful writer clears a timestamp only when the currently dirty mutation
+/// revision exactly matches the revision captured in that writer's submission.
+/// Replacing a fact at the same minute while I/O is in flight therefore cannot
+/// be falsely declared durable by the older completion.
+struct AtriaStressHistoryDurabilityLedger: Equatable, Sendable {
+    struct Submission: Equatable, Sendable {
+        fileprivate let revisions: [Date: UInt64]
+        var count: Int { revisions.count }
+    }
+
+    private var nextRevision: UInt64 = 0
+    private var dirtyRevisions: [Date: UInt64] = [:]
+
+    var dirtyCount: Int { dirtyRevisions.count }
+    var isEmpty: Bool { dirtyRevisions.isEmpty }
+
+    mutating func markDirty(_ date: Date) {
+        nextRevision &+= 1
+        if nextRevision == 0 { nextRevision = 1 }
+        dirtyRevisions[date] = nextRevision
+    }
+
+    mutating func markDirty<S: Sequence>(_ dates: S) where S.Element == Date {
+        for date in dates { markDirty(date) }
+    }
+
+    func isDirty(_ date: Date) -> Bool {
+        dirtyRevisions[date] != nil
+    }
+
+    mutating func retainOnly<S: Sequence>(_ retainedDates: S)
+        where S.Element == Date {
+        let retained = Set(retainedDates)
+        dirtyRevisions = dirtyRevisions.filter { retained.contains($0.key) }
+    }
+
+    func submission<S: Sequence>(for dates: S) -> Submission
+        where S.Element == Date {
+        var revisions: [Date: UInt64] = [:]
+        for date in dates {
+            if let revision = dirtyRevisions[date] {
+                revisions[date] = revision
+            }
+        }
+        return Submission(revisions: revisions)
+    }
+
+    @discardableResult
+    mutating func complete(_ submission: Submission, succeeded: Bool) -> Int {
+        guard succeeded else { return 0 }
+        var cleared = 0
+        for (date, submittedRevision) in submission.revisions
+        where dirtyRevisions[date] == submittedRevision {
+            dirtyRevisions.removeValue(forKey: date)
+            cleared += 1
+        }
+        return cleared
+    }
+}
+
+/// Thin store that frames qualified live samples into overlapping five-minute
+/// windows on a one-minute cadence. Both this live path and historical replay
+/// call `AtriaPhysiologicalStressModel.evaluate`; this class remains I/O-shaped
+/// plumbing and bounded persistence only.
 @MainActor
 final class AtriaStressMonitorStore: ObservableObject {
     @Published private(set) var state: AtriaStressState = .noSignal
@@ -1216,12 +2354,15 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// Clock of the most recent scored evaluation. Presentation surfaces use
     /// this source clock; merely opening a screen must never renew freshness.
     @Published private(set) var lastMeasuredAt: Date?
-    /// Scored readings thinned to ~1 per 30s and bounded to 48 hours / 5,760
+    /// Scored readings emitted once per minute and bounded to 48 hours / 2,880
     /// points. The production store restores a local display-only checkpoint;
     /// isolated stores remain memory-only unless persistence is injected. Real
     /// sample timestamps survive relaunch, so missing strap intervals remain
     /// gaps and are never interpolated.
     private(set) var history: [StressHistoryPoint] = []
+    /// Real timestamped HR observations sampled at minute evaluation. Kept
+    /// separate from the five-minute mean stored inside each stress fact.
+    private(set) var heartRateHistory: [HeartRateHistoryPoint] = []
     /// Cheap change token for SwiftUI observers. The Health screen reads
     /// `history` for data, but watches this integer so live updates never
     /// compare the full rolling array.
@@ -1230,10 +2371,9 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// truly are no retained readings; `loading` / `unavailable` must not be
     /// presented as the same empty-data claim.
     @Published private(set) var historyLoadState: AtriaStressHistoryLoadState = .disabled
-    /// Persisted, measured physiological-Stress band counts. HR-only cardiac
-    /// arousal remains in `history` with provenance, but never enters an
-    /// aggregate labelled Stress. This is deliberately a compact aggregate
-    /// rather than a second high-frequency sample archive.
+    /// Persisted, measured physiological-stress band counts. Complete v3
+    /// HR-only facts participate with their explicit low-confidence provenance;
+    /// this remains a compact aggregate rather than a second sample archive.
     private var distributionArchive: AtriaStressDistributionArchive
     @Published private(set) var distributionRevision = 0
 
@@ -1248,31 +2388,66 @@ final class AtriaStressMonitorStore: ObservableObject {
         let hrvAvailable: Bool
         /// Scorer/banding/hysteresis contract that produced this point.
         let scoringVersion: Int
+        /// Versioned minute fact shared by the live and historical paths.
+        let minuteFact: AtriaPhysiologicalStressModel.MinuteFact?
+        /// Exact-timestamp collision authority. Live acquisition is immutable;
+        /// replay may only replace replay under the non-regression rule below.
+        let factSource: AtriaStressHistoryFactSource
+        /// Present only for revision-aware recovered replay. Live acquisition
+        /// never carries replay authority.
+        let replayAuthority: AtriaStressReplayAuthority?
 
         init(t: Date,
              activation: Double,
              level: AtriaStressLevel,
              confidence: Double = 0,
              hrvAvailable: Bool = false,
+             minuteFact: AtriaPhysiologicalStressModel.MinuteFact? = nil,
+             factSource: AtriaStressHistoryFactSource = .live,
+             replayAuthority: AtriaStressReplayAuthority? = nil,
              scoringVersion: Int = AtriaStressMonitor.scoringVersion) {
             self.t = t
             self.activation = activation
             self.level = level
             self.confidence = confidence
             self.hrvAvailable = hrvAvailable
+            self.minuteFact = minuteFact
+            self.factSource = factSource
+            self.replayAuthority = replayAuthority
             self.scoringVersion = scoringVersion
         }
 
         var id: TimeInterval { t.timeIntervalSinceReferenceDate }
 
         var evidenceMode: AtriaStressEvidenceMode {
-            hrvAvailable ? .physiologicalStress : .cardiacArousal
+            if minuteFact?.scoringVersion == AtriaPhysiologicalStressModel.scoringVersion {
+                return .physiologicalStress
+            }
+            return hrvAvailable ? .physiologicalStress : .cardiacArousal
         }
 
         var evidenceProjection: AtriaStressEvidenceProjection {
             AtriaStressEvidenceProjection(activation: activation,
                                           mode: evidenceMode)
         }
+    }
+
+    struct HeartRateHistoryPoint: Identifiable, Equatable, Sendable {
+        let t: Date
+        let bpm: Int
+        /// Exact-clock acquisition authority mirrors minute facts so a full
+        /// replay may remove obsolete recovered HR without erasing live HR.
+        let factSource: AtriaStressHistoryFactSource
+
+        init(t: Date,
+             bpm: Int,
+             factSource: AtriaStressHistoryFactSource = .live) {
+            self.t = t
+            self.bpm = bpm
+            self.factSource = factSource
+        }
+
+        var id: TimeInterval { t.timeIntervalSinceReferenceDate }
     }
 
     private var hrBuffer: [(t: Date, bpm: Int)] = []
@@ -1313,7 +2488,10 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// Advances only after the background writer confirms a synchronized atomic
     /// replacement. A queued or failed write is never called durable.
     private var historyHasDurableCheckpoint = false
-    private var unsavedHistorySamples = 0
+    private var historyDurabilityLedger = AtriaStressHistoryDurabilityLedger()
+    private var unsavedHistorySamples: Int {
+        historyDurabilityLedger.dirtyCount
+    }
     private var historyCheckpointInFlight = false
     private var historyCheckpointRetryPending = false
     private var historyForcedFlushPending = false
@@ -1323,10 +2501,10 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// without calling an omitted older island durable.
     private var historyCheckpointDrainRemainingSamples = 0
     private var lastHistoryCheckpointAttemptAt: Date?
-    /// Ten 30-second readings = at most one routine checkpoint every five
+    /// Five one-minute facts trigger at most one routine checkpoint every five
     /// minutes. The first retained sample is checkpointed immediately so a
     /// short session can still restore something after a relaunch.
-    nonisolated private static let historyPersistEverySamples = 10
+    nonisolated private static let historyPersistEverySamples = 5
     nonisolated private static let historyCheckpointMinimumInterval: TimeInterval = 5 * 60
 
     init(defaults: UserDefaults = .standard,
@@ -1363,18 +2541,15 @@ final class AtriaStressMonitorStore: ObservableObject {
     private var wasRecording = false
     private var lastWorkoutEndAt: Date?
 
-    private var smoothedActivation: Double?
-    /// EMA/hysteresis state is valid only inside one evidence coordinate. A
-    /// mode transition resets it so an uncapped HR-only value can never leak
-    /// into the full HR+HRV Stress band (or vice versa).
-    private var smoothedEvidenceMode: AtriaStressEvidenceMode?
-    private var lastEmittedLevel: AtriaStressLevel?
-    private var candidateLevel: AtriaStressLevel?
-    private var candidateStreak = 0
+    private var previousMinuteFact: AtriaPhysiologicalStressModel.MinuteFact?
+    private var lastEvaluatedMinute: Date?
     private var unsavedDistributionSamples = 0
+    private var historicalReplayGeneration = 0
 
-    private static let hrWindowSeconds: TimeInterval = 60
-    private static let rrWindowSeconds: TimeInterval = 180
+    // Minute scoring floors `now`; one cadence of headroom prevents a :59 tick
+    // from pruning the first minute of the window being evaluated.
+    private static let hrWindowSeconds = AtriaPhysiologicalStressModel.windowDuration
+        + AtriaPhysiologicalStressModel.evaluationCadence
     /// Warm-up continuity grace (2026-07-31 device review): the tile sat at
     /// "collecting 2 min of live signal" indefinitely because ANY single tick
     /// without contact — one zero-HR skin-contact flicker, or one HR sample
@@ -1386,9 +2561,6 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// legitimately arrive ~30s apart, and a grace at or below that cadence
     /// would restart warm-up on every quiet tick — the exact stall this fixes.
     private static let warmUpContactGraceSeconds: TimeInterval = 60
-    private static let activationEMAAlpha = 0.2
-    private static let hysteresisMargin = 0.05
-    private static let hysteresisHoldTicks = 2
     nonisolated static let unchangedInputEvaluationInterval: TimeInterval = 30
 
     nonisolated static func shouldEvaluateStressInput(force: Bool,
@@ -1401,6 +2573,89 @@ final class AtriaStressMonitorStore: ObservableObject {
         guard let lastEvaluatedAt else { return true }
         if isNoSignal { return false }
         return now.timeIntervalSince(lastEvaluatedAt) >= minimumInterval
+    }
+
+    /// Correlates each RR interval only with a heart-rate observation measured
+    /// near that exact beat. This preserves the existing HR/RR mismatch gate
+    /// without assigning the latest HR to an older five-minute tachogram.
+    /// Inputs are expected in capture order and fail closed if either clock
+    /// moves backwards. The two advancing indices keep the pass O(n).
+    nonisolated static func timeAlignedRRIntervals(
+        _ samples: [AtriaBreathworkSession.RRSample],
+        heartRates: [(t: Date, bpm: Int)],
+        start: Date,
+        end: Date,
+        maximumHeartRateMatchAge: TimeInterval = 5
+    ) -> [RRInterval] {
+        guard end >= start,
+              maximumHeartRateMatchAge.isFinite,
+              maximumHeartRateMatchAge >= 0 else { return [] }
+
+        var previousHeartRateDate: Date?
+        for sample in heartRates {
+            if let previousHeartRateDate, sample.t < previousHeartRateDate {
+                return []
+            }
+            previousHeartRateDate = sample.t
+        }
+        var previousRRDate: Date?
+        for sample in samples {
+            if let previousRRDate, sample.date < previousRRDate { return [] }
+            previousRRDate = sample.date
+        }
+
+        var output: [RRInterval] = []
+        output.reserveCapacity(samples.count)
+        var heartRateIndex = 0
+
+        for sample in samples where sample.date >= start && sample.date <= end {
+            while heartRateIndex + 1 < heartRates.count,
+                  heartRates[heartRateIndex + 1].t <= sample.date {
+                heartRateIndex += 1
+            }
+
+            var nearest: (age: TimeInterval, bpm: Int)?
+            if heartRates.indices.contains(heartRateIndex) {
+                let candidate = heartRates[heartRateIndex]
+                if (30...240).contains(candidate.bpm) {
+                    nearest = (abs(candidate.t.timeIntervalSince(sample.date)),
+                               candidate.bpm)
+                }
+            }
+            let nextIndex = heartRateIndex + 1
+            if heartRates.indices.contains(nextIndex) {
+                let candidate = heartRates[nextIndex]
+                let age = abs(candidate.t.timeIntervalSince(sample.date))
+                if (30...240).contains(candidate.bpm),
+                   nearest.map({ age < $0.age }) ?? true {
+                    nearest = (age, candidate.bpm)
+                }
+            }
+            let expectedHR = nearest.flatMap {
+                $0.age <= maximumHeartRateMatchAge ? $0.bpm : nil
+            }
+            output.append(RRInterval(t: sample.date,
+                                     ms: Double(sample.ms),
+                                     expectedHR: expectedHR,
+                                     source: sample.source))
+        }
+        return output
+    }
+
+    /// Only an explicit, durable main-sleep interval with independent
+    /// qualification can mark a live minute asleep. Ordinary inferred or
+    /// already-ended sleep history does not become present-tense evidence.
+    nonisolated static func hasQualifiedActiveSleepEvidence(
+        in sleeps: [UserConfirmedSleep],
+        at now: Date
+    ) -> Bool {
+        sleeps.contains { sleep in
+            guard sleep.start <= now,
+                  now < sleep.end else {
+                return false
+            }
+            return AtriaHistoricalStressReplay.isQualifiedHistoricalSleep(sleep)
+        }
     }
 
     /// Robust awake HR reference (median + MAD-derived spread) from the trailing
@@ -1473,6 +2728,9 @@ final class AtriaStressMonitorStore: ObservableObject {
                                           level: level,
                                           confidence: point.confidence,
                                           hrvAvailable: point.hrvAvailable,
+                                          minuteFact: point.minuteFact,
+                                          factSource: point.resolvedFactSource,
+                                          replayAuthority: point.replayAuthority,
                                           scoringVersion: point.scoringVersion)
             }
             let merged = Self.mergeHistory(restored: restored,
@@ -1492,6 +2750,7 @@ final class AtriaStressMonitorStore: ObservableObject {
             historyHasDurableCheckpoint = false
             historyLoadState = .unavailable
         }
+        historyDurabilityLedger.retainOnly(history.lazy.map(\.t))
 
         let waiters = historyHydrationWaiters
         historyHydrationWaiters.removeAll(keepingCapacity: false)
@@ -1527,6 +2786,222 @@ final class AtriaStressMonitorStore: ObservableObject {
             return Array(ordered.suffix(AtriaStressHistoryArchive.maximumPointCount))
         }
         return ordered
+    }
+
+    /// Recovered replay has a different exact-clock contract from hydration.
+    /// A genuine live acquisition is immutable. Replay-origin points carry
+    /// independent cardiac-input, calibration, and confirmed-context revisions:
+    /// current context may add, shrink, or remove overlays; current calibration
+    /// may recompute derived terms against the same measured cardiac input; and
+    /// a complete replay from the generation-gated current source snapshot may
+    /// replace an older replay atomically when several authority axes change.
+    private static func mergeHistoricalReplay(
+        _ replay: [StressHistoryPoint],
+        into existing: [StressHistoryPoint],
+        managedRanges: [AtriaHistoricalStressReplay.ManagedRange],
+        now: Date
+    ) -> [StressHistoryPoint] {
+        let cutoff = now.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
+        let candidateDates = Set(replay.lazy.map(\.t))
+        var byTimestamp: [Date: StressHistoryPoint] = [:]
+        byTimestamp.reserveCapacity(existing.count + replay.count)
+        for point in existing where point.t >= cutoff {
+            let obsoleteManagedReplay = point.factSource == .historicalReplay
+                && isManaged(point.t, by: managedRanges)
+                && !candidateDates.contains(point.t)
+            if !obsoleteManagedReplay { byTimestamp[point.t] = point }
+        }
+        for candidate in replay where candidate.t >= cutoff {
+            guard let current = byTimestamp[candidate.t] else {
+                byTimestamp[candidate.t] = candidate
+                continue
+            }
+            if replayMayReplace(candidate, current: current) {
+                byTimestamp[candidate.t] = candidate
+            }
+        }
+        let ordered = byTimestamp.values.sorted { $0.t < $1.t }
+        if ordered.count > AtriaStressHistoryArchive.maximumPointCount {
+            return Array(ordered.suffix(AtriaStressHistoryArchive.maximumPointCount))
+        }
+        return ordered
+    }
+
+    private static func isManaged(
+        _ date: Date,
+        by ranges: [AtriaHistoricalStressReplay.ManagedRange]
+    ) -> Bool {
+        ranges.contains { $0.contains(date) }
+    }
+
+    private static func replayMayReplace(
+        _ candidate: StressHistoryPoint,
+        current: StressHistoryPoint
+    ) -> Bool {
+        guard candidate != current,
+              candidate.factSource == .historicalReplay,
+              current.factSource == .historicalReplay,
+              candidate.scoringVersion == current.scoringVersion,
+              let candidateFact = candidate.minuteFact,
+              let currentFact = current.minuteFact,
+              candidateFact.scoringVersion == currentFact.scoringVersion else {
+            return false
+        }
+
+        if let candidateAuthority = candidate.replayAuthority {
+            guard candidateAuthority.isStructurallyValid else { return false }
+            if let currentAuthority = current.replayAuthority {
+                let sameCardiacInput = candidateAuthority.cardiacInputRevision
+                    == currentAuthority.cardiacInputRevision
+                let sameCalibration = candidateAuthority.calibrationRevision
+                    == currentAuthority.calibrationRevision
+                let sameContext = candidateAuthority.contextRevision
+                    == currentAuthority.contextRevision
+
+                if sameCardiacInput {
+                    if sameCalibration {
+                        // Motion/sleep may change score and confidence, but the
+                        // exact same cardiac input + calibration must reproduce
+                        // every cardiac component. Confidence alone can never
+                        // authorize an RMSSD/HRV-stress mutation.
+                        guard cardiacComponentsAreEquivalent(currentFact,
+                                                             candidateFact) else {
+                            return false
+                        }
+                        return !sameContext
+                    }
+                    // A confirmed sleep may rebuild personalized RHR/HRV
+                    // calibration. With the exact same cardiac source input,
+                    // the current model is authoritative even when HR stress,
+                    // weights, confidence, and the final score all change.
+                    return cardiacMeasurementsAreEquivalent(currentFact,
+                                                             candidateFact)
+                }
+
+                // A changed cardiac fingerprint is explicit authority for the
+                // raw HR/RR source—not an inference from confidence. Home's
+                // generation gate admits only the newest complete replay, so
+                // accept its fact atomically even when calibration and context
+                // changed in the same publication. Otherwise an RR upgrade plus
+                // a sleep-baseline change (or a context delete plus one changed
+                // HR row) would be rejected forever and could never converge.
+                return true
+            }
+
+            // One-time migration from replay points written before independent
+            // authority revisions existed. Preserve the measured cardiac
+            // values, then adopt the current complete replay result so later
+            // delete/shrink operations have a durable revision to compare.
+            return cardiacMeasurementsAreEquivalent(currentFact, candidateFact)
+        }
+
+        // Never let a legacy/unversioned candidate erase authority already
+        // established by a current replay.
+        guard current.replayAuthority == nil,
+              candidateFact.confidence.numericValue
+                >= currentFact.confidence.numericValue,
+              !(!currentFact.baselineLearning && candidateFact.baselineLearning),
+              motionAuthorityDoesNotRegress(from: currentFact.motionContext,
+                                            to: candidateFact.motionContext),
+              sleepAuthorityDoesNotRegress(from: currentFact.sleepContext,
+                                           to: candidateFact.sleepContext),
+              cardiacAuthorityDoesNotRegress(from: currentFact,
+                                             to: candidateFact) else {
+            return false
+        }
+        return true
+    }
+
+    private static func cardiacMeasurementsAreEquivalent(
+        _ current: AtriaPhysiologicalStressModel.MinuteFact,
+        _ candidate: AtriaPhysiologicalStressModel.MinuteFact
+    ) -> Bool {
+        approximatelyEqual(current.meanHeartRate, candidate.meanHeartRate)
+            && optionalApproximatelyEqual(current.rmssd, candidate.rmssd)
+    }
+
+    private static func cardiacComponentsAreEquivalent(
+        _ current: AtriaPhysiologicalStressModel.MinuteFact,
+        _ candidate: AtriaPhysiologicalStressModel.MinuteFact
+    ) -> Bool {
+        cardiacMeasurementsAreEquivalent(current, candidate)
+            && approximatelyEqual(current.hrStress, candidate.hrStress)
+            && optionalApproximatelyEqual(current.hrvStress,
+                                          candidate.hrvStress)
+            && approximatelyEqual(current.heartRateWeight,
+                                  candidate.heartRateWeight)
+            && current.baselineLearning == candidate.baselineLearning
+    }
+
+    private static func cardiacAuthorityDoesNotRegress(
+        from current: AtriaPhysiologicalStressModel.MinuteFact,
+        to candidate: AtriaPhysiologicalStressModel.MinuteFact
+    ) -> Bool {
+        guard approximatelyEqual(current.meanHeartRate, candidate.meanHeartRate),
+              approximatelyEqual(current.hrStress, candidate.hrStress) else {
+            return false
+        }
+        if current.isHROnly {
+            // Qualified RR is an authority upgrade. Otherwise the HR-only
+            // weighting must remain the same cardiac model input.
+            return !candidate.isHROnly
+                || approximatelyEqual(current.heartRateWeight,
+                                      candidate.heartRateWeight)
+        }
+        guard !candidate.isHROnly,
+              let currentRMSSD = current.rmssd,
+              let candidateRMSSD = candidate.rmssd,
+              let currentHRVStress = current.hrvStress,
+              let candidateHRVStress = candidate.hrvStress else {
+            return false
+        }
+        return approximatelyEqual(currentRMSSD, candidateRMSSD)
+            && approximatelyEqual(currentHRVStress, candidateHRVStress)
+            && approximatelyEqual(current.heartRateWeight,
+                                  candidate.heartRateWeight)
+    }
+
+    private static func motionAuthorityDoesNotRegress(
+        from current: AtriaPhysiologicalStressModel.MotionContext,
+        to candidate: AtriaPhysiologicalStressModel.MotionContext
+    ) -> Bool {
+        guard current.qualified else { return true }
+        guard candidate.qualified else { return false }
+        if current.kind == .activity { return candidate.kind == .activity }
+        if current.kind == .still { return candidate.kind == .still }
+        return true
+    }
+
+    private static func sleepAuthorityDoesNotRegress(
+        from current: AtriaPhysiologicalStressModel.SleepContext,
+        to candidate: AtriaPhysiologicalStressModel.SleepContext
+    ) -> Bool {
+        switch current {
+        case .unavailable:
+            return true
+        case .awake:
+            return candidate == .awake
+        case .asleep:
+            return candidate == .asleep
+        }
+    }
+
+    private static func approximatelyEqual(_ lhs: Double,
+                                           _ rhs: Double,
+                                           tolerance: Double = 1e-9) -> Bool {
+        abs(lhs - rhs) <= tolerance
+    }
+
+    private static func optionalApproximatelyEqual(_ lhs: Double?,
+                                                   _ rhs: Double?) -> Bool {
+        switch (lhs, rhs) {
+        case (.none, .none):
+            return true
+        case let (.some(lhs), .some(rhs)):
+            return approximatelyEqual(lhs, rhs)
+        default:
+            return false
+        }
     }
 
     nonisolated static func shouldPersistHistory(hasDurableCheckpoint: Bool,
@@ -1585,20 +3060,18 @@ final class AtriaStressMonitorStore: ObservableObject {
             )
         }
 
-        // Unsaved readings are the chronological suffix. Start with its oldest
-        // dirty hour so a newer island can never leapfrog it and then subtract
-        // it from the durability count. Adjacent dirty hours share one bounded
-        // replacement; a gap starts another two-shard checkpoint after success.
-        let suffixCount = min(unsavedHistorySamples, history.count)
-        guard suffixCount > 0 else {
-            unsavedHistorySamples = 0
+        // Backfill can insert dirty facts before an already durable live tail, so
+        // dirtiness is identity/revision based—not an assumed array suffix. Start
+        // with the oldest dirty hour; adjacent hours share one bounded rewrite.
+        let dirtyPoints = history.lazy.filter {
+            self.historyDurabilityLedger.isDirty($0.t)
+        }
+        guard let firstUnsaved = dirtyPoints.first else {
             historyCheckpointDrainRemainingSamples = 0
             return
         }
-        let unsavedSuffix = history.suffix(suffixCount)
-        guard let firstUnsaved = unsavedSuffix.first else { return }
         let oldestDirtyHour = Self.historyHourIndex(for: firstUnsaved.t)
-        let nextDirtyHour = unsavedSuffix.lazy
+        let nextDirtyHour = dirtyPoints
             .map { Self.historyHourIndex(for: $0.t) }
             .first { $0 != oldestDirtyHour }
         let anchorHour = nextDirtyHour == oldestDirtyHour + 1
@@ -1608,10 +3081,13 @@ final class AtriaStressMonitorStore: ObservableObject {
         let isTargetHour: (Int64) -> Bool = {
             $0 == previousHour || $0 == anchorHour
         }
-        let submittedUnsavedSamples = unsavedSuffix.prefix {
-            isTargetHour(Self.historyHourIndex(for: $0.t))
-        }.count
-        guard submittedUnsavedSamples > 0 else { return }
+        let submission = historyDurabilityLedger.submission(
+            for: history.lazy.filter {
+                self.historyDurabilityLedger.isDirty($0.t)
+                    && isTargetHour(Self.historyHourIndex(for: $0.t))
+            }.map(\.t)
+        )
+        guard submission.count > 0 else { return }
 
         // Submit the complete canonical contents of both target hours, not just
         // their dirty suffix. This makes shard replacement preserve previously
@@ -1624,6 +3100,9 @@ final class AtriaStressMonitorStore: ObservableObject {
                                             level: $0.level,
                                             confidence: $0.confidence,
                                             hrvAvailable: $0.hrvAvailable,
+                                            minuteFact: $0.minuteFact,
+                                            factSource: $0.factSource,
+                                            replayAuthority: $0.replayAuthority,
                                             scoringVersion: $0.scoringVersion)
         }
         guard !points.isEmpty else { return }
@@ -1640,7 +3119,7 @@ final class AtriaStressMonitorStore: ObservableObject {
         ) { [weak self] succeeded in
             Task { @MainActor [weak self] in
                 self?.completeHistoryCheckpoint(succeeded: succeeded,
-                                                submittedUnsavedSamples: submittedUnsavedSamples,
+                                                submission: submission,
                                                 wasRetry: wasRetry,
                                                 now: now)
             }
@@ -1648,16 +3127,19 @@ final class AtriaStressMonitorStore: ObservableObject {
     }
 
     private func completeHistoryCheckpoint(succeeded: Bool,
-                                           submittedUnsavedSamples: Int,
+                                           submission: AtriaStressHistoryDurabilityLedger.Submission,
                                            wasRetry: Bool,
                                            now: Date) {
         historyCheckpointInFlight = false
         if succeeded {
             historyHasDurableCheckpoint = true
-            unsavedHistorySamples = max(0, unsavedHistorySamples - submittedUnsavedSamples)
+            let clearedRevisionCount = historyDurabilityLedger.complete(
+                submission,
+                succeeded: true
+            )
             historyCheckpointDrainRemainingSamples = max(
                 0,
-                historyCheckpointDrainRemainingSamples - submittedUnsavedSamples
+                historyCheckpointDrainRemainingSamples - clearedRevisionCount
             )
             historyCheckpointRetryPending = false
             if historyLoadState == .unavailable {
@@ -1694,23 +3176,34 @@ final class AtriaStressMonitorStore: ObservableObject {
     }
 
     private func recordHistory(now: Date) {
-        // Record the PUBLISHED (Medium-capped in HR-only mode) activation, not
-        // the raw EMA, so the timeline can never plot above the emitted level
-        // (audit §1 #7). `smoothedActivation` still gates recording to warm,
-        // scored ticks.
+        // Production history is emitted only from a versioned minute fact, so
+        // live and restored timelines cannot silently mix scoring kernels.
         guard case .scored = state.kind, let level = state.level,
-              smoothedActivation != nil else { return }
-        if let last = history.last, now.timeIntervalSince(last.t) < 30 { return }
-        let priorUnsavedSamples = Self.boundedUnsavedHistorySampleCount(
-            unsavedHistorySamples,
-            retainedPointCount: history.count
+              state.minuteFact != nil else { return }
+        let priorUnsavedSamples = unsavedHistorySamples
+        let livePoint = StressHistoryPoint(
+            t: now,
+            activation: state.rawActivation,
+            level: level,
+            confidence: state.confidence,
+            hrvAvailable: state.hrvAvailable,
+            minuteFact: state.minuteFact,
+            factSource: .live,
+            scoringVersion: AtriaStressMonitor.scoringVersion
         )
-        history.append(StressHistoryPoint(t: now,
-                                          activation: state.rawActivation,
-                                          level: level,
-                                          confidence: state.confidence,
-                                          hrvAvailable: state.hrvAvailable,
-                                          scoringVersion: AtriaStressMonitor.scoringVersion))
+        if let last = history.last, last.t == now {
+            // Recovered replay can finish just before the live minute publishes.
+            // Exact-clock acquisition authority belongs to the live fact.
+            guard last.factSource != .live else { return }
+            history[history.count - 1] = livePoint
+        } else {
+            if let last = history.last,
+               now.timeIntervalSince(last.t)
+                < AtriaPhysiologicalStressModel.evaluationCadence {
+                return
+            }
+            history.append(livePoint)
+        }
         history.removeAll {
             now.timeIntervalSince($0.t) > AtriaStressHistoryArchive.retentionWindow
         }
@@ -1718,15 +3211,10 @@ final class AtriaStressMonitorStore: ObservableObject {
             history.removeFirst(history.count - AtriaStressHistoryArchive.maximumPointCount)
         }
         historyRevision &+= 1
-        // The newly appended point is always the newest retained point. Any
-        // cap/expiry removal therefore came from the prior prefix; clamp its
-        // dirty suffix before adding this sample.
-        let survivingPriorUnsavedSamples = Self.boundedUnsavedHistorySampleCount(
-            priorUnsavedSamples,
-            retainedPointCount: max(0, history.count - 1)
-        )
+        historyDurabilityLedger.retainOnly(history.lazy.map(\.t))
+        let survivingPriorUnsavedSamples = unsavedHistorySamples
         let prunedUnsavedSamples = priorUnsavedSamples - survivingPriorUnsavedSamples
-        unsavedHistorySamples = survivingPriorUnsavedSamples + 1
+        historyDurabilityLedger.markDirty(now)
         historyCheckpointDrainRemainingSamples = max(
             0,
             historyCheckpointDrainRemainingSamples - prunedUnsavedSamples
@@ -1738,14 +3226,13 @@ final class AtriaStressMonitorStore: ObservableObject {
             checkpointHistory(now: now)
         }
 
-        // Daily Stress distributions contain only numeric physiological-Stress
-        // evidence. HR-only cardiac arousal remains queryable in `history` and
-        // is intentionally not counted as if it were the same metric.
-        if state.evidenceMode == .physiologicalStress,
-           distributionArchive.record(level: level, at: now) {
+        // Every complete v3 fact participates. HR-only facts remain explicitly
+        // lower confidence in minute provenance; silently dropping them would
+        // turn the daily distribution into undisclosed HR+HRV-only coverage.
+        if distributionArchive.record(level: level, at: now) {
             distributionRevision &+= 1
             unsavedDistributionSamples += 1
-            // At the 30-second history cadence this writes at most every five
+            // At the one-minute history cadence this writes at most every ten
             // minutes. A process interruption can lose only the small pending
             // tail; previously persisted evidence is never reconstructed.
             if unsavedDistributionSamples >= 10 {
@@ -1768,6 +3255,252 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// the persisted distribution archive — no second sample stream exists.
     func dailyTrendDays() -> [AtriaStressDistributionArchive.Day] {
         distributionArchive.measuredTrendDays()
+    }
+
+    /// Bounded historical/backfill ingestion through the exact v3 batch kernel
+    /// used by live scoring. Framed raw windows are evaluated off MainActor;
+    /// only complete versioned minute facts are merged, and real gaps remain.
+    func ingestHistoricalStressWindows(
+        _ inputs: [AtriaPhysiologicalStressModel.WindowInput],
+        now: Date = Date()
+    ) async {
+        if historyLoadState == .loading { await waitForHistoryHydration() }
+        let boundedInputs = Array(inputs.suffix(AtriaStressHistoryArchive.maximumPointCount))
+        let perWindowSampleLimit = 600
+        let totalSampleLimit = 500_000
+        guard boundedInputs.allSatisfy({
+            $0.heartRates.count <= perWindowSampleLimit
+                && $0.rrIntervals.count <= perWindowSampleLimit
+        }), boundedInputs.reduce(into: 0, {
+            $0 += $1.heartRates.count + $1.rrIntervals.count
+        }) <= totalSampleLimit else { return }
+        let firstEnd = boundedInputs.first?.end
+        let seed = history.lazy.reversed().compactMap(\.minuteFact).first(
+            where: { fact in
+                firstEnd.map { end in end > fact.date } ?? false
+            }
+        )
+        historicalReplayGeneration &+= 1
+        let generation = historicalReplayGeneration
+        let replay = await Task.detached(priority: .utility) {
+            let facts = AtriaPhysiologicalStressModel.evaluate(boundedInputs,
+                                                               previous: seed)
+            let heartRates = boundedInputs.compactMap { input -> AtriaHistoricalStressReplay.HeartRatePoint? in
+                guard let sample = input.heartRates.last(where: {
+                    $0.qualified && $0.date <= input.end && (30...240).contains($0.bpm)
+                }) else { return nil }
+                return AtriaHistoricalStressReplay.HeartRatePoint(
+                    date: sample.date,
+                    bpm: sample.bpm
+                )
+            }
+            return AtriaHistoricalStressReplay.Result(facts: facts,
+                                                      heartRates: heartRates)
+        }.value
+        guard generation == historicalReplayGeneration else { return }
+        await mergeHistoricalMinuteFacts(replay, now: now)
+    }
+
+    /// Chronological, idempotent archive boundary shared by explicit test
+    /// replay and SessionStore recovered-data publication. Existing in-process
+    /// live facts win exact-clock collisions. The compact daily distribution is
+    /// intentionally untouched: it has no minute identity, so replaying into it
+    /// would double-count every recovered publication.
+    func mergeHistoricalMinuteFacts(
+        _ replay: AtriaHistoricalStressReplay.Result,
+        now: Date = Date()
+    ) async {
+        if historyLoadState == .loading { await waitForHistoryHydration() }
+        let factDates = Set(replay.facts.map(\.date))
+        guard replay.facts.count <= AtriaStressHistoryArchive.maximumPointCount,
+              replay.heartRates.count <= AtriaStressHistoryArchive.maximumPointCount,
+              Self.areValidManagedRanges(replay.managedRanges, now: now),
+              replay.authorityByDate.count <= replay.facts.count,
+              replay.authorityByDate.allSatisfy({ date, authority in
+                  factDates.contains(date) && authority.isStructurallyValid
+              }),
+              Self.isStrictlyChronological(replay.facts.map(\.date)),
+              Self.isChronological(replay.heartRates.map(\.date)),
+              replay.facts.allSatisfy(\.isStructurallyValid),
+              replay.facts.allSatisfy({
+                  $0.date.timeIntervalSince(now)
+                    <= AtriaStressHistoryArchive.maximumFutureSkew
+              }),
+              replay.heartRates.allSatisfy({
+                  $0.date.timeIntervalSinceReferenceDate.isFinite
+                    && $0.date.timeIntervalSince(now)
+                        <= AtriaStressHistoryArchive.maximumFutureSkew
+                    && (30...240).contains($0.bpm)
+              }),
+              replay.managedRanges.isEmpty || replay.facts.allSatisfy({ fact in
+                  Self.isManaged(fact.date, by: replay.managedRanges)
+              }),
+              replay.managedRanges.isEmpty || replay.heartRates.allSatisfy({ point in
+                  Self.isManaged(point.date, by: replay.managedRanges)
+              }) else { return }
+
+        let backfilled = replay.facts.map { fact in
+            Self.historyPoint(from: fact,
+                              replayAuthority: replay.authorityByDate[fact.date])
+        }
+        let previousByTimestamp = Dictionary(uniqueKeysWithValues: history.map {
+            ($0.t, $0)
+        })
+        let merged = Self.mergeHistoricalReplay(backfilled,
+                                                into: history,
+                                                managedRanges: replay.managedRanges,
+                                                now: now)
+        let historyChanged = merged != history
+        if historyChanged {
+            history = merged
+            historyDurabilityLedger.retainOnly(history.lazy.map(\.t))
+            historyDurabilityLedger.markDirty(history.lazy.compactMap { point in
+                previousByTimestamp[point.t] == point ? nil : point.t
+            })
+        }
+        let heartRateChanged = mergeHistoricalHeartRateHistory(
+            replay.heartRates.map {
+                HeartRateHistoryPoint(t: $0.date,
+                                      bpm: $0.bpm,
+                                      factSource: .historicalReplay)
+            },
+            managedRanges: replay.managedRanges,
+            now: now
+        )
+        guard historyChanged || heartRateChanged else { return }
+        historyRevision &+= 1
+        guard historyChanged, let historyPersistence else { return }
+        let submission = historyDurabilityLedger.submission(
+            for: history.lazy.map(\.t)
+        )
+        let archive = AtriaStressHistoryArchive(points: history.map {
+            AtriaStressHistoryArchive.Point(t: $0.t,
+                                            activation: $0.activation,
+                                            level: $0.level,
+                                            confidence: $0.confidence,
+                                            hrvAvailable: $0.hrvAvailable,
+                                            minuteFact: $0.minuteFact,
+                                            factSource: $0.factSource,
+                                            replayAuthority: $0.replayAuthority,
+                                            scoringVersion: $0.scoringVersion)
+        })
+        if await historyPersistence.save(archive, now: now) {
+            historyHasDurableCheckpoint = true
+            historyDurabilityLedger.complete(submission, succeeded: true)
+            if historyLoadState == .unavailable { historyLoadState = .loaded }
+        }
+    }
+
+    nonisolated private static func isStrictlyChronological(_ dates: [Date]) -> Bool {
+        var previous: Date?
+        for date in dates {
+            guard date.timeIntervalSinceReferenceDate.isFinite,
+                  previous.map({ date > $0 }) ?? true else { return false }
+            previous = date
+        }
+        return true
+    }
+
+    nonisolated private static func isChronological(_ dates: [Date]) -> Bool {
+        var previous: Date?
+        for date in dates {
+            guard date.timeIntervalSinceReferenceDate.isFinite,
+                  previous.map({ date >= $0 }) ?? true else { return false }
+            previous = date
+        }
+        return true
+    }
+
+    nonisolated private static func areValidManagedRanges(
+        _ ranges: [AtriaHistoricalStressReplay.ManagedRange],
+        now: Date
+    ) -> Bool {
+        guard ranges.count <= AtriaHistoricalStressReplay.maximumManagedRangeCount,
+              now.timeIntervalSinceReferenceDate.isFinite else { return false }
+        let cutoff = now.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
+        let futureLimit = now.addingTimeInterval(
+            AtriaStressHistoryArchive.maximumFutureSkew
+        )
+        var previousEnd: Date?
+        for range in ranges {
+            guard range.isStructurallyValid,
+                  range.start >= cutoff,
+                  range.end <= futureLimit,
+                  previousEnd.map({ range.start > $0 }) ?? true else {
+                return false
+            }
+            previousEnd = range.end
+        }
+        return true
+    }
+
+    nonisolated private static func historyPoint(
+        from fact: AtriaPhysiologicalStressModel.MinuteFact,
+        replayAuthority: AtriaStressReplayAuthority?
+    ) -> StressHistoryPoint {
+        let level: AtriaStressLevel
+        switch fact.zone {
+        case .calm: level = .calm
+        case .moderate: level = .medium
+        case .high: level = .high
+        }
+        return StressHistoryPoint(t: fact.date,
+                                  activation: fact.score / 3,
+                                  level: level,
+                                  confidence: fact.confidence.numericValue,
+                                  hrvAvailable: !fact.isHROnly,
+                                  minuteFact: fact,
+                                  factSource: .historicalReplay,
+                                  replayAuthority: replayAuthority,
+                                  scoringVersion: fact.scoringVersion)
+    }
+
+    @discardableResult
+    private func mergeHeartRateHistory(_ additions: [HeartRateHistoryPoint],
+                                       now: Date) -> Bool {
+        let cutoff = now.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
+        var byClock = Dictionary(uniqueKeysWithValues: heartRateHistory
+            .filter { $0.t >= cutoff }
+            .map { ($0.t, $0) })
+        byClock.reserveCapacity(additions.count + heartRateHistory.count)
+        // This helper receives genuine live observations. They own an exact
+        // collision even when a recovered replay landed milliseconds earlier.
+        for point in additions where point.t >= cutoff {
+            byClock[point.t] = point
+        }
+        let ordered = byClock.values.sorted { $0.t < $1.t }
+        let merged = Array(ordered.suffix(AtriaStressHistoryArchive.maximumPointCount))
+        guard merged != heartRateHistory else { return false }
+        heartRateHistory = merged
+        return true
+    }
+
+    @discardableResult
+    private func mergeHistoricalHeartRateHistory(
+        _ additions: [HeartRateHistoryPoint],
+        managedRanges: [AtriaHistoricalStressReplay.ManagedRange],
+        now: Date
+    ) -> Bool {
+        let cutoff = now.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
+        let candidateDates = Set(additions.lazy.map(\.t))
+        var byClock: [Date: HeartRateHistoryPoint] = [:]
+        byClock.reserveCapacity(additions.count + heartRateHistory.count)
+        for point in heartRateHistory where point.t >= cutoff {
+            let obsoleteManagedReplay = point.factSource == .historicalReplay
+                && Self.isManaged(point.t, by: managedRanges)
+                && !candidateDates.contains(point.t)
+            if !obsoleteManagedReplay { byClock[point.t] = point }
+        }
+        for candidate in additions where candidate.t >= cutoff {
+            if byClock[candidate.t]?.factSource != .live {
+                byClock[candidate.t] = candidate
+            }
+        }
+        let ordered = byClock.values.sorted { $0.t < $1.t }
+        let merged = Array(ordered.suffix(AtriaStressHistoryArchive.maximumPointCount))
+        guard merged != heartRateHistory else { return false }
+        heartRateHistory = merged
+        return true
     }
 
     /// Slow multi-day awake-HR center (audit B3), or nil until enough qualifying
@@ -1839,10 +3572,10 @@ final class AtriaStressMonitorStore: ObservableObject {
 
         // Learn the wearer's awake HR reference from QUIET-AWAKE wear only. The
         // buffer must mirror the scorer's own exclusions and, critically, reject
-        // sleeping HR: `hasActiveSleepEvidence` is currently hardcoded false at
-        // both callers (bug #9), so without an explicit floor the 45-min buffer
-        // fills with overnight ~56 bpm, the median collapses, and every morning's
-        // awake HR reads a false Medium (adversarial review 2026-08-08, B2).
+        // sleeping HR. Qualified active sleep is supplied independently by the
+        // caller; the explicit resting-HR floor remains a fail-closed guard when
+        // sleep context is unavailable, so overnight HR cannot collapse this
+        // reference and overstate the following morning's physiological stress.
         // Bracket the accepted band: strictly above resting (excludes sleep/rest)
         // and at/below the activity threshold (excludes exertion the scorer
         // suppresses anyway, B4).
@@ -1890,137 +3623,157 @@ final class AtriaStressMonitorStore: ObservableObject {
         } else {
             awakeReference = nil
         }
+        _ = awakeReference
 
-        let rrWindow = recentRRSamples
-            .filter {
-                let age = now.timeIntervalSince($0.date)
-                return age >= -5 && age <= Self.rrWindowSeconds
-            }
-        let validatedShortWindowRMSSD = AtriaShortWindowRMSSD.value(
-            samples: rrWindow.map { (date: $0.date, ms: Double($0.ms)) },
-            minimumCoverageSeconds: AtriaStressMonitor.minimumHRVWindowSeconds
-        )
-
-        let smoothedHR: Int
-        if hrBuffer.isEmpty {
-            smoothedHR = heartRate
-        } else {
-            let total = hrBuffer.reduce(0) { $0 + $1.bpm }
-            smoothedHR = Int((Double(total) / Double(hrBuffer.count)).rounded())
+        guard hasContact, heartRate > 0 else {
+            previousMinuteFact = nil
+            lastEvaluatedMinute = nil
+            lastMeasuredAt = nil
+            if state != .noSignal { state = .noSignal }
+            return
         }
 
         let contactAge = contactStartedAt.map { now.timeIntervalSince($0) } ?? 0
-        let cooldownActive = lastWorkoutEndAt.map { now.timeIntervalSince($0) < AtriaStressMonitor.postWorkoutCooldownSeconds } ?? false
-        let hrvFallback: Double? = validatedShortWindowRMSSD
-            ?? ((hrvSnapshot?.isLiveStressEligible(on: now) == true) ? hrvSnapshot?.rmssd : nil)
-
-        let raw = AtriaStressMonitor.score(hrNow: smoothedHR,
-                                           hrWindow: hrBuffer.map(\.bpm),
-                                           // The timestamped path above is authoritative in
-                                           // production. An empty raw array prevents the pure
-                                           // compatibility scorer from bridging disconnected
-                                           // RR islands when strict evidence is unavailable.
-                                           rrWindowMs: [],
-                                           hrvFallbackRMSSD: hrvFallback,
-                                           baseline: baseline,
-                                           restingMaxHR: restingMaxHR,
-                                           workoutActive: isRecording || cooldownActive,
-                                           zoneIndex: zoneIndex,
-                                           // The learned duty-cycle window is a
-                                           // radio/upload schedule, not proof that
-                                           // the wearer is asleep. Only an actual
-                                           // active-sleep authority may suppress
-                                           // the live stress reading.
-                                           inSleepWindow: hasActiveSleepEvidence,
-                                           hasContact: hasContact,
-                                           contactAgeSeconds: contactAge,
-                                           awakeReference: awakeReference,
-                                           now: now)
-
-        guard raw.kind == .scored, let rawLevel = raw.level else {
-            smoothedActivation = nil
-            smoothedEvidenceMode = nil
-            lastEmittedLevel = nil
-            candidateLevel = nil
-            candidateStreak = 0
+        guard contactAge >= AtriaStressMonitor.warmUpSeconds else {
+            previousMinuteFact = nil
             lastMeasuredAt = nil
-            if raw != state { state = raw }
+            let warming = AtriaStressState(level: nil,
+                                           label: "Warming up",
+                                           detail: "Building a five-minute cardiac window",
+                                           kind: .warmingUp,
+                                           confidence: 0,
+                                           rawActivation: 0,
+                                           hrvAvailable: false)
+            if warming != state { state = warming }
             return
         }
 
-        guard let rawEvidenceMode = raw.evidenceMode else {
-            // `raw.kind == .scored` and a non-nil level make this unreachable,
-            // but fail closed instead of blending an unclassified coordinate.
-            smoothedActivation = nil
-            smoothedEvidenceMode = nil
-            lastEmittedLevel = nil
-            candidateLevel = nil
-            candidateStreak = 0
-            lastMeasuredAt = nil
-            return
+        let minute = Date(timeIntervalSince1970:
+            floor(now.timeIntervalSince1970 / AtriaPhysiologicalStressModel.evaluationCadence)
+                * AtriaPhysiologicalStressModel.evaluationCadence)
+        guard lastEvaluatedMinute != minute else { return }
+        lastEvaluatedMinute = minute
+
+        let freshBaseline = baseline.freshSamples(now: minute)
+        let qualifiedLnRMSSD = freshBaseline
+            .filter(\.isOvernightSample)
+            .compactMap(\.lnRMSSD)
+        let hrvBaseline = AtriaPhysiologicalStressModel.robustHRVBaseline(
+            lnRMSSDValues: qualifiedLnRMSSD,
+            qualifiedDayCount: baseline.freshHRVSampleCount(now: minute)
+        )
+        let personalization = AtriaPhysiologicalStressModel.Personalization(
+            restingHeartRate: baseline.restingHR ?? Double(restingMaxHR.rest),
+            maximumHeartRate: Double(restingMaxHR.max),
+            restingBaselineDayCount: baseline.freshRestingSampleCount(now: minute),
+            hrvBaseline: hrvBaseline
+        )
+
+        let motionContext: AtriaPhysiologicalStressModel.MotionContext
+        if isRecording {
+            // An explicitly active workout is qualified activity evidence.
+            // `zoneIndex` is derived from HR itself and must never attenuate a
+            // cardiac elevation as if it independently proved motion.
+            let workoutIntensity = zoneIndex.map {
+                min(max(Double($0 - 1) / 3, 0.35), 1)
+            } ?? 0.65
+            motionContext = .qualifiedActivity(intensity: workoutIntensity)
+        } else {
+            // Missing motion fails closed to M=1. Zone-only context is not a
+            // validated motion authority.
+            motionContext = .unavailable
         }
+        let sleepContext: AtriaPhysiologicalStressModel.SleepContext =
+            hasActiveSleepEvidence ? .asleep : .unavailable
 
-        if smoothedEvidenceMode != rawEvidenceMode {
-            smoothedActivation = nil
-            lastEmittedLevel = nil
-            candidateLevel = nil
-            candidateStreak = 0
-            smoothedEvidenceMode = rawEvidenceMode
-        }
-
-        let ema = smoothedActivation.map { $0 + Self.activationEMAAlpha * (raw.rawActivation - $0) } ?? raw.rawActivation
-        smoothedActivation = ema
-
-        let smoothedBand = AtriaStressMonitor.band(ema)
-        let cappedBand = raw.hrvAvailable ? smoothedBand : min(smoothedBand, AtriaStressLevel.medium.rawValue)
-        let smoothedLevel = AtriaStressLevel(rawValue: cappedBand) ?? rawLevel
-
-        let emittedLevel: AtriaStressLevel
-        if let lastEmittedLevel {
-            if smoothedLevel == lastEmittedLevel {
-                candidateLevel = nil
-                candidateStreak = 0
-                emittedLevel = lastEmittedLevel
-            } else {
-                if candidateLevel == smoothedLevel {
-                    candidateStreak += 1
-                } else {
-                    candidateLevel = smoothedLevel
-                    candidateStreak = 1
-                }
-                let boundaryDistance = AtriaStressMonitor.distanceToNearestBoundary(ema)
-                if boundaryDistance >= Self.hysteresisMargin || candidateStreak >= Self.hysteresisHoldTicks {
-                    emittedLevel = smoothedLevel
-                    self.lastEmittedLevel = smoothedLevel
-                    candidateLevel = nil
-                    candidateStreak = 0
-                } else {
-                    emittedLevel = lastEmittedLevel
-                }
+        // Persisted cadence HRV is deliberately not substituted here. Admit RR
+        // only when the existing artifact/provenance/confidence pipeline marks
+        // the complete local five-minute window ready. Rejected beats remain in
+        // the sequence as explicit breaks, so RMSSD never differences across an
+        // artifact. This bounded work occurs once per minute, after the cadence
+        // guard above, rather than on every live pulse tick.
+        _ = hrvSnapshot
+        let rrStart = minute.addingTimeInterval(-AtriaPhysiologicalStressModel.windowDuration)
+        let rawRR = Self.timeAlignedRRIntervals(
+            recentRRSamples,
+            heartRates: hrBuffer,
+            start: rrStart,
+            end: minute
+        )
+        let (rrQuality, correctedRR) = HRVAnalyzer.analyze(
+            rawRR,
+            now: minute,
+            includeTachogram: true,
+            provenance: .localRRWindow
+        )
+        let qualifiedRR: [AtriaPhysiologicalStressModel.RRSample]
+        if rrQuality?.isLiveStressEligible(on: minute, maximumAge: 60) == true {
+            qualifiedRR = correctedRR.map {
+                .init(date: $0.t,
+                      milliseconds: $0.ms,
+                      qualified: $0.corrected && !$0.interpolated)
             }
         } else {
-            emittedLevel = smoothedLevel
-            lastEmittedLevel = smoothedLevel
+            qualifiedRR = []
         }
+        let input = AtriaPhysiologicalStressModel.WindowInput(
+            end: minute,
+            heartRates: hrBuffer.map {
+                .init(date: $0.t, bpm: $0.bpm, qualified: true)
+            },
+            rrIntervals: qualifiedRR,
+            personalization: personalization,
+            motionContext: motionContext,
+            sleepContext: sleepContext
+        )
+        guard let fact = AtriaPhysiologicalStressModel.evaluate(
+            input,
+            previous: previousMinuteFact
+        ) else {
+            previousMinuteFact = nil
+            lastMeasuredAt = nil
+            if state != .noSignal { state = .noSignal }
+            return
+        }
+        previousMinuteFact = fact
 
-        // HR-only mode caps the emitted level at Medium (see `cappedBand`
-        // above). Its published activation is retained for the separate
-        // qualitative cardiac-arousal surface, so that evidence coordinate must
-        // agree with the emitted band and can never acquire a High claim. The
-        // internal `smoothedActivation` keeps the true, uncapped EMA only within
-        // the current evidence mode for temporal continuity and hysteresis.
-        let displayActivation = raw.hrvAvailable
-            ? ema
-            : min(ema, AtriaStressMonitor.mediumUpperBound)
-        let finalState = AtriaStressState(level: emittedLevel, label: emittedLevel.title,
-                                          detail: raw.detail, kind: .scored,
-                                          confidence: raw.confidence,
-                                          rawActivation: displayActivation,
-                                          hrvAvailable: raw.hrvAvailable)
-        if finalState != state {
-            state = finalState
+        let level: AtriaStressLevel
+        switch fact.zone {
+        case .calm: level = .calm
+        case .moderate: level = .medium
+        case .high: level = .high
         }
-        lastMeasuredAt = now
-        recordHistory(now: now)
+        var detail = fact.isHROnly
+            ? "HR-only estimate · lower confidence"
+            : "Physiological stress · HR + HRV"
+        if fact.baselineLearning { detail += " · learning baseline" }
+        if fact.motionContext.qualified, fact.motionContext.kind == .activity {
+            detail += " · activity-adjusted"
+        }
+        let finalState = AtriaStressState(
+            level: level,
+            label: fact.zone.rawValue,
+            detail: detail,
+            kind: .scored,
+            confidence: fact.confidence.numericValue,
+            rawActivation: fact.score / AtriaStressEvidenceProjection.maximumDisplayValue,
+            hrvAvailable: !fact.isHROnly,
+            minuteFact: fact
+        )
+        if finalState != state { state = finalState }
+        lastMeasuredAt = fact.date
+        // The HR tab receives a real timestamped observation from inside this
+        // exact minute window—not the later UI tick and not the five-minute
+        // mean embedded in the stress fact.
+        if let measuredHeartRate = hrBuffer.last(where: {
+            $0.t <= fact.date && (30...240).contains($0.bpm)
+        }) {
+            mergeHeartRateHistory(
+                [HeartRateHistoryPoint(t: measuredHeartRate.t,
+                                       bpm: measuredHeartRate.bpm)],
+                now: now
+            )
+        }
+        recordHistory(now: fact.date)
     }
 }

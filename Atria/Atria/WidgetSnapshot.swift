@@ -5,7 +5,7 @@ import WidgetKit
 
 struct WidgetSnapshot: Codable {
     let schema: Int
-    let createdAt: Date
+    var createdAt: Date
     let recoveryPercent: Int?
     let recoveryConfidence: String
     let recoveryDetail: String
@@ -32,14 +32,14 @@ struct WidgetSnapshot: Codable {
     /// authorizing that sleep for Recovery, debt, or physiological boundaries.
     var sleepDetail: String? = nil
     // Lock Screen single-metric widgets (Steps / BPM, alongside Strain / HRV).
-    let steps: Int?
+    var steps: Int?
     /// `true` means a fresh strap-derived preliminary count. Widgets must
     /// prefix it with `~` and never present it as a validated exact total.
     var stepsAreEstimated: Bool? = nil
     /// Timestamp of the most recent CRC-valid strap motion frame supporting
     /// `steps`. Independent from `createdAt`, which can advance for battery,
     /// recovery, or layout changes without making the step stream fresh.
-    let stepsCapturedAt: Date?
+    var stepsCapturedAt: Date?
     /// Additive provenance fields keep schema-4 payloads backward decodable
     /// while letting widgets distinguish a live packet from durable canonical
     /// archive evidence.
@@ -52,6 +52,28 @@ struct WidgetSnapshot: Codable {
     var stepsAuthorityVersion: String? = nil
     var stepsCycleStart: Date? = nil
     var stepsCycleExpiresAt: Date? = nil
+    /// App-only monotonic authority for the durable receipt lane. These
+    /// additive fields remain present even when an observed-motion receipt
+    /// correctly withholds `steps`, allowing that newer unresolved receipt to
+    /// invalidate a stale count without an older asynchronous patch restoring
+    /// it afterward. The widget extension ignores unknown keys.
+    var stepsReceiptAuthorityVersion: String? = nil
+    var stepsReceiptSourceIdentifier: String? = nil
+    var stepsReceiptCycleStart: Date? = nil
+    var stepsReceiptCapturedAt: Date? = nil
+    /// SHA-256 identity of the exact durable daily-receipt content. A receipt
+    /// correction may legitimately retain `stepsReceiptCapturedAt`, so this
+    /// additive key is the equal-clock ordering authority.
+    var stepsReceiptContentRevision: String? = nil
+    /// Receipt revision that directly owns the displayed step family. Nil
+    /// means the displayed exact canonical row came from an independent full
+    /// projection; receipt metadata may still advance beside it without
+    /// gaining authority to replace that row.
+    var stepsDisplayedReceiptContentRevision: String? = nil
+    /// The latest receipt observed motion but could not resolve a gait count.
+    /// It therefore invalidates an older partial projection without claiming
+    /// that an exact zero was observed.
+    var stepsReceiptInvalidatesIndependentPartial: Bool? = nil
     /// 2026-07-31: additive disclosure of the newest receipt that closed
     /// before the current wake boundary. Present only while `steps` is nil so
     /// a prior-cycle subtotal can be named in the detail line without ever
@@ -102,6 +124,29 @@ enum WidgetSnapshotPublisher {
         let complicationTargetPresent: Bool
     }
 
+    /// The narrow, durable input consumed by the receipt-only widget lane.
+    /// It deliberately contains no HR, Recovery, strain, battery, or layout
+    /// values, so applying it to the latest shared snapshot cannot replace a
+    /// fresher projection owned by another publisher.
+    struct DurableStepProjection: Equatable {
+        let authorityVersion: String
+        let sourceIdentifier: String
+        let cycleStart: Date
+        let cycleExpiresAt: Date
+        let receiptCapturedAt: Date?
+        let receiptContentRevision: String?
+        let displayedReceiptContentRevision: String?
+        let receiptInvalidatesIndependentPartial: Bool
+        let steps: Int?
+        let stepsAreEstimated: Bool?
+        let stepsCapturedAt: Date?
+        let stepsSource: String?
+        let stepsCompleteness: String?
+        let stepsCoverageFraction: Double?
+        let priorCycleSteps: Int?
+        let priorCycleEndedAt: Date?
+    }
+
     private static let key = "atria.widgetSnapshot.v1"
     private static let appGroupID = "group.com.adidshaft.atria"
     // Perf (docs/26 follow-up): bundle layout + entitlements are immutable for
@@ -111,6 +156,10 @@ enum WidgetSnapshotPublisher {
     // cache (MainActor-isolated, so the cache write is race-free).
     private static var cachedDiagnostics: Diagnostics?
     private static var scheduledPublishTask: Task<Void, Never>?
+    /// Receipt saves must not compete with or be cancelled by the broader
+    /// recovery/widget publisher. This lane reads the already-durable receipt
+    /// and rewrites only step fields in the latest shared snapshot.
+    private static var scheduledDurableStepPatchTask: Task<Void, Never>?
 #if canImport(WidgetKit)
     /// WidgetKit is not a 1 Hz surface, but dropping every change below the old
     /// 100-step bucket made short walks invisible. Keep one independent,
@@ -208,6 +257,638 @@ enum WidgetSnapshotPublisher {
         }
     }
 
+    /// A daily receipt is already fsync'd before `didSaveNotification` is
+    /// posted. Publish that one authority without waiting for the broad
+    /// Recovery/card readiness fence and without rebuilding unrelated fields.
+    static func scheduleDurableStepPatch(
+        store: SessionStore,
+        reason: String,
+        delay: Duration = .milliseconds(20)
+    ) {
+        scheduledDurableStepPatchTask?.cancel()
+        scheduledDurableStepPatchTask = Task { @MainActor in
+            await Task.yield()
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            guard !Task.isCancelled else { return }
+
+            let now = Date()
+            guard let sourceIdentifier =
+                    AtriaWhoop4MotionTickDailyStore
+                        .persistedStrapIdentifiers().first,
+                  let projection = durableStepProjection(
+                    store: store,
+                    sourceIdentifier: sourceIdentifier,
+                    now: now
+                  ) else {
+                AtriaDebugLog(
+                    "ATRIADBG widget_snapshot status=durable_steps_skipped reason=%@ detail=missing_qualified_source",
+                    reason
+                )
+                return
+            }
+            let widgetDiagnostics = diagnostics
+            let defaults = widgetDiagnostics.appGroupEnabled
+                ? (UserDefaults(suiteName: appGroupID) ?? .standard)
+                : .standard
+            guard let data = defaults.data(forKey: key),
+                  let current = try? JSONDecoder.widgetSnapshotDecoder.decode(
+                    WidgetSnapshot.self,
+                    from: data
+                  ) else {
+                // A step-only patch cannot honestly synthesize Recovery, HR,
+                // or layout fields. The first full eligible publication will
+                // carry the same durable receipt metadata.
+                AtriaDebugLog(
+                    "ATRIADBG widget_snapshot status=durable_steps_skipped reason=%@ detail=no_existing_snapshot",
+                    reason
+                )
+                return
+            }
+            guard let patched = durableStepPatchedSnapshot(
+                current: current,
+                projection: projection,
+                currentPersistedSourceIdentifier: sourceIdentifier,
+                deliveredAt: now
+            ),
+                  let patchedData = try? JSONEncoder.widgetSnapshotEncoder
+                    .encode(patched) else {
+                AtriaDebugLog(
+                    "ATRIADBG widget_snapshot status=durable_steps_skipped reason=%@ detail=stale_or_invalid_authority",
+                    reason
+                )
+                return
+            }
+            defaults.set(patchedData, forKey: key)
+            #if canImport(WidgetKit)
+            if widgetDiagnostics.appGroupEnabled {
+                scheduleTimelineReload(for: patched)
+            }
+            #endif
+            AtriaDebugLog(
+                "ATRIADBG widget_snapshot status=durable_steps_patch reason=%@ steps=%@ receipt_at=%.3f bytes=%d",
+                reason,
+                formatInt(patched.steps),
+                projection.receiptCapturedAt?.timeIntervalSince1970 ?? -1,
+                patchedData.count
+            )
+        }
+    }
+
+    private static func durableStepProjection(
+        store: SessionStore,
+        sourceIdentifier: String,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> DurableStepProjection? {
+        guard AtriaWhoop4GravityCadenceStepModel
+                .releaseDailyAuthorityQualified else { return nil }
+        let cycle = AtriaPhysiologicalCycle.current(
+            now: now,
+            confirmedSleeps: store.confirmedSleeps,
+            calendar: calendar
+        )
+        let publication = AtriaWhoop4MotionTickDailyStore.shared
+            .currentCyclePublication(
+                into: [],
+                strapIdentifiers: [sourceIdentifier],
+                windowStart: cycle.start,
+                now: now,
+                calendar: calendar
+            )
+        let receiptDays = publication.projectedDays
+        let receiptCapturedAt = publication.receipt?.evidence.capturedThrough
+        let priorReceipt = AtriaWhoop4MotionTickDailyStore.shared
+            .latestReceipt(
+                before: cycle.start,
+                strapIdentifiers: [sourceIdentifier]
+            )
+        let presentation = resolvedDailySteps(
+            day: now,
+            now: now,
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: receiptDays,
+            liveAuthorityQualified: true,
+            physiologicalDayStart: cycle.start,
+            priorCycleReceipt: priorReceipt.map {
+                .init(steps: $0.steps, endedAt: $0.capturedThrough)
+            },
+            calendar: calendar
+        )
+        let publishedSteps = presentation.count
+        let displayedReceiptContentRevision = publishedSteps != nil
+            && presentation.capturedAt == receiptCapturedAt
+            && publishedSteps == publication.receipt?.evidence.steps
+            && stepSourceIdentifier(presentation.source)
+                == "verifiedCanonical"
+            ? publication.displayedReceiptContentRevision : nil
+        return .init(
+            authorityVersion: qualifiedStepAuthorityVersion,
+            sourceIdentifier: sourceIdentifier,
+            cycleStart: cycle.start,
+            cycleExpiresAt: cumulativeStrainCycleExpiration(
+                cycle: cycle,
+                confirmedSleeps: store.confirmedSleeps,
+                calendar: calendar
+            ),
+            receiptCapturedAt: receiptCapturedAt,
+            receiptContentRevision:
+                publication.receipt?.contentRevision,
+            displayedReceiptContentRevision:
+                displayedReceiptContentRevision,
+            receiptInvalidatesIndependentPartial:
+                publication.receiptInvalidatesIndependentPartial,
+            steps: publishedSteps,
+            stepsAreEstimated: publishedSteps == nil ? nil
+                : (!presentation.isValidated
+                    || presentation.completeness == .partial),
+            stepsCapturedAt: presentation.capturedAt,
+            stepsSource: stepSourceIdentifier(presentation.source),
+            stepsCompleteness:
+                stepCompletenessIdentifier(presentation.completeness),
+            stepsCoverageFraction: presentation.coverageFraction,
+            priorCycleSteps: presentation.priorCycleReceipt?.steps,
+            priorCycleEndedAt: presentation.priorCycleReceipt?.endedAt
+        )
+    }
+
+    /// Applies only a current persisted strap's monotonic receipt authority.
+    /// A newer cycle (including an empty rollover) or replacement strap may
+    /// invalidate old steps. Within the same source/cycle, a missing or older
+    /// receipt can never clear a value supported by fresher live/durable data.
+    nonisolated static func durableStepPatchedSnapshot(
+        current: WidgetSnapshot,
+        projection: DurableStepProjection,
+        currentPersistedSourceIdentifier: String,
+        deliveredAt: Date
+    ) -> WidgetSnapshot? {
+        let incomingReceiptRevision = canonicalStepReceiptContentRevision(
+            projection.receiptContentRevision
+        )
+        let incomingDisplayedReceiptRevision =
+            canonicalStepReceiptContentRevision(
+                projection.displayedReceiptContentRevision
+            )
+        guard AtriaWhoop4GravityCadenceStepModel
+                .releaseDailyAuthorityQualified,
+              projection.authorityVersion == qualifiedStepAuthorityVersion,
+              let incomingSource = canonicalStepReceiptSourceIdentifier(
+                projection.sourceIdentifier
+              ),
+              incomingSource == canonicalStepReceiptSourceIdentifier(
+                currentPersistedSourceIdentifier
+              ),
+              projection.cycleStart <= deliveredAt.addingTimeInterval(5),
+              projection.cycleExpiresAt > projection.cycleStart,
+              projection.receiptCapturedAt.map({
+                $0 >= projection.cycleStart.addingTimeInterval(-1)
+                    && $0 <= deliveredAt.addingTimeInterval(5)
+              }) ?? true,
+              projection.receiptCapturedAt == nil
+                ? projection.receiptContentRevision == nil
+                : incomingReceiptRevision != nil,
+              projection.displayedReceiptContentRevision == nil
+                || (incomingDisplayedReceiptRevision
+                        == incomingReceiptRevision
+                    && projection.steps != nil),
+              !projection.receiptInvalidatesIndependentPartial
+                || (projection.steps == nil
+                    && incomingDisplayedReceiptRevision == nil) else {
+            return nil
+        }
+
+        let previousReceiptAuthorityQualified =
+            current.stepsReceiptAuthorityVersion
+                == qualifiedStepAuthorityVersion
+        let previousSource = previousReceiptAuthorityQualified
+            ? canonicalStepReceiptSourceIdentifier(
+                current.stepsReceiptSourceIdentifier
+            )
+            : nil
+        let isReplacementSource = previousSource.map {
+            $0 != incomingSource
+        } ?? false
+        let previousCycle = (previousReceiptAuthorityQualified
+            ? current.stepsReceiptCycleStart : nil)
+            ?? current.stepsCycleStart
+        let cycleDelta = previousCycle.map {
+            projection.cycleStart.timeIntervalSince($0)
+        }
+        let isSameCycle = cycleDelta.map { abs($0) < 1 } ?? false
+        let currentDisplayedReceiptRevision =
+            canonicalStepReceiptContentRevision(
+                current.stepsDisplayedReceiptContentRevision
+            )
+        let currentIsIndependentPartial = current.steps != nil
+            && current.stepsSource == "verifiedCanonical"
+            && current.stepsCompleteness == "partial"
+            && current.stepsAuthorityVersion == qualifiedStepAuthorityVersion
+            && currentDisplayedReceiptRevision == nil
+        let incomingCompletenessRank: Int
+        switch projection.stepsCompleteness {
+        case "complete": incomingCompletenessRank = 2
+        case "partial": incomingCompletenessRank = 1
+        default: incomingCompletenessRank = 0
+        }
+        let currentCompletenessRank = current.stepsCompleteness == "complete"
+            ? 2 : (current.stepsCompleteness == "partial" ? 1 : 0)
+        let incomingCoverage = projection.stepsCoverageFraction ?? 0
+        let currentCoverage = current.stepsCoverageFraction ?? 0
+        let incomingOutranksIndependentPartialWithoutClock =
+            projection.receiptInvalidatesIndependentPartial
+            || incomingCompletenessRank > currentCompletenessRank
+            || (incomingCompletenessRank == currentCompletenessRank
+                && incomingCoverage > currentCoverage)
+
+        if !isReplacementSource {
+            if let cycleDelta, cycleDelta < -1 { return nil }
+            if isSameCycle {
+                guard let incomingReceiptAt = projection.receiptCapturedAt
+                else { return nil }
+                let previousEvidenceAt = [
+                    previousReceiptAuthorityQualified
+                        ? current.stepsReceiptCapturedAt : nil,
+                    current.stepsCapturedAt,
+                ].compactMap { $0 }.max()
+                if let previousEvidenceAt,
+                   incomingReceiptAt < previousEvidenceAt,
+                   !(currentIsIndependentPartial
+                        && incomingOutranksIndependentPartialWithoutClock) {
+                    return nil
+                }
+            } else if previousCycle == nil,
+                      projection.receiptCapturedAt == nil {
+                // A legacy snapshot with no cycle/source authority cannot be
+                // cleared merely because an unrelated no-op notification ran.
+                return nil
+            }
+        }
+
+        // A publishable receipt must carry the same qualified product
+        // provenance used by every other step surface. An unresolved receipt
+        // intentionally carries no displayed value fields.
+        if projection.steps != nil {
+            guard projection.stepsCapturedAt != nil,
+                  projection.stepsCapturedAt == projection.receiptCapturedAt,
+                  projection.stepsSource == "verifiedCanonical"
+            else { return nil }
+        }
+
+        var patched = current
+        patched.createdAt = max(current.createdAt, deliveredAt)
+        patched.stepsReceiptAuthorityVersion = projection.authorityVersion
+        patched.stepsReceiptSourceIdentifier = incomingSource
+        patched.stepsReceiptCycleStart = projection.cycleStart
+        patched.stepsReceiptCapturedAt = projection.receiptCapturedAt
+        patched.stepsReceiptContentRevision = incomingReceiptRevision
+        patched.stepsReceiptInvalidatesIndependentPartial =
+            projection.receiptInvalidatesIndependentPartial
+        let incomingSupersedesReceiptOwnedExact =
+            currentDisplayedReceiptRevision != nil
+            && incomingReceiptRevision != currentDisplayedReceiptRevision
+        let incomingDisplayedAt = projection.stepsCapturedAt
+            ?? projection.receiptCapturedAt
+        let incomingIsStrongerThanIndependentPartial: Bool
+        if projection.receiptInvalidatesIndependentPartial {
+            incomingIsStrongerThanIndependentPartial = true
+        } else if incomingCompletenessRank != currentCompletenessRank {
+            incomingIsStrongerThanIndependentPartial =
+                incomingCompletenessRank > currentCompletenessRank
+        } else if incomingCoverage != currentCoverage {
+            // Coverage has the same cycle denominator and is the durable
+            // store's primary partial-strength authority. A later clock alone
+            // cannot make a sparser subtotal stronger.
+            incomingIsStrongerThanIndependentPartial =
+                incomingCoverage > currentCoverage
+        } else {
+            incomingIsStrongerThanIndependentPartial =
+                incomingDisplayedAt.map { incomingAt in
+                    current.stepsCapturedAt.map { incomingAt > $0 } ?? true
+                } ?? false
+        }
+        let preservesIndependentPartial = previousReceiptAuthorityQualified
+            && previousSource == incomingSource
+            && isSameCycle
+            && currentIsIndependentPartial
+            && !incomingIsStrongerThanIndependentPartial
+        let preservesExactCanonical = previousReceiptAuthorityQualified
+            && previousSource == incomingSource
+            && isSameCycle
+            && current.steps != nil
+            && current.stepsSource == "verifiedCanonical"
+            && current.stepsCompleteness == "complete"
+            && current.stepsAuthorityVersion == qualifiedStepAuthorityVersion
+            && !incomingSupersedesReceiptOwnedExact
+        if preservesExactCanonical || preservesIndependentPartial {
+            // `durableStepProjection` intentionally avoids the asynchronous
+            // history snapshot. An independently projected exact row outranks
+            // a receipt, and an equal-clock independent partial row keeps the
+            // stronger completeness/coverage. A row owned by an old receipt
+            // must follow any new receipt revision, including clearing when
+            // the new receipt is unresolved.
+            return patched
+        }
+        patched.steps = projection.steps
+        patched.stepsAreEstimated = projection.steps == nil
+            ? nil : projection.stepsAreEstimated
+        patched.stepsCapturedAt = projection.steps == nil
+            ? nil : projection.stepsCapturedAt
+        patched.stepsSource = projection.steps == nil
+            ? nil : projection.stepsSource
+        patched.stepsCompleteness = projection.steps == nil
+            ? nil : projection.stepsCompleteness
+        patched.stepsCoverageFraction = projection.steps == nil
+            ? nil : projection.stepsCoverageFraction
+        patched.stepsAuthorityVersion = projection.steps == nil
+            ? nil : projection.authorityVersion
+        patched.stepsCycleStart = projection.steps == nil
+            ? nil : projection.cycleStart
+        patched.stepsCycleExpiresAt = projection.steps == nil
+            ? nil : projection.cycleExpiresAt
+        patched.stepsDisplayedReceiptContentRevision = projection.steps == nil
+            ? nil : incomingDisplayedReceiptRevision
+        patched.stepsPriorCycleSteps = projection.steps == nil
+            ? projection.priorCycleSteps : nil
+        patched.stepsPriorCycleEndedAt = projection.steps == nil
+            ? projection.priorCycleEndedAt : nil
+        return patched
+    }
+
+    nonisolated private static func canonicalStepReceiptSourceIdentifier(
+        _ value: String?
+    ) -> String? {
+        value.flatMap(UUID.init(uuidString:))?.uuidString
+    }
+
+    nonisolated private static func canonicalStepReceiptContentRevision(
+        _ value: String?
+    ) -> String? {
+        guard let value, value.utf8.count == 64,
+              value.utf8.allSatisfy({ byte in
+                (48...57).contains(byte) || (97...102).contains(byte)
+              }) else {
+            return nil
+        }
+        return value
+    }
+
+    /// A broad rebuild can start immediately before a background receipt save
+    /// and reach UserDefaults after the receipt-only lane. Merge only the step
+    /// family from the stronger already-delivered authority; every non-step
+    /// field remains owned by the new broad candidate.
+    nonisolated static func snapshotPreservingFresherStepAuthority(
+        candidate: WidgetSnapshot,
+        current: WidgetSnapshot,
+        authoritativeReceiptContentRevision: String? = nil
+    ) -> WidgetSnapshot {
+        guard AtriaWhoop4GravityCadenceStepModel
+                .releaseDailyAuthorityQualified else {
+            // Gate-4 revocation must clear every former product projection;
+            // monotonic delivery metadata cannot keep a disproven count alive.
+            return candidate
+        }
+        let candidateReceiptAuthorityQualified =
+            candidate.stepsReceiptAuthorityVersion
+                == qualifiedStepAuthorityVersion
+        let currentReceiptAuthorityQualified =
+            current.stepsReceiptAuthorityVersion
+                == qualifiedStepAuthorityVersion
+        let candidateSource = candidateReceiptAuthorityQualified
+            ? canonicalStepReceiptSourceIdentifier(
+                candidate.stepsReceiptSourceIdentifier
+            )
+            : nil
+        let currentSource = currentReceiptAuthorityQualified
+            ? canonicalStepReceiptSourceIdentifier(
+                current.stepsReceiptSourceIdentifier
+            )
+            : nil
+        let shouldPreserveCurrent: Bool
+        if let candidateSource, let currentSource,
+           candidateSource != currentSource {
+            // A full publish resolves the currently persisted strap identity;
+            // never import a former strap's projection into that candidate.
+            shouldPreserveCurrent = false
+        } else if candidateSource != nil, currentSource == nil {
+            shouldPreserveCurrent = false
+        } else if candidateSource == nil, currentSource != nil {
+            // Losing the persisted identity is also an authority change. Do
+            // not keep a former strap's count alive under an anonymous source.
+            shouldPreserveCurrent = false
+        } else {
+            let candidateCycle = (candidateReceiptAuthorityQualified
+                ? candidate.stepsReceiptCycleStart : nil)
+                ?? candidate.stepsCycleStart
+            let currentCycle = (currentReceiptAuthorityQualified
+                ? current.stepsReceiptCycleStart : nil)
+                ?? current.stepsCycleStart
+            if let candidateCycle, let currentCycle,
+               abs(candidateCycle.timeIntervalSince(currentCycle)) >= 1 {
+                shouldPreserveCurrent = currentCycle > candidateCycle
+            } else if candidateCycle == nil, currentCycle != nil {
+                shouldPreserveCurrent = true
+            } else if candidateCycle != nil, currentCycle == nil {
+                shouldPreserveCurrent = false
+            } else {
+                let candidateHasIndependentExactCanonicalSteps =
+                    candidate.steps != nil
+                    && candidate.stepsSource == "verifiedCanonical"
+                    && candidate.stepsCompleteness == "complete"
+                    && candidate.stepsAuthorityVersion
+                        == qualifiedStepAuthorityVersion
+                    && candidate.stepsDisplayedReceiptContentRevision == nil
+                let currentHasIndependentExactCanonicalSteps =
+                    current.steps != nil
+                    && current.stepsSource == "verifiedCanonical"
+                    && current.stepsCompleteness == "complete"
+                    && current.stepsAuthorityVersion
+                        == qualifiedStepAuthorityVersion
+                    && current.stepsDisplayedReceiptContentRevision == nil
+                if candidateHasIndependentExactCanonicalSteps
+                    && currentHasIndependentExactCanonicalSteps {
+                    // Receipt clocks own neither independent row. Order their
+                    // displayed evidence directly: a newer delivered exact row
+                    // cannot regress, while equal clocks choose the freshly
+                    // computed broad candidate.
+                    shouldPreserveCurrent = current.stepsCapturedAt.map {
+                        currentAt in
+                        candidate.stepsCapturedAt.map {
+                            currentAt > $0
+                        } ?? true
+                    } ?? false
+                } else if candidateHasIndependentExactCanonicalSteps
+                    || currentHasIndependentExactCanonicalSteps {
+                    // An independent full canonical row outranks a receipt-
+                    // owned row even if a newer receipt lands while the broad
+                    // candidate is being built. The later receipt patch can
+                    // update receipt metadata, but cannot recreate a broad
+                    // row that this merge discards.
+                    shouldPreserveCurrent =
+                        currentHasIndependentExactCanonicalSteps
+                } else {
+                    let candidateHasIndependentPartialCanonicalSteps =
+                        candidate.steps != nil
+                        && candidate.stepsSource == "verifiedCanonical"
+                        && candidate.stepsCompleteness == "partial"
+                        && candidate.stepsAuthorityVersion
+                            == qualifiedStepAuthorityVersion
+                        && candidate.stepsDisplayedReceiptContentRevision == nil
+                    let currentHasIndependentPartialCanonicalSteps =
+                        current.steps != nil
+                        && current.stepsSource == "verifiedCanonical"
+                        && current.stepsCompleteness == "partial"
+                        && current.stepsAuthorityVersion
+                            == qualifiedStepAuthorityVersion
+                        && current.stepsDisplayedReceiptContentRevision == nil
+                    let candidateInvalidatesIndependentPartial =
+                        candidate.stepsReceiptInvalidatesIndependentPartial
+                            == true
+                    let currentInvalidatesIndependentPartial =
+                        current.stepsReceiptInvalidatesIndependentPartial
+                            == true
+                    if candidateInvalidatesIndependentPartial
+                        && currentHasIndependentPartialCanonicalSteps {
+                        // Observed motion with no qualified gait subtotal is
+                        // explicit negative authority for an older partial.
+                        // It never invalidates an independently projected
+                        // complete row (handled above).
+                        shouldPreserveCurrent = false
+                    } else if currentInvalidatesIndependentPartial
+                                && candidateHasIndependentPartialCanonicalSteps {
+                        shouldPreserveCurrent = true
+                    } else if candidateHasIndependentPartialCanonicalSteps
+                                || currentHasIndependentPartialCanonicalSteps {
+                        // Receipt clocks do not own an independent partial.
+                        // Mirror the daily-store merge: completeness and
+                        // coverage outrank time, then compare the displayed
+                        // evidence clock. On an exact tie the fresh broad
+                        // candidate wins unless only the current row is
+                        // independent.
+                        let candidateCompletenessRank =
+                            candidate.stepsCompleteness == "complete" ? 2
+                            : (candidate.stepsCompleteness == "partial" ? 1 : 0)
+                        let currentCompletenessRank =
+                            current.stepsCompleteness == "complete" ? 2
+                            : (current.stepsCompleteness == "partial" ? 1 : 0)
+                        if candidateCompletenessRank
+                            != currentCompletenessRank {
+                            shouldPreserveCurrent = currentCompletenessRank
+                                > candidateCompletenessRank
+                        } else {
+                            let candidateCoverage =
+                                candidate.stepsCoverageFraction ?? 0
+                            let currentCoverage =
+                                current.stepsCoverageFraction ?? 0
+                            if candidateCoverage != currentCoverage {
+                                shouldPreserveCurrent = currentCoverage
+                                    > candidateCoverage
+                            } else if candidate.stepsCapturedAt
+                                        != current.stepsCapturedAt {
+                                shouldPreserveCurrent =
+                                    current.stepsCapturedAt.map { currentAt in
+                                        candidate.stepsCapturedAt.map {
+                                            currentAt > $0
+                                        } ?? true
+                                    } ?? false
+                            } else {
+                                shouldPreserveCurrent =
+                                    currentHasIndependentPartialCanonicalSteps
+                                    && !candidateHasIndependentPartialCanonicalSteps
+                            }
+                        }
+                    } else {
+                        let candidateEvidenceAt = [
+                            candidateReceiptAuthorityQualified
+                                ? candidate.stepsReceiptCapturedAt : nil,
+                            candidate.stepsCapturedAt,
+                        ].compactMap { $0 }.max()
+                        let currentEvidenceAt = [
+                            currentReceiptAuthorityQualified
+                                ? current.stepsReceiptCapturedAt : nil,
+                            current.stepsCapturedAt,
+                        ].compactMap { $0 }.max()
+                        if let candidateEvidenceAt, let currentEvidenceAt,
+                           candidateEvidenceAt == currentEvidenceAt {
+                            let candidateRevision =
+                                candidateReceiptAuthorityQualified
+                                ? canonicalStepReceiptContentRevision(
+                                    candidate.stepsReceiptContentRevision
+                                ) : nil
+                            let currentRevision =
+                                currentReceiptAuthorityQualified
+                                ? canonicalStepReceiptContentRevision(
+                                    current.stepsReceiptContentRevision
+                                ) : nil
+                            let authoritativeRevision =
+                                canonicalStepReceiptContentRevision(
+                                    authoritativeReceiptContentRevision
+                                )
+                            if let authoritativeRevision {
+                                if authoritativeRevision == currentRevision {
+                                    shouldPreserveCurrent =
+                                        authoritativeRevision
+                                        != candidateRevision
+                                } else if authoritativeRevision
+                                            == candidateRevision {
+                                    shouldPreserveCurrent = false
+                                } else {
+                                    // Neither asynchronous snapshot represents
+                                    // the current durable content. Retain the
+                                    // already-delivered step family until its
+                                    // receipt patch lands; unrelated full fields
+                                    // may still advance.
+                                    shouldPreserveCurrent = true
+                                }
+                            } else if candidateRevision == currentRevision {
+                                shouldPreserveCurrent = false
+                            } else {
+                                // With two different same-clock records and no
+                                // durable tie-break proof, overwriting the
+                                // delivered value would be unprovable.
+                                shouldPreserveCurrent = true
+                            }
+                        } else {
+                            shouldPreserveCurrent = currentEvidenceAt.map {
+                                currentAt in
+                                candidateEvidenceAt.map {
+                                    currentAt > $0
+                                } ?? true
+                            } ?? false
+                        }
+                    }
+                }
+            }
+        }
+        guard shouldPreserveCurrent else { return candidate }
+
+        var merged = candidate
+        merged.steps = current.steps
+        merged.stepsAreEstimated = current.stepsAreEstimated
+        merged.stepsCapturedAt = current.stepsCapturedAt
+        merged.stepsSource = current.stepsSource
+        merged.stepsCompleteness = current.stepsCompleteness
+        merged.stepsCoverageFraction = current.stepsCoverageFraction
+        merged.stepsAuthorityVersion = current.stepsAuthorityVersion
+        merged.stepsCycleStart = current.stepsCycleStart
+        merged.stepsCycleExpiresAt = current.stepsCycleExpiresAt
+        merged.stepsReceiptAuthorityVersion =
+            current.stepsReceiptAuthorityVersion
+        merged.stepsReceiptSourceIdentifier =
+            current.stepsReceiptSourceIdentifier
+        merged.stepsReceiptCycleStart = current.stepsReceiptCycleStart
+        merged.stepsReceiptCapturedAt = current.stepsReceiptCapturedAt
+        merged.stepsReceiptContentRevision =
+            current.stepsReceiptContentRevision
+        merged.stepsDisplayedReceiptContentRevision =
+            current.stepsDisplayedReceiptContentRevision
+        merged.stepsReceiptInvalidatesIndependentPartial =
+            current.stepsReceiptInvalidatesIndependentPartial
+        merged.stepsPriorCycleSteps = current.stepsPriorCycleSteps
+        merged.stepsPriorCycleEndedAt = current.stepsPriorCycleEndedAt
+        return merged
+    }
+
     nonisolated static func liveWorkoutPatchedSnapshot(
         current: WidgetSnapshot,
         createdAt: Date,
@@ -233,9 +914,49 @@ enum WidgetSnapshotPublisher {
         let heartRateZone = heartRate.map {
             HRZone.zone(for: $0, maxHR: current.maxHR, restingHR: current.restingHR)
         }
+        let incomingStepEvidenceAt = steps.flatMap { _ in stepsCapturedAt }
+        let currentStepEvidenceAt = [
+            current.stepsReceiptCapturedAt,
+            current.stepsCapturedAt,
+        ].compactMap { $0 }.max()
+        // This lane may have captured its arguments before a durable receipt
+        // landed. Keep the latest snapshot's step projection unless the live
+        // sample is at least as new as every delivered step/receipt clock.
+        let acceptsIncomingSteps = incomingStepEvidenceAt.map { incoming in
+            let equalsRevisionedDurableReceipt =
+                current.stepsReceiptAuthorityVersion
+                    == qualifiedStepAuthorityVersion
+                && canonicalStepReceiptContentRevision(
+                    current.stepsReceiptContentRevision
+                ) != nil
+                && current.stepsReceiptCapturedAt == incoming
+            return !equalsRevisionedDurableReceipt
+                && (currentStepEvidenceAt.map { incoming >= $0 } ?? true)
+        } ?? (current.steps == nil
+                && current.stepsCapturedAt == nil
+                && current.stepsReceiptCapturedAt == nil)
+        let patchedSteps = acceptsIncomingSteps ? steps : current.steps
+        let patchedStepsAreEstimated = acceptsIncomingSteps
+            ? (steps == nil ? nil : stepsAreEstimated)
+            : current.stepsAreEstimated
+        let patchedStepsCapturedAt = acceptsIncomingSteps
+            ? (steps == nil ? nil : stepsCapturedAt)
+            : current.stepsCapturedAt
+        let patchedStepsSource = acceptsIncomingSteps
+            ? (steps == nil ? nil : stepsSource)
+            : current.stepsSource
+        let patchedStepsCompleteness = acceptsIncomingSteps
+            ? (steps == nil ? nil : stepsCompleteness)
+            : current.stepsCompleteness
+        let patchedStepsCoverageFraction = acceptsIncomingSteps
+            ? (steps == nil ? nil : stepsCoverageFraction)
+            : current.stepsCoverageFraction
+        let patchedStepsAuthorityVersion = acceptsIncomingSteps
+            ? (steps == nil ? nil : stepsAuthorityVersion)
+            : current.stepsAuthorityVersion
         return WidgetSnapshot(
             schema: current.schema,
-            createdAt: createdAt,
+            createdAt: max(current.createdAt, createdAt),
             recoveryPercent: current.recoveryPercent,
             recoveryConfidence: current.recoveryConfidence,
             recoveryDetail: current.recoveryDetail,
@@ -262,21 +983,36 @@ enum WidgetSnapshotPublisher {
             maxHR: current.maxHR,
             sleepHours: current.sleepHours,
             sleepDetail: current.sleepDetail,
-            steps: steps,
-            stepsAreEstimated: steps == nil ? nil : stepsAreEstimated,
-            stepsCapturedAt: steps == nil ? nil : stepsCapturedAt,
-            stepsSource: steps == nil ? nil : stepsSource,
-            stepsCompleteness: steps == nil ? nil : stepsCompleteness,
-            stepsCoverageFraction: steps == nil ? nil : stepsCoverageFraction,
-            stepsAuthorityVersion:
-                steps == nil ? nil : stepsAuthorityVersion,
-            stepsCycleStart: steps == nil ? nil : current.stepsCycleStart,
-            stepsCycleExpiresAt: steps == nil ? nil : current.stepsCycleExpiresAt,
+            steps: patchedSteps,
+            stepsAreEstimated: patchedStepsAreEstimated,
+            stepsCapturedAt: patchedStepsCapturedAt,
+            stepsSource: patchedStepsSource,
+            stepsCompleteness: patchedStepsCompleteness,
+            stepsCoverageFraction: patchedStepsCoverageFraction,
+            stepsAuthorityVersion: patchedStepsAuthorityVersion,
+            stepsCycleStart: acceptsIncomingSteps
+                ? (steps == nil ? nil : current.stepsCycleStart)
+                : current.stepsCycleStart,
+            stepsCycleExpiresAt: acceptsIncomingSteps
+                ? (steps == nil ? nil : current.stepsCycleExpiresAt)
+                : current.stepsCycleExpiresAt,
+            stepsReceiptAuthorityVersion:
+                current.stepsReceiptAuthorityVersion,
+            stepsReceiptSourceIdentifier:
+                current.stepsReceiptSourceIdentifier,
+            stepsReceiptCycleStart: current.stepsReceiptCycleStart,
+            stepsReceiptCapturedAt: current.stepsReceiptCapturedAt,
+            stepsReceiptContentRevision:
+                current.stepsReceiptContentRevision,
+            stepsDisplayedReceiptContentRevision: acceptsIncomingSteps
+                ? nil : current.stepsDisplayedReceiptContentRevision,
+            stepsReceiptInvalidatesIndependentPartial:
+                current.stepsReceiptInvalidatesIndependentPartial,
             // Prior-cycle disclosure only exists while today's value is nil;
             // a live patch that publishes a current count clears it.
-            stepsPriorCycleSteps: steps == nil
+            stepsPriorCycleSteps: patchedSteps == nil
                 ? current.stepsPriorCycleSteps : nil,
-            stepsPriorCycleEndedAt: steps == nil
+            stepsPriorCycleEndedAt: patchedSteps == nil
                 ? current.stepsPriorCycleEndedAt : nil,
             dailyStepGoal: current.dailyStepGoal,
             heartRate: heartRate,
@@ -372,6 +1108,20 @@ enum WidgetSnapshotPublisher {
                                         snapshot.stepsAuthorityVersion,
                                        stepsCycleStart: snapshot.stepsCycleStart,
                                        stepsCycleExpiresAt: snapshot.stepsCycleExpiresAt,
+                                       stepsReceiptAuthorityVersion:
+                                        snapshot.stepsReceiptAuthorityVersion,
+                                       stepsReceiptSourceIdentifier:
+                                        snapshot.stepsReceiptSourceIdentifier,
+                                       stepsReceiptCycleStart:
+                                        snapshot.stepsReceiptCycleStart,
+                                       stepsReceiptCapturedAt:
+                                        snapshot.stepsReceiptCapturedAt,
+                                       stepsReceiptContentRevision:
+                                        snapshot.stepsReceiptContentRevision,
+                                       stepsDisplayedReceiptContentRevision:
+                                        snapshot.stepsDisplayedReceiptContentRevision,
+                                       stepsReceiptInvalidatesIndependentPartial:
+                                        snapshot.stepsReceiptInvalidatesIndependentPartial,
                                        stepsPriorCycleSteps: snapshot.stepsPriorCycleSteps,
                                        stepsPriorCycleEndedAt: snapshot.stepsPriorCycleEndedAt,
                                        dailyStepGoal: snapshot.dailyStepGoal,
@@ -568,18 +1318,38 @@ enum WidgetSnapshotPublisher {
                 )
         let strapIdentifiers =
             AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers()
+        let stepReleaseAuthorityQualified =
+            AtriaWhoop4GravityCadenceStepModel
+                .releaseDailyAuthorityQualified
+        let currentCycleReceipt:
+            AtriaWhoop4MotionTickDailyStore.PublicationReceipt?
+        let currentCycleDisplayedReceiptContentRevision: String?
+        let currentCycleReceiptInvalidatesIndependentPartial: Bool
         if !strapIdentifiers.isEmpty {
-            projectedStepDays = AtriaWhoop4MotionTickDailyStore.shared
-                .mergingCurrentCycleReceipt(
+            let publication = AtriaWhoop4MotionTickDailyStore.shared
+                .currentCyclePublication(
                     into: qualifiedHistoricalStepDays,
                     strapIdentifiers: strapIdentifiers,
                     windowStart: savedAggregate.day,
                     now: now,
                     calendar: calendar
                 )
+            projectedStepDays = publication.projectedDays
+            currentCycleReceipt = publication.receipt
+            currentCycleDisplayedReceiptContentRevision =
+                publication.displayedReceiptContentRevision
+            currentCycleReceiptInvalidatesIndependentPartial =
+                publication.receiptInvalidatesIndependentPartial
         } else {
             projectedStepDays = qualifiedHistoricalStepDays
+            currentCycleReceipt = nil
+            currentCycleDisplayedReceiptContentRevision = nil
+            currentCycleReceiptInvalidatesIndependentPartial = false
         }
+        let currentCycleReceiptCapturedAt =
+            currentCycleReceipt?.evidence.capturedThrough
+        let currentCycleReceiptContentRevision =
+            currentCycleReceipt?.contentRevision
         // 2026-07-31: disclosure-only prior-cycle receipt. Kept out of
         // projectedStepDays so `steps` stays nil (honest) after a no-sleep
         // rollover; only the widget's detail line may name the prior count.
@@ -597,8 +1367,7 @@ enum WidgetSnapshotPublisher {
             liveCapturedAt: ble.liveStrapStepCountCapturedAt,
             canonicalDays: projectedStepDays,
             liveAuthorityQualified:
-                AtriaWhoop4GravityCadenceStepModel
-                    .releaseDailyAuthorityQualified,
+                stepReleaseAuthorityQualified,
             physiologicalDayStart: savedAggregate.day,
             priorCycleReceipt: priorCycleReceipt.map {
                 .init(steps: $0.steps, endedAt: $0.capturedThrough)
@@ -621,6 +1390,12 @@ enum WidgetSnapshotPublisher {
         let publishedSteps = dailySteps.count
         let stepsAreValidated = dailySteps.isValidated
         let stepsCapturedAt = dailySteps.capturedAt
+        let displayedReceiptContentRevision = publishedSteps != nil
+            && stepsCapturedAt == currentCycleReceiptCapturedAt
+            && publishedSteps == currentCycleReceipt?.evidence.steps
+            && stepSourceIdentifier(dailySteps.source)
+                == "verifiedCanonical"
+            ? currentCycleDisplayedReceiptContentRevision : nil
         let storedDailyStepGoal = UserDefaults.standard.integer(forKey: "atria.target.steps.goal")
         let dailyStepGoal = storedDailyStepGoal > 0 ? storedDailyStepGoal : 8_000
         let hrvRMSSD: Int?
@@ -670,7 +1445,7 @@ enum WidgetSnapshotPublisher {
             : nil
         // Optional evidence qualifiers are an additive schema-4 extension so
         // already-installed widget extensions continue decoding the payload.
-        let snapshot = WidgetSnapshot(schema: 4,
+        var snapshot = WidgetSnapshot(schema: 4,
                                       createdAt: now,
                                       recoveryPercent: recoveryPercent,
                                       recoveryConfidence: widgetRecovery.confidence.rawValue,
@@ -715,6 +1490,25 @@ enum WidgetSnapshotPublisher {
                                         ? nil : qualifiedStepAuthorityVersion,
                                       stepsCycleStart: publishedSteps == nil ? nil : physiologicalCycle.start,
                                       stepsCycleExpiresAt: publishedSteps == nil ? nil : strainCycleExpiresAt,
+                                      stepsReceiptAuthorityVersion:
+                                        strapIdentifiers.isEmpty
+                                            || !stepReleaseAuthorityQualified
+                                            ? nil : qualifiedStepAuthorityVersion,
+                                      stepsReceiptSourceIdentifier:
+                                        stepReleaseAuthorityQualified
+                                            ? strapIdentifiers.first : nil,
+                                      stepsReceiptCycleStart:
+                                        strapIdentifiers.isEmpty
+                                            || !stepReleaseAuthorityQualified
+                                            ? nil : physiologicalCycle.start,
+                                      stepsReceiptCapturedAt:
+                                        currentCycleReceiptCapturedAt,
+                                      stepsReceiptContentRevision:
+                                        currentCycleReceiptContentRevision,
+                                      stepsDisplayedReceiptContentRevision:
+                                        displayedReceiptContentRevision,
+                                      stepsReceiptInvalidatesIndependentPartial:
+                                        currentCycleReceiptInvalidatesIndependentPartial,
                                       stepsPriorCycleSteps: dailySteps
                                         .priorCycleReceipt?.steps,
                                       stepsPriorCycleEndedAt: dailySteps
@@ -758,6 +1552,31 @@ enum WidgetSnapshotPublisher {
             }
             AtriaDebugLog("ATRIADBG widget_snapshot status=deferred reason=%@ awaiting=%@", reason, awaiting)
             return snapshot
+        }
+        // Re-read the durable receipt after the broad/card computation. A
+        // correction can retain its capture clock, so the content revision is
+        // the only honest tie-break against a broad candidate that began first.
+        let authoritativeReceiptContentRevision = strapIdentifiers.isEmpty
+            ? nil
+            : AtriaWhoop4MotionTickDailyStore.shared
+                .currentCyclePublication(
+                    into: [],
+                    strapIdentifiers: strapIdentifiers,
+                    windowStart: savedAggregate.day,
+                    now: max(now, Date()),
+                    calendar: calendar
+                ).receipt?.contentRevision
+        if let currentData = defaults.data(forKey: key),
+           let current = try? JSONDecoder.widgetSnapshotDecoder.decode(
+            WidgetSnapshot.self,
+            from: currentData
+           ) {
+            snapshot = snapshotPreservingFresherStepAuthority(
+                candidate: snapshot,
+                current: current,
+                authoritativeReceiptContentRevision:
+                    authoritativeReceiptContentRevision
+            )
         }
         if let data = try? JSONEncoder.widgetSnapshotEncoder.encode(snapshot) {
             defaults.set(data, forKey: key)

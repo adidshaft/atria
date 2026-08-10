@@ -216,7 +216,9 @@ final class AtriaMetricTruthUXTests: XCTestCase {
         XCTAssertFalse(overview.contains("Label(\"Sleep rhythm\""))
         XCTAssertFalse(overview.contains(".accessibilityLabel(\"Sleep rhythm."))
 
-        XCTAssertTrue(AtriaAboutMetric.sleep.honestyNote.contains("not a measurement of circadian phase"))
+        XCTAssertTrue(AtriaAboutMetric.sleep.honestyNote.contains(
+            "not a clinical sleep study or a measurement of circadian phase"
+        ))
     }
 
     func testUnsupportedSensorCardsNameDecoderLimitationAndKeepNoValue() throws {
@@ -295,7 +297,8 @@ final class AtriaMetricTruthUXTests: XCTestCase {
         XCTAssertTrue(vitals.contains("AtriaMetricTile(label: hero.stressMetricTitle"))
 
         let coach = try source("AtriaAICoach.swift")
-        XCTAssertTrue(coach.contains("Cardiac arousal \\(context.stressText) (HR only; not a numeric Stress score)"))
-        XCTAssertFalse(coach.contains("stress \\(context.stressText)"))
+        XCTAssertTrue(coach.contains("let resolvedTitle = \"Physiological stress\""))
+        XCTAssertTrue(coach.contains("\\(resolvedTitle) \\(context.stressText) (HR-only estimate; lower confidence)"))
+        XCTAssertFalse(coach.contains("Cardiac arousal \\(context.stressText)"))
     }
 }

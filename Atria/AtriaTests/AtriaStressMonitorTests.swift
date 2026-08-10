@@ -3,44 +3,35 @@ import XCTest
 
 final class AtriaStressMonitorTests: XCTestCase {
     @MainActor
-    func testLiveStoreRequiresExplicitActiveSleepEvidenceBeforeShowingAsleep() {
+    func testLiveStoreCarriesOnlyExplicitQualifiedSleepContextIntoV3Fact() throws {
         let baseline = makeBaseline(restingMean: 60, restingSD: 4)
+        func fact(hasSleepEvidence: Bool) throws
+            -> AtriaPhysiologicalStressModel.MinuteFact {
+            let store = AtriaStressMonitorStore()
+            for offset in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] {
+                store.update(heartRate: 64,
+                             hasContact: true,
+                             recentRRSamples: [],
+                             isRecording: false,
+                             zoneIndex: 0,
+                             hrvSnapshot: nil,
+                             baseline: baseline,
+                             restingMaxHR: restingMaxHR,
+                             hasActiveSleepEvidence: hasSleepEvidence,
+                             now: now.addingTimeInterval(offset))
+            }
+            XCTAssertEqual(store.state.kind, .scored,
+                           "qualified sleep is context, not score suppression")
+            return try XCTUnwrap(store.state.minuteFact)
+        }
 
-        let awakeStore = AtriaStressMonitorStore()
-        awakeStore.update(
-            heartRate: 64,
-            hasContact: true,
-            recentRRSamples: [],
-            isRecording: false,
-            zoneIndex: 0,
-            hrvSnapshot: nil,
-            baseline: baseline,
-            restingMaxHR: restingMaxHR,
-            hasActiveSleepEvidence: false,
-            now: now
-        )
-        XCTAssertNotEqual(awakeStore.state.kind, .asleep)
-
-        let sleepingStore = AtriaStressMonitorStore()
-        sleepingStore.update(
-            heartRate: 64,
-            hasContact: true,
-            recentRRSamples: [],
-            isRecording: false,
-            zoneIndex: 0,
-            hrvSnapshot: nil,
-            baseline: baseline,
-            restingMaxHR: restingMaxHR,
-            hasActiveSleepEvidence: true,
-            now: now
-        )
-        XCTAssertEqual(sleepingStore.state.kind, .asleep)
+        XCTAssertEqual(try fact(hasSleepEvidence: false).sleepContext, .unavailable)
+        XCTAssertEqual(try fact(hasSleepEvidence: true).sleepContext, .asleep)
     }
 
-    // Added 2026-07-31 (device review: stress tile stuck at "collecting 2 min
-    // of live signal"): warm-up is anchored to accepted-HR continuity. A brief
-    // contact flicker must not restart the 2-minute clock; a sustained loss
-    // (longer than the 30s grace) must.
+    // Warm-up is anchored to accepted-HR continuity. A brief contact flicker
+    // must not restart the complete five-minute window; a sustained loss
+    // longer than the continuity grace must.
     @MainActor
     func testWarmUpSurvivesBriefContactFlicker() {
         let baseline = makeBaseline(restingMean: 60, restingSD: 4)
@@ -69,9 +60,12 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(store.state.kind, .noSignal)
         tick(atOffset: 106, hasContact: true)
 
-        // 125s after first contact: warm-up completes because the flicker did
-        // not restart the clock.
+        // Complete the original five-minute horizon. The six-second flicker
+        // did not reset its clock or create an internal HR gap.
         tick(atOffset: 125, hasContact: true)
+        tick(atOffset: 180, hasContact: true)
+        tick(atOffset: 240, hasContact: true)
+        tick(atOffset: 300, hasContact: true)
         XCTAssertEqual(store.state.kind, .scored)
     }
 
@@ -104,10 +98,12 @@ final class AtriaStressMonitorTests: XCTestCase {
         tick(atOffset: 180, hasContact: true)
         tick(atOffset: 220, hasContact: true)
         XCTAssertEqual(store.state.kind, .warmingUp)
-        // ...and completes 120s after the new contact epoch (ticks stay inside
-        // the production <=30s evaluation cadence).
+        // ...and completes five minutes after the new contact epoch.
         tick(atOffset: 260, hasContact: true)
-        tick(atOffset: 301, hasContact: true)
+        tick(atOffset: 300, hasContact: true)
+        tick(atOffset: 360, hasContact: true)
+        tick(atOffset: 420, hasContact: true)
+        tick(atOffset: 480, hasContact: true)
         XCTAssertEqual(store.state.kind, .scored)
     }
 
@@ -147,19 +143,205 @@ final class AtriaStressMonitorTests: XCTestCase {
                                 sessions: dayCount, updated: now, samples: samples)
     }
 
-    /// A continuous, artifact-screenable 90-second tachogram whose adjacent
+    /// A continuous, artifact-screenable five-minute tachogram whose adjacent
     /// intervals alternate by `rmssd` milliseconds. The resulting RMSSD is
     /// exactly `rmssd`, making evidence-mode transition tests deterministic.
     private func qualifiedRRSamples(endingAt end: Date,
-                                    rmssd: Int = 100) -> [AtriaBreathworkSession.RRSample] {
-        let lower = 1_000 - rmssd / 2
-        let upper = 1_000 + rmssd / 2
-        return (0...90).map { index in
+                                    rmssd: Int = 100,
+                                    heartRate: Int = 98) -> [AtriaBreathworkSession.RRSample] {
+        let center = 60_000 / heartRate
+        let lower = center - rmssd / 2
+        let upper = center + rmssd / 2
+        var samples: [AtriaBreathworkSession.RRSample] = []
+        var clock = end.addingTimeInterval(-300)
+        var index = 0
+        while clock <= end {
+            let milliseconds = index.isMultiple(of: 2) ? lower : upper
+            samples.append(.init(date: clock,
+                                 ms: milliseconds,
+                                 source: .standardHeartRateMeasurement2A37))
+            clock = clock.addingTimeInterval(Double(milliseconds) / 1_000)
+            index += 1
+        }
+        return samples
+    }
+
+    private var historicalPersonalization: AtriaPhysiologicalStressModel.Personalization {
+        .init(restingHeartRate: 60,
+              maximumHeartRate: 190,
+              restingBaselineDayCount: 20,
+              hrvBaseline: .init(medianLnRMSSD: log(80),
+                                 robustScale: 0.2,
+                                 qualifiedDayCount: 20))
+    }
+
+    private func replayAuthority(cardiac: String = "v1:0000000000000001",
+                                 calibration: String = "v1:0000000000000001",
+                                 context: String = "v1:0000000000000001")
+        -> AtriaStressReplayAuthority {
+        AtriaStressReplayAuthority(cardiacInputRevision: cardiac,
+                                   calibrationRevision: calibration,
+                                   contextRevision: context)
+    }
+
+    private func replayFact(
+        at date: Date,
+        score: Double,
+        meanHeartRate: Double = 132,
+        rmssd: Double? = 42,
+        hrStress: Double = 0.82,
+        hrvStress: Double? = 0.74,
+        heartRateWeight: Double = 0.62,
+        motion: AtriaPhysiologicalStressModel.MotionContext = .unavailable,
+        sleep: AtriaPhysiologicalStressModel.SleepContext = .unavailable,
+        confidence: AtriaPhysiologicalStressModel.Confidence = .medium,
+        baselineLearning: Bool = false
+    ) -> AtriaPhysiologicalStressModel.MinuteFact {
+        .init(date: date,
+              score: score,
+              unsmoothedScore: score,
+              meanHeartRate: meanHeartRate,
+              rmssd: rmssd,
+              hrStress: hrStress,
+              hrvStress: hrvStress,
+              heartRateWeight: heartRateWeight,
+              motionContext: motion,
+              sleepContext: sleep,
+              confidence: confidence,
+              baselineLearning: baselineLearning)
+    }
+
+    private func replayResult(
+        _ facts: [AtriaPhysiologicalStressModel.MinuteFact],
+        authorities: [AtriaStressReplayAuthority],
+        managedRanges: [AtriaHistoricalStressReplay.ManagedRange] = []
+    ) -> AtriaHistoricalStressReplay.Result {
+        XCTAssertEqual(facts.count, authorities.count)
+        return AtriaHistoricalStressReplay.Result(
+            facts: facts,
+            heartRates: facts.map {
+                .init(date: $0.date, bpm: Int($0.meanHeartRate.rounded()))
+            },
+            authorityByDate: Dictionary(uniqueKeysWithValues:
+                zip(facts.map(\.date), authorities)),
+            managedRanges: managedRanges
+        )
+    }
+
+    private func historicalHeartRates(endingAt end: Date,
+                                      duration: TimeInterval = 420,
+                                      bpm: Int = 75) -> [AtriaHistoricalStressReplay.HeartRateRow] {
+        let sampleCount = Int(duration / 30)
+        return (0...sampleCount).map { index in
+            .init(date: end.addingTimeInterval(-duration + Double(index) * 30),
+                  bpm: bpm)
+        }
+    }
+
+    private func historicalRR(endingAt end: Date,
+                              duration: TimeInterval = 420,
+                              source: AtriaRRSourceProvenance)
+        -> [AtriaHistoricalStressReplay.RRRow] {
+        var rows: [AtriaHistoricalStressReplay.RRRow] = []
+        var clock = end.addingTimeInterval(-duration)
+        var index = 0
+        while clock <= end {
+            let milliseconds = index.isMultiple(of: 2) ? 760 : 840
+            rows.append(.init(date: clock,
+                              milliseconds: milliseconds,
+                              source: source))
+            clock = clock.addingTimeInterval(Double(milliseconds) / 1_000)
+            index += 1
+        }
+        return rows
+    }
+
+    func testRRHeartRateMismatchUsesTimeAlignedObservationNotLatestHR() {
+        let start = now.addingTimeInterval(-300)
+        let samples = [
             AtriaBreathworkSession.RRSample(
-                date: end.addingTimeInterval(Double(index - 90)),
-                ms: index.isMultiple(of: 2) ? lower : upper
+                date: start.addingTimeInterval(1),
+                ms: 1_000,
+                source: .standardHeartRateMeasurement2A37
+            ),
+            AtriaBreathworkSession.RRSample(
+                date: now.addingTimeInterval(-1),
+                ms: 500,
+                source: .standardHeartRateMeasurement2A37
+            ),
+        ]
+        let aligned = AtriaStressMonitorStore.timeAlignedRRIntervals(
+            samples,
+            heartRates: [(t: start, bpm: 60), (t: now, bpm: 120)],
+            start: start,
+            end: now
+        )
+
+        XCTAssertEqual(aligned.map(\.expectedHR), [60, 120])
+        XCTAssertTrue(aligned.allSatisfy {
+            $0.source == .standardHeartRateMeasurement2A37
+        })
+    }
+
+    func testRRHeartRateAlignmentFailsClosedOnClockRegression() {
+        let samples = [
+            AtriaBreathworkSession.RRSample(date: now, ms: 800),
+            AtriaBreathworkSession.RRSample(
+                date: now.addingTimeInterval(-1),
+                ms: 800
+            ),
+        ]
+        XCTAssertTrue(AtriaStressMonitorStore.timeAlignedRRIntervals(
+            samples,
+            heartRates: [(t: now, bpm: 75)],
+            start: now.addingTimeInterval(-300),
+            end: now
+        ).isEmpty)
+    }
+
+    func testOnlyIndependentlyQualifiedActiveSleepBecomesStressContext() {
+        func sleep(source: String,
+                   confidence: String,
+                   motionValidated: Bool) -> UserConfirmedSleep {
+            let start = now.addingTimeInterval(-2 * 3_600)
+            let end = now.addingTimeInterval(2 * 3_600)
+            return UserConfirmedSleep(
+                id: UUID().uuidString,
+                createdAt: now,
+                start: start,
+                end: end,
+                source: source,
+                confidence: confidence,
+                sessions: 1,
+                samples: 1,
+                avgHR: 60,
+                peakHR: 70,
+                restingHR: 55,
+                hrv: nil,
+                hrvWindowCount: nil,
+                duration: end.timeIntervalSince(start),
+                span: end.timeIntervalSince(start),
+                reason: "test",
+                motionSource: motionValidated ? "validated" : "none",
+                motionValidated: motionValidated,
+                stageSegments: nil
             )
         }
+
+        XCTAssertFalse(AtriaStressMonitorStore.hasQualifiedActiveSleepEvidence(
+            in: [sleep(source: "detected", confidence: "low", motionValidated: false)],
+            at: now
+        ))
+        XCTAssertTrue(AtriaStressMonitorStore.hasQualifiedActiveSleepEvidence(
+            in: [sleep(source: "detected", confidence: "high", motionValidated: true)],
+            at: now
+        ))
+        XCTAssertTrue(AtriaStressMonitorStore.hasQualifiedActiveSleepEvidence(
+            in: [sleep(source: "manual_sleep",
+                       confidence: "user_confirmed_manual",
+                       motionValidated: false)],
+            at: now
+        ))
     }
 
     // MARK: Scored cases
@@ -183,7 +365,29 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(state.kind, .scored)
         XCTAssertEqual(state.level, .calm)
         XCTAssertFalse(state.hrvAvailable)
-        XCTAssertEqual(state.detail, "HR-only")
+        XCTAssertEqual(state.detail, "HR-only estimate · lower confidence")
+    }
+
+    func testDebugCompatibilityAdapterExpandsFiveValuesAtRawCadence() {
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4)
+        let state = AtriaStressMonitor.score(
+            hrNow: 64,
+            hrWindow: [60, 61, 62, 63, 64],
+            rrWindowMs: [],
+            hrvFallbackRMSSD: nil,
+            baseline: baseline,
+            restingMaxHR: restingMaxHR,
+            workoutActive: false,
+            zoneIndex: 0,
+            inSleepWindow: false,
+            hasContact: true,
+            contactAgeSeconds: 300,
+            now: now
+        )
+
+        XCTAssertEqual(state.kind, .scored)
+        XCTAssertNotNil(state.minuteFact,
+                        "five legacy values must expand to six cadence-safe points")
     }
 
     func testEvidenceProjectionSeparatesNumericStressFromCardiacArousalAndClampsBounds() {
@@ -198,8 +402,8 @@ final class AtriaStressMonitorTests: XCTestCase {
                                                     mode: .cardiacArousal)
         XCTAssertEqual(arousal.activation, 0)
         XCTAssertEqual(arousal.displayValue, 0)
-        XCTAssertNil(arousal.numericStressScore,
-                     "HR-only evidence must never occupy the numeric Stress scale")
+        XCTAssertEqual(arousal.numericStressScore, 0,
+                       "HR-only remains numeric but explicitly lower-confidence")
         XCTAssertEqual(arousal.cardiacArousalValue, 0)
 
         let nonFinite = AtriaStressEvidenceProjection(activation: .infinity,
@@ -208,21 +412,21 @@ final class AtriaStressMonitorTests: XCTestCase {
     }
 
     func testProductScaleThresholdsExactlyMatchCanonicalBandSemantics() {
-        XCTAssertEqual(AtriaStressEvidenceProjection.lowStartsAt, 0.60, accuracy: 1e-12)
-        XCTAssertEqual(AtriaStressEvidenceProjection.mediumStartsAt, 1.35, accuracy: 1e-12)
-        XCTAssertEqual(AtriaStressEvidenceProjection.highStartsAt, 2.16, accuracy: 1e-12)
+        XCTAssertEqual(AtriaStressEvidenceProjection.lowStartsAt, 1, accuracy: 1e-12)
+        XCTAssertEqual(AtriaStressEvidenceProjection.mediumStartsAt, 1, accuracy: 1e-12)
+        XCTAssertEqual(AtriaStressEvidenceProjection.highStartsAt, 2, accuracy: 1e-12)
 
         XCTAssertEqual(AtriaStressMonitor.band(AtriaStressMonitor.calmUpperBound.nextDown),
                        AtriaStressLevel.calm.rawValue)
         XCTAssertEqual(AtriaStressMonitor.band(AtriaStressMonitor.calmUpperBound),
-                       AtriaStressLevel.low.rawValue)
+                       AtriaStressLevel.medium.rawValue)
         XCTAssertEqual(AtriaStressMonitor.band(AtriaStressMonitor.lowUpperBound),
                        AtriaStressLevel.medium.rawValue)
         XCTAssertEqual(AtriaStressMonitor.band(AtriaStressMonitor.mediumUpperBound),
                        AtriaStressLevel.high.rawValue)
     }
 
-    func testBelowBaselineFullEvidenceMeansZeroDetectedElevationNotZeroPsychologicalStress() throws {
+    func testUntimestampedHRVFallbackCannotFabricateQualifiedHRV() throws {
         let baseline = makeBaseline(restingMean: 60,
                                     restingSD: 4,
                                     lnRMSSDMean: log(100),
@@ -245,13 +449,15 @@ final class AtriaStressMonitorTests: XCTestCase {
         )
 
         XCTAssertEqual(state.evidenceMode, .physiologicalStress)
-        XCTAssertEqual(state.rawActivation, 0, accuracy: 1e-12)
+        XCTAssertFalse(state.hrvAvailable)
+        XCTAssertTrue(try XCTUnwrap(state.minuteFact).isHROnly)
         let presentation = AtriaStressPresentation.make(state: state)
-        XCTAssertEqual(try XCTUnwrap(presentation.numericScore), 0, accuracy: 1e-12)
-        XCTAssertTrue(presentation.narrative.contains("does not mean zero psychological stress"))
+        XCTAssertNotNil(presentation.numericScore)
+        XCTAssertTrue(presentation.narrative.contains("heart rate only"))
+        XCTAssertTrue(presentation.narrative.contains("not a psychological diagnosis"))
     }
 
-    func testHROnlyPresentationIsQualitativeAndRemainsSeparatelyQueryable() throws {
+    func testHROnlyPresentationIsNumericLowerConfidenceAndSeparatelyQueryable() throws {
         let state = AtriaStressState(level: .medium,
                                      label: "Medium",
                                      detail: "HR-only",
@@ -262,57 +468,45 @@ final class AtriaStressMonitorTests: XCTestCase {
         let presentation = AtriaStressPresentation.make(state: state)
 
         XCTAssertEqual(presentation.evidenceMode, .cardiacArousal)
-        XCTAssertEqual(presentation.metricTitle, "Cardiac arousal")
-        XCTAssertNil(presentation.numericScore)
+        XCTAssertEqual(presentation.metricTitle, "Physiological stress")
+        XCTAssertEqual(try XCTUnwrap(presentation.numericScore), 2, accuracy: 1e-12)
         XCTAssertEqual(
             try XCTUnwrap(state.evidenceProjection?.cardiacArousalValue),
             AtriaStressEvidenceProjection.highStartsAt,
             accuracy: 1e-12
         )
-        XCTAssertTrue(presentation.narrative.contains("does not turn this evidence into a numeric Stress score"))
+        XCTAssertTrue(presentation.detail.contains("HR-only estimate"))
+        XCTAssertTrue(presentation.narrative.contains("lower-confidence estimate"))
     }
 
-    /// Corroboration model (2026-08-08 adversarial review): a lone signal — an
-    /// elevated HR alone OR a big (nonspecific) HRV drop alone — reads at most
-    /// Medium; only elevated HR AND suppressed HRV together reach High. This
-    /// replaces the noisy-OR that let either lone signal, or two merely-moderate
-    /// signals, escalate to High.
-    func testHighRequiresBothHRAndHRVCorroboration() {
+    func testV3DynamicWeightCombinesOnlyQualifiedRRWithHR() throws {
         let baseline = makeBaseline(restingMean: 55, restingSD: 3,
                                     lnRMSSDMean: log(45), lnRMSSDSD: 0.15,
                                     hrvSampleDays: 20)
         let awake = (center: 72.0, spread: 12.0)
-        func result(hr: Int, rmssd: Double) -> AtriaStressState {
-            AtriaStressMonitor.score(hrNow: hr, hrWindow: [hr, hr, hr], rrWindowMs: [],
-                                     hrvFallbackRMSSD: rmssd, baseline: baseline,
+        func result(hr: Int, rmssd: Int) -> AtriaStressState {
+            let lower = 1_000 - rmssd / 2
+            let upper = 1_000 + rmssd / 2
+            let rr = (0...180).map { $0.isMultiple(of: 2) ? lower : upper }
+            return AtriaStressMonitor.score(hrNow: hr, hrWindow: [hr, hr, hr], rrWindowMs: rr,
+                                     hrvFallbackRMSSD: nil, baseline: baseline,
                                      restingMaxHR: restingMaxHR, workoutActive: false,
                                      zoneIndex: 0, inSleepWindow: false, hasContact: true,
                                      contactAgeSeconds: 300, awakeReference: awake, now: now)
         }
-        // Lone big HRV drop, calm HR → Medium (not High): HRV is nonspecific.
-        XCTAssertEqual(result(hr: 64, rmssd: 5).level, .medium)
-        // Lone elevated HR, normal HRV → Medium (not High).
-        XCTAssertEqual(result(hr: 95, rmssd: 45).level, .medium)
-        // Both elevated HR AND suppressed HRV → High (corroboration).
-        let corroborated = result(hr: 95, rmssd: 5)
-        XCTAssertEqual(corroborated.level, .high)
-        XCTAssertTrue(corroborated.hrvAvailable)
-        XCTAssertEqual(corroborated.detail, "HR + HRV")
+        let normalHRV = result(hr: 95, rmssd: 45)
+        let suppressedHRV = result(hr: 95, rmssd: 6)
+        XCTAssertTrue(normalHRV.hrvAvailable)
+        XCTAssertTrue(suppressedHRV.hrvAvailable)
+        XCTAssertGreaterThan(suppressedHRV.rawActivation, normalHRV.rawActivation)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(normalHRV.minuteFact).heartRateWeight, 1)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(normalHRV.minuteFact).heartRateWeight, 0.5)
     }
 
-    func testHRVOnlyModeCapsEmittedLevelAtMedium() {
-        // Resting baseline is trusted, but zero distinct HRV days means the
-        // HRV baseline never reaches trust -- HR alone can push activation to
-        // 1.0, but the emitted level must never claim "High" without HRV
-        // corroboration.
+    func testHROnlyFallbackUsesEntireContinuousScaleAtLowConfidence() {
         let baseline = makeBaseline(restingMean: 60, restingSD: 2, hrvSampleDays: 0)
-
-        // Genuinely elevated HR (well above the awake reference), so activation
-        // saturates and the cap is what's under test. Post-rescoring (2026-08-08)
-        // an HR only mildly above rest is correctly Calm/Low, so an old value
-        // like 80 would no longer exercise the cap.
-        let state = AtriaStressMonitor.score(hrNow: 95,
-                                             hrWindow: [95, 94, 95],
+        let state = AtriaStressMonitor.score(hrNow: 180,
+                                             hrWindow: [180, 179, 180],
                                              rrWindowMs: [],
                                              hrvFallbackRMSSD: nil,
                                              baseline: baseline,
@@ -326,39 +520,28 @@ final class AtriaStressMonitorTests: XCTestCase {
 
         XCTAssertEqual(state.kind, .scored)
         XCTAssertFalse(state.hrvAvailable)
-        XCTAssertEqual(state.detail, "HR-only")
-        XCTAssertEqual(state.level, .medium, "HR-only mode must cap at Medium, never High")
-        XCTAssertNotEqual(state.level, .high)
+        XCTAssertEqual(state.detail, "HR-only estimate · lower confidence")
+        XCTAssertEqual(state.level, .high)
+        XCTAssertEqual(state.confidence,
+                       AtriaPhysiologicalStressModel.Confidence.low.numericValue)
+        XCTAssertTrue(state.minuteFact?.isHROnly == true)
     }
 
-    /// The 2026-08-08 rescoring: awake HR at/near the wearer's own awake
-    /// reference reads Calm (not Medium), and only genuine elevation climbs.
-    /// Validated against 4 real days where the old resting-referenced math
-    /// pinned 90-98% of the waking day to Medium.
-    func testAwakeReferencedStressIsCalmAtTypicalAwakeHR() {
+    func testLegacyAwakeReferenceCannotAlterV3Kernel() {
         let baseline = makeBaseline(restingMean: 56, restingSD: 3, hrvSampleDays: 0)
         let awake = (center: 73.0, spread: 12.0) // this wearer's real median/spread
 
-        func level(hr: Int) -> AtriaStressLevel? {
+        func activation(hr: Int, awake: (center: Double, spread: Double)?) -> Double {
             AtriaStressMonitor.score(hrNow: hr, hrWindow: [hr, hr, hr], rrWindowMs: [],
                                      hrvFallbackRMSSD: nil, baseline: baseline,
                                      restingMaxHR: restingMaxHR, workoutActive: false,
                                      zoneIndex: 0, inSleepWindow: false, hasContact: true,
-                                     contactAgeSeconds: 300, awakeReference: awake, now: now).level
+                                     contactAgeSeconds: 300, awakeReference: awake, now: now)
+                .rawActivation
         }
-        XCTAssertEqual(level(hr: 73), .calm, "at the awake reference → Calm, not Medium")
-        XCTAssertEqual(level(hr: 62), .calm, "below the awake reference → Calm")
-        XCTAssertEqual(level(hr: 95), .medium, "genuine elevation → Medium (HR-only cap)")
-
-        // Same wearer, WITHOUT a learned reference: the physiological default
-        // (resting + offset) must also keep typical awake HR out of Medium.
-        let atRestingAwake = AtriaStressMonitor.score(
-            hrNow: 71, hrWindow: [71, 71, 71], rrWindowMs: [], hrvFallbackRMSSD: nil,
-            baseline: baseline, restingMaxHR: restingMaxHR, workoutActive: false,
-            zoneIndex: 0, inSleepWindow: false, hasContact: true,
-            contactAgeSeconds: 300, now: now).level
-        XCTAssertNotEqual(atRestingAwake, .medium,
-                          "default awake reference must not pin typical awake HR to Medium")
+        XCTAssertEqual(activation(hr: 73, awake: awake),
+                       activation(hr: 73, awake: nil),
+                       accuracy: 1e-12)
     }
 
     func testAwakeReferenceLearnsRobustMedianOnceWarm() {
@@ -414,11 +597,11 @@ final class AtriaStressMonitorTests: XCTestCase {
             "a warm awake buffer must persist its learned reference")
         XCTAssertEqual(persisted.center, 85, accuracy: 1.0)
 
-        // Drive a fresh store to its FIRST scored tick (≈125s of contact) with a
-        // handful of same-HR ticks — too few to warm its own buffer, so scoring
-        // depends entirely on whatever reference was seeded at launch.
+        // Drive a fresh store to its first v3 minute fact. The reference still
+        // restores for the independent quiet-awake learner, but cannot alter
+        // the versioned physiological-stress equation.
         func warmToFirstScoredTick(_ store: AtriaStressMonitorStore) {
-            for offset in [0.0, 50.0, 100.0, 125.0] {
+            for offset in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] {
                 store.update(heartRate: awakeHR,
                              hasContact: true,
                              recentRRSamples: [],
@@ -428,16 +611,16 @@ final class AtriaStressMonitorTests: XCTestCase {
                              baseline: baseline,
                              restingMaxHR: restingMaxHR,
                              hasActiveSleepEvidence: false,
-                             now: now.addingTimeInterval(1000 + offset))
+                             now: now.addingTimeInterval(1020 + offset))
             }
         }
 
-        // Store B: fresh launch on the SAME suite → seeded → Calm at 85 bpm.
+        // Store B restores the seed, and still scores through v3.
         let storeB = AtriaStressMonitorStore(defaults: suite)
         warmToFirstScoredTick(storeB)
         XCTAssertEqual(storeB.state.kind, .scored)
-        XCTAssertEqual(storeB.state.level, .calm,
-                       "seeded from the wearer's own ~85 bpm awake HR, 85 reads Calm")
+        XCTAssertEqual(storeB.state.minuteFact?.scoringVersion,
+                       AtriaPhysiologicalStressModel.scoringVersion)
 
         // Store C: fresh launch on an EMPTY suite → no seed → the physiological
         // default centers far lower, so the same 85 bpm does NOT read Calm.
@@ -447,8 +630,9 @@ final class AtriaStressMonitorTests: XCTestCase {
         let storeC = AtriaStressMonitorStore(defaults: emptySuite)
         warmToFirstScoredTick(storeC)
         XCTAssertEqual(storeC.state.kind, .scored)
-        XCTAssertNotEqual(storeC.state.level, .calm,
-                          "without a seed the default reference flags this wearer's typical awake HR as elevated")
+        XCTAssertEqual(storeC.state.rawActivation, storeB.state.rawActivation,
+                       accuracy: 1e-12,
+                       "legacy awake-reference state cannot fork v3 scoring")
     }
 
     // A persisted reference older than the seed max-age must be ignored — awake
@@ -469,9 +653,10 @@ final class AtriaStressMonitorTests: XCTestCase {
                                                 updatedAt: now.addingTimeInterval(-30 * 24 * 3600))
         suite.set(try JSONEncoder().encode(stale), forKey: "atria.stress.awakeReference.v1")
 
-        let store = AtriaStressMonitorStore(defaults: suite)
-        for offset in [0.0, 50.0, 100.0, 125.0] {
-            store.update(heartRate: 85,
+        func score(using defaults: UserDefaults) -> AtriaStressState {
+            let store = AtriaStressMonitorStore(defaults: defaults)
+            for offset in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] {
+                store.update(heartRate: 85,
                          hasContact: true,
                          recentRRSamples: [],
                          isRecording: false,
@@ -480,30 +665,26 @@ final class AtriaStressMonitorTests: XCTestCase {
                          baseline: baseline,
                          restingMaxHR: restingMaxHR,
                          hasActiveSleepEvidence: false,
-                         now: now.addingTimeInterval(offset))
+                             now: now.addingTimeInterval(offset))
+            }
+            return store.state
         }
-        // A fresh center-120 seed would make 85 bpm read Calm; because the seed
-        // is stale it is discarded and the default (center ≈ rest + 15) applies,
-        // so 85 bpm scores elevated exactly as in the unseeded case.
-        XCTAssertEqual(store.state.kind, .scored)
-        XCTAssertNotEqual(store.state.level, .calm,
-                          "a seed past the max-age must be ignored in favour of the default")
+        let staleState = score(using: suite)
+        let emptyName = "atria.stress.awakeref.stale.empty.\(UUID().uuidString)"
+        let emptySuite = try XCTUnwrap(UserDefaults(suiteName: emptyName))
+        defer { emptySuite.removePersistentDomain(forName: emptyName) }
+        let emptyState = score(using: emptySuite)
+        XCTAssertEqual(staleState.kind, .scored)
+        XCTAssertEqual(staleState.rawActivation, emptyState.rawActivation, accuracy: 1e-12)
     }
 
-    // HR-only cardiac arousal remains a bounded, queryable evidence stream even
-    // though it no longer occupies the numeric Stress chart. The published and
-    // persisted activation must agree with its qualitative Medium ceiling.
     @MainActor
-    func testHROnlyModeCapsPublishedActivationToMediumCeiling() {
+    func testHROnlyModePublishesContinuousLowConfidenceV3Fact() {
         let baseline = makeBaseline(restingMean: 60, restingSD: 4, hrvSampleDays: 0)
         let store = AtriaStressMonitorStore()
 
-        // 98 bpm: high enough that the HR-only activation lands in the High band
-        // against the default awake reference, yet at/below rest+40 (100) so it
-        // is not suppressed as activity. Only a few ticks → the awake buffer
-        // stays cold → the default reference (not a learned ~98) drives scoring.
-        for offset in [0.0, 50.0, 100.0, 125.0] {
-            store.update(heartRate: 98,
+        for offset in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] {
+            store.update(heartRate: 180,
                          hasContact: true,
                          recentRRSamples: [],
                          isRecording: false,
@@ -516,31 +697,27 @@ final class AtriaStressMonitorTests: XCTestCase {
         }
 
         XCTAssertEqual(store.state.kind, .scored)
-        XCTAssertEqual(store.state.level, .medium, "HR-only caps the level at Medium")
+        XCTAssertEqual(store.state.level, .high)
         XCTAssertFalse(store.state.hrvAvailable)
-        XCTAssertLessThanOrEqual(store.state.rawActivation,
-                                 AtriaStressMonitor.mediumUpperBound + 1e-9,
-                                 "published activation must not exceed the Medium ceiling")
-        // Guard against a regression where the cap silently zeroes the reading:
-        // this is a genuine top-of-Medium reading, so it should sit near the cap.
-        XCTAssertGreaterThan(store.state.rawActivation, AtriaStressMonitor.lowUpperBound,
-                             "a genuinely elevated HR-only reading should still fill the Medium band")
+        XCTAssertGreaterThan(store.state.rawActivation,
+                             AtriaStressMonitor.mediumUpperBound)
+        XCTAssertEqual(store.state.confidence,
+                       AtriaPhysiologicalStressModel.Confidence.low.numericValue)
 
         // The separately queryable persisted point carries the same bounded value.
         guard let recorded = store.history.last else {
             return XCTFail("a scored tick must record a history point")
         }
-        XCTAssertLessThanOrEqual(recorded.activation,
-                                 AtriaStressMonitor.mediumUpperBound + 1e-9,
-                                 "persisted cardiac-arousal activation must also be capped")
-        XCTAssertEqual(recorded.evidenceMode, .cardiacArousal)
-        XCTAssertNil(recorded.evidenceProjection.numericStressScore)
-        XCTAssertEqual(recorded.evidenceProjection.cardiacArousalValue,
-                       recorded.evidenceProjection.displayValue)
+        XCTAssertEqual(recorded.activation, store.state.rawActivation, accuracy: 1e-12)
+        XCTAssertEqual(recorded.minuteFact?.scoringVersion,
+                       AtriaPhysiologicalStressModel.scoringVersion)
+        XCTAssertEqual(recorded.evidenceMode, .physiologicalStress)
+        XCTAssertNotNil(recorded.evidenceProjection.numericStressScore)
+        XCTAssertNil(recorded.evidenceProjection.cardiacArousalValue)
     }
 
     @MainActor
-    func testHROnlyToFullEvidenceTransitionCannotLeakHiddenEMAIntoFalseHigh() throws {
+    func testHROnlyToFullEvidenceTransitionUsesSameV3EMAState() throws {
         let baseline = makeBaseline(restingMean: 60,
                                     restingSD: 4,
                                     lnRMSSDMean: log(100),
@@ -548,7 +725,7 @@ final class AtriaStressMonitorTests: XCTestCase {
                                     hrvSampleDays: 20)
         let store = AtriaStressMonitorStore()
 
-        for offset in [0.0, 50.0, 100.0, 125.0, 155.0, 185.0, 215.0, 245.0] {
+        for offset in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] {
             store.update(heartRate: 98,
                          hasContact: true,
                          recentRRSamples: [],
@@ -560,10 +737,10 @@ final class AtriaStressMonitorTests: XCTestCase {
                          hasActiveSleepEvidence: false,
                          now: now.addingTimeInterval(offset))
         }
-        XCTAssertEqual(store.state.evidenceMode, .cardiacArousal)
-        XCTAssertEqual(store.state.level, .medium)
+        XCTAssertEqual(store.state.evidenceMode, .physiologicalStress)
+        let previous = try XCTUnwrap(store.state.minuteFact)
 
-        let fullEvidenceAt = now.addingTimeInterval(275)
+        let fullEvidenceAt = now.addingTimeInterval(360)
         store.update(heartRate: 98,
                      hasContact: true,
                      recentRRSamples: qualifiedRRSamples(endingAt: fullEvidenceAt),
@@ -575,31 +752,17 @@ final class AtriaStressMonitorTests: XCTestCase {
                      hasActiveSleepEvidence: false,
                      now: fullEvidenceAt)
 
-        let expectedFreshFullState = AtriaStressMonitor.score(
-            hrNow: 98,
-            hrWindow: [98],
-            rrWindowMs: [],
-            hrvFallbackRMSSD: 100,
-            baseline: baseline,
-            restingMaxHR: restingMaxHR,
-            workoutActive: false,
-            zoneIndex: 1,
-            inSleepWindow: false,
-            hasContact: true,
-            contactAgeSeconds: 275,
-            now: fullEvidenceAt
-        )
         XCTAssertEqual(store.state.evidenceMode, .physiologicalStress)
-        XCTAssertNotEqual(store.state.level, .high,
-                          "the prior HR-only EMA must not become a full-evidence High")
-        XCTAssertEqual(store.state.rawActivation,
-                       expectedFreshFullState.rawActivation,
-                       accuracy: 1e-9,
-                       "the new evidence coordinate starts from its own current sample")
+        let current = try XCTUnwrap(store.state.minuteFact)
+        let alpha = 1 - exp(-log(2.0) / 3.0)
+        XCTAssertEqual(current.score,
+                       previous.score + alpha * (current.unsmoothedScore - previous.score),
+                       accuracy: 1e-12,
+                       "evidence availability does not fork the v3 smoothing kernel")
     }
 
     @MainActor
-    func testFullToHROnlyTransitionStartsFreshCardiacArousalCoordinate() {
+    func testFullEvidenceExpiresToHROnlyWithoutFabricatingFreshRR() throws {
         let baseline = makeBaseline(restingMean: 60,
                                     restingSD: 4,
                                     lnRMSSDMean: log(100),
@@ -607,7 +770,7 @@ final class AtriaStressMonitorTests: XCTestCase {
                                     hrvSampleDays: 20)
         let store = AtriaStressMonitorStore()
 
-        for offset in [0.0, 50.0, 100.0, 125.0] {
+        for offset in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] {
             let tick = now.addingTimeInterval(offset)
             store.update(heartRate: 98,
                          hasContact: true,
@@ -622,39 +785,7 @@ final class AtriaStressMonitorTests: XCTestCase {
         }
         XCTAssertEqual(store.state.evidenceMode, .physiologicalStress)
 
-        store.update(heartRate: 98,
-                     hasContact: true,
-                     recentRRSamples: [],
-                     isRecording: false,
-                     zoneIndex: 1,
-                     hrvSnapshot: nil,
-                     baseline: baseline,
-                     restingMaxHR: restingMaxHR,
-                     hasActiveSleepEvidence: false,
-                     now: now.addingTimeInterval(155))
-
-        XCTAssertEqual(store.state.evidenceMode, .cardiacArousal)
-        XCTAssertEqual(store.state.level, .medium)
-        XCTAssertEqual(store.state.rawActivation,
-                       AtriaStressMonitor.mediumUpperBound,
-                       accuracy: 1e-12,
-                       "HR-only smoothing starts fresh, then applies its truthful cap")
-        XCTAssertNil(store.state.evidenceProjection?.numericStressScore)
-    }
-
-    @MainActor
-    func testDailyStressDistributionExcludesHROnlyButKeepsHistoryQueryable() throws {
-        let suiteName = "atria.stress.mode-distribution.\(UUID().uuidString)"
-        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { suite.removePersistentDomain(forName: suiteName) }
-        let baseline = makeBaseline(restingMean: 60,
-                                    restingSD: 4,
-                                    lnRMSSDMean: log(100),
-                                    lnRMSSDSD: 0.15,
-                                    hrvSampleDays: 20)
-        let store = AtriaStressMonitorStore(defaults: suite)
-
-        for offset in [0.0, 50.0, 100.0, 125.0] {
+        for offset in stride(from: 360.0, through: 660.0, by: 60.0) {
             store.update(heartRate: 98,
                          hasContact: true,
                          recentRRSamples: [],
@@ -667,12 +798,44 @@ final class AtriaStressMonitorTests: XCTestCase {
                          now: now.addingTimeInterval(offset))
         }
 
-        XCTAssertNil(store.distributionComparison(now: now.addingTimeInterval(125)),
-                     "cardiac arousal cannot enter an aggregate labelled Stress")
-        XCTAssertEqual(store.history.last?.evidenceMode, .cardiacArousal,
-                       "HR-only evidence remains available for its own future surface")
+        XCTAssertEqual(store.state.evidenceMode, .physiologicalStress)
+        XCTAssertTrue(try XCTUnwrap(store.state.minuteFact).isHROnly)
+        XCTAssertNotNil(store.state.evidenceProjection?.numericStressScore)
+    }
 
-        let fullEvidenceAt = now.addingTimeInterval(155)
+    @MainActor
+    func testDailyStressDistributionIncludesCompleteHROnlyFactsWithProvenance() throws {
+        let suiteName = "atria.stress.mode-distribution.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let baseline = makeBaseline(restingMean: 60,
+                                    restingSD: 4,
+                                    lnRMSSDMean: log(100),
+                                    lnRMSSDSD: 0.15,
+                                    hrvSampleDays: 20)
+        let store = AtriaStressMonitorStore(defaults: suite)
+
+        for offset in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] {
+            store.update(heartRate: 98,
+                         hasContact: true,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 1,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: now.addingTimeInterval(offset))
+        }
+
+        let hrOnlyComparison = try XCTUnwrap(
+            store.distributionComparison(now: now.addingTimeInterval(300))
+        )
+        XCTAssertEqual(hrOnlyComparison.today.sampleCount, 1)
+        XCTAssertEqual(store.history.last?.evidenceMode, .physiologicalStress)
+        XCTAssertTrue(store.history.last?.minuteFact?.isHROnly == true)
+
+        let fullEvidenceAt = now.addingTimeInterval(360)
         store.update(heartRate: 98,
                      hasContact: true,
                      recentRRSamples: qualifiedRRSamples(endingAt: fullEvidenceAt),
@@ -685,9 +848,1445 @@ final class AtriaStressMonitorTests: XCTestCase {
                      now: fullEvidenceAt)
 
         let comparison = try XCTUnwrap(store.distributionComparison(now: fullEvidenceAt))
-        XCTAssertEqual(comparison.today.sampleCount, 1)
+        XCTAssertEqual(comparison.today.sampleCount, 2)
         XCTAssertEqual(store.history.map(\.evidenceMode),
-                       [.cardiacArousal, .physiologicalStress])
+                       [.physiologicalStress, .physiologicalStress])
+    }
+
+    func testHistoricalFramingUsesExactFiveMinuteWindowsAndMatchesSharedBatchKernel() {
+        let end = now.addingTimeInterval(600)
+        let heartRates = historicalHeartRates(endingAt: end)
+        let snapshot = AtriaHistoricalStressReplay.Snapshot(
+            sessions: [
+                .init(id: UUID(),
+                      start: end.addingTimeInterval(-420),
+                      end: end,
+                      heartRates: heartRates,
+                      rrIntervals: []),
+            ],
+            personalization: historicalPersonalization,
+            now: end
+        )
+
+        let replay = AtriaHistoricalStressReplay.evaluate(snapshot)
+        let expectedEnds = [end.addingTimeInterval(-120),
+                            end.addingTimeInterval(-60),
+                            end]
+        let batchInputs = expectedEnds.map { windowEnd in
+            AtriaPhysiologicalStressModel.WindowInput(
+                end: windowEnd,
+                heartRates: heartRates.filter {
+                    $0.date >= windowEnd.addingTimeInterval(-300)
+                        && $0.date <= windowEnd
+                }.map {
+                    .init(date: $0.date, bpm: $0.bpm)
+                },
+                rrIntervals: [],
+                personalization: historicalPersonalization
+            )
+        }
+
+        XCTAssertEqual(replay.facts,
+                       AtriaPhysiologicalStressModel.evaluate(batchInputs),
+                       "historical framing must use the exact live v3 kernel")
+        XCTAssertEqual(replay.facts.map(\.date), expectedEnds)
+        XCTAssertTrue(zip(replay.facts, replay.facts.dropFirst()).allSatisfy { pair in
+            pair.1.date.timeIntervalSince(pair.0.date)
+                == AtriaPhysiologicalStressModel.evaluationCadence
+        })
+    }
+
+    func testReplayAuthorityTracksCardiacCalibrationAndContextIndependently() throws {
+        let end = now.addingTimeInterval(600)
+        let session = AtriaHistoricalStressReplay.Session(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000077")!,
+            start: end.addingTimeInterval(-420),
+            end: end,
+            heartRates: historicalHeartRates(endingAt: end),
+            rrIntervals: []
+        )
+        let baseSnapshot = AtriaHistoricalStressReplay.Snapshot(
+            sessions: [session],
+            personalization: historicalPersonalization,
+            now: end
+        )
+        let contextSnapshot = AtriaHistoricalStressReplay.Snapshot(
+            sessions: [session],
+            activityContexts: [
+                .init(start: end.addingTimeInterval(-420),
+                      end: end,
+                      intensity: 0.8),
+            ],
+            personalization: historicalPersonalization,
+            now: end
+        )
+        let recalibratedSnapshot = AtriaHistoricalStressReplay.Snapshot(
+            sessions: [session],
+            personalization: .init(restingHeartRate: 54,
+                                   maximumHeartRate: 188,
+                                   restingBaselineDayCount: 22,
+                                   hrvBaseline: historicalPersonalization.hrvBaseline),
+            now: end
+        )
+
+        let base = AtriaHistoricalStressReplay.evaluate(baseSnapshot)
+        XCTAssertEqual(base, AtriaHistoricalStressReplay.evaluate(baseSnapshot),
+                       "authority fingerprints must be deterministic")
+        let withContext = AtriaHistoricalStressReplay.evaluate(contextSnapshot)
+        let recalibrated = AtriaHistoricalStressReplay.evaluate(recalibratedSnapshot)
+        let date = try XCTUnwrap(base.facts.last?.date)
+        let baseAuthority = try XCTUnwrap(base.authorityByDate[date])
+        let contextAuthority = try XCTUnwrap(withContext.authorityByDate[date])
+        let calibrationAuthority = try XCTUnwrap(recalibrated.authorityByDate[date])
+
+        XCTAssertEqual(baseAuthority.cardiacInputRevision,
+                       contextAuthority.cardiacInputRevision)
+        XCTAssertEqual(baseAuthority.calibrationRevision,
+                       contextAuthority.calibrationRevision)
+        XCTAssertNotEqual(baseAuthority.contextRevision,
+                          contextAuthority.contextRevision)
+        XCTAssertEqual(baseAuthority.cardiacInputRevision,
+                       calibrationAuthority.cardiacInputRevision)
+        XCTAssertNotEqual(baseAuthority.calibrationRevision,
+                          calibrationAuthority.calibrationRevision)
+        XCTAssertEqual(baseAuthority.contextRevision,
+                       calibrationAuthority.contextRevision)
+    }
+
+    func testHistoricalStandardRRUsesSharedQualityGateWhileV24RemainsHROnly() throws {
+        let end = now.addingTimeInterval(1_200)
+        let heartRates = historicalHeartRates(endingAt: end)
+        func replay(source: AtriaRRSourceProvenance)
+            -> AtriaHistoricalStressReplay.Result {
+            AtriaHistoricalStressReplay.evaluate(
+                .init(
+                    sessions: [
+                        .init(id: UUID(),
+                              start: end.addingTimeInterval(-420),
+                              end: end,
+                              heartRates: heartRates,
+                              rrIntervals: historicalRR(endingAt: end,
+                                                        source: source)),
+                    ],
+                    personalization: historicalPersonalization,
+                    now: end
+                )
+            )
+        }
+
+        let standard = try XCTUnwrap(
+            replay(source: .standardHeartRateMeasurement2A37).facts.last
+        )
+        let historicalV24 = try XCTUnwrap(
+            replay(source: .verifiedWhoop4HistoricalV24).facts.last
+        )
+        XCTAssertFalse(standard.isHROnly,
+                       "qualified standard RR may contribute after the shared gate")
+        XCTAssertNotNil(standard.rmssd)
+        XCTAssertTrue(historicalV24.isHROnly,
+                      "v24 provenance must not be promoted to standard live RR")
+        XCTAssertNil(historicalV24.rmssd)
+        XCTAssertEqual(historicalV24.confidence, .low)
+    }
+
+    @MainActor
+    func testHistoricalStorageSnapshotDefersScalarRowMaterializationOffMainActor() async throws {
+        let end = now.addingTimeInterval(1_800)
+        let start = end.addingTimeInterval(-420)
+        var session = SavedSession(
+            id: UUID(),
+            start: start,
+            end: end,
+            label: "Recovered strap history",
+            points: stride(from: 0.0, through: 420.0, by: 30.0).map {
+                .init(t: $0, bpm: 92)
+            }
+        )
+        session.rrPoints = stride(from: 0.0, through: 420.0, by: 1.0).map {
+            .init(t: $0,
+                  ms: 800,
+                  source: .standardHeartRateMeasurement2A37)
+        }
+        session.recoveredMotionEpochs = [
+            .init(start: end.addingTimeInterval(-300),
+                  end: end,
+                  rows: 300,
+                  validatedRows: 300,
+                  stillnessRatio: 0.1,
+                  movementIntensity: 0.9,
+                  p95VectorDelta: 0.8,
+                  maximumGapSeconds: 1,
+                  measurementValidated: true,
+                  lowMotionQualified: false,
+                  reason: "qualified recovered activity"),
+            .init(start: end.addingTimeInterval(-300),
+                  end: end,
+                  rows: 300,
+                  validatedRows: 0,
+                  stillnessRatio: 0.1,
+                  movementIntensity: 1,
+                  p95VectorDelta: 0.9,
+                  maximumGapSeconds: 1,
+                  measurementValidated: false,
+                  lowMotionQualified: false,
+                  reason: "unvalidated motion must stay unavailable"),
+            .init(start: end.addingTimeInterval(-300),
+                  end: end,
+                  rows: 300,
+                  validatedRows: 300,
+                  stillnessRatio: 0.99,
+                  movementIntensity: 0.01,
+                  p95VectorDelta: 0.01,
+                  maximumGapSeconds: 1,
+                  measurementValidated: true,
+                  lowMotionQualified: true,
+                  reason: "validated stillness is not activity"),
+            .init(start: end.addingTimeInterval(-300),
+                  end: end,
+                  rows: 300,
+                  validatedRows: 300,
+                  stillnessRatio: 0.99,
+                  movementIntensity: 0.01,
+                  p95VectorDelta: 0.01,
+                  maximumGapSeconds: 1,
+                  measurementValidated: true,
+                  lowMotionQualified: false,
+                  reason: "not-sleep-qualified alone is not activity authority"),
+        ]
+        func sleep(id: String,
+                   source: String,
+                   confidence: String,
+                   motionValidated: Bool) -> UserConfirmedSleep {
+            let sleepStart = end.addingTimeInterval(-4 * 3_600)
+            return UserConfirmedSleep(
+                id: id,
+                createdAt: end,
+                start: sleepStart,
+                end: end,
+                source: source,
+                confidence: confidence,
+                sessions: 1,
+                samples: 480,
+                avgHR: 56,
+                peakHR: 68,
+                restingHR: 52,
+                hrv: nil,
+                hrvWindowCount: nil,
+                respiratoryRate: nil,
+                duration: end.timeIntervalSince(sleepStart),
+                span: end.timeIntervalSince(sleepStart),
+                reason: "historical context fixture",
+                motionSource: motionValidated ? "validated" : "none",
+                motionValidated: motionValidated,
+                stageSegments: nil
+            )
+        }
+        let qualifiedSleep = sleep(id: "manual-qualified",
+                                   source: "manual_sleep",
+                                   confidence: "user_confirmed_manual",
+                                   motionValidated: false)
+        let unqualifiedSleep = sleep(id: "inferred-only",
+                                     source: "automatic_sleep",
+                                     confidence: "low",
+                                     motionValidated: false)
+
+        let storage = try XCTUnwrap(AtriaHistoricalStressReplay.snapshot(
+            sessions: [session],
+            confirmedSleeps: [qualifiedSleep, unqualifiedSleep],
+            personalization: historicalPersonalization,
+            now: end
+        ))
+        XCTAssertEqual(storage.sessions.count, 1)
+
+        let scalar = await Task.detached(priority: .utility) {
+            AtriaHistoricalStressReplay.materialize(storage)
+        }.value
+        let materialized = try XCTUnwrap(scalar)
+        XCTAssertEqual(materialized.heartRateRowCount, session.points.count)
+        XCTAssertEqual(materialized.rrRowCount, session.rrPoints?.count ?? 0)
+        XCTAssertEqual(materialized.activityContexts, [
+            .init(start: end.addingTimeInterval(-300),
+                  end: end,
+                  intensity: 0.9),
+        ])
+        XCTAssertEqual(materialized.sleepContexts, [
+            .init(start: qualifiedSleep.start, end: qualifiedSleep.end),
+        ])
+
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaStressMonitor.swift"),
+            encoding: .utf8
+        )
+        let snapshotStart = try XCTUnwrap(
+            source.range(of: "@MainActor\n    static func snapshot")
+        ).lowerBound
+        let materializeStart = try XCTUnwrap(
+            source.range(of: "    static func materialize(",
+                         range: snapshotStart..<source.endIndex)
+        ).lowerBound
+        let mainActorSnapshotBody = String(source[snapshotStart..<materializeStart])
+        XCTAssertFalse(mainActorSnapshotBody.contains("for point in session.points"))
+        XCTAssertFalse(mainActorSnapshotBody.contains("heartRates.append"))
+        XCTAssertFalse(mainActorSnapshotBody.contains("rrIntervals.append"))
+        let detachedMaterializer = String(source[materializeStart...])
+        XCTAssertTrue(detachedMaterializer.contains("for point in session.points"))
+        XCTAssertTrue(detachedMaterializer.contains("heartRates.append"))
+        XCTAssertTrue(detachedMaterializer.contains("rrIntervals.append"))
+    }
+
+    func testHistoricalFactsRequireQualifiedActivityAndSleepAuthority() throws {
+        let end = now.addingTimeInterval(2_400)
+        let session = AtriaHistoricalStressReplay.Session(
+            id: UUID(),
+            start: end.addingTimeInterval(-420),
+            end: end,
+            heartRates: historicalHeartRates(endingAt: end, bpm: 135),
+            rrIntervals: []
+        )
+        func replay(
+            activity: AtriaHistoricalStressReplay.ActivityContextInterval? = nil,
+            sleep: AtriaHistoricalStressReplay.SleepContextInterval? = nil
+        ) throws -> AtriaPhysiologicalStressModel.MinuteFact {
+            let result = AtriaHistoricalStressReplay.evaluate(
+                .init(sessions: [session],
+                      activityContexts: activity.map { [$0] } ?? [],
+                      sleepContexts: sleep.map { [$0] } ?? [],
+                      personalization: historicalPersonalization,
+                      now: end)
+            )
+            return try XCTUnwrap(result.facts.last)
+        }
+        let contextStart = end.addingTimeInterval(-300)
+        let noContext = try replay()
+        let unqualifiedActivity = try replay(activity: .init(
+            start: contextStart,
+            end: end,
+            intensity: 1,
+            qualified: false
+        ))
+        let qualifiedActivity = try replay(activity: .init(
+            start: contextStart,
+            end: end,
+            intensity: 1
+        ))
+        let unqualifiedSleep = try replay(sleep: .init(
+            start: contextStart,
+            end: end,
+            qualified: false
+        ))
+        let qualifiedSleep = try replay(sleep: .init(
+            start: contextStart,
+            end: end
+        ))
+
+        XCTAssertEqual(noContext.motionContext, .unavailable)
+        XCTAssertEqual(unqualifiedActivity.motionContext, .unavailable)
+        XCTAssertEqual(unqualifiedActivity.score, noContext.score, accuracy: 1e-12)
+        XCTAssertEqual(qualifiedActivity.motionContext,
+                       .qualifiedActivity(intensity: 1))
+        XCTAssertLessThan(qualifiedActivity.score, noContext.score,
+                          "only qualified activity may attenuate exercise elevation")
+        XCTAssertEqual(unqualifiedSleep.sleepContext, .unavailable)
+        XCTAssertEqual(qualifiedSleep.sleepContext, .asleep)
+
+        func chartReading(
+            from fact: AtriaPhysiologicalStressModel.MinuteFact
+        ) -> AtriaStressDetailReading {
+            AtriaStressDetailReading(historyPoint: .init(
+                t: fact.date,
+                activation: fact.score / 3,
+                level: fact.zone == .calm
+                    ? .calm : (fact.zone == .moderate ? .medium : .high),
+                confidence: fact.confidence.numericValue,
+                hrvAvailable: !fact.isHROnly,
+                minuteFact: fact
+            ))
+        }
+        XCTAssertEqual(chartReading(from: qualifiedActivity).motionContext,
+                       .qualifiedActivity(intensity: 1),
+                       "historical activity authority must survive into chart overlays")
+        XCTAssertEqual(chartReading(from: qualifiedSleep).sleepContext, .asleep,
+                       "historical sleep authority must survive into chart overlays")
+    }
+
+    func testStressHistoryDurabilityLedgerIsRevisionSafeAcrossOverlappingWriters() {
+        let firstMinute = now
+        let secondMinute = now.addingTimeInterval(60)
+        var ledger = AtriaStressHistoryDurabilityLedger()
+        ledger.markDirty(firstMinute)
+        let checkpoint = ledger.submission(for: [firstMinute])
+        let fullSave = ledger.submission(for: [firstMinute])
+
+        // A replacement at the same timestamp and a new minute arrive while
+        // both writers still hold the older fact revision.
+        ledger.markDirty(firstMinute)
+        ledger.markDirty(secondMinute)
+        XCTAssertEqual(ledger.complete(fullSave, succeeded: true), 0)
+        XCTAssertEqual(ledger.complete(checkpoint, succeeded: true), 0)
+        XCTAssertEqual(ledger.dirtyCount, 2)
+        XCTAssertTrue(ledger.isDirty(firstMinute))
+        XCTAssertTrue(ledger.isDirty(secondMinute))
+
+        let currentFullSave = ledger.submission(for: [firstMinute, secondMinute])
+        XCTAssertEqual(ledger.complete(currentFullSave, succeeded: false), 0)
+        XCTAssertEqual(ledger.dirtyCount, 2,
+                       "a failed writer must never declare facts durable")
+        XCTAssertEqual(ledger.complete(currentFullSave, succeeded: true), 2)
+        XCTAssertTrue(ledger.isEmpty)
+
+        // Overlapping successful submissions clear each exact revision once,
+        // regardless of completion order.
+        ledger.markDirty(firstMinute)
+        ledger.markDirty(secondMinute)
+        let overlappingCheckpoint = ledger.submission(for: [firstMinute])
+        let overlappingFullSave = ledger.submission(for: [firstMinute, secondMinute])
+        XCTAssertEqual(ledger.complete(overlappingCheckpoint, succeeded: true), 1)
+        XCTAssertEqual(ledger.complete(overlappingFullSave, succeeded: true), 1)
+        XCTAssertTrue(ledger.isEmpty)
+    }
+
+    @MainActor
+    func testQualifiedReplayEnrichesPriorReplayWithoutRegressingCardiacAuthority() async throws {
+        let date = now.addingTimeInterval(-60)
+        func fact(score: Double,
+                  motion: AtriaPhysiologicalStressModel.MotionContext,
+                  includeHRV: Bool) -> AtriaPhysiologicalStressModel.MinuteFact {
+            .init(date: date,
+                  score: score,
+                  unsmoothedScore: score,
+                  meanHeartRate: 132,
+                  rmssd: includeHRV ? 42 : nil,
+                  hrStress: 0.82,
+                  hrvStress: includeHRV ? 0.74 : nil,
+                  heartRateWeight: includeHRV ? 0.62 : 1,
+                  motionContext: motion,
+                  sleepContext: .unavailable,
+                  confidence: includeHRV ? .high : .low,
+                  baselineLearning: false)
+        }
+        func replay(_ fact: AtriaPhysiologicalStressModel.MinuteFact)
+            -> AtriaHistoricalStressReplay.Result {
+            .init(facts: [fact], heartRates: [.init(date: date, bpm: 132)])
+        }
+
+        let store = AtriaStressMonitorStore()
+        let preConfirmation = fact(score: 2.5,
+                                   motion: .unavailable,
+                                   includeHRV: true)
+        await store.mergeHistoricalMinuteFacts(replay(preConfirmation), now: now)
+        XCTAssertEqual(try XCTUnwrap(store.history.last).factSource,
+                       .historicalReplay)
+
+        let lowerAuthorityCandidate = fact(
+            score: 1.6,
+            motion: .qualifiedActivity(intensity: 0.9),
+            includeHRV: false
+        )
+        await store.mergeHistoricalMinuteFacts(replay(lowerAuthorityCandidate), now: now)
+        XCTAssertEqual(try XCTUnwrap(store.history.last).minuteFact,
+                       preConfirmation,
+                       "qualified context cannot erase already-qualified RR authority")
+
+        let qualifiedEnrichment = fact(
+            score: 1.6,
+            motion: .qualifiedActivity(intensity: 0.9),
+            includeHRV: true
+        )
+        await store.mergeHistoricalMinuteFacts(replay(qualifiedEnrichment), now: now)
+        let enriched = try XCTUnwrap(store.history.last)
+        XCTAssertEqual(enriched.factSource, .historicalReplay)
+        XCTAssertEqual(enriched.minuteFact, qualifiedEnrichment)
+        XCTAssertEqual(enriched.activation, qualifiedEnrichment.score / 3,
+                       accuracy: 1e-12)
+
+        let contextRegression = fact(score: 2.5,
+                                     motion: .unavailable,
+                                     includeHRV: true)
+        await store.mergeHistoricalMinuteFacts(replay(contextRegression), now: now)
+        XCTAssertEqual(try XCTUnwrap(store.history.last).minuteFact,
+                       qualifiedEnrichment,
+                       "a later replay cannot remove qualified context authority")
+    }
+
+    @MainActor
+    func testCurrentContextRevisionRemovesDeletedAndShrunkReplayOverlays() async throws {
+        let firstDate = now.addingTimeInterval(-120)
+        let secondDate = now.addingTimeInterval(-60)
+        let firstCardiac = "v1:0000000000000011"
+        let secondCardiac = "v1:0000000000000012"
+        let calibration = "v1:0000000000000021"
+        let originalContext = "v1:0000000000000031"
+        let shrunkContext = "v1:0000000000000032"
+        let deletedContext = "v1:0000000000000033"
+        let activity = AtriaPhysiologicalStressModel.MotionContext
+            .qualifiedActivity(intensity: 0.8)
+
+        let store = AtriaStressMonitorStore()
+        let original = [
+            replayFact(at: firstDate, score: 1.5, motion: activity,
+                       confidence: .high),
+            replayFact(at: secondDate, score: 1.6, motion: activity,
+                       confidence: .high),
+        ]
+        await store.mergeHistoricalMinuteFacts(
+            replayResult(original, authorities: [
+                replayAuthority(cardiac: firstCardiac,
+                                calibration: calibration,
+                                context: originalContext),
+                replayAuthority(cardiac: secondCardiac,
+                                calibration: calibration,
+                                context: originalContext),
+            ]),
+            now: now
+        )
+
+        let shrunk = [
+            replayFact(at: firstDate, score: 2.4, motion: .unavailable,
+                       confidence: .medium),
+            replayFact(at: secondDate, score: 1.6, motion: activity,
+                       confidence: .high),
+        ]
+        await store.mergeHistoricalMinuteFacts(
+            replayResult(shrunk, authorities: [
+                replayAuthority(cardiac: firstCardiac,
+                                calibration: calibration,
+                                context: shrunkContext),
+                replayAuthority(cardiac: secondCardiac,
+                                calibration: calibration,
+                                context: shrunkContext),
+            ]),
+            now: now
+        )
+        XCTAssertEqual(store.history.compactMap(\.minuteFact), shrunk)
+        XCTAssertEqual(store.history.first?.minuteFact?.motionContext, .unavailable,
+                       "tightening the confirmed boundary must remove the old overlay")
+
+        let deleted = [
+            replayFact(at: firstDate, score: 2.4, motion: .unavailable,
+                       confidence: .medium),
+            replayFact(at: secondDate, score: 2.5, motion: .unavailable,
+                       confidence: .medium),
+        ]
+        await store.mergeHistoricalMinuteFacts(
+            replayResult(deleted, authorities: [
+                replayAuthority(cardiac: firstCardiac,
+                                calibration: calibration,
+                                context: deletedContext),
+                replayAuthority(cardiac: secondCardiac,
+                                calibration: calibration,
+                                context: deletedContext),
+            ]),
+            now: now
+        )
+        XCTAssertEqual(store.history.compactMap(\.minuteFact), deleted)
+        XCTAssertTrue(store.history.allSatisfy {
+            $0.minuteFact?.motionContext == .unavailable
+        }, "deleting confirmed authority must remove every replay-origin overlay")
+    }
+
+    @MainActor
+    func testCurrentCalibrationRevisionRecomputesReplayFromSameCardiacInput() async throws {
+        let date = now.addingTimeInterval(-60)
+        let cardiac = "v1:0000000000000041"
+        let oldCalibration = "v1:0000000000000042"
+        let newCalibration = "v1:0000000000000043"
+        let oldFact = replayFact(at: date,
+                                 score: 1.3,
+                                 hrStress: 0.55,
+                                 hrvStress: 0.45,
+                                 heartRateWeight: 0.72,
+                                 confidence: .medium)
+        let recalibrated = replayFact(at: date,
+                                      score: 2.2,
+                                      hrStress: 0.78,
+                                      hrvStress: 0.67,
+                                      heartRateWeight: 0.58,
+                                      sleep: .asleep,
+                                      confidence: .high)
+        let store = AtriaStressMonitorStore()
+        await store.mergeHistoricalMinuteFacts(
+            replayResult([oldFact], authorities: [
+                replayAuthority(cardiac: cardiac,
+                                calibration: oldCalibration,
+                                context: "v1:0000000000000044"),
+            ]),
+            now: now
+        )
+        await store.mergeHistoricalMinuteFacts(
+            replayResult([recalibrated], authorities: [
+                replayAuthority(cardiac: cardiac,
+                                calibration: newCalibration,
+                                context: "v1:0000000000000045"),
+            ]),
+            now: now
+        )
+
+        XCTAssertEqual(try XCTUnwrap(store.history.last?.minuteFact), recalibrated,
+                       "confirmed-sleep baseline changes must fully recompute replay facts")
+    }
+
+    @MainActor
+    func testMotionConfidenceCannotAuthorizeUnrelatedCardiacMutation() async throws {
+        let date = now.addingTimeInterval(-60)
+        let authority = replayAuthority(cardiac: "v1:0000000000000051",
+                                        calibration: "v1:0000000000000052",
+                                        context: "v1:0000000000000053")
+        let original = replayFact(at: date,
+                                  score: 2.3,
+                                  rmssd: 42,
+                                  hrvStress: 0.74,
+                                  motion: .unavailable,
+                                  confidence: .medium)
+        let unrelatedMutation = replayFact(
+            at: date,
+            score: 1.5,
+            rmssd: 58,
+            hrvStress: 0.51,
+            motion: .qualifiedActivity(intensity: 0.9),
+            confidence: .high
+        )
+        let store = AtriaStressMonitorStore()
+        await store.mergeHistoricalMinuteFacts(
+            replayResult([original], authorities: [authority]),
+            now: now
+        )
+        await store.mergeHistoricalMinuteFacts(
+            replayResult([unrelatedMutation], authorities: [
+                replayAuthority(cardiac: authority.cardiacInputRevision,
+                                calibration: authority.calibrationRevision,
+                                context: "v1:0000000000000054"),
+            ]),
+            now: now
+        )
+
+        XCTAssertEqual(try XCTUnwrap(store.history.last?.minuteFact), original,
+                       "motion-driven confidence cannot mutate RMSSD/HRV stress")
+    }
+
+    @MainActor
+    func testSimultaneousCardiacCalibrationAndContextRevisionConvergesAtomically() async throws {
+        let date = now.addingTimeInterval(-60)
+        let original = replayFact(
+            at: date,
+            score: 2.4,
+            meanHeartRate: 132,
+            rmssd: nil,
+            hrvStress: nil,
+            heartRateWeight: 1,
+            motion: .qualifiedActivity(intensity: 0.8),
+            sleep: .asleep,
+            confidence: .low,
+            baselineLearning: true
+        )
+        let currentReplay = replayFact(
+            at: date,
+            score: 1.7,
+            meanHeartRate: 134,
+            rmssd: 56,
+            hrStress: 0.77,
+            hrvStress: 0.48,
+            heartRateWeight: 0.58,
+            motion: .unavailable,
+            sleep: .unavailable,
+            confidence: .medium,
+            baselineLearning: false
+        )
+        let originalAuthority = replayAuthority(
+            cardiac: "v1:0000000000000061",
+            calibration: "v1:0000000000000062",
+            context: "v1:0000000000000063"
+        )
+        let currentAuthority = replayAuthority(
+            cardiac: "v1:0000000000000064",
+            calibration: "v1:0000000000000065",
+            context: "v1:0000000000000066"
+        )
+        let store = AtriaStressMonitorStore()
+        await store.mergeHistoricalMinuteFacts(
+            replayResult([original], authorities: [originalAuthority]),
+            now: now
+        )
+        await store.mergeHistoricalMinuteFacts(
+            replayResult([currentReplay], authorities: [currentAuthority]),
+            now: now
+        )
+
+        XCTAssertEqual(try XCTUnwrap(store.history.last?.minuteFact), currentReplay)
+        XCTAssertEqual(store.history.last?.replayAuthority, currentAuthority)
+        let convergedRevision = store.historyRevision
+        await store.mergeHistoricalMinuteFacts(
+            replayResult([currentReplay], authorities: [currentAuthority]),
+            now: now
+        )
+        XCTAssertEqual(store.historyRevision, convergedRevision,
+                       "an identical current replay must remain idempotent after convergence")
+    }
+
+    @MainActor
+    func testChangedCardiacRowsCanRemoveDeletedContextInSameReplay() async throws {
+        let date = now.addingTimeInterval(-60)
+        let calibration = "v1:0000000000000071"
+        let original = replayFact(
+            at: date,
+            score: 1.4,
+            meanHeartRate: 128,
+            rmssd: 44,
+            hrvStress: 0.70,
+            motion: .qualifiedActivity(intensity: 0.9),
+            sleep: .asleep,
+            confidence: .high
+        )
+        let afterDelete = replayFact(
+            at: date,
+            score: 2.5,
+            meanHeartRate: 129,
+            rmssd: 43,
+            hrvStress: 0.72,
+            motion: .unavailable,
+            sleep: .unavailable,
+            confidence: .medium
+        )
+        let store = AtriaStressMonitorStore()
+        await store.mergeHistoricalMinuteFacts(
+            replayResult([original], authorities: [
+                replayAuthority(cardiac: "v1:0000000000000072",
+                                calibration: calibration,
+                                context: "v1:0000000000000073"),
+            ]),
+            now: now
+        )
+        await store.mergeHistoricalMinuteFacts(
+            replayResult([afterDelete], authorities: [
+                replayAuthority(cardiac: "v1:0000000000000074",
+                                calibration: calibration,
+                                context: "v1:0000000000000075"),
+            ]),
+            now: now
+        )
+
+        let merged = try XCTUnwrap(store.history.last?.minuteFact)
+        XCTAssertEqual(merged, afterDelete)
+        XCTAssertEqual(merged.motionContext, .unavailable)
+        XCTAssertEqual(merged.sleepContext, .unavailable)
+    }
+
+    @MainActor
+    func testAuthoritativeManagedRangeDeletesShrunkAndRemovedReplayGaps() async throws {
+        let firstDate = now.addingTimeInterval(-180)
+        let removedDate = now.addingTimeInterval(-120)
+        let finalDate = now.addingTimeInterval(-60)
+        let managed = AtriaHistoricalStressReplay.ManagedRange(
+            start: firstDate.addingTimeInterval(-60),
+            end: now
+        )
+        let original = [
+            replayFact(at: firstDate, score: 1.2),
+            replayFact(at: removedDate, score: 1.5),
+            replayFact(at: finalDate, score: 1.8),
+        ]
+        let authorities = [
+            replayAuthority(cardiac: "v1:0000000000000081"),
+            replayAuthority(cardiac: "v1:0000000000000082"),
+            replayAuthority(cardiac: "v1:0000000000000083"),
+        ]
+        let store = AtriaStressMonitorStore()
+        await store.mergeHistoricalMinuteFacts(
+            replayResult(original,
+                         authorities: authorities,
+                         managedRanges: [managed]),
+            now: now
+        )
+        XCTAssertEqual(store.history.map(\.t), [firstDate, removedDate, finalDate])
+        XCTAssertEqual(store.heartRateHistory.map(\.t),
+                       [firstDate, removedDate, finalDate])
+
+        let shrunkFacts = [original[0], original[2]]
+        await store.mergeHistoricalMinuteFacts(
+            replayResult(shrunkFacts,
+                         authorities: [authorities[0], authorities[2]],
+                         managedRanges: [managed]),
+            now: now
+        )
+        XCTAssertEqual(store.history.map(\.t), [firstDate, finalDate],
+                       "an absent minute inside the managed source becomes a real graph gap")
+        XCTAssertEqual(store.heartRateHistory.map(\.t), [firstDate, finalDate],
+                       "the matching replay-owned HR observation must also disappear")
+
+        let emptyFullReplay = AtriaHistoricalStressReplay.evaluate(
+            .init(sessions: [],
+                  personalization: historicalPersonalization,
+                  now: now)
+        )
+        XCTAssertEqual(emptyFullReplay.managedRanges.count, 1,
+                       "a validated empty source carries deletion authority")
+        await store.mergeHistoricalMinuteFacts(emptyFullReplay, now: now)
+        XCTAssertTrue(store.history.isEmpty,
+                      "deleting the authoritative session removes its replay facts")
+        XCTAssertTrue(store.heartRateHistory.isEmpty,
+                      "deleting the authoritative session removes its replay HR")
+    }
+
+    @MainActor
+    func testAuthoritativeEmptyReplayPreservesGenuineLiveFactAndHeartRate() async throws {
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4,
+                                    hrvSampleDays: 0)
+        let store = AtriaStressMonitorStore()
+        for offset in [-300.0, -240.0, -180.0, -120.0, -60.0, 0.0] {
+            store.update(heartRate: 75,
+                         hasContact: true,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 0,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         now: now.addingTimeInterval(offset))
+        }
+        let liveFact = try XCTUnwrap(store.history.last)
+        let liveHeartRate = try XCTUnwrap(store.heartRateHistory.last)
+        XCTAssertEqual(liveFact.factSource, .live)
+        XCTAssertEqual(liveHeartRate.factSource, .live)
+
+        await store.mergeHistoricalMinuteFacts(
+            .init(facts: [],
+                  heartRates: [],
+                  managedRanges: [.init(start: now.addingTimeInterval(-60),
+                                        end: now)]),
+            now: now
+        )
+        XCTAssertEqual(store.history.last, liveFact)
+        XCTAssertEqual(store.heartRateHistory.last, liveHeartRate)
+    }
+
+    @MainActor
+    func testMalformedFullReplayCannotClaimManagedDeletionAuthority() async throws {
+        let date = now.addingTimeInterval(-60)
+        let original = replayFact(at: date, score: 1.4)
+        let store = AtriaStressMonitorStore()
+        await store.mergeHistoricalMinuteFacts(
+            replayResult(
+                [original],
+                authorities: [replayAuthority(
+                    cardiac: "v1:0000000000000091"
+                )],
+                managedRanges: [.init(
+                    start: date.addingTimeInterval(-60),
+                    end: now
+                )]
+            ),
+            now: now
+        )
+
+        let malformed = AtriaHistoricalStressReplay.evaluate(
+            .init(
+                sessions: [.init(
+                    id: UUID(),
+                    start: date.addingTimeInterval(-300),
+                    end: date,
+                    heartRates: [
+                        .init(date: date, bpm: 75),
+                        .init(date: date.addingTimeInterval(-30), bpm: 75),
+                    ],
+                    rrIntervals: []
+                )],
+                personalization: historicalPersonalization,
+                now: now
+            )
+        )
+        XCTAssertTrue(malformed.managedRanges.isEmpty,
+                      "malformed source input must fail non-destructively")
+        await store.mergeHistoricalMinuteFacts(malformed, now: now)
+        XCTAssertEqual(store.history.map(\.t), [date])
+        XCTAssertEqual(store.heartRateHistory.map(\.t), [date])
+    }
+
+    func testCalibrationPublicationGateTracksExactV3FieldsAndDefersRecoveredIntermediate() {
+        func fingerprint(rest: Double = 60,
+                         maximum: Double = 190,
+                         restingDays: Int = 20,
+                         median: Double? = log(80),
+                         scale: Double = 0.2,
+                         hrvDays: Int = 20)
+            -> AtriaHistoricalStressCalibrationFingerprint {
+            let hrv = median.map {
+                AtriaPhysiologicalStressModel.HRVBaseline(
+                    medianLnRMSSD: $0,
+                    robustScale: scale,
+                    qualifiedDayCount: hrvDays
+                )
+            }
+            return AtriaHistoricalStressCalibrationFingerprint(
+                .init(restingHeartRate: rest,
+                      maximumHeartRate: maximum,
+                      restingBaselineDayCount: restingDays,
+                      hrvBaseline: hrv)
+            )
+        }
+
+        var gate = AtriaHistoricalStressCalibrationPublicationGate()
+        let initial = fingerprint()
+        XCTAssertFalse(gate.accepts(initial, publicationDeferred: false),
+                       "the initial Combine publication only seeds dedup state")
+        XCTAssertFalse(gate.accepts(initial, publicationDeferred: false))
+        XCTAssertTrue(gate.accepts(fingerprint(maximum: 196),
+                                   publicationDeferred: false),
+                      "an independent max-HR/profile change must replay")
+        XCTAssertTrue(gate.accepts(fingerprint(maximum: 196,
+                                               median: log(64),
+                                               scale: 0.31,
+                                               hrvDays: 21),
+                                   publicationDeferred: false),
+                      "the exact median/MAD/sample calibration must replay")
+        let recoveredIntermediate = fingerprint(rest: 58,
+                                                maximum: 196,
+                                                median: log(64),
+                                                scale: 0.31,
+                                                hrvDays: 21)
+        XCTAssertFalse(gate.accepts(recoveredIntermediate,
+                                    publicationDeferred: true),
+                       "intermediate recovered baseline state waits for its final fence")
+        XCTAssertFalse(gate.accepts(recoveredIntermediate,
+                                    publicationDeferred: false),
+                       "a rollback callback after ticket release remains pending until the typed terminal edge")
+        XCTAssertTrue(gate.releaseDeferred(final: recoveredIntermediate),
+                      "the exact final fingerprint releases one deferred replay")
+        XCTAssertFalse(gate.releaseDeferred(final: recoveredIntermediate))
+    }
+
+    func testFallbackRestChangePublishesIndependentLearningCalibrationRevision() {
+        func learningFingerprint(rest: Double)
+            -> AtriaHistoricalStressCalibrationFingerprint {
+            AtriaHistoricalStressCalibrationFingerprint(
+                .init(restingHeartRate: rest,
+                      maximumHeartRate: 190,
+                      restingBaselineDayCount: 0,
+                      hrvBaseline: nil)
+            )
+        }
+        var gate = AtriaHistoricalStressCalibrationPublicationGate()
+        XCTAssertFalse(gate.accepts(learningFingerprint(rest: 60),
+                                    publicationDeferred: false))
+        XCTAssertTrue(gate.accepts(learningFingerprint(rest: 61),
+                                   publicationDeferred: false),
+                      "the actual fallback rest input is a v3 calibration field")
+        XCTAssertFalse(gate.accepts(learningFingerprint(rest: 61),
+                                    publicationDeferred: false),
+                       "unchanged fallback rest must not wake another replay")
+    }
+
+    func testProfileOnlyChangeSurvivingFailedRecoveryReleasesFinalCalibration() {
+        func fingerprint(maximum: Double)
+            -> AtriaHistoricalStressCalibrationFingerprint {
+            AtriaHistoricalStressCalibrationFingerprint(
+                .init(restingHeartRate: 60,
+                      maximumHeartRate: maximum,
+                      restingBaselineDayCount: 20,
+                      hrvBaseline: nil)
+            )
+        }
+        var gate = AtriaHistoricalStressCalibrationPublicationGate()
+        XCTAssertFalse(gate.accepts(fingerprint(maximum: 190),
+                                    publicationDeferred: false))
+        XCTAssertFalse(gate.accepts(fingerprint(maximum: 196),
+                                    publicationDeferred: true))
+        XCTAssertTrue(gate.releaseDeferred(final: fingerprint(maximum: 196)),
+                      "a profile mutation outside the rollback image survives failure and must replay")
+        XCTAssertFalse(gate.releaseDeferred(final: fingerprint(maximum: 196)))
+    }
+
+    func testFallbackRestOnlyChangeSurvivingFailedRecoveryReleasesFinalCalibration() {
+        func fingerprint(rest: Double)
+            -> AtriaHistoricalStressCalibrationFingerprint {
+            AtriaHistoricalStressCalibrationFingerprint(
+                .init(restingHeartRate: rest,
+                      maximumHeartRate: 190,
+                      restingBaselineDayCount: 0,
+                      hrvBaseline: nil)
+            )
+        }
+        var gate = AtriaHistoricalStressCalibrationPublicationGate()
+        XCTAssertFalse(gate.accepts(fingerprint(rest: 60),
+                                    publicationDeferred: false))
+        XCTAssertFalse(gate.accepts(fingerprint(rest: 61),
+                                    publicationDeferred: true))
+        XCTAssertTrue(gate.releaseDeferred(final: fingerprint(rest: 61)),
+                      "the live fallback-rest input survives recovered rollback and must replay")
+        XCTAssertFalse(gate.accepts(fingerprint(rest: 61),
+                                    publicationDeferred: false))
+    }
+
+    func testProvisionalRollbackBaselineCannotReplayBetweenTicketClearAndTerminalEdge() {
+        func fingerprint(rest: Double, days: Int)
+            -> AtriaHistoricalStressCalibrationFingerprint {
+            AtriaHistoricalStressCalibrationFingerprint(
+                .init(restingHeartRate: rest,
+                      maximumHeartRate: 190,
+                      restingBaselineDayCount: days,
+                      hrvBaseline: nil)
+            )
+        }
+        let settled = fingerprint(rest: 60, days: 20)
+        var gate = AtriaHistoricalStressCalibrationPublicationGate()
+        XCTAssertFalse(gate.accepts(settled, publicationDeferred: false))
+        XCTAssertFalse(gate.accepts(fingerprint(rest: 55, days: 21),
+                                    publicationDeferred: true))
+
+        // AtriaRecoveredDataMutationTransaction deliberately clears its active
+        // ticket before invoking rollback callbacks. This non-deferred callback
+        // must update only pending state, never publish an intermediate replay.
+        XCTAssertFalse(gate.accepts(settled, publicationDeferred: false))
+        XCTAssertFalse(gate.releaseDeferred(final: settled),
+                       "rollback to the already-settled baseline needs no replay")
+        XCTAssertFalse(gate.accepts(settled, publicationDeferred: false))
+    }
+
+    func testFailedNonRetainedRestoreReleasesFallbackRestPendingCalibration() {
+        func fingerprint(rest: Double)
+            -> AtriaHistoricalStressCalibrationFingerprint {
+            AtriaHistoricalStressCalibrationFingerprint(
+                .init(restingHeartRate: rest,
+                      maximumHeartRate: 190,
+                      restingBaselineDayCount: 0,
+                      hrvBaseline: nil)
+            )
+        }
+        var gate = AtriaHistoricalStressCalibrationPublicationGate()
+        XCTAssertFalse(gate.accepts(fingerprint(rest: 60),
+                                    publicationDeferred: false))
+        XCTAssertFalse(gate.accepts(fingerprint(rest: 62),
+                                    publicationDeferred: true))
+        XCTAssertTrue(gate.releaseDeferred(final: fingerprint(rest: 62)),
+                      "failed restore fence release must settle a surviving fallback-rest change")
+        XCTAssertFalse(gate.releaseDeferred(final: fingerprint(rest: 62)))
+    }
+
+    func testMixedProvisionalBaselineAndSurvivingProfileReleaseFinalCalibrationAtomically() {
+        func fingerprint(rest: Double, maximum: Double, days: Int)
+            -> AtriaHistoricalStressCalibrationFingerprint {
+            AtriaHistoricalStressCalibrationFingerprint(
+                .init(restingHeartRate: rest,
+                      maximumHeartRate: maximum,
+                      restingBaselineDayCount: days,
+                      hrvBaseline: nil)
+            )
+        }
+        let settled = fingerprint(rest: 60, maximum: 190, days: 20)
+        let provisional = fingerprint(rest: 55, maximum: 196, days: 21)
+        let final = fingerprint(rest: 60, maximum: 196, days: 20)
+        var gate = AtriaHistoricalStressCalibrationPublicationGate()
+        XCTAssertFalse(gate.accepts(settled, publicationDeferred: false))
+        XCTAssertFalse(gate.accepts(provisional, publicationDeferred: true))
+        XCTAssertFalse(gate.accepts(final, publicationDeferred: false),
+                       "ticket-clear rollback callback must remain pending")
+        XCTAssertTrue(gate.releaseDeferred(final: final),
+                      "the settled result must retain profile authority while discarding provisional baseline authority")
+        XCTAssertFalse(gate.accepts(final, publicationDeferred: false))
+    }
+
+    func testCommitRejectedRollbackCleanupReleasesPendingCalibration() {
+        func fingerprint(maximum: Double)
+            -> AtriaHistoricalStressCalibrationFingerprint {
+            AtriaHistoricalStressCalibrationFingerprint(
+                .init(restingHeartRate: 60,
+                      maximumHeartRate: maximum,
+                      restingBaselineDayCount: 20,
+                      hrvBaseline: nil)
+            )
+        }
+        var gate = AtriaHistoricalStressCalibrationPublicationGate()
+        XCTAssertFalse(gate.accepts(fingerprint(maximum: 190),
+                                    publicationDeferred: false))
+        XCTAssertFalse(gate.accepts(fingerprint(maximum: 195),
+                                    publicationDeferred: true))
+        XCTAssertTrue(gate.releaseDeferred(final: fingerprint(maximum: 195)),
+                      "commit rejection must roll back the active ticket and release the surviving final calibration")
+        XCTAssertFalse(gate.releaseDeferred(final: fingerprint(maximum: 195)))
+    }
+
+    func testOverlappingFailureTerminalOrderMatrixWaitsForFinalFence() {
+        func fingerprint(rest: Double, maximum: Double, days: Int)
+            -> AtriaHistoricalStressCalibrationFingerprint {
+            AtriaHistoricalStressCalibrationFingerprint(
+                .init(restingHeartRate: rest,
+                      maximumHeartRate: maximum,
+                      restingBaselineDayCount: days,
+                      hrvBaseline: nil)
+            )
+        }
+        let settled = fingerprint(rest: 60, maximum: 190, days: 20)
+        let provisional = fingerprint(rest: 55, maximum: 196, days: 21)
+        let final = fingerprint(rest: 60, maximum: 196, days: 20)
+
+        for order in [
+            "restore failure while recovered remains active",
+            "recovered failure while restore remains active"
+        ] {
+            var gate = AtriaHistoricalStressCalibrationPublicationGate()
+            XCTAssertFalse(gate.accepts(settled, publicationDeferred: false), order)
+            XCTAssertFalse(gate.accepts(provisional, publicationDeferred: true), order)
+            XCTAssertFalse(
+                gate.recordTerminal(
+                    sourceReplayRequired: false,
+                    publicationDeferred: true
+                ),
+                "\(order) must not consume the other fence's provisional authority"
+            )
+            XCTAssertFalse(
+                gate.accepts(final, publicationDeferred: false),
+                "the callback between last-fence clear and its terminal edge remains pending"
+            )
+            XCTAssertTrue(gate.recordTerminal(
+                sourceReplayRequired: false,
+                publicationDeferred: false
+            ), order)
+            XCTAssertTrue(gate.releaseDeferred(final: final), order)
+            XCTAssertFalse(gate.releaseDeferred(final: final),
+                           "\(order) must drain exactly once")
+        }
+    }
+
+    func testOverlappingTwoFailuresDiscardRollbackOnlyBaselineInEitherOrder() {
+        func fingerprint(rest: Double, days: Int)
+            -> AtriaHistoricalStressCalibrationFingerprint {
+            AtriaHistoricalStressCalibrationFingerprint(
+                .init(restingHeartRate: rest,
+                      maximumHeartRate: 190,
+                      restingBaselineDayCount: days,
+                      hrvBaseline: nil)
+            )
+        }
+        let settled = fingerprint(rest: 60, days: 20)
+        let provisional = fingerprint(rest: 54, days: 21)
+
+        for order in ["restore then recovered", "recovered then restore"] {
+            var gate = AtriaHistoricalStressCalibrationPublicationGate()
+            XCTAssertFalse(gate.accepts(settled, publicationDeferred: false), order)
+            XCTAssertFalse(gate.accepts(provisional, publicationDeferred: true), order)
+            XCTAssertFalse(gate.recordTerminal(
+                sourceReplayRequired: false,
+                publicationDeferred: true
+            ), order)
+            XCTAssertFalse(gate.accepts(settled, publicationDeferred: false), order)
+            XCTAssertTrue(gate.recordTerminal(
+                sourceReplayRequired: false,
+                publicationDeferred: false
+            ), "pending calibration must be drained only at final authority")
+            XCTAssertFalse(gate.releaseDeferred(final: settled),
+                           "\(order) must not replay a rolled-back baseline")
+            XCTAssertFalse(gate.releaseDeferred(final: settled), order)
+        }
+    }
+
+    func testOverlappingSuccessfulSourceMatrixPreservesReplayUntilFinalFence() {
+        func fingerprint(maximum: Double = 190)
+            -> AtriaHistoricalStressCalibrationFingerprint {
+            AtriaHistoricalStressCalibrationFingerprint(
+                .init(restingHeartRate: 60,
+                      maximumHeartRate: maximum,
+                      restingBaselineDayCount: 20,
+                      hrvBaseline: nil)
+            )
+        }
+        let settled = fingerprint()
+
+        for firstSource in ["recovered success", "restore success"] {
+            for secondFenceAlsoPublishesSource in [false, true] {
+                let scenario = "\(firstSource), second source=\(secondFenceAlsoPublishesSource)"
+                var gate = AtriaHistoricalStressCalibrationPublicationGate()
+                XCTAssertFalse(gate.accepts(settled,
+                                            publicationDeferred: false),
+                               scenario)
+                XCTAssertFalse(gate.recordTerminal(
+                    sourceReplayRequired: true,
+                    publicationDeferred: true
+                ), "\(scenario) must wait for the other active fence")
+                XCTAssertFalse(gate.accepts(settled,
+                                            publicationDeferred: false),
+                               "source intent keeps pre-terminal callbacks pending")
+                XCTAssertTrue(gate.recordTerminal(
+                    sourceReplayRequired: secondFenceAlsoPublishesSource,
+                    publicationDeferred: false
+                ), scenario)
+                XCTAssertTrue(gate.releaseDeferred(final: settled),
+                              "\(scenario) owes one source replay")
+                XCTAssertFalse(gate.releaseDeferred(final: settled),
+                               "\(scenario) must coalesce both terminal edges")
+            }
+        }
+    }
+
+    func testOverlappingFailureFirstThenSuccessfulSourceDrainsOnceInEitherOrder() {
+        let settled = AtriaHistoricalStressCalibrationFingerprint(
+            .init(restingHeartRate: 60,
+                  maximumHeartRate: 190,
+                  restingBaselineDayCount: 20,
+                  hrvBaseline: nil)
+        )
+
+        for order in [
+            "restore failure then recovered success",
+            "recovered failure then restore success"
+        ] {
+            var gate = AtriaHistoricalStressCalibrationPublicationGate()
+            XCTAssertFalse(gate.accepts(settled, publicationDeferred: false), order)
+            XCTAssertFalse(gate.recordTerminal(
+                sourceReplayRequired: false,
+                publicationDeferred: true
+            ), "\(order) must wait for the still-active source fence")
+            XCTAssertTrue(gate.recordTerminal(
+                sourceReplayRequired: true,
+                publicationDeferred: false
+            ), "\(order) final success must retain one source replay")
+            XCTAssertTrue(gate.releaseDeferred(final: settled), order)
+            XCTAssertFalse(gate.releaseDeferred(final: settled),
+                           "\(order) must drain exactly once")
+        }
+    }
+
+    func testOverlappingSourceAndCalibrationDrainAtomicallyWithoutCardiacLoop() {
+        func fingerprint(maximum: Double)
+            -> AtriaHistoricalStressCalibrationFingerprint {
+            AtriaHistoricalStressCalibrationFingerprint(
+                .init(restingHeartRate: 60,
+                      maximumHeartRate: maximum,
+                      restingBaselineDayCount: 20,
+                      hrvBaseline: nil)
+            )
+        }
+        let settled = fingerprint(maximum: 190)
+        let final = fingerprint(maximum: 196)
+        var gate = AtriaHistoricalStressCalibrationPublicationGate()
+        XCTAssertFalse(gate.accepts(settled, publicationDeferred: false))
+        XCTAssertFalse(gate.recordTerminal(
+            sourceReplayRequired: true,
+            publicationDeferred: true
+        ))
+        XCTAssertFalse(gate.accepts(final, publicationDeferred: true))
+        XCTAssertTrue(gate.recordTerminal(
+            sourceReplayRequired: false,
+            publicationDeferred: false
+        ))
+        XCTAssertTrue(gate.releaseDeferred(final: final),
+                      "source and final calibration authority drain atomically")
+        XCTAssertFalse(gate.accepts(final, publicationDeferred: false),
+                       "the drained fingerprint must not loop another replay")
+        XCTAssertFalse(gate.recordTerminal(
+            sourceReplayRequired: false,
+            publicationDeferred: false
+        ))
+    }
+
+    @MainActor
+    func testBackdatedMinuteMergeIsIdempotentLeavesDistributionUntouchedAndLiveWinsCollision() async throws {
+        let suiteName = "atria.stress.historical-merge.\(UUID().uuidString)"
+        let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+        let store = AtriaStressMonitorStore(defaults: suite)
+        let baseline = makeBaseline(restingMean: 60, restingSD: 4)
+        for offset in [-300.0, -240.0, -180.0, -120.0, -60.0, 0.0] {
+            store.update(heartRate: 75,
+                         hasContact: true,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 0,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         now: now.addingTimeInterval(offset))
+        }
+        let live = try XCTUnwrap(store.history.last)
+        XCTAssertEqual(live.factSource, .live)
+        let distributionBefore = try XCTUnwrap(
+            store.distributionComparison(now: now)
+        ).today.sampleCount
+
+        func fact(at date: Date, score: Double) -> AtriaPhysiologicalStressModel.MinuteFact {
+            .init(date: date,
+                  score: score,
+                  unsmoothedScore: score,
+                  meanHeartRate: 75,
+                  rmssd: nil,
+                  hrStress: score / 3,
+                  hrvStress: nil,
+                  heartRateWeight: 1,
+                  motionContext: .unavailable,
+                  sleepContext: .unavailable,
+                  confidence: .low,
+                  baselineLearning: false)
+        }
+        let replay = AtriaHistoricalStressReplay.Result(
+            facts: [fact(at: now.addingTimeInterval(-60), score: 2.2),
+                    fact(at: now, score: 2.8)],
+            heartRates: [
+                .init(date: now.addingTimeInterval(-60), bpm: 75),
+            ]
+        )
+
+        await store.mergeHistoricalMinuteFacts(replay, now: now)
+        XCTAssertEqual(store.history.map(\.t), [now.addingTimeInterval(-60), now])
+        XCTAssertEqual(try XCTUnwrap(store.history.last).activation,
+                       live.activation,
+                       accuracy: 1e-12,
+                       "the in-process live fact must win an exact-clock collision")
+        XCTAssertEqual(try XCTUnwrap(store.history.last).factSource, .live)
+        XCTAssertEqual(try XCTUnwrap(store.distributionComparison(now: now))
+            .today.sampleCount, distributionBefore)
+        let revisionAfterFirstMerge = store.historyRevision
+
+        await store.mergeHistoricalMinuteFacts(replay, now: now)
+        XCTAssertEqual(store.historyRevision, revisionAfterFirstMerge,
+                       "replaying the same minute identities must be a no-op")
+        XCTAssertEqual(try XCTUnwrap(store.distributionComparison(now: now))
+            .today.sampleCount, distributionBefore)
+    }
+
+    func testRapidRecoveredPublicationGenerationCancelsOlderResultAuthority() {
+        var gate = AtriaHistoricalStressReplayGenerationGate()
+        let first = gate.begin()
+        let second = gate.begin()
+
+        XCTAssertFalse(gate.accepts(first))
+        XCTAssertTrue(gate.accepts(second))
+    }
+
+    func testHistoricalReplayCapsLargeSnapshotsAndFailsClosed() {
+        XCTAssertTrue(AtriaHistoricalStressReplay.isWithinSnapshotBounds(
+            sessionCount: AtriaHistoricalStressReplay.maximumSessionCount,
+            heartRateRowCount: AtriaHistoricalStressReplay.maximumHeartRateRowCount,
+            rrRowCount: AtriaHistoricalStressReplay.maximumRRRowCount
+        ))
+        XCTAssertFalse(AtriaHistoricalStressReplay.isWithinSnapshotBounds(
+            sessionCount: AtriaHistoricalStressReplay.maximumSessionCount + 1,
+            heartRateRowCount: 0,
+            rrRowCount: 0
+        ))
+        XCTAssertFalse(AtriaHistoricalStressReplay.isWithinSnapshotBounds(
+            sessionCount: 1,
+            heartRateRowCount: AtriaHistoricalStressReplay.maximumHeartRateRowCount + 1,
+            rrRowCount: 0
+        ))
+
+        let emptySession = AtriaHistoricalStressReplay.Session(
+            id: UUID(),
+            start: now,
+            end: now,
+            heartRates: [],
+            rrIntervals: []
+        )
+        let oversized = AtriaHistoricalStressReplay.Snapshot(
+            sessions: Array(repeating: emptySession,
+                            count: AtriaHistoricalStressReplay.maximumSessionCount + 1),
+            personalization: historicalPersonalization,
+            now: now
+        )
+        XCTAssertEqual(AtriaHistoricalStressReplay.evaluate(oversized), .empty)
+    }
+
+    func testHomeObservesExactRecoveredStoreAndCancelsPriorStressReplayWorker() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaHomeView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(source.contains(
+            "SessionStore.recoveredDataRecomputeDidPublishNotification"
+        ))
+        XCTAssertTrue(source.contains(
+            "SessionStore.stressContextDidPublishNotification"
+        ))
+        XCTAssertTrue(source.contains(
+            "SessionStore.stressReplayDidPublishNotification"
+        ))
+        XCTAssertTrue(source.contains(
+            "SessionStore.stressCalibrationFenceDidReleaseNotification"
+        ))
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy:
+                "publishingStore === self.store").count - 1,
+            4,
+            "every recovered/context/terminal edge must be exact-store scoped"
+        )
+        XCTAssertFalse(source.contains(
+            "AtriaHistoricalStressSleepPublicationRevision"
+        ), "Home must not walk whole sleep-history arrays to detect context changes")
+        XCTAssertTrue(source.contains(
+            "Publishers.CombineLatest3("
+        ))
+        XCTAssertTrue(source.contains(
+            "historicalStressFallbackRestSubject.removeDuplicates()"
+        ))
+        XCTAssertTrue(source.contains(
+            "historicalStressFallbackRestSubject.send(liveSessionDerived.rest)"
+        ))
+        XCTAssertTrue(source.contains(
+            "AtriaHistoricalStressCalibrationFingerprint"
+        ))
+        XCTAssertTrue(source.contains(".removeDuplicates()"))
+        XCTAssertTrue(source.contains(
+            "historicalStressCalibrationPublicationGate.accepts"
+        ))
+        XCTAssertTrue(source.contains(
+            "historicalStressCalibrationPublicationGate.releaseDeferred"
+        ))
+        XCTAssertTrue(source.contains(
+            "historicalStressCalibrationPublicationGate.recordTerminal"
+        ))
+        XCTAssertTrue(source.contains(
+            "releaseDeferredHistoricalStressCalibration()"
+        ))
+        XCTAssertTrue(source.contains(
+            "publicationDeferred: store.stressReplayPublicationIsDeferred"
+        ), "every terminal must recheck the combined recovered/restore fence")
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy:
+                "handleHistoricalStressTerminal(").count - 1,
+            5,
+            "all four exact-store terminal/source observers share one multi-fence helper"
+        )
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy:
+                "sourceReplayRequired: true").count - 1,
+            3,
+            "recovered, context, and generic replay sources must retain replay intent"
+        )
+        XCTAssertTrue(source.contains("sourceReplayRequired: false"))
+        XCTAssertFalse(source.contains(
+            "_ = self.releaseDeferredHistoricalStressCalibration()"
+        ), "source observers must not clear pending state while another fence remains")
+        XCTAssertTrue(source.contains("historicalStressReplayTriggerSubject"))
+        XCTAssertTrue(source.contains(
+            ".debounce(for: .milliseconds(750), scheduler: RunLoop.main)"
+        ))
+        XCTAssertTrue(source.contains(
+            "private func invalidateAndEnqueueHistoricalStressReplay()"
+        ))
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy:
+                "historicalStressReplayGate.begin()").count - 1,
+            2,
+            "publication must invalidate authority before debounce and again when starting"
+        )
+        XCTAssertTrue(source.contains("historicalStressReplayWorker?.cancel()"))
+        XCTAssertTrue(source.contains("AtriaHistoricalStressReplay.snapshot("))
+        XCTAssertFalse(source.contains("!snapshot.sessions.isEmpty"),
+                       "an authoritative empty source must clear obsolete replay gaps")
+        XCTAssertTrue(source.contains("confirmedWorkouts: store.confirmedWorkouts"))
+        XCTAssertTrue(source.contains("confirmedSleeps: store.confirmedSleeps"))
+        XCTAssertTrue(source.contains("Task.detached(priority: .utility)"))
+        XCTAssertTrue(source.contains("waitForHistoryHydration()"))
+        XCTAssertGreaterThanOrEqual(
+            source.components(separatedBy:
+                "historicalStressReplayGate.accepts(generation)").count - 1,
+            2,
+            "generation authority must be rechecked after hydration suspension"
+        )
+        XCTAssertTrue(source.contains("mergeHistoricalMinuteFacts("))
     }
 
     // MARK: Bounded local stress-history continuity
@@ -699,14 +2298,64 @@ final class AtriaStressMonitorTests: XCTestCase {
         return (AtriaStressHistoryPersistence(directoryURL: directory), directory)
     }
 
-    func testStressPersistenceUsesV2NamespacesAndFailsClosedOnLegacySemantics() throws {
-        XCTAssertEqual(AtriaStressMonitor.scoringVersion, 2)
-        XCTAssertEqual(AtriaStressHistoryArchive.currentSchemaVersion, 2)
-        XCTAssertEqual(AtriaStressHistoryPersistence.filenamePrefix, "stress-hour-v2-")
+    private func persistedPoint(
+        t: Date,
+        activation: Double,
+        level _: AtriaStressLevel,
+        confidence: Double,
+        hrvAvailable: Bool,
+        minuteFact customMinuteFact: AtriaPhysiologicalStressModel.MinuteFact? = nil,
+        factSource: AtriaStressHistoryFactSource = .live,
+        replayAuthority: AtriaStressReplayAuthority? = nil,
+        scoringVersion: Int = AtriaStressMonitor.scoringVersion
+    ) -> AtriaStressHistoryArchive.Point {
+        let confidenceBand: AtriaPhysiologicalStressModel.Confidence = hrvAvailable
+            ? (confidence >= 0.8 ? .high : (confidence >= 0.6 ? .medium : .low))
+            : .low
+        let score = min(max(activation * 3, 0), 3)
+        let generatedFact = AtriaPhysiologicalStressModel.MinuteFact(
+            date: t,
+            score: score,
+            unsmoothedScore: score,
+            meanHeartRate: 80,
+            rmssd: hrvAvailable ? 50 : nil,
+            hrStress: activation,
+            hrvStress: hrvAvailable ? activation : nil,
+            heartRateWeight: hrvAvailable ? 0.75 : 1,
+            motionContext: confidenceBand == .high ? .qualifiedStill : .unavailable,
+            sleepContext: .unavailable,
+            confidence: confidenceBand,
+            baselineLearning: confidenceBand != .high,
+            scoringVersion: scoringVersion
+        )
+        let minuteFact = customMinuteFact ?? generatedFact
+        let resolvedLevel: AtriaStressLevel
+        switch minuteFact.zone {
+        case .calm: resolvedLevel = .calm
+        case .moderate: resolvedLevel = .medium
+        case .high: resolvedLevel = .high
+        }
+        return AtriaStressHistoryArchive.Point(
+            t: t,
+            activation: minuteFact.score / 3,
+            level: resolvedLevel,
+            confidence: minuteFact.confidence.numericValue,
+            hrvAvailable: hrvAvailable,
+            minuteFact: minuteFact,
+            factSource: factSource,
+            replayAuthority: replayAuthority,
+            scoringVersion: scoringVersion
+        )
+    }
+
+    func testStressPersistenceUsesV3NamespacesAndFailsClosedOnLegacySemantics() throws {
+        XCTAssertEqual(AtriaStressMonitor.scoringVersion, 3)
+        XCTAssertEqual(AtriaStressHistoryArchive.currentSchemaVersion, 3)
+        XCTAssertEqual(AtriaStressHistoryPersistence.filenamePrefix, "stress-minute-v3-")
         XCTAssertEqual(AtriaStressHistoryPersistence.productionDirectoryName,
-                       "Atria/stress-history-v2")
+                       "Atria/stress-history-v3")
         XCTAssertEqual(AtriaStressDistributionArchive.defaultsKey,
-                       "atria.stress.distribution.v2")
+                       "atria.stress.distribution.v3")
 
         let legacyPoint = AtriaStressHistoryArchive.Point(
             t: now,
@@ -720,6 +2369,18 @@ final class AtriaStressMonitorTests: XCTestCase {
             try AtriaStressHistoryArchive(points: [legacyPoint])
                 .validatedAndPruned(now: now)
         )
+        let incompleteV3 = AtriaStressHistoryArchive.Point(
+            t: now,
+            activation: 0.3,
+            level: .calm,
+            confidence: 0.7,
+            hrvAvailable: false
+        )
+        XCTAssertThrowsError(
+            try AtriaStressHistoryArchive(points: [incompleteV3])
+                .validatedAndPruned(now: now),
+            "v3 records require their complete versioned minute fact"
+        )
 
         let suiteName = "atria.stress.legacy-distribution.\(UUID().uuidString)"
         let suite = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -732,9 +2393,9 @@ final class AtriaStressMonitorTests: XCTestCase {
                   lastSampleAt: now),
         ])
         suite.set(try JSONEncoder().encode(legacyArchive),
-                  forKey: "atria.stress.distribution.v1")
+                  forKey: "atria.stress.distribution.v2")
         XCTAssertTrue(AtriaStressDistributionArchive.load(defaults: suite).days.isEmpty,
-                      "v1 mixed-semantics aggregates are ignored, not relabelled v2")
+                      "v2 mixed-semantics aggregates are ignored, not relabelled v3")
     }
 
     func testStressHistoryArchiveRoundTripPreservesTimestampsGapsAndProvenance() async throws {
@@ -742,19 +2403,40 @@ final class AtriaStressMonitorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let base = Date(timeIntervalSince1970: 1_800_100_000)
+        let minuteFact = AtriaPhysiologicalStressModel.MinuteFact(
+            date: base.addingTimeInterval(30),
+            score: 1.11,
+            unsmoothedScore: 1.2,
+            meanHeartRate: 84,
+            rmssd: 52,
+            hrStress: 0.45,
+            hrvStress: 0.32,
+            heartRateWeight: 0.8,
+            motionContext: .qualifiedStill,
+            sleepContext: .awake,
+            confidence: .high,
+            baselineLearning: false
+        )
         let points = [
-            AtriaStressHistoryArchive.Point(t: base,
+            persistedPoint(t: base,
                                             activation: 0.18,
                                             level: .calm,
                                             confidence: 0.62,
                                             hrvAvailable: false),
-            AtriaStressHistoryArchive.Point(t: base.addingTimeInterval(30),
+            persistedPoint(t: base.addingTimeInterval(30),
                                             activation: 0.37,
                                             level: .low,
                                             confidence: 0.75,
-                                            hrvAvailable: true),
+                                            hrvAvailable: true,
+                                            minuteFact: minuteFact,
+                                            factSource: .historicalReplay,
+                                            replayAuthority: replayAuthority(
+                                                cardiac: "v1:0000000000000061",
+                                                calibration: "v1:0000000000000062",
+                                                context: "v1:0000000000000063"
+                                            )),
             // Deliberate 9.5-minute hole: persistence must not invent points.
-            AtriaStressHistoryArchive.Point(t: base.addingTimeInterval(600),
+            persistedPoint(t: base.addingTimeInterval(600),
                                             activation: 0.68,
                                             level: .medium,
                                             confidence: 0.91,
@@ -771,8 +2453,12 @@ final class AtriaStressMonitorTests: XCTestCase {
         }
         XCTAssertEqual(restored, archive)
         XCTAssertEqual(restored.points.map(\.t), points.map(\.t))
-        XCTAssertEqual(restored.points[1].confidence, 0.75, accuracy: 1e-12)
+        XCTAssertEqual(restored.points[1].confidence, 0.9, accuracy: 1e-12)
         XCTAssertTrue(restored.points[1].hrvAvailable)
+        XCTAssertEqual(restored.points[1].minuteFact, minuteFact)
+        XCTAssertEqual(restored.points[1].resolvedFactSource, .historicalReplay)
+        XCTAssertEqual(restored.points[1].replayAuthority?.contextRevision,
+                       "v1:0000000000000063")
         XCTAssertFalse(restored.points[0].hrvAvailable)
         XCTAssertEqual(restored.points[2].scoringVersion,
                        AtriaStressMonitor.scoringVersion)
@@ -787,7 +2473,7 @@ final class AtriaStressMonitorTests: XCTestCase {
 
         let end = Date(timeIntervalSince1970: 1_800_200_000)
         var points = [
-            AtriaStressHistoryArchive.Point(
+            persistedPoint(
                 t: end.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow - 1),
                 activation: 0.1,
                 level: .calm,
@@ -795,11 +2481,11 @@ final class AtriaStressMonitorTests: XCTestCase {
                 hrvAvailable: false
             ),
         ]
-        // All 6,000 generated points are recent; the independent count cap must
-        // retain only the newest 5,760 even if a future cadence changes.
-        points += (0..<6_000).map { index in
-            AtriaStressHistoryArchive.Point(
-                t: end.addingTimeInterval(-Double(5_999 - index) * 28.5),
+        // More than 48 hours of minute facts exercise exact retention and the
+        // independent 2,880-point hard cap without exceeding 64 points/hour.
+        points += (0..<3_000).map { index in
+            persistedPoint(
+                t: end.addingTimeInterval(-Double(2_999 - index) * 60),
                 activation: 0.4,
                 level: .low,
                 confidence: 0.8,
@@ -832,7 +2518,7 @@ final class AtriaStressMonitorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let hourStart = Date(timeIntervalSince1970: 1_800_000_000)
         let points = (0..<AtriaStressHistoryPersistence.maximumPointsPerShard).map { index in
-            AtriaStressHistoryArchive.Point(
+            persistedPoint(
                 t: hourStart.addingTimeInterval(Double(index) * 28),
                 activation: 0.987_654_321_098_765_4,
                 level: .high,
@@ -855,16 +2541,16 @@ final class AtriaStressMonitorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let base = Date(timeIntervalSince1970: 1_800_300_000)
-        let liveClock = base.addingTimeInterval(125)
+        let liveClock = base.addingTimeInterval(300)
         let persisted = AtriaStressHistoryArchive(points: [
-            AtriaStressHistoryArchive.Point(t: base.addingTimeInterval(-600),
+            persistedPoint(t: base.addingTimeInterval(-600),
                                             activation: 0.2,
                                             level: .calm,
                                             confidence: 0.6,
                                             hrvAvailable: false),
             // This exact timestamp will also be produced live before the async
             // restore completes. The live publication must win, not duplicate.
-            AtriaStressHistoryArchive.Point(t: liveClock,
+            persistedPoint(t: liveClock,
                                             activation: 0.1,
                                             level: .calm,
                                             confidence: 0.1,
@@ -879,7 +2565,7 @@ final class AtriaStressMonitorTests: XCTestCase {
         let baseline = makeBaseline(restingMean: 60, restingSD: 4, hrvSampleDays: 0)
         // No suspension between store init and these updates: this creates a
         // real live tail while the serial filesystem restore is pending.
-        for offset in [0.0, 50.0, 100.0, 125.0] {
+        for offset in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] {
             store.update(heartRate: 75,
                          hasContact: true,
                          recentRRSamples: [],
@@ -904,7 +2590,7 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(mergedTail.confidence, livePoint.confidence, accuracy: 1e-12)
         XCTAssertEqual(mergedTail.hrvAvailable, livePoint.hrvAvailable,
                        "live HR-only provenance must replace stale duplicate provenance")
-        XCTAssertEqual(mergedTail.t.timeIntervalSince(store.history[0].t), 725,
+        XCTAssertEqual(mergedTail.t.timeIntervalSince(store.history[0].t), 900,
                        "hydration must preserve the real gap")
     }
 
@@ -914,7 +2600,11 @@ final class AtriaStressMonitorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory,
                                                 withIntermediateDirectories: true)
-        let loadNow = Date(timeIntervalSince1970: 1_800_400_000)
+        // Keep the fixture on the scorer's exact one-minute frame. The v3
+        // kernel intentionally rejects a partial (<290 s) five-minute window;
+        // an off-minute start would never create the valid replacement fact
+        // this persistence recovery test is meant to exercise.
+        let loadNow = Date(timeIntervalSince1970: 1_800_400_020)
         let olderCorruptHour = loadNow.addingTimeInterval(-3 * 3_600)
         try Data("not-json".utf8).write(
             to: persistence.shardURL(containing: olderCorruptHour),
@@ -931,7 +2621,7 @@ final class AtriaStressMonitorTests: XCTestCase {
         // hour. Once the background writer confirms it, the live tail is again
         // an available (shorter, honest) archive rather than a permanent error.
         let baseline = makeBaseline(restingMean: 60, restingSD: 4, hrvSampleDays: 0)
-        for offset in [0.0, 50.0, 100.0, 125.0] {
+        for offset in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] {
             store.update(heartRate: 75,
                          hasContact: true,
                          recentRRSamples: [],
@@ -949,12 +2639,12 @@ final class AtriaStressMonitorTests: XCTestCase {
         // older corrupt shard must have been cleared before `.loaded` published.
         let relaunched = AtriaStressHistoryPersistence(directoryURL: directory)
         guard case .loaded(let recovered) = await relaunched.load(
-            now: loadNow.addingTimeInterval(125)
+            now: loadNow.addingTimeInterval(300)
         ) else {
             return XCTFail("a confirmed replacement must become readable")
         }
         XCTAssertEqual(recovered.points.count, 1)
-        XCTAssertEqual(recovered.points.first?.t, loadNow.addingTimeInterval(125))
+        XCTAssertEqual(recovered.points.first?.t, loadNow.addingTimeInterval(300))
     }
 
     func testInvalidStressCheckpointIsRejectedWithoutReplacingLastValidShard() async throws {
@@ -962,7 +2652,7 @@ final class AtriaStressMonitorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let now = Date(timeIntervalSince1970: 1_800_500_000)
         let valid = AtriaStressHistoryArchive(points: [
-            AtriaStressHistoryArchive.Point(t: now,
+            persistedPoint(t: now,
                                             activation: 0.3,
                                             level: .low,
                                             confidence: 0.7,
@@ -970,31 +2660,53 @@ final class AtriaStressMonitorTests: XCTestCase {
         ])
         let didSave = await persistence.save(valid, now: now)
         XCTAssertTrue(didSave)
+        let validFact = try XCTUnwrap(valid.points.first?.minuteFact)
+        let futureClock = now.addingTimeInterval(
+            AtriaStressHistoryArchive.maximumFutureSkew + 1
+        )
+        let futureFact = AtriaPhysiologicalStressModel.MinuteFact(
+            date: futureClock,
+            score: validFact.score,
+            unsmoothedScore: validFact.unsmoothedScore,
+            meanHeartRate: validFact.meanHeartRate,
+            rmssd: validFact.rmssd,
+            hrStress: validFact.hrStress,
+            hrvStress: validFact.hrvStress,
+            heartRateWeight: validFact.heartRateWeight,
+            motionContext: validFact.motionContext,
+            sleepContext: validFact.sleepContext,
+            confidence: validFact.confidence,
+            baselineLearning: validFact.baselineLearning
+        )
 
         let invalidClaims = [
-            // HR-only provenance can never support a High band/activation.
+            // Every failure keeps a complete fact and corrupts one outer claim.
             AtriaStressHistoryArchive.Point(t: now,
-                                            activation: 0.9,
+                                            activation: validFact.score / 3,
                                             level: .high,
-                                            confidence: 0.8,
-                                            hrvAvailable: false),
+                                            confidence: validFact.confidence.numericValue,
+                                            hrvAvailable: !validFact.isHROnly,
+                                            minuteFact: validFact),
             AtriaStressHistoryArchive.Point(t: now,
-                                            activation: 0.3,
-                                            level: .low,
+                                            activation: validFact.score / 3,
+                                            level: .calm,
                                             confidence: 1.1,
-                                            hrvAvailable: true),
+                                            hrvAvailable: !validFact.isHROnly,
+                                            minuteFact: validFact),
             AtriaStressHistoryArchive.Point(t: now,
-                                            activation: 0.3,
-                                            level: .low,
-                                            confidence: 0.7,
-                                            hrvAvailable: true,
+                                            activation: validFact.score / 3,
+                                            level: .calm,
+                                            confidence: validFact.confidence.numericValue,
+                                            hrvAvailable: !validFact.isHROnly,
+                                            minuteFact: validFact,
                                             scoringVersion: AtriaStressMonitor.scoringVersion + 1),
             AtriaStressHistoryArchive.Point(
-                t: now.addingTimeInterval(AtriaStressHistoryArchive.maximumFutureSkew + 1),
-                activation: 0.3,
-                level: .low,
-                confidence: 0.7,
-                hrvAvailable: true
+                t: futureClock,
+                activation: futureFact.score / 3,
+                level: .calm,
+                confidence: futureFact.confidence.numericValue,
+                hrvAvailable: !futureFact.isHROnly,
+                minuteFact: futureFact
             ),
         ]
         for invalid in invalidClaims {
@@ -1017,7 +2729,7 @@ final class AtriaStressMonitorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let base = Date(timeIntervalSince1970: 1_800_600_000)
         let seed = AtriaStressHistoryArchive(points: [
-            AtriaStressHistoryArchive.Point(t: base.addingTimeInterval(-600),
+            persistedPoint(t: base.addingTimeInterval(-600),
                                             activation: 0.2,
                                             level: .calm,
                                             confidence: 0.6,
@@ -1030,7 +2742,7 @@ final class AtriaStressMonitorTests: XCTestCase {
         await store.waitForHistoryHydration()
 
         let baseline = makeBaseline(restingMean: 60, restingSD: 4, hrvSampleDays: 0)
-        for offset in [0.0, 50.0, 100.0, 125.0] {
+        for offset in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] {
             store.update(heartRate: 75,
                          hasContact: true,
                          recentRRSamples: [],
@@ -1055,7 +2767,7 @@ final class AtriaStressMonitorTests: XCTestCase {
             return XCTFail("background flush must leave a readable archive")
         }
         XCTAssertEqual(restored.points.map(\.t),
-                       [base.addingTimeInterval(-600), base.addingTimeInterval(125)])
+                       [base.addingTimeInterval(-600), base.addingTimeInterval(300)])
     }
 
     @MainActor
@@ -1064,14 +2776,14 @@ final class AtriaStressMonitorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         // Keep both scored islands comfortably inside their respective hours.
-        // The first contributes only three dirty points (the affected 1...9
-        // sub-cadence range); seven later points bring the global count to ten.
+        // The first contributes three dirty minute facts; two later facts bring
+        // the global count to the five-fact persistence cadence.
         let firstStart = now.addingTimeInterval(600)
         let secondStart = firstStart.addingTimeInterval(3 * 3_600)
         let seedClock = firstStart.addingTimeInterval(-600)
         let didSeed = await persistence.save(
             AtriaStressHistoryArchive(points: [
-                AtriaStressHistoryArchive.Point(t: seedClock,
+                persistedPoint(t: seedClock,
                                                 activation: 0.2,
                                                 level: .calm,
                                                 confidence: 0.6,
@@ -1087,8 +2799,8 @@ final class AtriaStressMonitorTests: XCTestCase {
         let baseline = makeBaseline(restingMean: 60, restingSD: 4, hrvSampleDays: 0)
 
         func feedIsland(start: Date, scoredPointCount: Int) {
-            let offsets = [0.0, 50.0, 100.0]
-                + (0..<scoredPointCount).map { 125.0 + Double($0) * 30 }
+            let offsets = [0.0, 60.0, 120.0, 180.0, 240.0]
+                + (0..<scoredPointCount).map { 300.0 + Double($0) * 60 }
             for offset in offsets {
                 store.update(heartRate: 75,
                              hasContact: true,
@@ -1104,12 +2816,12 @@ final class AtriaStressMonitorTests: XCTestCase {
         }
 
         feedIsland(start: firstStart, scoredPointCount: 3)
-        feedIsland(start: secondStart, scoredPointCount: 7)
+        feedIsland(start: secondStart, scoredPointCount: 2)
         await store.waitForPendingHistoryCheckpoint()
 
         // A new persistence object and store model a process relaunch. Both
         // dirty islands must survive; the three-hour discontinuity stays empty.
-        let relaunchNow = secondStart.addingTimeInterval(305)
+        let relaunchNow = secondStart.addingTimeInterval(480)
         let relaunchedPersistence = AtriaStressHistoryPersistence(directoryURL: directory)
         let relaunchedStore = AtriaStressMonitorStore(
             historyPersistence: relaunchedPersistence,
@@ -1118,14 +2830,14 @@ final class AtriaStressMonitorTests: XCTestCase {
         await relaunchedStore.waitForHistoryHydration()
 
         let firstClocks = (0..<3).map {
-            firstStart.addingTimeInterval(125 + Double($0) * 30)
+            firstStart.addingTimeInterval(300 + Double($0) * 60)
         }
-        let secondClocks = (0..<7).map {
-            secondStart.addingTimeInterval(125 + Double($0) * 30)
+        let secondClocks = (0..<2).map {
+            secondStart.addingTimeInterval(300 + Double($0) * 60)
         }
         XCTAssertEqual(relaunchedStore.history.map(\.t),
                        [seedClock] + firstClocks + secondClocks)
-        XCTAssertEqual(relaunchedStore.history.count, 11)
+        XCTAssertEqual(relaunchedStore.history.count, 6)
         XCTAssertGreaterThan(
             try XCTUnwrap(secondClocks.first).timeIntervalSince(
                 try XCTUnwrap(firstClocks.last)
@@ -1152,7 +2864,7 @@ final class AtriaStressMonitorTests: XCTestCase {
             hasDurableCheckpoint: false,
             unsavedSampleCount: 1
         ), "the first point makes a short session relaunch-visible")
-        for pending in 1..<10 {
+        for pending in 1..<5 {
             XCTAssertFalse(AtriaStressMonitorStore.shouldPersistHistory(
                 hasDurableCheckpoint: true,
                 unsavedSampleCount: pending
@@ -1160,8 +2872,8 @@ final class AtriaStressMonitorTests: XCTestCase {
         }
         XCTAssertTrue(AtriaStressMonitorStore.shouldPersistHistory(
             hasDurableCheckpoint: true,
-            unsavedSampleCount: 10
-        ), "ten 30-second points checkpoint at most once per five minutes")
+            unsavedSampleCount: 5
+        ), "five minute facts checkpoint at most once per five minutes")
     }
 
     // MARK: Slow multi-day awake baseline (audit B3, recording-only)
@@ -1295,12 +3007,12 @@ final class AtriaStressMonitorTests: XCTestCase {
                        "every admitted sample is 72, so the median of daily medians is 72")
     }
 
-    // MARK: Suppression
+    // MARK: Qualified context
 
-    func testSuppressedWhileRecording() {
+    func testRecordingAttenuatesButDoesNotSuppressV3Score() throws {
         let baseline = makeBaseline(restingMean: 60, restingSD: 4)
 
-        let state = AtriaStressMonitor.score(hrNow: 150,
+        let adjusted = AtriaStressMonitor.score(hrNow: 150,
                                              hrWindow: [150],
                                              rrWindowMs: [],
                                              hrvFallbackRMSSD: nil,
@@ -1312,22 +3024,30 @@ final class AtriaStressMonitorTests: XCTestCase {
                                              hasContact: true,
                                              contactAgeSeconds: 300,
                                              now: now)
+        let unadjusted = AtriaStressMonitor.score(hrNow: 150,
+                                                  hrWindow: [150],
+                                                  rrWindowMs: [],
+                                                  hrvFallbackRMSSD: nil,
+                                                  baseline: baseline,
+                                                  restingMaxHR: restingMaxHR,
+                                                  workoutActive: false,
+                                                  zoneIndex: 0,
+                                                  inSleepWindow: false,
+                                                  hasContact: true,
+                                                  contactAgeSeconds: 300,
+                                                  now: now)
 
-        XCTAssertEqual(state.kind, .active)
-        XCTAssertNil(state.level)
-        let presentation = AtriaStressPresentation.make(state: state)
-        XCTAssertEqual(
-            presentation.value,
-            AtriaCompactMetricPresentation.noValue
-        )
-        XCTAssertEqual(presentation.detail, "Paused during activity")
-        XCTAssertTrue(presentation.narrative.contains("pauses during activity"))
+        XCTAssertEqual(adjusted.kind, .scored)
+        XCTAssertEqual(try XCTUnwrap(adjusted.minuteFact).motionContext.kind,
+                       .activity)
+        XCTAssertLessThan(adjusted.rawActivation, unadjusted.rawActivation)
+        XCTAssertGreaterThan(adjusted.rawActivation, 0)
     }
 
-    func testSuppressedAtZoneTwoOrAbove() {
+    func testZoneOnlyCannotAttenuateOrSuppressV3Score() {
         let baseline = makeBaseline(restingMean: 60, restingSD: 4)
 
-        let state = AtriaStressMonitor.score(hrNow: 130,
+        let zoneTwo = AtriaStressMonitor.score(hrNow: 130,
                                              hrWindow: [130],
                                              rrWindowMs: [],
                                              hrvFallbackRMSSD: nil,
@@ -1339,12 +3059,25 @@ final class AtriaStressMonitorTests: XCTestCase {
                                              hasContact: true,
                                              contactAgeSeconds: 300,
                                              now: now)
+        let zoneZero = AtriaStressMonitor.score(hrNow: 130,
+                                                hrWindow: [130],
+                                                rrWindowMs: [],
+                                                hrvFallbackRMSSD: nil,
+                                                baseline: baseline,
+                                                restingMaxHR: restingMaxHR,
+                                                workoutActive: false,
+                                                zoneIndex: 0,
+                                                inSleepWindow: false,
+                                                hasContact: true,
+                                                contactAgeSeconds: 300,
+                                                now: now)
 
-        XCTAssertEqual(state.kind, .active)
-        XCTAssertNil(state.level)
+        XCTAssertEqual(zoneTwo.kind, .scored)
+        XCTAssertEqual(zoneTwo.rawActivation, zoneZero.rawActivation, accuracy: 1e-12)
+        XCTAssertEqual(zoneTwo.minuteFact?.motionContext, .unavailable)
     }
 
-    func testSuppressedInSleepWindow() {
+    func testQualifiedSleepIsContextAndDoesNotEraseScore() throws {
         let baseline = makeBaseline(restingMean: 60, restingSD: 4)
 
         let state = AtriaStressMonitor.score(hrNow: 58,
@@ -1360,8 +3093,9 @@ final class AtriaStressMonitorTests: XCTestCase {
                                              contactAgeSeconds: 300,
                                              now: now)
 
-        XCTAssertEqual(state.kind, .asleep)
-        XCTAssertNil(state.level)
+        XCTAssertEqual(state.kind, .scored)
+        XCTAssertEqual(try XCTUnwrap(state.minuteFact).sleepContext, .asleep)
+        XCTAssertNotNil(state.level)
     }
 
     func testNoSignalWhenContactLost() {
@@ -1390,7 +3124,7 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(presentation.detail, "Waiting for a fresh strap signal")
     }
 
-    func testImmatureBaselinePresentationNeverLeaksNumericStress() {
+    func testImmatureBaselineUsesNumericLearningEstimate() throws {
         let baseline = makeBaseline(restingMean: 60,
                                     restingSD: 4,
                                     dayCount: PersonalBaseline.trustedMinimumSamples - 1)
@@ -1408,16 +3142,10 @@ final class AtriaStressMonitorTests: XCTestCase {
                                              now: now)
 
         let presentation = AtriaStressPresentation.make(state: state)
-        XCTAssertEqual(state.kind, .calibrating)
-        XCTAssertEqual(
-            presentation.value,
-            AtriaCompactMetricPresentation.noValue
-        )
-        // Migrated 2026-08-05: the scorer's calibrating detail now carries the
-        // visible progress count (the card shows detail, not label, so the
-        // count was invisible to users watching live HR stream beside "--").
-        XCTAssertEqual(presentation.detail, "Baseline 13 of 14 rest days")
-        XCTAssertFalse(presentation.value.contains("/3"))
+        XCTAssertEqual(state.kind, .scored)
+        XCTAssertTrue(try XCTUnwrap(state.minuteFact).baselineLearning)
+        XCTAssertNotNil(presentation.numericScore)
+        XCTAssertTrue(presentation.value.contains("/ 3"))
     }
 
     func testMatureRestPresentationIsIdenticalForEverySurfaceConsumer() {
@@ -1438,43 +3166,44 @@ final class AtriaStressMonitorTests: XCTestCase {
         let homeProjection = AtriaStressPresentation.make(state: state)
         let healthProjection = AtriaStressPresentation.make(state: state)
         XCTAssertEqual(homeProjection, healthProjection)
-        XCTAssertEqual(homeProjection.value, "Calm")
-        XCTAssertEqual(homeProjection.metricTitle, "Cardiac arousal")
-        XCTAssertEqual(homeProjection.detail, "Cardiac arousal · HR only")
-        XCTAssertNil(homeProjection.numericScore)
-        XCTAssertTrue(homeProjection.narrative.contains("qualitative cardiac-arousal band"))
+        XCTAssertEqual(homeProjection.value, "0.4 / 3")
+        XCTAssertEqual(homeProjection.metricTitle, "Physiological stress")
+        XCTAssertTrue(homeProjection.detail.contains("HR-only estimate"))
+        XCTAssertNotNil(homeProjection.numericScore)
+        XCTAssertTrue(homeProjection.narrative.contains("lower-confidence estimate"))
     }
 
-    func testCoachCopyNeverRelabelsHROnlyCardiacArousalAsStress() {
+    func testCoachCopyUsesPhysiologicalStressAndDisclosesHROnlyConfidence() {
         let guidance = Coach.guide(recovery: 0, strain: 0)
         let hrOnly = AtriaCoachContext(guidance: guidance,
                                        strain: 0,
                                        recoveryText: "--",
                                        hrvText: "--",
-                                       stressText: "Medium",
+                                       stressText: "2.0 / 3",
                                        stressMetricTitle: "Cardiac arousal",
                                        stressEvidenceMode: .cardiacArousal,
+                                       stressIsHROnlyEstimate: true,
                                        baselineSamples: 0,
                                        sessionsCount: 0)
         XCTAssertEqual(
             AtriaCoachStressPresentation.clause(context: hrOnly),
-            "Cardiac arousal Medium (HR only; not a numeric Stress score)"
+            "Physiological stress 2.0 / 3 (HR-only estimate; lower confidence)"
         )
 
         let physiological = AtriaCoachContext(guidance: guidance,
                                                strain: 0,
                                                recoveryText: "--",
                                                hrvText: "--",
-                                               stressText: "Medium",
+                                               stressText: "1.4 / 3",
                                                stressMetricTitle: "Stress",
                                                stressEvidenceMode: .physiologicalStress,
                                                baselineSamples: 0,
                                                sessionsCount: 0)
         XCTAssertEqual(AtriaCoachStressPresentation.clause(context: physiological),
-                       "Stress Medium")
+                       "Physiological stress 1.4 / 3")
     }
 
-    func testWarmingUpDuringFirst120SecondsOfContact() {
+    func testWarmingUpBeforeCompleteFiveMinuteWindow() {
         let baseline = makeBaseline(restingMean: 60, restingSD: 4)
 
         let state = AtriaStressMonitor.score(hrNow: 62,
@@ -1493,12 +3222,12 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(state.kind, .warmingUp)
         XCTAssertNil(state.level)
         XCTAssertEqual(AtriaStressPresentation.make(state: state).detail,
-                       "2 min of live signal")
+                       "5 min of continuous signal")
     }
 
     // MARK: Honesty gating
 
-    func testCalibratingWhenRestingBaselineNotYetTrusted() {
+    func testNoHistoricalBaselineUsesConservativeLearningFallback() throws {
         let baseline = PersonalBaseline() // no samples at all
 
         let state = AtriaStressMonitor.score(hrNow: 62,
@@ -1514,12 +3243,13 @@ final class AtriaStressMonitorTests: XCTestCase {
                                              contactAgeSeconds: 300,
                                              now: now)
 
-        XCTAssertEqual(state.kind, .calibrating)
-        XCTAssertNil(state.level)
-        XCTAssertEqual(state.label, "Calibrating (0/14)")
+        XCTAssertEqual(state.kind, .scored)
+        XCTAssertTrue(try XCTUnwrap(state.minuteFact).baselineLearning)
+        XCTAssertEqual(state.confidence,
+                       AtriaPhysiologicalStressModel.Confidence.low.numericValue)
     }
 
-    func testCalibratingProgressReflectsFreshRestingSampleCount() {
+    func testPartialHistoricalBaselineRemainsExplicitlyLearning() throws {
         let baseline = makeBaseline(restingMean: 60, restingSD: 4, dayCount: 5)
 
         let state = AtriaStressMonitor.score(hrNow: 62,
@@ -1535,8 +3265,8 @@ final class AtriaStressMonitorTests: XCTestCase {
                                              contactAgeSeconds: 300,
                                              now: now)
 
-        XCTAssertEqual(state.kind, .calibrating)
-        XCTAssertEqual(state.label, "Calibrating (5/14)")
+        XCTAssertEqual(state.kind, .scored)
+        XCTAssertTrue(try XCTUnwrap(state.minuteFact).baselineLearning)
     }
 
     func testStressDistributionTypicalRequiresThreeComparableMeasuredDays() throws {

@@ -4506,6 +4506,8 @@ struct AtriaHomeView: View {
                                  stressText: hero.stressValue,
                                  stressMetricTitle: hero.stressMetricTitle,
                                  stressEvidenceMode: hero.stressEvidenceMode,
+                                 stressIsHROnlyEstimate: hero.stressDetail
+                                    .localizedCaseInsensitiveContains("HR-only"),
                                  baselineSamples: hero.baselineSamples,
                                  sessionsCount: hero.sessionsCount)
     }
@@ -4588,6 +4590,13 @@ struct AtriaHomeView: View {
     private func handleConnectivityRefresh() async {
         await MainActor.run {
             ble.requestStrapStatusRead(reason: "pull_to_refresh")
+            // A refresh is also an explicit request to advance stale strap
+            // history. Queue the exact connected-object/epoch lane; the next
+            // accepted 2A37 packet mints authority without disconnecting live
+            // HR or granting a reason string generic transport authority.
+            ble.queueConnectedRawHistoryCatchUpIntent(
+                reason: "pull_to_refresh"
+            )
             model.forceRefresh()
             showConnectivityPill = true
             connectivityPillTask?.cancel()
@@ -4626,8 +4635,8 @@ struct AtriaHomeView: View {
         private static let refreshInterval: TimeInterval = 15
 
         var body: some View {
-            TimelineView(.periodic(from: .now, by: Self.refreshInterval)) { _ in
-                let notices = notices()
+            TimelineView(.periodic(from: .now, by: Self.refreshInterval)) { context in
+                let notices = notices(now: context.date)
                 if !notices.isEmpty {
                     GlassEffectContainer(spacing: 10) {
                         ScrollView(.horizontal, showsIndicators: false) {
@@ -4642,11 +4651,15 @@ struct AtriaHomeView: View {
                             LazyHStack(spacing: 32) {
                                 ForEach(Array(notices.enumerated()), id: \.offset) { index, status in
                                     HStack(spacing: 8) {
-                                        Label(status.title, systemImage: status.symbol)
-                                            .font(.caption.weight(.semibold))
-                                            .lineLimit(1)
-                                            .minimumScaleFactor(0.82)
-                                            .foregroundStyle(.primary)
+                                        ViewThatFits(in: .horizontal) {
+                                            Label(status.title, systemImage: status.symbol)
+                                                .fixedSize(horizontal: true, vertical: false)
+                                            Label(status.compactTitle, systemImage: status.symbol)
+                                                .lineLimit(1)
+                                                .minimumScaleFactor(0.82)
+                                        }
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.primary)
 
                                         Spacer(minLength: 0)
 
@@ -4697,9 +4710,9 @@ struct AtriaHomeView: View {
         /// actionable first. A healthy live capture stays in the compact strap
         /// chip above; it is a state, not dashboard content worth spending a
         /// full row on.
-        private func notices() -> [Status] {
+        private func notices(now: Date) -> [Status] {
             var result: [Status] = []
-            if let status = status() {
+            if let status = status(now: now) {
                 result.append(status)
             }
             if let maturity = maturityText() {
@@ -4720,16 +4733,21 @@ struct AtriaHomeView: View {
             return result
         }
 
-        private func status() -> Status? {
+        private func status(now: Date) -> Status? {
             let live = coreLiveStore.state
             switch live.historicalRecoveryPresentation {
             case .syncing(let savedRecords):
-                let suffix = savedRecords > 0 ? " · \(savedRecords) saved" : ""
-                return Status(title: "Syncing strap history\(suffix)",
+                let copy = AtriaHomeRecoverySyncPresentation.copy(
+                    savedRecords: savedRecords,
+                    drainedThroughUnix: UserDefaults.standard.object(
+                        forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+                    ) as? Double,
+                    now: now
+                )
+                return Status(title: copy.title,
                               symbol: "arrow.triangle.2.circlepath",
-                              accessibilityLabel: savedRecords > 0
-                                ? "History sync in progress. \(savedRecords) records durably saved in this recovery; missing data is not yet verified."
-                                : "History sync in progress. Missing data is not yet verified.")
+                              accessibilityLabel: copy.accessibilityLabel,
+                              compactTitle: copy.compactTitle)
             case .verified:
                 return Status(title: "Recovery verified",
                               symbol: "checkmark.seal.fill",
@@ -4760,6 +4778,17 @@ struct AtriaHomeView: View {
             let title: String
             let symbol: String
             let accessibilityLabel: String
+            let compactTitle: String
+
+            init(title: String,
+                 symbol: String,
+                 accessibilityLabel: String,
+                 compactTitle: String? = nil) {
+                self.title = title
+                self.symbol = symbol
+                self.accessibilityLabel = accessibilityLabel
+                self.compactTitle = compactTitle ?? title
+            }
         }
     }
 
@@ -5089,8 +5118,9 @@ struct AtriaHomeView: View {
                 missedDataBannerDismissedUntil = Date().addingTimeInterval(60 * 60)
             } onSync: {
                 missedDataBannerDismissedUntil = nil
-                _ = ble.requestOfflineHistoricalSyncIfNeeded(reason: "home_missed_data_banner",
-                                                             force: true)
+                ble.queueConnectedRawHistoryCatchUpIntent(
+                    reason: "home_missed_data_banner"
+                )
             } onStartFresh: {
                 confirmStartFreshFromBanner = true
             }
@@ -5616,6 +5646,94 @@ struct AtriaHomeView: View {
     }
 }
 
+/// Compact, truthful copy for the recovery chip near the top of Overview. The
+/// durable archive frontier is optional: until it exists (or when it is
+/// invalid), the chip keeps its prior copy instead of inventing a synced time.
+/// A shorter title preserves the frontier on narrow widths and at larger
+/// Dynamic Type sizes; VoiceOver always receives the complete status.
+enum AtriaHomeRecoverySyncPresentation {
+    struct Copy: Equatable {
+        let title: String
+        let compactTitle: String
+        let accessibilityLabel: String
+    }
+
+    static func copy(savedRecords: Int,
+                     drainedThroughUnix: Double?,
+                     now: Date,
+                     calendar: Calendar = .current,
+                     locale: Locale = .current) -> Copy {
+        let savedRecords = max(0, savedRecords)
+        let through = syncedThroughText(drainedThroughUnix: drainedThroughUnix,
+                                        now: now,
+                                        calendar: calendar,
+                                        locale: locale)
+
+        var titleParts = ["Syncing strap history"]
+        var compactParts = ["Syncing"]
+        if savedRecords > 0 {
+            titleParts.append("\(savedRecords) saved")
+            compactParts.append("\(savedRecords) saved")
+        }
+        if let through {
+            titleParts.append("through \(through)")
+            compactParts.append("through \(through)")
+        }
+
+        var accessibilityParts = ["History sync in progress."]
+        if savedRecords > 0 {
+            accessibilityParts.append(
+                "\(savedRecords) records durably saved in this recovery."
+            )
+        }
+        if let through {
+            accessibilityParts.append(
+                "Strap history is durably synced through \(through)."
+            )
+        }
+        accessibilityParts.append("Missing data is not yet verified.")
+
+        return Copy(title: titleParts.joined(separator: " · "),
+                    compactTitle: compactParts.joined(separator: " · "),
+                    accessibilityLabel: accessibilityParts.joined(separator: " "))
+    }
+
+    private static func syncedThroughText(drainedThroughUnix: Double?,
+                                          now: Date,
+                                          calendar: Calendar,
+                                          locale: Locale) -> String? {
+        guard let drainedThroughUnix,
+              drainedThroughUnix.isFinite,
+              drainedThroughUnix > 0,
+              drainedThroughUnix <= now.timeIntervalSince1970 else {
+            return nil
+        }
+        let frontier = Date(timeIntervalSince1970: drainedThroughUnix)
+        let timeFormatter = DateFormatter()
+        timeFormatter.calendar = calendar
+        timeFormatter.locale = locale
+        timeFormatter.timeZone = calendar.timeZone
+        timeFormatter.timeStyle = .short
+        timeFormatter.dateStyle = .none
+
+        let time = timeFormatter.string(from: frontier)
+        if calendar.isDate(frontier, inSameDayAs: now) {
+            return time
+        }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(frontier, inSameDayAs: yesterday) {
+            return "\(time) yesterday"
+        }
+
+        let dayFormatter = DateFormatter()
+        dayFormatter.calendar = calendar
+        dayFormatter.locale = locale
+        dayFormatter.timeZone = calendar.timeZone
+        dayFormatter.setLocalizedDateFormatFromTemplate("EEE")
+        return "\(time) \(dayFormatter.string(from: frontier))"
+    }
+}
+
 /// Honest copy for the missed-data banner. The old banner showed the gap's AGE
 /// (hours since it was first opened) as "Data gap · 85.4 h", which reads as
 /// "85.4 h of data is missing" AND implies a sync will recover it. In reality the
@@ -6009,11 +6127,14 @@ private struct AtriaMissedDataBanner: View, Equatable {
     @State private var syncTapFeedback: String?
 
     private func handleSyncTap() {
+        // `onSync` queues the exact process-local connected-history intent. It
+        // is safe while live HR is protected and does not invoke the generic
+        // force/cutover path.
+        onSync()
         if protectsLiveStream {
             syncTapFeedback = "Queued · live tracking stays on"
             return
         }
-        onSync()
         let defaults = UserDefaults.standard
         let lastFlushAt = defaults.object(
             forKey: AtriaBLEManager.OfflineSyncDefaults.lastDurableFlushBoundaryOKAt
@@ -8499,6 +8620,54 @@ private struct AtriaStandByMetric: View {
     }
 }
 
+/// Main-actor admission for the saved/archive aggregate projection. Live HR can
+/// request UI publication several times per second, while this projection scans
+/// saved sessions and their accepted-HR rows. Keep exactly one worker active and
+/// collapse any authority burst to the newest trailing generation; an older
+/// result can never publish over a newer request.
+struct AtriaHomeSavedAggregateRefreshGate: Equatable, Sendable {
+    enum Admission: Equatable, Sendable {
+        case start(UInt64)
+        case coalesced
+    }
+
+    enum Completion: Equatable, Sendable {
+        case ignored
+        case publish
+        case start(UInt64)
+    }
+
+    private(set) var latestGeneration: UInt64 = 0
+    private(set) var inFlightGeneration: UInt64?
+    private(set) var trailingGeneration: UInt64?
+
+    mutating func request() -> Admission {
+        latestGeneration &+= 1
+        guard inFlightGeneration == nil else {
+            trailingGeneration = latestGeneration
+            return .coalesced
+        }
+        inFlightGeneration = latestGeneration
+        return .start(latestGeneration)
+    }
+
+    mutating func complete(_ generation: UInt64) -> Completion {
+        guard inFlightGeneration == generation else { return .ignored }
+        inFlightGeneration = nil
+        if let trailingGeneration {
+            self.trailingGeneration = nil
+            inFlightGeneration = trailingGeneration
+            return .start(trailingGeneration)
+        }
+        return generation == latestGeneration ? .publish : .ignored
+    }
+
+    var outstandingWorkUpperBound: Int {
+        (inFlightGeneration == nil ? 0 : 1)
+            + (trailingGeneration == nil ? 0 : 1)
+    }
+}
+
 @MainActor
 final class AtriaHomeModel {
     nonisolated static let liveHeartRateFreshnessInterval: TimeInterval = 6
@@ -8925,8 +9094,9 @@ final class AtriaHomeModel {
         let stressValue: String
         let stressDetail: String
         let stressNarrative: String
-        /// Compact consumers must preserve the scorer's evidence coordinate.
-        /// A qualitative HR-only band is Cardiac arousal, never a Stress score.
+        /// Compact consumers preserve the scorer's evidence provenance. A
+        /// complete v3 HR-only fact remains numeric and is labelled lower
+        /// confidence in `stressDetail`.
         let stressEvidenceMode: AtriaStressEvidenceMode?
         let stressMetricTitle: String
         let rrPackageText: String
@@ -9284,6 +9454,21 @@ final class AtriaHomeModel {
     private var diagnosticsRefreshToken = UUID()
     private var liveHeartRateFreshnessTask: Task<Void, Never>?
     private var stressFreshnessExpiryTask: Task<Void, Never>?
+    private var savedAggregateCycleRolloverTask: Task<Void, Never>?
+    private var savedAggregateRefreshGate = AtriaHomeSavedAggregateRefreshGate()
+    private var pendingSavedAggregateRefreshReason = "initial"
+    private let savedAggregateRefreshQueue = DispatchQueue(
+        label: "com.adidshaft.atria.home-saved-aggregate",
+        qos: .utility
+    )
+    private var historicalStressReplayGate = AtriaHistoricalStressReplayGenerationGate()
+    private var historicalStressCalibrationPublicationGate =
+        AtriaHistoricalStressCalibrationPublicationGate()
+    private var historicalStressReplayWorker: Task<AtriaHistoricalStressReplay.Result, Never>?
+    private let historicalStressReplayTriggerSubject = PassthroughSubject<Void, Never>()
+    /// Publishes the exact fallback resting-HR scalar consumed by historical
+    /// personalization while the durable baseline is still learning.
+    private let historicalStressFallbackRestSubject = CurrentValueSubject<Int, Never>(60)
     private var prefersPulseSparklineUpdates = false
     private var prefersActivityProjectionUpdates = false
     private var activityProjectionIsDirty = false
@@ -9310,6 +9495,17 @@ final class AtriaHomeModel {
         let confirmedWorkouts: Int
         let confirmedSleeps: Int
         let savedTodayObservedSeconds: TimeInterval
+    }
+
+    private struct SavedAggregateRefreshInput: @unchecked Sendable {
+        /// COW value snapshots captured at the authority edge. Their reducers
+        /// run on `savedAggregateRefreshQueue`; MainActor only retains storage.
+        let source: SessionStore.HomeSavedAggregateSourceSnapshot
+        let baseline: PersonalBaseline
+        let liveRestingHeartRate: Int?
+        let activeSessionID: UUID?
+        let confirmedWorkouts: Int
+        let windowEnd: Date
     }
 
     private struct DeferredDetails: Equatable {
@@ -9519,6 +9715,7 @@ final class AtriaHomeModel {
         let sharedStressStore = AtriaStressMonitorStore(
             historyPersistence: AtriaStressHistoryPersistence.production()
         )
+        let initialStressNow = Date()
         sharedStressStore.update(heartRate: initialPulseLive.heartRate,
                                  hasContact: initialPulseLive.hasContact,
                                  recentRRSamples: initialPulseLive.recentRRSamples,
@@ -9528,7 +9725,12 @@ final class AtriaHomeModel {
                                  baseline: store.baseline,
                                  restingMaxHR: (rest: store.baseline.restingInt ?? initialLiveSessionDerived.rest,
                                                max: store.profile.maxHR),
-                                 hasActiveSleepEvidence: false)
+                                 hasActiveSleepEvidence: AtriaStressMonitorStore
+                                    .hasQualifiedActiveSleepEvidence(
+                                        in: store.confirmedSleeps,
+                                        at: initialStressNow
+                                    ),
+                                 now: initialStressNow)
         let initialHero = Self.makeHeroSnapshot(ble: ble,
                                                 store: store,
                                                 live: initialCoreLive,
@@ -9571,7 +9773,9 @@ final class AtriaHomeModel {
         self.stressMonitorStore = sharedStressStore
         self.todaySessionProjectionStore = AtriaTodaySessionProjectionStore(store: store)
         self.activityStore = ActivityStore(state: Self.makeActivityState(store: store))
+        historicalStressFallbackRestSubject.send(initialLiveSessionDerived.rest)
         bind()
+        scheduleSavedAggregateCycleRolloverRefresh()
         coreRefreshSubject.send(())
         heroRefreshSubject.send(())
     }
@@ -9600,6 +9804,7 @@ final class AtriaHomeModel {
     }
 
     func forceRefresh() {
+        requestSavedAggregateRefresh(reason: "force_refresh")
         publishStatus()
         publishCoreLive()
         publishHeroPulse()
@@ -9807,6 +10012,35 @@ final class AtriaHomeModel {
             }
             .store(in: &cancellables)
 
+        // Historical replay reacts only to the fixed-size identity of the
+        // exact v3 personalization fields. Baseline/profile/fallback-rest
+        // publications are slow authority edges (not the HR hot loop), and
+        // equality is O(1).
+        Publishers.CombineLatest3(
+            store.$baseline,
+            store.$profile,
+            historicalStressFallbackRestSubject.removeDuplicates()
+        )
+            .map { baseline, profile, fallbackRest
+                -> AtriaHistoricalStressCalibrationFingerprint in
+                let personalization = Self.historicalStressPersonalization(
+                    baseline: baseline,
+                    profile: profile,
+                    fallbackRestingHeartRate: fallbackRest,
+                    now: Date()
+                )
+                return AtriaHistoricalStressCalibrationFingerprint(
+                    personalization
+                )
+            }
+            .removeDuplicates()
+            .sink { [weak self] fingerprint in
+                self?.enqueueHistoricalStressCalibrationReplayIfNeeded(
+                    fingerprint
+                )
+            }
+            .store(in: &cancellables)
+
         stressMonitorStore.$state
             .removeDuplicates()
             .sink { [weak self] _ in
@@ -9853,6 +10087,18 @@ final class AtriaHomeModel {
             .sink { [weak self] _ in self?.publishCollectionLive() }
             .store(in: &cancellables)
 
+        // Workout saves often publish dashboard/history more than once and a
+        // sleep save publishes both sleep and dashboard state. Collapse that
+        // transaction burst—and any simultaneous recovered-data fence—into one
+        // bounded replay. The generation gate below still cancels an older
+        // worker if a genuinely newer publication arrives after the debounce.
+        historicalStressReplayTriggerSubject
+            .debounce(for: .milliseconds(750), scheduler: RunLoop.main)
+            .sink { [weak self] in
+                self?.scheduleHistoricalStressReplay(now: Date())
+            }
+            .store(in: &cancellables)
+
         store.$dashboardRevision
             .map { _ in () }
             .sink { [weak self] _ in
@@ -9864,10 +10110,76 @@ final class AtriaHomeModel {
         store.$historySnapshot
             .map { _ in () }
             .sink { [weak self] _ in
+                self?.requestSavedAggregateRefresh(reason: "history_snapshot")
                 self?.publishCoreLive()
                 self?.coreRefreshSubject.send(())
             }
             .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(
+            for: SessionStore.recoveredDataRecomputeDidPublishNotification
+        )
+        .sink { [weak self] notification in
+            guard let self,
+                  let publishingStore = notification.object as? SessionStore,
+                  publishingStore === self.store else { return }
+            self.handleHistoricalStressTerminal(
+                sourceReplayRequired: true
+            )
+        }
+        .store(in: &cancellables)
+
+        // This exact-store edge is emitted only after an authoritative
+        // confirmed workout/sleep save, edit, or delete is durable and fully
+        // published. Recovered intermediate snapshots deliberately never post
+        // it; their complete publication fence above owns that replay.
+        NotificationCenter.default.publisher(
+            for: SessionStore.stressContextDidPublishNotification
+        )
+        .sink { [weak self] notification in
+            guard let self,
+                  let publishingStore = notification.object as? SessionStore,
+                  publishingStore === self.store else { return }
+            self.handleHistoricalStressTerminal(
+                sourceReplayRequired: true
+            )
+        }
+        .store(in: &cancellables)
+
+        // A failed/superseded recovered transaction has no full recovered-data
+        // publication. Settle only a calibration fingerprint that was actually
+        // deferred by that exact store; unchanged rollback state performs no
+        // replay, while independent profile/fallback-rest changes that survived
+        // the rollback enter the same generation-cancelled debounce lane.
+        NotificationCenter.default.publisher(
+            for: SessionStore.stressCalibrationFenceDidReleaseNotification
+        )
+        .sink { [weak self] notification in
+            guard let self,
+                  let publishingStore = notification.object as? SessionStore,
+                  publishingStore === self.store else { return }
+            self.handleHistoricalStressTerminal(
+                sourceReplayRequired: false
+            )
+        }
+        .store(in: &cancellables)
+
+        // Exact-store terminal authority for saved-session removal/shrink,
+        // rollback-preserved live mutations, and a completed backup restore.
+        // It shares the generation-cancelled/debounced replay lane above, so a
+        // terminal burst never starts duplicate or unbounded scoring work.
+        NotificationCenter.default.publisher(
+            for: SessionStore.stressReplayDidPublishNotification
+        )
+        .sink { [weak self] notification in
+            guard let self,
+                  let publishingStore = notification.object as? SessionStore,
+                  publishingStore === self.store else { return }
+            self.handleHistoricalStressTerminal(
+                sourceReplayRequired: true
+            )
+        }
+        .store(in: &cancellables)
 
         Publishers.Merge3(
             store.$sleepHistorySnapshot.map { _ in () }.eraseToAnyPublisher(),
@@ -9899,7 +10211,7 @@ final class AtriaHomeModel {
             .debounce(for: .milliseconds(900), scheduler: RunLoop.main)
             .sink { [weak self] in
                 guard let self else { return }
-                self.refreshSavedAggregate()
+                self.requestSavedAggregateRefresh(reason: "dashboard_revision")
                 self.coreRefreshSubject.send(())
                 self.heroRefreshSubject.send(())
                 self.publishProfileMetrics()
@@ -9917,7 +10229,7 @@ final class AtriaHomeModel {
                     self.ble.maxHRSetting = profile.maxHR
                 }
                 self.publishProfile()
-                self.refreshSavedAggregate()
+                self.requestSavedAggregateRefresh(reason: "profile")
                 self.publishCoreLive()
                 self.publishHeroPulse()
                 self.publishPulseLive()
@@ -9930,6 +10242,13 @@ final class AtriaHomeModel {
                 if self.diagnosticsRequested {
                     self.diagnosticsRefreshSubject.send(())
                 }
+            }
+            .store(in: &cancellables)
+
+        store.$baseline
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.requestSavedAggregateRefresh(reason: "baseline")
             }
             .store(in: &cancellables)
 
@@ -9970,11 +10289,9 @@ final class AtriaHomeModel {
     }
 
     private func publishCoreLive() {
-        // The phone can remain awake and connected across midnight. Re-read the
-        // store's day-keyed aggregate on every bounded core publish so yesterday's
-        // saved strain/steps cannot survive until the next session write. This is
-        // O(1) except for the first publish of a new local day.
-        refreshSavedAggregate()
+        // This is the accepted-HR hot path. Saved/archive rows are refreshed by
+        // their own authority lane and physiological-cycle clock; never scan them
+        // from the 400 ms sessionSampleCount publication cadence.
         refreshLiveSessionDerivedIfNeeded()
         let next = Self.makeCoreLiveState(ble: ble,
                                           liveSessionDerived: liveSessionDerived,
@@ -10233,12 +10550,150 @@ final class AtriaHomeModel {
         }
     }
 
-    private func refreshSavedAggregate() {
-        let next = Self.makeSavedAggregate(ble: ble,
-                                           store: store,
-                                           restingContext: currentRestingContext())
-        guard next != savedAggregate else { return }
-        savedAggregate = next
+    private func requestSavedAggregateRefresh(reason: String) {
+        pendingSavedAggregateRefreshReason = reason
+        guard case .start(let generation) = savedAggregateRefreshGate.request() else {
+            return
+        }
+        startSavedAggregateRefresh(generation: generation, reason: reason)
+    }
+
+    private func startSavedAggregateRefresh(generation: UInt64, reason: String) {
+        let input = savedAggregateRefreshInputSnapshot(now: Date())
+        savedAggregateRefreshQueue.async { [weak self, input] in
+            let result = Self.makeSavedAggregate(input: input)
+            DispatchQueue.main.async { [weak self] in
+                self?.finishSavedAggregateRefresh(
+                    generation: generation,
+                    result: result,
+                    reason: reason
+                )
+            }
+        }
+    }
+
+    private func finishSavedAggregateRefresh(generation: UInt64,
+                                             result: SavedAggregate,
+                                             reason: String) {
+        switch savedAggregateRefreshGate.complete(generation) {
+        case .ignored:
+            return
+        case .start(let nextGeneration):
+            startSavedAggregateRefresh(
+                generation: nextGeneration,
+                reason: pendingSavedAggregateRefreshReason
+            )
+        case .publish:
+            let changed = result != savedAggregate
+            if changed {
+                savedAggregate = result
+                publishCoreLive()
+                refreshHeroSnapshot()
+                coreRefreshSubject.send(())
+            }
+            scheduleSavedAggregateCycleRolloverRefresh()
+            AtriaDebugLog(
+                "ATRIADBG home_saved_aggregate status=published reason=%@ generation=%llu changed=%d",
+                reason,
+                generation,
+                changed ? 1 : 0
+            )
+        }
+    }
+
+    /// Snapshot only value-semantic authority on MainActor. Array assignments
+    /// are COW retains; session filtering, physiological-cycle framing, TRIMP,
+    /// calories, steps, baseline freshness, and HR-union work all stay in the
+    /// utility worker below.
+    private func savedAggregateRefreshInputSnapshot(
+        now: Date
+    ) -> SavedAggregateRefreshInput {
+        return SavedAggregateRefreshInput(
+            source: store.homeSavedAggregateSourceSnapshot(),
+            baseline: store.baseline,
+            liveRestingHeartRate: ble.restingHR,
+            activeSessionID: ble.currentLiveSessionID,
+            confirmedWorkouts: store.confirmedWorkouts.count,
+            windowEnd: now
+        )
+    }
+
+    private nonisolated static func makeSavedAggregate(
+        input: SavedAggregateRefreshInput
+    ) -> SavedAggregate {
+        let restingContext = restingMetricContext(
+            baselineResting: input.baseline.restingInt,
+            liveResting: input.liveRestingHeartRate,
+            latestSavedResting: input.source.latestRawSession
+                .map(\.restingStable)
+                .flatMap { $0 > 0 ? $0 : nil }
+        )
+        let cycleStart = AtriaPhysiologicalCycle.current(
+            now: input.windowEnd,
+            confirmedSleeps: input.source.confirmedSleeps,
+            calendar: .current
+        ).start
+        let aggregate = SessionStore.homeSavedAggregate(
+            from: input.source.canonicalSessions,
+            archiveHeartRatePoints: input.source.archiveHeartRatePoints,
+            rest: restingContext.resolved,
+            maxHR: input.source.profile.maxHR,
+            biologicalSex: input.source.profile.biologicalSex,
+            profile: input.source.profile,
+            activeSessionID: input.activeSessionID,
+            calendar: .current,
+            now: input.windowEnd,
+            cycleStart: cycleStart,
+            excludedLoadIntervals: input.source.confirmedSleeps.map {
+                DateInterval(start: $0.start, end: $0.end)
+            },
+            rawSessionCount: input.source.rawSessionCount
+        )
+        return SavedAggregate(
+            cycleStart: aggregate.day,
+            restingContext: restingContext,
+            savedTodayTRIMP: aggregate.savedTodayTRIMP,
+            savedActiveSessionTRIMP: aggregate.savedActiveSessionTRIMP,
+            savedTodayActiveCalories: aggregate.savedTodayActiveCalories,
+            savedActiveSessionActiveCalories:
+                aggregate.savedActiveSessionActiveCalories,
+            savedTodayStrapSteps: aggregate.savedTodayStrapSteps,
+            savedActiveSessionStrapSteps: aggregate.savedActiveSessionStrapSteps,
+            savedActiveSessionTotalStrapSteps:
+                aggregate.savedActiveSessionTotalStrapSteps,
+            hasSavedToday: aggregate.hasSavedToday,
+            sessionsCount: aggregate.sessionsCount,
+            baselineSamples: input.baseline.freshHRVSampleCount(
+                now: input.windowEnd
+            ),
+            confirmedWorkouts: input.confirmedWorkouts,
+            confirmedSleeps: input.source.confirmedSleeps.count,
+            savedTodayObservedSeconds: observedHeartRateUnionSeconds(
+                sessions: input.source.rawSessions,
+                windowStart: aggregate.day,
+                windowEnd: input.windowEnd
+            )
+        )
+    }
+
+    private func scheduleSavedAggregateCycleRolloverRefresh() {
+        savedAggregateCycleRolloverTask?.cancel()
+        savedAggregateCycleRolloverTask = nil
+        let now = Date()
+        guard let boundary = AtriaPhysiologicalCycle.nextNoSleepRollover(
+            now: now,
+            confirmedSleeps: store.confirmedSleeps,
+            calendar: .current
+        ) else { return }
+        let delay = max(1, boundary.timeIntervalSince(now) + 1)
+        savedAggregateCycleRolloverTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(
+                nanoseconds: UInt64(delay * 1_000_000_000)
+            )
+            guard !Task.isCancelled, let self else { return }
+            self.savedAggregateCycleRolloverTask = nil
+            self.requestSavedAggregateRefresh(reason: "physiological_cycle_rollover")
+        }
     }
 
     private func refreshHeroSnapshot() {
@@ -10271,8 +10726,131 @@ final class AtriaHomeModel {
                                   hrvSnapshot: ble.hrvSnapshot,
                                   baseline: store.baseline,
                                   restingMaxHR: (rest: rest, max: maxHR),
-                                  hasActiveSleepEvidence: false,
+                                  hasActiveSleepEvidence: AtriaStressMonitorStore
+                                    .hasQualifiedActiveSleepEvidence(
+                                        in: store.confirmedSleeps,
+                                        at: now
+                                    ),
                                   now: now)
+    }
+
+    private func enqueueHistoricalStressCalibrationReplayIfNeeded(
+        _ fingerprint: AtriaHistoricalStressCalibrationFingerprint
+    ) {
+        guard historicalStressCalibrationPublicationGate.accepts(
+            fingerprint,
+            publicationDeferred: store.stressReplayPublicationIsDeferred
+        ) else { return }
+        invalidateAndEnqueueHistoricalStressReplay()
+    }
+
+    /// Compares pending provisional observations with the exact post-fence
+    /// personalization. This is O(1) apart from PersonalBaseline's pre-bounded
+    /// 90-day calibration projection and never snapshots history/session rows.
+    private func handleHistoricalStressTerminal(
+        sourceReplayRequired: Bool
+    ) {
+        guard historicalStressCalibrationPublicationGate.recordTerminal(
+            sourceReplayRequired: sourceReplayRequired,
+            publicationDeferred: store.stressReplayPublicationIsDeferred
+        ) else { return }
+        guard releaseDeferredHistoricalStressCalibration() else { return }
+        invalidateAndEnqueueHistoricalStressReplay()
+    }
+
+    private func releaseDeferredHistoricalStressCalibration(
+        now: Date = Date()
+    ) -> Bool {
+        let personalization = Self.historicalStressPersonalization(
+            baseline: store.baseline,
+            profile: store.profile,
+            fallbackRestingHeartRate: historicalStressFallbackRestSubject.value,
+            now: now
+        )
+        return historicalStressCalibrationPublicationGate.releaseDeferred(
+            final: AtriaHistoricalStressCalibrationFingerprint(personalization)
+        )
+    }
+
+    private static func historicalStressPersonalization(
+        baseline: PersonalBaseline,
+        profile: AthleteProfile,
+        fallbackRestingHeartRate: Int,
+        now: Date
+    ) -> AtriaPhysiologicalStressModel.Personalization {
+        let freshBaseline = baseline.freshSamples(now: now)
+        let qualifiedLnRMSSD = freshBaseline
+            .filter(\.isOvernightSample)
+            .compactMap(\.lnRMSSD)
+        return AtriaPhysiologicalStressModel.Personalization(
+            restingHeartRate: baseline.restingHR
+                ?? Double(fallbackRestingHeartRate),
+            maximumHeartRate: Double(profile.maxHR),
+            restingBaselineDayCount: baseline.freshRestingSampleCount(now: now),
+            hrvBaseline: AtriaPhysiologicalStressModel.robustHRVBaseline(
+                lnRMSSDValues: qualifiedLnRMSSD,
+                qualifiedDayCount: baseline.freshHRVSampleCount(now: now)
+            )
+        )
+    }
+
+    /// Invalidate a running generation at the publication edge, before the
+    /// debounce delay. The delayed subject starts only the newest coalesced
+    /// worker; an older result cannot land during that delay.
+    private func invalidateAndEnqueueHistoricalStressReplay() {
+        _ = historicalStressReplayGate.begin()
+        historicalStressReplayWorker?.cancel()
+        historicalStressReplayWorker = nil
+        historicalStressReplayTriggerSubject.send(())
+    }
+
+    /// Recovered history is captured only after SessionStore's complete
+    /// publication fence. MainActor retains bounded COW source storage without
+    /// walking HR/RR rows; scalar materialization, context qualification, window
+    /// framing, shared RR qualification, and v3 evaluation run in a cancellable
+    /// utility worker. Rapid publications invalidate the older generation before
+    /// any result can reach the chronological archive.
+    private func scheduleHistoricalStressReplay(now: Date) {
+        let generation = historicalStressReplayGate.begin()
+        historicalStressReplayWorker?.cancel()
+        historicalStressReplayWorker = nil
+
+        let personalization = Self.historicalStressPersonalization(
+            baseline: store.baseline,
+            profile: store.profile,
+            fallbackRestingHeartRate: liveSessionDerived.rest,
+            now: now
+        )
+        guard let snapshot = AtriaHistoricalStressReplay.snapshot(
+            sessions: store.historySnapshot.sessions,
+            confirmedWorkouts: store.confirmedWorkouts,
+            confirmedSleeps: store.confirmedSleeps,
+            personalization: personalization,
+            now: now
+        ) else { return }
+
+        let worker = Task.detached(priority: .utility) {
+            AtriaHistoricalStressReplay.evaluate(snapshot)
+        }
+        historicalStressReplayWorker = worker
+        Task { @MainActor [weak self] in
+            let replay = await worker.value
+            guard !worker.isCancelled,
+                  let self,
+                  self.historicalStressReplayGate.accepts(generation) else {
+                return
+            }
+            await self.stressMonitorStore.waitForHistoryHydration()
+            guard !worker.isCancelled,
+                  self.historicalStressReplayGate.accepts(generation) else {
+                return
+            }
+            self.historicalStressReplayWorker = nil
+            await self.stressMonitorStore.mergeHistoricalMinuteFacts(
+                replay,
+                now: now
+            )
+        }
     }
 
     private func publishHeroSnapshotIfNeeded(_ next: HeroSnapshot) {
@@ -10363,12 +10941,18 @@ final class AtriaHomeModel {
             || liveSessionDerived.cycleStart != savedAggregate.cycleStart
 
         guard needsRefresh else { return }
-        liveSessionDerived = Self.nextLiveSessionDerived(previous: liveSessionDerived,
-                                                         samples: samples,
-                                                         rest: rest,
-                                                         maxHR: maxHR,
-                                                         profile: profile,
-                                                         cycleStart: savedAggregate.cycleStart)
+        let previousFallbackRest = liveSessionDerived.rest
+        liveSessionDerived = Self.nextLiveSessionDerived(
+            previous: liveSessionDerived,
+            samples: samples,
+            rest: rest,
+            maxHR: maxHR,
+            profile: profile,
+            cycleStart: savedAggregate.cycleStart
+        )
+        if liveSessionDerived.rest != previousFallbackRest {
+            historicalStressFallbackRestSubject.send(liveSessionDerived.rest)
+        }
     }
 
     private func currentPulseZoneContext() -> PulseZoneContext {
@@ -10399,17 +10983,21 @@ final class AtriaHomeModel {
         return resolved
     }
 
-    static func resolvedRestingHeartRate(baselineResting: Int?,
-                                         liveResting: Int?,
-                                         latestSavedResting: () -> Int?) -> Int {
+    nonisolated static func resolvedRestingHeartRate(
+        baselineResting: Int?,
+        liveResting: Int?,
+        latestSavedResting: () -> Int?
+    ) -> Int {
         if let baselineResting { return baselineResting }
         if let liveResting { return liveResting }
         return latestSavedResting() ?? 60
     }
 
-    static func restingMetricContext(baselineResting: Int?,
-                                     liveResting: Int?,
-                                     latestSavedResting: Int?) -> RestingMetricContext {
+    nonisolated static func restingMetricContext(
+        baselineResting: Int?,
+        liveResting: Int?,
+        latestSavedResting: Int?
+    ) -> RestingMetricContext {
         RestingMetricContext(
             resolved: resolvedRestingHeartRate(baselineResting: baselineResting,
                                                liveResting: liveResting) {
@@ -11027,11 +11615,11 @@ final class AtriaHomeModel {
                             hrvDetail: "personal baseline",
                             hrvNarrative: "Debug fixture: pending sleep uses the normal recovery model before confirmation.",
                             stressLevel: .calm,
-                            stressValue: "0/3",
+                            stressValue: "0.0 / 3",
                             stressDetail: "personal baseline",
                             stressNarrative: "Debug fixture stress is neutral while provisional recovery is shown.",
                             stressEvidenceMode: .physiologicalStress,
-                            stressMetricTitle: "Stress",
+                            stressMetricTitle: "Physiological stress",
                             rrPackageText: "Personal",
                             nextAction: "Confirming sleep will reconcile this recovery without a modal.",
                             headline: "Provisional recovery is ready.",
@@ -11227,10 +11815,10 @@ final class AtriaHomeModel {
                             // Standby/reconnecting snapshot: deterministic
                             // no-value token like every other metric value.
                             stressValue: AtriaCompactMetricPresentation.noValue,
-                            stressDetail: "Beat-to-beat window",
-                            stressNarrative: "Stress appears after the strap reconnects and beat-to-beat data is ready.",
+                            stressDetail: "Five-minute cardiac window",
+                            stressNarrative: "Physiological stress appears after the strap reconnects and a complete five-minute cardiac window is ready.",
                             stressEvidenceMode: nil,
-                            stressMetricTitle: "Stress",
+                            stressMetricTitle: "Physiological stress",
                             rrPackageText: fallbackHrv.packageText,
                             nextAction: nextAction,
                             headline: headline,
@@ -11942,7 +12530,9 @@ enum AtriaTopStatusProjection {
                 if recovering {
                     label = "Reading…"
                 } else if !input.isBluetoothReady {
-                    label = "Waiting for Bluetooth"
+                    label = input.bluetoothPermissionDenied
+                        ? "Permission"
+                        : "Bluetooth recovering"
                 } else if activelyLinking {
                     label = "Linking to \(input.displayDeviceName)"
                 } else if reconnectAge != nil {
@@ -11955,10 +12545,12 @@ enum AtriaTopStatusProjection {
             case .poweredOff:
                 label = input.bluetoothPermissionDenied ? "Permission" : "Bluetooth off"
             case .disconnected:
-                if !input.hasEverConnected {
-                    label = "Disconnected"
+                if input.bluetoothPermissionDenied {
+                    label = "Permission"
                 } else if !input.isBluetoothReady {
-                    label = "Waiting for Bluetooth"
+                    label = "Bluetooth unavailable"
+                } else if !input.hasEverConnected {
+                    label = "Disconnected"
                 } else if activelyLinking {
                     label = "Linking to \(input.displayDeviceName)"
                 } else {
@@ -11977,10 +12569,20 @@ enum AtriaTopStatusProjection {
         } else {
             switch displayStatus {
             case .connected: symbol = hasPulseSignal ? "bolt.heart.fill" : "heart.slash"
-            case .connecting: symbol = recovering ? "waveform.path.ecg" : "dot.radiowaves.left.and.right"
+            case .connecting:
+                symbol = input.bluetoothPermissionDenied
+                    ? "hand.raised.fill"
+                    : (recovering
+                        ? "waveform.path.ecg"
+                        : "dot.radiowaves.left.and.right")
             case .scanning: symbol = "dot.radiowaves.left.and.right"
             case .poweredOff: symbol = input.bluetoothPermissionDenied ? "hand.raised.fill" : "bolt.slash.fill"
-            case .disconnected: symbol = "bolt.horizontal.circle"
+            case .disconnected:
+                symbol = input.bluetoothPermissionDenied
+                    ? "hand.raised.fill"
+                    : (input.isBluetoothReady
+                        ? "bolt.horizontal.circle"
+                        : "exclamationmark.triangle")
             }
         }
 
@@ -11999,10 +12601,16 @@ enum AtriaTopStatusProjection {
         } else {
             switch displayStatus {
             case .connected: tone = hasPulseSignal ? .green : .orange
-            case .connecting: tone = recovering ? .cyan : .yellow
+            case .connecting:
+                tone = input.bluetoothPermissionDenied
+                    ? .red
+                    : (recovering ? .cyan : .yellow)
             case .scanning: tone = .cyan
             case .poweredOff: tone = .red
-            case .disconnected: tone = input.hasEverConnected ? .yellow : .secondary
+            case .disconnected:
+                tone = input.bluetoothPermissionDenied || !input.isBluetoothReady
+                    ? .red
+                    : (input.hasEverConnected ? .yellow : .secondary)
             }
         }
 

@@ -94,10 +94,11 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
 
         XCTAssertEqual(value.valueText, "3210")
         XCTAssertEqual(value.completeness, .partial)
-        XCTAssertEqual(
-            value.detailText,
-            "Today so far · 50% synced from strap"
-        )
+        XCTAssertTrue(value.detailText.hasPrefix("50% · through "))
+        XCTAssertFalse(value.detailText.contains("Today so far"))
+        XCTAssertFalse(value.detailText.contains("synced from strap"))
+        XCTAssertTrue(value.accessibilityText.contains("50 percent synced from your strap"))
+        XCTAssertTrue(value.accessibilityText.contains("through "))
     }
 
     func testConflictingExactCanonicalTotalsFailClosed() {

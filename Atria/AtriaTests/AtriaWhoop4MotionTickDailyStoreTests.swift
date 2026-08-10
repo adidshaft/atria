@@ -38,6 +38,84 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         )
     }
 
+    func testSameCountNewerCapturedThroughReplacesDurableReceipt() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let start = Date(timeIntervalSince1970: 10_000)
+        let first = makeEvidence(
+            start: start,
+            ticks: 155,
+            steps: 132,
+            capturedAfter: 180,
+            known: 160
+        )
+        let renewed = makeEvidence(
+            start: start,
+            ticks: 155,
+            steps: 132,
+            capturedAfter: 240,
+            known: 160
+        )
+
+        XCTAssertTrue(try store.save(first, strapIdentifier: strap))
+        XCTAssertTrue(
+            try store.save(renewed, strapIdentifier: strap),
+            "an unchanged count still carries a newer verified-through clock"
+        )
+        XCTAssertEqual(
+            store.load(strapIdentifier: strap, windowStart: start),
+            renewed
+        )
+    }
+
+    func testSameClockCorrectionChangesPublicationContentRevision() throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let start = Date(timeIntervalSince1970: 10_000)
+        let first = makeEvidence(
+            start: start,
+            ticks: 155,
+            steps: 132,
+            capturedAfter: 240,
+            known: 160
+        )
+        let corrected = makeEvidence(
+            start: start,
+            ticks: 149,
+            steps: 126,
+            capturedAfter: 240,
+            known: 160
+        )
+
+        XCTAssertTrue(try store.save(first, strapIdentifier: strap))
+        let firstReceipt = try XCTUnwrap(store.currentCyclePublication(
+            into: [],
+            strapIdentifiers: [strap],
+            windowStart: start,
+            now: first.capturedThrough,
+            includeUnqualifiedResearchEvidence: true,
+            calendar: utcCalendar
+        ).receipt)
+
+        XCTAssertTrue(try store.save(corrected, strapIdentifier: strap))
+        let correctedReceipt = try XCTUnwrap(store.currentCyclePublication(
+            into: [],
+            strapIdentifiers: [strap],
+            windowStart: start,
+            now: corrected.capturedThrough,
+            includeUnqualifiedResearchEvidence: true,
+            calendar: utcCalendar
+        ).receipt)
+
+        XCTAssertEqual(firstReceipt.evidence.capturedThrough,
+                       correctedReceipt.evidence.capturedThrough)
+        XCTAssertEqual(correctedReceipt.evidence, corrected)
+        XCTAssertEqual(correctedReceipt.sourceIdentifier, strap)
+        XCTAssertEqual(correctedReceipt.contentRevision.count, 64)
+        XCTAssertNotEqual(firstReceipt.contentRevision,
+                          correctedReceipt.contentRevision)
+    }
+
     // Prior-day lower-bound lane (2026-08-08). The enumeration must exclude
     // today's civil day AND the open physiological cycle's civil day, so this
     // lane never keys the same civil date as the wake-to-wake current-cycle
@@ -878,6 +956,84 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         )
     }
 
+    func testNewerUnresolvedReceiptInvalidatesOlderPartialProjection()
+        throws {
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let start = Date(timeIntervalSince1970: 150_000)
+        let stationaryPrefix = makeEvidence(
+            start: start,
+            ticks: 0,
+            steps: 0,
+            capturedAfter: 180,
+            known: 160
+        )
+        XCTAssertTrue(
+            try store.save(stationaryPrefix, strapIdentifier: strap)
+        )
+        let priorProjection = store.mergingCurrentCycleReceipt(
+            into: [],
+            strapIdentifiers: [strap],
+            windowStart: start,
+            now: stationaryPrefix.capturedThrough,
+            includeUnqualifiedResearchEvidence: true,
+            calendar: utcCalendar
+        )
+        XCTAssertEqual(priorProjection.first?.knownCoverageSeconds, 160)
+        XCTAssertEqual(
+            priorProjection.first?.dayEnd,
+            stationaryPrefix.capturedThrough
+        )
+
+        let unresolved = makeEvidence(
+            start: start,
+            ticks: 28,
+            steps: 0,
+            capturedAfter: 360,
+            known: 330
+        )
+        XCTAssertTrue(try store.save(unresolved, strapIdentifier: strap))
+        let cached = try XCTUnwrap(
+            store.load(strapIdentifier: strap, windowStart: start)
+        )
+        XCTAssertEqual(cached.capturedThrough, unresolved.capturedThrough)
+        XCTAssertEqual(cached.motionTicks, 28)
+
+        let refreshed = store.mergingCurrentCycleReceipt(
+            into: priorProjection,
+            strapIdentifiers: [strap],
+            windowStart: start,
+            now: unresolved.capturedThrough,
+            includeUnqualifiedResearchEvidence: true,
+            calendar: utcCalendar
+        )
+        let day = try XCTUnwrap(refreshed.first)
+        XCTAssertEqual(
+            day.dayEnd,
+            unresolved.capturedThrough,
+            "the latest durable receipt must invalidate the stale prefix clock"
+        )
+        XCTAssertEqual(day.state, .missing)
+        XCTAssertNil(day.stepCount)
+        XCTAssertEqual(day.knownCoverageSeconds, 0)
+
+        let presentation = AtriaDailyStepPresentation.resolve(
+            day: start,
+            now: unresolved.capturedThrough,
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: refreshed,
+            physiologicalDayStart: start,
+            calendar: utcCalendar
+        )
+        XCTAssertNil(presentation.count)
+        XCTAssertEqual(
+            presentation.unavailabilityReason,
+            .motionObservedCountUnresolved
+        )
+    }
+
     func testTrueStationaryCompleteReceiptMayPublishVerifiedZero() throws {
         let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
         let strap = UUID().uuidString
@@ -921,6 +1077,436 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             .compactOnlyMissing,
             "a compact miss must not authorize JSONL from a hot caller"
         )
+    }
+
+    func testReceiptWindowsUseCurrentThenImmediatelyPriorMainSleepCycle()
+        throws {
+        let calendar = utcCalendar
+        let priorWake = try XCTUnwrap(calendar.date(from: .init(
+            year: 2026,
+            month: 8,
+            day: 9,
+            hour: 7
+        )))
+        let currentWake = try XCTUnwrap(calendar.date(from: .init(
+            year: 2026,
+            month: 8,
+            day: 10,
+            hour: 7
+        )))
+        let now = try XCTUnwrap(calendar.date(from: .init(
+            year: 2026,
+            month: 8,
+            day: 10,
+            hour: 12
+        )))
+        let sleeps = [
+            makeSleep(
+                id: "prior",
+                start: priorWake.addingTimeInterval(-8 * 60 * 60),
+                end: priorWake
+            ),
+            makeSleep(
+                id: "current",
+                start: currentWake.addingTimeInterval(-8 * 60 * 60),
+                end: currentWake
+            ),
+        ]
+
+        let windows = SessionStore.currentAndPriorStepReceiptWindows(
+            now: now,
+            confirmedSleeps: sleeps,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(windows.map(\.role), [.current, .immediatelyPrior])
+        XCTAssertEqual(
+            windows.map(\.interval),
+            [
+                .init(start: currentWake, end: now),
+                .init(start: priorWake, end: currentWake),
+            ]
+        )
+        XCTAssertEqual(windows.count, 2, "no older cycle is admitted")
+    }
+
+    func testReceiptWindowsUseOnlyTwoMostRecentNoSleepFallbackCycles()
+        throws {
+        let calendar = utcCalendar
+        let wake = try XCTUnwrap(calendar.date(from: .init(
+            year: 2026,
+            month: 8,
+            day: 7,
+            hour: 7
+        )))
+        let sleep = makeSleep(
+            id: "anchor",
+            start: wake.addingTimeInterval(-8 * 60 * 60),
+            end: wake
+        )
+        let firstFallback = try XCTUnwrap(
+            AtriaPhysiologicalCycle.firstNoSleepFallback(
+                after: wake,
+                eventTimeZoneIdentifier: "UTC",
+                calendar: calendar
+            )
+        )
+        let secondFallback = try XCTUnwrap(calendar.date(
+            byAdding: .day,
+            value: 1,
+            to: firstFallback
+        ))
+        let now = secondFallback.addingTimeInterval(2 * 60 * 60)
+
+        let windows = SessionStore.currentAndPriorStepReceiptWindows(
+            now: now,
+            confirmedSleeps: [sleep],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(windows.map(\.role), [.current, .immediatelyPrior])
+        XCTAssertEqual(
+            windows.map(\.interval),
+            [
+                .init(start: secondFallback, end: now),
+                .init(start: firstFallback, end: secondFallback),
+            ]
+        )
+        XCTAssertFalse(windows.contains {
+            abs($0.interval.start.timeIntervalSince(wake)) < 1
+        }, "the worker must never expand to a third/older cycle")
+    }
+
+    func testInitialFallbackReceiptWindowsPreserveDSTCalendarBoundaries()
+        throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(
+            identifier: "America/Los_Angeles"
+        ))
+        let now = try XCTUnwrap(calendar.date(from: .init(
+            year: 2026,
+            month: 3,
+            day: 8,
+            hour: 12
+        )))
+
+        let windows = SessionStore.currentAndPriorStepReceiptWindows(
+            now: now,
+            confirmedSleeps: [],
+            calendar: calendar
+        )
+        let expectedCurrent = AtriaPhysiologicalCycle.current(
+            now: now,
+            confirmedSleeps: [],
+            calendar: calendar
+        ).start
+        let expectedPrior = AtriaPhysiologicalCycle.current(
+            now: expectedCurrent.addingTimeInterval(-0.001),
+            confirmedSleeps: [],
+            calendar: calendar
+        ).start
+
+        XCTAssertEqual(windows.map(\.role), [.current, .immediatelyPrior])
+        XCTAssertEqual(windows[0].interval.start, expectedCurrent)
+        XCTAssertEqual(windows[1].interval.start, expectedPrior)
+        XCTAssertEqual(windows[1].interval.end, expectedCurrent)
+        XCTAssertEqual(
+            calendar.component(.hour, from: windows[0].interval.start),
+            calendar.component(.hour, from: windows[1].interval.start),
+            "DST must preserve the physiological fallback's local clock"
+        )
+    }
+
+    func testPriorReceiptAdvancesWhenNewCurrentCycleCompactReadIsMissing()
+        throws {
+        let calendar = utcCalendar
+        let priorWake = Date(timeIntervalSince1970: 1_786_252_400)
+        let currentWake = priorWake.addingTimeInterval(24 * 60 * 60)
+        let now = currentWake.addingTimeInterval(2 * 60 * 60)
+        let sleeps = [
+            makeSleep(
+                id: "prior",
+                start: priorWake.addingTimeInterval(-8 * 60 * 60),
+                end: priorWake
+            ),
+            makeSleep(
+                id: "current",
+                start: currentWake.addingTimeInterval(-8 * 60 * 60),
+                end: currentWake
+            ),
+        ]
+        let windows = SessionStore.currentAndPriorStepReceiptWindows(
+            now: now,
+            confirmedSleeps: sleeps,
+            calendar: calendar
+        )
+        let prior = try XCTUnwrap(
+            windows.first { $0.role == .immediatelyPrior }
+        )
+        let current = try XCTUnwrap(windows.first { $0.role == .current })
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+        let foreignStrap = UUID().uuidString
+        let old = makeWindowEvidence(
+            prior.interval,
+            ticks: 900,
+            steps: 700,
+            known: 8_000,
+            capturedThrough: prior.interval.start.addingTimeInterval(12 * 60 * 60)
+        )
+        let strengthened = makeWindowEvidence(
+            prior.interval,
+            ticks: 1_800,
+            steps: 1_450,
+            known: 52_000,
+            capturedThrough: prior.interval.end.addingTimeInterval(-60)
+        )
+        XCTAssertTrue(try store.save(old, strapIdentifier: strap))
+        XCTAssertTrue(try store.save(old, strapIdentifier: foreignStrap))
+        let oldRevision = try XCTUnwrap(store.currentCyclePublication(
+            into: [],
+            strapIdentifiers: [strap],
+            windowStart: prior.interval.start,
+            now: old.capturedThrough,
+            includeUnqualifiedResearchEvidence: true,
+            calendar: calendar
+        ).receipt?.contentRevision)
+
+        try replayCompactReceiptReads(
+            windows: windows,
+            reads: [
+                .current: .incomplete,
+                .immediatelyPrior: .qualified(strengthened),
+            ],
+            store: store,
+            strapIdentifier: strap
+        )
+
+        XCTAssertNil(store.load(
+            strapIdentifier: strap,
+            windowStart: current.interval.start
+        ), "a missing current compact read must not fabricate a receipt")
+        XCTAssertEqual(
+            store.load(
+                strapIdentifier: strap,
+                windowStart: prior.interval.start
+            ),
+            strengthened
+        )
+        XCTAssertEqual(
+            store.load(
+                strapIdentifier: foreignStrap,
+                windowStart: prior.interval.start
+            ),
+            old,
+            "prior replay remains isolated to the selected strap"
+        )
+        let strengthenedPublication = try XCTUnwrap(
+            store.currentCyclePublication(
+                into: [],
+                strapIdentifiers: [strap],
+                windowStart: prior.interval.start,
+                now: strengthened.capturedThrough,
+                includeUnqualifiedResearchEvidence: true,
+                calendar: calendar
+            ).receipt
+        )
+        XCTAssertEqual(
+            strengthenedPublication.evidence.capturedThrough,
+            strengthened.capturedThrough
+        )
+        XCTAssertEqual(
+            strengthenedPublication.evidence.knownCoverageSeconds,
+            strengthened.knownCoverageSeconds
+        )
+        XCTAssertNotEqual(
+            strengthenedPublication.contentRevision,
+            oldRevision
+        )
+    }
+
+    func testCurrentAndPriorQualifiedReadsPublishBothBoundedWindows() throws {
+        let calendar = utcCalendar
+        let priorWake = Date(timeIntervalSince1970: 1_786_252_400)
+        let currentWake = priorWake.addingTimeInterval(24 * 60 * 60)
+        let now = currentWake.addingTimeInterval(2 * 60 * 60)
+        let windows = SessionStore.currentAndPriorStepReceiptWindows(
+            now: now,
+            confirmedSleeps: [
+                makeSleep(
+                    id: "prior",
+                    start: priorWake.addingTimeInterval(-8 * 60 * 60),
+                    end: priorWake
+                ),
+                makeSleep(
+                    id: "current",
+                    start: currentWake.addingTimeInterval(-8 * 60 * 60),
+                    end: currentWake
+                ),
+            ],
+            calendar: calendar
+        )
+        let current = try XCTUnwrap(windows.first { $0.role == .current })
+        let prior = try XCTUnwrap(
+            windows.first { $0.role == .immediatelyPrior }
+        )
+        let currentEvidence = makeWindowEvidence(
+            current.interval,
+            ticks: 200,
+            steps: 160,
+            known: 6_000,
+            capturedThrough: current.interval.end
+        )
+        let priorEvidence = makeWindowEvidence(
+            prior.interval,
+            ticks: 1_800,
+            steps: 1_450,
+            known: 52_000,
+            capturedThrough: prior.interval.end
+        )
+        let store = AtriaWhoop4MotionTickDailyStore(directoryURL: directory)
+        let strap = UUID().uuidString
+
+        try replayCompactReceiptReads(
+            windows: windows,
+            reads: [
+                .current: .qualified(currentEvidence),
+                .immediatelyPrior: .qualified(priorEvidence),
+            ],
+            store: store,
+            strapIdentifier: strap
+        )
+
+        XCTAssertEqual(
+            store.load(
+                strapIdentifier: strap,
+                windowStart: current.interval.start
+            ),
+            currentEvidence
+        )
+        XCTAssertEqual(
+            store.load(
+                strapIdentifier: strap,
+                windowStart: prior.interval.start
+            ),
+            priorEvidence
+        )
+        XCTAssertEqual(
+            Set(store.recentReceipts(
+                strapIdentifier: strap,
+                limit: 10
+            ).map(\.windowStart)),
+            Set(windows.map { $0.interval.start })
+        )
+    }
+
+    func testCurrentCycleReceiptCoalescerBoundsNotificationStorm() {
+        var coalescer = AtriaCurrentCycleStepReceiptReadCoalescer()
+
+        XCTAssertTrue(coalescer.admit(reason: "first", now: 0))
+        for index in 0..<1_000 {
+            XCTAssertFalse(coalescer.admit(
+                reason: "storm_\(index)",
+                now: 0.05
+            ))
+            XCTAssertLessThanOrEqual(coalescer.outstandingWorkUpperBound, 2)
+        }
+
+        XCTAssertTrue(coalescer.inFlight)
+        XCTAssertEqual(coalescer.trailingReason, "storm_999")
+        XCTAssertEqual(coalescer.outstandingWorkUpperBound, 2)
+        XCTAssertEqual(
+            coalescer.finish(
+                now: 0.1,
+                minimumStartInterval: 5
+            ) ?? -1,
+            4.9,
+            accuracy: 0.000_001
+        )
+        guard case .wait(let remaining) =
+                coalescer.activateCooldown(now: 4.9) else {
+            return XCTFail("cooldown activated before its deadline")
+        }
+        XCTAssertEqual(remaining, 0.1, accuracy: 0.000_001)
+        XCTAssertEqual(
+            coalescer.activateCooldown(now: 5),
+            .start("storm_999")
+        )
+        XCTAssertTrue(coalescer.inFlight)
+        XCTAssertNil(coalescer.trailingReason)
+        XCTAssertEqual(coalescer.outstandingWorkUpperBound, 1)
+    }
+
+    func testCurrentCycleReceiptFailureDrainAllowsOneFreshTrailingRead() {
+        var coalescer = AtriaCurrentCycleStepReceiptReadCoalescer()
+
+        XCTAssertTrue(coalescer.admit(reason: "missing_strap", now: 10))
+        XCTAssertFalse(coalescer.admit(reason: "cycle_changed", now: 10.1))
+        XCTAssertFalse(coalescer.admit(
+            reason: "latest_compact_checkpoint",
+            now: 10.2
+        ))
+
+        // Production calls the same finish operation from a defer, including
+        // missing-strap, empty-coverage, compact-miss, and save-error paths.
+        XCTAssertEqual(
+            coalescer.finish(
+                now: 10.25,
+                minimumStartInterval: 5
+            ) ?? -1,
+            4.75,
+            accuracy: 0.000_001
+        )
+        let activation = coalescer.activateCooldown(now: 15)
+        XCTAssertEqual(activation, .start("latest_compact_checkpoint"))
+        XCTAssertEqual(coalescer.outstandingWorkUpperBound, 1)
+        XCTAssertNil(coalescer.finish(
+            now: 20,
+            minimumStartInterval: 5
+        ))
+        XCTAssertEqual(coalescer.outstandingWorkUpperBound, 0)
+    }
+
+    func testCurrentCycleReceiptStormReadRateIsTimeBounded() {
+        var coalescer = AtriaCurrentCycleStepReceiptReadCoalescer()
+        let minimumInterval: TimeInterval = 5
+        var scheduledWake: TimeInterval?
+        var readStarts: [TimeInterval] = []
+
+        for tick in 0...120 {
+            let now = TimeInterval(tick) * 0.5
+            if let wake = scheduledWake, wake <= now {
+                if case .start = coalescer.activateCooldown(now: wake) {
+                    readStarts.append(wake)
+                    let finishedAt = wake + 0.05
+                    scheduledWake = coalescer.finish(
+                        now: finishedAt,
+                        minimumStartInterval: minimumInterval
+                    ).map { finishedAt + $0 }
+                } else {
+                    scheduledWake = nil
+                }
+            }
+
+            if coalescer.admit(reason: "storm_\(tick)", now: now) {
+                readStarts.append(now)
+                let finishedAt = now + 0.05
+                scheduledWake = coalescer.finish(
+                    now: finishedAt,
+                    minimumStartInterval: minimumInterval
+                ).map { finishedAt + $0 }
+            }
+            XCTAssertLessThanOrEqual(coalescer.outstandingWorkUpperBound, 2)
+        }
+
+        XCTAssertEqual(readStarts.first, 0)
+        XCTAssertLessThanOrEqual(readStarts.count, 13)
+        for pair in zip(readStarts, readStarts.dropFirst()) {
+            XCTAssertGreaterThanOrEqual(
+                pair.1 - pair.0,
+                minimumInterval - 0.000_001
+            )
+        }
     }
 
     func testLegacyMigrationAdmissionRequiresSafeBackgroundMaintenance() {
@@ -1031,19 +1617,58 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         ))
         let body = String(sessions[start.lowerBound..<end.lowerBound])
         // Every interactive/current-link callback is compact-only. Neither a
-        // compact miss nor a prior-day refresh can reach canonical JSONL.
+        // current nor immediately-prior miss can reach canonical JSONL.
         XCTAssertTrue(body.contains(
             "case .publishCompact"
         ))
         XCTAssertTrue(body.contains(
             "case .compactOnlyMissing"
         ))
-        XCTAssertNotNil(body.range(
-            of: "AtriaWhoop4MotionTickCompactStore.shared\n                .motionTickDayEvidenceRead("
-        ))
+        XCTAssertTrue(body.contains(".motionTickDayEvidenceRead("))
         XCTAssertTrue(body.contains(
             "Self.currentCycleStepReceiptQueue.async"
         ), "compact receipt work must not wait behind lifetime archive projections")
+        XCTAssertTrue(body.contains(
+            "currentCycleStepReceiptReadCoalescer.admit("
+        ))
+        XCTAssertTrue(body.contains(
+            "defer {\n                Self.scheduleCurrentCycleStepReceiptReadFinish("
+        ), "every worker exit must drain the single coalesced trailing request")
+        XCTAssertTrue(body.contains(
+            "currentCycleStepReceiptReadCoalescer.finish("
+        ))
+        XCTAssertTrue(body.contains(
+            "currentCycleStepReceiptMinimumStartInterval"
+        ))
+        XCTAssertTrue(body.contains(
+            "startCurrentCycleStrapStepReceiptRead(reason: trailingReason)"
+        ))
+        let queueStart = try XCTUnwrap(body.range(
+            of: "Self.currentCycleStepReceiptQueue.async"
+        )?.lowerBound)
+        let workerClock = try XCTUnwrap(body.range(
+            of: "let now = Date()"
+        )?.lowerBound)
+        let workerCycle = try XCTUnwrap(body.range(
+            of: "let receiptWindows = Self.currentAndPriorStepReceiptWindows("
+        )?.lowerBound)
+        let workerCoverage = try XCTUnwrap(body.range(
+            of: "let coverage = AtriaWhoop4MotionBankCoverageLedger.intervals("
+        )?.lowerBound)
+        XCTAssertLessThan(queueStart, workerClock)
+        XCTAssertLessThan(queueStart, workerCycle)
+        XCTAssertLessThan(queueStart, workerCoverage)
+        XCTAssertTrue(body.contains("for window in receiptWindows"))
+        XCTAssertTrue(body.contains("if coverage.isEmpty"))
+        XCTAssertTrue(body.contains("if window.role == .current"))
+        XCTAssertTrue(body.contains("continue"),
+                      "a missing current window must not suppress prior replay")
+        XCTAssertTrue(sessions.contains(
+            "role: .immediatelyPrior"
+        ))
+        XCTAssertFalse(body.contains(
+            "completedPriorCivilDayWindows("
+        ), "the hot worker is physiological-cycle bounded, never civil-day backfill")
         XCTAssertFalse(body.contains(
             "HistoricalArchive.motionTickDayEvidenceRead("
         ))
@@ -1277,6 +1902,91 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
             decodedRows: 20,
             capturedThrough: start.addingTimeInterval(capturedAfter)
         )
+    }
+
+    private func makeWindowEvidence(
+        _ interval: DateInterval,
+        ticks: Int,
+        steps: Int,
+        known: Int,
+        capturedThrough: Date
+    ) -> HistoricalArchive.MotionTickDayEvidence {
+        let duration = max(0, Int(interval.duration.rounded(.down)))
+        return .init(
+            windowStart: interval.start,
+            windowEnd: interval.end,
+            motionTicks: ticks,
+            steps: steps,
+            knownCoverageSeconds: known,
+            missingCoverageSeconds: max(0, duration - known),
+            decodedRows: max(2, known / 5),
+            capturedThrough: capturedThrough
+        )
+    }
+
+    private func makeSleep(
+        id: String,
+        start: Date,
+        end: Date,
+        eventTimeZoneIdentifier: String = "UTC"
+    ) -> UserConfirmedSleep {
+        UserConfirmedSleep(
+            id: id,
+            createdAt: end,
+            start: start,
+            end: end,
+            source: "manual_sleep",
+            confidence: "user",
+            sessions: 1,
+            samples: 100,
+            avgHR: 52,
+            peakHR: 60,
+            restingHR: 48,
+            hrv: 60,
+            hrvWindowCount: 4,
+            duration: end.timeIntervalSince(start),
+            span: end.timeIntervalSince(start),
+            reason: "test",
+            motionSource: "test",
+            motionValidated: true,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: eventTimeZoneIdentifier
+        )
+    }
+
+    private func replayCompactReceiptReads(
+        windows: [AtriaCurrentCycleStepReceiptWindow],
+        reads: [
+            AtriaCurrentCycleStepReceiptWindow.Role:
+                HistoricalArchive.MotionTickDayEvidenceRead
+        ],
+        store: AtriaWhoop4MotionTickDailyStore,
+        strapIdentifier: String
+    ) throws {
+        XCTAssertLessThanOrEqual(windows.count, 2)
+        for window in windows {
+            let read = reads[window.role] ?? .incomplete
+            let qualified: Bool
+            if case .qualified = read {
+                qualified = true
+            } else {
+                qualified = false
+            }
+            switch SessionStore.currentCycleStepReceiptReadPlan(
+                compactReadQualified: qualified
+            ) {
+            case .publishCompact:
+                guard case .qualified(let evidence) = read else {
+                    return XCTFail("publish plan requires qualified evidence")
+                }
+                _ = try store.save(
+                    evidence,
+                    strapIdentifier: strapIdentifier
+                )
+            case .compactOnlyMissing:
+                continue
+            }
+        }
     }
 
     private func stepDay(

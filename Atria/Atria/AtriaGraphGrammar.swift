@@ -1,4 +1,46 @@
 import SwiftUI
+import Charts
+
+/// Shared rendering grammar for every chart surface.
+///
+/// Atria deliberately distinguishes visual smoothness from data smoothing:
+/// trend charts may use a shape-preserving curve between their real anchors,
+/// while high-frequency physiological traces keep their exact linear segments.
+/// Neither mode drops, averages, nor manufactures a recorded sample.
+enum AtriaChartVisualGrammar {
+    static let trendLine = StrokeStyle(
+        lineWidth: 2.25,
+        lineCap: .round,
+        lineJoin: .round
+    )
+
+    static let traceLine = StrokeStyle(
+        lineWidth: 1.8,
+        lineCap: .round,
+        lineJoin: .round
+    )
+
+    static let comparisonLine = StrokeStyle(
+        lineWidth: 1.5,
+        lineCap: .round,
+        lineJoin: .round,
+        dash: [5, 4]
+    )
+}
+
+extension View {
+    /// A quiet, plot-aligned surface gives axes and dense traces enough
+    /// contrast without adding a competing card inside the existing card.
+    func atriaGraphPlotSurface() -> some View {
+        chartPlotStyle { plotArea in
+            plotArea
+                .background(Color.primary.opacity(0.035))
+                .clipShape(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                )
+        }
+    }
+}
 
 /// Design-parity slice 4 — graph interaction grammar (design spec section 4).
 /// The scrub (1), brush (5), and landscape (6) patterns already live in

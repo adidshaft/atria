@@ -34,6 +34,22 @@ final class AtriaWhoop4HistoricalIngressSpool {
         case corruptRecord
         case generationMismatch
         case payloadTooLarge
+        case staleDurableBoundary
+    }
+
+    /// Exact in-memory dequeue position captured synchronously after the
+    /// canonical archive flush and matching HISTORY_END ACK have succeeded.
+    /// It is intentionally process-local: reopening a journal recreates no ACK
+    /// authority, and a later dequeue/append makes this boundary stale.
+    struct DurablePrefixBoundary: Equatable, Sendable {
+        fileprivate let generation: UInt64
+        fileprivate let readOffset: UInt64
+        fileprivate let writeOffset: UInt64
+        fileprivate let unreadCount: Int
+
+        var coversEntireJournal: Bool {
+            readOffset == writeOffset && unreadCount == 0
+        }
     }
 
     private static let magic = Data([0x41, 0x54, 0x52, 0x49, 0x48, 0x49, 0x53, 0x31])
@@ -119,6 +135,10 @@ final class AtriaWhoop4HistoricalIngressSpool {
     var pendingCount: Int { unreadCount }
     var isEmpty: Bool { unreadCount == 0 }
     var bytesOnDisk: UInt64 { writeOffset }
+    var consumedPrefixBytes: UInt64 {
+        readOffset - UInt64(Self.headerBytes)
+    }
+    var unreadBytes: UInt64 { writeOffset - readOffset }
 
     func append(_ event: Event) throws {
         let encoded = try encode(event)
@@ -184,6 +204,87 @@ final class AtriaWhoop4HistoricalIngressSpool {
     func synchronize() throws {
         guard let handle = writeHandle else { throw CocoaError(.fileWriteUnknown) }
         try handle.synchronize()
+    }
+
+    /// Captures the exact byte boundary established by a matching clean ACK.
+    /// The caller must invoke this only inside the synchronous ACK-acceptance
+    /// branch. Merely having accepted an earlier page is not enough: a later
+    /// page may already have been dequeued without reaching its own ACK.
+    func captureDurablyAcknowledgedPrefixBoundary() -> DurablePrefixBoundary {
+        DurablePrefixBoundary(
+            generation: generation,
+            readOffset: readOffset,
+            writeOffset: writeOffset,
+            unreadCount: unreadCount
+        )
+    }
+
+    func matches(_ boundary: DurablePrefixBoundary) -> Bool {
+        boundary.generation == generation
+            && boundary.readOffset == readOffset
+            && boundary.writeOffset == writeOffset
+            && boundary.unreadCount == unreadCount
+    }
+
+    /// Atomically rewrites this live spool to the suffix following one exact
+    /// clean-ACK boundary.
+    ///
+    /// `boundary.readOffset`, rather than the current dequeue cursor, is the
+    /// retirement authority. If anything dequeues or appends after capture,
+    /// the exact-match guard fails closed and leaves the complete journal for
+    /// replay. The replacement remains a normal generation-bound spool, so an
+    /// orphan vault/reopen sees only the suffix the strap has not already had
+    /// durably ACKed.
+    @discardableResult
+    func retireConsumedPrefix(
+        through boundary: DurablePrefixBoundary
+    ) throws -> UInt64 {
+        guard matches(boundary) else {
+            throw SpoolError.staleDurableBoundary
+        }
+        let retiredBytes = boundary.readOffset - UInt64(Self.headerBytes)
+        guard retiredBytes > 0 else { return 0 }
+        guard let reader = readHandle else {
+            throw CocoaError(.fileReadUnknown)
+        }
+        try reader.seek(toOffset: boundary.readOffset)
+        let suffixLength = boundary.writeOffset - boundary.readOffset
+        let suffix = try reader.read(upToCount: Int(suffixLength)) ?? Data()
+        guard UInt64(suffix.count) == suffixLength else {
+            throw SpoolError.corruptRecord
+        }
+
+        var replacement = Self.magic
+        replacement.append(le(generation))
+        replacement.append(suffix)
+        guard UInt64(replacement.count) <= maximumBytes else {
+            throw SpoolError.capacityExceeded
+        }
+
+        try writeHandle?.close()
+        try readHandle?.close()
+        writeHandle = nil
+        readHandle = nil
+        do {
+            // Atomic rename is enough for this non-authoritative cache. If the
+            // process dies before replacement, the old full journal remains
+            // and replay merely deduplicates its acknowledged prefix.
+            try replacement.write(to: url, options: .atomic)
+            readOffset = UInt64(Self.headerBytes)
+            writeOffset = UInt64(replacement.count)
+            writeHandle = try FileHandle(forWritingTo: url)
+            readHandle = try FileHandle(forReadingFrom: url)
+            return retiredBytes
+        } catch {
+            // `.atomic` preserves the old destination on write failure. Reopen
+            // it at the original offsets so the caller can retain the complete
+            // fail-closed journal.
+            readOffset = boundary.readOffset
+            writeOffset = boundary.writeOffset
+            writeHandle = try? FileHandle(forWritingTo: url)
+            readHandle = try? FileHandle(forReadingFrom: url)
+            throw error
+        }
     }
 
     private func create() throws {

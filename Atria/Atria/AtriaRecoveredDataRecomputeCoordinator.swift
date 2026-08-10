@@ -25,14 +25,47 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         case todayHeartRateZones
         /// Journal correlations whose day inputs are written by the history pass.
         case behaviorInsights
+        /// Bounded publication for the current physiological cycle and newest
+        /// sleep only. This component deliberately excludes archive diagnostics,
+        /// workout repair, lifetime history, trends, and other global fan-out.
+        case currentCycleAndLatestNight
     }
 
-    static let sessionStoreComponents = Set(Component.allCases)
+    static let sessionStoreComponents: Set<Component> = [
+        .archiveStatusAndCycleHeartRate,
+        .confirmedWorkouts,
+        .sleepSettlement,
+        .historySleepAndDailyRollups,
+        .overviewTrends,
+        .trainingLoad,
+        .todayHeartRateZones,
+        .behaviorInsights,
+    ]
+
+    enum Scope: Equatable, Sendable {
+        case full
+        /// The associated cutoff is captured before metadata admission and is
+        /// carried through the worker/derived boundary as immutable authority.
+        case automaticCurrentCycle(since: Date)
+    }
 
     struct Ticket: Equatable, Sendable {
         let generation: UInt64
         let archiveRevision: UInt64
         let reason: String
+        let scope: Scope
+
+        init(
+            generation: UInt64,
+            archiveRevision: UInt64,
+            reason: String,
+            scope: Scope = .full
+        ) {
+            self.generation = generation
+            self.archiveRevision = archiveRevision
+            self.reason = reason
+            self.scope = scope
+        }
     }
 
     struct Failure: Equatable, Sendable {
@@ -77,6 +110,7 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
     private struct Request: Equatable, Sendable {
         let archiveRevision: UInt64
         let reason: String
+        let scope: Scope
     }
 
     // 20s, was 12 (2026-08-04): reclaim after a cycle is gradual; trailing
@@ -90,9 +124,16 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
     private var nextGeneration: UInt64 = 0
     private var trailingRequest: Request?
     private let requiredComponents: Set<Component>
+    private let automaticCurrentCycleComponents: Set<Component>
 
-    init(requiredComponents: Set<Component> = Self.sessionStoreComponents) {
+    init(
+        requiredComponents: Set<Component> = Self.sessionStoreComponents,
+        automaticCurrentCycleComponents: Set<Component> = [
+            .currentCycleAndLatestNight,
+        ]
+    ) {
         self.requiredComponents = requiredComponents
+        self.automaticCurrentCycleComponents = automaticCurrentCycleComponents
     }
 
     /// Registers a newly durable archive revision. Duplicate or regressed
@@ -100,13 +141,18 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
     /// retained; the active run is allowed to finish but can no longer publish.
     mutating func request(archiveRevision: UInt64,
                           reason: String,
+                          scope: Scope = .full,
                           now: Date = Date()) -> [Effect] {
         if let latestRequestedArchiveRevision,
            archiveRevision <= latestRequestedArchiveRevision {
             return []
         }
         latestRequestedArchiveRevision = archiveRevision
-        let request = Request(archiveRevision: archiveRevision, reason: reason)
+        let request = Request(
+            archiveRevision: archiveRevision,
+            reason: reason,
+            scope: scope
+        )
 
         switch phase {
         case .idle, .failed:
@@ -155,7 +201,8 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         guard case let .failed(ticket, _) = phase else { return [] }
         restingUntil = nil
         return start(Request(archiveRevision: ticket.archiveRevision,
-                             reason: reason))
+                             reason: reason,
+                             scope: ticket.scope))
     }
 
     /// Projection success means the recovered sessions have been installed and
@@ -177,13 +224,20 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         if trailingRequest != nil {
             return restThenStartTrailing(ticket, now: now)
         }
-        guard !requiredComponents.isEmpty else {
+        let components: Set<Component>
+        switch ticket.scope {
+        case .full:
+            components = requiredComponents
+        case .automaticCurrentCycle:
+            components = automaticCurrentCycleComponents
+        }
+        guard !components.isEmpty else {
             phase = .idle
             restingUntil = now.addingTimeInterval(Self.interCycleRestSeconds)
             return [.publish(ticket)]
         }
-        phase = .deriving(ticket, pending: requiredComponents)
-        return [.startDerived(ticket, requiredComponents)]
+        phase = .deriving(ticket, pending: components)
+        return [.startDerived(ticket, components)]
     }
 
     /// Retires one exact projecting ticket whose authoritative pre-scan plan
@@ -285,7 +339,8 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         nextGeneration &+= 1
         let ticket = Ticket(generation: nextGeneration,
                             archiveRevision: request.archiveRevision,
-                            reason: request.reason)
+                            reason: request.reason,
+                            scope: request.scope)
         phase = .projecting(ticket)
         return [.startProjection(ticket)]
     }

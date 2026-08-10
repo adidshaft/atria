@@ -21,7 +21,7 @@ enum AtriaRecoveredRRProjection {
         case verifiedWhoop4HistoricalV24 = "verified_whoop4_historical_v24"
     }
 
-    enum RejectionReason: String, CaseIterable, Equatable, Error, Sendable {
+    enum RejectionReason: String, Codable, CaseIterable, Equatable, Error, Sendable {
         case metricNotUsable = "metric_not_usable"
         case archiveFieldsNotUsable = "archive_fields_not_usable"
         case wrongTransportProvenance = "wrong_transport_provenance"
@@ -108,8 +108,8 @@ enum AtriaRecoveredRRProjection {
     /// the 3.45GB phys_footprint jetsams. `finish()` materializes the exact
     /// same Result as `project(records:)` — same dedup, same clock-provenance
     /// preference, same ordering, same fingerprint.
-    struct Accumulator {
-        fileprivate struct CompactAccepted {
+    struct Accumulator: Codable {
+        fileprivate struct CompactAccepted: Codable {
             var clockRank: ClockRank
             var correctedUnix: UInt32
             var subsecond: UInt16
@@ -213,7 +213,7 @@ enum AtriaRecoveredRRProjection {
     /// each (2026-08-05 bounding design, Edit 2). Words are loaded and
     /// re-emitted with the same native convention, so `bytes` reproduces the
     /// digest byte-for-byte.
-    fileprivate struct Digest32: Hashable {
+    fileprivate struct Digest32: Codable, Hashable {
         let word0: UInt64
         let word1: UInt64
         let word2: UInt64
@@ -237,7 +237,7 @@ enum AtriaRecoveredRRProjection {
         }
     }
 
-    fileprivate struct ClockRank {
+    fileprivate struct ClockRank: Codable {
         let wall: UInt32
         let device: UInt32
         let correctedUnix: UInt32

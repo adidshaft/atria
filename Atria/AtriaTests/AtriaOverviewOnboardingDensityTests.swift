@@ -56,8 +56,8 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         XCTAssertTrue(bootstrap.contains("recoveredDataPublished"))
         XCTAssertTrue(bootstrap.contains("currentPeripheralIdentifier == requestedPeripheralIdentifier"),
                       "completion must be bound to the exact strap that was imported")
-        XCTAssertTrue(bootstrap.contains("saved on this iPhone before their verified replay pages are acknowledged"))
-        XCTAssertTrue(bootstrap.contains("It never discards unseen strap data to force a fresh start."))
+        XCTAssertTrue(bootstrap.contains("verified replay pages are acknowledged only after they are saved on this iPhone"))
+        XCTAssertTrue(bootstrap.contains("It never disconnects live tracking or discards unseen strap data to force a fresh start."))
         XCTAssertTrue(bootstrap.contains("Atria does not send a physical-erase command"),
                       "onboarding must not promise an unverified destructive erase")
     }
@@ -147,7 +147,9 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
 
         XCTAssertTrue(status.contains("if historyBootstrap.isCompleteForCurrentStrap"))
         XCTAssertTrue(status.contains("Saved setup found · reconnect your strap to verify it"))
-        XCTAssertTrue(status.contains("Ready · strap history verified"))
+        XCTAssertTrue(status.contains("Ready · \\(historyBootstrap.snapshot.importedRows) records safely added"))
+        XCTAssertTrue(status.contains(": historyBootstrap.snapshot.detail"),
+                      "A zero-row completion must retain the bootstrap's truthful live-ready detail")
     }
 
     func testConnectionPermissionGuidanceIsVisibleAndAdaptsAtAccessibilitySizes() throws {

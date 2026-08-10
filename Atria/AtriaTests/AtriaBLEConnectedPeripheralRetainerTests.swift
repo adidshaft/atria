@@ -249,6 +249,27 @@ final class AtriaBLEConnectedPeripheralRetainerTests: XCTestCase {
         XCTAssertFalse(retainer.hasPendingConnectRequest(peripheralID: id))
     }
 
+    func testRestoredTransitionPendingClaimIsExactObjectScoped() {
+        let retainer = AtriaBLEConnectedPeripheralRetainer()
+        let id = UUID()
+        let restoredOwner = StubPeripheral(
+            identifier: id,
+            state: .connecting
+        )
+        let sameUUIDTwin = StubPeripheral(
+            identifier: id,
+            state: .connecting
+        )
+
+        XCTAssertTrue(retainer.adoptRestoredConnectTransition(restoredOwner))
+        XCTAssertTrue(retainer.ownsPendingConnectRequest(restoredOwner))
+        XCTAssertFalse(retainer.ownsPendingConnectRequest(sameUUIDTwin))
+
+        XCTAssertTrue(retainer.release(restoredOwner))
+        XCTAssertFalse(retainer.ownsPendingConnectRequest(restoredOwner))
+        XCTAssertEqual(retainer.pendingConnectCount, 0)
+    }
+
     func testRestoredConnectedObjectSupersedesObjectDistinctPendingPrecheck() {
         let retainer = AtriaBLEConnectedPeripheralRetainer()
         let id = UUID()

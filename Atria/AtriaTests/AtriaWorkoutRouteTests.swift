@@ -296,9 +296,9 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         let lockEnd = try XCTUnwrap(widgetSource.range(of: "private func elapsedText",
                                                        range: lockStart.upperBound..<widgetSource.endIndex))
         let lock = String(widgetSource[lockStart.lowerBound..<lockEnd.lowerBound])
-        XCTAssertTrue(lock.contains(".minimumScaleFactor(0.58)"))
-        XCTAssertTrue(lock.contains(".frame(width: 68, alignment: .leading)"))
-        XCTAssertTrue(lock.contains(".frame(width: 82, alignment: .leading)"))
+        XCTAssertTrue(lock.contains(".minimumScaleFactor(0.8)"))
+        XCTAssertTrue(lock.contains(".frame(width: 112, alignment: .leading)"))
+        XCTAssertTrue(lock.contains(".frame(width: 74, alignment: .trailing)"))
         XCTAssertFalse(lock.contains(".layoutPriority(emphasis ? 3 : 0)"))
         XCTAssertTrue(lock.contains(".accessibilityElement(children: .ignore)"))
     }

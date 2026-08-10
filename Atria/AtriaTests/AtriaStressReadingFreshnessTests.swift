@@ -99,8 +99,8 @@ final class AtriaStressReadingFreshnessTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.level, .medium)
-        XCTAssertEqual(presentation.value, "Medium")
-        XCTAssertEqual(presentation.detail, "Personal HR + HRV")
+        XCTAssertEqual(presentation.value, "1.8 / 3")
+        XCTAssertEqual(presentation.detail, "Medium · Personal HR + HRV")
     }
 
     func testHomeHeroHidesStaleScoredStress() {

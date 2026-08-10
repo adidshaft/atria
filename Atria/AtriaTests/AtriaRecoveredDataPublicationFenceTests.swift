@@ -49,6 +49,73 @@ final class AtriaRecoveredDataPublicationFenceTests: XCTestCase {
         let failedResult = await result.value
         XCTAssertFalse(failedResult)
         XCTAssertEqual(fence.lastPublishedRevision, 0)
+        XCTAssertEqual(fence.lastFailedRevision, revision)
+    }
+
+    func testFailureBeforeAwaitReturnsImmediately() async {
+        let fence = AtriaRecoveredDataPublicationFence()
+        let revision = fence.recordArchiveUpdate()
+        fence.fail(through: revision)
+
+        let started = Date()
+        let result = await fence.awaitPublication(
+            after: 0,
+            timeout: .seconds(30)
+        )
+
+        XCTAssertFalse(result)
+        XCTAssertLessThan(
+            Date().timeIntervalSince(started),
+            1,
+            "a progressed/deferred bootstrap result must not wait for the fairness deadline"
+        )
+        XCTAssertEqual(fence.pendingWaiterCount, 0)
+    }
+
+    func testLaterPublishOfFailedRevisionWinsForNewWaiters() async {
+        let fence = AtriaRecoveredDataPublicationFence()
+        let revision = fence.recordArchiveUpdate()
+        fence.fail(through: revision)
+        fence.publish(through: revision)
+
+        let result = await fence.awaitPublication(
+            after: 0,
+            timeout: .milliseconds(10)
+        )
+        XCTAssertTrue(result)
+    }
+
+    func testFailedRevisionDoesNotPoisonNewerRevision() async {
+        let fence = AtriaRecoveredDataPublicationFence()
+        let first = fence.recordArchiveUpdate()
+        fence.fail(through: first)
+        let second = fence.recordArchiveUpdate()
+        let waiter = Task { @MainActor in
+            await fence.awaitPublication(after: first, timeout: .seconds(1))
+        }
+        await Task.yield()
+
+        fence.publish(through: second)
+
+        let result = await waiter.value
+        XCTAssertTrue(result)
+    }
+
+    func testFailAllDoesNotPoisonFutureRevisions() async {
+        let fence = AtriaRecoveredDataPublicationFence()
+        let first = fence.recordArchiveUpdate()
+        fence.failAll()
+        XCTAssertEqual(fence.lastFailedRevision, first)
+        let second = fence.recordArchiveUpdate()
+        let waiter = Task { @MainActor in
+            await fence.awaitPublication(after: first, timeout: .seconds(1))
+        }
+        await Task.yield()
+
+        fence.publish(through: second)
+
+        let result = await waiter.value
+        XCTAssertTrue(result)
     }
 
     func testTimeoutFailsUnpublishedWaiter() async {

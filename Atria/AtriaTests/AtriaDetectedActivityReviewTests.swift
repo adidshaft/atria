@@ -7,6 +7,24 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
     private let rest = 55
     private let maxHR = 190
 
+    private func aggregateSignature(
+        _ candidates: [AggregateWorkoutCandidate]
+    ) -> [String] {
+        candidates.map {
+            [
+                $0.id.uuidString,
+                $0.source,
+                String($0.start.timeIntervalSince1970.bitPattern),
+                String($0.end.timeIntervalSince1970.bitPattern),
+                String($0.samples),
+                String($0.avgHR),
+                String($0.peakHR),
+                $0.readiness.status,
+                $0.readiness.reason
+            ].joined(separator: "|")
+        }
+    }
+
     private struct PreservedActiveJournal: Decodable {
         struct Sample: Decodable {
             let t: TimeInterval
@@ -279,6 +297,270 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
                             hrArtifactDropped: 0,
                             hrAcceptedGaps: 0,
                             hrMaxAcceptedGap: 2)
+    }
+
+    func testAggregateLaunchSingleFlightSharesIdenticalConcurrentCorpus()
+        async
+    {
+        let session = cleanEffortSession(
+            start: Date(timeIntervalSince1970: 1_801_000_000),
+            label: "Single-flight effort"
+        )
+        let excludedStart = session.end.addingTimeInterval(60)
+        let excludedDuration: TimeInterval = 7 * 3_600
+        let historyExcludedJournal = SavedSession(
+            id: UUID(),
+            start: excludedStart,
+            end: excludedStart.addingTimeInterval(excludedDuration),
+            label: "History active journal",
+            points: [
+                .init(t: 0, bpm: 70),
+                .init(t: excludedDuration, bpm: 72)
+            ]
+        )
+        let reviewExcludedJournal = SavedSession(
+            id: UUID(),
+            start: excludedStart,
+            end: excludedStart.addingTimeInterval(excludedDuration),
+            label: "Review active journal",
+            points: [
+                .init(t: 0, bpm: 71),
+                .init(t: excludedDuration, bpm: 73)
+            ]
+        )
+        let historySessions = [session, historyExcludedJournal]
+        let reviewSessions = [session, reviewExcludedJournal]
+        let restingHR = rest
+        let profileMaxHR = maxHR
+        SessionStore.resetWorkoutAggregateSingleFlightForTesting()
+
+        async let historyPass = Task.detached(priority: .utility) {
+            SessionStore.aggregateWorkoutCandidatesForTesting(
+                in: historySessions,
+                rest: restingHR,
+                maxHR: profileMaxHR
+            )
+        }.value
+        async let reviewPass = Task.detached(priority: .utility) {
+            SessionStore.aggregateWorkoutCandidatesForTesting(
+                in: reviewSessions,
+                rest: restingHR,
+                maxHR: profileMaxHR
+            )
+        }.value
+        let (history, review) = await (historyPass, reviewPass)
+
+        XCTAssertEqual(
+            aggregateSignature(history),
+            aggregateSignature(review),
+            "shared launch work must preserve byte-for-byte result fields"
+        )
+        let counters = SessionStore
+            .workoutAggregateSingleFlightCountersForTesting()
+        XCTAssertEqual(counters.executions, 1)
+        XCTAssertEqual(counters.sharedResults, 1)
+    }
+
+    func testAggregateSingleFlightKeySeparatesCalibrationInputs() {
+        let session = cleanEffortSession(
+            start: Date(timeIntervalSince1970: 1_801_100_000),
+            label: "Calibration-key effort"
+        )
+        let sessions = [session]
+        SessionStore.resetWorkoutAggregateSingleFlightForTesting()
+
+        let baseline = SessionStore.aggregateWorkoutCandidatesForTesting(
+            in: sessions,
+            rest: rest,
+            maxHR: maxHR,
+            thresholdFraction: 0.50
+        )
+        let repeated = SessionStore.aggregateWorkoutCandidatesForTesting(
+            in: sessions,
+            rest: rest,
+            maxHR: maxHR,
+            thresholdFraction: 0.50
+        )
+        _ = SessionStore.aggregateWorkoutCandidatesForTesting(
+            in: sessions,
+            rest: rest,
+            maxHR: maxHR,
+            thresholdFraction: 0.55
+        )
+
+        XCTAssertEqual(
+            aggregateSignature(baseline),
+            aggregateSignature(repeated)
+        )
+        let counters = SessionStore
+            .workoutAggregateSingleFlightCountersForTesting()
+        XCTAssertEqual(counters.executions, 2)
+        XCTAssertEqual(counters.sharedResults, 1)
+    }
+
+    func testHistorySupersetAndWorkoutReviewHorizonShareCommonClusterWithoutOverlap()
+        async
+    {
+        var configuredCalendar = Calendar(identifier: .gregorian)
+        configuredCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let calendar = configuredCalendar
+        let now = Date(timeIntervalSince1970: 1_801_500_000)
+        let old = cleanEffortSession(
+            start: now.addingTimeInterval(-72 * 3_600),
+            label: "History-only old effort"
+        )
+        let recent = cleanEffortSession(
+            start: now.addingTimeInterval(-2 * 3_600),
+            label: "Common recent effort"
+        )
+        let historySessions = [old, recent]
+        let reviewSessions = SessionStore.workoutReviewSessionsWithinHorizon(
+            historySessions,
+            now: now
+        )
+        let restingHR = rest
+        let profileMaxHR = maxHR
+        SessionStore.resetWorkoutAggregateSingleFlightForTesting()
+
+        async let historyPass = Task.detached(priority: .utility) {
+            SessionStore.aggregateWorkoutCandidatesForTesting(
+                in: historySessions,
+                rest: restingHR,
+                maxHR: profileMaxHR,
+                calendar: calendar
+            )
+        }.value
+        async let reviewPass = Task.detached(priority: .utility) {
+            SessionStore.aggregateWorkoutCandidatesForTesting(
+                in: reviewSessions,
+                rest: restingHR,
+                maxHR: profileMaxHR,
+                calendar: calendar
+            )
+        }.value
+        let (history, review) = await (historyPass, reviewPass)
+
+        let historyRecent = history.filter { $0.start >= recent.start }
+        let historyOld = history.filter { $0.end <= old.end }
+        XCTAssertFalse(historyOld.isEmpty,
+                       "cluster sharing must retain History-only detections")
+        XCTAssertEqual(
+            aggregateSignature(historyRecent),
+            aggregateSignature(review),
+            "the exact common cluster must return the shared result unchanged"
+        )
+        // The host app can independently warm unrelated aggregate keys while
+        // XCTest is running. Scope deterministic counters to these random
+        // session identities instead of asserting process-global totals.
+        let recentCounters = SessionStore
+            .workoutAggregateClusterSingleFlightCountersForTesting(
+                sessionID: recent.id
+            )
+        XCTAssertEqual(recentCounters.executions, 1,
+                       "the exact common cluster executes only once")
+        XCTAssertEqual(recentCounters.sharedResults, 1,
+                       "History and UI must rendezvous on the common cluster")
+        let oldCounters = SessionStore
+            .workoutAggregateClusterSingleFlightCountersForTesting(
+                sessionID: old.id
+            )
+        XCTAssertEqual(oldCounters.executions, 1,
+                       "the History-only cluster still executes")
+        XCTAssertEqual(oldCounters.sharedResults, 0,
+                       "the horizon slice must not fabricate old work")
+    }
+
+    func testAggregateClusterCanonicalizesEqualStartSessionsBeforeSharing()
+        async
+    {
+        var configuredCalendar = Calendar(identifier: .gregorian)
+        configuredCalendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let calendar = configuredCalendar
+        let start = Date(timeIntervalSince1970: 1_801_600_000)
+        let template = cleanEffortSession(start: start, label: "Template")
+        let first = SavedSession(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            start: start,
+            end: template.end,
+            label: "Equal start A",
+            points: template.points,
+            rrPoints: template.rrPoints,
+            hrRaw2A37: template.points.count,
+            hrAccepted: template.points.count,
+            hrZero: 0,
+            hrArtifactHeld: 0,
+            hrArtifactDropped: 0,
+            hrAcceptedGaps: 0,
+            hrMaxAcceptedGap: 2
+        )
+        let second = SavedSession(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
+            start: start,
+            end: start.addingTimeInterval(70 * 60),
+            label: "Equal start B",
+            points: template.points,
+            rrPoints: template.rrPoints,
+            hrRaw2A37: template.points.count,
+            hrAccepted: template.points.count,
+            hrZero: 0,
+            hrArtifactHeld: 0,
+            hrArtifactDropped: 0,
+            hrAcceptedGaps: 0,
+            hrMaxAcceptedGap: 2
+        )
+        // This chunk begins 31 minutes after `first` ends, but overlaps
+        // `second`. A start-only sort can leave the shorter equal-start chunk
+        // last and incorrectly split membership; the total order must put the
+        // longer chunk last before clustering this continuation.
+        let continuationStart = start.addingTimeInterval(66 * 60)
+        let continuationTemplate = cleanEffortSession(
+            start: continuationStart,
+            label: "Continuation template"
+        )
+        let continuation = SavedSession(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!,
+            start: continuationStart,
+            end: continuationTemplate.end,
+            label: "Equal start continuation",
+            points: continuationTemplate.points,
+            rrPoints: continuationTemplate.rrPoints,
+            hrRaw2A37: continuationTemplate.points.count,
+            hrAccepted: continuationTemplate.points.count,
+            hrZero: 0,
+            hrArtifactHeld: 0,
+            hrArtifactDropped: 0,
+            hrAcceptedGaps: 0,
+            hrMaxAcceptedGap: 2
+        )
+        let restingHR = rest
+        let profileMaxHR = maxHR
+        SessionStore.resetWorkoutAggregateSingleFlightForTesting()
+
+        async let forwardPass = Task.detached(priority: .utility) {
+            SessionStore.aggregateWorkoutCandidatesForTesting(
+                in: [second, first, continuation],
+                rest: restingHR,
+                maxHR: profileMaxHR,
+                calendar: calendar
+            )
+        }.value
+        async let reversePass = Task.detached(priority: .utility) {
+            SessionStore.aggregateWorkoutCandidatesForTesting(
+                in: [first, second, continuation],
+                rest: restingHR,
+                maxHR: profileMaxHR,
+                calendar: calendar
+            )
+        }.value
+        let (forward, reverse) = await (forwardPass, reversePass)
+
+        XCTAssertEqual(aggregateSignature(forward), aggregateSignature(reverse))
+        let clusterCounters = SessionStore
+            .workoutAggregateClusterSingleFlightCountersForTesting(
+                sessionID: first.id
+            )
+        XCTAssertEqual(clusterCounters.executions, 1)
+        XCTAssertEqual(clusterCounters.sharedResults, 1)
     }
 
     /// Models the July 27 physical acceptance run: a long, continuously

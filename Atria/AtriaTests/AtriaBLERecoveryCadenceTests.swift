@@ -3,6 +3,50 @@ import CoreBluetooth
 @testable import Atria
 
 final class AtriaBLERecoveryCadenceTests: XCTestCase {
+    func testSavedStandingConnectIsNeverMutatedByElapsedTimeAlone() {
+        for elapsed: TimeInterval in [
+            20,
+            60 * 60,
+            24 * 60 * 60,
+        ] {
+            XCTAssertEqual(
+                AtriaBLEManager.reconnectWatchdogDisposition(
+                    elapsed: elapsed,
+                    hasSavedStrap: true,
+                    peripheralState: .connecting
+                ),
+                .observeSavedStandingRequest
+            )
+            XCTAssertEqual(
+                AtriaBLEManager.reconnectWatchdogDisposition(
+                    elapsed: elapsed,
+                    hasSavedStrap: true,
+                    peripheralState: .disconnected
+                ),
+                .observeSavedStandingRequest
+            )
+        }
+    }
+
+    func testPriorHistoryFailureCannotMutateSavedStandingConnect() {
+        XCTAssertEqual(
+            AtriaBLEManager.reconnectWatchdogDisposition(
+                elapsed: 20,
+                hasSavedStrap: true,
+                peripheralState: .connecting
+            ),
+            .observeSavedStandingRequest
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.reconnectWatchdogDisposition(
+                elapsed: 24 * 60 * 60,
+                hasSavedStrap: true,
+                peripheralState: .disconnected
+            ),
+            .observeSavedStandingRequest
+        )
+    }
+
     func testCancelledRealtimeRestartCannotReenableStreaming() {
         XCTAssertFalse(AtriaBLEManager.canFinishRealtimeRestart(
             taskCancelled: true,
@@ -2900,9 +2944,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             range: acceptedStart.upperBound..<source.endIndex
         ))
         let accepted = String(source[acceptedStart.lowerBound..<acceptedEnd.lowerBound])
-        XCTAssertTrue(accepted.contains(
-            "attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded(\n                now: sampleTime"
+        let qualifiedAttempt = try XCTUnwrap(accepted.range(
+            of: "attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded("
         ))
+        XCTAssertTrue(String(accepted[qualifiedAttempt.lowerBound...])
+            .prefix(160).contains("now: sampleTime"))
     }
 
     func testOnlyDeliberateUIActionsCountAsConnectedHistoricalSyncIntent() {
@@ -4246,12 +4292,40 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                 pendingReason: "user_requested_history_diagnostic"
             ))
 
-        XCTAssertTrue(source.contains(
-            "persistActiveSessionJournalIfNeeded(reason: \"accepted_hr\", force: false)"
+        let acceptedStart = try XCTUnwrap(source.range(
+            of: "private func acceptHeartRate("
         ))
-        XCTAssertTrue(source.contains(
-            "resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(\n                reason: \"accepted_hr\""
-        ), "the accepted-HR path must persist first, then evaluate a forced request")
+        let acceptedEnd = try XCTUnwrap(source.range(
+            of: "private func beginAcceptedHeartRateBatch",
+            range: acceptedStart.upperBound..<source.endIndex
+        ))
+        let acceptedBody = String(
+            source[acceptedStart.lowerBound..<acceptedEnd.lowerBound]
+        )
+        let acceptedPersistence = try XCTUnwrap(acceptedBody.range(
+            of: "persistActiveSessionJournalIfNeeded(reason: \"accepted_hr\", force: false)"
+        ))
+        let rawFirstRefusal = try XCTUnwrap(acceptedBody.range(
+            of: "if !connectedRawCatchUpStarted",
+            range: acceptedPersistence.upperBound..<acceptedBody.endIndex
+        ))
+        let acceptedResume = try XCTUnwrap(acceptedBody.range(
+            of: "resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(",
+            range: rawFirstRefusal.upperBound..<acceptedBody.endIndex
+        ))
+        XCTAssertTrue(acceptedBody[acceptedResume.lowerBound...].contains(
+            "reason: \"accepted_hr\""
+        ))
+        XCTAssertLessThan(
+            acceptedPersistence.lowerBound,
+            rawFirstRefusal.lowerBound,
+            "the accepted-HR path must persist before recovery scheduling"
+        )
+        XCTAssertLessThan(
+            rawFirstRefusal.lowerBound,
+            acceptedResume.lowerBound,
+            "the exact connected-raw scheduler must get first refusal before a generic forced request"
+        )
     }
 
     func testInterruptedFullDrainRelaunchResumesOnlyPendingTransportAuthority() {
@@ -4727,11 +4801,36 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(body.contains("requestOfflineHistoricalSyncIfNeeded("),
                        "the per-sample rearm must preserve live transport, not start history inline")
 
-        XCTAssertTrue(source.contains(
-            "rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(\n                reason: \"accepted_hr\""
+        let acceptedStart = try XCTUnwrap(source.range(
+            of: "private func acceptHeartRate("
         ))
-        XCTAssertTrue(source.contains(
-            "rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(\n            reason: \"accepted_hr_batch\""
+        let acceptedEnd = try XCTUnwrap(source.range(
+            of: "private func beginAcceptedHeartRateBatch",
+            range: acceptedStart.upperBound..<source.endIndex
+        ))
+        let accepted = String(
+            source[acceptedStart.lowerBound..<acceptedEnd.lowerBound]
+        )
+        let acceptedRearm = try XCTUnwrap(accepted.range(
+            of: "rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded("
+        ))
+        XCTAssertTrue(accepted[acceptedRearm.lowerBound...].contains(
+            "reason: \"accepted_hr\""
+        ))
+
+        let batchStart = try XCTUnwrap(source.range(
+            of: "private func endAcceptedHeartRateBatch("
+        ))
+        let batchEnd = try XCTUnwrap(source.range(
+            of: "private func publishLiveHeartDisplayIfNeeded",
+            range: batchStart.upperBound..<source.endIndex
+        ))
+        let batch = String(source[batchStart.lowerBound..<batchEnd.lowerBound])
+        let batchRearm = try XCTUnwrap(batch.range(
+            of: "rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded("
+        ))
+        XCTAssertTrue(batch[batchRearm.lowerBound...].contains(
+            "reason: \"accepted_hr_batch\""
         ))
     }
 
@@ -4803,8 +4902,16 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             range: start.upperBound..<source.endIndex
         ))
         let body = String(source[start.lowerBound..<end.lowerBound])
-        XCTAssertTrue(body.contains(
-            "reason: reason, force: force,\n                explicitRequest: explicitRequest"
+        let archiveWarmRetain = try XCTUnwrap(body.range(
+            of: "retainPendingOfflineHistoricalSyncRequest("
+        ))
+        let retainedRequest = String(
+            body[archiveWarmRetain.lowerBound...].prefix(240)
+        )
+        XCTAssertTrue(retainedRequest.contains("reason: reason"))
+        XCTAssertTrue(retainedRequest.contains("force: force"))
+        XCTAssertTrue(retainedRequest.contains(
+            "explicitRequest: explicitRequest"
         ), "a transaction-boundary reconnect race must retain the full forced request")
     }
 
@@ -7144,7 +7251,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
 
         let acceptedStart = try XCTUnwrap(source.range(of: "private func recordAcceptedHRSample"))
         let acceptedEnd = try XCTUnwrap(source.range(
-            of: "fileprivate func record(_ rate:",
+            of: "fileprivate func record(",
             range: acceptedStart.upperBound..<source.endIndex
         ))
         let accepted = String(source[acceptedStart.lowerBound..<acceptedEnd.lowerBound])
@@ -8382,7 +8489,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             range: connectedRace.upperBound..<body.endIndex
         ))
         let disconnectedRace = try XCTUnwrap(body.range(
-            of: "else if peripheral.state == .disconnected",
+            of: "else if Self.shouldIssueMainActorDisconnectReconnect(",
             range: immediateClaim.upperBound..<body.endIndex
         ))
         let standingConnect = try XCTUnwrap(body.range(
@@ -8394,6 +8501,18 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertLessThan(connectedRace.lowerBound, immediateClaim.lowerBound)
         XCTAssertLessThan(immediateClaim.lowerBound, disconnectedRace.lowerBound)
         XCTAssertLessThan(disconnectedRace.lowerBound, standingConnect.lowerBound)
+        XCTAssertTrue(AtriaBLEManager.shouldIssueMainActorDisconnectReconnect(
+            synchronousReconnectIssued: false,
+            peripheralState: .disconnected
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldIssueMainActorDisconnectReconnect(
+            synchronousReconnectIssued: true,
+            peripheralState: .disconnected
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldIssueMainActorDisconnectReconnect(
+            synchronousReconnectIssued: false,
+            peripheralState: .connecting
+        ))
     }
 
     func testReadOnlyHistoryRejectsRestoredConnectedEpochBeforeDiscovery() throws {
@@ -9090,7 +9209,8 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             of: "historicalMotionBankRetryEligible("
         ))
         let deferralReservation = try XCTUnwrap(body.range(
-            of: "workoutHistoricalMotionBankTransportDeferredTicketIDKey"
+            of: "workoutHistoricalMotionBankTransportDeferredTicketIDKey",
+            range: retryGate.upperBound..<body.endIndex
         ))
         let request = try XCTUnwrap(body.range(
             of: "requestOfflineHistoricalSyncIfNeeded("
@@ -9180,7 +9300,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
     {
         let source = try leaseManagerSource()
         let acceptedStart = try XCTUnwrap(source.range(
-            of: "private func acceptHeartRate(_ rate: Int, at sampleTime: Date)"
+            of: "private func acceptHeartRate("
         ))
         let acceptedEnd = try XCTUnwrap(source.range(
             of: "private func beginAcceptedHeartRateBatch()",
@@ -9230,7 +9350,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
 
         let genericStart = try XCTUnwrap(source.range(
-            of: "private func pendingForcedHistoricalSyncMayResumeAfterLivePersistence("
+            of: "nonisolated static func pendingForcedHistoricalSyncMayResumeAfterLivePersistence("
         ))
         let generic = String(source[genericStart.lowerBound...].prefix(1_200))
         XCTAssertTrue(generic.contains("force && explicitRequest"))
@@ -9511,7 +9631,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let armStart = try XCTUnwrap(source.range(
             of: "private func armWorkoutHistoricalMotionBankIfPossible("
         ))
-        let arm = String(source[armStart.lowerBound...].prefix(700))
+        let armEnd = try XCTUnwrap(source.range(
+            of: "private func checkpointDailyHistoricalMotionBankIfNeeded(",
+            range: armStart.upperBound..<source.endIndex
+        ))
+        let arm = String(source[armStart.lowerBound..<armEnd.lowerBound])
         XCTAssertTrue(arm.contains("!freshHistoryOwnerCutoverPending"))
     }
 
@@ -9961,7 +10085,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         let body = String(source[start.lowerBound..<end.lowerBound])
         let exactHistoryGuard = try XCTUnwrap(body.range(
-            of: "activeConnectedMotionBankHistoryAuthority("
+            of: "activeConnectedRealtimePreservingHistoryAuthorityExists("
         ))
         let immediate = try XCTUnwrap(body.range(
             of: "let replaceWedgedSession = immediateConnectedRebuild"
@@ -10088,20 +10212,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                        "a hung local persistence batch must not retain the BLE owner indefinitely")
     }
 
-    func testPostHistoryStuckSavedReconnectGetsOneBoundedReissue() throws {
+    func testNoHistoryLatchCanCancelOrReissueSavedReconnect() throws {
         let source = try leaseManagerSource()
-        XCTAssertTrue(source.contains(
-            "historyFailureReconnectReissuePending = true"
-        ))
-        XCTAssertTrue(source.contains(
-            "action=cancel_stuck_post_history_connect_once"
-        ))
-        XCTAssertTrue(source.contains(
-            "historyFailureReconnectReissuePending = false"
-        ))
-        XCTAssertTrue(source.contains(
-            "reason: \"post_history_stuck_connect_reissue\""
-        ))
+        XCTAssertFalse(source.contains("historyFailureReconnectReissuePending"))
+        XCTAssertFalse(source.contains("cancel_stuck_post_history_connect_once"))
+        XCTAssertFalse(source.contains("post_history_stuck_connect_reissue"))
     }
 
     func testTelemetryNeverInjectsHistoryContinueIntoAnOpenPage() throws {
@@ -10211,9 +10326,11 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(lease.contains("(error as NSError).domain == CBErrorDomain"))
         XCTAssertTrue(lease.contains("CBError.connectionTimeout.rawValue"))
         XCTAssertTrue(lease.contains("backgroundReconnectLeaseReissueUsed"))
-        XCTAssertTrue(lease.contains("Task.sleep(for: .seconds"))
-        XCTAssertTrue(lease.contains("central.cancelPeripheralConnection(peripheral)"))
-        XCTAssertTrue(lease.contains("reconnectKnownPeripheralImmediately"))
+        XCTAssertTrue(lease.contains("startReconnectWatchdog("))
+        XCTAssertTrue(lease.contains("single_watchdog_owns_pending_session_no_cancel"))
+        XCTAssertFalse(lease.contains("Task.sleep(for: .seconds"))
+        XCTAssertFalse(lease.contains("central.cancelPeripheralConnection(peripheral)"))
+        XCTAssertFalse(lease.contains("reconnectKnownPeripheralImmediately"))
         XCTAssertFalse(lease.contains("peripheral.state == .connecting,\n              let error"),
                        "the callback must arm after the synchronous standing connect is installed")
     }
@@ -10418,11 +10535,22 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let evaluation = try XCTUnwrap(body.range(
             of: "evaluatePendingWorkoutHistoricalMotionBankOffload("
         ))
+        let liveRestoration = try XCTUnwrap(body.range(
+            of: "if liveRestored,",
+            range: evaluation.upperBound..<body.endIndex
+        ))
+        let continuationFence = try XCTUnwrap(body.range(
+            of: "!connectedRawHistoryCatchUpContinuationPending",
+            range: liveRestoration.upperBound..<body.endIndex
+        ))
         let rearm = try XCTUnwrap(body.range(
-            of: "armWorkoutHistoricalMotionBankIfPossible("
+            of: "armWorkoutHistoricalMotionBankIfPossible(",
+            range: continuationFence.upperBound..<body.endIndex
         ))
         XCTAssertLessThan(evaluation.lowerBound, rearm.lowerBound)
-        XCTAssertTrue(body.contains("if terminalAndLiveRestored"))
+        XCTAssertLessThan(evaluation.lowerBound, liveRestoration.lowerBound)
+        XCTAssertLessThan(liveRestoration.lowerBound, continuationFence.lowerBound)
+        XCTAssertLessThan(continuationFence.lowerBound, rearm.lowerBound)
         XCTAssertTrue(body.contains(
             "reason: \"history_terminal_live_restored_\\(reason)\""
         ))
@@ -11033,6 +11161,77 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(body.contains("startScan"))
     }
 
+    func testSavedPendingWatchdogContainsNoCentralRotationOrScanFallback() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func startReconnectWatchdog("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func beginBackgroundReconnectLeaseIfNeeded(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let watchdog = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(watchdog.contains("case .observeSavedStandingRequest:"))
+        XCTAssertTrue(watchdog.contains("action=observe_pending_connect_saved_strap"))
+        XCTAssertFalse(watchdog.contains("rebuildCentralForWedgedSessionOnce("))
+        XCTAssertFalse(watchdog.contains("rotateRestoredConnectingCentral"))
+        XCTAssertFalse(watchdog.contains("centralEventFence.retire"))
+
+        let leaseEnd = try XCTUnwrap(source.range(
+            of: "/// State-restoration relaunches run without debug launch arguments",
+            range: end.upperBound..<source.endIndex
+        ))
+        let lease = String(source[end.lowerBound..<leaseEnd.lowerBound])
+        XCTAssertTrue(lease.contains(
+            "startReconnectWatchdog(\n            reason: \"connection_timeout_pending_session\""
+        ))
+        XCTAssertTrue(lease.contains(
+            "action=single_watchdog_owns_pending_session_no_cancel"
+        ))
+        XCTAssertFalse(lease.contains("cancelPeripheralConnection"))
+        XCTAssertFalse(lease.contains("reconnectKnownPeripheralImmediately("))
+    }
+
+    func testRestoredTransitionPublishesWatchdogWithoutDuplicateConnect() throws {
+        let source = try leaseManagerSource()
+        let restore = try XCTUnwrap(source.range(
+            of: "willRestoreState dict: [String: Any]"
+        ))
+        let discover = try XCTUnwrap(source.range(
+            of: "didDiscover peripheral: CBPeripheral",
+            range: restore.upperBound..<source.endIndex
+        ))
+        let body = String(source[restore.lowerBound..<discover.lowerBound])
+
+        XCTAssertTrue(body.contains("restoredPeripheral.state == .connecting"))
+        XCTAssertTrue(body.contains("self.startReconnectWatchdog("))
+        XCTAssertFalse(body.contains("restoredTransitionCentral:"))
+        XCTAssertFalse(body.contains("restoredTransitionToken:"))
+        let watchdog = try XCTUnwrap(body.range(of: "self.startReconnectWatchdog("))
+        let transitionLog = try XCTUnwrap(body.range(
+            of: "action=keep_existing_no_duplicate_connect",
+            range: watchdog.upperBound..<body.endIndex
+        ))
+        XCTAssertLessThan(watchdog.lowerBound, transitionLog.lowerBound)
+    }
+
+    func testPoweredOnGatewayPublishesExactPendingWatchdogWithoutSecondConnect() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "} else if let earlyPendingConnect {"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "} else if reconnectToSavedPeripheralIfPossible(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let branch = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(branch.contains("self.startReconnectWatchdog("))
+        XCTAssertFalse(branch.contains("issueSingleFlightConnect("))
+        XCTAssertFalse(branch.contains("central.connect("))
+        XCTAssertFalse(branch.contains("cancelPeripheralConnection("))
+    }
+
     func testAcceptedHRSampleIsTheOnlyRecoveryTerminal() throws {
         let source = try leaseManagerSource()
         let start = try XCTUnwrap(source.range(
@@ -11154,12 +11353,32 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(source.contains(
             "status=fresh_owner_admitted_on_did_connect"
         ))
-        XCTAssertTrue(source.contains(
-            "let historyTransportClaimed = connectedPeripheralRetainer"
+        let startSync = try XCTUnwrap(source.range(
+            of: "private func startOfflineHistoricalSync(reason: String,\n                                            force: Bool,\n                                            explicitRequest: Bool,\n                                            connectedChunkedBackfill: Bool,"
         ))
-        XCTAssertTrue(source.contains(
-            ".claimHistoryTransportIfNoRetainedConnect("
+        let endSync = try XCTUnwrap(source.range(
+            of: "private func noteOfflineHistoricalSyncProgress(",
+            range: startSync.upperBound..<source.endIndex
         ))
+        let startBody = source[startSync.lowerBound..<endSync.lowerBound]
+        let claimDeclaration = try XCTUnwrap(startBody.range(
+            of: "let historyTransportClaimed: Bool"
+        ))
+        let connectedClaim = try XCTUnwrap(startBody.range(
+            of: ".claimExclusiveConnectedCanonicalTransport(",
+            range: claimDeclaration.upperBound..<startBody.endIndex
+        ))
+        let disconnectedClaim = try XCTUnwrap(startBody.range(
+            of: ".claimHistoryTransportIfNoRetainedConnect(",
+            range: connectedClaim.upperBound..<startBody.endIndex
+        ))
+        let claimGate = try XCTUnwrap(startBody.range(
+            of: "guard historyTransportClaimed else",
+            range: disconnectedClaim.upperBound..<startBody.endIndex
+        ))
+        XCTAssertLessThan(claimDeclaration.lowerBound, connectedClaim.lowerBound)
+        XCTAssertLessThan(connectedClaim.lowerBound, disconnectedClaim.lowerBound)
+        XCTAssertLessThan(disconnectedClaim.lowerBound, claimGate.lowerBound)
     }
 
     func testR10StepLeaseGrantsOnlyForFreshManualWorkoutHR() {

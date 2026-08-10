@@ -62,7 +62,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
     func testAttendedAndGeneralHistoryDeferWhileOnlyExactMotionBankTokenCanShareLive() throws {
         let source = try managerSource()
         let guardStart = try XCTUnwrap(source.range(
-            of: "if connectedMotionBankRequestAuthority == nil,\n           Self.shouldDeferHistoricalTransportForRealtimeContinuity("
+            of: "if !exactConnectedRealtimePreservingRequest,\n           Self.shouldDeferHistoricalTransportForRealtimeContinuity("
         ))
         let transactionStart = try XCTUnwrap(source.range(
             of: "return startOfflineHistoricalSync("
@@ -172,6 +172,1277 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         )
     }
 
+    private func connectedRawCatchUpAdmission(
+        background: Bool = true,
+        queuedPull: Bool = false,
+        foregroundAutomatic: Bool = false,
+        backlog: Bool = true,
+        verified: Bool = true,
+        exactSource: Bool = true,
+        syncing: Bool = false,
+        connected: Bool = true,
+        thermal: Bool = false,
+        connectedAgo: TimeInterval? = 61,
+        samples: Int = 10,
+        acceptedAgo: TimeInterval? = 1,
+        workout: Bool = false
+    ) -> Bool {
+        let now = Date(timeIntervalSince1970: 10_000)
+        return AtriaBLEManager.shouldMintConnectedRawHistoryCatchUpAuthority(
+            applicationIsBackground: background,
+            queuedPullIntent: queuedPull,
+            foregroundAutomaticBacklog: foregroundAutomatic,
+            strapBacklogPending: backlog,
+            verifiedRawHistoryCapability: verified,
+            exactCallbackSourceAvailable: exactSource,
+            syncInProgress: syncing,
+            linkConnected: connected,
+            thermalPressureActive: thermal,
+            connectedAt: connectedAgo.map { now.addingTimeInterval(-$0) },
+            acceptedSampleCount: samples,
+            lastAcceptedHRAt: acceptedAgo.map {
+                now.addingTimeInterval(-$0)
+            },
+            activeExplicitWorkout: workout,
+            now: now
+        )
+    }
+
+    func testConnectedRawCatchUpMintsOnlyForStableExactLiveAuthority() {
+        XCTAssertTrue(connectedRawCatchUpAdmission())
+        XCTAssertTrue(connectedRawCatchUpAdmission(
+            background: false,
+            queuedPull: true
+        ))
+        XCTAssertTrue(connectedRawCatchUpAdmission(
+            background: false,
+            foregroundAutomatic: true
+        ))
+        XCTAssertFalse(connectedRawCatchUpAdmission(background: false))
+        XCTAssertFalse(connectedRawCatchUpAdmission(backlog: false))
+        XCTAssertFalse(connectedRawCatchUpAdmission(verified: false))
+        XCTAssertFalse(connectedRawCatchUpAdmission(exactSource: false))
+        XCTAssertFalse(connectedRawCatchUpAdmission(syncing: true))
+        XCTAssertFalse(connectedRawCatchUpAdmission(connected: false))
+        XCTAssertFalse(connectedRawCatchUpAdmission(connectedAgo: 59))
+        XCTAssertFalse(connectedRawCatchUpAdmission(samples: 9))
+        XCTAssertFalse(connectedRawCatchUpAdmission(acceptedAgo: 46))
+        XCTAssertFalse(connectedRawCatchUpAdmission(workout: true))
+        XCTAssertFalse(connectedRawCatchUpAdmission(thermal: true))
+        XCTAssertFalse(
+            AtriaBLEManager
+                .shouldParkConnectedRawHistoryCatchUpForPowerPressure(
+                    thermalState: .nominal
+                ),
+            "the durable raw lane has no Low Power Mode input and must remain eligible when thermally nominal"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .shouldParkConnectedRawHistoryCatchUpForPowerPressure(
+                    thermalState: .fair
+                )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .shouldParkConnectedRawHistoryCatchUpForPowerPressure(
+                    thermalState: .serious
+                ),
+            "serious heat uses bounded duty instead of permanently stranding durable raw history"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager
+                .shouldParkConnectedRawHistoryCatchUpForPowerPressure(
+                    thermalState: .critical
+                )
+        )
+    }
+
+    func testExplicitMotionLeaseClosesTerminalIntentRaceForHistory() {
+        XCTAssertFalse(
+            AtriaBLEManager.explicitMotionOwnershipBlocksHistory(
+                pendingWorkoutIntentActive: false,
+                inMemoryLeaseHeld: false,
+                calibrationHoldActive: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.explicitMotionOwnershipBlocksHistory(
+                pendingWorkoutIntentActive: true,
+                inMemoryLeaseHeld: false,
+                calibrationHoldActive: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.explicitMotionOwnershipBlocksHistory(
+                pendingWorkoutIntentActive: false,
+                inMemoryLeaseHeld: true,
+                calibrationHoldActive: false
+            ),
+            "raw cannot enter after terminal intent but before lease release"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.explicitMotionOwnershipBlocksHistory(
+                pendingWorkoutIntentActive: false,
+                inMemoryLeaseHeld: false,
+                calibrationHoldActive: true
+            )
+        )
+    }
+
+    func testWorkoutHistoryPreemptionSuccessorRequiresNewerExactHREpoch() {
+        let strap = UUID()
+        let otherStrap = UUID()
+        let predecessorObject = NSObject()
+        let successorObject = NSObject()
+        let predecessor = AtriaBLECallbackEpochFence.Source(
+            epoch: 40,
+            peripheralID: strap,
+            peripheralObjectID: ObjectIdentifier(predecessorObject)
+        )
+        var gate = AtriaBLEWorkoutHistoryPreemptionSuccessorGate()
+        gate.install(predecessorSource: predecessor)
+
+        XCTAssertFalse(gate.consumeAfterAcceptedHeartRate(
+            source: predecessor,
+            sourceIsCurrent: true
+        ))
+        XCTAssertFalse(gate.consumeAfterAcceptedHeartRate(
+            source: .init(
+                epoch: 41,
+                peripheralID: otherStrap,
+                peripheralObjectID: ObjectIdentifier(successorObject)
+            ),
+            sourceIsCurrent: true
+        ))
+        XCTAssertFalse(gate.consumeAfterAcceptedHeartRate(
+            source: .init(
+                epoch: 41,
+                peripheralID: strap,
+                peripheralObjectID: ObjectIdentifier(successorObject)
+            ),
+            sourceIsCurrent: false
+        ))
+        XCTAssertTrue(gate.isAwaitingReplacementAcceptedHeartRate)
+        XCTAssertTrue(gate.consumeAfterAcceptedHeartRate(
+            source: .init(
+                epoch: 41,
+                peripheralID: strap,
+                peripheralObjectID: ObjectIdentifier(successorObject)
+            ),
+            sourceIsCurrent: true
+        ))
+        XCTAssertFalse(gate.isAwaitingReplacementAcceptedHeartRate)
+
+        var replacementGate =
+            AtriaBLEWorkoutHistoryPreemptionSuccessorGate()
+        replacementGate.install(predecessorSource: predecessor)
+        XCTAssertFalse(replacementGate.blocksArm(for: otherStrap))
+        XCTAssertFalse(
+            replacementGate.isAwaitingReplacementAcceptedHeartRate,
+            "old-strap provenance must not black out a replacement strap"
+        )
+    }
+
+    func testFailedContinuationAdmissionYieldsOneMeaningfulCaptureTurn()
+        throws {
+        let failedAt = Date(timeIntervalSince1970: 20_000)
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawNoRadioRetryNotBefore(
+                priorContinuationPending: true,
+                admissionStarted: false,
+                historyOwnerActive: false,
+                failedAt: failedAt
+            ),
+            failedAt.addingTimeInterval(120)
+        )
+        XCTAssertNil(
+            AtriaBLEManager.connectedRawNoRadioRetryNotBefore(
+                priorContinuationPending: false,
+                admissionStarted: false,
+                historyOwnerActive: false,
+                failedAt: failedAt
+            )
+        )
+        XCTAssertNil(
+            AtriaBLEManager.connectedRawNoRadioRetryNotBefore(
+                priorContinuationPending: true,
+                admissionStarted: false,
+                historyOwnerActive: true,
+                failedAt: failedAt
+            ),
+            "a physical owner cannot be reclassified as a no-radio yield"
+        )
+
+        let armedAt = failedAt.addingTimeInterval(1)
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawPresentBankRetryNotBefore(
+                bankArmedForCurrentConnection: true,
+                bankArmedAt: armedAt,
+                now: armedAt.addingTimeInterval(6)
+            ),
+            armedAt.addingTimeInterval(120),
+            "the next callback cannot close a six-second bank"
+        )
+        XCTAssertNil(
+            AtriaBLEManager.connectedRawPresentBankRetryNotBefore(
+                bankArmedForCurrentConnection: true,
+                bankArmedAt: armedAt,
+                now: armedAt.addingTimeInterval(120)
+            )
+        )
+
+        let source = try managerSource()
+        let selectorStart = try XCTUnwrap(source.range(
+            of: "private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded("
+        ))
+        let selector = String(source[selectorStart.lowerBound...].prefix(3_500))
+        XCTAssertTrue(selector.contains(
+            "guard !connectedRawNoRadioCaptureTurnIsCurrent()"
+        ), "a coexisting direct ticket must not consume the no-radio capture turn")
+        XCTAssertTrue(selector.contains(
+            "action=no_selector_no_attempt_no_cadence_mutation_rearm_present_bank_first"
+        ))
+
+        let acceptedStart = try XCTUnwrap(source.range(
+            of: "private func acceptHeartRate("
+        ))
+        let acceptedEnd = try XCTUnwrap(source.range(
+            of: "private func beginAcceptedHeartRateBatch()",
+            range: acceptedStart.upperBound..<source.endIndex
+        ))
+        let accepted = String(
+            source[acceptedStart.lowerBound..<acceptedEnd.lowerBound]
+        )
+        let captureTurn = try XCTUnwrap(accepted.range(
+            of: "let noRadioPresentCaptureTurn ="
+        ))
+        let directSelector = try XCTUnwrap(accepted.range(
+            of: "resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded("
+        ))
+        let presentArm = try XCTUnwrap(accepted.range(
+            of: "noRadioPresentCaptureTurn\n                            || Self"
+        ))
+        XCTAssertLessThan(captureTurn.lowerBound, directSelector.lowerBound)
+        XCTAssertLessThan(directSelector.lowerBound, presentArm.lowerBound)
+
+        let autonomousStart = try XCTUnwrap(source.range(
+            of: "private func attemptAutonomousBackgroundCatchUpAfterAcceptedHRIfNeeded("
+        ))
+        let autonomousEnd = try XCTUnwrap(source.range(
+            of: "/// The current flush-debt level",
+            range: autonomousStart.upperBound..<source.endIndex
+        ))
+        let autonomous = String(
+            source[autonomousStart.lowerBound..<autonomousEnd.lowerBound]
+        )
+        XCTAssertTrue(autonomous.contains(
+            "|| connectedRawNoRadioCaptureTurnIsCurrent()"
+        ), "forced/full-drain/range-loss fallbacks must stay fenced for the capture turn")
+
+        let rawAttemptStart = try XCTUnwrap(source.range(
+            of: "private func attemptConnectedRawHistoryCatchUpAfterAcceptedHRIfNeeded("
+        ))
+        let rawAttempt = String(
+            source[rawAttemptStart.lowerBound..<autonomousStart.lowerBound]
+        )
+        let armedWindow = try XCTUnwrap(rawAttempt.range(
+            of: "connectedRawPresentBankRetryNotBefore("
+        ))
+        let consumeDeferral = try XCTUnwrap(rawAttempt.range(
+            of: "connectedRawNoRadioCaptureDeferral = nil",
+            range: armedWindow.upperBound..<rawAttempt.endIndex
+        ))
+        XCTAssertLessThan(armedWindow.lowerBound, consumeDeferral.lowerBound)
+    }
+
+    func testGlobalFrontierEvaluationCoalescesOneFreshTrailingPass() {
+        var gate = AtriaBLEManager.GlobalFrontierEvaluationCoalescer()
+        XCTAssertTrue(gate.request(whileEvaluationInFlight: false))
+        XCTAssertFalse(gate.request(whileEvaluationInFlight: true))
+        XCTAssertFalse(gate.request(whileEvaluationInFlight: true))
+        XCTAssertTrue(gate.consumeTrailingRequest())
+        XCTAssertFalse(gate.consumeTrailingRequest())
+    }
+
+    func testConnectedRawCatchUpUsesAdaptiveThermalDutyAndProgressCadence() {
+        let started = Date(timeIntervalSince1970: 1_000)
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpBudgetDisposition(
+                startedAt: started,
+                lastAcceptedHeartRateAt: started,
+                now: started.addingTimeInterval(30),
+                liveSilenceLimit: 45,
+                thermalState: .nominal,
+                durableBoundaryReached: false
+            ),
+            .keepServing,
+            "a bounded multi-page burst must not be cut through a page"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpBudgetDisposition(
+                startedAt: started,
+                lastAcceptedHeartRateAt: started.addingTimeInterval(6),
+                now: started.addingTimeInterval(7),
+                liveSilenceLimit: 45,
+                thermalState: .serious,
+                durableBoundaryReached: false
+            ),
+            .keepServing
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpBudgetDisposition(
+                startedAt: started,
+                lastAcceptedHeartRateAt: started.addingTimeInterval(9),
+                now: started.addingTimeInterval(46),
+                liveSilenceLimit: 45,
+                thermalState: .serious,
+                durableBoundaryReached: true
+            ),
+            .keepServing,
+            "46 seconds plus durable progress must keep serving until the fourth exact ACK boundary"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpBudgetDisposition(
+                startedAt: started,
+                lastAcceptedHeartRateAt: started,
+                now: started.addingTimeInterval(45),
+                liveSilenceLimit: 45,
+                thermalState: .serious,
+                durableBoundaryReached: false
+            ),
+            .keepServing,
+            "the polling budget cannot cut a no-boundary page; the independent progress-clocked idle watchdog owns a genuine stall"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpBudgetDisposition(
+                startedAt: started,
+                lastAcceptedHeartRateAt: started,
+                now: started,
+                liveSilenceLimit: 45,
+                thermalState: .critical,
+                durableBoundaryReached: false
+            ),
+            .finishForPowerPressure
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .shouldFinishConnectedRawHistoryCatchUpAtACKBoundary(
+                    acknowledgedPages: 3
+                )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager
+                .shouldFinishConnectedRawHistoryCatchUpAtACKBoundary(
+                    acknowledgedPages: 4
+                )
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpTargetAcknowledgedPages(
+                thermalState: .nominal
+            ),
+            16
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpTargetAcknowledgedPages(
+                thermalState: .fair
+            ),
+            16
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpTargetAcknowledgedPages(
+                thermalState: .serious
+            ),
+            4
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpTargetAcknowledgedPages(
+                thermalState: .critical
+            ),
+            1
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .shouldFinishConnectedRawHistoryCatchUpAtACKBoundary(
+                    acknowledgedPages: 15,
+                    minimumAcknowledgedPages: 16
+                )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager
+                .shouldFinishConnectedRawHistoryCatchUpAtACKBoundary(
+                    acknowledgedPages: 16,
+                    minimumAcknowledgedPages: 16
+                )
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: true,
+                cursorCaughtUp: false,
+                durableRows: 200,
+                frontierAdvanceSeconds: 90,
+                thermalState: .nominal,
+                durableProgressAuthorized: true,
+                thermalInterruption: false,
+                consecutiveProductiveSlices: 0
+            ),
+            .resumeAfter(2)
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: true,
+                cursorCaughtUp: false,
+                durableRows: 200,
+                frontierAdvanceSeconds: 90,
+                thermalState: .nominal,
+                durableProgressAuthorized: true,
+                thermalInterruption: false,
+                consecutiveProductiveSlices: 7
+            ),
+            .resumeAfter(8)
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: true,
+                cursorCaughtUp: false,
+                durableRows: 200,
+                frontierAdvanceSeconds: 90,
+                thermalState: .nominal,
+                durableProgressAuthorized: true,
+                thermalInterruption: false,
+                consecutiveProductiveSlices: 0,
+                publicationYieldNeeded: true
+            ),
+            .yieldForPublication(120),
+            "one sixteen-page nominal slice is a sufficient quantum before app-facing work"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: true,
+                cursorCaughtUp: false,
+                durableRows: 20,
+                frontierAdvanceSeconds: 8,
+                thermalState: .serious,
+                durableProgressAuthorized: true,
+                thermalInterruption: true,
+                consecutiveProductiveSlices: 0,
+                publicationYieldNeeded: true
+            ),
+            .resumeAfter(2),
+            "serious heat cannot run publication, so its proven four-page raw duty must continue without a 120-second empty yield"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: true,
+                cursorCaughtUp: false,
+                durableRows: 200,
+                frontierAdvanceSeconds: 90,
+                thermalState: .nominal,
+                durableProgressAuthorized: true,
+                thermalInterruption: false,
+                consecutiveProductiveSlices: 0,
+                publicationYieldNeeded: true,
+                publicationYieldRunnable: false
+            ),
+            .resumeAfter(2),
+            "a pending intent cannot pause raw transfer while lifecycle or Low Power Mode makes publication unrunnable"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: true,
+                cursorCaughtUp: false,
+                durableRows: 0,
+                frontierAdvanceSeconds: 0,
+                thermalState: .nominal,
+                durableProgressAuthorized: false,
+                thermalInterruption: false,
+                consecutiveProductiveSlices: 0
+            ),
+            .retryAfter(120)
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: true,
+                cursorCaughtUp: false,
+                durableRows: 20,
+                frontierAdvanceSeconds: 8,
+                thermalState: .serious,
+                durableProgressAuthorized: true,
+                thermalInterruption: true,
+                consecutiveProductiveSlices: 0
+            ),
+            .resumeAfter(2),
+            "fresh live HR after the burst is the thermal duty pause; serious heat must not add another fixed 20-second stall"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: true,
+                cursorCaughtUp: false,
+                durableRows: 20,
+                frontierAdvanceSeconds: 8,
+                thermalState: .critical,
+                durableProgressAuthorized: true,
+                thermalInterruption: true,
+                consecutiveProductiveSlices: 0
+            ),
+            .awaitThermalRecovery
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: true,
+                cursorCaughtUp: true,
+                durableRows: 0,
+                frontierAdvanceSeconds: 0,
+                thermalState: .nominal,
+                durableProgressAuthorized: true,
+                thermalInterruption: false,
+                consecutiveProductiveSlices: 0
+            ),
+            .complete
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: true,
+                cursorCaughtUp: false,
+                durableRows: 20,
+                frontierAdvanceSeconds: 8,
+                thermalState: .nominal,
+                durableProgressAuthorized: false,
+                thermalInterruption: false,
+                consecutiveProductiveSlices: 0
+            ),
+            .retryAfter(120),
+            "inserted rows from a nonterminal/failing generation cannot fast-chain without a durable ACK/terminal boundary"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: true,
+                cursorCaughtUp: false,
+                durableRows: 0,
+                frontierAdvanceSeconds: 0,
+                thermalState: .serious,
+                durableProgressAuthorized: false,
+                thermalInterruption: true,
+                consecutiveProductiveSlices: 0
+            ),
+            .retryAfter(120),
+            "serious heat never turns a zero-progress attempt into a 20-second command loop"
+        )
+
+        XCTAssertTrue(
+            AtriaBLEManager
+                .connectedRawHistoryCatchUpContinuationDefersProjection(
+                    continuationPending: true,
+                    publicationYieldActive: false
+                )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .connectedRawHistoryCatchUpContinuationDefersProjection(
+                    continuationPending: true,
+                    publicationYieldActive: true
+                ),
+            "the continuation stays pending during a yield without claiming projection ownership"
+        )
+        let yieldDeadline = started.addingTimeInterval(120)
+        XCTAssertTrue(
+            AtriaBLEManager
+                .connectedRawHistoryCatchUpPublicationYieldShouldRemainActive(
+                    publicationNeeded: true,
+                    publicationSucceeded: false,
+                    now: yieldDeadline.addingTimeInterval(-0.001),
+                    deadline: yieldDeadline
+                )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .connectedRawHistoryCatchUpPublicationYieldShouldRemainActive(
+                    publicationNeeded: true,
+                    publicationSucceeded: false,
+                    now: yieldDeadline,
+                    deadline: yieldDeadline
+                ),
+            "the absolute deadline must release the process-local token"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .connectedRawHistoryCatchUpPublicationYieldShouldRemainActive(
+                    publicationNeeded: true,
+                    publicationSucceeded: true,
+                    now: yieldDeadline.addingTimeInterval(-30),
+                    deadline: yieldDeadline
+                )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .connectedRawHistoryCatchUpPublicationYieldShouldRemainActive(
+                    publicationNeeded: true,
+                    publicationSucceeded: false,
+                    publicationAttemptCompleted: true,
+                    now: yieldDeadline.addingTimeInterval(-119),
+                    deadline: yieldDeadline
+                ),
+            "one completed bounded offer must release raw immediately even when durable bootstrap intent remains"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .connectedRawHistoryCatchUpPublicationYieldShouldRemainActive(
+                    publicationNeeded: false,
+                    publicationSucceeded: false,
+                    now: yieldDeadline.addingTimeInterval(-30),
+                    deadline: yieldDeadline
+                )
+        )
+
+        let progress = AtriaBLEManager.connectedRawHistoryCatchUpSliceProgress(
+            durableRows: 240,
+            startedAt: started,
+            finishedAt: started.addingTimeInterval(60),
+            startFrontierUnix: 5_000,
+            endFrontierUnix: 5_180
+        )
+        XCTAssertEqual(progress.durationSeconds, 60, accuracy: 0.001)
+        XCTAssertEqual(progress.rowsPerSecond, 4, accuracy: 0.001)
+        XCTAssertEqual(progress.frontierAdvanceSeconds, 180, accuracy: 0.001)
+
+        XCTAssertEqual(
+            AtriaBLEManager.advancedDurableHistoricalFrontier(
+                existing: 5_000,
+                durableEffectiveUnix: [4_900, 5_120, 5_100],
+                now: Date(timeIntervalSince1970: 6_000)
+            ),
+            5_120
+        )
+        XCTAssertNil(
+            AtriaBLEManager.advancedDurableHistoricalFrontier(
+                existing: 5_120,
+                durableEffectiveUnix: [5_100, 5_120],
+                now: Date(timeIntervalSince1970: 6_000)
+            ),
+            "a durable flush never regresses or rewrites the frontier"
+        )
+        XCTAssertNil(
+            AtriaBLEManager.advancedDurableHistoricalFrontier(
+                existing: 5_120,
+                durableEffectiveUnix: [6_301],
+                now: Date(timeIntervalSince1970: 6_000),
+                futureTolerance: 300
+            ),
+            "a clock-corrupt future row is not display-frontier authority"
+        )
+    }
+
+    func testHistoryServeCutoverAlwaysClearsArmedStateAndRetainsPrearm() {
+        XCTAssertEqual(
+            AtriaBLEManager
+                .historicalMotionBankStateAfterHistoryServeCutover(),
+            .init(
+                processArmed: false,
+                persistedEnabled: false,
+                prearmRequested: true
+            )
+        )
+    }
+
+    func testMotionBankRearmTracksRealRawOwnershipNotDurableTicketCount() {
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankRearmBlockedByRawOwnership(
+                historyTransportActive: true,
+                rawContinuationPending: false,
+                postHistoryRawRestorationActive: false,
+                explicitPresentCapturePriority: true
+            ),
+            "manual priority cannot interleave 69/01 with a physical owner"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankRearmBlockedByRawOwnership(
+                historyTransportActive: false,
+                rawContinuationPending: true,
+                postHistoryRawRestorationActive: true,
+                explicitPresentCapturePriority: false
+            ),
+            "between-slice restoration remains one logical FIFO episode"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.historicalMotionBankRearmBlockedByRawOwnership(
+                historyTransportActive: false,
+                rawContinuationPending: true,
+                postHistoryRawRestorationActive: false,
+                explicitPresentCapturePriority: true
+            ),
+            "a workout may preempt only after physical transport released"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.historicalMotionBankRearmBlockedByRawOwnership(
+                historyTransportActive: false,
+                rawContinuationPending: false,
+                postHistoryRawRestorationActive: false,
+                explicitPresentCapturePriority: false
+            ),
+            "an unrelated durable/local ticket is not radio ownership"
+        )
+    }
+
+    func testAcceptedCurrentServeFrameCancelsOnlyItsMatchingContinuation() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldCancelHistoricalPageContinuationForFrame(
+                activeGeneration: 41,
+                continuationGeneration: 41,
+                frameGeneration: 41,
+                ingressAccepted: true,
+                callbackCapturedCurrentServe: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldCancelHistoricalPageContinuationForFrame(
+                activeGeneration: 41,
+                continuationGeneration: 41,
+                frameGeneration: 41,
+                ingressAccepted: false,
+                callbackCapturedCurrentServe: true
+            ),
+            "a callback rejected by the ingress gate must not cancel anything"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldCancelHistoricalPageContinuationForFrame(
+                activeGeneration: 41,
+                continuationGeneration: 41,
+                frameGeneration: 41,
+                ingressAccepted: true,
+                callbackCapturedCurrentServe: false
+            ),
+            "a predecessor callback without this serve token is not page activity"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldCancelHistoricalPageContinuationForFrame(
+                activeGeneration: 42,
+                continuationGeneration: 41,
+                frameGeneration: 41,
+                ingressAccepted: true,
+                callbackCapturedCurrentServe: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldCancelHistoricalPageContinuationForFrame(
+                activeGeneration: 41,
+                continuationGeneration: 42,
+                frameGeneration: 41,
+                ingressAccepted: true,
+                callbackCapturedCurrentServe: true
+            ),
+            "an older frame cannot cancel a newer continuation generation"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldCancelHistoricalPageContinuationForFrame(
+                activeGeneration: 41,
+                continuationGeneration: nil,
+                frameGeneration: 41,
+                ingressAccepted: true,
+                callbackCapturedCurrentServe: true
+            )
+        )
+    }
+
+    func testConnectedRawIngressRequiresCallbackCapturedServeAndAdmission() {
+        XCTAssertTrue(AtriaBLEManager.shouldAcceptConnectedRawHistoryIngress(
+            exactRawAuthorityActive: false,
+            callbackCapturedCurrentServe: false,
+            admissionAttemptAvailable: false
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldAcceptConnectedRawHistoryIngress(
+            exactRawAuthorityActive: true,
+            callbackCapturedCurrentServe: false,
+            admissionAttemptAvailable: true
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldAcceptConnectedRawHistoryIngress(
+            exactRawAuthorityActive: true,
+            callbackCapturedCurrentServe: true,
+            admissionAttemptAvailable: false
+        ))
+        XCTAssertTrue(AtriaBLEManager.shouldAcceptConnectedRawHistoryIngress(
+            exactRawAuthorityActive: true,
+            callbackCapturedCurrentServe: true,
+            admissionAttemptAvailable: true
+        ))
+    }
+
+    func testConnectedRawConsumedPrefixRetirementAllowsScheduledUnreadDrainOnly() {
+        func safe(
+            exactCleanACKFinish: Bool = true,
+            pendingPersistence: Int = 0,
+            inFlight: Bool = false,
+            scheduled: Bool = true,
+            deferred: Bool = false,
+            flushing: Bool = false,
+            pendingACK: Bool = false,
+            ackGate: Bool = false
+        ) -> Bool {
+            AtriaBLEManager.shouldRetireConnectedRawConsumedPrefix(
+                exactCleanACKFinishAuthority: exactCleanACKFinish,
+                durableBoundaryReached: true,
+                acknowledgedPages: 4,
+                pendingPersistenceCount: pendingPersistence,
+                admissionBatchInFlight: inFlight,
+                admissionBatchScheduled: scheduled,
+                hasDeferredEvent: deferred,
+                durableFlushInFlight: flushing,
+                hasPendingACK: pendingACK,
+                ackGateDeferringCallbacks: ackGate
+            )
+        }
+
+        XCTAssertTrue(
+            safe(scheduled: true),
+            "a merely scheduled MainActor drain has popped nothing and the unread suffix must be compactable"
+        )
+        XCTAssertFalse(
+            safe(exactCleanACKFinish: false),
+            "an earlier page ACK cannot retire a later page's dequeued prefix"
+        )
+        XCTAssertFalse(safe(pendingPersistence: 1))
+        XCTAssertFalse(safe(inFlight: true))
+        XCTAssertFalse(safe(deferred: true))
+        XCTAssertFalse(safe(flushing: true))
+        XCTAssertFalse(safe(pendingACK: true))
+        XCTAssertFalse(safe(ackGate: true))
+    }
+
+    func testConnectedRawCatchUpIsExactGenerationBoundAndLocallyTerminal() throws {
+        let source = try managerSource()
+        XCTAssertTrue(source.contains(
+            "private struct ConnectedRawHistoryCatchUpRequestAuthority"
+        ))
+        XCTAssertTrue(source.contains(
+            "let callbackSource: AtriaBLECallbackEpochFence.Source"
+        ))
+        XCTAssertTrue(source.contains(
+            "private struct ConnectedRawHistoryCatchUpGenerationAuthority"
+        ))
+        XCTAssertTrue(source.contains("let generation: UInt64"))
+        XCTAssertTrue(source.contains("let startedAt: Date"))
+        XCTAssertTrue(source.contains("let startFrontierUnix: TimeInterval"))
+        XCTAssertTrue(source.contains(
+            "authority.callbackSource.peripheralObjectID\n                == ObjectIdentifier(peripheral)"
+        ))
+        XCTAssertTrue(source.contains(
+            "activeConnectedRawHistoryCatchUpGenerationAuthority = .init("
+        ))
+        XCTAssertTrue(source.contains(
+            ".claimExclusiveConnectedCanonicalTransport("
+        ))
+        XCTAssertTrue(source.contains(
+            "armConnectedRealtimePreservingHistoryBudget("
+        ))
+        XCTAssertTrue(source.contains(
+            "connectedRawHistoryCatchUpForegroundLiveSilenceLimit: TimeInterval = 45"
+        ))
+        XCTAssertTrue(source.contains(
+            "connectedRawHistoryCatchUpBackgroundLiveSilenceLimit: TimeInterval = 45"
+        ))
+        XCTAssertTrue(source.contains(
+            "activeConnectedRawHistoryCatchUpGenerationAuthority = nil"
+        ))
+        XCTAssertTrue(source.contains(
+            "shouldResumePendingSync = resumePendingSync\n            && !boundedConnectedRawCatchUp"
+        ))
+        XCTAssertTrue(source.contains(
+            "if connectedRawHistoryCatchUpRequestAuthority == nil,\n           Self.shouldDeferAutomaticOfflineSyncForThermalPressure("
+        ), "the generic serious-heat gate must not make the adaptive exact raw lane unreachable")
+        XCTAssertTrue(source.contains(
+            "if connectedRawHistoryCatchUpRequestAuthority == nil,\n           !flushMaintenanceWindow,\n           Self.shouldDeferAutomaticOfflineSyncForConnectedLink("
+        ), "the legacy metric-gap connected guard must not reject exact raw-only catch-up")
+
+        let budgetStart = try XCTUnwrap(source.range(
+            of: "private func armConnectedRealtimePreservingHistoryBudget("
+        ))
+        let budgetEnd = try XCTUnwrap(source.range(
+            of: "private func holdConnectedMotionBankBeforeFreshHRFirstRefusal(",
+            range: budgetStart.upperBound..<source.endIndex
+        ))
+        let budget = String(source[budgetStart.lowerBound..<budgetEnd.lowerBound])
+        let rawPowerBranchStart = try XCTUnwrap(budget.range(
+            of: "if let rawAuthority ="
+        ))
+        let motionPowerBranchStart = try XCTUnwrap(budget.range(
+            of: ".connectedMotionBankHistoryBudgetDisposition(",
+            range: rawPowerBranchStart.upperBound..<budget.endIndex
+        ))
+        let rawPowerBranch = String(
+            budget[rawPowerBranchStart.lowerBound..<motionPowerBranchStart.lowerBound]
+        )
+        XCTAssertTrue(rawPowerBranch.contains(
+            "connectedRawHistoryCatchUpBudgetDisposition("
+        ))
+        XCTAssertFalse(rawPowerBranch.contains(
+            "connectedMotionBankHistoryAbsoluteLimit"
+        ))
+        XCTAssertFalse(rawPowerBranch.contains("isLowPowerModeEnabled"))
+        XCTAssertTrue(String(budget[motionPowerBranchStart.lowerBound...]).contains(
+            "isLowPowerModeEnabled"
+        ))
+        XCTAssertTrue(String(budget[motionPowerBranchStart.lowerBound...]).contains(
+            "connectedMotionBankHistoryAbsoluteLimit"
+        ))
+        XCTAssertTrue(budget.contains(
+            "finishConnectedHistoryFailureWithoutDisconnectIfNeeded("
+        ))
+        XCTAssertFalse(budget.contains("cancelPeripheralConnection("))
+        XCTAssertFalse(budget.contains("rebuildCentralForWedgedSessionOnce("))
+
+        let failureStart = try XCTUnwrap(source.range(
+            of: "private func finishConnectedHistoryFailureWithoutDisconnectIfNeeded("
+        ))
+        let failureEnd = try XCTUnwrap(source.range(
+            of: "private func beginHistoricalArchiveWarmBackgroundLease(",
+            range: failureStart.upperBound..<source.endIndex
+        ))
+        let failure = String(source[failureStart.lowerBound..<failureEnd.lowerBound])
+        XCTAssertTrue(failure.contains(
+            "activeConnectedRealtimePreservingHistoryAuthorityExists("
+        ))
+        XCTAssertFalse(failure.contains("cancelPeripheralConnection("))
+        XCTAssertFalse(failure.contains("rebuildCentralForWedgedSessionOnce("))
+    }
+
+    func testConnectedRawCatchUpHotPathQueuesNoGenericAuthorityAndPreserves2A37() throws {
+        let source = try managerSource()
+        let queueStart = try XCTUnwrap(source.range(
+            of: "func queueConnectedRawHistoryCatchUpIntent("
+        ))
+        let queueEnd = try XCTUnwrap(source.range(
+            of: "private func attemptConnectedRawHistoryCatchUpAfterAcceptedHRIfNeeded(",
+            range: queueStart.upperBound..<source.endIndex
+        ))
+        let queue = String(source[queueStart.lowerBound..<queueEnd.lowerBound])
+        XCTAssertFalse(queue.contains("UserDefaults"))
+        XCTAssertFalse(queue.contains("requestOfflineHistoricalSyncIfNeeded("))
+
+        let retainStart = try XCTUnwrap(source.range(
+            of: "private func retainPendingOfflineHistoricalSyncRequest("
+        ))
+        let retainEnd = try XCTUnwrap(source.range(
+            of: "private func takePendingOfflineHistoricalSyncRequest(",
+            range: retainStart.upperBound..<source.endIndex
+        ))
+        let retain = String(source[retainStart.lowerBound..<retainEnd.lowerBound])
+        XCTAssertTrue(retain.contains(
+            "if transientConnectedRawHistoryCatchUpRequestAuthority != nil"
+        ))
+        XCTAssertTrue(retain.contains("return retained"))
+        XCTAssertTrue(source.contains(
+            "Production WHOOP 4 recovery first quiets only the proprietary"
+        ))
+        XCTAssertTrue(source.contains("Standard 2A37 HR/RR remains live"))
+        XCTAssertFalse(source.contains(
+            "transientConnectedRawHistoryCatchUpRequestAuthority = pending"
+        ))
+        XCTAssertTrue(source.contains(
+            "trigger: \"accepted_hr_batch\""
+        ))
+        XCTAssertFalse(source.contains(
+            "connectedRawHistoryCatchUpAttemptCooldown"
+        ))
+        XCTAssertTrue(source.contains(
+            "|| connectedRawHistoryCatchUpContinuationPending"
+        ))
+        XCTAssertTrue(source.contains(
+            "|| connectedRawNoRadioCaptureTurnIsCurrent()"
+        ), "a failed productive continuation admission must occupy the outer scheduling turn while present capture rearms")
+        XCTAssertTrue(source.contains(
+            "postHistoryLiveRestorationGeneration != nil,\n           connectedRawHistoryCatchUpContinuationPending"
+        ))
+        XCTAssertTrue(source.contains(
+            "connectedRawHistoryCatchUpContinuationDefersProjection("
+        ))
+        XCTAssertTrue(source.contains(
+            "publicationYieldActive:\n                connectedRawHistoryCatchUpPublicationYield != nil"
+        ), "projection deferral must open only for the exact process-local yield token")
+        XCTAssertTrue(source.contains(
+            "var onConnectedRawCatchUpPublicationYield:"
+        ))
+        XCTAssertTrue(source.contains(
+            "var connectedRawCatchUpPublicationYieldIsNeeded: (() -> Bool)?"
+        ))
+        XCTAssertTrue(source.contains(
+            "func releaseConnectedRawCatchUpPublicationYieldForLifecycle("
+        ))
+        XCTAssertTrue(source.contains(
+            "private struct ConnectedRawHistoryCatchUpPublicationYield"
+        ))
+        XCTAssertTrue(source.contains("let token: UUID"))
+        XCTAssertTrue(source.contains("let deadline: Date"))
+        XCTAssertTrue(source.contains(
+            "scheduleConnectedRawHistoryCatchUpContinuation("
+        ))
+        XCTAssertTrue(source.contains("rows_per_s=%.3f"))
+        XCTAssertTrue(source.contains("frontier_advance_s=%.3f"))
+        let continuationStart = try XCTUnwrap(source.range(
+            of: "private func scheduleConnectedRawHistoryCatchUpContinuation("
+        ))
+        let continuationEnd = try XCTUnwrap(source.range(
+            of: "/// Runs the terminal consumer materialization lanes",
+            range: continuationStart.upperBound..<source.endIndex
+        ))
+        let continuation = String(
+            source[continuationStart.lowerBound..<continuationEnd.lowerBound]
+        )
+        XCTAssertFalse(continuation.contains(
+            "requestOfflineHistoricalSyncIfNeeded("
+        ))
+        XCTAssertFalse(continuation.contains("cancelPeripheralConnection("))
+        XCTAssertFalse(continuation.contains(
+            "rebuildCentralForWedgedSessionOnce("
+        ))
+        XCTAssertTrue(continuation.contains(
+            "beginConnectedRawHistoryCatchUpPublicationYield("
+        ))
+        XCTAssertTrue(continuation.contains(
+            "publicationYieldRunnable: publicationYieldRunnable"
+        ))
+        XCTAssertTrue(continuation.contains(
+            "publicationAttemptCompleted: true"
+        ))
+        XCTAssertTrue(continuation.contains(
+            "connectedRawHistoryCatchUpContinuationPending = true"
+        ))
+        XCTAssertTrue(continuation.contains(
+            "action=await_fresh_2a37_exact_authority_no_radio_command"
+        ))
+
+        let motionOffloadStart = try XCTUnwrap(source.range(
+            of: "private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded("
+        ))
+        let motionOffloadTail = String(source[motionOffloadStart.lowerBound...])
+        XCTAssertTrue(motionOffloadTail.prefix(2_500).contains(
+            "guard connectedRawHistoryCatchUpPublicationYield == nil"
+        ))
+        XCTAssertTrue(motionOffloadTail.prefix(2_500).contains(
+            "allow_present_capture_rearm_no_history_command"
+        ))
+
+        let acceptedOrphanStart = try XCTUnwrap(source.range(
+            of: "reason: \"first_accepted_hr_orphan_ingress_replay\""
+        ))
+        let acceptedOrphanTail = String(source[
+            acceptedOrphanStart.lowerBound...
+        ].prefix(320))
+        XCTAssertTrue(acceptedOrphanTail.contains(
+            "retainHistoricalRequest: false"
+        ), "raw orphan archival on accepted HR must never mint a generic transport request")
+
+        let flushStart = try XCTUnwrap(source.range(
+            of: "let durableMetricFacts = self.historicalMetricDurabilityFence"
+        ))
+        let ackEffect = try XCTUnwrap(source.range(
+            of: "let next = self.historyDrain.durableFlushCompleted(",
+            range: flushStart.upperBound..<source.endIndex
+        ))
+        let flushToACK = String(source[flushStart.lowerBound..<ackEffect.lowerBound])
+        XCTAssertTrue(flushToACK.contains(
+            "commitDurableHistoricalRawFrontier("
+        ))
+        XCTAssertTrue(flushToACK.contains("if error == nil"))
+        let successfulFlush = try XCTUnwrap(flushToACK.range(
+            of: "if error == nil"
+        ))
+        let frontierCommit = try XCTUnwrap(flushToACK.range(
+            of: "commitDurableHistoricalRawFrontier("
+        ))
+        XCTAssertLessThan(
+            successfulFlush.lowerBound,
+            frontierCommit.lowerBound,
+            "frontier advancement must remain behind the successful canonical flush and before ACK reducer advancement"
+        )
+
+        let ackStart = try XCTUnwrap(source.range(
+            of: "private func completeHistoricalACKAcceptance("
+        ))
+        let ackEnd = try XCTUnwrap(source.range(
+            of: "private func reackDurableHistoricalReplay(",
+            range: ackStart.upperBound..<source.endIndex
+        ))
+        let ack = String(source[ackStart.lowerBound..<ackEnd.lowerBound])
+        let burstStop = try XCTUnwrap(ack.range(
+            of: "shouldFinishConnectedRawHistoryCatchUpAtACKBoundary("
+        ))
+        let cleanACKBoundaryCapture = try XCTUnwrap(ack.range(
+            of: "captureDurablyAcknowledgedPrefixBoundary()",
+            range: burstStop.upperBound..<ack.endIndex
+        ))
+        let localACKFinish = try XCTUnwrap(ack.range(
+            of: "finishConnectedHistoryFailureWithoutDisconnectIfNeeded(",
+            range: cleanACKBoundaryCapture.upperBound..<ack.endIndex
+        ))
+        let nextPage = try XCTUnwrap(ack.range(
+            of: "armHistoricalPageContinuationAfterACK("
+        ))
+        XCTAssertLessThan(burstStop.lowerBound, cleanACKBoundaryCapture.lowerBound)
+        XCTAssertLessThan(cleanACKBoundaryCapture.lowerBound, localACKFinish.lowerBound)
+        XCTAssertLessThan(localACKFinish.lowerBound, nextPage.lowerBound)
+        XCTAssertLessThan(burstStop.lowerBound, nextPage.lowerBound)
+        XCTAssertTrue(ack.contains(
+            "reason: \"exact_connected_raw_ack_burst_boundary\""
+        ))
+        XCTAssertFalse(ack.contains("cancelPeripheralConnection("))
+        XCTAssertFalse(ack.contains("rebuildCentralForWedgedSessionOnce("))
+
+        let finishStart = try XCTUnwrap(source.range(
+            of: "private func finishOfflineHistoricalSync("
+        ))
+        let finishEnd = try XCTUnwrap(source.range(
+            of: "private func finalizeOfflineHistoricalSyncAfterLiveRestoration(",
+            range: finishStart.upperBound..<source.endIndex
+        ))
+        let finish = String(source[finishStart.lowerBound..<finishEnd.lowerBound])
+        XCTAssertTrue(finish.contains(
+            "connectedRawCleanACKFinishAuthority"
+        ))
+        XCTAssertTrue(finish.contains(
+            ".coversEntireJournal == true"
+        ))
+        XCTAssertTrue(finish.contains("connectedRawIngressFullyAcknowledged"))
+        XCTAssertTrue(finish.contains("historicalIngressSpool?.remove()"))
+        XCTAssertTrue(finish.contains("pendingHistoricalTransportEventCount == 0"))
+        XCTAssertTrue(finish.contains("historyDrain.pendingPersistenceCount == 0"))
+        XCTAssertTrue(finish.contains("!historicalAdmissionBatchInFlight"))
+        XCTAssertTrue(finish.contains("connectedRawConsumedPrefixRetirementSafe"))
+        XCTAssertTrue(finish.contains(
+            "shouldRetireConnectedRawConsumedPrefix("
+        ))
+        XCTAssertTrue(finish.contains(
+            "hasDeferredEvent:\n                    historicalIngressDeferredEvent != nil"
+        ))
+        XCTAssertTrue(finish.contains("!historyDurableFlushInFlight"))
+        XCTAssertTrue(finish.contains("pendingHistoryEndACK == nil"))
+        XCTAssertTrue(finish.contains("!historyACKGate.requiresHistoryCallbackDeferral"))
+        XCTAssertTrue(finish.contains("retireConsumedPrefix("))
+        XCTAssertTrue(finish.contains(
+            "through: connectedRawCleanACKFinishAuthority"
+        ))
+        XCTAssertTrue(finish.contains(
+            "!boundedConnectedRawCatchUp"
+        ), "a connected-raw terminal without the exact clean-ACK finish authority must retain its full spool")
+
+        let metadataStart = try XCTUnwrap(source.range(
+            of: "private func handleHistoryMetadata("
+        ))
+        let dataStart = try XCTUnwrap(source.range(
+            of: "private func handleHistoricalData(",
+            range: metadataStart.upperBound..<source.endIndex
+        ))
+        let drainStart = try XCTUnwrap(source.range(
+            of: "private func drainNextHistoricalTransportEventBurst(",
+            range: dataStart.upperBound..<source.endIndex
+        ))
+        let metadata = String(source[metadataStart.lowerBound..<dataStart.lowerBound])
+        let data = String(source[dataStart.lowerBound..<drainStart.lowerBound])
+        for handler in [metadata, data] {
+            XCTAssertTrue(handler.contains("shouldAcceptConnectedRawHistoryIngress("))
+            XCTAssertTrue(handler.contains("historyTransportPhaseFence.acceptsServe("))
+            XCTAssertTrue(handler.contains("historicalAdmissionAttempt != nil"))
+            XCTAssertTrue(handler.contains("finishConnectedHistoryFailureWithoutDisconnectIfNeeded("))
+            XCTAssertFalse(handler.contains("rebuildCentralForWedgedSessionOnce("))
+        }
+        let metadataIngressEnd = try XCTUnwrap(metadata.range(
+            of: "private func enqueueHistoricalIngress("
+        ))
+        let metadataIngress = String(metadata[..<metadataIngressEnd.lowerBound])
+        XCTAssertFalse(metadataIngress.contains("cancelPeripheralConnection("))
+        XCTAssertFalse(data.contains("cancelPeripheralConnection("))
+        let dataGate = try XCTUnwrap(data.range(
+            of: "shouldAcceptConnectedRawHistoryIngress("
+        ))
+        let acceptedGate = try XCTUnwrap(data.range(
+            of: "guard ingressAccepted else",
+            range: dataGate.upperBound..<data.endIndex
+        ))
+        let pageContinuationCancellation = try XCTUnwrap(data.range(
+            of: "cancelHistoricalPageContinuationForAcceptedCurrentServeFrameIfNeeded(",
+            range: acceptedGate.upperBound..<data.endIndex
+        ))
+        let firstFrameMutation = try XCTUnwrap(data.range(
+            of: "recordResearchProbeCandidate("
+        ))
+        XCTAssertLessThan(dataGate.lowerBound, firstFrameMutation.lowerBound)
+        XCTAssertLessThan(acceptedGate.lowerBound, pageContinuationCancellation.lowerBound)
+        XCTAssertLessThan(
+            pageContinuationCancellation.lowerBound,
+            firstFrameMutation.lowerBound,
+            "only a frame that crossed the callback-captured ingress gate may cancel the silence fallback"
+        )
+        let cancellationStart = try XCTUnwrap(source.range(
+            of: "private func cancelHistoricalPageContinuationForAcceptedCurrentServeFrameIfNeeded("
+        ))
+        let cancellationEnd = try XCTUnwrap(source.range(
+            of: "private func scheduleHistoricalTransportEventDrain(",
+            range: cancellationStart.upperBound..<source.endIndex
+        ))
+        let cancellation = String(
+            source[cancellationStart.lowerBound..<cancellationEnd.lowerBound]
+        )
+        XCTAssertTrue(cancellation.contains(
+            "shouldCancelHistoricalPageContinuationForFrame("
+        ))
+        XCTAssertTrue(cancellation.contains("historicalPageContinuationTask?.cancel()"))
+        for forbiddenMutation in [
+            "pendingHistoryEndACK",
+            "historicalIngressSpool",
+            "historyACKGate",
+            "writeCompletionLedger",
+            "sendCommand(",
+            "sendHistoryCommandAwaitingWriteConfirmation(",
+            "Cmd.sendHistoricalData",
+            "Cmd.historicalDataResult",
+            "captureDurablyAcknowledgedPrefixBoundary(",
+            "retireConsumedPrefix(",
+            "processHistoricalDrainEffects("
+        ] {
+            XCTAssertFalse(
+                cancellation.contains(forbiddenMutation),
+                "accepted-frame cancellation must not mutate ACK, spool, durability, or transport state: \(forbiddenMutation)"
+            )
+        }
+        let continuationArmStart = try XCTUnwrap(source.range(
+            of: "private func armHistoricalPageContinuationAfterACK("
+        ))
+        let continuationArmEnd = try XCTUnwrap(source.range(
+            of: "private func submitGate4DailyBankRearmAtDurableBoundaryIfSafe(",
+            range: continuationArmStart.upperBound..<source.endIndex
+        ))
+        let continuationArm = String(
+            source[continuationArmStart.lowerBound..<continuationArmEnd.lowerBound]
+        )
+        let cancellationFence = try XCTUnwrap(continuationArm.range(
+            of: "guard !Task.isCancelled,"
+        ))
+        let continuationSend = try XCTUnwrap(continuationArm.range(
+            of: "command: Cmd.sendHistoricalData"
+        ))
+        XCTAssertLessThan(
+            cancellationFence.lowerBound,
+            continuationSend.lowerBound,
+            "an accepted frame's synchronous task cancellation must fence the next 0x16 send"
+        )
+        XCTAssertTrue(metadata.contains(
+            "action=no_spool_no_progress_no_flush_no_ack_keep_2a37"
+        ))
+        XCTAssertTrue(data.contains(
+            "action=no_spool_no_first_frame_no_admission_no_progress_keep_2a37"
+        ))
+        XCTAssertTrue(source.contains(
+            "live_restored=%d terminal_and_live_restored=%d"
+        ))
+        let reassembly = try XCTUnwrap(source.range(
+            of: "let completeFrames = proprietaryFrameReassembler.feed("
+        ))
+        let reassemblyTail = String(source[reassembly.lowerBound...].prefix(520))
+        XCTAssertTrue(reassemblyTail.contains(
+            "historyGeneration: historyPhase.generation"
+        ))
+        XCTAssertTrue(reassemblyTail.contains(
+            "historyServeToken: historyPhase.serveToken"
+        ))
+    }
+
     func testMotionBankOffloadUsesTypedExactAuthorityNotConnectedHandoffFlag() throws {
         let source = try managerSource()
         let methodStart = try XCTUnwrap(source.range(
@@ -183,7 +1454,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         ))
         let method = String(source[methodStart.lowerBound..<methodEnd.lowerBound])
         let requestStart = try XCTUnwrap(method.range(
-            of: "let started: Bool = {"
+            of: "let requestResult: ("
         ))
         let requestEnd = try XCTUnwrap(method.range(
             of: "let updatedAttempts",
@@ -372,7 +1643,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             source.components(
                 separatedBy: "pending.preserveConnectedRealtimeOwner"
             ).count - 1,
-            8,
+            9,
             "every pending bank reissue must restore no-cutover/no-cancel authority"
         )
     }
@@ -393,7 +1664,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             of: "if powerPressureActive,\n           Self.historicalMotionBankOffloadEligible("
         ))
         let request = try XCTUnwrap(selector.range(
-            of: "let started: Bool = {",
+            of: "let requestResult: (",
             range: powerPark.upperBound..<selector.endIndex
         ))
         XCTAssertLessThan(powerPark.lowerBound, request.lowerBound)
@@ -421,14 +1692,17 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertFalse(parked.contains("cancelPeripheralConnection("))
         XCTAssertFalse(parked.contains("rebuildCentralForWedgedSessionOnce("))
         XCTAssertTrue(source.contains(
-            "reason: \"fresh_accepted_hr_prearm\",\n                    prioritizePresentCaptureOverProcessRetry: Self"
+            "reason: \"fresh_accepted_hr_prearm\""
+        ))
+        XCTAssertTrue(source.contains(
+            "noRadioPresentCaptureTurn\n                            || Self"
         ), "the post-stop throttle edge must still rearm present capture under power pressure")
         XCTAssertTrue(source.contains(
             "if !workoutHistoricalMotionBankArmed {\n                armWorkoutHistoricalMotionBankIfPossible("
         ), "an already-armed bank must not rewrite duty-cycle defaults on every HR")
 
         let budgetStart = try XCTUnwrap(source.range(
-            of: "private func armConnectedMotionBankHistoryBudget("
+            of: "private func armConnectedRealtimePreservingHistoryBudget("
         ))
         let budgetEnd = try XCTUnwrap(source.range(
             of: "private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded",
@@ -437,7 +1711,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         let budget = String(source[budgetStart.lowerBound..<budgetEnd.lowerBound])
         XCTAssertTrue(budget.contains("case .finishForPowerPressure:"))
         XCTAssertTrue(budget.contains(
-            "connected_motion_bank_power_pressure"
+            "exact_connected_history_power_pressure"
         ))
         XCTAssertTrue(budget.contains(
             "finishConnectedHistoryFailureWithoutDisconnectIfNeeded("
@@ -446,7 +1720,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertFalse(budget.contains("rebuildCentralForWedgedSessionOnce("))
     }
 
-    func testWorkoutPreemptionEndsSharedHistoryWithoutDisconnectingHeartRate() throws {
+    func testWorkoutPreemptionUsesPhysicalFenceBeforeMotionBankArm() throws {
         XCTAssertEqual(
             AtriaBLEManager.workoutHistoricalTransportPreemptionDisposition(
                 syncInProgress: true,
@@ -454,7 +1728,8 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 preservesConnectedRealtimeOwner: true,
                 linkConnected: true
             ),
-            .finishPreservingRealtimeOwner
+            .disconnectConnectedHistoryOwner,
+            "local owner release cannot prove an in-flight FIFO page stopped"
         )
         XCTAssertEqual(
             AtriaBLEManager.workoutHistoricalTransportPreemptionDisposition(
@@ -493,19 +1768,94 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             range: start.upperBound..<source.endIndex
         ))
         let method = String(source[start.lowerBound..<end.lowerBound])
-        let localFinish = try XCTUnwrap(method.range(
-            of: "finishConnectedHistoryFailureWithoutDisconnectIfNeeded("
-        ))
         let radioCancel = try XCTUnwrap(method.range(
             of: "cancelPeripheralConnection("
         ))
-        XCTAssertLessThan(localFinish.lowerBound, radioCancel.lowerBound)
-        XCTAssertTrue(method.contains(
-            "Never fall through to a physical cancel"
+        let successorFence = try XCTUnwrap(method.range(
+            of: "workoutHistoryPreemptionSuccessorGate.install("
+        ))
+        XCTAssertLessThan(successorFence.lowerBound, radioCancel.lowerBound)
+        XCTAssertFalse(method.contains(
+            "finishConnectedHistoryFailureWithoutDisconnectIfNeeded("
         ))
         XCTAssertTrue(method.contains(
             "preserveConnectedRealtimeOwner: preservesRealtimeOwner"
         ))
+
+        let beginStart = try XCTUnwrap(source.range(
+            of: "func beginWorkoutMotionLease(startedAt: Date, reason: String) {"
+        ))
+        let beginEnd = try XCTUnwrap(source.range(
+            of: "private func yieldHistoricalTransportToExplicitWorkoutIfNeeded(",
+            range: beginStart.upperBound..<source.endIndex
+        ))
+        let begin = String(source[beginStart.lowerBound..<beginEnd.lowerBound])
+        let arm = try XCTUnwrap(begin.range(
+            of: "armWorkoutHistoricalMotionBankIfPossible(reason: reason)"
+        ))
+        let yield = try XCTUnwrap(begin.range(
+            of: "yieldHistoricalTransportToExplicitWorkoutIfNeeded(reason: reason)"
+        ))
+        XCTAssertLessThan(arm.lowerBound, yield.lowerBound)
+        XCTAssertEqual(
+            begin.components(
+                separatedBy: "armWorkoutHistoricalMotionBankIfPossible("
+            ).count - 1,
+            1,
+            "mid-page preemption must not arm again before disconnect quiescence"
+        )
+
+        let stopStart = try XCTUnwrap(source.range(
+            of: "private func stopWorkoutHistoricalMotionBankIfPossible("
+        ))
+        let stopEnd = try XCTUnwrap(source.range(
+            of: "nonisolated static func workoutHistoricalMotionBankOffloadRetryDelay(",
+            range: stopStart.upperBound..<source.endIndex
+        ))
+        let stop = String(source[stopStart.lowerBound..<stopEnd.lowerBound])
+        let historyGuard = try XCTUnwrap(stop.range(
+            of: "guard !offlineHistoricalSyncInProgress, !historyOnlyProbeMode"
+        ))
+        let write = try XCTUnwrap(stop.range(of: "peripheral.writeValue("))
+        XCTAssertLessThan(historyGuard.lowerBound, write.lowerBound)
+
+        let armStart = try XCTUnwrap(source.range(
+            of: "private func armWorkoutHistoricalMotionBankIfPossible("
+        ))
+        let armEnd = try XCTUnwrap(source.range(
+            of: "private func checkpointDailyHistoricalMotionBankIfNeeded(",
+            range: armStart.upperBound..<source.endIndex
+        ))
+        let armMethod = String(source[armStart.lowerBound..<armEnd.lowerBound])
+        let successorHRGuard = try XCTUnwrap(armMethod.range(
+            of: "workoutHistoryPreemptionSuccessorGate.blocksArm("
+        ))
+        let armWrite = try XCTUnwrap(armMethod.range(
+            of: "Cmd.toggleIMUModeHistorical"
+        ))
+        XCTAssertLessThan(successorHRGuard.lowerBound, armWrite.lowerBound)
+
+        let acceptedStart = try XCTUnwrap(source.range(
+            of: "private func acceptHeartRate("
+        ))
+        let acceptedEnd = try XCTUnwrap(source.range(
+            of: "private func beginAcceptedHeartRateBatch()",
+            range: acceptedStart.upperBound..<source.endIndex
+        ))
+        let accepted = String(
+            source[acceptedStart.lowerBound..<acceptedEnd.lowerBound]
+        )
+        let acceptedPublish = try XCTUnwrap(accepted.range(
+            of: "lastAcceptedHRAt = sampleTime"
+        ))
+        let consumeSuccessor = try XCTUnwrap(accepted.range(
+            of: ".consumeAfterAcceptedHeartRate("
+        ))
+        let acceptedArm = try XCTUnwrap(accepted.range(
+            of: "armWorkoutHistoricalMotionBankIfPossible("
+        ))
+        XCTAssertLessThan(acceptedPublish.lowerBound, consumeSuccessor.lowerBound)
+        XCTAssertLessThan(consumeSuccessor.lowerBound, acceptedArm.lowerBound)
     }
 
     func testNonDestructiveHistoryFailuresCannotReachARadioCancel() throws {
@@ -514,7 +1864,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             "offlineHistoricalSyncPreservesConnectedRealtimeOwner ="
         ))
         XCTAssertTrue(source.contains(
-            "offlineHistoricalSyncPreservesConnectedRealtimeOwner =\n            activeConnectedMotionBankHistoryAuthority("
+            "offlineHistoricalSyncPreservesConnectedRealtimeOwner =\n            activeConnectedRealtimePreservingHistoryAuthorityExists("
         ))
         for failure in [
             "history_background_lease_expired_preserve_realtime",
@@ -547,7 +1897,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         ))
         let method = String(source[methodStart.lowerBound..<methodEnd.lowerBound])
         let exactGuard = try XCTUnwrap(method.range(
-            of: "activeConnectedMotionBankHistoryAuthority("
+            of: "activeConnectedRealtimePreservingHistoryAuthorityExists("
         ))
         let localFinish = try XCTUnwrap(method.range(
             of: "delayed_recovery_preempted_connected_motion_bank_preserve_realtime",
@@ -589,13 +1939,13 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             "connectedMotionBankHistoryRequestAuthorityIsValid("
         ))
         XCTAssertTrue(source.contains(
-            "connected_motion_bank_authority_lost_before_command"
+            "exact_connected_history_authority_lost_before_command"
         ))
         XCTAssertTrue(source.contains(
-            "if !compactMotionBankOnly,\n           terminalAndLiveRestored && offlineHistoricalSyncReachedTerminal"
+            "if !compactMotionBankOnly,\n           !connectedRawHistoryCatchUpContinuationPending,\n           terminalAndLiveRestored && offlineHistoricalSyncReachedTerminal"
         ))
         XCTAssertTrue(source.contains(
-            "continue_exact_ticket_compact_only_no_projection_scan"
+            "continue_bounded_transport_no_projection_scan"
         ))
         XCTAssertTrue(source.contains(
             "Standard 2A37 HR/RR remains live"
@@ -781,7 +2131,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertLessThan(reservation.lowerBound, radioWrite.lowerBound)
 
         let acceptedStart = try XCTUnwrap(source.range(
-            of: "private func acceptHeartRate(_ rate: Int, at sampleTime: Date)"
+            of: "private func acceptHeartRate("
         ))
         let acceptedEnd = try XCTUnwrap(source.range(
             of: "private func beginAcceptedHeartRateBatch()",
@@ -1181,7 +2531,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         ))
 
         let acceptedHRStart = try XCTUnwrap(source.range(
-            of: "private func acceptHeartRate(_ rate: Int, at sampleTime: Date)"
+            of: "private func acceptHeartRate("
         ))
         let acceptedHRBody = String(
             source[acceptedHRStart.lowerBound...].prefix(1_600)

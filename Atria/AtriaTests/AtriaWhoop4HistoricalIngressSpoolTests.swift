@@ -131,6 +131,113 @@ final class AtriaWhoop4HistoricalIngressSpoolTests: XCTestCase {
         XCTAssertEqual(spool.pendingCount, 1)
     }
 
+    func testDurableBoundaryRetiresOnlyConsumedPrefixAndReopenSeesUnreadSuffix() throws {
+        let url = directory.appendingPathComponent("durable-suffix.bin")
+        let spool = try AtriaWhoop4HistoricalIngressSpool(
+            url: url,
+            generation: 72
+        )
+        let consumed = (0..<200).map { index in
+            AtriaWhoop4HistoricalIngressSpool.Event.frame(
+                payload: [0x2f, UInt8(truncatingIfNeeded: index)],
+                clock: .init(device: UInt32(index), wall: UInt32(index + 1_000)),
+                clockAuthorityEnabled: true
+            )
+        }
+        for event in consumed { try spool.append(event) }
+        let unread = AtriaWhoop4HistoricalIngressSpool.Event.metadata(
+            payload: [0x31, 0x74, 0x0e],
+            phaseGeneration: 72
+        )
+        try spool.append(unread)
+        for expected in consumed {
+            XCTAssertEqual(try spool.popFirst(), expected)
+        }
+        XCTAssertEqual(spool.pendingCount, 1)
+        let cleanACKBoundary = spool
+            .captureDurablyAcknowledgedPrefixBoundary()
+        XCTAssertFalse(cleanACKBoundary.coversEntireJournal)
+        let sizeBefore = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: url.path)[.size]
+                as? NSNumber
+        ).uint64Value
+
+        let retired = try spool.retireConsumedPrefix(
+            through: cleanACKBoundary
+        )
+        let sizeAfter = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: url.path)[.size]
+                as? NSNumber
+        ).uint64Value
+
+        XCTAssertGreaterThan(retired, 0)
+        XCTAssertLessThan(sizeAfter, sizeBefore)
+        XCTAssertEqual(spool.pendingCount, 1)
+        let reopened = try AtriaWhoop4HistoricalIngressSpool(
+            url: url,
+            generation: 72
+        )
+        XCTAssertEqual(reopened.pendingCount, 1)
+        XCTAssertEqual(try reopened.popFirst(), unread)
+        XCTAssertNil(try reopened.popFirst())
+    }
+
+    func testEarlierACKCannotRetireDequeuedRowsFromAnUnacknowledgedLaterPage() throws {
+        let url = directory.appendingPathComponent("mid-page-exit.bin")
+        let spool = try AtriaWhoop4HistoricalIngressSpool(
+            url: url,
+            generation: 73
+        )
+        let acknowledgedPage = (0..<4).map { index in
+            AtriaWhoop4HistoricalIngressSpool.Event.frame(
+                payload: [0x2f, UInt8(index)],
+                clock: nil,
+                clockAuthorityEnabled: false
+            )
+        }
+        for event in acknowledgedPage { try spool.append(event) }
+        for expected in acknowledgedPage {
+            XCTAssertEqual(try spool.popFirst(), expected)
+        }
+        let pageOneACK = spool.captureDurablyAcknowledgedPrefixBoundary()
+        XCTAssertTrue(pageOneACK.coversEntireJournal)
+
+        let unacknowledgedPage = (4..<9).map { index in
+            AtriaWhoop4HistoricalIngressSpool.Event.frame(
+                payload: [0x2f, UInt8(index)],
+                clock: nil,
+                clockAuthorityEnabled: false
+            )
+        }
+        for event in unacknowledgedPage { try spool.append(event) }
+        XCTAssertEqual(try spool.popFirst(), unacknowledgedPage[0])
+        XCTAssertEqual(try spool.popFirst(), unacknowledgedPage[1])
+
+        XCTAssertThrowsError(
+            try spool.retireConsumedPrefix(through: pageOneACK)
+        ) { error in
+            XCTAssertEqual(
+                error as? AtriaWhoop4HistoricalIngressSpool.SpoolError,
+                .staleDurableBoundary
+            )
+        }
+        try spool.synchronize()
+
+        // A non-ACK thermal/idle/failure exit retains the append-only file.
+        // Reopening therefore recovers every later-page row, including the two
+        // already dequeued in memory, instead of treating ACK1 as ACK2.
+        let reopened = try AtriaWhoop4HistoricalIngressSpool(
+            url: url,
+            generation: 73
+        )
+        let expectedReplay = acknowledgedPage + unacknowledgedPage
+        XCTAssertEqual(reopened.pendingCount, expectedReplay.count)
+        for expected in expectedReplay {
+            XCTAssertEqual(try reopened.popFirst(), expected)
+        }
+        XCTAssertNil(try reopened.popFirst())
+    }
+
     func testOrphanRetentionPreservesFreshJournal() throws {
         let url = directory.appendingPathComponent("fresh.bin")
         _ = try AtriaWhoop4HistoricalIngressSpool(url: url, generation: 3)

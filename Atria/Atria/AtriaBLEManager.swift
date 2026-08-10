@@ -74,6 +74,7 @@ private final class PowerThermalGovernor {
     private(set) var mode: Mode = .nominal
     private var observers: [NSObjectProtocol] = []
     var onChange: ((Mode) -> Void)?
+    var onThermalStateChange: ((ProcessInfo.ThermalState) -> Void)?
 
     init() {
         refresh(notify: false)
@@ -82,7 +83,11 @@ private final class PowerThermalGovernor {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.refresh(notify: true) }
+            Task { @MainActor in
+                guard let self else { return }
+                self.onThermalStateChange?(ProcessInfo.processInfo.thermalState)
+                self.refresh(notify: true)
+            }
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: .NSProcessInfoPowerStateDidChange,
@@ -291,6 +296,56 @@ struct AtriaBLEConnectedMotionBankPreFreshHRArmGate: Sendable {
         self.ticketID = nil
         deadline = nil
         return ticketID
+    }
+}
+
+/// Process-local successor fence for an explicit workout that physically
+/// disconnected an in-flight WHOOP history page. The old callback epoch is
+/// retained only as provenance: a 0x69 arm may resume after an accepted 2A37
+/// sample proves a strictly newer epoch for the same strap. TX discovery,
+/// lifecycle replay, and stale callbacks cannot consume this reservation.
+struct AtriaBLEWorkoutHistoryPreemptionSuccessorGate: Sendable {
+    private(set) var predecessorSource: AtriaBLECallbackEpochFence.Source?
+
+    var isAwaitingReplacementAcceptedHeartRate: Bool {
+        predecessorSource != nil
+    }
+
+    mutating func install(
+        predecessorSource: AtriaBLECallbackEpochFence.Source
+    ) {
+        self.predecessorSource = predecessorSource
+    }
+
+    /// A predecessor reservation is meaningful only for that same saved
+    /// strap. Retire it synchronously when the user connects a replacement so
+    /// old provenance cannot black out motion capture on the new device.
+    mutating func blocksArm(for peripheralID: UUID) -> Bool {
+        guard let predecessorSource else { return false }
+        guard predecessorSource.peripheralID == peripheralID else {
+            self.predecessorSource = nil
+            return false
+        }
+        return true
+    }
+
+    mutating func retire() {
+        predecessorSource = nil
+    }
+
+    @discardableResult
+    mutating func consumeAfterAcceptedHeartRate(
+        source: AtriaBLECallbackEpochFence.Source,
+        sourceIsCurrent: Bool
+    ) -> Bool {
+        guard sourceIsCurrent,
+              let predecessorSource,
+              source.peripheralID == predecessorSource.peripheralID,
+              source.epoch > predecessorSource.epoch else {
+            return false
+        }
+        self.predecessorSource = nil
+        return true
     }
 }
 
@@ -1291,19 +1346,38 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     var onSessionCheckpoint: ((SavedSession) -> Bool)?
     var requestAndAwaitRecoveredDataPublication: ((String) async -> Bool)?
     var onHistoricalTransportOwnershipReleased: ((String) -> Void)?
+    /// App/store bridge for one bounded current-window projection while the raw
+    /// continuation deliberately owns no radio. The Bool is publication
+    /// success, not transport authority; resumption still waits for a later
+    /// accepted 2A37 callback.
+    var onConnectedRawCatchUpPublicationYield:
+        ((String, TimeInterval) async -> Bool)?
+    /// Cheap durable-intent query supplied by SessionStore. Raw traffic yields
+    /// only when app-facing bootstrap work is already pending; the yield must
+    /// never manufacture a new projection intent by itself.
+    var connectedRawCatchUpPublicationYieldIsNeeded: (() -> Bool)?
     var recoveredDataProjectionDeferralIsActive: Bool {
-        Self.historicalTransportOwnershipIsActive(
-            offlineSyncInProgress: offlineHistoricalSyncInProgress,
-            historyProbeEnabled: historyOnlyProbeEnabled,
-            historyPhaseActive: historyOnlyProbeMode,
-            readOnlyRequested: readOnlyHistoryCaptureRequested,
-            readOnlyActive: readOnlyHistoryCaptureActive,
-            postHistoryLiveRestorationPending: postHistoryLiveRestorationGeneration != nil,
-            explicitRequestPending: pendingOfflineHistoricalSyncRequest?.explicitRequest == true,
-            freshOwnerCutoverPending: freshHistoryOwnerCutoverPending,
-            freshOwnerConnectionArmed: freshHistoryOwnerConnectionGeneration != nil,
-            explicitLaunchIntentPending: explicitHistoryLaunchIntentPending
+        Self.connectedRawHistoryCatchUpContinuationDefersProjection(
+            continuationPending:
+                connectedRawHistoryCatchUpContinuationPending,
+            publicationYieldActive:
+                connectedRawHistoryCatchUpPublicationYield != nil
         )
+            || Self.historicalTransportOwnershipIsActive(
+                offlineSyncInProgress: offlineHistoricalSyncInProgress,
+                historyProbeEnabled: historyOnlyProbeEnabled,
+                historyPhaseActive: historyOnlyProbeMode,
+                readOnlyRequested: readOnlyHistoryCaptureRequested,
+                readOnlyActive: readOnlyHistoryCaptureActive,
+                postHistoryLiveRestorationPending:
+                    postHistoryLiveRestorationGeneration != nil,
+                explicitRequestPending:
+                    pendingOfflineHistoricalSyncRequest?.explicitRequest == true,
+                freshOwnerCutoverPending: freshHistoryOwnerCutoverPending,
+                freshOwnerConnectionArmed:
+                    freshHistoryOwnerConnectionGeneration != nil,
+                explicitLaunchIntentPending: explicitHistoryLaunchIntentPending
+            )
     }
     /// Exact recovered-data publication is local archive work. It must defer
     /// only while a history operation actually owns or is cutting over the
@@ -1559,6 +1633,77 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let generation: UInt64
     }
 
+    /// Process-local proof for one bounded raw-history slice over the exact
+    /// canonical realtime connection. Unlike the persisted pending request,
+    /// this value can only be minted from a fresh accepted-HR epoch and carries
+    /// the callback fence's exact CBPeripheral object identity.
+    private enum ConnectedRawHistoryCatchUpIntent: Equatable {
+        case background
+        case foregroundAutomatic
+        case queuedPull(UUID)
+    }
+
+    private struct ConnectedRawHistoryCatchUpRequestAuthority: Equatable {
+        let authorityID: UUID
+        let strapIdentifier: String
+        let callbackSource: AtriaBLECallbackEpochFence.Source
+        let intent: ConnectedRawHistoryCatchUpIntent
+        let mintedAt: Date
+    }
+
+    private struct ConnectedRawHistoryCatchUpGenerationAuthority: Equatable {
+        let request: ConnectedRawHistoryCatchUpRequestAuthority
+        let generation: UInt64
+        let startedAt: Date
+        let startFrontierUnix: TimeInterval
+    }
+
+    /// One synchronous, generation-and-boundary-scoped permission to retire
+    /// ingress after an exact connected-raw slice deliberately yields at its
+    /// clean ACK target. An earlier ACK count or a finish reason string cannot
+    /// recreate this authority after a later page has begun.
+    private struct ConnectedRawHistoryCleanACKFinishAuthority: Equatable {
+        let generation: UInt64
+        let boundaryID: String
+        let ingressBoundary:
+            AtriaWhoop4HistoricalIngressSpool.DurablePrefixBoundary
+    }
+
+    private struct QueuedConnectedRawHistoryCatchUpIntent {
+        let id: UUID
+        let reason: String
+        let requestedAt: Date
+    }
+
+    /// Process-local fairness lease between exact raw generations. The token
+    /// fences late async publication results and the absolute deadline ensures
+    /// a suspended/failed app-facing lane cannot strand the durable raw drain.
+    /// This is scheduling state only: it owns no peripheral, callback epoch,
+    /// command, reconnect, or persisted history authority.
+    private struct ConnectedRawHistoryCatchUpPublicationYield: Equatable {
+        let token: UUID
+        let sourceGeneration: UInt64
+        let reason: String
+        let startedAt: Date
+        let deadline: Date
+    }
+
+    /// A productive FIFO episode whose next exact admission failed owns no
+    /// radio, but it does own one bounded present-capture turn. The exact
+    /// callback source prevents a replacement connection from inheriting its
+    /// delay or using it as command authority.
+    private struct ConnectedRawNoRadioCaptureDeferral: Equatable {
+        let callbackSource: AtriaBLECallbackEpochFence.Source
+        let failedAt: Date
+        let retryNotBefore: Date
+    }
+
+    private struct GlobalFrontierMotionBankEvaluationRequest: Equatable {
+        let strapIdentifier: String
+        let callbackSource: AtriaBLECallbackEpochFence.Source?
+        let reason: String
+    }
+
     private enum ConnectedMotionBankDeferredLocalDependency: String {
         case orphanArchive
         case terminalMaterialization
@@ -1577,6 +1722,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// a new exact-object/epoch proof.
     private var transientConnectedMotionBankHistoryRequestAuthority:
         ConnectedMotionBankHistoryRequestAuthority?
+    /// Synchronous call-scope authority only. A Boolean pending envelope must
+    /// never recreate this exact-object/epoch proof on a later callback.
+    private var transientConnectedRawHistoryCatchUpRequestAuthority:
+        ConnectedRawHistoryCatchUpRequestAuthority?
     /// Call-scope observation only: records that this exact typed request
     /// actually reached a `.warming` archive gate. It is restored when the
     /// synchronous request returns and is never persisted or used as authority.
@@ -1594,6 +1743,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// generation/phase publication.
     private var activeConnectedMotionBankHistoryGenerationAuthority:
         ConnectedMotionBankHistoryGenerationAuthority?
+    private var activeConnectedRawHistoryCatchUpGenerationAuthority:
+        ConnectedRawHistoryCatchUpGenerationAuthority?
+    private var connectedRawHistoryCleanACKFinishAuthority:
+        ConnectedRawHistoryCleanACKFinishAuthority?
+    private var queuedConnectedRawHistoryCatchUpIntent:
+        QueuedConnectedRawHistoryCatchUpIntent?
+    private var connectedRawHistoryCatchUpEvaluationNotBefore: Date?
+    private var connectedRawNoRadioCaptureDeferral:
+        ConnectedRawNoRadioCaptureDeferral?
+    /// Scheduling hint only. It suppresses generic Boolean history replay
+    /// while the exact raw lane awaits its next accepted-HR boundary, but it
+    /// can never authorize a BLE command or survive a callback epoch change.
+    private var connectedRawHistoryCatchUpContinuationPending = false
+    private var connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+    private var connectedRawHistoryCatchUpPublicationYield:
+        ConnectedRawHistoryCatchUpPublicationYield?
+    private var connectedRawHistoryCatchUpPublicationYieldOfferTask:
+        Task<Void, Never>?
+    private var connectedRawHistoryCatchUpPublicationYieldTimeoutTask:
+        Task<Void, Never>?
+    /// Newest decoded strap timestamp since the preceding successful durable
+    /// flush. This is generation-local display evidence only; it is released
+    /// into `drainedThroughUnix` after the canonical raw+identity flush and is
+    /// reset before another generation can observe it.
+    private var pendingHistoricalRawFrontierGeneration: UInt64?
+    private var pendingHistoricalRawFrontierUnix: UInt32?
     /// True only for the completed motion-bank lane that was admitted over an
     /// already-healthy standard-HR connection. A failure in that generation
     /// may retire local history state, but it must never manufacture a radio
@@ -2041,6 +2216,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var connectedMotionBankHistoryBudgetTask: Task<Void, Never>?
     private let connectedMotionBankHistoryLiveSilenceLimit: TimeInterval = 8
     private let connectedMotionBankHistoryAbsoluteLimit: TimeInterval = 90
+    private let connectedRawHistoryCatchUpIdleEvaluationInterval: TimeInterval = 15
+    private let connectedRawHistoryCatchUpProductiveRetryInterval: TimeInterval = 2
+    private let connectedRawHistoryCatchUpZeroProgressRetryInterval: TimeInterval = 120
+    private let connectedRawHistoryCatchUpPublicationYieldBudget: TimeInterval = 120
+    private let connectedRawHistoryCatchUpForegroundLiveSilenceLimit: TimeInterval = 45
+    private let connectedRawHistoryCatchUpBackgroundLiveSilenceLimit: TimeInterval = 45
+    private let connectedRawHistoryCatchUpIntentLifetime: TimeInterval = 10 * 60
+    private let connectedRawHistoryCatchUpAuthorityLifetime: TimeInterval = 5
     private let connectedHistoricalSliceMinimumDuration: TimeInterval = 45
     private let connectedHistoricalSliceLiveSilenceLimit: TimeInterval = 15
     private let backgroundHistoricalSliceMinimumDuration: TimeInterval = 5
@@ -2133,6 +2316,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var workoutMotionActivationTask: Task<Void, Never>?
     private var workoutMotionCommandTask: Task<Void, Never>?
     private var workoutMotionOwnerStartedAt: Date?
+    private var workoutHistoryPreemptionSuccessorGate =
+        AtriaBLEWorkoutHistoryPreemptionSuccessorGate()
     /// Epoch-local R10 authority is intentionally separate from the durable
     /// workout intent. A reconnect or history handoff revokes only this lease,
     /// never the user's workout.
@@ -2619,7 +2804,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// no strap writes and never influences production step accounting.
     private var r10MotionPipelineGeneration: UInt64 = 0
     private enum BufferedSessionInput {
-        case heartRate(measurement: ParsedHeartRatePacket, rawData: Data)
+        case heartRate(
+            measurement: ParsedHeartRatePacket,
+            rawData: Data,
+            callbackSource: AtriaBLECallbackEpochFence.Source?
+        )
         case realtime(ParsedRealtimePacket)
     }
     private struct SessionBoundaryOutcome {
@@ -2810,6 +2999,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// proof that a replacement connection has received the command.
     private var workoutHistoricalMotionBankArmedConnectionStartedAt: Date?
     private var workoutHistoricalMotionBankOffloadEvaluationInFlight = false
+    private var globalFrontierEvaluationCoalescer =
+        GlobalFrontierEvaluationCoalescer()
+    private var pendingGlobalFrontierEvaluationRequest:
+        GlobalFrontierMotionBankEvaluationRequest?
     private var workoutHistoricalMotionBankOffloadEvaluationDeferredUntilForeground = false
     private var workoutHistoricalMotionBankOffloadRetryTask: Task<Void, Never>?
     private var processInterruptedMotionBankReservationTask:
@@ -4210,6 +4403,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastSilentStreamRepairSpentAt = nil
         }
         connectedAt = now
+        connectedEpochAcceptedHeartRateSamples = 0
+        invalidateConnectedRawHistoryCatchUpPublicationYield(
+            reason: "connection_epoch_changed"
+        )
+        connectedRawNoRadioCaptureDeferral = nil
+        connectedRawHistoryCatchUpEvaluationNotBefore = nil
+        connectedRawHistoryCatchUpContinuationPending = false
+        connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
         UserDefaults.standard.set(now.timeIntervalSince1970,
                                   forKey: "atria.ble.connectionEpochAt")
         UserDefaults.standard.set(reason, forKey: "atria.ble.connectionEpochReason")
@@ -4451,7 +4652,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// subsequent saved-peripheral connect permanently in `.connecting`.
     /// Permit exactly one cancel/reissue for that known failure; ordinary
     /// out-of-range connects remain standing forever as before.
-    private var historyFailureReconnectReissuePending = false
     private var scanRetryTask: Task<Void, Never>?
     private var scanWideningTask: Task<Void, Never>?
     private var pendingScanReason: String?
@@ -4550,6 +4750,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 #endif
     private var userRequestedDisconnect = false
     private var connectedAt: Date?
+    /// Accepted standard-HR samples in this exact connection epoch. The live
+    /// session can span reconnects, so `session.count` is not sufficient proof
+    /// that the current CBPeripheral object has delivered ten healthy samples.
+    private var connectedEpochAcceptedHeartRateSamples = 0
     // A process can be killed without a lifecycle callback. Coalesce accepted
     // HR into bounded deltas, but never leave the first dirty accepted sample
     // without a durable checkpoint for more than five seconds by policy.
@@ -5394,6 +5598,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 }
                 self.scheduleStaleArmedRangeLossBackfillReconciliation(reason: "thermal_pressure_recovered")
                 self.scheduleRangeLossBackfillIfNeeded(reason: "thermal_pressure_recovered")
+                _ = self.offerConnectedRawCatchUpPublicationYieldIfNeeded(
+                    reason: "power_thermal_governor_ready"
+                )
+            }
+        }
+        powerThermalGovernor.onThermalStateChange = { [weak self] state in
+            guard let self,
+                  self.connectedRawHistoryCatchUpContinuationPending else {
+                return
+            }
+            // During a publication lease whose one bounded offer is still in
+            // flight, a fair/nominal edge may reoffer only after that task exits.
+            // Outside that lease, preserve the prior raw-edge behavior: the
+            // next accepted 2A37 beat still mints the exact transport token.
+            if self.connectedRawHistoryCatchUpPublicationYield != nil {
+                if state == .nominal || state == .fair {
+                    _ = self.offerConnectedRawCatchUpPublicationYieldIfNeeded(
+                        reason: "raw_thermal_ready"
+                    )
+                }
+                return
+            }
+            if state != .critical {
+                self.connectedRawHistoryCatchUpEvaluationNotBefore = nil
             }
         }
         if motionHandshakeDiagnostic == nil {
@@ -6917,7 +7145,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         lastInteractiveForegroundHandlingAt = now
-        let activeExplicitWorkout = AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
+        let activeExplicitWorkout = Self.explicitMotionOwnershipBlocksHistory(
+            pendingWorkoutIntentActive:
+                AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
+            inMemoryLeaseHeld: workoutMotionOwnerStartedAt != nil,
+            calibrationHoldActive:
+                workoutMotionCalibrationHoldUntil.map { Date() < $0 } == true
+        )
         if Self.shouldUseFastWorkoutForegroundResume(
             activeExplicitWorkout: activeExplicitWorkout,
             hasLiveSession: !session.isEmpty,
@@ -8132,6 +8366,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 preserveConnectedRealtimeOwner
                     || transientConnectedRealtimeOwnerPreservation
         )
+        // An exact connected raw slice is process-local capability, never a
+        // persisted/replayable request bit. If a synchronous prerequisite moves
+        // underneath it, return the candidate for diagnostics but leave any
+        // existing pending authority untouched; the next bounded fresh-HR
+        // evaluation must mint a new exact object/epoch token.
+        if transientConnectedRawHistoryCatchUpRequestAuthority != nil {
+            return retained
+        }
         pendingOfflineHistoricalSyncRequest = retained
         if let authority =
                 transientConnectedMotionBankHistoryRequestAuthority {
@@ -9232,6 +9474,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 }
                 return authority
             }
+        let connectedRawHistoryCatchUpRequestAuthority =
+            transientConnectedRawHistoryCatchUpRequestAuthority.flatMap {
+                authority -> ConnectedRawHistoryCatchUpRequestAuthority? in
+                guard let peripheral,
+                      connectedRawHistoryCatchUpRequestAuthorityIsValid(
+                        authority,
+                        peripheral: peripheral,
+                        forActiveGeneration: false
+                      ) else { return nil }
+                return authority
+            }
+        let exactConnectedRealtimePreservingRequest =
+            connectedMotionBankRequestAuthority != nil
+                || connectedRawHistoryCatchUpRequestAuthority != nil
         let exactRealtimeEpochOwned = bleCallbackEpochFence.hasActiveOwner
         var realtimeConnectInterestIDs = Set<UUID>()
         if let peripheralID = peripheral?.identifier {
@@ -9260,7 +9516,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             syncInProgress: offlineHistoricalSyncInProgress,
             attendedRequest: attendedHistoricalRequest,
             nonDestructiveConnectedHistoryAllowed:
-                connectedMotionBankRequestAuthority != nil
+                exactConnectedRealtimePreservingRequest
         ) {
             retainPendingOfflineHistoricalSyncRequest(
                 reason: reason,
@@ -9360,6 +9616,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // journal locally instead.
         var strandedDrainingAuthorityResumeAdmitted = false
         if let authority = try? historicalFullDrainCoverageStore.load() {
+            if connectedRawHistoryCatchUpRequestAuthority != nil,
+               authority.status == .draining {
+                // A process-local raw token may start a new cursor slice; it may
+                // not impersonate or replace a persisted exact drain authority.
+                AtriaDebugLog(
+                    "ATRIADBG offline_sync status=connected_raw_catch_up_deferred reason=%@ blocker=persisted_draining_authority action=no_generation_no_command_no_pending_authority",
+                    reason
+                )
+                return false
+            }
             // P0: any fresh backlog (not just the range-loss ticket) admits
             // the raw-only catch-up lane past a parked terminal authority —
             // the lane's safety argument is unchanged (forward-from-cursor
@@ -9379,15 +9645,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     forKey: OfflineSyncDefaults.lastStatus
                 )
                 defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
-                if terminalDisposition
-                    == .resumeLocalPublicationAndContinueMotionBank,
-                   connectedMotionBankRequestAuthority != nil {
+                if exactConnectedRealtimePreservingRequest {
                     // A same-link glance/offload has a strict compact-only hot
                     // path. A parked terminal journal may resume later through
                     // its ordinary foreground lane; it cannot make this BLE
                     // request launch a whole-archive consumer projection.
                     AtriaDebugLog(
-                        "ATRIADBG offline_sync status=terminal_consumer_materialization_deferred_for_connected_motion_bank reason=%@ stage=%@ action=continue_exact_ticket_compact_only_no_projection_scan",
+                        "ATRIADBG offline_sync status=terminal_consumer_materialization_deferred_for_exact_connected_history reason=%@ stage=%@ action=continue_bounded_transport_no_projection_scan",
                         reason,
                         authority.status.rawValue
                     )
@@ -9547,7 +9811,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             forKey: OfflineSyncDefaults.lastAttemptAt
         )
         let autonomousBackgroundCatchUp =
-            Self.shouldAdmitAutonomousCursorAnchoredCatchUpStart(
+            connectedRawHistoryCatchUpRequestAuthority != nil
+            || Self.shouldAdmitAutonomousCursorAnchoredCatchUpStart(
                 foregroundInteractive: foregroundInteractiveMode,
                 strapBacklogPending: strapBacklogPendingForCatchUp(),
                 syncInProgress: offlineHistoricalSyncInProgress,
@@ -9652,7 +9917,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // Genuine heat only: the governor's mode also flags Low Power Mode as
         // `.serious`, which silently parked every overnight drain whenever the
         // user toggled LPM — banked coverage then waited for a morning unlock.
-        if Self.shouldDeferAutomaticOfflineSyncForThermalPressure(
+        // Exact raw catch-up has its own stricter thermal controller: critical
+        // parks, serious serves only through one clean durable boundary with a
+        // hard cap, and every exit preserves 2A37. Do not let this older
+        // all-or-nothing automatic-history gate make that adaptive lane
+        // unreachable on a warm, cabled phone. Motion-bank and every generic
+        // request continue to use the conservative gate below.
+        if connectedRawHistoryCatchUpRequestAuthority == nil,
+           Self.shouldDeferAutomaticOfflineSyncForThermalPressure(
             thermalPressure:
                 powerThermalGovernor.shouldDeferDurableHistoryAdmissionForHeat,
             explicitUserRequest: explicitUserRequest || explicitResearchRequest
@@ -9677,7 +9949,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // itself as attended, start a fresh-owner cutover, and cancel a healthy
         // HR/motion epoch. User intent raises the retained request's priority;
         // it never grants permission to interrupt current transmission.
-        if connectedMotionBankRequestAuthority == nil,
+        if !exactConnectedRealtimePreservingRequest,
            Self.shouldDeferHistoricalTransportForRealtimeContinuity(
             linkConnected: connectedLink || exactRealtimeEpochOwned,
             linkConnecting: connectingLink || standingRealtimeConnectOwned,
@@ -9816,7 +10088,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                               reason)
             }
         }
-        if Self.shouldSuppressAutomaticHistoricalNoRowsRetry(
+        if connectedRawHistoryCatchUpRequestAuthority == nil,
+           Self.shouldSuppressAutomaticHistoricalNoRowsRetry(
             exactGapPending: recoverableGapPending,
             explicitUserRequest: explicitHistoricalRequest,
             currentGapFingerprint: gapFingerprint,
@@ -9847,7 +10120,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     forKey: OfflineSyncDefaults.historyStartTimeoutGapFingerprint
                 )
                 : nil
-        if Self.shouldSuppressAutomaticHistoryStartTimeoutRetry(
+        if connectedRawHistoryCatchUpRequestAuthority == nil,
+           Self.shouldSuppressAutomaticHistoryStartTimeoutRetry(
             exactGapPending: recoverableGapPending,
             explicitUserRequest: explicitHistoricalRequest,
             currentGapFingerprint: gapFingerprint,
@@ -9874,7 +10148,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             explicitUserRequest: explicitHistoricalRequest,
             rawGapAlreadyArchived: rawGapAlreadyArchived
         )
-        if recoverableGapPending,
+        if connectedRawHistoryCatchUpRequestAuthority == nil,
+           recoverableGapPending,
            verifiedHistoryCapability,
            !verifiedMetricHistoryCapability,
            !explicitHistoricalRequest,
@@ -9913,7 +10188,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 as? Double).map {
                     Date().timeIntervalSince1970 - $0 < 300
                 } ?? false
-        let protectedHistoryHandoffAllowed = Self.shouldAllowProtectedHistoricalRecovery(
+        let protectedHistoryHandoffAllowed =
+            connectedRawHistoryCatchUpRequestAuthority != nil
+            || Self.shouldAllowProtectedHistoricalRecovery(
             linkConnected: connectedLink,
             exactGapPending: recoverableGapPending,
             verifiedHistoryCapability: verifiedHistoryCapability,
@@ -10037,6 +10314,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         if connectedLink,
            connectedSliceCooldownUntil > now.timeIntervalSince1970,
+           connectedRawHistoryCatchUpRequestAuthority == nil,
            !explicitUserRequest,
            !explicitResearchRequest,
            !flushMaintenanceWindow {
@@ -10137,7 +10415,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // reconnect while the exact recovery window remained pending. Wait for
         // a naturally disconnected transport instead. A deliberate user action
         // remains able to request a connected sync.
-        if !flushMaintenanceWindow,
+        // The exact raw lane has already proved the canonical object/epoch and
+        // owns its adaptive 2A37-preserving budget. The older connected-link
+        // policy additionally requires metric-gap authority and therefore
+        // rejected raw-only catch-up as `deferred_connected_live_link` on the
+        // physical phone. Keep that policy for every generic/motion request;
+        // let only the exact raw authority reach the atomic transaction gate.
+        if connectedRawHistoryCatchUpRequestAuthority == nil,
+           !flushMaintenanceWindow,
            Self.shouldDeferAutomaticOfflineSyncForConnectedLink(
             linkConnected: connectedLink,
             linkConnecting: connectingLink,
@@ -10145,7 +10430,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             exactGapPending: recoverableGapPending,
             verifiedMetricRecovery: verifiedMetricHistoryCapability,
             automaticConnectedHandoffAllowed: allowConnectedAutomaticHandoff
-                || connectedMotionBankRequestAuthority != nil
+                || exactConnectedRealtimePreservingRequest
         ) {
             retainPendingOfflineHistoricalSyncRequest(
                 reason: reason, force: force,
@@ -10163,7 +10448,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // background offload could end by cancelling an otherwise healthy
         // stream. Preserve live data; the durable gap ledger keeps this request
         // pending until a natural reconnect or an explicit manual force sync.
-        if !force,
+        if connectedRawHistoryCatchUpRequestAuthority == nil,
+           !force,
            !flushMaintenanceWindow,
            !(recoverableGapPending && verifiedMetricHistoryCapability),
            shouldProtectLiveStreamForOfflineSync(now: now) {
@@ -10195,6 +10481,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // (hundreds of attempts) when a durable boundary could not advance.
         // Only an explicit user/research request may bypass the cooldown.
         if !explicitHistoricalRequest,
+           connectedRawHistoryCatchUpRequestAuthority == nil,
            let lastAttempt,
            now.timeIntervalSince(lastAttempt) < minimumInterval {
             defaults.set("throttled", forKey: OfflineSyncDefaults.lastStatus)
@@ -10216,9 +10503,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             connectedChunkedBackfill: connectedChunkedBackfill,
             attemptAt: now,
             rawOnlyGapFingerprint: rawOnlyDisconnectedRecovery ? gapFingerprint : nil,
-            gapFingerprint: gapFingerprint,
+            gapFingerprint: connectedRawHistoryCatchUpRequestAuthority == nil
+                ? gapFingerprint
+                : nil,
             preserveConnectedRealtimeOwner:
-                connectedMotionBankRequestAuthority != nil,
+                exactConnectedRealtimePreservingRequest,
             explicitPostWorkoutBankRequest:
                 explicitPostWorkoutBankRequest
         )
@@ -12159,14 +12448,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         generation: UInt64,
         reason: String
     ) -> Bool {
-        let exactConnectedMotionBankGeneration =
-            activeConnectedMotionBankHistoryAuthority(
+        let exactConnectedGeneration =
+            activeConnectedRealtimePreservingHistoryAuthorityExists(
                 generation: generation
-            ) != nil
+            )
         guard Self.shouldFinishHistoricalFailureWithoutDisconnect(
             preservesConnectedRealtimeOwner:
                 offlineHistoricalSyncPreservesConnectedRealtimeOwner
-                    || exactConnectedMotionBankGeneration,
+                    || exactConnectedGeneration,
             syncInProgress: offlineHistoricalSyncInProgress,
             expectedGeneration: generation,
             activeGeneration: offlineHistoricalSyncGeneration,
@@ -12176,7 +12465,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // ticket, and a natural disconnect must not be turned into an app
             // cancel/rebuild by the failure tail.
             linkConnected: peripheral?.state == .connected
-                || exactConnectedMotionBankGeneration
+                || exactConnectedGeneration
         ) else { return false }
         AtriaDebugLog(
             "ATRIADBG offline_sync status=failed_preserved_realtime generation=%llu reason=%@ action=finish_local_history_no_disconnect_no_ack_no_abort_retain_ticket",
@@ -12265,6 +12554,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 }
                 return authority
             }
+        let connectedRawHistoryCatchUpRequestAuthority =
+            transientConnectedRawHistoryCatchUpRequestAuthority.flatMap {
+                authority -> ConnectedRawHistoryCatchUpRequestAuthority? in
+                guard let peripheral,
+                      connectedRawHistoryCatchUpRequestAuthorityIsValid(
+                        authority,
+                        peripheral: peripheral,
+                        forActiveGeneration: false
+                      ) else { return nil }
+                return authority
+            }
+        let exactConnectedRealtimePreservingRequest =
+            connectedMotionBankRequestAuthority != nil
+                || connectedRawHistoryCatchUpRequestAuthority != nil
         guard historicalArchiveWarmState == .ready else {
             if historicalArchiveWarmState == .warming,
                let connectedMotionBankRequestAuthority {
@@ -12304,7 +12607,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // request stays pending and can run after backgrounding or a later
         // natural link loss; an explicit user import remains allowed.
         if foregroundInteractiveMode
-            && !explicitRequest {
+            && !explicitRequest
+            && !exactConnectedRealtimePreservingRequest {
             retainPendingOfflineHistoricalSyncRequest(
                 reason: reason,
                 force: force,
@@ -12339,7 +12643,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             .hasRetainedConnectInterest(
                 peripheralIDs: transactionConnectInterestIDs
             )
-        guard connectedMotionBankRequestAuthority != nil
+        guard exactConnectedRealtimePreservingRequest
                 || !Self.shouldDeferHistoricalTransportForRealtimeContinuity(
             linkConnected: transactionPeripheralState == .connected
                 || transactionRealtimeEpochOwned,
@@ -12369,6 +12673,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             return false
         }
+        let connectedRawHistoryCatchUpStartFrontierUnix =
+            UserDefaults.standard.double(
+            forKey: OfflineSyncDefaults.drainedThroughUnix
+        )
+        // `startOfflineHistoricalSync` is MainActor-isolated, so no accepted
+        // realtime callback can interleave between this synchronous journal
+        // flush and the atomic transport claim below. Establish the live
+        // workout/session durability snapshot and save request before the
+        // history phase begins owning BLE callbacks; a failed claim may cause
+        // an extra flush, but never a claim that preceded that snapshot.
+        flushActiveSessionJournal(reason: "offline_sync_preflight_\(reason)")
         var syncGeneration: UInt64 = 0
         let installHistoryTransportClaim = { [self] in
             // Recheck the exact callback epoch while the retainer lock excludes
@@ -12382,6 +12697,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       ) else {
                     return false
                 }
+            } else if let connectedRawHistoryCatchUpRequestAuthority {
+                guard let peripheral,
+                      connectedRawHistoryCatchUpRequestAuthorityIsValid(
+                        connectedRawHistoryCatchUpRequestAuthority,
+                        peripheral: peripheral,
+                        forActiveGeneration: false
+                      ) else {
+                    return false
+                }
             } else {
                 guard !bleCallbackEpochFence.hasActiveOwner else {
                     return false
@@ -12389,6 +12713,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }
             offlineHistoricalSyncGeneration &+= 1
             syncGeneration = offlineHistoricalSyncGeneration
+            connectedRawHistoryCleanACKFinishAuthority = nil
             if let connectedMotionBankRequestAuthority {
                 activeConnectedMotionBankHistoryGenerationAuthority = .init(
                     request: connectedMotionBankRequestAuthority,
@@ -12396,6 +12721,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 )
             } else {
                 activeConnectedMotionBankHistoryGenerationAuthority = nil
+            }
+            if let connectedRawHistoryCatchUpRequestAuthority {
+                activeConnectedRawHistoryCatchUpGenerationAuthority = .init(
+                    request: connectedRawHistoryCatchUpRequestAuthority,
+                    generation: syncGeneration,
+                    startedAt: attemptAt,
+                    startFrontierUnix:
+                        connectedRawHistoryCatchUpStartFrontierUnix
+                )
+            } else {
+                activeConnectedRawHistoryCatchUpGenerationAuthority = nil
             }
             _ = historyTransportPhaseFence.activate(
                 generation: syncGeneration,
@@ -12405,7 +12741,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return true
         }
         let historyTransportClaimed: Bool
-        if connectedMotionBankRequestAuthority != nil,
+        if exactConnectedRealtimePreservingRequest,
            let transactionPeripheral = peripheral {
             historyTransportClaimed = connectedPeripheralRetainer
                 .claimExclusiveConnectedCanonicalTransport(
@@ -12474,16 +12810,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             defaults.set(attemptAt.timeIntervalSince1970,
                          forKey: OfflineSyncDefaults.rangeLossBackfillStartedAt)
         }
-        flushActiveSessionJournal(reason: "offline_sync_preflight_\(reason)")
         offlineHistoricalSyncPreviousStandardHROnlyMode = standardHROnlyMode
         offlineHistoricalSyncStartRows = historicalArchiveRows
         offlineHistoricalSyncMadeRequestedMetricProgress = false
         offlineHistoricalSyncResolvedGapCoverage = false
         offlineHistoricalSyncReachedTerminal = false
         offlineHistoricalSyncPreservesConnectedRealtimeOwner =
-            activeConnectedMotionBankHistoryAuthority(
+            activeConnectedRealtimePreservingHistoryAuthorityExists(
                 generation: syncGeneration
-            ) != nil
+            )
         offlineHistoricalSyncExplicitPostWorkoutBankRequest =
             explicitPostWorkoutBankRequest
         verifiedEmptyHistoryCursorGeneration = nil
@@ -12551,7 +12886,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historicalAdmissionFailed = false
         historicalCheckpointCoordinator.begin(generation: syncGeneration)
         let persistedFullDrainAuthority = try? historicalFullDrainCoverageStore.load()
-        if let persisted = persistedFullDrainAuthority,
+        if activeConnectedRawHistoryCatchUpAuthority(
+            generation: syncGeneration
+        ) != nil {
+            // This slice advances only the strap's forward raw cursor. It is not
+            // authority for any exact local gap or parked full-drain journal.
+            selectedFullDrainGap = nil
+        } else if let persisted = persistedFullDrainAuthority,
            persisted.status == .draining,
            let gapID = UUID(uuidString: persisted.gap.gapIdentifier) {
             selectedFullDrainGap = AtriaHistoricalGapLedger.recoveryCandidate(
@@ -12672,6 +13013,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         _ = historyDrain.begin(generation: syncGeneration)
         startHistoricalDrainTelemetry(generation: syncGeneration)
         historicalMetricDurabilityFence.begin(generation: syncGeneration)
+        pendingHistoricalRawFrontierGeneration = syncGeneration
+        pendingHistoricalRawFrontierUnix = nil
         noteOfflineHistoricalSyncProgress(
             generation: syncGeneration,
             reason: "generation_started"
@@ -12755,25 +13098,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               historySkipDataRangeRequest ? 0 : 1,
               connectedChunkedBackfill ? 1 : 0)
 
-        if let exactAuthority = activeConnectedMotionBankHistoryAuthority(
+        if activeConnectedRealtimePreservingHistoryAuthorityExists(
             generation: syncGeneration
         ) {
             guard let current = peripheral,
-                  connectedMotionBankHistoryRequestAuthorityIsValid(
-                      exactAuthority.request,
-                      peripheral: current
+                  activeConnectedRealtimePreservingHistoryAuthorityIsValid(
+                    generation: syncGeneration,
+                    peripheral: current
                   ) else {
                 _ = finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
                     generation: syncGeneration,
                     reason:
-                        "connected_motion_bank_authority_lost_before_discovery"
+                        "exact_connected_history_authority_lost_before_discovery"
                 )
                 return true
             }
             // This deadline is independent of page progress. Standard 2A37 is
             // never unsubscribed by the production history init command set;
             // the budget merely releases local proprietary command ownership.
-            armConnectedMotionBankHistoryBudget(
+            armConnectedRealtimePreservingHistoryBudget(
                 generation: syncGeneration
             )
         }
@@ -12781,17 +13124,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             dbgLast = "offline sync reconnect"
             switch peripheral.state {
             case .connected:
-                if let exactAuthority =
-                    activeConnectedMotionBankHistoryAuthority(
-                        generation: syncGeneration
-                    ), !connectedMotionBankHistoryRequestAuthorityIsValid(
-                        exactAuthority.request,
-                        peripheral: peripheral
-                    ) {
+                if activeConnectedRealtimePreservingHistoryAuthorityExists(
+                    generation: syncGeneration
+                ), !activeConnectedRealtimePreservingHistoryAuthorityIsValid(
+                    generation: syncGeneration,
+                    peripheral: peripheral
+                ) {
                     _ = finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
                         generation: syncGeneration,
                         reason:
-                            "connected_motion_bank_authority_lost_at_discovery"
+                            "exact_connected_history_authority_lost_at_discovery"
                     )
                     return true
                 }
@@ -12852,6 +13194,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             id: ticketID,
             strapIdentifier: strapIdentifier
         ),
+        ticket.effectiveRecoveryMode == .directOffload,
         let attempted =
             AtriaWhoop4MotionBankCoverageLedger.markOffloadAttempt(
                 id: ticket.id,
@@ -12895,7 +13238,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func archiveOrphanHistoricalIngressIfNeeded(
         reason: String,
         force: Bool,
-        explicitRequest: Bool
+        explicitRequest: Bool,
+        retainHistoricalRequest: Bool = true
     ) -> Bool {
         let ingressDirectory = FileManager.default.urls(
             for: .applicationSupportDirectory,
@@ -12913,11 +13257,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // Preserve that authority until the existing replay worker
             // retires its journal; otherwise the durable prefix survives but
             // the exact drain silently stops after process restoration.
-            retainPendingOfflineHistoricalSyncRequest(
-                reason: reason,
-                force: force,
-                explicitRequest: explicitRequest
-            )
+            // An exact connected-raw token cannot survive this asynchronous
+            // replay, and the accepted-HR orphan sweep is raw archival only.
+            // Neither is permission to manufacture a generic Boolean history
+            // request that the healthy live-owner gate will reject later.
+            if retainHistoricalRequest,
+               transientConnectedRawHistoryCatchUpRequestAuthority == nil {
+                retainPendingOfflineHistoricalSyncRequest(
+                    reason: reason,
+                    force: force,
+                    explicitRequest: explicitRequest
+                )
+            }
             AtriaDebugLog(
                 "ATRIADBG historyIngress status=replay_in_flight_request_retained reason=%@ force=%d explicit=%d action=resume_after_orphan_retirement",
                 reason,
@@ -12958,9 +13309,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard hasIngressSource || AtriaWhoop4HistoricalOrphanVault.hasPotentialProductionEntries() else {
             return false
         }
-        retainPendingOfflineHistoricalSyncRequest(
-            reason: reason, force: force, explicitRequest: explicitRequest
-        )
+        if retainHistoricalRequest,
+           transientConnectedRawHistoryCatchUpRequestAuthority == nil {
+            retainPendingOfflineHistoricalSyncRequest(
+                reason: reason,
+                force: force,
+                explicitRequest: explicitRequest
+            )
+        }
         // Set this before dispatch so another HR callback cannot schedule a
         // second reader while the first worker is hashing/copying the source.
         orphanHistoricalIngressArchiveInFlight = true
@@ -13139,7 +13495,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     _ = self.archiveOrphanHistoricalIngressIfNeeded(
                         reason: "orphan_vault_follow_up_after_canonical_replay",
                         force: false,
-                        explicitRequest: false
+                        explicitRequest: false,
+                        retainHistoricalRequest: false
                     )
                     let exactMotionResumed = self
                         .resumeConnectedMotionBankAfterLocalDependencyIfNeeded(
@@ -13731,10 +14088,75 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             activeConnectedMotionBankHistoryAuthority(
                 generation: generation
             ) != nil
+        let connectedRawCatchUpAuthority =
+            activeConnectedRawHistoryCatchUpAuthority(
+                generation: generation
+            )
+        let boundedConnectedRawCatchUp = connectedRawCatchUpAuthority != nil
+        let connectedRawCleanACKFinishAuthority =
+            connectedRawHistoryCleanACKFinishAuthority.flatMap {
+                authority -> ConnectedRawHistoryCleanACKFinishAuthority? in
+                guard boundedConnectedRawCatchUp,
+                      authority.generation == generation,
+                      let historicalIngressSpool,
+                      historicalIngressSpool.matches(
+                        authority.ingressBoundary
+                      ) else {
+                    return nil
+                }
+                return authority
+            }
+        let connectedRawCatchUpDurableBoundary =
+            boundedConnectedRawCatchUp
+                && !historicalAdmissionFailed
+                && historicalArchiveWriteFailures == 0
+                && historicalDrainTelemetry.persistErrors == 0
+                && historicalDrainTelemetry.flushErrors == 0
+                && (offlineHistoricalSyncReachedTerminal
+                    || historicalDrainTelemetry.ackSucceeded > 0)
+        let connectedRawIngressFullyAcknowledged =
+            connectedRawCleanACKFinishAuthority?.ingressBoundary
+                .coversEntireJournal == true
+                && connectedRawCatchUpDurableBoundary
+                && historicalDrainTelemetry.ackSucceeded > 0
+                && pendingHistoricalTransportEventCount == 0
+                && historyDrain.pendingPersistenceCount == 0
+                && !historicalAdmissionBatchInFlight
+                && !historicalAdmissionBatchScheduled
+                && !historyDurableFlushInFlight
+                && pendingHistoryEndACK == nil
+                && !historyACKGate.requiresHistoryCallbackDeferral
+        let connectedRawConsumedPrefixRetirementSafe =
+            Self.shouldRetireConnectedRawConsumedPrefix(
+                exactCleanACKFinishAuthority:
+                    connectedRawCleanACKFinishAuthority != nil,
+                durableBoundaryReached:
+                    connectedRawCatchUpDurableBoundary,
+                acknowledgedPages:
+                    historicalDrainTelemetry.ackSucceeded,
+                pendingPersistenceCount:
+                    historyDrain.pendingPersistenceCount,
+                admissionBatchInFlight:
+                    historicalAdmissionBatchInFlight,
+                admissionBatchScheduled:
+                    historicalAdmissionBatchScheduled,
+                hasDeferredEvent:
+                    historicalIngressDeferredEvent != nil,
+                durableFlushInFlight:
+                    historyDurableFlushInFlight,
+                hasPendingACK: pendingHistoryEndACK != nil,
+                ackGateDeferringCallbacks:
+                    historyACKGate.requiresHistoryCallbackDeferral
+            )
+        let shouldResumePendingSync = resumePendingSync
+            && !boundedConnectedRawCatchUp
         let preservesConnectedRealtimeOwner =
             offlineHistoricalSyncPreservesConnectedRealtimeOwner
                 || compactMotionBankOnly
+                || boundedConnectedRawCatchUp
         activeConnectedMotionBankHistoryGenerationAuthority = nil
+        activeConnectedRawHistoryCatchUpGenerationAuthority = nil
+        connectedRawHistoryCleanACKFinishAuthority = nil
         offlineHistoricalSyncPreservesConnectedRealtimeOwner = false
         offlineHistoricalSyncExplicitPostWorkoutBankRequest = false
         clearGate4DailyBankRearmIntent(
@@ -13752,6 +14174,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         cancelHistoryOnlyProbe(reason: "offline_sync_finished")
         historicalMetricDurabilityFence.invalidate(generation: generation)
+        pendingHistoricalRawFrontierGeneration = nil
+        pendingHistoricalRawFrontierUnix = nil
         historyDurableFlushInFlight = false
         pendingHistoryEndACK = nil
         pendingHistoryACKAttempts = 0
@@ -13787,15 +14211,56 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         historySkipDataRangeRequest = false
         probeCommandMode = .withoutResponse
         finishHistoricalDrainTelemetry(generation: generation, trigger: "finish")
-        let mayDiscardIngress = offlineHistoricalSyncReachedTerminal
-            && !historicalAdmissionFailed
+        let ingressQueuesAreDrained = !historicalAdmissionFailed
             && pendingHistoricalTransportEventCount == 0
             && historyDrain.pendingPersistenceCount == 0
             && !historicalAdmissionBatchInFlight
+            && !historicalAdmissionBatchScheduled
+        let mayDiscardIngress = ingressQueuesAreDrained
+            && ((!boundedConnectedRawCatchUp
+                    && offlineHistoricalSyncReachedTerminal)
+                || connectedRawIngressFullyAcknowledged)
         if mayDiscardIngress {
-            // The reducer terminal proof and canonical archive durability have
-            // both completed. Only now is this raw ingress cache disposable.
+            // A full terminal or an exact connected-raw ACK both prove that
+            // the complete popped prefix crossed canonical durability. The
+            // ACK-boundary slice stops before issuing the next 0x16, so an
+            // empty queue also proves there is no unacknowledged suffix to
+            // seal/replay. Failed or mid-page exits still retain the journal.
             historicalIngressSpool?.remove()
+        } else if connectedRawConsumedPrefixRetirementSafe,
+                  let connectedRawCleanACKFinishAuthority,
+                  let historicalIngressSpool,
+                  historicalIngressSpool.matches(
+                    connectedRawCleanACKFinishAuthority.ingressBoundary
+                  ) {
+            // Only the exact dequeue offset captured inside this generation's
+            // synchronous target-ACK branch is retirement authority. A queued
+            // successor-page tail remains unread and is preserved, while the
+            // already-fsynced/ACKed prefix is removed before the orphan worker
+            // reopens the file from its header. Mid-page thermal/idle/failure
+            // exits have no authority here and retain the complete journal.
+            do {
+                let retiredBytes = try historicalIngressSpool
+                    .retireConsumedPrefix(
+                        through: connectedRawCleanACKFinishAuthority
+                            .ingressBoundary
+                    )
+                AtriaDebugLog(
+                    "ATRIADBG historyIngress status=retired_durable_consumed_prefix generation=%llu retired_bytes=%llu unread_events=%d action=orphan_only_unacked_suffix",
+                    generation,
+                    retiredBytes,
+                    historicalIngressSpool.pendingCount
+                )
+            } catch {
+                // The original append-only spool remains the fail-closed
+                // fallback. Duplicate replay costs I/O but cannot lose a row
+                // or authorize an ACK.
+                AtriaDebugLog(
+                    "ATRIADBG historyIngress status=durable_prefix_retirement_failed generation=%llu error=%@ action=retain_full_spool_no_ack_no_loss",
+                    generation,
+                    String(describing: error)
+                )
+            }
         } else {
             // Preserve a failed/interrupted generation for crash diagnostics;
             // it cannot be reused as a new generation's ACK authority. Do not
@@ -13858,15 +14323,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 requestedWindowMetricProgress: requestedWindowMetricProgress,
                 ledgerCoverageResolved: ledgerCoverageResolved,
                 terminalAndLiveRestored: false,
-                resumePendingSync: resumePendingSync,
-                compactMotionBankOnly: compactMotionBankOnly
+                liveRestored: false,
+                resumePendingSync: shouldResumePendingSync,
+                compactMotionBankOnly: compactMotionBankOnly,
+                connectedRawCatchUpAuthority: connectedRawCatchUpAuthority,
+                connectedRawCatchUpDurableBoundary:
+                    connectedRawCatchUpDurableBoundary
             )
             return
         }
 
         let restorationPeripheralID = restorationPeripheral.identifier
+        let restorationPeripheralObjectID = ObjectIdentifier(
+            restorationPeripheral
+        )
         let restorationEpoch = bleCallbackEpochFence.epoch
         let restorationRequestedAt = Date()
+        let liveRestorationTimeout = boundedConnectedRawCatchUp
+            ? connectedRawHistoryCatchUpBackgroundLiveSilenceLimit
+            : postHistoryLiveRestorationTimeout
         postHistoryLiveRestorationGeneration = generation
         UserDefaults.standard.set("awaiting_post_history_live_sample",
                                   forKey: OfflineSyncDefaults.lastStatus)
@@ -13875,28 +14350,44 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       generation,
                       restorationEpoch,
                       restorationPeripheralID.uuidString,
-                      postHistoryLiveRestorationTimeout)
+                      liveRestorationTimeout)
         postHistoryLiveRestorationTask?.cancel()
         postHistoryLiveRestorationTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let deadline = restorationRequestedAt.addingTimeInterval(
-                self.postHistoryLiveRestorationTimeout
+                liveRestorationTimeout
             )
             var restored = false
             var repairReasserted = false
             var reconnectRequested = false
             while !Task.isCancelled, Date() < deadline {
-                let samePeripheral = self.peripheral?.identifier == restorationPeripheralID
+                let samePeripheral = self.peripheral.map {
+                    $0.identifier == restorationPeripheralID
+                        && ObjectIdentifier($0)
+                            == restorationPeripheralObjectID
+                } ?? false
+                let sameEpoch = self.bleCallbackEpochFence.epoch
+                    == restorationEpoch
                 let connected = self.peripheral?.state == .connected
-                    && self.status == .connected
                 if samePeripheral,
+                   sameEpoch,
                    connected,
                    let acceptedAt = self.lastAcceptedHRAt,
                    acceptedAt > restorationRequestedAt {
                     restored = true
                     break
                 }
-                guard samePeripheral else { break }
+                if !samePeripheral || !sameEpoch {
+                    // A same-link raw slice never turns a transient MainActor
+                    // publication gap into a destructive recovery. Keep the
+                    // fresh-2A37 proof bounded by this task's deadline; exact
+                    // token reminting remains impossible until it succeeds.
+                    if preservesConnectedRealtimeOwner {
+                        try? await Task.sleep(for: .milliseconds(250))
+                        continue
+                    }
+                    break
+                }
                 if !repairReasserted,
                    connected,
                    self.bleCallbackEpochFence.epoch == restorationEpoch,
@@ -13939,8 +14430,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 requestedWindowMetricProgress: requestedWindowMetricProgress,
                 ledgerCoverageResolved: ledgerCoverageResolved,
                 terminalAndLiveRestored: completedDrain && restored,
-                resumePendingSync: resumePendingSync,
-                compactMotionBankOnly: compactMotionBankOnly
+                liveRestored: restored,
+                resumePendingSync: shouldResumePendingSync,
+                compactMotionBankOnly: compactMotionBankOnly,
+                connectedRawCatchUpAuthority: connectedRawCatchUpAuthority,
+                connectedRawCatchUpDurableBoundary:
+                    connectedRawCatchUpDurableBoundary
             )
         }
     }
@@ -13955,9 +14450,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         requestedWindowMetricProgress: Bool,
         ledgerCoverageResolved: Bool,
         terminalAndLiveRestored: Bool,
+        liveRestored: Bool,
         resumePendingSync: Bool,
-        compactMotionBankOnly: Bool
+        compactMotionBankOnly: Bool,
+        connectedRawCatchUpAuthority:
+            ConnectedRawHistoryCatchUpGenerationAuthority?,
+        connectedRawCatchUpDurableBoundary: Bool
     ) {
+        let boundedConnectedRawCatchUp = connectedRawCatchUpAuthority != nil
         lastCompletedHistoricalSyncGeneration = generation
         lastCompletedHistoricalSyncReachedTerminal = terminalAndLiveRestored
             && offlineHistoricalSyncReachedTerminal
@@ -13972,7 +14472,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let rawOnlyGapArchived = rawOnlyGapFingerprint != nil
             && newRows > 0
             && terminalAndLiveRestored
-        let completionStatus = !terminalAndLiveRestored && newRows > 0
+        let connectedRawPageDurableAndLive = boundedConnectedRawCatchUp
+            && connectedRawCatchUpDurableBoundary
+            && liveRestored
+        let completionStatus = connectedRawPageDurableAndLive
+            ? "connected_raw_page_durable_live_restored"
+            : !terminalAndLiveRestored && newRows > 0
             ? "partial_live_restore_unverified"
             : rawOnlyGapArchived
             ? "raw_gap_archived_awaiting_transaction_validation"
@@ -13988,6 +14493,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             ? "strap_cursor_caught_up_older_gaps_retained"
             : completionStatus
         let defaults = UserDefaults.standard
+        if let connectedRawCatchUpAuthority {
+            let rawBoundaryNow = Date()
+            scheduleConnectedRawHistoryCatchUpContinuation(
+                authority: connectedRawCatchUpAuthority,
+                reason: reason,
+                newRows: newRows,
+                cursorCaughtUp: forwardCursorCaughtUp,
+                liveRestored: liveRestored,
+                durableBoundary: connectedRawCatchUpDurableBoundary,
+                now: rawBoundaryNow
+            )
+        }
         if let rawOnlyGapFingerprint, rawOnlyGapArchived {
             defaults.set(rawOnlyGapFingerprint,
                          forKey: OfflineSyncDefaults.rawArchivedGapFingerprint)
@@ -14072,6 +14589,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
         }
         if !compactMotionBankOnly,
+           !connectedRawHistoryCatchUpContinuationPending,
            terminalAndLiveRestored && offlineHistoricalSyncReachedTerminal {
             if activeFullDrainEventIdentity?.transportGeneration == generation
                 || activeHistoricalRequestBinding?.transportGeneration == generation {
@@ -14105,6 +14623,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }
         }
         if !compactMotionBankOnly,
+           !boundedConnectedRawCatchUp,
            Self.shouldRetryUnresolvedRangeLossAfterTerminal(
             rangeLossResolved: rangeLossResolved,
             forwardCursorCaughtUp: forwardCursorCaughtUp,
@@ -14116,30 +14635,41 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // exact gap resolves, or the strap proves that no rows exist.
             scheduleRangeLossBackfillRetry(reason: reason)
         }
-        evaluatePendingWorkoutHistoricalMotionBankOffload(
-            reason: "history_terminal_\(reason)",
-            allowRetry: terminalAndLiveRestored
-        )
+        if boundedConnectedRawCatchUp {
+            evaluatePendingGlobalFrontierMotionBankCoverage(
+                reason: "connected_raw_slice_\(reason)"
+            )
+        } else if compactMotionBankOnly
+                    || !connectedRawHistoryCatchUpContinuationPending {
+            evaluatePendingWorkoutHistoricalMotionBankOffload(
+                reason: "history_terminal_\(reason)",
+                allowRetry: terminalAndLiveRestored
+            )
+        }
         // A history transaction necessarily closes the low-bandwidth 0x69
         // bank before taking command ownership. The accepted-HR hot path
         // usually re-arms it, but terminal materialization and ticket retries
         // can consume that callback and leave the durable state stuck at
         // `prearmRequested=true, enabled=false` for the rest of the day.
-        // This finalizer runs only after the generation released transport and
-        // live HR was restored, so deterministically reopen the next all-day
-        // capture window here. If TX discovery is not resident yet, the helper
-        // requests only the command characteristic and arms from its callback.
-        if terminalAndLiveRestored {
+        // This finalizer runs after the generation released transport. Any
+        // generation-matching exit with restored live HR can reopen the next
+        // all-day capture window; durable terminal coverage is not required to
+        // resume present capture. If TX discovery is not resident yet, the
+        // helper requests only the command characteristic and arms from its
+        // callback.
+        if liveRestored,
+           !connectedRawHistoryCatchUpContinuationPending {
             armWorkoutHistoricalMotionBankIfPossible(
                 reason: "history_terminal_live_restored_\(reason)"
             )
         }
-        AtriaDebugLog("ATRIADBG offline_sync status=%@ reason=%@ generation=%llu rows=%d new_rows=%d live_restored=%d action=%@",
+        AtriaDebugLog("ATRIADBG offline_sync status=%@ reason=%@ generation=%llu rows=%d new_rows=%d live_restored=%d terminal_and_live_restored=%d action=%@",
                       publishedCompletionStatus,
                       reason,
                       generation,
                       rows,
                       newRows,
+                      liveRestored ? 1 : 0,
                       terminalAndLiveRestored ? 1 : 0,
                       terminalAndLiveRestored
                         ? "publish_after_fresh_hr"
@@ -14156,10 +14686,381 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     pending.preserveConnectedRealtimeOwner
             )
         }
-        resumeWorkoutMotionLeaseAfterHistoricalSync(
-            reason: "offline_sync_terminal_\(reason)"
+        if !connectedRawHistoryCatchUpContinuationPending {
+            resumeWorkoutMotionLeaseAfterHistoricalSync(
+                reason: "offline_sync_terminal_\(reason)"
+            )
+        }
+        if !connectedRawHistoryCatchUpContinuationPending {
+            onHistoricalTransportOwnershipReleased?(
+                "offline_sync_terminal_\(reason)"
+            )
+        }
+    }
+
+    /// Converts one exact raw generation's durable result into scheduling only.
+    /// The hint below cannot issue a command: the next generation still waits
+    /// for a later accepted 2A37 callback to mint a new object/epoch token and
+    /// repeat the atomic canonical claim.
+    private func scheduleConnectedRawHistoryCatchUpContinuation(
+        authority: ConnectedRawHistoryCatchUpGenerationAuthority,
+        reason: String,
+        newRows: Int,
+        cursorCaughtUp: Bool,
+        liveRestored: Bool,
+        durableBoundary: Bool,
+        now: Date
+    ) {
+        let defaults = UserDefaults.standard
+        let progress = Self.connectedRawHistoryCatchUpSliceProgress(
+            durableRows: newRows,
+            startedAt: authority.startedAt,
+            finishedAt: now,
+            startFrontierUnix: authority.startFrontierUnix,
+            endFrontierUnix: defaults.double(
+                forKey: OfflineSyncDefaults.drainedThroughUnix
+            )
         )
-        onHistoricalTransportOwnershipReleased?("offline_sync_terminal_\(reason)")
+        let backlogPending = strapBacklogPendingForCatchUp(now: now)
+        let thermalState = ProcessInfo.processInfo.thermalState
+        let publicationYieldRunnable =
+            UIApplication.shared.applicationState == .active
+            && (thermalState == .nominal || thermalState == .fair)
+            && !ProcessInfo.processInfo.isLowPowerModeEnabled
+        let thermalInterruption = reason.contains("power_pressure")
+            || (thermalState == .critical
+                && reason.contains("authority_lost"))
+        let disposition = Self
+            .connectedRawHistoryCatchUpContinuationDisposition(
+                backlogPending: backlogPending,
+                cursorCaughtUp: cursorCaughtUp,
+                durableRows: progress.durableRows,
+                frontierAdvanceSeconds: progress.frontierAdvanceSeconds,
+                thermalState: thermalState,
+                durableProgressAuthorized:
+                    liveRestored && durableBoundary,
+                thermalInterruption: thermalInterruption,
+                consecutiveProductiveSlices:
+                    connectedRawHistoryCatchUpConsecutiveProductiveSlices,
+                publicationYieldNeeded:
+                    connectedRawCatchUpPublicationYieldIsNeeded?() ?? false,
+                publicationYieldRunnable: publicationYieldRunnable,
+                productiveDelay:
+                    connectedRawHistoryCatchUpProductiveRetryInterval,
+                zeroProgressDelay:
+                    connectedRawHistoryCatchUpZeroProgressRetryInterval,
+                publicationYieldBudget:
+                    connectedRawHistoryCatchUpPublicationYieldBudget
+            )
+        let action: String
+        switch disposition {
+        case .complete:
+            connectedRawHistoryCatchUpContinuationPending = false
+            connectedRawHistoryCatchUpEvaluationNotBefore =
+                now.addingTimeInterval(
+                    connectedRawHistoryCatchUpZeroProgressRetryInterval
+                )
+            connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+            if case .queuedPull(let intentID) = authority.request.intent,
+               queuedConnectedRawHistoryCatchUpIntent?.id == intentID {
+                queuedConnectedRawHistoryCatchUpIntent = nil
+            }
+            action = "complete"
+        case .awaitThermalRecovery:
+            connectedRawHistoryCatchUpContinuationPending = true
+            connectedRawHistoryCatchUpEvaluationNotBefore = nil
+            connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+            action = "await_critical_thermal_recovery"
+        case .yieldForPublication(let budget):
+            beginConnectedRawHistoryCatchUpPublicationYield(
+                sourceGeneration: authority.generation,
+                reason: reason,
+                budget: budget,
+                now: now
+            )
+            action = String(
+                format: "yield_for_publication_%.0fs",
+                budget
+            )
+        case .resumeAfter(let delay):
+            connectedRawHistoryCatchUpContinuationPending = true
+            connectedRawHistoryCatchUpEvaluationNotBefore =
+                now.addingTimeInterval(delay)
+            let nextProductiveCount =
+                connectedRawHistoryCatchUpConsecutiveProductiveSlices + 1
+            if delay > connectedRawHistoryCatchUpProductiveRetryInterval {
+                connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+            } else {
+                connectedRawHistoryCatchUpConsecutiveProductiveSlices =
+                    nextProductiveCount
+            }
+            action = String(format: "resume_after_%.0fs", delay)
+        case .retryAfter(let delay):
+            connectedRawHistoryCatchUpContinuationPending = true
+            connectedRawHistoryCatchUpEvaluationNotBefore =
+                now.addingTimeInterval(delay)
+            connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+            action = String(format: "retry_after_%.0fs", delay)
+        }
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=connected_raw_catch_up_slice generation=%llu reason=%@ durable_rows=%d duration_s=%.3f rows_per_s=%.3f frontier_advance_s=%.3f backlog=%d thermal=%ld action=%@ next_authority=fresh_2a37_exact_object_epoch",
+            authority.generation,
+            reason,
+            progress.durableRows,
+            progress.durationSeconds,
+            progress.rowsPerSecond,
+            progress.frontierAdvanceSeconds,
+            backlogPending ? 1 : 0,
+            thermalState.rawValue,
+            action
+        )
+    }
+
+    /// Installs only a process-local fairness lease after the exact raw
+    /// generation has reached canonical durability, a clean ACK boundary, and
+    /// fresh live-HR restoration. The continuation stays pending so generic
+    /// history lanes remain suppressed, while the projection provider sees no
+    /// raw scheduling ownership for this finite interval.
+    private func beginConnectedRawHistoryCatchUpPublicationYield(
+        sourceGeneration: UInt64,
+        reason: String,
+        budget: TimeInterval,
+        now: Date
+    ) {
+        invalidateConnectedRawHistoryCatchUpPublicationYield(
+            reason: "replaced"
+        )
+        let boundedBudget = max(1, min(
+            connectedRawHistoryCatchUpPublicationYieldBudget,
+            budget
+        ))
+        let yield = ConnectedRawHistoryCatchUpPublicationYield(
+            token: UUID(),
+            sourceGeneration: sourceGeneration,
+            reason: reason,
+            startedAt: now,
+            deadline: now.addingTimeInterval(boundedBudget)
+        )
+        connectedRawHistoryCatchUpPublicationYield = yield
+        connectedRawHistoryCatchUpContinuationPending = true
+        connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+        connectedRawHistoryCatchUpEvaluationNotBefore = yield.deadline
+        connectedRawHistoryCatchUpPublicationYieldTimeoutTask = Task {
+            @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(boundedBudget))
+            guard !Task.isCancelled, let self else { return }
+            _ = self.finishConnectedRawHistoryCatchUpPublicationYieldIfNeeded(
+                token: yield.token,
+                publicationSucceeded: false,
+                reason: "deadline",
+                // A wall-clock adjustment must not turn the one-shot timeout
+                // task into a no-op. The accepted-HR path still independently
+                // observes the real deadline as a second safety fence.
+                now: max(Date(), yield.deadline)
+            )
+        }
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=connected_raw_publication_yield_started token=%@ generation=%llu budget_s=%.0f reason=%@ action=release_projection_fence_keep_continuation_no_radio_command_no_cancel_no_rebuild",
+            yield.token.uuidString,
+            sourceGeneration,
+            boundedBudget,
+            reason
+        )
+        offerConnectedRawCatchUpPublicationYieldIfNeeded(
+            reason: "raw_slice_boundary"
+        )
+    }
+
+    /// AtriaApp calls this on a newly usable foreground/BGProcessing edge. One
+    /// callback result always spends this fairness turn; the absolute deadline
+    /// bounds only a callback which has not returned yet. No result from this
+    /// callback can itself issue a history command.
+    @discardableResult
+    func offerConnectedRawCatchUpPublicationYieldIfNeeded(
+        reason: String,
+        now: Date = Date()
+    ) -> Bool {
+        guard let yield = connectedRawHistoryCatchUpPublicationYield else {
+            return false
+        }
+        let publicationNeeded =
+            connectedRawCatchUpPublicationYieldIsNeeded?() ?? false
+        guard Self
+            .connectedRawHistoryCatchUpPublicationYieldShouldRemainActive(
+                publicationNeeded: publicationNeeded,
+                publicationSucceeded: false,
+                now: now,
+                deadline: yield.deadline
+            ) else {
+            _ = finishConnectedRawHistoryCatchUpPublicationYieldIfNeeded(
+                token: yield.token,
+                publicationSucceeded: false,
+                reason: publicationNeeded
+                    ? "deadline_observed_\(reason)"
+                    : "intent_cleared_\(reason)",
+                now: now
+            )
+            return false
+        }
+        guard !historicalRadioTransportOwnsLink else {
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=connected_raw_publication_yield_offer_deferred token=%@ reason=%@ detail=radio_owner_still_active action=finish_empty_turn_no_overlap",
+                yield.token.uuidString,
+                reason
+            )
+            _ = finishConnectedRawHistoryCatchUpPublicationYieldIfNeeded(
+                token: yield.token,
+                publicationSucceeded: false,
+                publicationAttemptCompleted: true,
+                reason: "radio_owner_reacquired_\(reason)",
+                now: now
+            )
+            return false
+        }
+        if connectedRawHistoryCatchUpPublicationYieldOfferTask != nil {
+            return true
+        }
+        guard let offer = onConnectedRawCatchUpPublicationYield else {
+            _ = finishConnectedRawHistoryCatchUpPublicationYieldIfNeeded(
+                token: yield.token,
+                publicationSucceeded: false,
+                publicationAttemptCompleted: true,
+                reason: "publication_provider_missing_\(reason)",
+                now: now
+            )
+            return false
+        }
+        let remainingBudget = max(
+            1,
+            yield.deadline.timeIntervalSince(now)
+        )
+        connectedRawHistoryCatchUpPublicationYieldOfferTask = Task {
+            @MainActor [weak self] in
+            let succeeded = await offer(reason, remainingBudget)
+            guard !Task.isCancelled, let self else { return }
+            guard self.connectedRawHistoryCatchUpPublicationYield?.token
+                    == yield.token else { return }
+            self.connectedRawHistoryCatchUpPublicationYieldOfferTask = nil
+            if succeeded {
+                _ = self
+                    .finishConnectedRawHistoryCatchUpPublicationYieldIfNeeded(
+                        token: yield.token,
+                        publicationSucceeded: true,
+                        publicationAttemptCompleted: true,
+                        reason: "published_\(reason)",
+                        now: Date()
+                    )
+            } else {
+                // The callback owns exactly one bounded publication attempt.
+                // A false result means that attempt either made one resumable
+                // chunk of progress or was not runnable; neither is authority
+                // to idle the raw lane until the absolute deadline. Durable
+                // intent retains the next offer, after another productive raw
+                // slice and a fresh accepted-2A37 authority boundary.
+                _ = self
+                    .finishConnectedRawHistoryCatchUpPublicationYieldIfNeeded(
+                        token: yield.token,
+                        publicationSucceeded: false,
+                        publicationAttemptCompleted: true,
+                        reason: "offer_completed_without_publication_\(reason)",
+                        now: Date()
+                    )
+            }
+        }
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=connected_raw_publication_yield_offered token=%@ reason=%@ remaining_s=%.0f action=bounded_local_projection_no_radio_overlap",
+            yield.token.uuidString,
+            reason,
+            remainingBudget
+        )
+        return true
+    }
+
+    /// Scene/BGTask lifecycle owner releases a lease it can no longer service.
+    /// This invalidates the exact local token and its async result, preserves
+    /// the raw scheduling hint, and performs no radio action. Consequently only
+    /// a subsequent accepted 2A37 callback can resume raw catch-up.
+    @discardableResult
+    func releaseConnectedRawCatchUpPublicationYieldForLifecycle(
+        reason: String
+    ) -> Bool {
+        guard connectedRawHistoryCatchUpPublicationYield != nil else {
+            return false
+        }
+        invalidateConnectedRawHistoryCatchUpPublicationYield(
+            reason: "lifecycle_\(reason)"
+        )
+        connectedRawHistoryCatchUpContinuationPending = true
+        connectedRawHistoryCatchUpEvaluationNotBefore = nil
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=connected_raw_publication_yield_lifecycle_released reason=%@ action=await_fresh_2a37_exact_authority_no_radio_command",
+            reason
+        )
+        return true
+    }
+
+    @discardableResult
+    private func finishConnectedRawHistoryCatchUpPublicationYieldIfNeeded(
+        token: UUID,
+        publicationSucceeded: Bool,
+        publicationAttemptCompleted: Bool = false,
+        reason: String,
+        now: Date
+    ) -> Bool {
+        guard let yield = connectedRawHistoryCatchUpPublicationYield,
+              yield.token == token else { return false }
+        let publicationNeeded =
+            connectedRawCatchUpPublicationYieldIsNeeded?() ?? false
+        guard !Self
+            .connectedRawHistoryCatchUpPublicationYieldShouldRemainActive(
+                publicationNeeded: publicationNeeded,
+                publicationSucceeded: publicationSucceeded,
+                publicationAttemptCompleted: publicationAttemptCompleted,
+                now: now,
+                deadline: yield.deadline
+            ) else { return false }
+        connectedRawHistoryCatchUpPublicationYieldOfferTask?.cancel()
+        connectedRawHistoryCatchUpPublicationYieldOfferTask = nil
+        connectedRawHistoryCatchUpPublicationYieldTimeoutTask?.cancel()
+        connectedRawHistoryCatchUpPublicationYieldTimeoutTask = nil
+        connectedRawHistoryCatchUpPublicationYield = nil
+        // Keep the scheduling hint. Clearing only its old deadline makes the
+        // next accepted 2A37 callback the sole place that can mint a new exact
+        // object/epoch authority.
+        connectedRawHistoryCatchUpContinuationPending = true
+        connectedRawHistoryCatchUpEvaluationNotBefore = nil
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=connected_raw_publication_yield_finished token=%@ generation=%llu succeeded=%d reason=%@ elapsed_s=%.1f action=await_fresh_2a37_exact_authority_no_radio_command",
+            yield.token.uuidString,
+            yield.sourceGeneration,
+            publicationSucceeded ? 1 : 0,
+            reason,
+            max(0, now.timeIntervalSince(yield.startedAt))
+        )
+        return true
+    }
+
+    private func invalidateConnectedRawHistoryCatchUpPublicationYield(
+        reason: String
+    ) {
+        guard let yield = connectedRawHistoryCatchUpPublicationYield else {
+            connectedRawHistoryCatchUpPublicationYieldOfferTask?.cancel()
+            connectedRawHistoryCatchUpPublicationYieldOfferTask = nil
+            connectedRawHistoryCatchUpPublicationYieldTimeoutTask?.cancel()
+            connectedRawHistoryCatchUpPublicationYieldTimeoutTask = nil
+            return
+        }
+        connectedRawHistoryCatchUpPublicationYieldOfferTask?.cancel()
+        connectedRawHistoryCatchUpPublicationYieldOfferTask = nil
+        connectedRawHistoryCatchUpPublicationYieldTimeoutTask?.cancel()
+        connectedRawHistoryCatchUpPublicationYieldTimeoutTask = nil
+        connectedRawHistoryCatchUpPublicationYield = nil
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=connected_raw_publication_yield_invalidated token=%@ generation=%llu reason=%@ action=drop_process_local_token_no_radio_command",
+            yield.token.uuidString,
+            yield.sourceGeneration,
+            reason
+        )
     }
 
     /// Runs the terminal consumer materialization lanes that a
@@ -14264,12 +15165,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         let interruptedGeneration = offlineHistoricalSyncGeneration
-        if activeConnectedMotionBankHistoryAuthority(
+        if activeConnectedRealtimePreservingHistoryAuthorityExists(
             generation: interruptedGeneration
-        ) != nil {
+        ) {
             offlineHistoricalSyncReachedTerminal = false
             AtriaDebugLog(
-                "ATRIADBG offline_sync status=connected_motion_bank_interrupted reason=%@ generation=%llu action=finish_local_no_history_reissue_no_cancel_no_rebuild_retain_ticket",
+                "ATRIADBG offline_sync status=exact_connected_history_interrupted reason=%@ generation=%llu action=finish_local_no_history_reissue_no_cancel_no_rebuild_retain_authority",
                 reason,
                 interruptedGeneration
             )
@@ -14280,7 +15181,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             return
         }
-        historyFailureReconnectReissuePending = true
         offlineHistoricalSyncReachedTerminal = false
         AtriaDebugLog("ATRIADBG offline_sync status=interrupted reason=%@ generation=%llu action=cancel_probe_retain_gap_retry_after_reconnect",
                       reason,
@@ -14892,7 +15792,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
            observedAt.isFinite,
            now.timeIntervalSince1970 - observedAt <= 15 * 60 {
             let records = defaults.integer(forKey: OfflineSyncDefaults.flushDebtPendingRecords)
-            if flushDebtLevel(pendingRecords: records) != .caughtUp { return .freshDebt }
+            // A fresh, verified 0x22 range response is the strap's current
+            // backlog authority.  When it says the cursor is caught up, do not
+            // immediately fall through to an older durable phone frontier and
+            // re-arm another raw drain.  The observation is deliberately
+            // time-bounded: once it expires, the stale frontier may trigger one
+            // new probe and refresh the truth.  A real range-loss ticket still
+            // wins above this branch, and we never advance the durable frontier
+            // from debt alone.
+            return flushDebtLevel(pendingRecords: records) == .caughtUp
+                ? .none
+                : .freshDebt
         }
         let frontier = defaults.double(forKey: OfflineSyncDefaults.drainedThroughUnix)
         if frontier > 0, now.timeIntervalSince1970 - frontier >= frontierBacklogFloorSeconds {
@@ -14935,22 +15845,323 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         Self.drainableStrapBacklogPendingFromDefaults(now: now)
     }
 
-    /// Accepted-HR wake path for BACKGROUND catch-up (2026-08-08). BGProcessing
-    /// windows are scarce; on a connected strap, accepted-HR BLE callbacks
-    /// survive suspension+lock and are frequent, so this is where most
-    /// background drain progress actually comes from. Fires only in the
-    /// background, only when not already syncing, and only on the robust backlog
-    /// signal — NOT the raw ticket, which publication can falsely clear while
-    /// records remain on the strap (the observed background-stall). It routes
-    /// through the ordinary autonomous admission (`force:false`, no handoff), so
-    /// `shouldAdmitAutonomousCursorAnchoredCatchUpStart` (connection age >= 60s,
-    /// HR freshness <= 45s, 120s attempt cooldown) still decides — no fence is
-    /// relaxed and it can never enter full drain. Sibling to the ticket-gated
-    /// `attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded`.
-    private func attemptAutonomousBackgroundCatchUpAfterAcceptedHRIfNeeded(now: Date = Date()) {
-        guard !foregroundInteractiveMode,
-              !offlineHistoricalSyncInProgress,
-              strapBacklogPendingForCatchUp(now: now) else { return }
+    /// A failed next raw admission releases logical FIFO ownership, but the
+    /// same exact callback epoch receives one present-capture turn before any
+    /// direct motion-ticket selector can retake the radio. This is scheduling
+    /// only: it neither clears the durable backlog nor authorizes a command.
+    private func connectedRawNoRadioCaptureTurnIsCurrent() -> Bool {
+        guard let deferral = connectedRawNoRadioCaptureDeferral,
+              let current = peripheral,
+              current.state == .connected,
+              deferral.callbackSource.peripheralID == current.identifier,
+              deferral.callbackSource.peripheralObjectID
+                == ObjectIdentifier(current),
+              bleCallbackEpochFence.owns(source: deferral.callbackSource)
+        else { return false }
+        return true
+    }
+
+    private func connectedRawNoRadioCaptureTurnRequiresPresentArm() -> Bool {
+        connectedRawNoRadioCaptureTurnIsCurrent()
+            && !Self.historicalMotionBankIsArmedForCurrentConnection(
+            armed: workoutHistoricalMotionBankArmed,
+            armedConnectionStartedAt:
+                workoutHistoricalMotionBankArmedConnectionStartedAt,
+            currentConnectionStartedAt: connectedAt
+        )
+    }
+
+    /// Records explicit foreground interest without creating a generic history
+    /// request or touching UserDefaults. The next accepted 2A37 boundary mints
+    /// the exact object/epoch token; a UI reason string is never transport
+    /// authority by itself.
+    func queueConnectedRawHistoryCatchUpIntent(
+        reason: String,
+        now: Date = Date()
+    ) {
+        queuedConnectedRawHistoryCatchUpIntent = .init(
+            id: UUID(),
+            reason: reason,
+            requestedAt: now
+        )
+        if let deferral = connectedRawNoRadioCaptureDeferral {
+            connectedRawHistoryCatchUpEvaluationNotBefore =
+                deferral.retryNotBefore
+        } else {
+            connectedRawHistoryCatchUpEvaluationNotBefore = nil
+        }
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=connected_raw_catch_up_intent_queued reason=%@ action=await_fresh_2a37_exact_epoch_no_history_command_no_disconnect",
+            reason
+        )
+    }
+
+    /// Evaluates one exact raw-history slice from the accepted-HR hot path.
+    /// Productive generations are paced by a process-local continuation
+    /// deadline, not the global persisted attempt timestamp. Every new slice
+    /// still requires a later accepted 2A37 callback to mint a fresh exact
+    /// object/epoch token.
+    @discardableResult
+    private func attemptConnectedRawHistoryCatchUpAfterAcceptedHRIfNeeded(
+        now: Date,
+        trigger: String
+    ) -> Bool {
+        if let yield = connectedRawHistoryCatchUpPublicationYield {
+            let publicationNow = Date()
+            let publicationNeeded =
+                connectedRawCatchUpPublicationYieldIsNeeded?() ?? false
+            if Self
+                .connectedRawHistoryCatchUpPublicationYieldShouldRemainActive(
+                    publicationNeeded: publicationNeeded,
+                    publicationSucceeded: false,
+                    now: publicationNow,
+                    deadline: yield.deadline
+                ) {
+                // Keep returning through the outer continuation-pending fence:
+                // generic history and motion offload may not claim the shared
+                // lane while bounded local projection owns this token.
+                return false
+            }
+            _ = finishConnectedRawHistoryCatchUpPublicationYieldIfNeeded(
+                token: yield.token,
+                publicationSucceeded: false,
+                reason: publicationNeeded
+                    ? "deadline_observed_\(trigger)"
+                    : "intent_cleared_\(trigger)",
+                now: publicationNow
+            )
+            // Deliberately continue in this accepted-HR callback. It is the
+            // first post-yield 2A37 fact and must still pass every exact
+            // object/epoch/freshness guard below before a generation can start.
+        }
+        guard connectedRawHistoryCatchUpEvaluationNotBefore.map({ now >= $0 })
+                ?? true else { return false }
+
+        var queuedIntent = queuedConnectedRawHistoryCatchUpIntent
+        if let existingQueuedIntent = queuedIntent,
+           now.timeIntervalSince(existingQueuedIntent.requestedAt)
+                > connectedRawHistoryCatchUpIntentLifetime {
+            self.queuedConnectedRawHistoryCatchUpIntent = nil
+            queuedIntent = nil
+        }
+        guard !offlineHistoricalSyncInProgress,
+              postHistoryLiveRestorationGeneration == nil,
+              let current = peripheral,
+              self.peripheral === current,
+              current.state == .connected else { return false }
+
+        let explicitMotionOwnership = Self
+            .explicitMotionOwnershipBlocksHistory(
+                pendingWorkoutIntentActive:
+                    AtriaPendingWorkoutIntent
+                        .isActiveForBLEContinuity(now: now),
+                inMemoryLeaseHeld: workoutMotionOwnerStartedAt != nil,
+                calibrationHoldActive:
+                    workoutMotionCalibrationHoldUntil.map { now < $0 } == true
+            )
+        guard !explicitMotionOwnership else { return false }
+
+        if let deferral = connectedRawNoRadioCaptureDeferral {
+            let exactSourceStillOwned =
+                deferral.callbackSource.peripheralID == current.identifier
+                    && deferral.callbackSource.peripheralObjectID
+                        == ObjectIdentifier(current)
+                    && bleCallbackEpochFence.owns(
+                        source: deferral.callbackSource
+                    )
+            guard exactSourceStillOwned else {
+                connectedRawNoRadioCaptureDeferral = nil
+                connectedRawHistoryCatchUpEvaluationNotBefore = nil
+                return false
+            }
+            guard now >= deferral.retryNotBefore else {
+                connectedRawHistoryCatchUpEvaluationNotBefore =
+                    deferral.retryNotBefore
+                return false
+            }
+        }
+
+        // If a productive slice parked for genuine heat, each accepted HR does
+        // only this in-memory ProcessInfo check. Do not push the continuation
+        // behind another fixed deadline; the first fair/nominal beat must be
+        // able to resume immediately.
+        let thermalPressureActive = Self
+            .shouldParkConnectedRawHistoryCatchUpForPowerPressure(
+                thermalState: ProcessInfo.processInfo.thermalState
+            )
+        if thermalPressureActive {
+            // Critical heat performs only this cheap check on each accepted
+            // beat. Keeping the deadline clear lets the first serious, fair,
+            // or nominal beat enter its permitted duty immediately.
+            connectedRawHistoryCatchUpEvaluationNotBefore = nil
+            return false
+        }
+
+        let backlogReason = Self.strapBacklogReason(now: now)
+        let strapBacklogPending = backlogReason != .none
+        guard strapBacklogPending else {
+            connectedRawHistoryCatchUpContinuationPending = false
+            connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+            connectedRawNoRadioCaptureDeferral = nil
+            return false
+        }
+        let applicationState = UIApplication.shared.applicationState
+        let applicationIsBackground = applicationState == .background
+        let foregroundAutomaticBacklog = applicationState == .active
+        guard applicationIsBackground
+                || foregroundAutomaticBacklog
+                || queuedIntent != nil else { return false }
+
+        let defaults = UserDefaults.standard
+        let bankArmedAtValue = defaults.double(
+            forKey: Self.workoutHistoricalMotionBankArmedAtKey
+        )
+        if let retryNotBefore = Self.connectedRawPresentBankRetryNotBefore(
+            bankArmedForCurrentConnection:
+                Self.historicalMotionBankIsArmedForCurrentConnection(
+                    armed: workoutHistoricalMotionBankArmed,
+                    armedConnectionStartedAt:
+                        workoutHistoricalMotionBankArmedConnectionStartedAt,
+                    currentConnectionStartedAt: connectedAt
+                ),
+            bankArmedAt: bankArmedAtValue > 0
+                ? Date(timeIntervalSince1970: bankArmedAtValue)
+                : nil,
+            now: now,
+            minimumPresentCaptureInterval:
+                connectedRawHistoryCatchUpZeroProgressRetryInterval
+        ) {
+            connectedRawHistoryCatchUpEvaluationNotBefore = retryNotBefore
+            return false
+        }
+
+        // Failed prerequisites retry at an idle cadence. A productive
+        // finalizer overwrites this with its 2-8 second continuation deadline.
+        connectedRawHistoryCatchUpEvaluationNotBefore = now.addingTimeInterval(
+            connectedRawHistoryCatchUpIdleEvaluationInterval
+        )
+
+        let callbackSource = bleCallbackEpochFence.captureIfAccepted(
+            peripheralID: current.identifier,
+            peripheralObjectID: ObjectIdentifier(current),
+            peripheralConnected: true
+        )
+        guard Self.shouldMintConnectedRawHistoryCatchUpAuthority(
+            applicationIsBackground: applicationIsBackground,
+            queuedPullIntent: queuedIntent != nil,
+            foregroundAutomaticBacklog: foregroundAutomaticBacklog,
+            strapBacklogPending: strapBacklogPending,
+            verifiedRawHistoryCapability:
+                currentVerifiedRawHistoryCapability(),
+            exactCallbackSourceAvailable: callbackSource != nil,
+            syncInProgress: offlineHistoricalSyncInProgress,
+            linkConnected: current.state == .connected,
+            thermalPressureActive: thermalPressureActive,
+            connectedAt: connectedAt,
+            acceptedSampleCount: connectedEpochAcceptedHeartRateSamples,
+            lastAcceptedHRAt: lastAcceptedHRAt,
+            activeExplicitWorkout:
+                explicitMotionOwnership,
+            now: now,
+            stableConnectionInterval: 60,
+            acceptedFreshnessWindow: 45,
+            minimumSamples: 10
+        ), let callbackSource else { return false }
+
+        let intent: ConnectedRawHistoryCatchUpIntent
+        if let queuedIntent {
+            intent = .queuedPull(queuedIntent.id)
+        } else if applicationIsBackground {
+            intent = .background
+        } else {
+            intent = .foregroundAutomatic
+        }
+        guard let authority = makeConnectedRawHistoryCatchUpRequestAuthority(
+            peripheral: current,
+            callbackSource: callbackSource,
+            intent: intent,
+            now: now
+        ) else { return false }
+
+        // Only a fully reminted exact raw authority may consume the completed
+        // capture turn. Until this point the deferral remains visible to the
+        // outer accepted-HR scheduler so generic forced/range-loss fallbacks
+        // cannot seize the shared radio.
+        connectedRawNoRadioCaptureDeferral = nil
+
+        let previousAuthority =
+            transientConnectedRawHistoryCatchUpRequestAuthority
+        transientConnectedRawHistoryCatchUpRequestAuthority = authority
+        defer {
+            transientConnectedRawHistoryCatchUpRequestAuthority =
+                previousAuthority
+        }
+        let priorContinuationPending =
+            connectedRawHistoryCatchUpContinuationPending
+        let started = requestOfflineHistoricalSyncIfNeeded(
+            reason: "connected_raw_catch_up_\(trigger)",
+            force: false,
+            allowConnectedAutomaticHandoff: false
+        )
+        guard started else {
+            if let retryNotBefore = Self.connectedRawNoRadioRetryNotBefore(
+                priorContinuationPending: priorContinuationPending,
+                admissionStarted: false,
+                historyOwnerActive: offlineHistoricalSyncInProgress,
+                failedAt: now,
+                minimumPresentCaptureInterval:
+                    connectedRawHistoryCatchUpZeroProgressRetryInterval
+            ) {
+                connectedRawNoRadioCaptureDeferral = .init(
+                    callbackSource: authority.callbackSource,
+                    failedAt: now,
+                    retryNotBefore: retryNotBefore
+                )
+                connectedRawHistoryCatchUpContinuationPending = false
+                connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+                connectedRawHistoryCatchUpEvaluationNotBefore = retryNotBefore
+                AtriaDebugLog(
+                    "ATRIADBG offline_sync status=connected_raw_no_radio_capture_turn authority=%@ retry_unix=%.3f action=release_logical_fifo_owner_rearm_present_bank_defer_raw_120s_retain_backlog_no_command",
+                    authority.authorityID.uuidString,
+                    retryNotBefore.timeIntervalSince1970
+                )
+            }
+            return false
+        }
+        connectedRawNoRadioCaptureDeferral = nil
+        // A queued/fresh intent owns no FIFO lane. Publish logical continuation
+        // only after atomic admission actually installed a generation; failed
+        // authority/claim/local gates must leave present capture eligible.
+        connectedRawHistoryCatchUpContinuationPending = true
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=connected_raw_catch_up_started authority=%@ trigger=%@ generation=%llu backlog=%@ action=sustained_same_link_keep_2a37_no_cancel_no_rebuild",
+            authority.authorityID.uuidString,
+            trigger,
+            offlineHistoricalSyncGeneration,
+            String(describing: backlogReason)
+        )
+        return true
+    }
+
+    /// Accepted-HR wake path for sustained exact raw catch-up. Background and a
+    /// materially stale visible foreground both qualify, but only a fresh
+    /// callback-source token can start a generation. While a typed continuation
+    /// is active, suppress the legacy generic retry lanes; they carry no exact
+    /// object/epoch authority and must not race the same-link owner.
+    @discardableResult
+    private func attemptAutonomousBackgroundCatchUpAfterAcceptedHRIfNeeded(
+        now: Date = Date(),
+        trigger: String = "accepted_hr_autonomous_catchup"
+    ) -> Bool {
+        if offlineHistoricalSyncInProgress {
+            return activeConnectedRawHistoryCatchUpAuthority(
+                generation: offlineHistoricalSyncGeneration
+            ) != nil
+        }
+        if postHistoryLiveRestorationGeneration != nil,
+           connectedRawHistoryCatchUpContinuationPending {
+            return true
+        }
         // No explicit HR->motion yield here (2026-08-08): this same accepted-HR
         // handler already attempted the motion offload FIRST
         // (resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded, "fresh_accepted_hr").
@@ -14960,10 +16171,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // connected), draining HR here keeps that transport productive instead of
         // idling it. An earlier optimistic ledger-only yield (hasResumableMotionBankOffload)
         // wrongly skipped HR even while motion was in fact blocked; removed.
-        _ = requestOfflineHistoricalSyncIfNeeded(
-            reason: "accepted_hr_autonomous_catchup",
-            force: false,
-            allowConnectedAutomaticHandoff: false)
+        let started = attemptConnectedRawHistoryCatchUpAfterAcceptedHRIfNeeded(
+            now: now,
+            trigger: trigger
+        )
+        return started
+            || connectedRawHistoryCatchUpContinuationPending
+            || connectedRawNoRadioCaptureTurnIsCurrent()
     }
 
     /// The current flush-debt level, or nil when the last observation is missing
@@ -15339,6 +16553,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func recordLinkConnected(peripheral: CBPeripheral) {
         clearPendingKnownReconnect(reason: "did_connect")
         let defaults = UserDefaults.standard
+        if let previousSavedStrap = defaults.string(
+            forKey: LinkDefaults.savedPeripheralUUID
+        ), previousSavedStrap != peripheral.identifier.uuidString {
+            workoutHistoryPreemptionSuccessorGate.retire()
+        }
         // Remember this strap so we can re-arm a standing pending connection to it
         // on every launch / drop without scanning. "Connect once, stay connected."
         defaults.set(peripheral.identifier.uuidString, forKey: LinkDefaults.savedPeripheralUUID)
@@ -16460,9 +17679,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         immediateConnectedRebuild: Bool = false
     ) {
         let activeHistoryGeneration = offlineHistoricalSyncGeneration
-        if activeConnectedMotionBankHistoryAuthority(
+        if activeConnectedRealtimePreservingHistoryAuthorityExists(
             generation: activeHistoryGeneration
-        ) != nil {
+        ) {
             // A delayed watchdog may have been armed before the exact same-link
             // motion-bank generation claimed the canonical peripheral. History
             // is optional; realtime continuity is not. Relinquish only the local
@@ -16629,9 +17848,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             self.freshScanFallbackTask = nil
             let activeHistoryGeneration =
                 self.offlineHistoricalSyncGeneration
-            if self.activeConnectedMotionBankHistoryAuthority(
+            if self.activeConnectedRealtimePreservingHistoryAuthorityExists(
                 generation: activeHistoryGeneration
-            ) != nil {
+            ) {
                 // This task can predate the atomic same-link history claim. It
                 // therefore cannot use its old recovery intent to mutate GATT,
                 // cancel the canonical object, or replace the central while the
@@ -19933,13 +21152,33 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func derivedConnectionStatus() -> Status {
-        switch central.state {
-        case .poweredOff, .unauthorized, .unsupported:
-            // Bluetooth genuinely unavailable — a stale peripheral.state can't override this.
+        Self.derivedConnectionStatus(
+            centralState: central.state,
+            peripheralState: peripheral?.state,
+            hasSavedStrap: hasSavedStrap,
+            isActivelyScanning: isActivelyScanning
+        )
+    }
+
+    /// Only CoreBluetooth's exact `.poweredOff` state may produce the user-
+    /// facing Bluetooth-off status. Authorization and platform availability
+    /// are separate conditions; collapsing them into `.poweredOff` tells the
+    /// user to toggle a radio that may already be on. Resetting/unknown retain a
+    /// saved standing-connect presentation while CoreBluetooth recovers.
+    nonisolated static func derivedConnectionStatus(
+        centralState: CBManagerState,
+        peripheralState: CBPeripheralState?,
+        hasSavedStrap: Bool,
+        isActivelyScanning: Bool
+    ) -> Status {
+        switch centralState {
+        case .poweredOff:
             return .poweredOff
+        case .unauthorized, .unsupported:
+            return .disconnected
         case .poweredOn:
-            if let peripheral {
-                switch peripheral.state {
+            if let peripheralState {
+                switch peripheralState {
                 case .connected:
                     return .connected
                 case .connecting, .disconnecting:
@@ -19952,10 +21191,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     return .connecting
                 }
             }
-            return isActivelyScanning ? .scanning : (hasSavedStrap ? .connecting : .disconnected)
+            return isActivelyScanning
+                ? .scanning
+                : (hasSavedStrap ? .connecting : .disconnected)
         case .resetting, .unknown:
-            // Transient — hold the last reasonable state without flapping.
-            return peripheral?.state == .connected ? .connected : (hasSavedStrap ? .connecting : .disconnected)
+            return peripheralState == .connected
+                ? .connected
+                : (hasSavedStrap ? .connecting : .disconnected)
         @unknown default:
             return .disconnected
         }
@@ -20095,6 +21337,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             connectedPeripheralRetainer.adoptRestoredConnectTransition(saved)
             recomputeConnectionStatus(reason: "event")
             markPendingKnownReconnect(reason: reason)
+            if saved.state == .connecting {
+                startReconnectWatchdog(
+                    reason: "\(reason)_existing_transition",
+                    peripheral: saved
+                )
+            }
             AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=%@ action=keep_existing_transition peripheral_state=%d",
                           reason,
                           saved.state.rawValue)
@@ -20108,6 +21356,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 saved,
                 central: central,
                 reason: reason
+            )
+            startReconnectWatchdog(
+                reason: "\(reason)_pending_connect",
+                peripheral: saved
             )
             AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=%@ action=pending_connect", reason)
         }
@@ -20380,6 +21632,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     func forgetSavedStrap(reason: String) {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: LinkDefaults.savedPeripheralUUID)
+        workoutHistoryPreemptionSuccessorGate.retire()
         userRequestedDisconnect = true
         reconnectWatchdogTask?.cancel()
         reconnectWatchdogTask = nil
@@ -20396,7 +21649,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         AtriaDebugLog("ATRIADBG ble_link status=forgotten reason=%@ action=user_forget", reason)
     }
 
-    private func startReconnectWatchdog(reason: String, peripheral: CBPeripheral) {
+    enum ReconnectWatchdogDisposition: Equatable {
+        case observeSavedStandingRequest
+        case recoverUnsavedPeripheral
+    }
+
+    /// Elapsed time alone is never authority to retire a saved CoreBluetooth
+    /// request. A standing `connect` is intentionally allowed to wait for hours
+    /// while the strap is out of range. History completion does not grant
+    /// cancellation, central rotation, or request-reissue authority.
+    nonisolated static func reconnectWatchdogDisposition(
+        elapsed: TimeInterval,
+        hasSavedStrap: Bool,
+        peripheralState: CBPeripheralState
+    ) -> ReconnectWatchdogDisposition {
+        _ = elapsed
+        _ = peripheralState
+        if hasSavedStrap {
+            return .observeSavedStandingRequest
+        }
+        return .recoverUnsavedPeripheral
+    }
+
+    private func startReconnectWatchdog(
+        reason: String,
+        peripheral: CBPeripheral
+    ) {
         reconnectWatchdogTask?.cancel()
         reconnectWatchdogTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(reconnectWatchdogSeconds))
@@ -20404,40 +21682,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             guard self.peripheral === peripheral,
                   self.status == .connecting,
                   peripheral.state != .connected else { return }
-            // For a SAVED strap, NEVER cancel the connection and fall back to
-            // scanning — that is what made "unable to reconnect" possible. A
-            // pending connect() stands forever and iOS fulfils it the moment the
-            // strap returns to range. Keep it armed and stay in the reconnecting
-            // state; only an explicit user "Forget" stops it.
-            if self.hasSavedStrap,
-               self.historyFailureReconnectReissuePending,
-               peripheral.state == .connecting {
-                self.historyFailureReconnectReissuePending = false
-                self.backgroundReconnectFence.markAppOwnedCancellation(
-                    peripheralID: peripheral.identifier
-                )
-                self.recordReconnectLeaseStage("app_cancel_history_stuck_connect",
-                                               detail: reason)
-                self.central.cancelPeripheralConnection(peripheral)
-                AtriaDebugLog("ATRIADBG ble_link watchdog reason=%@ action=cancel_stuck_post_history_connect_once peripheral_state=%d",
-                              reason,
-                              peripheral.state.rawValue)
-                Task { @MainActor [self, peripheral] in
-                    try? await Task.sleep(for: .seconds(1))
-                    guard self.peripheral?.identifier == peripheral.identifier,
-                          peripheral.state == .disconnected else { return }
-                    self.reconnectKnownPeripheralImmediately(
-                        peripheral,
-                        reason: "post_history_stuck_connect_reissue"
-                    )
-                }
-                return
-            }
-            if self.hasSavedStrap {
+            switch Self.reconnectWatchdogDisposition(
+                elapsed: self.reconnectWatchdogSeconds,
+                hasSavedStrap: self.hasSavedStrap,
+                peripheralState: peripheral.state
+            ) {
+            case .observeSavedStandingRequest:
                 AtriaDebugLog("ATRIADBG ble_link watchdog reason=%@ action=observe_pending_connect_saved_strap peripheral_state=%d",
                               reason,
                               peripheral.state.rawValue)
                 return
+            case .recoverUnsavedPeripheral:
+                break
             }
             self.recordLinkFailure(reason: "\(reason)_watchdog", error: nil)
             self.preserveLongWearRangeLossRecovery(reason: "\(reason)_watchdog")
@@ -20483,41 +21739,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         recordReconnectLeaseStage("away_lease_begun",
                                   detail: "remote_range_loss")
-        AtriaDebugLog("ATRIADBG ble_link reconnect_lease=status_active reason=remote_range_loss duration_s=%.0f action=await_one_bounded_reissue",
+        AtriaDebugLog("ATRIADBG ble_link reconnect_lease=status_active reason=remote_range_loss duration_s=%.0f action=single_watchdog_owns_pending_session_no_cancel",
                       reconnectWatchdogSeconds)
-        backgroundReconnectLeaseTask = Task { @MainActor [weak self, weak peripheral] in
-            try? await Task.sleep(for: .seconds(self?.reconnectWatchdogSeconds ?? 20))
-            guard let self, !Task.isCancelled, let peripheral,
-                  self.peripheral === peripheral,
-                  self.status == .connecting,
-                  peripheral.state == .connecting else {
-                return
-            }
-            self.backgroundReconnectLeaseReissueUsed = true
-            self.recordReconnectLeaseStage("away_stuck_connect_reissue",
-                                           detail: "state=\(peripheral.state.rawValue)")
-            // Keep the UIKit assertion alive across the cancel/reconnect:
-            // ending it here can suspend the process before the delayed
-            // reconnect below re-arms the standing connect, stranding the
-            // strap with no pending connection while locked.
-            self.backgroundReconnectLeaseTask = nil
-            self.backgroundReconnectFence.markAppOwnedCancellation(
-                peripheralID: peripheral.identifier
-            )
-            self.central.cancelPeripheralConnection(peripheral)
-            AtriaDebugLog("ATRIADBG ble_link reconnect_lease=action_reissue reason=remote_range_loss_bounded_reconnect peripheral_state=%d",
-                          peripheral.state.rawValue)
-            Task { @MainActor [weak self, weak peripheral] in
-                try? await Task.sleep(for: .seconds(1))
-                guard let self, let peripheral,
-                      self.peripheral?.identifier == peripheral.identifier,
-                      peripheral.state == .disconnected else { return }
-                self.reconnectKnownPeripheralImmediately(
-                    peripheral,
-                    reason: "remote_range_loss_bounded_reconnect"
-                )
-            }
-        }
+        // The reconnect watchdog is the only timeout observer. A saved standing
+        // request remains installed for as long as CoreBluetooth needs; elapsed
+        // time and prior history state are never cancellation authority.
+        startReconnectWatchdog(
+            reason: "connection_timeout_pending_session",
+            peripheral: peripheral
+        )
     }
 
     /// State-restoration relaunches run without debug launch arguments, so the
@@ -22289,7 +23519,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         scheduleSampleDiagnosticsFlush()
     }
 
-    fileprivate func record(_ rate: Int, at sampleTime: Date = Date()) {
+    fileprivate func record(
+        _ rate: Int,
+        at sampleTime: Date = Date(),
+        callbackSource: AtriaBLECallbackEpochFence.Source? = nil
+    ) {
         // ACCURACY: a 0 means the sensor lost skin contact — don't pollute the
         // series, just flag it.
         guard rate > 0 else {
@@ -22344,8 +23578,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if decision.reason == "confirmed_jump", let pending = pendingHRJump {
                 pendingHRJump = nil
                 AtriaDebugLog("ATRIADBG hr_artifact action=accept reason=confirmed_jump previous=%d rate=%d median=%d gap_s=%.1f", pending.rate, rate, med, gap)
-                acceptHeartRate(pending.rate, at: pending.at)
-                acceptHeartRate(rate, at: sampleTime)
+                acceptHeartRate(
+                    pending.rate,
+                    at: pending.at,
+                    callbackSource: callbackSource
+                )
+                acceptHeartRate(
+                    rate,
+                    at: sampleTime,
+                    callbackSource: callbackSource
+                )
                 return
             }
             pendingHRJump = (rate, sampleTime)
@@ -22366,10 +23608,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG hr_artifact action=drop reason=not_confirmed previous=%d rate=%d", pending.rate, rate)
             pendingHRJump = nil
         }
-        acceptHeartRate(rate, at: sampleTime)
+        acceptHeartRate(
+            rate,
+            at: sampleTime,
+            callbackSource: callbackSource
+        )
     }
 
-    private func acceptHeartRate(_ rate: Int, at sampleTime: Date) {
+    private func acceptHeartRate(
+        _ rate: Int,
+        at sampleTime: Date,
+        callbackSource: AtriaBLECallbackEpochFence.Source?
+    ) {
         let shouldForceFirstJournalSave = longWearModeEnabled && session.isEmpty
         recordAcceptedHRSample(rate: rate, at: sampleTime)
         // A restored CoreBluetooth link can bypass both didConnect and the
@@ -22379,7 +23629,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         _ = archiveOrphanHistoricalIngressIfNeeded(
             reason: "first_accepted_hr_orphan_ingress_replay",
             force: false,
-            explicitRequest: false
+            explicitRequest: false,
+            retainHistoricalRequest: false
         )
         if resumeFullDrainPublicationAfterFreshHR,
            !historicalRadioTransportOwnsLink,
@@ -22410,6 +23661,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         lastStandardHR = (rate, sampleTime)
         lastAcceptedHRAt = sampleTime
+        connectedEpochAcceptedHeartRateSamples += 1
+        if let callbackSource,
+           workoutHistoryPreemptionSuccessorGate
+            .consumeAfterAcceptedHeartRate(
+                source: callbackSource,
+                sourceIsCurrent:
+                    bleCallbackEpochFence.owns(source: callbackSource)
+            ) {
+            AtriaDebugLog(
+                "ATRIADBG workout_motion status=history_preemption_successor_live callback_epoch=%llu action=allow_69_arm_on_same_accepted_hr",
+                callbackSource.epoch
+            )
+        }
         _ = retryForegroundGlanceCheckpointAfterFreshHeartRateIfNeeded(
             at: sampleTime
         )
@@ -22435,10 +23699,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 strapIdentifier: strapIdentifier
             )
         }
+        // One connected raw continuation is one serial FIFO drain even across
+        // its bounded live-restoration gaps. A newly closed bank ticket cannot
+        // target the fresh wall-clock interval, so the generic exact-ticket
+        // selector stays out of this lane until global catch-up releases it.
+        let noRadioPresentCaptureTurn =
+            connectedRawNoRadioCaptureTurnIsCurrent()
         let bankOffloadStarted =
-            resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
-            reason: "fresh_accepted_hr"
-        )
+            connectedRawHistoryCatchUpContinuationPending
+                || noRadioPresentCaptureTurn
+                ? false
+                : resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
+                    reason: "fresh_accepted_hr"
+                )
         if !bankOffloadStarted {
             // A boundary-opened 0x69 bank can remain flat during the first part
             // of a workout. The physically accepted walks were pre-armed, so
@@ -22446,19 +23719,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if !workoutHistoricalMotionBankArmed {
                 armWorkoutHistoricalMotionBankIfPossible(
                     reason: "fresh_accepted_hr_prearm",
-                    prioritizePresentCaptureOverProcessRetry: Self
-                        .shouldParkConnectedMotionBankHistoryForPowerPressure(
-                            thermalState:
-                                ProcessInfo.processInfo.thermalState,
-                            lowPowerModeEnabled:
-                                ProcessInfo.processInfo.isLowPowerModeEnabled
-                        )
+                    prioritizePresentCaptureOverProcessRetry:
+                        noRadioPresentCaptureTurn
+                            || Self
+                                .shouldParkConnectedMotionBankHistoryForPowerPressure(
+                                    thermalState:
+                                        ProcessInfo.processInfo.thermalState,
+                                    lowPowerModeEnabled:
+                                        ProcessInfo.processInfo.isLowPowerModeEnabled
+                                )
                 )
             }
-            checkpointDailyHistoricalMotionBankIfNeeded(
-                at: sampleTime,
-                reason: "fresh_accepted_hr"
-            )
+            if !connectedRawHistoryCatchUpContinuationPending,
+               connectedRawHistoryCatchUpPublicationYield == nil,
+               !(postHistoryLiveRestorationGeneration != nil
+                    && connectedRawHistoryCatchUpContinuationPending) {
+                checkpointDailyHistoricalMotionBankIfNeeded(
+                    at: sampleTime,
+                    reason: "fresh_accepted_hr"
+                )
+            }
         }
         // Fresh accepted HR is the only signal allowed to grant a new R10
         // lease after a reconnect or HR outage. The scheduler coalesces the
@@ -22493,21 +23773,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 persistActiveSessionJournalIfNeeded(reason: "accepted_hr", force: false)
             }
             checkpointFromLiveEventIfNeeded(now: sampleTime)
-            resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(
-                reason: "accepted_hr"
-            )
-            rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(
-                reason: "accepted_hr"
-            )
-            resumeInterruptedFullDrainAfterTransportLossIfNeeded(
-                reason: "accepted_hr"
-            )
-            attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded(
-                now: sampleTime
-            )
-            attemptAutonomousBackgroundCatchUpAfterAcceptedHRIfNeeded(
-                now: sampleTime
-            )
+            let connectedRawCatchUpStarted =
+                attemptAutonomousBackgroundCatchUpAfterAcceptedHRIfNeeded(
+                    now: sampleTime,
+                    trigger: "accepted_hr"
+                )
+            if !connectedRawCatchUpStarted {
+                resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(
+                    reason: "accepted_hr"
+                )
+                rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(
+                    reason: "accepted_hr"
+                )
+                resumeInterruptedFullDrainAfterTransportLossIfNeeded(
+                    reason: "accepted_hr"
+                )
+                attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded(
+                    now: sampleTime
+                )
+            }
         }
     }
 
@@ -22579,15 +23863,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                             displayRate: displayRate,
                                             force: pendingDisplayForce)
         }
-        resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(
-            reason: "accepted_hr_batch"
-        )
-        rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(
-            reason: "accepted_hr_batch"
-        )
-        resumeInterruptedFullDrainAfterTransportLossIfNeeded(
-            reason: "accepted_hr_batch"
-        )
+        let connectedRawCatchUpStarted =
+            attemptAutonomousBackgroundCatchUpAfterAcceptedHRIfNeeded(
+                now: checkpointAt ?? Date(),
+                trigger: "accepted_hr_batch"
+            )
+        if !connectedRawCatchUpStarted {
+            resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(
+                reason: "accepted_hr_batch"
+            )
+            rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(
+                reason: "accepted_hr_batch"
+            )
+            resumeInterruptedFullDrainAfterTransportLossIfNeeded(
+                reason: "accepted_hr_batch"
+            )
+        }
     }
 
     private func publishLiveHeartDisplayIfNeeded(sampleTime: Date,
@@ -22697,10 +23988,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     fileprivate func recordHeartRateMeasurement(_ data: Data) {
         let parsed = Self.parseHeartRatePacket(data)
-        recordHeartRateMeasurement(parsed, rawData: data)
+        recordHeartRateMeasurement(
+            parsed,
+            rawData: data,
+            callbackSource: nil
+        )
     }
 
-    private func recordHeartRateMeasurement(_ measurement: ParsedHeartRatePacket?, rawData data: Data) {
+    private func recordHeartRateMeasurement(
+        _ measurement: ParsedHeartRatePacket?,
+        rawData data: Data,
+        callbackSource: AtriaBLECallbackEpochFence.Source?
+    ) {
         let frameTime = measurement?.frameTime ?? Date()
         let payloadLogBudget = standardHRPayloadLogBudget(now: frameTime)
         guard let measurement else {
@@ -22715,7 +24014,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if !replayingBufferedSessionInputs,
            r10SessionBoundaryID != nil || activeSessionRestoreInFlightGeneration != nil ||
             strapStepLedgerRestoreInFlight {
-            bufferedSessionInputs.append(.heartRate(measurement: measurement, rawData: data))
+            bufferedSessionInputs.append(.heartRate(
+                measurement: measurement,
+                rawData: data,
+                callbackSource: callbackSource
+            ))
             return
         }
         if !replayingBufferedSessionInputs,
@@ -22724,7 +24027,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                                     profileMaxHR: maxHRSetting),
            beginAutomaticSessionBoundaryIfNeeded(
                 nextSampleTime: frameTime,
-                firstBufferedInput: .heartRate(measurement: measurement, rawData: data)
+                firstBufferedInput: .heartRate(
+                    measurement: measurement,
+                    rawData: data,
+                    callbackSource: callbackSource
+                )
            ) {
             return
         }
@@ -22751,7 +24058,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             logRow(kind: "hr_artifact", source: "0x2A37", opcode: "", len: "", value: "\(measurement.hr)", at: frameTime)
             return
         }
-        record(measurement.hr, at: frameTime)
+        record(
+            measurement.hr,
+            at: frameTime,
+            callbackSource: callbackSource
+        )
 
         guard !measurement.rrValues.isEmpty else {
             if acceptedHeartRateBatchDepth > 0 {
@@ -23725,18 +25036,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return false
         }
         if offlineHistoricalSyncInProgress,
-           let exactAuthority = activeConnectedMotionBankHistoryAuthority(
-               generation: offlineHistoricalSyncGeneration
+           activeConnectedRealtimePreservingHistoryAuthorityExists(
+            generation: offlineHistoricalSyncGeneration
            ) {
             guard let current = peripheral,
-                  connectedMotionBankHistoryRequestAuthorityIsValid(
-                      exactAuthority.request,
-                      peripheral: current
+                  activeConnectedRealtimePreservingHistoryAuthorityIsValid(
+                    generation: offlineHistoricalSyncGeneration,
+                    peripheral: current
                   ) else {
                 _ = finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
-                    generation: exactAuthority.generation,
+                    generation: offlineHistoricalSyncGeneration,
                     reason:
-                        "connected_motion_bank_authority_lost_before_command"
+                        "exact_connected_history_authority_lost_before_command"
                 )
                 return false
             }
@@ -23790,6 +25101,73 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// ledger entry has received its CoreBluetooth callback. The ledger itself
     /// rejects a second outstanding WR, so a late callback can never be
     /// reinterpreted as confirmation for a newer command.
+    private func closeWorkoutHistoricalMotionBankForHistoryServeCutover(
+        generation: UInt64,
+        peripheral: CBPeripheral
+    ) {
+        guard offlineHistoricalSyncInProgress,
+              offlineHistoricalSyncGeneration == generation,
+              self.peripheral === peripheral else { return }
+        let defaults = UserDefaults.standard
+        let wasArmed = Self
+            .historicalMotionBankIsArmedForCurrentConnection(
+                armed: workoutHistoricalMotionBankArmed,
+                armedConnectionStartedAt:
+                    workoutHistoricalMotionBankArmedConnectionStartedAt,
+                currentConnectionStartedAt: connectedAt
+            )
+        if wasArmed {
+            let cutoverTicket =
+                AtriaWhoop4MotionBankCoverageLedger.close(
+                at: Date(),
+                strapIdentifier: peripheral.identifier.uuidString,
+                armedConnectionStartedAt:
+                    workoutHistoricalMotionBankArmedConnectionStartedAt
+                        ?? connectedAt,
+                recoveryMode: .awaitingGlobalFrontier
+            )
+            if let cutoverTicket {
+                AtriaDebugLog(
+                    "ATRIADBG workout_motion_bank_offload status=frontier_ticket_created ticket=%@ generation=%llu action=exclude_generic_selector_resolve_from_compact_global_fifo",
+                    cutoverTicket.id,
+                    generation
+                )
+            }
+        }
+        // WHOOP 4's accepted 16/00 takes the proprietary owner and closes 0x69
+        // in firmware. Mirror that boundary synchronously even if our cached
+        // bit was stale: retaining `enabled=true` would make every later rearm
+        // helper no-op while the coverage ledger falsely accrued time.
+        let cutoverState = Self
+            .historicalMotionBankStateAfterHistoryServeCutover()
+        workoutHistoricalMotionBankArmed = cutoverState.processArmed
+        workoutHistoricalMotionBankArmedConnectionStartedAt = nil
+        defaults.set(
+            cutoverState.persistedEnabled,
+            forKey: Self.workoutHistoricalMotionBankEnabledKey
+        )
+        defaults.set(
+            cutoverState.prearmRequested,
+            forKey: Self.workoutHistoricalMotionBankPrearmRequestedKey
+        )
+        defaults.set(
+            false,
+            forKey: Self.workoutHistoricalMotionBankStopPendingKey
+        )
+        defaults.removeObject(
+            forKey: Self.workoutHistoricalMotionBankArmedAtKey
+        )
+        defaults.removeObject(
+            forKey: Self.workoutHistoricalMotionBankRearmNotBeforeKey
+        )
+        AtriaMotionBankDutyCycleDiag.note("sync_cutover")
+        AtriaDebugLog(
+            "ATRIADBG workout_motion_bank status=history_serve_cutover generation=%llu was_armed=%d action=close_coverage_clear_process_and_persisted_arm_retain_prearm",
+            generation,
+            wasArmed ? 1 : 0
+        )
+    }
+
     private func sendHistoryCommandAwaitingWriteConfirmation(
         command: UInt8,
         payload: [UInt8],
@@ -23806,6 +25184,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               expected.command == command,
               expected.payload == payload else {
             return .rejected
+        }
+        if command == Cmd.sendHistoricalData, payload == [0x00],
+           let current = peripheral {
+            closeWorkoutHistoricalMotionBankForHistoryServeCutover(
+                generation: generation,
+                peripheral: current
+            )
         }
         for _ in 0..<max(1, timeoutAttempts) {
             if let completion = lastProprietaryWriteCompletion,
@@ -24637,41 +26022,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             offlineHistoricalSyncPreservesConnectedRealtimeOwner
         let activeBankRequest =
             offlineHistoricalSyncExplicitPostWorkoutBankRequest
+        let activeRawCatchUp = activeConnectedRawHistoryCatchUpAuthority(
+            generation: offlineHistoricalSyncGeneration
+        ) != nil
         let disposition = Self
             .workoutHistoricalTransportPreemptionDisposition(
                 syncInProgress: offlineHistoricalSyncInProgress,
                 historyProbeActive: historyOnlyProbeMode,
-                preservesConnectedRealtimeOwner: preservesRealtimeOwner,
+                // Releasing only the local owner cannot prove WHOOP stopped
+                // serving an in-flight FIFO page. A connected workout
+                // preemption always uses a physical disconnect fence; standard
+                // HR and 69/01 resume on the replacement callback epoch.
+                preservesConnectedRealtimeOwner: false,
                 linkConnected: peripheral?.state == .connected
             )
         guard disposition != .noHistoryOwner else { return }
-        retainPendingOfflineHistoricalSyncRequest(
-            reason: "post_workout_resume_\(offlineHistoricalSyncReason)",
-            force: activeBankRequest
-                || pendingOfflineHistoricalSyncRequest?.force == true,
-            explicitRequest:
-                pendingOfflineHistoricalSyncRequest?.explicitRequest == true,
-            explicitPostWorkoutBankRequest: activeBankRequest,
-            preserveConnectedRealtimeOwner: preservesRealtimeOwner
-        )
-        if disposition == .finishPreservingRealtimeOwner {
-            let finished =
-                finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
-                    generation: offlineHistoricalSyncGeneration,
-                    reason:
-                        "explicit_workout_preempt_history_preserve_realtime"
-                )
-            AtriaDebugLog(
-                "ATRIADBG workout_motion status=history_owner_preempt_requested reason=%@ generation=%llu action=%@",
-                reason,
-                offlineHistoricalSyncGeneration,
-                finished
-                    ? "finish_local_history_preserve_connected_hr"
-                    : "preserve_connected_hr_fail_closed"
+        if !activeRawCatchUp {
+            retainPendingOfflineHistoricalSyncRequest(
+                reason: "post_workout_resume_\(offlineHistoricalSyncReason)",
+                force: activeBankRequest
+                    || pendingOfflineHistoricalSyncRequest?.force == true,
+                explicitRequest:
+                    pendingOfflineHistoricalSyncRequest?.explicitRequest == true,
+                explicitPostWorkoutBankRequest: activeBankRequest,
+                preserveConnectedRealtimeOwner: preservesRealtimeOwner
             )
-            // Never fall through to a physical cancel for a generation whose
-            // admission contract promised to preserve the realtime owner.
-            return
         }
         AtriaDebugLog("ATRIADBG workout_motion status=history_owner_preempt_requested reason=%@ generation=%llu action=disconnect_without_abort_retain_durable_prefix",
                       reason,
@@ -24679,6 +26054,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if disposition == .disconnectConnectedHistoryOwner,
            let connectedPeripheral = peripheral,
            connectedPeripheral.state == .connected {
+            guard let predecessorSource = bleCallbackEpochFence
+                .captureIfAccepted(
+                    peripheralID: connectedPeripheral.identifier,
+                    peripheralObjectID: ObjectIdentifier(connectedPeripheral),
+                    peripheralConnected: true
+                ) else {
+                AtriaDebugLog(
+                    "ATRIADBG workout_motion status=history_owner_preempt_deferred reason=%@ action=await_exact_current_callback_source_no_cancel_no_69",
+                    reason
+                )
+                return
+            }
+            workoutHistoryPreemptionSuccessorGate.install(
+                predecessorSource: predecessorSource
+            )
             cancelPeripheralConnection(
                 connectedPeripheral,
                 reason: "explicit_workout_preempt_history"
@@ -25032,9 +26422,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason: String,
         prioritizePresentCaptureOverProcessRetry: Bool = false
     ) {
+        let now = Date()
+        let manualWorkoutActive =
+            AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: now)
+        let calibrationHoldActive =
+            workoutMotionCalibrationHoldUntil.map { now < $0 } == true
+        let explicitPresentCapturePriority =
+            manualWorkoutActive || calibrationHoldActive
         guard !historyOnlyProbeMode,
-              !offlineHistoricalSyncInProgress,
-              !freshHistoryOwnerCutoverPending else {
+              !freshHistoryOwnerCutoverPending,
+              !Self.historicalMotionBankRearmBlockedByRawOwnership(
+                historyTransportActive: offlineHistoricalSyncInProgress,
+                rawContinuationPending:
+                    connectedRawHistoryCatchUpContinuationPending,
+                postHistoryRawRestorationActive:
+                    postHistoryLiveRestorationGeneration != nil
+                        && connectedRawHistoryCatchUpContinuationPending,
+                explicitPresentCapturePriority:
+                    explicitPresentCapturePriority
+              ) else {
+            // A bounded connected-raw continuation is one active global FIFO
+            // catch-up even while transport briefly yields for live HR. The
+            // physically rejected v5 flow reopened 69/01 inside this episode
+            // and manufactured tickets faster than read_cursor could converge.
             noteMotionBankDutyCycle("sync_cutover")
             return
         }
@@ -25042,12 +26452,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaMotionBankDutyCycleDiag.note("link_down")
             return
         }
+        guard !workoutHistoryPreemptionSuccessorGate.blocksArm(
+            for: peripheral.identifier
+        ) else {
+            // TX discovery on the replacement link can precede 2A37. The
+            // physical disconnect proved the old FIFO owner is gone, but only
+            // accepted HR proves the same-strap successor epoch is healthy
+            // enough to resume present motion capture. A different strap
+            // retires the stale reservation in `blocksArm` above.
+            noteMotionBankDutyCycle("await_fresh_hr")
+            return
+        }
         let defaults = UserDefaults.standard
-        let now = Date()
-        let manualWorkoutActive =
-            AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: now)
-        let calibrationHoldActive =
-            workoutMotionCalibrationHoldUntil.map { now < $0 } == true
+        let presentCapturePriority =
+            prioritizePresentCaptureOverProcessRetry
+                || connectedRawNoRadioCaptureTurnRequiresPresentArm()
         // All-day capture is authorized only by its own v24 governor policy.
         // Manual workouts and guided calibration retain their existing
         // ability to arm the bank independently of that product preference.
@@ -25079,6 +26498,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 id: boundID,
                 strapIdentifier: peripheral.identifier.uuidString
             )
+        }.flatMap { ticket in
+            ticket.effectiveRecoveryMode == .directOffload ? ticket : nil
         }
         let lastStartedAtValue = defaults.double(
             forKey:
@@ -25137,7 +26558,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             lastAcceptedHRAt.map { $0 >= connectionStart }
         } == true
         if firstAttemptTransportDeferred,
-           !prioritizePresentCaptureOverProcessRetry,
+           !presentCapturePriority,
            !manualWorkoutActive,
            !calibrationHoldActive,
            !acceptedCurrentConnectionHR,
@@ -25201,7 +26622,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                     selectedPendingOffload.attempts
                             )
                 } ?? true
-            if !prioritizePresentCaptureOverProcessRetry,
+            if !presentCapturePriority,
                Self.historicalMotionBankProcessRetryBlocksPresentCapture(
                 processInterruptedRetry: processInterruptedRetry,
                 consumerMaterializationInFlight:
@@ -25224,7 +26645,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 return
             }
         }
-        guard Self.historicalMotionBankArmEligible(
+        guard presentCapturePriority || Self.historicalMotionBankArmEligible(
             manualWorkoutActive: manualWorkoutActive,
             pendingOffloadAttempts: selectedPendingOffload?.attempts,
             firstAttemptTransportDeferred:
@@ -25255,6 +26676,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         ),
            defaults.bool(forKey: Self.workoutHistoricalMotionBankEnabledKey) {
             AtriaMotionBankDutyCycleDiag.note("armed")
+            return
+        }
+        guard peripheral.canSendWriteWithoutResponse else {
+            // CoreBluetooth accepted no command, so neither process state nor
+            // durable coverage may claim that 69/01 reached the strap.
+            noteMotionBankDutyCycle("wwr_backpressure")
+            return
+        }
+        guard writeCompletionLedger.pending.isEmpty else {
+            // Never interleave a bank toggle with an unresolved with-response
+            // command from an ambiguous history serve.
+            noteMotionBankDutyCycle("wr_pending")
             return
         }
         let armedAt = Date()
@@ -25782,14 +27215,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
-    private func stopWorkoutHistoricalMotionBankIfPossible(reason: String) {
+    @discardableResult
+    private func stopWorkoutHistoricalMotionBankIfPossible(
+        reason: String
+    ) -> AtriaWhoop4MotionBankCoverageLedger.OffloadTicket? {
         let defaults = UserDefaults.standard
         let wasEnabled = workoutHistoricalMotionBankArmed
             || defaults.bool(forKey: Self.workoutHistoricalMotionBankEnabledKey)
         let hadDeferredPrearm = defaults.bool(
             forKey: Self.workoutHistoricalMotionBankPrearmRequestedKey
         )
-        guard wasEnabled || hadDeferredPrearm else { return }
+        guard wasEnabled || hadDeferredPrearm else { return nil }
         defaults.set(false,
                      forKey: Self.workoutHistoricalMotionBankPrearmRequestedKey)
         // A TX-only discovery request may still be in flight when the policy
@@ -25800,16 +27236,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 false,
                 forKey: Self.workoutHistoricalMotionBankStopPendingKey
             )
-            return
+            return nil
         }
         defaults.set(true, forKey: Self.workoutHistoricalMotionBankStopPendingKey)
+        guard !offlineHistoricalSyncInProgress, !historyOnlyProbeMode else {
+            AtriaDebugLog(
+                "ATRIADBG workout_motion_bank status=stop_deferred reason=%@ detail=history_transport_active action=retain_stop_intent_no_6900_no_command_collision",
+                reason
+            )
+            return nil
+        }
         guard let peripheral,
               peripheral.state == .connected,
               let txCharacteristic,
-              txCharacteristic.properties.contains(.writeWithoutResponse) else {
+              txCharacteristic.properties.contains(.writeWithoutResponse),
+              peripheral.canSendWriteWithoutResponse,
+              writeCompletionLedger.pending.isEmpty else {
             AtriaDebugLog("ATRIADBG workout_motion_bank status=stop_deferred reason=%@ action=stop_on_next_tx",
                           reason)
-            return
+            return nil
         }
         let sequence = cmdSeq
         cmdSeq &+= 1
@@ -25824,7 +27269,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             for: txCharacteristic,
             type: .withoutResponse
         )
-        AtriaWhoop4MotionBankCoverageLedger.close(
+        let closedTicket = AtriaWhoop4MotionBankCoverageLedger.close(
             at: stoppedAt,
             strapIdentifier: peripheral.identifier.uuidString,
             armedConnectionStartedAt:
@@ -25832,10 +27277,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
         AtriaMotionBankDutyCycleDiag.note("stopped")
         let strapIdentifier = peripheral.identifier.uuidString
-        persistNextUnattemptedMotionBankMaintenanceTicketIfNeeded(
-            strapIdentifier: strapIdentifier,
-            defaults: defaults
-        )
+        if let closedTicket {
+            // Preserve the identity returned by this exact 69/00 boundary.
+            // Selecting a generic oldest attempts-zero ticket here can starve
+            // this interval forever while raw history keeps rotating banks.
+            defaults.set(
+                closedTicket.id,
+                forKey:
+                    Self.workoutHistoricalMotionBankMaintenanceTicketIDKey
+            )
+        } else {
+            persistNextUnattemptedMotionBankMaintenanceTicketIfNeeded(
+                strapIdentifier: strapIdentifier,
+                defaults: defaults
+            )
+        }
         workoutHistoricalMotionBankArmed = false
         workoutHistoricalMotionBankArmedConnectionStartedAt = nil
         defaults.set(false, forKey: Self.workoutHistoricalMotionBankEnabledKey)
@@ -25850,11 +27306,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(1))
             guard let self, !Task.isCancelled else { return }
-            _ = self.resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
-                reason: "workout_motion_bank_\(reason)",
-                maintenanceWindow: true
-            )
+            _ = self
+                .resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
+                    reason: "workout_motion_bank_\(reason)",
+                    maintenanceWindow: true
+                )
         }
+        return closedTicket
     }
 
     nonisolated static func workoutHistoricalMotionBankOffloadRetryDelay(
@@ -25907,6 +27365,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         maintenanceWindow: Bool = false,
         processInterruptedBoundRetry: Bool = false
     ) -> AtriaWhoop4MotionBankCoverageLedger.OffloadTicket? {
+        let bound = bound.flatMap {
+            $0.effectiveRecoveryMode == .directOffload ? $0 : nil
+        }
+        let next = next.flatMap {
+            $0.effectiveRecoveryMode == .directOffload ? $0 : nil
+        }
         // A process-interrupted exact transaction already owns the durable
         // binding and gets one relaunch-scoped continuation. A stale deferred
         // maintenance hint must not rotate that recovery to a newer
@@ -25976,6 +27440,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     id: ticketID,
                     strapIdentifier: strapIdentifier
                 ),
+              ticket.effectiveRecoveryMode == .directOffload,
               ticket.attempts == 0 else {
             // Resolution, exhaustion, or an already-started attempt retires
             // only this scheduling hint. The ledger remains the coverage
@@ -25989,7 +27454,159 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return ticket
     }
 
-    /// Mints the only authority which can share a connected standard-HR link
+    /// Mints a raw catch-up token only from the exact callback source already
+    /// accepted for the canonical connected object. The token expires before a
+    /// deferred MainActor turn could reuse it as a different transport request.
+    private func makeConnectedRawHistoryCatchUpRequestAuthority(
+        peripheral: CBPeripheral,
+        callbackSource: AtriaBLECallbackEpochFence.Source,
+        intent: ConnectedRawHistoryCatchUpIntent,
+        now: Date
+    ) -> ConnectedRawHistoryCatchUpRequestAuthority? {
+        let authority = ConnectedRawHistoryCatchUpRequestAuthority(
+            authorityID: UUID(),
+            strapIdentifier: peripheral.identifier.uuidString,
+            callbackSource: callbackSource,
+            intent: intent,
+            mintedAt: now
+        )
+        guard connectedRawHistoryCatchUpRequestAuthorityIsValid(
+            authority,
+            peripheral: peripheral,
+            forActiveGeneration: false,
+            now: now
+        ) else { return nil }
+        return authority
+    }
+
+    private func connectedRawHistoryCatchUpRequestAuthorityIsValid(
+        _ authority: ConnectedRawHistoryCatchUpRequestAuthority,
+        peripheral: CBPeripheral,
+        forActiveGeneration: Bool,
+        now: Date = Date()
+    ) -> Bool {
+        let explicitMotionOwnership = Self
+            .explicitMotionOwnershipBlocksHistory(
+                pendingWorkoutIntentActive:
+                    AtriaPendingWorkoutIntent
+                        .isActiveForBLEContinuity(now: now),
+                inMemoryLeaseHeld: workoutMotionOwnerStartedAt != nil,
+                calibrationHoldActive:
+                    workoutMotionCalibrationHoldUntil.map { now < $0 } == true
+            )
+        guard self.peripheral === peripheral,
+              peripheral.state == .connected,
+              authority.strapIdentifier == peripheral.identifier.uuidString,
+              authority.callbackSource.peripheralID == peripheral.identifier,
+              authority.callbackSource.peripheralObjectID
+                == ObjectIdentifier(peripheral),
+              bleCallbackEpochFence.accepts(
+                source: authority.callbackSource,
+                peripheralConnected: true
+              ),
+              !explicitMotionOwnership,
+              let connectionStart = connectedAt,
+              let acceptedAt = lastAcceptedHRAt,
+              acceptedAt >= connectionStart else { return false }
+
+        let applicationIsBackground =
+            UIApplication.shared.applicationState == .background
+        switch authority.intent {
+        case .background:
+            if !forActiveGeneration {
+                guard applicationIsBackground else { return false }
+            }
+        case .foregroundAutomatic:
+            if !forActiveGeneration {
+                guard UIApplication.shared.applicationState == .active else {
+                    return false
+                }
+            }
+        case .queuedPull(let intentID):
+            if !forActiveGeneration {
+                guard queuedConnectedRawHistoryCatchUpIntent?.id == intentID else {
+                    return false
+                }
+            }
+        }
+
+        guard !Self.shouldParkConnectedRawHistoryCatchUpForPowerPressure(
+            thermalState: ProcessInfo.processInfo.thermalState
+        ) else { return false }
+        if forActiveGeneration {
+            let liveSilenceLimit = connectedRawHistoryCatchUpLiveSilenceLimit(
+                for: authority.intent
+            )
+            return now.timeIntervalSince(acceptedAt) >= 0
+                && now.timeIntervalSince(acceptedAt)
+                    < liveSilenceLimit
+        }
+        guard now.timeIntervalSince(authority.mintedAt) >= 0,
+              now.timeIntervalSince(authority.mintedAt)
+                <= connectedRawHistoryCatchUpAuthorityLifetime,
+              now.timeIntervalSince(connectionStart) >= 60,
+              now.timeIntervalSince(acceptedAt) >= 0,
+              now.timeIntervalSince(acceptedAt) <= 45,
+              connectedEpochAcceptedHeartRateSamples >= 10,
+              currentVerifiedRawHistoryCapability(),
+              strapBacklogPendingForCatchUp(now: now) else { return false }
+        return true
+    }
+
+    private func connectedRawHistoryCatchUpLiveSilenceLimit(
+        for intent: ConnectedRawHistoryCatchUpIntent
+    ) -> TimeInterval {
+        switch intent {
+        case .background:
+            return connectedRawHistoryCatchUpBackgroundLiveSilenceLimit
+        case .foregroundAutomatic, .queuedPull:
+            return connectedRawHistoryCatchUpForegroundLiveSilenceLimit
+        }
+    }
+
+    private func activeConnectedRawHistoryCatchUpAuthority(
+        generation: UInt64
+    ) -> ConnectedRawHistoryCatchUpGenerationAuthority? {
+        guard let authority =
+                activeConnectedRawHistoryCatchUpGenerationAuthority,
+              authority.generation == generation else { return nil }
+        return authority
+    }
+
+    private func activeConnectedRealtimePreservingHistoryAuthorityIsValid(
+        generation: UInt64,
+        peripheral: CBPeripheral
+    ) -> Bool {
+        if let authority = activeConnectedMotionBankHistoryAuthority(
+            generation: generation
+        ) {
+            return connectedMotionBankHistoryRequestAuthorityIsValid(
+                authority.request,
+                peripheral: peripheral
+            )
+        }
+        if let authority = activeConnectedRawHistoryCatchUpAuthority(
+            generation: generation
+        ) {
+            return connectedRawHistoryCatchUpRequestAuthorityIsValid(
+                authority.request,
+                peripheral: peripheral,
+                forActiveGeneration: true
+            )
+        }
+        return false
+    }
+
+    private func activeConnectedRealtimePreservingHistoryAuthorityExists(
+        generation: UInt64
+    ) -> Bool {
+        activeConnectedMotionBankHistoryAuthority(generation: generation) != nil
+            || activeConnectedRawHistoryCatchUpAuthority(
+                generation: generation
+            ) != nil
+    }
+
+    /// Mints the only motion-bank authority which can share a connected standard-HR link
     /// with history. The durable ticket is selected by the motion-bank ledger;
     /// a recent accepted 2A37 sample proves this exact connection is healthy;
     /// and the epoch fence binds the token to one CBPeripheral object, not just
@@ -26003,6 +27620,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard self.peripheral === peripheral,
               peripheral.state == .connected,
               ticket.strapIdentifier == peripheral.identifier.uuidString,
+              ticket.effectiveRecoveryMode == .directOffload,
               let connectionStart = connectedAt,
               let acceptedAt = lastAcceptedHRAt,
               acceptedAt >= connectionStart,
@@ -26035,10 +27653,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               UserDefaults.standard.string(
                   forKey: Self.workoutHistoricalMotionBankActiveTicketIDKey
               ) == authority.ticketID,
-              AtriaWhoop4MotionBankCoverageLedger.pendingOffload(
+              let ticket = AtriaWhoop4MotionBankCoverageLedger.pendingOffload(
                   id: authority.ticketID,
                   strapIdentifier: authority.strapIdentifier
-              ) != nil else {
+              ),
+              ticket.effectiveRecoveryMode == .directOffload else {
             return false
         }
         return bleCallbackEpochFence.accepts(
@@ -26058,14 +27677,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return authority
     }
 
-    private func armConnectedMotionBankHistoryBudget(
+    private func armConnectedRealtimePreservingHistoryBudget(
         generation: UInt64
     ) {
         connectedMotionBankHistoryBudgetTask?.cancel()
         connectedMotionBankHistoryBudgetTask = nil
-        guard activeConnectedMotionBankHistoryAuthority(
+        guard activeConnectedRealtimePreservingHistoryAuthorityExists(
             generation: generation
-        ) != nil else { return }
+        ) else { return }
         let startedAt = Date()
         connectedMotionBankHistoryBudgetTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -26074,56 +27693,91 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 guard !Task.isCancelled,
                       self.offlineHistoricalSyncInProgress,
                       self.offlineHistoricalSyncGeneration == generation,
-                      let authority = self
-                        .activeConnectedMotionBankHistoryAuthority(
-                            generation: generation
-                        ) else {
+                      self.activeConnectedRealtimePreservingHistoryAuthorityExists(
+                        generation: generation
+                      ) else {
                     return
                 }
                 guard let current = self.peripheral,
-                      self.connectedMotionBankHistoryRequestAuthorityIsValid(
-                          authority.request,
-                          peripheral: current
+                      self.activeConnectedRealtimePreservingHistoryAuthorityIsValid(
+                        generation: generation,
+                        peripheral: current
                       ) else {
                     _ = self
                         .finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
                             generation: generation,
                             reason:
-                                "connected_motion_bank_exact_authority_lost"
+                                "exact_connected_history_authority_lost"
                         )
                     return
                 }
                 let now = Date()
-                switch Self.connectedMotionBankHistoryBudgetDisposition(
-                    startedAt: startedAt,
-                    lastAcceptedHeartRateAt: self.lastAcceptedHRAt,
-                    now: now,
-                    liveSilenceLimit:
-                        self.connectedMotionBankHistoryLiveSilenceLimit,
-                    absoluteLimit:
-                        self.connectedMotionBankHistoryAbsoluteLimit,
-                    powerPressureActive: Self
-                        .shouldParkConnectedMotionBankHistoryForPowerPressure(
-                            thermalState:
-                                ProcessInfo.processInfo.thermalState,
-                            lowPowerModeEnabled:
-                                ProcessInfo.processInfo.isLowPowerModeEnabled
+                let thermalState = ProcessInfo.processInfo.thermalState
+                let disposition: ConnectedMotionBankHistoryBudgetDisposition
+                if let rawAuthority =
+                        self.activeConnectedRawHistoryCatchUpAuthority(
+                            generation: generation
+                        ) {
+                    // All noncritical raw catch-up is sliced synchronously at
+                    // the fourth clean page ACK. This timer may park critical
+                    // heat or reject an invalid clock, but it never cuts
+                    // through a page. A true no-progress transport remains
+                    // bounded by the progress-clocked history idle watchdog.
+                    disposition = Self
+                        .connectedRawHistoryCatchUpBudgetDisposition(
+                            startedAt: rawAuthority.startedAt,
+                            lastAcceptedHeartRateAt: self.lastAcceptedHRAt,
+                            now: now,
+                            liveSilenceLimit: self
+                                .connectedRawHistoryCatchUpLiveSilenceLimit(
+                                    for: rawAuthority.request.intent
+                                ),
+                            thermalState: thermalState,
+                            durableBoundaryReached:
+                                !self.historicalAdmissionFailed
+                                && self.historicalArchiveWriteFailures == 0
+                                && self.historicalDrainTelemetry.persistErrors == 0
+                                && self.historicalDrainTelemetry.flushErrors == 0
+                                && self.historicalDrainTelemetry.ackSucceeded > 0
                         )
-                ) {
+                } else {
+                    disposition = Self
+                        .connectedMotionBankHistoryBudgetDisposition(
+                            startedAt: startedAt,
+                            lastAcceptedHeartRateAt: self.lastAcceptedHRAt,
+                            now: now,
+                            liveSilenceLimit:
+                                self.connectedMotionBankHistoryLiveSilenceLimit,
+                            absoluteLimit:
+                                self.connectedMotionBankHistoryAbsoluteLimit,
+                            powerPressureActive: Self
+                                .shouldParkConnectedMotionBankHistoryForPowerPressure(
+                                    thermalState: thermalState,
+                                    lowPowerModeEnabled:
+                                        ProcessInfo.processInfo
+                                            .isLowPowerModeEnabled
+                                )
+                        )
+                }
+                switch disposition {
                 case .keepServing:
                     continue
                 case .finishForPowerPressure:
-                    self.connectedMotionBankHistoryAdmissionRetryNotBefore =
-                        Self.connectedMotionBankHistoryPowerRetryNotBefore(
-                            existing: self
-                                .connectedMotionBankHistoryAdmissionRetryNotBefore,
-                            now: now
-                        )
+                    if self.activeConnectedMotionBankHistoryAuthority(
+                        generation: generation
+                    ) != nil {
+                        self.connectedMotionBankHistoryAdmissionRetryNotBefore =
+                            Self.connectedMotionBankHistoryPowerRetryNotBefore(
+                                existing: self
+                                    .connectedMotionBankHistoryAdmissionRetryNotBefore,
+                                now: now
+                            )
+                    }
                     _ = self
                         .finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
                             generation: generation,
                             reason:
-                                "connected_motion_bank_power_pressure"
+                                "exact_connected_history_power_pressure"
                         )
                     return
                 case .finishForLiveHeartRateSilence:
@@ -26131,7 +27785,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         .finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
                             generation: generation,
                             reason:
-                                "connected_motion_bank_live_hr_silence"
+                                "exact_connected_history_live_hr_silence"
                         )
                     return
                 case .finishForAbsoluteBudget:
@@ -26139,7 +27793,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         .finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
                             generation: generation,
                             reason:
-                                "connected_motion_bank_absolute_budget"
+                                "exact_connected_history_absolute_budget"
                         )
                     return
                 }
@@ -26481,6 +28135,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         expectedAdmissionLedgerTicketID: String? = nil,
         expectedLocalDependencyTicketID: String? = nil
     ) -> Bool {
+        guard !connectedRawHistoryCatchUpContinuationPending else {
+            AtriaDebugLog(
+                "ATRIADBG workout_motion_bank_offload status=deferred reason=%@ detail=connected_raw_fifo_continuation action=no_selector_no_attempt_no_cadence_mutation",
+                reason
+            )
+            return false
+        }
+        guard !connectedRawNoRadioCaptureTurnIsCurrent() else {
+            AtriaDebugLog(
+                "ATRIADBG workout_motion_bank_offload status=deferred reason=%@ detail=connected_raw_no_radio_capture_turn action=no_selector_no_attempt_no_cadence_mutation_rearm_present_bank_first",
+                reason
+            )
+            return false
+        }
+        guard connectedRawHistoryCatchUpPublicationYield == nil else {
+            // The low-bandwidth 0x69 present-capture rearm remains available to
+            // callers after this false return, but no motion-bank offload may
+            // seize the shared command/archive lane during the bounded local
+            // publication lease.
+            AtriaDebugLog(
+                "ATRIADBG workout_motion_bank_offload status=deferred reason=%@ detail=connected_raw_publication_yield action=allow_present_capture_rearm_no_history_command",
+                reason
+            )
+            return false
+        }
         let now = Date()
         if expectedArchiveWarmTicketID == nil,
            connectedMotionBankArchiveWarmRetryGate.isHolding {
@@ -26672,6 +28351,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     id: boundID,
                     strapIdentifier: strapIdentifier
                 )
+            }.flatMap { ticket in
+                ticket.effectiveRecoveryMode == .directOffload ? ticket : nil
             }
             let lastStartedAtValue = defaults.double(
                 forKey:
@@ -27172,6 +28853,131 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
     }
 
+    /// A connected raw slice advances WHOOP's one global read cursor; it does
+    /// not target the newest bank ticket. Re-evaluate every durable interval
+    /// against compact v24 facts after each slice and resolve only exact >=90%
+    /// windows. No ticket attempt, selector binding, cadence timestamp, or
+    /// scalar HR frontier is created here.
+    private func evaluatePendingGlobalFrontierMotionBankCoverage(
+        reason: String
+    ) {
+        guard let current = peripheral else { return }
+        let request = GlobalFrontierMotionBankEvaluationRequest(
+            strapIdentifier: current.identifier.uuidString,
+            callbackSource: bleCallbackEpochFence.captureIfAccepted(
+                peripheralID: current.identifier,
+                peripheralObjectID: ObjectIdentifier(current),
+                peripheralConnected: current.state == .connected
+            ),
+            reason: reason
+        )
+        guard globalFrontierEvaluationCoalescer.request(
+            whileEvaluationInFlight:
+                workoutHistoricalMotionBankOffloadEvaluationInFlight
+        ) else {
+            // Keep the freshest exact object/epoch proof. Compact evaluation is
+            // strap-scoped and may still resolve an older request, but only the
+            // newest live source is ever considered for successor 69/01.
+            pendingGlobalFrontierEvaluationRequest = request
+            AtriaDebugLog(
+                "ATRIADBG workout_motion_bank_offload status=global_frontier_evaluation_coalesced strap=%@ reason=%@ action=one_fresh_trailing_pass",
+                request.strapIdentifier,
+                reason
+            )
+            return
+        }
+        startGlobalFrontierMotionBankEvaluation(request)
+    }
+
+    private func startGlobalFrontierMotionBankEvaluation(
+        _ request: GlobalFrontierMotionBankEvaluationRequest
+    ) {
+        let pendingTickets =
+            AtriaWhoop4MotionBankCoverageLedger.pendingOffloads(
+                strapIdentifier: request.strapIdentifier
+            )
+        guard !pendingTickets.isEmpty else {
+            armAfterGlobalFrontierEvaluationIfSafe(request: request)
+            return
+        }
+        workoutHistoricalMotionBankOffloadEvaluationInFlight = true
+        historicalArchiveQueue.async { [weak self, request] in
+            let compactCoverages =
+                AtriaWhoop4MotionTickCompactStore.shared.transportCoverages(
+                    tickets: pendingTickets,
+                    strapIdentifier: request.strapIdentifier
+                )
+            let resolvedTicketIDs = Set(
+                compactCoverages.compactMap { id, coverage in
+                    coverage.satisfiesNinetyPercentExactWindow ? id : nil
+                }
+            )
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.workoutHistoricalMotionBankOffloadEvaluationInFlight =
+                    false
+                defer {
+                    self.runCoalescedGlobalFrontierEvaluationIfNeeded()
+                }
+                if !resolvedTicketIDs.isEmpty {
+                    AtriaWhoop4MotionBankCoverageLedger.resolveOffloads(
+                        ids: resolvedTicketIDs
+                    )
+                }
+                let remaining = AtriaWhoop4MotionBankCoverageLedger
+                    .pendingOffloads(
+                        strapIdentifier: request.strapIdentifier
+                    )
+                AtriaDebugLog(
+                    "ATRIADBG workout_motion_bank_offload status=global_frontier_compact_evaluated inspected=%d resolved=%d remaining=%d reason=%@ action=no_ticket_attempt_no_generic_selector",
+                    pendingTickets.count,
+                    resolvedTicketIDs.count,
+                    remaining.count,
+                    request.reason
+                )
+                guard remaining.isEmpty else { return }
+                self.armAfterGlobalFrontierEvaluationIfSafe(
+                    request: request
+                )
+            }
+        }
+    }
+
+    private func runCoalescedGlobalFrontierEvaluationIfNeeded() {
+        guard !workoutHistoricalMotionBankOffloadEvaluationInFlight,
+              globalFrontierEvaluationCoalescer.consumeTrailingRequest(),
+              let request = pendingGlobalFrontierEvaluationRequest else {
+            return
+        }
+        pendingGlobalFrontierEvaluationRequest = nil
+        startGlobalFrontierMotionBankEvaluation(request)
+    }
+
+    private func armAfterGlobalFrontierEvaluationIfSafe(
+        request: GlobalFrontierMotionBankEvaluationRequest
+    ) {
+        guard let source = request.callbackSource,
+              let current = peripheral,
+              current.identifier.uuidString == request.strapIdentifier,
+              source.peripheralID == current.identifier,
+              source.peripheralObjectID == ObjectIdentifier(current),
+              bleCallbackEpochFence.accepts(
+                  source: source,
+                  peripheralConnected: current.state == .connected
+              ),
+              !offlineHistoricalSyncInProgress,
+              !connectedRawHistoryCatchUpContinuationPending,
+              postHistoryLiveRestorationGeneration == nil,
+              let connectedAt,
+              lastAcceptedHRAt.map({ $0 >= connectedAt }) == true else {
+            return
+        }
+        armWorkoutHistoricalMotionBankIfPossible(
+            reason:
+                "global_frontier_tickets_resolved_\(request.reason)"
+        )
+    }
+
     private func evaluatePendingWorkoutHistoricalMotionBankOffload(
         reason: String,
         allowRetry: Bool
@@ -27190,7 +28996,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         .pendingOffload(
                             id: boundID,
                             strapIdentifier: peripheralID
-                        ) {
+                        ),
+                     bound.effectiveRecoveryMode == .directOffload {
                       return bound
                   }
                   return AtriaWhoop4MotionBankCoverageLedger
@@ -27235,6 +29042,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 guard let self else { return }
                 self.workoutHistoricalMotionBankOffloadEvaluationInFlight =
                     false
+                defer {
+                    self.runCoalescedGlobalFrontierEvaluationIfNeeded()
+                }
                 var resolvedTicketIDs = compactResolvedTicketIDs
                 if coverage.satisfiesNinetyPercentExactWindow {
                     resolvedTicketIDs.insert(ticket.id)
@@ -28505,17 +30315,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             forKey: OfflineSyncDefaults.handshakeAt
         )
         if let peripheral, peripheral.state == .connected {
-            if let exactAuthority =
-                activeConnectedMotionBankHistoryAuthority(
-                    generation: generation
-                ), !connectedMotionBankHistoryRequestAuthorityIsValid(
-                    exactAuthority.request,
-                    peripheral: peripheral
-                ) {
+            if activeConnectedRealtimePreservingHistoryAuthorityExists(
+                generation: generation
+            ), !activeConnectedRealtimePreservingHistoryAuthorityIsValid(
+                generation: generation,
+                peripheral: peripheral
+            ) {
                 _ = finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
                     generation: generation,
                     reason:
-                        "connected_motion_bank_authority_lost_before_rediscovery"
+                        "exact_connected_history_authority_lost_before_rediscovery"
                 )
                 return
             }
@@ -28899,6 +30708,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     guard let cmd = command.first else { continue }
                     let data = Array(command.dropFirst())
                     if cmd == Cmd.sendHistoricalData, data == [0x00] {
+                        guard historyTransportPhaseFence.armServe(
+                            ifMatching: syncGeneration
+                        ) != nil else {
+                            failHistoryHandshakeWrite(
+                                generation: syncGeneration,
+                                command: cmd,
+                                result: .failed
+                            )
+                            return
+                        }
                         pendingFullDrainCommandRequestedAtUnix =
                             Date().timeIntervalSince1970
                     }
@@ -32501,8 +34320,44 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         _ payload: [UInt8],
         historyPhase: AtriaBLEHistoryTransportPhaseFence.Snapshot
     ) {
-        guard activeHistoricalGeneration(for: historyPhase) != nil else {
+        guard let generation = activeHistoricalGeneration(
+            for: historyPhase
+        ) else {
             AtriaDebugLog("ATRIADBG historyMeta status=ignored reason=inactive_or_stale_transport_phase")
+            return
+        }
+        let exactRawAuthorityActive =
+            activeConnectedRawHistoryCatchUpAuthority(
+                generation: generation
+            ) != nil
+        if exactRawAuthorityActive, historicalAdmissionFailed {
+            AtriaDebugLog(
+                "ATRIADBG historyMeta status=ignored reason=exact_raw_admission_already_failed generation=%llu action=finish_local_no_progress_no_ack_keep_2a37",
+                generation
+            )
+            _ = finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
+                generation: generation,
+                reason: "exact_connected_raw_admission_failed"
+            )
+            return
+        }
+        guard Self.shouldAcceptConnectedRawHistoryIngress(
+            exactRawAuthorityActive: exactRawAuthorityActive,
+            callbackCapturedCurrentServe:
+                historyTransportPhaseFence.acceptsServe(
+                    historyPhase,
+                    generation: generation
+                ),
+            admissionAttemptAvailable: historicalAdmissionAttempt != nil
+        ) else {
+            // This decision uses the serve token captured synchronously at
+            // delegate entry. A predecessor callback queued before this
+            // generation's 0x16 cannot acquire authority merely because the
+            // MainActor applies it after 0x16.
+            AtriaDebugLog(
+                "ATRIADBG historyMeta status=ignored reason=pre_current_generation_serve generation=%llu action=no_spool_no_progress_no_flush_no_ack_keep_2a37",
+                generation
+            )
             return
         }
         if historicalAdmissionFailed {
@@ -32816,6 +34671,42 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             AtriaDebugLog("ATRIADBG historicalArchive status=ignored reason=inactive_or_stale_transport_phase")
             return
         }
+        let exactRawAuthorityActive =
+            activeConnectedRawHistoryCatchUpAuthority(
+                generation: generation
+            ) != nil
+        if exactRawAuthorityActive, historicalAdmissionFailed {
+            AtriaDebugLog(
+                "ATRIADBG historicalArchive status=ignored reason=exact_raw_admission_already_failed generation=%llu action=finish_local_no_progress_keep_2a37",
+                generation
+            )
+            _ = finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
+                generation: generation,
+                reason: "exact_connected_raw_admission_failed"
+            )
+            return
+        }
+        let callbackCapturedCurrentServe = historyTransportPhaseFence.acceptsServe(
+            historyPhase,
+            generation: generation
+        )
+        let ingressAccepted = Self.shouldAcceptConnectedRawHistoryIngress(
+            exactRawAuthorityActive: exactRawAuthorityActive,
+            callbackCapturedCurrentServe: callbackCapturedCurrentServe,
+            admissionAttemptAvailable: historicalAdmissionAttempt != nil
+        )
+        guard ingressAccepted else {
+            AtriaDebugLog(
+                "ATRIADBG historicalArchive status=ignored reason=pre_current_generation_serve generation=%llu action=no_spool_no_first_frame_no_admission_no_progress_keep_2a37",
+                generation
+            )
+            return
+        }
+        cancelHistoricalPageContinuationForAcceptedCurrentServeFrameIfNeeded(
+            generation: generation,
+            ingressAccepted: ingressAccepted,
+            callbackCapturedCurrentServe: callbackCapturedCurrentServe
+        )
         recordResearchProbeCandidate(payload: payload, source: .historical)
         if historyFirstFrameReceivedGeneration != generation {
             historyFirstFrameReceivedGeneration = generation
@@ -32871,6 +34762,32 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
     }
 
+    /// A current-serve frame proves that the strap has already continued. This
+    /// clears only the local silence fallback; it cannot ACK, advance/retire the
+    /// ingress spool, mutate reducer durability, or touch either radio owner.
+    private func cancelHistoricalPageContinuationForAcceptedCurrentServeFrameIfNeeded(
+        generation: UInt64,
+        ingressAccepted: Bool,
+        callbackCapturedCurrentServe: Bool
+    ) {
+        guard Self.shouldCancelHistoricalPageContinuationForFrame(
+            activeGeneration: historyDrain.generation,
+            continuationGeneration: historicalPageContinuationGeneration,
+            frameGeneration: generation,
+            ingressAccepted: ingressAccepted,
+            callbackCapturedCurrentServe: callbackCapturedCurrentServe
+        ) else { return }
+        historicalPageContinuationTask?.cancel()
+        historicalPageContinuationTask = nil
+        historicalPageContinuationGeneration = nil
+        historicalPageContinuationBoundaryID = nil
+        historicalPageContinuationHasFutureAttempt = false
+        AtriaDebugLog(
+            "ATRIADBG historyContinue status=cancelled generation=%llu reason=accepted_current_serve_frame action=keep_active_page_no_1600",
+            generation
+        )
+    }
+
     private func scheduleHistoricalTransportEventDrain() {
         guard !historicalAdmissionBatchScheduled,
               !historicalAdmissionBatchInFlight,
@@ -32889,6 +34806,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func drainNextHistoricalTransportEventBurst() {
         guard !historicalAdmissionBatchInFlight,
               hasPendingHistoricalTransportEvents else { return }
+        let exactRawAuthorityActive =
+            activeConnectedRawHistoryCatchUpAuthority(
+                generation: offlineHistoricalSyncGeneration
+            ) != nil
+        if exactRawAuthorityActive, historicalAdmissionFailed {
+            _ = finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
+                generation: offlineHistoricalSyncGeneration,
+                reason: "exact_connected_raw_admission_failed"
+            )
+            return
+        }
         guard !historyACKGate.requiresHistoryCallbackDeferral else {
             AtriaDebugLog("ATRIADBG historyAdmission status=deferred reason=awaiting_ack_two_proofs generation=%llu buffered=%d action=preserve_order",
                           offlineHistoricalSyncGeneration,
@@ -32918,6 +34846,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 return
             }
             firstWasDeferred = false
+        }
+        if exactRawAuthorityActive,
+           case .frame = first,
+           (historicalAdmissionLedger == nil
+                || historicalAdmissionAttempt == nil) {
+            // Do not pop this frame. A callback-captured serve token normally
+            // makes this state unreachable, but if admission authority is
+            // lost, preserve the unread suffix and release the exact shared
+            // lane locally rather than latching a failure that stale END
+            // markers can keep alive forever.
+            AtriaDebugLog(
+                "ATRIADBG historyAdmission status=failed reason=exact_raw_ledger_or_attempt_missing generation=%llu action=finish_local_preserve_unread_no_ack_no_disconnect_keep_2a37",
+                offlineHistoricalSyncGeneration
+            )
+            historicalAdmissionFailed = true
+            historicalArchiveWriteFailures += 1
+            _ = finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
+                generation: offlineHistoricalSyncGeneration,
+                reason: "exact_connected_raw_admission_identity_missing"
+            )
+            return
         }
         if case let .metadata(payload, phaseGeneration) = first {
             if !firstWasDeferred {
@@ -33309,6 +35258,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 metricUsable: result.metricUsable,
                 effectiveUnix: result.effectiveUnix
             )
+            if pendingHistoricalRawFrontierGeneration == generation,
+               let effectiveUnix = result.effectiveUnix,
+               effectiveUnix > 0 {
+                pendingHistoricalRawFrontierUnix = max(
+                    pendingHistoricalRawFrontierUnix ?? 0,
+                    effectiveUnix
+                )
+            }
             lastHistoricalArchivePath = result.persistedPath.isEmpty ? HistoricalArchive.relativePath : result.persistedPath
             if result.archivedUndecodable {
                 AtriaDebugLog("ATRIADBG historicalArchive status=archived_undecodable reason=%@ rows=%d rows_since_ack=%d failures=%d path=%@",
@@ -33405,6 +35362,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 offlineHistoricalSyncMadeRequestedMetricProgress = true
             }
         }
+    }
+
+    private func commitDurableHistoricalRawFrontier(
+        effectiveUnix: UInt32,
+        generation: UInt64,
+        now: Date = Date()
+    ) {
+        guard offlineHistoricalSyncInProgress,
+              generation == offlineHistoricalSyncGeneration else { return }
+        let defaults = UserDefaults.standard
+        let existing = defaults.double(
+            forKey: OfflineSyncDefaults.drainedThroughUnix
+        )
+        guard let advanced = Self.advancedDurableHistoricalFrontier(
+            existing: existing,
+            durableEffectiveUnix: [effectiveUnix],
+            now: now
+        ) else { return }
+        defaults.set(advanced, forKey: OfflineSyncDefaults.drainedThroughUnix)
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=durable_frontier_advanced generation=%llu from_unix=%.0f through_unix=%.0f authority=canonical_flush_generation_fence",
+            generation,
+            existing,
+            advanced
+        )
     }
 
     private func processHistoricalDrainEffects(
@@ -33652,6 +35634,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                 succeeded: error == nil
                             )
                         if error == nil {
+                            if self.pendingHistoricalRawFrontierGeneration
+                                    == generation,
+                               let rawFrontier = self
+                                    .pendingHistoricalRawFrontierUnix {
+                                self.commitDurableHistoricalRawFrontier(
+                                    effectiveUnix: rawFrontier,
+                                    generation: generation
+                                )
+                            }
+                            self.pendingHistoricalRawFrontierUnix = nil
                             self.commitDurableHistoricalMetricFacts(
                                 durableMetricFacts,
                                 generation: generation
@@ -36534,6 +38526,42 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 succeeded: true
             )
         )
+        // End an exact raw slice only in this synchronous clean-boundary
+        // window, before 0x16 can request another page. The thermal-qualified
+        // ACK target amortizes discovery/range setup while keeping the burst
+        // finite. The
+        // local finalizer removes the spool only if every reducer/admission
+        // queue is empty; no disconnect, rebuild, protocol abort, or synthetic
+        // ACK is issued on this path.
+        if offlineHistoricalSyncInProgress,
+           activeConnectedRawHistoryCatchUpAuthority(
+                generation: ackIdentity.generation
+           ) != nil,
+           Self.shouldFinishConnectedRawHistoryCatchUpAtACKBoundary(
+                acknowledgedPages: historicalDrainTelemetry.ackSucceeded,
+                minimumAcknowledgedPages: Self
+                    .connectedRawHistoryCatchUpTargetAcknowledgedPages(
+                        thermalState: ProcessInfo.processInfo.thermalState
+                    )
+           ) {
+            if let historicalIngressSpool {
+                connectedRawHistoryCleanACKFinishAuthority = .init(
+                    generation: ackIdentity.generation,
+                    boundaryID: ackIdentity.boundaryID,
+                    ingressBoundary: historicalIngressSpool
+                        .captureDurablyAcknowledgedPrefixBoundary()
+                )
+            }
+            if finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
+                generation: ackIdentity.generation,
+                reason: "exact_connected_raw_ack_burst_boundary"
+            ) {
+                return
+            }
+            // A stale/reentrant finish cannot carry this one-shot boundary
+            // into another terminal path.
+            connectedRawHistoryCleanACKFinishAuthority = nil
+        }
         armHistoricalPageContinuationAfterACK(
             generation: ackIdentity.generation,
             boundaryID: ackIdentity.boundaryID
@@ -36698,6 +38726,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                               boundaryID,
                               attempt,
                               delay)
+                guard self.historyTransportPhaseFence.armServe(
+                    ifMatching: generation
+                ) != nil else { return }
                 self.pendingFullDrainCommandRequestedAtUnix =
                     Date().timeIntervalSince1970
                 let result = await self.sendHistoryCommandAwaitingWriteConfirmation(
@@ -37687,8 +39718,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defer { replayingBufferedSessionInputs = false }
         for input in buffered {
             switch input {
-            case let .heartRate(measurement, rawData):
-                recordHeartRateMeasurement(measurement, rawData: rawData)
+            case let .heartRate(measurement, rawData, callbackSource):
+                recordHeartRateMeasurement(
+                    measurement,
+                    rawData: rawData,
+                    callbackSource: callbackSource
+                )
             case let .realtime(packet):
                 handleParsedRealtimePacket(packet)
             }
@@ -38020,7 +40055,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   bleCallbackEpochFence.owns(source: callbackSource) else {
                 continue
             }
-            recordHeartRateMeasurement(update.packet, rawData: update.rawData)
+            recordHeartRateMeasurement(
+                update.packet,
+                rawData: update.rawData,
+                callbackSource: callbackSource
+            )
             if index < updates.count - 1,
                (index + 1).isMultiple(of: Self.mainActorPacketApplyYieldInterval) {
                 await Task.yield()
@@ -39760,7 +41799,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     _ = archiveOrphanHistoricalIngressIfNeeded(
                         reason: "central_powered_on_orphan_ingress_replay",
                         force: false,
-                        explicitRequest: false
+                        explicitRequest: false,
+                        retainHistoricalRequest: false
                     )
                     if !beginMotionHandshakeLaunchConnectionCutoverIfNeeded(
                         peripheral: peripheral,
@@ -39778,6 +41818,10 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     recomputeConnectionStatus(reason: "event")
                     recordLinkAttempt(reason: "powered_on_\(reason)", peripheral: earlyPendingConnect)
                     markPendingKnownReconnect(reason: "powered_on_\(reason)")
+                    self.startReconnectWatchdog(
+                        reason: "powered_on_\(reason)_pending_connect",
+                        peripheral: earlyPendingConnect
+                    )
                     AtriaDebugLog("ATRIADBG ble_link status=reconnect_known reason=powered_on_%@ action=pending_connect", reason)
                 } else if reconnectToSavedPeripheralIfPossible(
                     reason: "powered_on_\(reason)",
@@ -40026,7 +42070,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 _ = self.archiveOrphanHistoricalIngressIfNeeded(
                     reason: "state_restore_orphan_ingress_replay",
                     force: false,
-                    explicitRequest: false
+                    explicitRequest: false,
+                    retainHistoricalRequest: false
                 )
                 self.protectedR10InitialProfilePeripheralID = nil
                 self.protectedR10InitialProfileNotificationRequested = false
@@ -40102,10 +42147,17 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 self.batteryConnectionRestoredSamePeripheral = false
                 self.recomputeConnectionStatus(reason: "event")
                 self.markPendingKnownReconnect(reason: "state_restore_transition")
-                self.startReconnectWatchdog(
-                    reason: "state_restore_transition",
-                    peripheral: restoredPeripheral
-                )
+                if restoredPeripheral.state == .connecting {
+                    self.startReconnectWatchdog(
+                        reason: "state_restore_transition",
+                        peripheral: restoredPeripheral
+                    )
+                } else {
+                    self.startReconnectWatchdog(
+                        reason: "state_restore_transition",
+                        peripheral: restoredPeripheral
+                    )
+                }
                 AtriaDebugLog(
                     "ATRIADBG ble_restore status=transition peripheral_state=%d name=%@ action=keep_existing_no_duplicate_connect",
                     restoredPeripheral.state.rawValue,
@@ -40396,10 +42448,6 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     reason: "did_connect_interrupted_history_owner_live_release"
                 )
             }
-            // If CoreBluetooth completed the reconnect on its own, consume the
-            // one-shot repair permit so a later unrelated reconnect is never
-            // cancelled by stale history-failure state.
-            self.historyFailureReconnectReissuePending = false
             self.writeCompletionLedger.reset()
             self.heartRateNotificationEnableGate.reset()
             self.heartRateInactiveCallbackRetryIssued = false
@@ -40535,7 +42583,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             _ = archiveOrphanHistoricalIngressIfNeeded(
                 reason: "did_connect_orphan_ingress_replay",
                 force: false,
-                explicitRequest: false
+                explicitRequest: false,
+                retainHistoricalRequest: false
             )
             if self.freshHistoryOwnerAdmissionPending {
                 self.freshHistoryOwnerAdmissionPending = false
@@ -43166,7 +45215,14 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             }
         }
 
-        let completeFrames = proprietaryFrameReassembler.feed(data, source: frameSource)
+        let completeFrames = proprietaryFrameReassembler.feed(
+            data,
+            source: frameSource,
+            scope: .init(
+                historyGeneration: historyPhase.generation,
+                historyServeToken: historyPhase.serveToken
+            )
+        )
         guard !completeFrames.isEmpty else { return }
         Task { @MainActor in
             guard self.acceptsBLECallback(

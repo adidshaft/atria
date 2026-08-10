@@ -240,14 +240,17 @@ struct AtriaHistoricalVerifiedConsumerReader {
         let dailyProof: AtriaHistoricalDailyConsumerProjection.InspectionProof
         let sessionProof: AtriaHistoricalSessionInspectionProof
         do {
-            dailyProof = try .make(
-                generationIdentifier: prepared.generationIdentifier,
-                catalogSnapshot: prepared.catalogSnapshot,
-                dependencyChunks: prepared.dependencyChunks,
-                closedCoverageIntervals: prepared.closedCoverageIntervals.map {
-                    .init(start: $0.start, end: $0.end, recordCount: $0.recordCount)
-                }
-            )
+            dailyProof = try AtriaHistoricalDailyConsumerProjection
+                .makeSourceBoundInspectionProof(
+                    source: source,
+                    dependencyChunks: prepared.dependencyChunks,
+                    configuration: configuration.daily,
+                    generationIdentifier: prepared.generationIdentifier,
+                    catalogSnapshot: prepared.catalogSnapshot,
+                    closedCoverageIntervals: prepared.closedCoverageIntervals.map {
+                        .init(start: $0.start, end: $0.end, recordCount: $0.recordCount)
+                    }
+                )
             sessionProof = try .make(
                 generationIdentifier: prepared.generationIdentifier,
                 catalogSnapshot: prepared.catalogSnapshot,

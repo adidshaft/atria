@@ -14,7 +14,9 @@ final class AtriaRecoveredDataRecomputeCoordinatorTests: XCTestCase {
             [.startDerived(ticket, Coordinator.sessionStoreComponents)]
         )
 
-        let ordered = Coordinator.Component.allCases
+        let ordered = Coordinator.Component.allCases.filter {
+            Coordinator.sessionStoreComponents.contains($0)
+        }
         for component in ordered.dropLast() {
             XCTAssertTrue(
                 coordinator.componentCompleted(ticket: ticket, component: component).isEmpty
