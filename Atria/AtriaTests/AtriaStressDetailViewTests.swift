@@ -272,6 +272,84 @@ final class AtriaStressDetailViewTests: XCTestCase {
         XCTAssertEqual(AtriaStressDetailCopy.relaxButtonTitle, "Relax · 3 min")
     }
 
+    func testContextIntervalsCoalesceContiguousAsleepFactsIntoOneBand() {
+        let readings = (0..<6).map { index in
+            AtriaStressDetailReading(date: now.addingTimeInterval(Double(index) * 60),
+                                     score: 0.4,
+                                     sleepContext: .asleep)
+        }
+        let intervals = AtriaStressContextInterval.intervals(from: readings) {
+            $0.sleepContext == .asleep
+        }
+        // Six consecutive asleep minutes coalesce into ONE band, not six stripes.
+        XCTAssertEqual(intervals.count, 1)
+        XCTAssertEqual(intervals[0].readingCount, 6)
+        XCTAssertEqual(intervals[0].start, now)
+        XCTAssertEqual(intervals[0].end, now.addingTimeInterval(300))
+    }
+
+    func testContextIntervalsBreakAtATelemetryGapAndAtNonMembers() {
+        let readings = [
+            AtriaStressDetailReading(date: now, score: 0.4, sleepContext: .asleep),
+            AtriaStressDetailReading(date: now.addingTimeInterval(60), score: 0.4, sleepContext: .asleep),
+            AtriaStressDetailReading(date: now.addingTimeInterval(60 + 10 * 60), score: 0.4, sleepContext: .asleep),
+            AtriaStressDetailReading(date: now.addingTimeInterval(60 + 10 * 60 + 60), score: 0.4, sleepContext: .awake),
+            AtriaStressDetailReading(date: now.addingTimeInterval(60 + 10 * 60 + 120), score: 0.4, sleepContext: .asleep),
+        ]
+        let intervals = AtriaStressContextInterval.intervals(from: readings) {
+            $0.sleepContext == .asleep
+        }
+        // Run 1 = [0, 60] (2 facts); a > threshold gap breaks it; a lone asleep
+        // fact; an awake fact breaks the run; a final lone asleep fact.
+        XCTAssertEqual(intervals.count, 3)
+        XCTAssertEqual(intervals[0].readingCount, 2)
+        XCTAssertEqual(intervals[0].start, now)
+        XCTAssertEqual(intervals[0].end, now.addingTimeInterval(60))
+        XCTAssertEqual(intervals[1].readingCount, 1)
+        // A lone member gets one minute-fact of visible width, never bridging.
+        XCTAssertEqual(intervals[1].duration, 60, accuracy: 0.001)
+        XCTAssertEqual(intervals[2].readingCount, 1)
+        // No band bridges the telemetry gap.
+        XCTAssertLessThan(intervals[0].end, intervals[1].start)
+    }
+
+    func testActivityContextIntervalsRequireQualifiedActivityFacts() {
+        let qualified = AtriaPhysiologicalStressModel.MotionContext.qualifiedActivity(intensity: 0.5)
+        let still = AtriaPhysiologicalStressModel.MotionContext.qualifiedStill
+        let readings = [
+            AtriaStressDetailReading(date: now, score: 1.0, motionContext: qualified),
+            AtriaStressDetailReading(date: now.addingTimeInterval(60), score: 1.0, motionContext: qualified),
+            AtriaStressDetailReading(date: now.addingTimeInterval(120), score: 1.0, motionContext: still),
+        ]
+        let intervals = AtriaStressContextInterval.intervals(from: readings) {
+            $0.motionContext.qualified && $0.motionContext.kind == .activity
+        }
+        // Only the two qualified-activity facts coalesce; qualified-still is not
+        // an activity band.
+        XCTAssertEqual(intervals.count, 1)
+        XCTAssertEqual(intervals[0].readingCount, 2)
+    }
+
+    func testStressContextBandsAreNotPerMinuteBarcode() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        for file in ["AtriaStressDetailView.swift", "AtriaVitalsCollectionSections.swift"] {
+            let source = try String(contentsOf: sourceDirectory.appendingPathComponent(file), encoding: .utf8)
+            XCTAssertFalse(
+                source.contains(".value(\"Sleep start\", point.reading.date.addingTimeInterval(-30))"),
+                "\(file) still draws a per-minute sleep barcode"
+            )
+            XCTAssertFalse(
+                source.contains(".value(\"Activity start\", point.reading.date.addingTimeInterval(-30))"),
+                "\(file) still draws a per-minute activity barcode"
+            )
+            XCTAssertTrue(
+                source.contains("AtriaStressContextInterval.intervals(from: points.map(\\.reading))"),
+                "\(file) must render coalesced context intervals"
+            )
+        }
+    }
+
     func testStressHistoryCopyDoesNotRegressToSessionOnlyClaims() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceDirectory = testsDirectory

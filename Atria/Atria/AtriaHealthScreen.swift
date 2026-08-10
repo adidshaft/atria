@@ -871,11 +871,24 @@ struct AtriaHealthScreen: View {
         }
 
         let restingHeartRate = vitalsStore.state.baseline.restingInt
+        // Union the archive read with canonical session points and observed HR
+        // history so this card cannot disagree with the Activity day-timeline HR
+        // over the same sleep window. Snapshot both on MainActor before the
+        // detached read.
+        let sessions = store.sessions
+        let observed = stressMonitorStore.heartRateHistory.map {
+            HistoricalArchive.HeartRatePoint(t: $0.t, bpm: $0.bpm)
+        }
+        if sleepStressProjection.availability != .ready {
+            sleepStressProjection = .loading
+        }
         let projection = await Task.detached(priority: .utility) {
             AtriaSleepStressArchiveProjection.load(
                 sleepStart: start,
                 sleepEnd: end,
-                restingHeartRate: restingHeartRate
+                restingHeartRate: restingHeartRate,
+                sessions: sessions,
+                observed: observed
             )
         }.value
         guard !Task.isCancelled else { return }
@@ -2277,6 +2290,7 @@ struct AtriaSleepStressProjection: Equatable {
     }
 
     enum Availability: Equatable {
+        case loading
         case unavailable
         case baselineNeeded
         case insufficientWear
@@ -2284,6 +2298,10 @@ struct AtriaSleepStressProjection: Equatable {
 
         var title: String {
             switch self {
+            // A still-loading read is distinct from a failed one: the card must
+            // not flash "unavailable" before the detached archive/observed union
+            // returns.
+            case .loading: return "Loading overnight HR…"
             // `AtriaSleepStressCard` is mounted only after the enclosing Sleep
             // detail has resolved a real sleep window. Calling this state
             // "Sleep window unavailable" therefore contradicted the saved
@@ -2298,6 +2316,7 @@ struct AtriaSleepStressProjection: Equatable {
 
         var detail: String {
             switch self {
+            case .loading: return "Reading saved and observed overnight heart rate for this sleep window…"
             case .unavailable: return "This saved sleep has no usable archived heart-rate evidence for an overnight load trace."
             case .baselineNeeded: return "A personal resting heart-rate baseline is needed before overnight HR load can be interpreted."
             case .insufficientWear: return "Keep the strap on through the night to map observed overnight HR load."
@@ -2311,6 +2330,7 @@ struct AtriaSleepStressProjection: Equatable {
     let availability: Availability
 
     static let unavailable = Self(samples: [], heartRateSamples: [], availability: .unavailable)
+    static let loading = Self(samples: [], heartRateSamples: [], availability: .loading)
 
     static func make(points: [HistoricalArchive.HeartRatePoint],
                      sleepStart: Date,
@@ -2370,7 +2390,9 @@ enum AtriaSleepStressArchiveProjection {
         read: HistoricalArchive.HeartRateWindowRead?,
         sleepStart: Date,
         sleepEnd: Date,
-        restingHeartRate: Int?
+        restingHeartRate: Int?,
+        canonical: [HistoricalArchive.HeartRatePoint] = [],
+        observed: [HistoricalArchive.HeartRatePoint] = []
     ) -> AtriaSleepStressProjection {
         guard let restingHeartRate, (35...120).contains(restingHeartRate) else {
             return AtriaSleepStressProjection.make(
@@ -2380,9 +2402,21 @@ enum AtriaSleepStressArchiveProjection {
                 restingHeartRate: restingHeartRate
             )
         }
-        guard let read else { return .unavailable }
+        // Union the durable archive read with canonical saved-session points and
+        // the retained observed history so this overnight surface builds from the
+        // SAME exact-window evidence as the Activity day-timeline HR trace. A nil
+        // archive read is only truly "unavailable" when no source has in-window
+        // points; a readable-but-thin night still resolves to insufficient wear.
+        let union = AtriaExactWindowHeartRate.union(
+            canonical: canonical,
+            archive: read?.points ?? [],
+            observed: observed,
+            interval: DateInterval(start: sleepStart,
+                                   end: max(sleepEnd, sleepStart).addingTimeInterval(1))
+        )
+        if read == nil, union.isEmpty { return .unavailable }
         return AtriaSleepStressProjection.make(
-            points: read.points,
+            points: union,
             sleepStart: sleepStart,
             sleepEnd: sleepEnd,
             restingHeartRate: restingHeartRate
@@ -2393,6 +2427,8 @@ enum AtriaSleepStressArchiveProjection {
         sleepStart: Date,
         sleepEnd: Date,
         restingHeartRate: Int?,
+        sessions: [SavedSession] = [],
+        observed: [HistoricalArchive.HeartRatePoint] = [],
         maximumPoints: Int = 50_000
     ) -> AtriaSleepStressProjection {
         guard let restingHeartRate, (35...120).contains(restingHeartRate) else {
@@ -2408,11 +2444,23 @@ enum AtriaSleepStressArchiveProjection {
             end: sleepEnd,
             maximumPoints: maximumPoints
         )
+        let canonical = sessions
+            .filter { $0.end > sleepStart && $0.start < sleepEnd }
+            .flatMap { session in
+                session.points.compactMap { point -> HistoricalArchive.HeartRatePoint? in
+                    let date = session.start.addingTimeInterval(point.t)
+                    guard date >= sleepStart, date <= sleepEnd,
+                          (25...240).contains(point.bpm) else { return nil }
+                    return .init(t: date, bpm: point.bpm)
+                }
+            }
         return make(
             read: read,
             sleepStart: sleepStart,
             sleepEnd: sleepEnd,
-            restingHeartRate: restingHeartRate
+            restingHeartRate: restingHeartRate,
+            canonical: canonical,
+            observed: observed
         )
     }
 }

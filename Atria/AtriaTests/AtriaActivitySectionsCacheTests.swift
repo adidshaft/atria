@@ -401,6 +401,76 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(ready.availability, .ready)
     }
 
+    func testExactWindowHeartRateUnionDedupesAndClipsToWindow() {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let interval = DateInterval(start: base, end: base.addingTimeInterval(600))
+        let canonical = [HistoricalArchive.HeartRatePoint(t: base, bpm: 60)]
+        let archive = [
+            HistoricalArchive.HeartRatePoint(t: base, bpm: 60), // exact duplicate of canonical
+            HistoricalArchive.HeartRatePoint(t: base.addingTimeInterval(60), bpm: 62),
+        ]
+        let observed = [
+            HistoricalArchive.HeartRatePoint(t: base.addingTimeInterval(120), bpm: 64),
+            HistoricalArchive.HeartRatePoint(t: base.addingTimeInterval(-30), bpm: 99), // before window
+            HistoricalArchive.HeartRatePoint(t: base.addingTimeInterval(700), bpm: 99), // after window
+        ]
+        let union = AtriaExactWindowHeartRate.union(canonical: canonical,
+                                                    archive: archive,
+                                                    observed: observed,
+                                                    interval: interval)
+        // Deduplicated, clipped to the window, time-sorted; nothing synthesized.
+        XCTAssertEqual(union.map(\.bpm), [60, 62, 64])
+        XCTAssertEqual(union.map(\.t), [base,
+                                        base.addingTimeInterval(60),
+                                        base.addingTimeInterval(120)])
+    }
+
+    func testActivityHeartRateSurfacesObservedHistoryWhenArchiveEmpty() {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        let interval = DateInterval(start: base, end: base.addingTimeInterval(600))
+        // Six observed minute facts, empty archive/canonical — the stable-BPM
+        // case where the change-triggered live tail alone would show one point.
+        let observed = (0..<6).map {
+            HistoricalArchive.HeartRatePoint(t: base.addingTimeInterval(Double($0) * 60), bpm: 70 + $0)
+        }
+        let union = AtriaExactWindowHeartRate.union(canonical: [],
+                                                    archive: [],
+                                                    observed: observed,
+                                                    interval: interval)
+        let projection = AtriaActivityTimelineSignalProjection.heartRate(samples: union, interval: interval)
+        XCTAssertGreaterThan(projection.points.count, 1)
+        XCTAssertEqual(projection.measuredSampleCount, 6)
+    }
+
+    func testOvernightProjectionUsesObservedWhenArchiveReadIsNil() {
+        let sleepStart = Date(timeIntervalSince1970: 1_800_000_000)
+        let sleepEnd = sleepStart.addingTimeInterval(8 * 3600)
+        let observed = (0..<20).map {
+            HistoricalArchive.HeartRatePoint(t: sleepStart.addingTimeInterval(Double($0) * 20 * 60), bpm: 58)
+        }
+        // A nil archive read still builds from observed history rather than
+        // collapsing to unavailable.
+        let withObserved = AtriaSleepStressArchiveProjection.make(read: nil,
+                                                                  sleepStart: sleepStart,
+                                                                  sleepEnd: sleepEnd,
+                                                                  restingHeartRate: 55,
+                                                                  canonical: [],
+                                                                  observed: observed)
+        XCTAssertNotEqual(withObserved.availability, .unavailable)
+        // A nil read with no source at all remains a truthful unavailable state.
+        let empty = AtriaSleepStressArchiveProjection.make(read: nil,
+                                                           sleepStart: sleepStart,
+                                                           sleepEnd: sleepEnd,
+                                                           restingHeartRate: 55)
+        XCTAssertEqual(empty.availability, .unavailable)
+    }
+
+    func testOvernightLoadingAvailabilityIsDistinctFromUnavailable() {
+        XCTAssertNotEqual(AtriaSleepStressProjection.Availability.loading, .unavailable)
+        XCTAssertNotEqual(AtriaSleepStressProjection.Availability.loading.title,
+                          AtriaSleepStressProjection.Availability.unavailable.title)
+    }
+
     func testHealthAndActivityOvernightLoadUseOneTypedArchiveBoundary() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")

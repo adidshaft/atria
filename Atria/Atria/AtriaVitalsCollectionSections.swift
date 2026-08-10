@@ -4093,25 +4093,24 @@ private struct AtriaVitalsStressTimelineChart: View {
                 .lineStyle(StrokeStyle(lineWidth: 0.75))
                 .foregroundStyle(.secondary.opacity(0.18))
 
-            ForEach(points.filter {
-                $0.reading.sleepContext == .asleep
-            }) { point in
+            ForEach(AtriaStressContextInterval.intervals(from: points.map(\.reading)) {
+                $0.sleepContext == .asleep
+            }) { interval in
                 RectangleMark(
-                    xStart: .value("Sleep start", point.reading.date.addingTimeInterval(-30)),
-                    xEnd: .value("Sleep end", point.reading.date.addingTimeInterval(30)),
+                    xStart: .value("Sleep start", interval.start),
+                    xEnd: .value("Sleep end", interval.end),
                     yStart: .value("Sleep floor", 0),
                     yEnd: .value("Sleep ceiling", 3)
                 )
                 .foregroundStyle(Color.indigo.opacity(0.09))
             }
 
-            ForEach(points.filter {
-                $0.reading.motionContext.qualified
-                    && $0.reading.motionContext.kind == .activity
-            }) { point in
+            ForEach(AtriaStressContextInterval.intervals(from: points.map(\.reading)) {
+                $0.motionContext.qualified && $0.motionContext.kind == .activity
+            }) { interval in
                 RectangleMark(
-                    xStart: .value("Activity start", point.reading.date.addingTimeInterval(-30)),
-                    xEnd: .value("Activity end", point.reading.date.addingTimeInterval(30)),
+                    xStart: .value("Activity start", interval.start),
+                    xEnd: .value("Activity end", interval.end),
                     yStart: .value("Activity floor", 0),
                     yEnd: .value("Activity ceiling", 3)
                 )
@@ -4397,10 +4396,14 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
                     .background(Color(.systemBackground).opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .clipped()
-                    // Full-bleed plot (2026-08-05 width audit): the inner
-                    // backdrop strip stretches to the outer card's edge; the
-                    // header row above keeps the 12pt inset.
-                    .padding(.horizontal, -12)
+                    // Leading-only bleed (2026-08-10 chart-truth audit): the
+                    // inner backdrop strip stretches to the outer card's LEADING
+                    // edge, but the trailing edge keeps its 12pt inset so the
+                    // trailing bpm axis has a real gutter — the full-horizontal
+                    // bleed clipped the top/right "120" label against the card's
+                    // rounded corner (screenshot 2). The header row keeps its
+                    // 12pt inset either way.
+                    .padding(.leading, -12)
 
             }
             .padding(12)
@@ -4476,25 +4479,76 @@ struct AtriaHeartRateChartSeries: Equatable {
     /// ~72 buckets across the window once the raw stream exceeds 150 samples;
     /// below that the raw line is already legible. Each bucket keeps the REAL
     /// min/max and average of its samples -- nothing synthesized.
+    ///
+    /// The stream is first split into runs at a material capture gap (one shared
+    /// honesty threshold with the Activity timeline). Buckets are then formed
+    /// *within* each run and tagged with that run's segment id, so a smoothed
+    /// line never averages — and Charts never connects — two observations across
+    /// a window when the strap was not read. Buckets that would otherwise fall
+    /// inside a hole are never created because no run spans it.
     static func smoothedBuckets(points: [AtriaHomeModel.HeartRateChartPoint],
                                 targetBuckets: Int = 72) -> [AtriaHeartRateBucket]? {
-        guard points.count > 150,
-              targetBuckets > 0,
-              let first = points.first?.t,
-              let last = points.last?.t,
-              last > first else { return nil }
+        guard points.count > 150, targetBuckets > 0 else { return nil }
+        let runs = segmentedRuns(
+            points,
+            gapThreshold: AtriaActivityTimelineSignalProjection.heartRateGapThreshold
+        )
+        guard !runs.isEmpty else { return nil }
+        let total = points.count
+        var out: [AtriaHeartRateBucket] = []
+        for (segment, run) in runs.enumerated() {
+            // Distribute the bucket budget proportionally so the total stays near
+            // `targetBuckets`; every run keeps at least one bucket so a short run
+            // still renders (as a singleton PointMark).
+            let share = max(1, Int((Double(run.count) / Double(total) * Double(targetBuckets)).rounded()))
+            out.append(contentsOf: uniformBuckets(run, targetBuckets: share, segment: segment))
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    /// Splits a time-ordered sample stream into runs, breaking whenever the gap
+    /// between two consecutive real samples exceeds the honesty threshold.
+    static func segmentedRuns(_ points: [AtriaHomeModel.HeartRateChartPoint],
+                              gapThreshold: TimeInterval) -> [[AtriaHomeModel.HeartRateChartPoint]] {
+        guard !points.isEmpty else { return [] }
+        var runs: [[AtriaHomeModel.HeartRateChartPoint]] = []
+        var current: [AtriaHomeModel.HeartRateChartPoint] = []
+        for point in points {
+            if let previous = current.last,
+               point.t.timeIntervalSince(previous.t) > gapThreshold {
+                runs.append(current)
+                current = []
+            }
+            current.append(point)
+        }
+        if !current.isEmpty { runs.append(current) }
+        return runs
+    }
+
+    /// Uniform buckets across a single run's observed span. A run that spans no
+    /// time (one real reading, or several at the same instant) is one honest
+    /// bucket, not a fabricated line.
+    private static func uniformBuckets(_ run: [AtriaHomeModel.HeartRateChartPoint],
+                                       targetBuckets: Int,
+                                       segment: Int) -> [AtriaHeartRateBucket] {
+        guard let first = run.first?.t, let last = run.last?.t else { return [] }
+        guard run.count > 1, last > first, targetBuckets > 1 else {
+            var accumulator = AtriaHeartRateBucketAccumulator()
+            for point in run { accumulator.append(point.bpm) }
+            return accumulator.bucket(centeredAt: first, segment: segment).map { [$0] } ?? []
+        }
         let span = last.timeIntervalSince(first)
         let width = span / Double(targetBuckets)
-        var buckets = Array(repeating: AtriaHeartRateBucketAccumulator(), count: targetBuckets)
-        for point in points {
+        var accumulators = Array(repeating: AtriaHeartRateBucketAccumulator(), count: targetBuckets)
+        for point in run {
             let index = min(targetBuckets - 1, max(0, Int(point.t.timeIntervalSince(first) / width)))
-            buckets[index].append(point.bpm)
+            accumulators[index].append(point.bpm)
         }
-        return buckets.indices.compactMap { index in
-            guard let bucket = buckets[index].bucket(centeredAt: first.addingTimeInterval((Double(index) + 0.5) * width)) else {
-                return nil
-            }
-            return bucket
+        return accumulators.indices.compactMap { index in
+            accumulators[index].bucket(
+                centeredAt: first.addingTimeInterval((Double(index) + 0.5) * width),
+                segment: segment
+            )
         }
     }
 }
@@ -5257,6 +5311,10 @@ struct AtriaHeartRateBucket: Equatable, Identifiable {
     let average: Double
     let minBPM: Int
     let maxBPM: Int
+    /// Run index. Buckets on opposite sides of a material capture gap carry
+    /// different segment ids so Swift Charts never draws a line/fill across the
+    /// hole. Two buckets are only ever connected when they share this value.
+    let segment: Int
 }
 
 private struct AtriaHeartRateBucketAccumulator {
@@ -5272,13 +5330,14 @@ private struct AtriaHeartRateBucketAccumulator {
         maxBPM = max(maxBPM ?? bpm, bpm)
     }
 
-    func bucket(centeredAt center: Date) -> AtriaHeartRateBucket? {
+    func bucket(centeredAt center: Date, segment: Int) -> AtriaHeartRateBucket? {
         guard count > 0 else { return nil }
         return AtriaHeartRateBucket(id: center,
                                     t: center,
                                     average: Double(sum) / Double(count),
                                     minBPM: minBPM ?? 0,
-                                    maxBPM: maxBPM ?? 0)
+                                    maxBPM: maxBPM ?? 0,
+                                    segment: segment)
     }
 }
 
@@ -5346,36 +5405,100 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         ], startPoint: .bottom, endPoint: .top)
     }
 
+    /// One raw observation tagged with its run so the trace never bridges a
+    /// material capture gap, plus whether its run is a lone reading (drawn as a
+    /// visible PointMark since a one-sample LineMark paints nothing).
+    private struct SegmentedRawEntry: Identifiable {
+        let id: Int
+        let point: AtriaHomeModel.HeartRateChartPoint
+        let segment: Int
+        let isOnlyPointInSegment: Bool
+    }
+
+    /// Bucket segments that hold a single bucket — a smoothed run that collapsed
+    /// to one point and therefore needs a PointMark to stay visible.
+    private var singletonBucketSegments: Set<Int> {
+        guard let buckets else { return [] }
+        var counts: [Int: Int] = [:]
+        for bucket in buckets { counts[bucket.segment, default: 0] += 1 }
+        return Set(counts.filter { $0.value == 1 }.keys)
+    }
+
+    /// The raw fallback path (≤150 samples) segmented at the same shared honesty
+    /// threshold as the smoothed path and the Activity timeline.
+    private var segmentedPoints: [SegmentedRawEntry] {
+        guard !points.isEmpty else { return [] }
+        let threshold = AtriaActivityTimelineSignalProjection.heartRateGapThreshold
+        var assigned: [(AtriaHomeModel.HeartRateChartPoint, Int)] = []
+        var counts: [Int: Int] = [:]
+        var segment = 0
+        var previous: AtriaHomeModel.HeartRateChartPoint?
+        for point in points {
+            if let previous, point.t.timeIntervalSince(previous.t) > threshold {
+                segment += 1
+            }
+            assigned.append((point, segment))
+            counts[segment, default: 0] += 1
+            previous = point
+        }
+        return assigned.enumerated().map { index, entry in
+            SegmentedRawEntry(id: index,
+                              point: entry.0,
+                              segment: entry.1,
+                              isOnlyPointInSegment: counts[entry.1] == 1)
+        }
+    }
+
     private var baseChart: some View {
         Chart {
             if let buckets {
-                // Smoothed mode: one calm average line with a soft gradient fill
-                // beneath it. The old per-bucket min-max band jumped bucket to
-                // bucket and read as a noisy scribble (user-reported 2026-07-08);
-                // the average already carries the shape, and detail is one zoom
-                // away. Nothing here is synthesized — average is the real mean.
+                // Smoothed mode: one calm average line per run with a soft
+                // gradient fill beneath it. The old per-bucket min-max band
+                // jumped bucket to bucket and read as a noisy scribble
+                // (user-reported 2026-07-08); the average already carries the
+                // shape, and detail is one zoom away. Nothing here is synthesized
+                // — average is the real mean. `series: bucket.segment` keeps
+                // Charts from drawing a line/fill across a real capture gap.
                 ForEach(buckets) { bucket in
                     AreaMark(x: .value("Time", bucket.t),
                              yStart: .value("Floor", Double(yDomain.lowerBound)),
-                             yEnd: .value("BPM", bucket.average))
-                        .interpolationMethod(.linear)
+                             yEnd: .value("BPM", bucket.average),
+                             series: .value("HR run", bucket.segment))
+                        .interpolationMethod(.monotone)
                         .foregroundStyle(heartRateAreaGradient)
                     LineMark(x: .value("Time", bucket.t),
-                             y: .value("BPM", bucket.average))
-                        .interpolationMethod(.linear)
+                             y: .value("BPM", bucket.average),
+                             series: .value("HR run", bucket.segment))
+                        .interpolationMethod(.monotone)
                         .foregroundStyle(heartRateGradient)
-                        .lineStyle(StrokeStyle(lineWidth: 2))
+                        .lineStyle(AtriaChartVisualGrammar.trendLine)
+                    if singletonBucketSegments.contains(bucket.segment) {
+                        PointMark(x: .value("Time", bucket.t),
+                                  y: .value("BPM", bucket.average))
+                            .foregroundStyle(heartRateGradient)
+                            .symbolSize(30)
+                    }
                 }
             } else {
-                ForEach(points) { point in
-                    AreaMark(x: .value("Time", point.t),
+                ForEach(segmentedPoints) { entry in
+                    AreaMark(x: .value("Time", entry.point.t),
                              yStart: .value("Visible floor", yDomain.lowerBound),
-                             yEnd: .value("BPM", point.bpm))
+                             yEnd: .value("BPM", entry.point.bpm),
+                             series: .value("HR run", entry.segment))
                         .interpolationMethod(.linear)
                         .foregroundStyle(heartRateAreaGradient)
-                    LineMark(x: .value("Time", point.t), y: .value("BPM", point.bpm))
+                    LineMark(x: .value("Time", entry.point.t),
+                             y: .value("BPM", entry.point.bpm),
+                             series: .value("HR run", entry.segment))
                         .interpolationMethod(.linear)
                         .foregroundStyle(heartRateGradient)
+                        .lineStyle(AtriaChartVisualGrammar.traceLine)
+                    if entry.isOnlyPointInSegment {
+                        PointMark(x: .value("Time", entry.point.t),
+                                  y: .value("BPM", entry.point.bpm))
+                            .foregroundStyle(heartRateGradient)
+                            .symbolSize(24)
+                    }
                 }
             }
             if let selectedTime {
@@ -6429,27 +6552,31 @@ struct AtriaSleepStageBuildingSummary: View, Equatable {
     var body: some View {
         // Do not draw five colorful empty values. A blank hypnogram looks
         // complete at a glance while conveying no decision. The full stage
-        // timeline appears only when this night has qualified segments.
-        HStack(alignment: .top, spacing: 10) {
+        // timeline appears only when this night has qualified segments. This
+        // honest "unavailable" state is deliberately compact (2026-08-10 sleep
+        // truth audit) — a small icon + one dense two-line explanation — so it
+        // never masquerades as a real distribution.
+        HStack(alignment: .center, spacing: 9) {
             Image(systemName: "moon.zzz.fill")
-                .font(.headline.weight(.bold))
+                .font(.footnote.weight(.bold))
                 .foregroundStyle(.cyan)
-                .frame(width: 32, height: 32)
+                .frame(width: 22, height: 22)
                 .background(.cyan.opacity(0.12), in: Circle())
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(headline)
-                    .font(.subheadline.weight(.bold))
+                    .font(.footnote.weight(.semibold))
                 Text(detail)
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 0)
         }
-        .padding(12)
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(night.evidenceLabel). \(headline). \(detail)")
     }

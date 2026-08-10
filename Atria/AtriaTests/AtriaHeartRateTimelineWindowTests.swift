@@ -328,6 +328,105 @@ final class AtriaHeartRateTimelineWindowTests: XCTestCase {
         XCTAssertNil(AtriaHeartRateChartSeries.smoothedBuckets(points: Array(dense.prefix(150)), targetBuckets: 3))
     }
 
+    func testSmoothedBucketsSplitRunsAtAMultiHourHole() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let morning = (0..<120).map { index in
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(TimeInterval(index)),
+                                               bpm: 70 + index % 5)
+        }
+        let afternoonStart = start.addingTimeInterval(3 * 3600)
+        let afternoon = (0..<120).map { index in
+            AtriaHomeModel.HeartRateChartPoint(t: afternoonStart.addingTimeInterval(TimeInterval(index)),
+                                               bpm: 90 + index % 5)
+        }
+
+        let buckets = try XCTUnwrap(
+            AtriaHeartRateChartSeries.smoothedBuckets(points: morning + afternoon, targetBuckets: 24)
+        )
+
+        // Two runs -> at least two distinct segment ids, so Charts keys the
+        // line/fill per run and cannot bridge the empty interval.
+        XCTAssertEqual(Set(buckets.map(\.segment)).count, 2)
+        // No bucket center is placed inside the hole.
+        let holeStart = start.addingTimeInterval(119)
+        XCTAssertFalse(buckets.contains { $0.t > holeStart && $0.t < afternoonStart })
+        let segment0 = buckets.filter { $0.segment == 0 }
+        let segment1 = buckets.filter { $0.segment == 1 }
+        XCTAssertFalse(segment0.isEmpty)
+        XCTAssertFalse(segment1.isEmpty)
+        XCTAssertLessThan(try XCTUnwrap(segment0.map(\.t).max()),
+                          try XCTUnwrap(segment1.map(\.t).min()))
+    }
+
+    func testSmoothedBucketsKeepALoneLateReadingAsItsOwnSegment() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let dense = (0..<180).map { index in
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(TimeInterval(index)),
+                                               bpm: 60 + index % 10)
+        }
+        let lone = AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(4 * 3600), bpm: 101)
+
+        let buckets = try XCTUnwrap(
+            AtriaHeartRateChartSeries.smoothedBuckets(points: dense + [lone], targetBuckets: 24)
+        )
+
+        let lateSegment = try XCTUnwrap(buckets.map(\.segment).max())
+        let lateBuckets = buckets.filter { $0.segment == lateSegment }
+        // The isolated reading is one honest bucket in its own segment (drawn as
+        // a PointMark), never averaged into the dense run.
+        XCTAssertEqual(lateBuckets.count, 1)
+        XCTAssertEqual(lateBuckets[0].minBPM, 101)
+        XCTAssertEqual(lateBuckets[0].maxBPM, 101)
+        XCTAssertEqual(lateBuckets[0].t, lone.t)
+    }
+
+    func testSmoothedBucketsNeverInventTimestampsOutsideObservedSpans() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let morning = (0..<160).map { index in
+            AtriaHomeModel.HeartRateChartPoint(t: start.addingTimeInterval(TimeInterval(index)), bpm: 72)
+        }
+        let afternoonStart = start.addingTimeInterval(2 * 3600)
+        let afternoon = (0..<40).map { index in
+            AtriaHomeModel.HeartRateChartPoint(t: afternoonStart.addingTimeInterval(TimeInterval(index)), bpm: 88)
+        }
+        let points = morning + afternoon
+
+        let buckets = try XCTUnwrap(
+            AtriaHeartRateChartSeries.smoothedBuckets(points: points, targetBuckets: 30)
+        )
+
+        let firstT = try XCTUnwrap(points.first?.t)
+        let lastT = try XCTUnwrap(points.last?.t)
+        for bucket in buckets {
+            XCTAssertGreaterThanOrEqual(bucket.t, firstT)
+            XCTAssertLessThanOrEqual(bucket.t, lastT)
+        }
+        let holeStart = start.addingTimeInterval(159)
+        XCTAssertFalse(buckets.contains { $0.t > holeStart && $0.t < afternoonStart })
+    }
+
+    func testHeartRateAxisChartDrawsSegmentedSeriesForBucketAndRawPaths() throws {
+        let source = try vitalsSectionsSource()
+        // Both render paths key their line/area on the run segment so Swift
+        // Charts cannot connect two observations across a capture gap.
+        XCTAssertEqual(
+            source.components(separatedBy: "series: .value(\"HR run\"").count - 1,
+            4,
+            "bucket AreaMark+LineMark and raw AreaMark+LineMark must each pass the segment as the Charts series"
+        )
+        // Isolated runs stay visible as PointMarks on both paths.
+        XCTAssertTrue(source.contains("singletonBucketSegments.contains(bucket.segment)"))
+        XCTAssertTrue(source.contains("if entry.isOnlyPointInSegment"))
+    }
+
+    private func vitalsSectionsSource() throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaVitalsCollectionSections.swift")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
     func testRangeSummaryUsesOnlySamplesInsideSelection() throws {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let points = [60, 70, 90, 80].enumerated().map { index, bpm in

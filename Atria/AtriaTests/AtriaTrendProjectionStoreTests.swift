@@ -294,6 +294,72 @@ final class AtriaTrendProjectionStoreTests: XCTestCase {
                        "gap handling must not average or synthesize values")
     }
 
+    func testSparseGrammarWithholdsAreaFillUntilFiveObservationsAndCoverageTarget() {
+        // 0-4 observations never draw an area fill: a couple of real points must
+        // not read as a filled "mountain".
+        for count in 0...4 {
+            XCTAssertFalse(AtriaTrendSparseGrammar.areaAllowed(observedCount: count,
+                                                               confidenceTargetPoints: 4))
+        }
+        // 5+ with the week coverage target (4) met -> fill allowed.
+        XCTAssertTrue(AtriaTrendSparseGrammar.areaAllowed(observedCount: 5,
+                                                          confidenceTargetPoints: 4))
+        // 5+ but below a higher (month) coverage target stays fill-free.
+        XCTAssertFalse(AtriaTrendSparseGrammar.areaAllowed(observedCount: 6,
+                                                           confidenceTargetPoints: 12))
+        XCTAssertTrue(AtriaTrendSparseGrammar.areaAllowed(observedCount: 12,
+                                                          confidenceTargetPoints: 12))
+    }
+
+    func testSparseGrammarMarksEveryDayOnlyWhenSparse() {
+        for count in 1...4 {
+            XCTAssertTrue(AtriaTrendSparseGrammar.marksEveryPoint(observedCount: count))
+        }
+        for count in 5...9 {
+            XCTAssertFalse(AtriaTrendSparseGrammar.marksEveryPoint(observedCount: count))
+        }
+    }
+
+    func testSparseGrammarFlagsEveryLoneDaySegmentForAVisiblePoint() {
+        // Two observations separated by a missing civil day -> two singleton
+        // segments -> BOTH must be flagged so neither becomes invisible.
+        let segments = AtriaTrendGapPolicy.assigningSegments(
+            to: [
+                AtriaTrendPoint.Sample(date: date(2026, 7, 1), value: 60, segment: 0),
+                AtriaTrendPoint.Sample(date: date(2026, 7, 3), value: 64, segment: 0),
+            ],
+            calendar: utcCalendar
+        ).map(\.segment)
+        XCTAssertEqual(segments, [0, 1])
+        XCTAssertEqual(AtriaTrendSparseGrammar.singletonSegments(segments), Set([0, 1]))
+        // A contiguous run of two shares one non-singleton segment.
+        XCTAssertEqual(AtriaTrendSparseGrammar.singletonSegments([0, 0, 1]), Set([1]))
+    }
+
+    func testSparseGrammarShrinksCardHeightForSparseWindows() {
+        XCTAssertEqual(AtriaTrendSparseGrammar.chartHeight(observedCount: 1), 132)
+        XCTAssertEqual(AtriaTrendSparseGrammar.chartHeight(observedCount: 3), 164)
+        XCTAssertEqual(AtriaTrendSparseGrammar.chartHeight(observedCount: 8), 210)
+    }
+
+    func testTrendCardGatesAreaFillAndMarksEveryObservedDay() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaTrendChart.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let cardStart = try XCTUnwrap(source.range(of: "struct AtriaTrendChartCard: View"))
+        let cardEnd = try XCTUnwrap(source.range(of: "private struct AtriaTrendPeriodReadout",
+                                                 range: cardStart.lowerBound..<source.endIndex))
+        let card = String(source[cardStart.lowerBound..<cardEnd.lowerBound])
+        XCTAssertTrue(card.contains("if trendAreaAllowed {"),
+                      "the area fill must be gated behind the density policy")
+        XCTAssertTrue(card.contains("if trendPointMarkVisible(sample) {"),
+                      "every qualifying observed day gets a PointMark, not only the last")
+        XCTAssertFalse(card.contains("if let latest = prepared.series.last {"),
+                      "the last-point-only PointMark must be gone")
+    }
+
     func testTrendChartHasNoAutomaticBaselineRuleAndLabelsOptInComparison() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory

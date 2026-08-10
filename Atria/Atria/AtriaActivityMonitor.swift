@@ -803,6 +803,35 @@ struct AtriaActivityTimelineStressProjection: Equatable, Sendable {
 /// Bounded selected-day projections for the two Activity monitor traces.
 /// Reduction selects existing samples at stable indices; it never creates an
 /// averaged value or a synthetic timestamp. Each real gap remains a new series.
+/// One shared exact-window measured-HR union for every saved/current HR trace.
+/// It merges the three real sources — canonical saved-session points, the
+/// durable archive, and the retained observed history behind successful minute
+/// facts — into one deduplicated, in-window point set. Nothing is interpolated;
+/// byte-identical observations collapse; real gaps are left for the segmenter to
+/// break so the saved-day HR card and the Overnight HR card cannot disagree.
+enum AtriaExactWindowHeartRate {
+    static func union(
+        canonical: [HistoricalArchive.HeartRatePoint],
+        archive: [HistoricalArchive.HeartRatePoint],
+        observed: [HistoricalArchive.HeartRatePoint],
+        interval: DateInterval
+    ) -> [HistoricalArchive.HeartRatePoint] {
+        let inWindow = (canonical + archive + observed).filter {
+            $0.t >= interval.start && $0.t < interval.end && (25...240).contains($0.bpm)
+        }
+        let sorted = inWindow.sorted {
+            if $0.t != $1.t { return $0.t < $1.t }
+            return $0.bpm < $1.bpm
+        }
+        var result: [HistoricalArchive.HeartRatePoint] = []
+        result.reserveCapacity(sorted.count)
+        for point in sorted where result.last != point {
+            result.append(point)
+        }
+        return result
+    }
+}
+
 enum AtriaActivityTimelineSignalProjection {
     static let heartRateGapThreshold: TimeInterval = 2 * 60
     static let stressGapThreshold = AtriaPhysiologicalStressModel.maximumFactContinuityGap
@@ -1164,6 +1193,11 @@ struct AtriaActivityMonitorTab: View {
         let historicalEnd: Date?
         let isCurrent: Bool
         let completenessRevision: UInt64
+        // Observed HR history is now a first-class HR source (canonical +
+        // archive + observed). Fold its revision into the HR window key so a
+        // stable live feed that keeps appending observed minutes re-projects
+        // instead of staying stuck on the first sparse read.
+        var heartRateHistoryRevision: Int = 0
     }
 
     private struct TimelineStressRequestKey: Hashable {
@@ -1281,7 +1315,12 @@ struct AtriaActivityMonitorTab: View {
                                             restingHRs: activity.sleepHistorySnapshot.nights
                                                 .filter { $0.confirmed && !$0.isNapEvidence }
                                                 .suffix(30)
-                                                .compactMap { $0.restingHR })) {
+                                                .compactMap { $0.restingHR }),
+                                          overnightSessions: store.sessions,
+                                          overnightObservedHeartRate:
+                                            stressMonitorStore.heartRateHistory.map {
+                                                HistoricalArchive.HeartRatePoint(t: $0.t, bpm: $0.bpm)
+                                            }) {
                 sleepDetail = nil
                 onEditSleep(night)
             }
@@ -1727,7 +1766,8 @@ struct AtriaActivityMonitorTab: View {
         return TimelineSignalWindowKey(start: window.interval.start,
                                        historicalEnd: window.isCurrentPhysiologicalDay ? nil : window.interval.end,
                                        isCurrent: window.isCurrentPhysiologicalDay,
-                                       completenessRevision: timelineCompletenessRevision)
+                                       completenessRevision: timelineCompletenessRevision,
+                                       heartRateHistoryRevision: stressMonitorStore.historyRevision)
     }
 
     private var timelineStressRequestKey: TimelineStressRequestKey {
@@ -1767,6 +1807,10 @@ struct AtriaActivityMonitorTab: View {
     /// archive tail; completed historical days retain the exact-window reader.
     private struct TimelineHeartRateSourceSnapshot: @unchecked Sendable {
         let sessions: [SavedSession]
+        /// Retained observed HR behind successful minute facts. Folded in as a
+        /// third exact-window source so a stable BPM feed (which stops the live
+        /// tail appending) still shows more than one real point.
+        let observedHeartRate: [HistoricalArchive.HeartRatePoint]
         let interval: DateInterval
         let isCurrent: Bool
     }
@@ -1775,7 +1819,7 @@ struct AtriaActivityMonitorTab: View {
         _ snapshot: TimelineHeartRateSourceSnapshot
     ) -> TimelineHeartRateReadResult {
         if snapshot.isCurrent {
-            let prepared = snapshot.sessions
+            let canonical = snapshot.sessions
                 .filter {
                     $0.end > snapshot.interval.start
                         && $0.start < snapshot.interval.end
@@ -1789,47 +1833,49 @@ struct AtriaActivityMonitorTab: View {
                         return .init(t: date, bpm: point.bpm)
                     }
                 }
-            // The resident session image is the primary current-cycle source.
-            // A small recent tail fills live/offline rows that have reached the
-            // archive but not the next settled SessionStore publication. Unlike
-            // the exact lifetime scanner, this read is byte- and row-bounded.
+            // The resident session image plus a small recent archive tail fill
+            // live/offline rows that reached the archive but not the next settled
+            // SessionStore publication. Observed history is the third source: it
+            // holds the exact minute-sampled HR behind successful facts even when
+            // a stable BPM keeps the change-triggered live tail from appending.
             let recent = HistoricalArchive.metricHeartRatePoints(
                 since: snapshot.interval.start,
                 limit: 12_000
             )
-            let merged = deduplicatedHeartRatePoints(prepared + recent)
+            let merged = AtriaExactWindowHeartRate.union(
+                canonical: canonical,
+                archive: recent,
+                observed: snapshot.observedHeartRate,
+                interval: snapshot.interval
+            )
             return .loaded(AtriaActivityTimelineSignalProjection.heartRate(
                 samples: merged,
                 interval: snapshot.interval
             ))
         }
 
-        guard let read = HistoricalArchive.metricHeartRatePoints(
+        // A completed historical day: the exact-window archive read is the
+        // authority. Observed history overlapping that window is still unioned so
+        // a readable-but-sparse archive gains its real observed rows. Only a nil
+        // archive read AND no observed rows is a true unavailable state.
+        let archive = HistoricalArchive.metricHeartRatePoints(
             start: snapshot.interval.start,
             end: snapshot.interval.end,
             maximumPoints: 100_000
-        ) else {
+        )
+        if archive == nil, snapshot.observedHeartRate.isEmpty {
             return .unavailable
         }
+        let merged = AtriaExactWindowHeartRate.union(
+            canonical: [],
+            archive: archive?.points ?? [],
+            observed: snapshot.observedHeartRate,
+            interval: snapshot.interval
+        )
         return .loaded(AtriaActivityTimelineSignalProjection.heartRate(
-            samples: read.points,
+            samples: merged,
             interval: snapshot.interval
         ))
-    }
-
-    private nonisolated static func deduplicatedHeartRatePoints(
-        _ points: [HistoricalArchive.HeartRatePoint]
-    ) -> [HistoricalArchive.HeartRatePoint] {
-        let sorted = points.sorted {
-            if $0.t != $1.t { return $0.t < $1.t }
-            return $0.bpm < $1.bpm
-        }
-        var result: [HistoricalArchive.HeartRatePoint] = []
-        result.reserveCapacity(sorted.count)
-        for point in sorted where result.last != point {
-            result.append(point)
-        }
-        return result
     }
 
     @MainActor
@@ -1861,6 +1907,9 @@ struct AtriaActivityMonitorTab: View {
                                     end: max(end, window.interval.start.addingTimeInterval(1)))
         let snapshot = TimelineHeartRateSourceSnapshot(
             sessions: window.isCurrentPhysiologicalDay ? store.sessions : [],
+            observedHeartRate: stressMonitorStore.heartRateHistory.map {
+                HistoricalArchive.HeartRatePoint(t: $0.t, bpm: $0.bpm)
+            },
             interval: interval,
             isCurrent: window.isCurrentPhysiologicalDay
         )
@@ -4530,6 +4579,12 @@ struct AtriaSleepActivityReviewSheet: View {
     /// GAP-07: the user's typical overnight resting-HR band, shaded behind the
     /// heart-rate trace when enough qualified nights exist.
     var typicalRestingBand: ClosedRange<Double>? = nil
+    /// Canonical saved-session points and observed HR history for this night's
+    /// window, threaded from the presenting store so the overnight HR trace
+    /// unions the same exact-window evidence as the Activity day timeline. Empty
+    /// by default keeps existing presentations archive-only with no regression.
+    var overnightSessions: [SavedSession] = []
+    var overnightObservedHeartRate: [HistoricalArchive.HeartRatePoint] = []
     let onEditTimes: () -> Void
     @Environment(\.dismiss) private var dismiss
     /// GAP-07: the exact same overnight HR trace / HR-load reading shown on the
@@ -4598,11 +4653,18 @@ struct AtriaSleepActivityReviewSheet: View {
             return
         }
         let resting = restingBaseline ?? night.restingHR
+        let sessions = overnightSessions
+        let observed = overnightObservedHeartRate
+        if overnightHRProjection.availability != .ready {
+            overnightHRProjection = .loading
+        }
         let projection = await Task.detached(priority: .utility) {
             AtriaSleepStressArchiveProjection.load(
                 sleepStart: start,
                 sleepEnd: end,
-                restingHeartRate: resting
+                restingHeartRate: resting,
+                sessions: sessions,
+                observed: observed
             )
         }.value
         guard !Task.isCancelled else { return }

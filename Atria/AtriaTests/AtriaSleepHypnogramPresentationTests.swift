@@ -320,6 +320,43 @@ final class AtriaSleepHypnogramPresentationTests: XCTestCase {
                        .timeline)
     }
 
+    func testHrOnlyNightPublishesNoStageDistributionAndNoRemDeepSws() {
+        let start = date(24, 23)
+        let end = date(25, 6)
+        // Real, integrity-valid stage segments exist, but the night is not
+        // motion-validated -> the gate must withhold the entire distribution.
+        let hrOnly = night(motionValidated: false,
+                           confidence: "learning",
+                           segments: fullNightSegments(start: start, end: end),
+                           start: start,
+                           end: end)
+        XCTAssertEqual(hrOnly.stageEvidence, .hrOnlyEstimate)
+        XCTAssertTrue(hrOnly.displayStageSegments.isEmpty)
+        // Not a single fabricated stage duration — and specifically no
+        // restorative REM/Deep/SWS invented from heart rate alone.
+        for stage in SleepStageKind.allCases {
+            XCTAssertEqual(hrOnly.stageDuration(stage), 0,
+                           "HR-only night fabricated a \(stage) duration")
+        }
+    }
+
+    func testMotionValidatedNightStageDurationsNeverExceedObservedSleep() {
+        let start = date(24, 23)
+        let end = date(25, 6)
+        let validated = night(motionValidated: true,
+                              confidence: "ready",
+                              segments: fullNightSegments(start: start, end: end),
+                              start: start,
+                              end: end)
+        XCTAssertFalse(validated.displayStageSegments.isEmpty)
+        let observed = end.timeIntervalSince(start)
+        let nonAwake = SleepStageKind.allCases
+            .filter { $0 != .awake }
+            .reduce(0.0) { $0 + validated.stageDuration($1) }
+        XCTAssertLessThanOrEqual(nonAwake, observed + 1,
+                                 "credited sleep stages must never exceed the observed sleep window")
+    }
+
     func testSegmentlessOrWindowlessNightRendersBuildingState() {
         XCTAssertEqual(AtriaSleepHypnogramCard.displayState(segments: [],
                                                             stageEvidence: .none,
