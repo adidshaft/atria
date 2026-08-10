@@ -22365,31 +22365,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     currentIdentifier: currentRestoreIdentifier
                 )
                 : baseRestoreIdentifier
-        if motionHandshakeDiagnostic == nil {
-            // Persist the alternate owner BEFORE constructing it. A process
-            // kill during the swap must relaunch into the replacement
-            // namespace, not the poisoned predecessor.
-            persistCentralRecoveryRestoreIdentifier(
-                replacementRestoreIdentifier,
-                baseIdentifier: baseRestoreIdentifier,
-                defaults: defaults
-            )
-            // A silent-link repair has not yet spent the separate unavailable-
-            // central fallback. The real Build 4 failure was A -> B for a
-            // silent link, followed by B reporting impossible `.unsupported`;
-            // marking that first swap as the unavailable one-shot strands B
-            // forever. Only a rebuild actually admitted by the unavailable-
-            // state timer consumes the persisted one-shot. Its replacement
-            // then cannot flip A/B again across force launches until an exact
-            // current `.poweredOn` callback clears this bit.
-            if centralUnavailableRecoveryAttempt {
-                setCentralRecoveryPending(
-                    true,
-                    baseIdentifier: baseRestoreIdentifier,
-                    defaults: defaults
-                )
-            }
-        }
+        // The replacement identifier is computed here, but it is NOT published to
+        // the restore-slot dictionary yet: doing so before the old central
+        // finishes draining is the 2026-08-10 write-ahead crash-consistency bug.
+        // Persistence is deferred to the post-drain/pre-construction commit point
+        // below, after `centralEventFence.retire`.
         defaults.set(defaults.integer(forKey: KeepaliveDefaults.stallReconnects) + 1,
                      forKey: KeepaliveDefaults.stallReconnects)
         defaults.set(Date().timeIntervalSince1970,
@@ -22418,6 +22398,41 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         realtimeArmed = false
         isActivelyScanning = false
         retiredCentral.delegate = nil
+        // Crash-consistent restore-slot handoff. Publish the replacement owner
+        // only now — after the old central has drained its delegate lane, been
+        // retired, and had its peripheral epoch invalidated by the drain above —
+        // and still before the replacement central is constructed. A process
+        // death before the drain must relaunch into the old slot, because the
+        // surviving CoreBluetooth session still belongs to it; a death after the
+        // drain but before/during construction must relaunch into the new slot.
+        // Persisting earlier (the 2026-08-10 failure) let an interrupted swap
+        // relaunch into a namespace CoreBluetooth had not yet handed over,
+        // leaving bluetoothd two sessions for one strap and reaping HR CCCD
+        // handle 0x002b out from under the canonical owner.
+        if motionHandshakeDiagnostic == nil {
+            persistCentralRecoveryRestoreIdentifier(
+                replacementRestoreIdentifier,
+                baseIdentifier: baseRestoreIdentifier,
+                defaults: defaults
+            )
+            // A silent-link repair has not yet spent the separate unavailable-
+            // central fallback. The real Build 4 failure was A -> B for a
+            // silent link, followed by B reporting impossible `.unsupported`;
+            // marking that first swap as the unavailable one-shot strands B
+            // forever. Only a rebuild actually admitted by the unavailable-
+            // state timer consumes the persisted one-shot. Its replacement
+            // then cannot flip A/B again across force launches until an exact
+            // current `.poweredOn` callback clears this bit. This pending-bit
+            // write commits in the same post-drain/pre-construction window as
+            // the restore-slot persistence above.
+            if centralUnavailableRecoveryAttempt {
+                setCentralRecoveryPending(
+                    true,
+                    baseIdentifier: baseRestoreIdentifier,
+                    defaults: defaults
+                )
+            }
+        }
         let delegateQueue = centralDelegateQueue
         delegateQueue?.suspend()
         central = CBCentralManager(delegate: self,

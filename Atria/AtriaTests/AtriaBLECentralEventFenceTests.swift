@@ -605,6 +605,65 @@ final class AtriaBLECentralRecoveryTests: XCTestCase {
         }
     }
 
+    func testReplacementRestoreSlotPersistsAfterDrainAndBeforeConstruction() throws {
+        let source = try managerSource()
+        let rebuildStart = try XCTUnwrap(source.range(
+            of: "private func rebuildCentralForWedgedSessionOnce("
+        ))
+        let rebuildEnd = try XCTUnwrap(source.range(
+            of: "private func reconcileCentralUnavailableRecovery(",
+            range: rebuildStart.upperBound..<source.endIndex
+        ))
+        let rebuild = String(source[rebuildStart.lowerBound..<rebuildEnd.lowerBound])
+
+        let drainedRetire = try XCTUnwrap(rebuild.range(
+            of: "centralEventFence.retire(\n            retiredCentral,\n            afterDraining: centralDelegateQueue,"
+        ))
+        let persist = try XCTUnwrap(rebuild.range(
+            of: "persistCentralRecoveryRestoreIdentifier("
+        ))
+        let pendingWrite = try XCTUnwrap(rebuild.range(
+            of: "setCentralRecoveryPending("
+        ))
+        let construction = try XCTUnwrap(rebuild.range(
+            of: "central = CBCentralManager(delegate: self"
+        ))
+
+        // Write-ahead crash-consistency: the replacement restore slot must be
+        // published only after the old central drains and is retired, and still
+        // before the replacement central is constructed. An interrupted swap
+        // must never relaunch into a namespace CoreBluetooth has not handed over.
+        XCTAssertLessThan(
+            drainedRetire.lowerBound,
+            persist.lowerBound,
+            "restore slot persisted before the old central drained"
+        )
+        XCTAssertLessThan(
+            persist.lowerBound,
+            construction.lowerBound,
+            "restore slot persisted after the replacement central was constructed"
+        )
+        // The unavailable pending bit shares the same post-drain / pre-construction
+        // commit point.
+        XCTAssertLessThan(
+            drainedRetire.lowerBound,
+            pendingWrite.lowerBound,
+            "unavailable pending bit written before the old central drained"
+        )
+        XCTAssertLessThan(
+            pendingWrite.lowerBound,
+            construction.lowerBound,
+            "unavailable pending bit written after the replacement central was constructed"
+        )
+
+        // The replacement identifier must still be computed before teardown so
+        // the exact same value is what gets persisted and constructed.
+        let compute = try XCTUnwrap(rebuild.range(
+            of: "let replacementRestoreIdentifier ="
+        ))
+        XCTAssertLessThan(compute.lowerBound, drainedRetire.lowerBound)
+    }
+
     private func managerSource() throws -> String {
         let managerURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()

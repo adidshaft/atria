@@ -116,12 +116,33 @@ final class AtriaDefaultChangeCenter {
 
     private init(store: UserDefaults) {
         self.store = store
+        // `queue: nil` runs the block synchronously on the *posting* thread, not
+        // on `.main`. This is the fix for the 2026-08-10 P0 deadlock: a BLE
+        // callback on `com.adidshaft.atria.ble-central` wrote a diagnostics
+        // default, which posts `didChangeNotification`; with `queue: .main` that
+        // post synchronously waited for the main-queue observer, while MainActor
+        // was itself blocked inside `centralEventFence.retire`'s `delegateQueue.sync`
+        // draining that very BLE lane — a lock inversion iOS killed with
+        // 0x8BADF00D. An off-main writer must never wait for MainActor here.
+        //
+        // On the main thread (in-process keyed and direct writes) the block runs
+        // synchronously exactly as before, preserving `isPerformingKeyedWrite`
+        // suppression. Off-main, it only hops the coalesced refresh onto
+        // MainActor and returns immediately to the posting queue. No mutable
+        // state (`boxesByKey`, `refreshTask`, counters, `isPerformingKeyedWrite`)
+        // is read or written off MainActor.
         observer = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification,
                                                           object: store,
-                                                          queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard self?.isPerformingKeyedWrite == false else { return }
-                self?.scheduleExternalRefresh()
+                                                          queue: nil) { [weak self] _ in
+            if Thread.isMainThread {
+                MainActor.assumeIsolated {
+                    guard self?.isPerformingKeyedWrite == false else { return }
+                    self?.scheduleExternalRefresh()
+                }
+            } else {
+                Task { @MainActor [weak self] in
+                    self?.scheduleExternalRefresh()
+                }
             }
         }
     }
