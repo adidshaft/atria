@@ -269,7 +269,9 @@ private struct AtriaStrapConnectionHero: View {
                     .controlSize(.regular)
                     .frame(width: 44, height: 44)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Connecting\u{2026}")
+                    Text(statusStore.state.isBluetoothReady
+                         ? "Connecting\u{2026}"
+                         : "Bluetooth recovering")
                         .font(.headline.weight(.bold))
                         .foregroundStyle(.blue)
                     Text(connectionDetail)
@@ -292,6 +294,10 @@ private struct AtriaStrapConnectionHero: View {
                     .font(.headline.weight(.bold))
                 Text(displayStatus == .poweredOff
                      ? "Turn on Bluetooth to begin \u{2014} Atria reconnects automatically."
+                     : coreLiveStore.state.bluetoothPermissionDenied
+                     ? "Allow Bluetooth access in Settings, then return to Atria."
+                     : !statusStore.state.isBluetoothReady
+                     ? "Bluetooth is unavailable right now. Atria will retry automatically."
                      : "Bring your strap into range to begin \u{2014} Atria scans automatically.")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -347,7 +353,12 @@ private struct AtriaStrapConnectionHero: View {
         if coreLiveStore.state.hasRecentHeartRateSample {
             return "HR \(coreLiveStore.state.lastReadingAgeText)"
         }
-        return coreLiveStore.state.bluetoothPermissionDenied ? "Permission needed" : "Waiting for HR"
+        if coreLiveStore.state.bluetoothPermissionDenied {
+            return "Permission needed"
+        }
+        return statusStore.state.isBluetoothReady
+            ? "Waiting for HR"
+            : "Waiting for Bluetooth"
     }
 
     private var connectionSymbol: String {

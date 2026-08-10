@@ -101,7 +101,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .hrv:
             return "The variation in the time between consecutive heartbeats, measured overnight from the beat-to-beat timing of your heart. Higher variation generally reflects more recovery capacity, but the \u{201c}right\u{201d} number is deeply individual."
         case .stress:
-            return "A live estimate of autonomic load right now, read from your heart rate and beat-to-beat timing — not a lab cortisol measurement. Treat it as a rough Calm / Low / Medium / High signal for how activated your system currently is."
+            return "A continuous 0–3 estimate of physiological stress from your cardiac response: Calm from 0–1, Moderate from 1–2, and High from 2–3. It describes physiological load, not a psychological diagnosis or a cortisol measurement."
         case .recovery:
             return "One readiness read that blends your overnight HRV, resting heart rate, sleep, and respiration against your own baseline. It answers \u{201c}how ready am I today,\u{201d} not a score to max out every day."
         case .restingHeartRate:
@@ -141,12 +141,13 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // baseline prefers overnight/sleep samples.
             return "Clean beat-to-beat intervals from overnight wear — 300–2000 ms, with any beat more than 20% off its neighbors dropped — then the beat-to-beat variation is measured over the most stable stretch of sleep."
         case .stress:
-            // AtriaStressMonitor.swift: HR z-scored vs the wearer's own AWAKE HR
-            // Reference (learned awake median, or resting + offset until
-            // learned), plus qualified HRV vs the overnight baseline. Numeric
-            // Stress is reserved for the combined evidence mode; HR alone is a
-            // separate qualitative cardiac-arousal observation.
-            return "Atria compares live heart rate with your own typical awake heart rate and qualified beat-to-beat variability with your overnight baseline. When both signals are available, it reports a 0–3 physiological Stress score with Calm / Low / Medium / High bands. Heart rate alone is shown separately as qualitative Cardiac arousal because posture, movement, illness, stimulants, and emotion can all raise it; Atria does not turn that into a numeric Stress score. A score of 0 means no positive deviation was detected, not zero psychological stress. Loose contact, movement noise, and recognized workouts pause the reading instead of substituting zero."
+            // AtriaPhysiologicalStressModel.swift: overlapping five-minute
+            // windows, evaluated once per minute. HR reserve drives a sigmoid;
+            // qualified ln-RMSSD is compared with the rolling personal median
+            // and robust MAD, with HR weighted more near rest. Qualified
+            // activity attenuates rather than erases elevation; EMA half-life
+            // is three minutes and telemetry gaps remain gaps.
+            return "Every minute, Atria looks back over the previous five minutes. It compares heart rate with your personal rest-to-maximum range and clean beat-to-beat timing with your recent overnight pattern. The two signals share the score according to the cardiac context. Confirmed movement can reduce likely exercise-related elevation by at most 35%, never erase it. Nearby readings are lightly smoothed, but genuine signal gaps stay blank. If usable beat timing is unavailable, Atria still shows a numeric heart-rate-only estimate and labels it lower confidence; it never invents a second signal or calm."
         case .recovery:
             // AtriaAnalytics.swift: z-blend HRV 0.60 / RHR 0.20 (inverted) / sleep
             // 0.15 / respiration 0.05, logistic → 1–99%.
@@ -185,7 +186,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // distinct overnight readings and holds up to 90 nights.
             return "\u{201c}Personal baseline\u{201d} means compared with your own recent overnight nights — never a population norm. A trusted baseline needs about 14 clean overnight readings before HRV appears at all."
         case .stress:
-            return "Not a medical stress diagnosis — a same-day, relative signal from your own resting patterns."
+            return "A physiological estimate, not a medical or psychological diagnosis. Baselines learn from your own qualified history; missing heart rate stays blank, and HR-only values are explicitly lower confidence."
         case .recovery:
             return "Scored against your own baseline, never a population norm. Early scores are labeled as such; confidence reaches personal-baseline after 14 trusted nights, and missing essentials keep it Learning rather than guessing."
         case .restingHeartRate:

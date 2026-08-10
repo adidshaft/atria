@@ -1297,12 +1297,12 @@ struct AtriaTodayScreen: View {
                                            hrvValue: "58",
                                            hrvDetail: "personal baseline",
                                            hrvNarrative: "Debug fixture: strain target state is fixed for visual proof.",
-                                           stressLevel: .low,
-                                           stressValue: "1/3",
-                                           stressDetail: "steady",
-                                           stressNarrative: "Debug fixture stress stays neutral while strain target state changes.",
+                                           stressLevel: .medium,
+                                           stressValue: "1.0 / 3",
+                                           stressDetail: "Moderate · HR + HRV",
+                                           stressNarrative: "Debug fixture physiological stress stays fixed while strain target state changes.",
                                            stressEvidenceMode: .physiologicalStress,
-                                           stressMetricTitle: "Stress",
+                                           stressMetricTitle: "Physiological stress",
                                            rrPackageText: "Personal",
                                            nextAction: guidance.detail,
                                            headline: guidance.headline,
@@ -2069,6 +2069,8 @@ struct AtriaTodayScreen: View {
                           stressText: displayHero.stressValue,
                           stressMetricTitle: displayHero.stressMetricTitle,
                           stressEvidenceMode: displayHero.stressEvidenceMode,
+                          stressIsHROnlyEstimate: displayHero.stressDetail
+                            .localizedCaseInsensitiveContains("HR-only"),
                           baselineSamples: displayHero.baselineSamples,
                           sessionsCount: displayHero.sessionsCount)
     }

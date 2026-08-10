@@ -184,6 +184,59 @@ final class AtriaBLECentralEventFenceTests: XCTestCase {
             "the old peripheral epoch must be invalid before the callback lane is released"
         )
     }
+
+    func testConditionalRetirementLetsAheadOfBarrierLiveEdgeVetoRotation() {
+        let fence = AtriaBLECentralEventFence()
+        let callbackQueue = DispatchQueue(
+            label: "com.adidshaft.atria.tests.conditional-central-retirement"
+        )
+        let central = CentralStub()
+        let token = fence.install(central)
+        var liveEdgeObserved = false
+
+        callbackQueue.async {
+            liveEdgeObserved = true
+        }
+        let retired = fence.retireIfAccepted(
+            central,
+            token: token,
+            afterDraining: callbackQueue,
+            shouldRetire: { !liveEdgeObserved }
+        )
+
+        XCTAssertFalse(retired)
+        XCTAssertTrue(
+            fence.accepts(token, central: central),
+            "a connected edge ahead of the barrier must preserve its manager"
+        )
+    }
+
+    func testConditionalRetirementRunsTeardownOnceForExactToken() {
+        let fence = AtriaBLECentralEventFence()
+        let callbackQueue = DispatchQueue(
+            label: "com.adidshaft.atria.tests.exact-central-retirement"
+        )
+        let central = CentralStub()
+        let token = fence.install(central)
+        var teardownCount = 0
+
+        XCTAssertTrue(fence.retireIfAccepted(
+            central,
+            token: token,
+            afterDraining: callbackQueue,
+            shouldRetire: { true },
+            synchronizedTeardown: { teardownCount += 1 }
+        ))
+        XCTAssertEqual(teardownCount, 1)
+        XCTAssertFalse(fence.retireIfAccepted(
+            central,
+            token: token,
+            afterDraining: callbackQueue,
+            shouldRetire: { true },
+            synchronizedTeardown: { teardownCount += 1 }
+        ))
+        XCTAssertEqual(teardownCount, 1)
+    }
 }
 
 final class AtriaBLECentralRecoveryTests: XCTestCase {

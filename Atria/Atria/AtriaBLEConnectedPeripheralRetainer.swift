@@ -424,6 +424,18 @@ final class AtriaBLEConnectedPeripheralRetainer: @unchecked Sendable {
         }
     }
 
+    /// Exact-object form used by restoration watchdogs. A UUID-wide pending
+    /// bit is insufficient because CoreBluetooth can vend an object-distinct
+    /// representation for the same physical strap during state restoration.
+    func ownsPendingConnectRequest(
+        _ peripheral: AtriaBLERetainablePeripheral
+    ) -> Bool {
+        let key = ObjectIdentifier(peripheral)
+        return lock.withLock {
+            pendingConnectOwnerByPeripheralID[peripheral.identifier] == key
+        }
+    }
+
     var pendingConnectCount: Int {
         lock.withLock { pendingConnectOwnerByPeripheralID.count }
     }

@@ -105,7 +105,7 @@ final class AtriaWorkoutStartDensityTests: XCTestCase {
         let sheet = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(sheet.contains("@Environment(\\.dynamicTypeSize) private var dynamicTypeSize"))
-        XCTAssertTrue(sheet.contains("private var targetHeader: some View"))
+        XCTAssertTrue(sheet.contains("private var workoutTargetsHeader: some View"))
         XCTAssertTrue(sheet.contains("if dynamicTypeSize.isAccessibilitySize"))
         XCTAssertTrue(sheet.contains("VStack(alignment: .leading, spacing: 8)"))
         XCTAssertTrue(sheet.contains("zonePicker(title: title, selection: selection)"))

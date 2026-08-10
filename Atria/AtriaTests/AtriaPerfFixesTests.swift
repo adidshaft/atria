@@ -2004,7 +2004,7 @@ final class AtriaPerfFixesTests: XCTestCase {
         }
     }
 
-    func testReduceStressStrip_excludesHROnlyAndBreaksNumericLineAcrossIt() {
+    func testReduceStressStrip_keepsHROnlyOnNumericLineWithoutInventingGap() {
         let history = [
             AtriaStressMonitorStore.StressHistoryPoint(t: t0,
                                                        activation: 0.3,
@@ -2022,11 +2022,12 @@ final class AtriaPerfFixesTests: XCTestCase {
 
         let reduced = AtriaHealthScreen.reduceStressStrip(history)
 
-        XCTAssertEqual(reduced.count, 2)
+        XCTAssertEqual(reduced.count, 3)
         XCTAssertEqual(reduced[0].value, 0.9, accuracy: 1e-12)
-        XCTAssertEqual(reduced[1].value, 1.5, accuracy: 1e-12)
-        XCTAssertEqual(reduced.map(\.segment), [0, 1],
-                       "numeric Stress cannot bridge an intervening cardiac-arousal point")
+        XCTAssertEqual(reduced[1].value, 2.1, accuracy: 1e-12)
+        XCTAssertEqual(reduced[2].value, 1.5, accuracy: 1e-12)
+        XCTAssertEqual(reduced.map(\.segment), [0, 0, 0],
+                       "a complete HR-only estimate is numeric; only a real time gap splits the line")
     }
 
     /// Empty / single-point history yields nothing (matches the >1 guard).

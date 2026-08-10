@@ -301,6 +301,11 @@ enum HistoricalArchive {
         /// Every exhausted channel in deterministic order, retaining the exact
         /// bound that caused partial publication.
         let budgetLimitations: [RecoveredDataBudgetLimitation]
+        /// Complete-line scanner authority captured from the exact cache image
+        /// that produced this snapshot. SessionStore persists this alongside
+        /// its bounded current-cycle projection so a later process can decode
+        /// an append-only tail without advancing past rows the UI never saw.
+        let automaticCacheAuthority: AutomaticRecoveredDataCacheAuthority?
     }
 
     struct VerifiedConsumerSourceReadReport: Equatable, Sendable {
@@ -333,12 +338,12 @@ enum HistoricalArchive {
         }
     }
 
-    struct HeartRatePoint: Equatable, Sendable {
+    struct HeartRatePoint: Codable, Equatable, Sendable {
         let t: Date
         let bpm: Int
     }
 
-    struct SkinTemperatureRawPoint: Equatable, Sendable {
+    struct SkinTemperatureRawPoint: Codable, Equatable, Sendable {
         let t: Date
         let raw: Int
         let strapIdentifier: String?
@@ -370,6 +375,65 @@ enum HistoricalArchive {
             encoder.outputFormatting = [.sortedKeys]
             return try? encoder.encode(self).base64EncodedString()
         }
+    }
+
+    /// Compact cross-process authority for the automatic recovered-data lane.
+    /// It persists only verified complete-line offsets and source identity; the
+    /// bounded UI checkpoint remains the base projection. On relaunch, this lets
+    /// an unchanged source reuse that checkpoint or an append-only <=8 MiB tail
+    /// decode only the new bytes without serializing the large in-memory cache.
+    struct AutomaticRecoveredDataCacheAuthority: Codable, Equatable, Sendable {
+        static let schema = 1
+
+        struct Source: Codable, Equatable, Sendable {
+            let path: String
+            let processedOffset: UInt64
+            let modificationTime: TimeInterval
+            let resourceIdentifier: String
+        }
+
+        let version: Int
+        let coveredSince: TimeInterval
+        let sources: [Source]
+    }
+
+    enum AutomaticRecoveredDataBootstrapStepResult: Equatable, Sendable {
+        case progressed(readBytes: Int, remainingBytes: UInt64)
+        case ready(readBytes: Int)
+        case deferred(reason: String)
+        case invalidated(reason: String)
+    }
+
+    private struct AutomaticRecoveredDataBootstrapSourceImage {
+        let catalogGeneration: UInt64?
+        let descriptors: [AtriaHistoricalJSONLRecentScanner.FileDescriptor]
+    }
+
+    /// Durable, bounded partial projection for a first-install/upgrade whose
+    /// current-window raw image is larger than one automatic 8 MiB pass.
+    /// Complete-line cursors and compact metric accumulators are one atomic
+    /// property-list generation; no cursor can advance without the evidence it
+    /// decoded being present in the same file.
+    private struct AutomaticRecoveredDataBootstrapCheckpoint: Codable {
+        static let schema = 1
+
+        struct Source: Codable, Equatable {
+            let path: String
+            var targetSize: UInt64
+            var processedOffset: UInt64
+            var modificationTime: TimeInterval
+            let resourceIdentifier: String
+        }
+
+        let version: Int
+        var cutoff: TimeInterval
+        var updatedAt: TimeInterval
+        var sourceFingerprint: ConsumerSourceFingerprint
+        var sources: [Source]
+        var heartRatePoints: [HeartRatePoint]
+        var rrAccumulator: AtriaRecoveredRRProjection.Accumulator
+        var skinTemperatureRawPoints: [SkinTemperatureRawPoint]
+        var gravitySamples: [GravitySample]
     }
 
     enum MotionTickWindowRead: Equatable, Sendable {
@@ -3340,35 +3404,947 @@ enum HistoricalArchive {
     /// keeping this freshness lane materially smaller than a full archive pass.
     static let maximumAutomaticRecoveredDataIncrementalBytes: UInt64 =
         8 * 1024 * 1024
+    /// A current-cycle projection normally touches only the active chunk plus
+    /// a handful of recently sealed chunks. Refuse an unexpectedly broad
+    /// source image before either serializing authority or installing a cold
+    /// cache; this bounds metadata, JSON size, and planner work independently
+    /// of the byte ceiling.
+    static let maximumAutomaticRecoveredDataCacheAuthoritySourceCount = 64
+    private static let maximumAutomaticRecoveredDataCacheAuthorityWindow:
+        TimeInterval = 6 * 24 * 60 * 60
+    private static let maximumAutomaticRecoveredDataCacheAuthorityPathBytes =
+        4_096
+    private static let maximumAutomaticRecoveredDataCacheAuthorityIdentifierBytes =
+        1_024
+    private static let maximumAutomaticRecoveredDataBootstrapSourceBytes:
+        UInt64 = 512 * 1024 * 1024
+    private static let maximumAutomaticRecoveredDataBootstrapCheckpointBytes:
+        UInt64 = 64 * 1024 * 1024
+    private static let maximumAutomaticRecoveredDataBootstrapAge:
+        TimeInterval = 6 * 24 * 60 * 60
+    private static let automaticRecoveredDataBootstrapBudget =
+        RecoveredProjectionBudget(
+            maximumHeartRatePoints: 200_000,
+            maximumRRRecords: 200_000,
+            maximumSkinTemperaturePoints: 200_000,
+            maximumGravitySamples: 200_000,
+            maximumMotionReplayIdentities: 200_000
+        )
+    private static var automaticRecoveredDataBootstrapCheckpointURL: URL {
+        FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0]
+        .appendingPathComponent("atria-projections", isDirectory: true)
+        .appendingPathComponent(
+            "recovered-current-bootstrap-v1.plist",
+            isDirectory: false
+        )
+    }
 
     static func automaticRecoveredDataProjectionPlanIsBounded(
         _ plan: AtriaHistoricalJSONLRecentScanner.Plan,
         maximumIncrementalBytes: UInt64 =
-            maximumAutomaticRecoveredDataIncrementalBytes
+            maximumAutomaticRecoveredDataIncrementalBytes,
+        allowsBoundedRebuild: Bool = false
     ) -> Bool {
+        let sources: [AtriaHistoricalJSONLRecentScanner.Source]
         switch plan {
         case .reuse:
             return true
-        case .rebuild:
-            return false
-        case .incremental(let sources):
-            var total: UInt64 = 0
-            for source in sources {
-                // Compressed artifacts are all-or-nothing and their expanded
-                // byte cost is not bounded by the on-disk descriptor.
-                guard !source.descriptor.isCompressed,
-                      source.startOffset <= source.descriptor.size else {
-                    return false
-                }
-                let addition = source.descriptor.size - source.startOffset
-                guard total <= maximumIncrementalBytes,
-                      addition <= maximumIncrementalBytes - total else {
-                    return false
-                }
-                total += addition
+        case .rebuild(let rebuildSources):
+            guard allowsBoundedRebuild,
+                  rebuildSources.allSatisfy({ $0.startOffset == 0 }) else {
+                return false
             }
-            return total <= maximumIncrementalBytes
+            sources = rebuildSources
+        case .incremental(let incrementalSources):
+            sources = incrementalSources
         }
+        var total: UInt64 = 0
+        for source in sources {
+            // Compressed artifacts are all-or-nothing and their expanded byte
+            // cost is not bounded by the on-disk descriptor. Stable filesystem
+            // identity is required for both a first-install bounded seed and a
+            // later append; path/size alone cannot fence replacement.
+            guard source.descriptor.resourceIdentifier != nil,
+                  !source.descriptor.isCompressed,
+                  source.startOffset <= source.descriptor.size else {
+                return false
+            }
+            let addition = source.descriptor.size - source.startOffset
+            guard total <= maximumIncrementalBytes,
+                  addition <= maximumIncrementalBytes - total else {
+                return false
+            }
+            total += addition
+        }
+        return total <= maximumIncrementalBytes
+    }
+
+    /// Reconstructs the scanner plan represented by persisted complete-line
+    /// offsets. The authority never supplies current EOF: descriptors are
+    /// captured again, and only scanner-proven reuse or an uncompressed,
+    /// stable-identity append totaling at most the caller's byte ceiling is
+    /// accepted. This is pure so cold-process and race boundaries can be tested
+    /// without opening an archive file.
+    static func automaticRecoveredDataCacheAuthorityRestorationPlan(
+        _ authority: AutomaticRecoveredDataCacheAuthority,
+        since: Date,
+        descriptors: [AtriaHistoricalJSONLRecentScanner.FileDescriptor],
+        maximumIncrementalBytes: UInt64 =
+            maximumAutomaticRecoveredDataIncrementalBytes
+    ) -> AtriaHistoricalJSONLRecentScanner.Plan? {
+        let cutoff = since.timeIntervalSince1970
+        guard maximumIncrementalBytes > 0,
+              cutoff.isFinite,
+              authority.version == AutomaticRecoveredDataCacheAuthority.schema,
+              authority.coveredSince.isFinite,
+              authority.coveredSince <= cutoff,
+              cutoff - authority.coveredSince
+                <= maximumAutomaticRecoveredDataCacheAuthorityWindow,
+              !authority.sources.isEmpty,
+              authority.sources.count
+                <= maximumAutomaticRecoveredDataCacheAuthoritySourceCount,
+              !descriptors.isEmpty,
+              descriptors.count
+                <= maximumAutomaticRecoveredDataCacheAuthoritySourceCount else {
+            return nil
+        }
+
+        var seenPaths = Set<String>()
+        var seenIdentifiers = Set<String>()
+        var states: [String: AtriaHistoricalJSONLRecentScanner.FileState] = [:]
+        states.reserveCapacity(authority.sources.count)
+        for source in authority.sources {
+            let canonicalPath = URL(fileURLWithPath: source.path)
+                .standardizedFileURL.path
+            guard !source.path.isEmpty,
+                  source.path.utf8.count
+                    <= maximumAutomaticRecoveredDataCacheAuthorityPathBytes,
+                  canonicalPath == source.path,
+                  source.modificationTime.isFinite,
+                  !source.resourceIdentifier.isEmpty,
+                  source.resourceIdentifier.utf8.count
+                    <= maximumAutomaticRecoveredDataCacheAuthorityIdentifierBytes,
+                  seenPaths.insert(source.path).inserted,
+                  seenIdentifiers.insert(source.resourceIdentifier).inserted else {
+                return nil
+            }
+            states[source.path] = .init(
+                path: source.path,
+                processedOffset: source.processedOffset,
+                modificationTime: source.modificationTime,
+                resourceIdentifier: source.resourceIdentifier
+            )
+        }
+
+        var currentPaths = Set<String>()
+        for descriptor in descriptors {
+            let canonicalPath = descriptor.url.standardizedFileURL.path
+            guard canonicalPath == descriptor.path,
+                  descriptor.modificationTime.isFinite,
+                  currentPaths.insert(descriptor.path).inserted else {
+                return nil
+            }
+        }
+        let plan = AtriaHistoricalJSONLRecentScanner.plan(
+            previousStates: states,
+            current: descriptors
+        )
+        return automaticRecoveredDataProjectionPlanIsBounded(
+            plan,
+            maximumIncrementalBytes: maximumIncrementalBytes
+        ) ? plan : nil
+    }
+
+    /// Metadata-only validation used while writing the paired UI/scanner
+    /// checkpoint. It intentionally validates the snapshot's old offsets
+    /// against the latest descriptors; it never derives or advances an offset
+    /// from those descriptors.
+    static func automaticRecoveredDataCacheAuthorityHasBoundedCurrentPlan(
+        _ authority: AutomaticRecoveredDataCacheAuthority,
+        since: Date,
+        maximumIncrementalBytes: UInt64 =
+            maximumAutomaticRecoveredDataIncrementalBytes
+    ) -> Bool {
+        precondition(
+            !Thread.isMainThread,
+            "Recovered cache authority validation must run off the main thread"
+        )
+        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(
+            for: recentRecoveredReadableFileURLs(
+                since: since.timeIntervalSince1970
+            )
+        )
+        return automaticRecoveredDataCacheAuthorityRestorationPlan(
+            authority,
+            since: since,
+            descriptors: descriptors,
+            maximumIncrementalBytes: maximumIncrementalBytes
+        ) != nil
+    }
+
+    /// Installs a sparse recovered-data cache after a cold process launch. Raw
+    /// physiology/motion arrays are deliberately not serialized: SessionStore's
+    /// paired bounded checkpoint is the base projection, while this cache owns
+    /// only exact complete-line offsets for decoding the next small delta.
+    @discardableResult
+    static func restoreAutomaticRecoveredDataCacheAuthority(
+        _ authority: AutomaticRecoveredDataCacheAuthority,
+        since: Date,
+        maximumIncrementalBytes: UInt64 =
+            maximumAutomaticRecoveredDataIncrementalBytes
+    ) -> Bool {
+        precondition(
+            !Thread.isMainThread,
+            "Recovered cache authority restoration must run off the main thread"
+        )
+        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(
+            for: recentRecoveredReadableFileURLs(
+                since: since.timeIntervalSince1970
+            )
+        )
+        return restoreAutomaticRecoveredDataCacheAuthority(
+            authority,
+            since: since,
+            descriptors: descriptors,
+            maximumIncrementalBytes: maximumIncrementalBytes
+        )
+    }
+
+    /// Dependency-injected cold-process seam. Validation happens before the
+    /// cache lock; a later source change is re-planned by metadata admission
+    /// and again by the authoritative scanner worker, so it can only make the
+    /// lane fail closed.
+    @discardableResult
+    static func restoreAutomaticRecoveredDataCacheAuthority(
+        _ authority: AutomaticRecoveredDataCacheAuthority,
+        since: Date,
+        descriptors: [AtriaHistoricalJSONLRecentScanner.FileDescriptor],
+        maximumIncrementalBytes: UInt64 =
+            maximumAutomaticRecoveredDataIncrementalBytes
+    ) -> Bool {
+        guard automaticRecoveredDataCacheAuthorityRestorationPlan(
+            authority,
+            since: since,
+            descriptors: descriptors,
+            maximumIncrementalBytes: maximumIncrementalBytes
+        ) != nil else { return false }
+        let states = Dictionary(
+            uniqueKeysWithValues: authority.sources.map { source in
+                (
+                    source.path,
+                    AtriaHistoricalJSONLRecentScanner.FileState(
+                        path: source.path,
+                        processedOffset: source.processedOffset,
+                        modificationTime: source.modificationTime,
+                        resourceIdentifier: source.resourceIdentifier
+                    )
+                )
+            }
+        )
+        recoveredDataCacheLock.lock()
+        defer { recoveredDataCacheLock.unlock() }
+        // Never replace a live process cache with an older disk checkpoint.
+        guard recoveredDataCache == nil else { return false }
+        recoveredDataCache = RecoveredDataCache(
+            coveredSince: authority.coveredSince,
+            budget: .production,
+            fileStates: states,
+            heartRatePoints: [],
+            rrAccumulator: .init(),
+            skinTemperatureRawPoints: [],
+            gravitySamples: [],
+            motionRecordIdentities: [],
+            truncatedChannels: []
+        )
+        return true
+    }
+
+    static var automaticRecoveredDataBootstrapCheckpointExists: Bool {
+        guard let attributes = try? FileManager.default.attributesOfItem(
+            atPath: automaticRecoveredDataBootstrapCheckpointURL.path
+        ),
+        let size = (attributes[.size] as? NSNumber)?.uint64Value else {
+            return false
+        }
+        return size > 0
+            && size <= maximumAutomaticRecoveredDataBootstrapCheckpointBytes
+    }
+
+    static func removeAutomaticRecoveredDataBootstrapCheckpoint() {
+        try? FileManager.default.removeItem(
+            at: automaticRecoveredDataBootstrapCheckpointURL
+        )
+    }
+
+    /// Selects only catalog-qualified chunks that can overlap the bounded
+    /// current-cycle/prior-night cutoff. A source image whose entire physical
+    /// size is already <=8 MiB may bootstrap without catalog metadata because
+    /// that complete rebuild is independently byte-bounded. Larger unknown,
+    /// compressed, or unverified source sets fail closed.
+    private static func automaticRecoveredDataBootstrapSourceImage(
+        since: Date
+    ) -> AutomaticRecoveredDataBootstrapSourceImage? {
+        let candidates = recentReadableFileURLs()
+        let allDescriptors = AtriaHistoricalJSONLRecentScanner.descriptors(
+            for: candidates
+        )
+        if automaticRecoveredDataBootstrapDescriptorsAreAdmissible(
+            allDescriptors,
+            maximumTotalBytes: maximumAutomaticRecoveredDataIncrementalBytes
+        ) {
+            let generation = (try? catalogStoreLocked())
+                .flatMap { try? $0.snapshot().generation }
+            return .init(
+                catalogGeneration: generation,
+                descriptors: allDescriptors
+            )
+        }
+
+        let cutoff = since.timeIntervalSince1970
+        guard cutoff.isFinite,
+              let store = try? catalogStoreLocked(),
+              let catalog = try? store.snapshot(),
+              (try? catalog.validate()) != nil else { return nil }
+        let selectedURLs = recoveredProjectionFileURLs(
+            candidates: candidates,
+            catalog: catalog,
+            archiveRoot: archiveDirectory,
+            since: cutoff
+        )
+        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(
+            for: selectedURLs
+        )
+        guard automaticRecoveredDataBootstrapDescriptorsAreAdmissible(
+            descriptors,
+            maximumTotalBytes:
+                maximumAutomaticRecoveredDataBootstrapSourceBytes
+        ) else { return nil }
+
+        let root = archiveDirectory.standardizedFileURL
+        let chunksByPath = Dictionary(grouping: catalog.chunks) { chunk in
+            root.appendingPathComponent(chunk.relativePath)
+                .standardizedFileURL.path
+        }
+        for descriptor in descriptors {
+            let matches = chunksByPath[descriptor.path] ?? []
+            guard matches.count == 1, let chunk = matches.first else {
+                return nil
+            }
+            switch chunk.state {
+            case .active:
+                guard chunk.id == catalog.activeChunkID,
+                      chunk.compressedStorage == nil else { return nil }
+            case .sealed:
+                guard chunk.compressedStorage == nil,
+                      let sealedAt = chunk.sealedAt,
+                      let rows = chunk.rowCount,
+                      rows > 0,
+                      let first = chunk.firstTimestamp,
+                      let last = chunk.lastTimestamp,
+                      last >= first,
+                      last.timeIntervalSince1970 >= cutoff,
+                      let digest = chunk.contentSHA256,
+                      digest.count == 64,
+                      let attributes = try? FileManager.default
+                        .attributesOfItem(atPath: descriptor.path),
+                      (attributes[.type] as? FileAttributeType)
+                        == .typeRegular,
+                      (attributes[.size] as? NSNumber)?.uint64Value
+                        == chunk.byteCount,
+                      let modified = attributes[.modificationDate] as? Date,
+                      modified.timeIntervalSince(sealedAt) <= 1 else {
+                    return nil
+                }
+            case .retired:
+                return nil
+            }
+        }
+        return .init(
+            catalogGeneration: catalog.generation,
+            descriptors: descriptors
+        )
+    }
+
+    private static func automaticRecoveredDataBootstrapDescriptorsAreAdmissible(
+        _ descriptors: [AtriaHistoricalJSONLRecentScanner.FileDescriptor],
+        maximumTotalBytes: UInt64
+    ) -> Bool {
+        guard maximumTotalBytes > 0,
+              !descriptors.isEmpty,
+              descriptors.count
+                <= maximumAutomaticRecoveredDataCacheAuthoritySourceCount else {
+            return false
+        }
+        var paths = Set<String>()
+        var identifiers = Set<String>()
+        var total: UInt64 = 0
+        for descriptor in descriptors {
+            guard !descriptor.isCompressed,
+                  let identifier = descriptor.resourceIdentifier,
+                  !identifier.isEmpty,
+                  identifier.utf8.count
+                    <= maximumAutomaticRecoveredDataCacheAuthorityIdentifierBytes,
+                  descriptor.path.utf8.count
+                    <= maximumAutomaticRecoveredDataCacheAuthorityPathBytes,
+                  descriptor.path
+                    == descriptor.url.standardizedFileURL.path,
+                  descriptor.modificationTime.isFinite,
+                  paths.insert(descriptor.path).inserted,
+                  identifiers.insert(identifier).inserted,
+                  total <= maximumTotalBytes,
+                  descriptor.size <= maximumTotalBytes - total else {
+                return false
+            }
+            total += descriptor.size
+        }
+        return total <= maximumTotalBytes
+    }
+
+    private static func readAutomaticRecoveredDataBootstrapCheckpoint(
+        from url: URL,
+        now: Date,
+        requestedCutoff: Date
+    ) -> AutomaticRecoveredDataBootstrapCheckpoint? {
+        guard let attributes = try? FileManager.default.attributesOfItem(
+            atPath: url.path
+        ),
+        let byteCount = (attributes[.size] as? NSNumber)?.uint64Value,
+        byteCount > 0,
+        byteCount <= maximumAutomaticRecoveredDataBootstrapCheckpointBytes,
+        let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+        var checkpoint = try? PropertyListDecoder().decode(
+            AutomaticRecoveredDataBootstrapCheckpoint.self,
+            from: data
+        ),
+        checkpoint.version
+            == AutomaticRecoveredDataBootstrapCheckpoint.schema,
+        checkpoint.cutoff.isFinite,
+        checkpoint.updatedAt.isFinite,
+        checkpoint.updatedAt <= now.timeIntervalSince1970 + 5 * 60,
+        now.timeIntervalSince1970 - checkpoint.updatedAt
+            <= maximumAutomaticRecoveredDataBootstrapAge,
+        !checkpoint.sources.isEmpty,
+        checkpoint.sources.count
+            <= maximumAutomaticRecoveredDataCacheAuthoritySourceCount,
+        checkpoint.heartRatePoints.count
+            <= automaticRecoveredDataBootstrapBudget.maximumHeartRatePoints,
+        checkpoint.rrAccumulator.acceptedRecordCount
+            <= automaticRecoveredDataBootstrapBudget.maximumRRRecords,
+        checkpoint.skinTemperatureRawPoints.count
+            <= automaticRecoveredDataBootstrapBudget
+                .maximumSkinTemperaturePoints,
+        checkpoint.gravitySamples.count
+            <= automaticRecoveredDataBootstrapBudget.maximumGravitySamples
+        else { return nil }
+
+        let requested = requestedCutoff.timeIntervalSince1970
+        guard requested.isFinite,
+              checkpoint.cutoff <= requested,
+              requested - checkpoint.cutoff
+                <= maximumAutomaticRecoveredDataCacheAuthorityWindow else {
+            return nil
+        }
+        if requested > checkpoint.cutoff {
+            checkpoint.cutoff = requested
+            checkpoint.heartRatePoints.removeAll {
+                $0.t.timeIntervalSince1970 < requested
+            }
+            checkpoint.rrAccumulator.prune(before: requested)
+            checkpoint.skinTemperatureRawPoints.removeAll {
+                $0.t.timeIntervalSince1970 < requested
+            }
+            checkpoint.gravitySamples.removeAll {
+                $0.timestamp < requested
+            }
+        }
+        return checkpoint
+    }
+
+    private static func writeAutomaticRecoveredDataBootstrapCheckpoint(
+        _ checkpoint: AutomaticRecoveredDataBootstrapCheckpoint,
+        to url: URL
+    ) -> Bool {
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .binary
+        guard let data = try? encoder.encode(checkpoint),
+              UInt64(data.count)
+                <= maximumAutomaticRecoveredDataBootstrapCheckpointBytes else {
+            return false
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try data.write(to: url, options: .atomic)
+            return true
+        } catch {
+            AtriaDebugLog(
+                "ATRIADBG recovered_bootstrap status=checkpoint_write_failed error=%@",
+                error.localizedDescription
+            )
+            return false
+        }
+    }
+
+    private static func makeAutomaticRecoveredDataBootstrapCheckpoint(
+        since: Date,
+        sourceImage: AutomaticRecoveredDataBootstrapSourceImage,
+        now: Date
+    ) -> AutomaticRecoveredDataBootstrapCheckpoint? {
+        let cutoff = since.timeIntervalSince1970
+        guard cutoff.isFinite else { return nil }
+
+        recoveredDataCacheLock.lock()
+        defer { recoveredDataCacheLock.unlock() }
+        let existingCache = recoveredDataCache
+        let seed: RecoveredDataCache?
+        if let existingCache {
+            guard existingCache.coveredSince <= cutoff,
+                  cutoff - existingCache.coveredSince
+                    <= maximumAutomaticRecoveredDataCacheAuthorityWindow,
+                  existingCache.truncatedChannels.isEmpty else { return nil }
+            let pruned = prunedRecoveredCache(existingCache, since: cutoff)
+            let plan = AtriaHistoricalJSONLRecentScanner.plan(
+                previousStates: pruned.fileStates,
+                current: sourceImage.descriptors
+            )
+            guard automaticRecoveredDataProjectionPlanIsBounded(
+                plan,
+                maximumIncrementalBytes:
+                    maximumAutomaticRecoveredDataBootstrapSourceBytes
+            ),
+            pruned.heartRatePoints.count
+                <= automaticRecoveredDataBootstrapBudget.maximumHeartRatePoints,
+            pruned.rrAccumulator.acceptedRecordCount
+                <= automaticRecoveredDataBootstrapBudget.maximumRRRecords,
+            pruned.skinTemperatureRawPoints.count
+                <= automaticRecoveredDataBootstrapBudget
+                    .maximumSkinTemperaturePoints,
+            pruned.gravitySamples.count
+                <= automaticRecoveredDataBootstrapBudget.maximumGravitySamples
+            else { return nil }
+            seed = pruned
+        } else {
+            seed = nil
+        }
+
+        let states = seed?.fileStates ?? [:]
+        let sources = sourceImage.descriptors.map { descriptor in
+            AutomaticRecoveredDataBootstrapCheckpoint.Source(
+                path: descriptor.path,
+                targetSize: descriptor.size,
+                processedOffset:
+                    states[descriptor.path]?.processedOffset ?? 0,
+                modificationTime: descriptor.modificationTime,
+                resourceIdentifier: descriptor.resourceIdentifier!
+            )
+        }.sorted { $0.path < $1.path }
+        var rr = seed?.rrAccumulator
+            ?? AtriaRecoveredRRProjection.Accumulator()
+        rr.prune(before: cutoff)
+        return .init(
+            version: AutomaticRecoveredDataBootstrapCheckpoint.schema,
+            cutoff: cutoff,
+            updatedAt: now.timeIntervalSince1970,
+            sourceFingerprint: makeConsumerSourceFingerprint(
+                catalogGeneration: sourceImage.catalogGeneration,
+                descriptors: sourceImage.descriptors
+            ),
+            sources: sources,
+            heartRatePoints: seed?.heartRatePoints ?? [],
+            rrAccumulator: rr,
+            skinTemperatureRawPoints:
+                seed?.skinTemperatureRawPoints ?? [],
+            gravitySamples: seed?.gravitySamples ?? []
+        )
+    }
+
+    /// Revalidates persisted target EOFs against a new metadata image. Growth
+    /// extends the target without advancing the processed cursor; removal,
+    /// truncation, replacement, same-size mutation, compression, or an
+    /// over-broad current image invalidates the partial projection.
+    private static func updateAutomaticRecoveredDataBootstrapSources(
+        _ checkpoint: inout AutomaticRecoveredDataBootstrapCheckpoint,
+        sourceImage: AutomaticRecoveredDataBootstrapSourceImage
+    ) -> String? {
+        guard automaticRecoveredDataBootstrapDescriptorsAreAdmissible(
+            sourceImage.descriptors,
+            maximumTotalBytes:
+                maximumAutomaticRecoveredDataBootstrapSourceBytes
+        ) else { return "source_image_unbounded_or_compressed" }
+        let currentByPath = Dictionary(
+            uniqueKeysWithValues: sourceImage.descriptors.map {
+                ($0.path, $0)
+            }
+        )
+        let priorPaths = Set(checkpoint.sources.map(\.path))
+        guard priorPaths.isSubset(of: Set(currentByPath.keys)) else {
+            return "source_removed"
+        }
+        for index in checkpoint.sources.indices {
+            var source = checkpoint.sources[index]
+            guard let descriptor = currentByPath[source.path],
+                  descriptor.resourceIdentifier
+                    == source.resourceIdentifier else {
+                return "source_replaced"
+            }
+            guard descriptor.size >= source.targetSize,
+                  descriptor.size >= source.processedOffset else {
+                return "source_truncated"
+            }
+            if descriptor.size == source.targetSize {
+                guard descriptor.modificationTime
+                        == source.modificationTime else {
+                    return "source_same_size_mutated"
+                }
+            } else {
+                source.targetSize = descriptor.size
+                source.modificationTime = descriptor.modificationTime
+                checkpoint.sources[index] = source
+            }
+        }
+        for descriptor in sourceImage.descriptors
+        where !priorPaths.contains(descriptor.path) {
+            checkpoint.sources.append(.init(
+                path: descriptor.path,
+                targetSize: descriptor.size,
+                processedOffset: 0,
+                modificationTime: descriptor.modificationTime,
+                resourceIdentifier: descriptor.resourceIdentifier!
+            ))
+        }
+        checkpoint.sources.sort { $0.path < $1.path }
+        checkpoint.sourceFingerprint = makeConsumerSourceFingerprint(
+            catalogGeneration: sourceImage.catalogGeneration,
+            descriptors: sourceImage.descriptors
+        )
+        return nil
+    }
+
+    private static func canonicalizeAutomaticRecoveredDataBootstrapEvidence(
+        _ checkpoint: inout AutomaticRecoveredDataBootstrapCheckpoint
+    ) {
+        checkpoint.heartRatePoints.sort {
+            if $0.t != $1.t { return $0.t < $1.t }
+            return $0.bpm < $1.bpm
+        }
+        checkpoint.heartRatePoints = checkpoint.heartRatePoints.reduce(
+            into: []
+        ) { result, point in
+            if result.last != point { result.append(point) }
+        }
+        checkpoint.skinTemperatureRawPoints.sort {
+            if $0.t != $1.t { return $0.t < $1.t }
+            if $0.raw != $1.raw { return $0.raw < $1.raw }
+            return ($0.strapIdentifier ?? "") < ($1.strapIdentifier ?? "")
+        }
+        checkpoint.skinTemperatureRawPoints = checkpoint
+            .skinTemperatureRawPoints.reduce(into: []) { result, point in
+                if result.last != point { result.append(point) }
+            }
+        checkpoint.gravitySamples.sort {
+            if $0.timestamp != $1.timestamp {
+                return $0.timestamp < $1.timestamp
+            }
+            if $0.sequence != $1.sequence { return $0.sequence < $1.sequence }
+            if $0.x != $1.x { return $0.x < $1.x }
+            if $0.y != $1.y { return $0.y < $1.y }
+            if $0.z != $1.z { return $0.z < $1.z }
+            if $0.validated != $1.validated {
+                return !$0.validated && $1.validated
+            }
+            return !$0.timestampValidated && $1.timestampValidated
+        }
+        checkpoint.gravitySamples = checkpoint.gravitySamples.reduce(
+            into: []
+        ) { result, sample in
+            if result.last != sample { result.append(sample) }
+        }
+    }
+
+    private static func remainingAutomaticRecoveredDataBootstrapBytes(
+        _ checkpoint: AutomaticRecoveredDataBootstrapCheckpoint
+    ) -> UInt64 {
+        checkpoint.sources.reduce(UInt64(0)) { total, source in
+            let remaining = source.targetSize >= source.processedOffset
+                ? source.targetSize - source.processedOffset
+                : UInt64.max
+            let (sum, overflow) = total.addingReportingOverflow(remaining)
+            return overflow ? UInt64.max : sum
+        }
+    }
+
+    private static func installAutomaticRecoveredDataBootstrapCache(
+        _ checkpoint: AutomaticRecoveredDataBootstrapCheckpoint
+    ) -> Bool {
+        guard remainingAutomaticRecoveredDataBootstrapBytes(checkpoint) == 0,
+              checkpoint.heartRatePoints.count
+                <= automaticRecoveredDataBootstrapBudget
+                    .maximumHeartRatePoints,
+              checkpoint.rrAccumulator.acceptedRecordCount
+                <= automaticRecoveredDataBootstrapBudget.maximumRRRecords,
+              checkpoint.skinTemperatureRawPoints.count
+                <= automaticRecoveredDataBootstrapBudget
+                    .maximumSkinTemperaturePoints,
+              checkpoint.gravitySamples.count
+                <= automaticRecoveredDataBootstrapBudget
+                    .maximumGravitySamples else { return false }
+        let states = Dictionary(
+            uniqueKeysWithValues: checkpoint.sources.map { source in
+                (
+                    source.path,
+                    AtriaHistoricalJSONLRecentScanner.FileState(
+                        path: source.path,
+                        processedOffset: source.processedOffset,
+                        modificationTime: source.modificationTime,
+                        resourceIdentifier: source.resourceIdentifier
+                    )
+                )
+            }
+        )
+        let cache = RecoveredDataCache(
+            coveredSince: checkpoint.cutoff,
+            budget: .production,
+            fileStates: states,
+            heartRatePoints: checkpoint.heartRatePoints,
+            rrAccumulator: checkpoint.rrAccumulator,
+            skinTemperatureRawPoints: checkpoint.skinTemperatureRawPoints,
+            gravitySamples: checkpoint.gravitySamples,
+            // Chunk cursors never overlap, and bootstrap canonicalization
+            // removes exact gravity replays across chunks. The ordinary
+            // incremental lane will add fresh replay identities from here.
+            motionRecordIdentities: [],
+            truncatedChannels: []
+        )
+        recoveredDataCacheLock.lock()
+        recoveredDataCache = cache
+        recoveredDataCacheLock.unlock()
+        recordRetainedCacheFootprint(cache, plan: "bootstrap")
+        return true
+    }
+
+    /// Runs exactly one <=8 MiB resumable current-window pass under the live
+    /// BGProcessing throttle lease. A completed bootstrap installs a normal
+    /// production cache; SessionStore then enters the existing bounded
+    /// current-cycle/latest-night publication pipeline.
+    static func performAutomaticRecoveredDataBootstrapStep(
+        since: Date,
+        lease: AtriaBackgroundProjectionThrottle.ActiveLease,
+        maximumBytesPerStep: UInt64 =
+            maximumAutomaticRecoveredDataIncrementalBytes
+    ) -> AutomaticRecoveredDataBootstrapStepResult {
+        precondition(
+            !Thread.isMainThread,
+            "Recovered bootstrap must run off the main thread"
+        )
+        return performAutomaticRecoveredDataBootstrapStep(
+            since: since,
+            checkpointURL: automaticRecoveredDataBootstrapCheckpointURL,
+            maximumBytesPerStep: maximumBytesPerStep,
+            sourceImageProvider: {
+                automaticRecoveredDataBootstrapSourceImage(since: since)
+            },
+            shouldContinue: {
+                !AtriaBackgroundProjectionThrottle.shared
+                    .cooperativeCheckpointShouldAbort(
+                        lease: lease,
+                        processedDelta: 0
+                    )
+            }
+        )
+    }
+
+#if DEBUG
+    static func performAutomaticRecoveredDataBootstrapStepForTesting(
+        since: Date,
+        descriptors: @escaping () ->
+            [AtriaHistoricalJSONLRecentScanner.FileDescriptor]?,
+        checkpointURL: URL,
+        maximumBytesPerStep: UInt64
+    ) -> AutomaticRecoveredDataBootstrapStepResult {
+        performAutomaticRecoveredDataBootstrapStep(
+            since: since,
+            checkpointURL: checkpointURL,
+            maximumBytesPerStep: maximumBytesPerStep,
+            sourceImageProvider: {
+                descriptors().map {
+                    AutomaticRecoveredDataBootstrapSourceImage(
+                        catalogGeneration: 1,
+                        descriptors: $0
+                    )
+                }
+            },
+            shouldContinue: { true }
+        )
+    }
+#endif
+
+    private static func performAutomaticRecoveredDataBootstrapStep(
+        since: Date,
+        checkpointURL: URL,
+        maximumBytesPerStep: UInt64,
+        sourceImageProvider: () -> AutomaticRecoveredDataBootstrapSourceImage?,
+        shouldContinue: () -> Bool
+    ) -> AutomaticRecoveredDataBootstrapStepResult {
+        guard maximumBytesPerStep > 0,
+              maximumBytesPerStep
+                <= maximumAutomaticRecoveredDataIncrementalBytes else {
+            return .deferred(reason: "invalid_step_budget")
+        }
+        guard shouldContinue() else {
+            return .deferred(reason: "background_authority_revoked")
+        }
+        let now = Date()
+        guard let initialImage = sourceImageProvider(),
+              automaticRecoveredDataBootstrapDescriptorsAreAdmissible(
+                initialImage.descriptors,
+                maximumTotalBytes:
+                    maximumAutomaticRecoveredDataBootstrapSourceBytes
+              ) else {
+            return .deferred(reason: "current_window_source_unqualified")
+        }
+
+        var checkpoint: AutomaticRecoveredDataBootstrapCheckpoint
+        if FileManager.default.fileExists(atPath: checkpointURL.path) {
+            guard let restored = readAutomaticRecoveredDataBootstrapCheckpoint(
+                from: checkpointURL,
+                now: now,
+                requestedCutoff: since
+            ) else {
+                try? FileManager.default.removeItem(at: checkpointURL)
+                return .invalidated(reason: "checkpoint_invalid")
+            }
+            checkpoint = restored
+        } else {
+            guard let created = makeAutomaticRecoveredDataBootstrapCheckpoint(
+                since: since,
+                sourceImage: initialImage,
+                now: now
+            ) else {
+                return .invalidated(reason: "cache_seed_unavailable")
+            }
+            checkpoint = created
+        }
+        if let invalidation = updateAutomaticRecoveredDataBootstrapSources(
+            &checkpoint,
+            sourceImage: initialImage
+        ) {
+            try? FileManager.default.removeItem(at: checkpointURL)
+            return .invalidated(reason: invalidation)
+        }
+
+        var limitations = recoveredBudgetLimitations(
+            heartRateCount: checkpoint.heartRatePoints.count,
+            rrRecordCount: checkpoint.rrAccumulator.acceptedRecordCount,
+            skinTemperatureCount:
+                checkpoint.skinTemperatureRawPoints.count,
+            gravityCount: checkpoint.gravitySamples.count,
+            motionIdentityCount: 0,
+            budget: automaticRecoveredDataBootstrapBudget
+        )
+        guard limitations.isEmpty else {
+            try? FileManager.default.removeItem(at: checkpointURL)
+            return .invalidated(reason: "partial_projection_budget_exceeded")
+        }
+
+        let sources = checkpoint.sources.compactMap { source ->
+            AtriaHistoricalJSONLRecentScanner.Source? in
+            guard source.processedOffset < source.targetSize else { return nil }
+            return .init(
+                descriptor: .init(
+                    url: URL(fileURLWithPath: source.path),
+                    size: source.targetSize,
+                    modificationTime: source.modificationTime,
+                    resourceIdentifier: source.resourceIdentifier
+                ),
+                startOffset: source.processedOffset
+            )
+        }
+        var motionIdentities = Set<AtriaRecoveredMotionReplayIdentity>()
+        var strapIdentifierIntern: [String: String] = [:]
+        let scanResult = AtriaHistoricalJSONLRecentScanner.scan(
+            sources: sources,
+            cutoff: checkpoint.cutoff,
+            byteBudget: Int(maximumBytesPerStep),
+            shouldContinue: shouldContinue
+        ) { line in
+            guard let record = Record(scanLine: line) else { return }
+            appendRecoveredRecord(
+                record,
+                cutoff: checkpoint.cutoff,
+                budget: automaticRecoveredDataBootstrapBudget,
+                limitations: &limitations,
+                heartRate: &checkpoint.heartRatePoints,
+                rrAccumulator: &checkpoint.rrAccumulator,
+                skinTemperatureRawPoints:
+                    &checkpoint.skinTemperatureRawPoints,
+                gravity: &checkpoint.gravitySamples,
+                motionRecordIdentities: &motionIdentities,
+                strapIdentifierIntern: &strapIdentifierIntern
+            )
+        }
+        guard scanResult.statistics.byteCount <= Int(maximumBytesPerStep) else {
+            try? FileManager.default.removeItem(at: checkpointURL)
+            return .invalidated(reason: "step_byte_budget_exceeded")
+        }
+        guard !scanResult.cancelled else {
+            return .deferred(reason: "background_authority_revoked")
+        }
+        guard scanResult.complete || scanResult.exhaustedByteBudget else {
+            return .deferred(reason: "source_read_incomplete")
+        }
+        guard limitations.isEmpty else {
+            try? FileManager.default.removeItem(at: checkpointURL)
+            return .invalidated(reason: "partial_projection_budget_exceeded")
+        }
+        for (path, state) in scanResult.states {
+            guard let index = checkpoint.sources.firstIndex(where: {
+                $0.path == path
+            }) else {
+                try? FileManager.default.removeItem(at: checkpointURL)
+                return .invalidated(reason: "scanner_state_unknown_source")
+            }
+            checkpoint.sources[index].processedOffset = state.processedOffset
+        }
+        canonicalizeAutomaticRecoveredDataBootstrapEvidence(&checkpoint)
+
+        guard shouldContinue() else {
+            return .deferred(reason: "background_authority_revoked")
+        }
+        guard let finalImage = sourceImageProvider() else {
+            return .deferred(reason: "source_revalidation_unavailable")
+        }
+        if let invalidation = updateAutomaticRecoveredDataBootstrapSources(
+            &checkpoint,
+            sourceImage: finalImage
+        ) {
+            try? FileManager.default.removeItem(at: checkpointURL)
+            return .invalidated(reason: invalidation)
+        }
+        checkpoint.updatedAt = Date().timeIntervalSince1970
+        guard writeAutomaticRecoveredDataBootstrapCheckpoint(
+            checkpoint,
+            to: checkpointURL
+        ) else {
+            return .deferred(reason: "checkpoint_write_failed")
+        }
+        let remaining = remainingAutomaticRecoveredDataBootstrapBytes(
+            checkpoint
+        )
+        guard remaining == 0 else {
+            return .progressed(
+                readBytes: scanResult.statistics.byteCount,
+                remainingBytes: remaining
+            )
+        }
+        guard installAutomaticRecoveredDataBootstrapCache(checkpoint) else {
+            return .invalidated(reason: "completed_cache_install_failed")
+        }
+        return .ready(readBytes: scanResult.statistics.byteCount)
     }
 
     /// Metadata-only admission check for the automatic incremental freshness
@@ -3388,21 +4364,39 @@ enum HistoricalArchive {
         let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(
             for: recentRecoveredReadableFileURLs(since: cutoff)
         )
+        return automaticRecoveredDataProjectionHasBoundedIncrementalPlan(
+            since: since,
+            budget: budget,
+            descriptors: descriptors,
+            maximumIncrementalBytes: maximumIncrementalBytes
+        )
+    }
+
+    /// Dependency-injected metadata seam for cold-process restoration tests.
+    /// No source is opened or decoded.
+    static func automaticRecoveredDataProjectionHasBoundedIncrementalPlan(
+        since: Date,
+        budget: RecoveredProjectionBudget = .production,
+        descriptors: [AtriaHistoricalJSONLRecentScanner.FileDescriptor],
+        maximumIncrementalBytes: UInt64 =
+            maximumAutomaticRecoveredDataIncrementalBytes
+    ) -> Bool {
+        let cutoff = since.timeIntervalSince1970
         recoveredDataCacheLock.lock()
         defer { recoveredDataCacheLock.unlock() }
-        guard let cache = recoveredDataCache,
-              cache.budget == budget,
-              cache.coveredSince <= cutoff,
-              cutoff - cache.coveredSince
-                <= recoveredDataCacheMaximumWindowDrift else {
-            return false
+        let cache = recoveredDataCache
+        let reusableStates = cache.flatMap {
+            $0.budget == budget && $0.coveredSince <= cutoff
+                ? $0.fileStates
+                : nil
         }
         return automaticRecoveredDataProjectionPlanIsBounded(
             AtriaHistoricalJSONLRecentScanner.plan(
-                previousStates: cache.fileStates,
+                previousStates: reusableStates,
                 current: descriptors
             ),
-            maximumIncrementalBytes: maximumIncrementalBytes
+            maximumIncrementalBytes: maximumIncrementalBytes,
+            allowsBoundedRebuild: cache == nil
         )
     }
 
@@ -3440,6 +4434,32 @@ enum HistoricalArchive {
             onScanProgress: onScanProgress
         )
     }
+
+#if DEBUG
+    /// Dependency-injected worker seam for proving that a completed resumable
+    /// bootstrap is immediately consumable by the same bounded automatic lane.
+    /// Production callers always obtain descriptors from the archive catalog.
+    static func makeAutomaticallyAdmittedRecoveredDataSnapshotForTesting(
+        since: Date,
+        descriptors: [AtriaHistoricalJSONLRecentScanner.FileDescriptor],
+        maximumIncrementalBytes: UInt64 =
+            maximumAutomaticRecoveredDataIncrementalBytes
+    ) -> RecoveredDataSnapshot? {
+        precondition(
+            !Thread.isMainThread,
+            "Automatic recovered archive decoding must run off the main thread"
+        )
+        return makeRecoveredDataSnapshot(
+            since: since,
+            budget: .production,
+            descriptors: descriptors,
+            started: DispatchTime.now().uptimeNanoseconds,
+            maximumAutomaticIncrementalBytes: maximumIncrementalBytes,
+            backgroundProjectionLease: nil,
+            onScanProgress: nil
+        )
+    }
+#endif
 
     static func makeRecoveredDataSnapshot(
         since: Date,
@@ -3826,10 +4846,15 @@ enum HistoricalArchive {
         recoveredDataCacheLock.lock()
         defer { recoveredDataCacheLock.unlock() }
 
+        let hadRecoveredDataCache = recoveredDataCache != nil
         let reusableCache = recoveredDataCache.flatMap { cache in
             cache.budget == budget
                 && cache.coveredSince <= cutoff
-                && cutoff - cache.coveredSince <= recoveredDataCacheMaximumWindowDrift
+                && (
+                    maximumAutomaticIncrementalBytes != nil
+                        || cutoff - cache.coveredSince
+                            <= recoveredDataCacheMaximumWindowDrift
+                )
                 ? prunedRecoveredCache(cache, since: cutoff)
                 : nil
         }
@@ -3840,7 +4865,8 @@ enum HistoricalArchive {
         if let maximumAutomaticIncrementalBytes,
            !automaticRecoveredDataProjectionPlanIsBounded(
                 plan,
-                maximumIncrementalBytes: maximumAutomaticIncrementalBytes
+                maximumIncrementalBytes: maximumAutomaticIncrementalBytes,
+                allowsBoundedRebuild: !hadRecoveredDataCache
            ) {
             return nil
         }
@@ -3860,7 +4886,8 @@ enum HistoricalArchive {
                                                  byteCount: 0,
                                                  decodedRecordCount: 0,
                                                  elapsedMilliseconds: elapsed),
-                                     limitations: limitations)
+                                     limitations: limitations,
+                                     includesCompleteScannerImage: true)
         }
 
         var decodedRecordCount = 0
@@ -4120,7 +5147,9 @@ enum HistoricalArchive {
                                              byteCount: scanResult.statistics.byteCount,
                                              decodedRecordCount: decodedRecordCount,
                                              elapsedMilliseconds: elapsed),
-                                 limitations: limitations)
+                                 limitations: limitations,
+                                 includesCompleteScannerImage:
+                                    scanResult.complete)
     }
 
     private static func appendRecoveredRecord(
@@ -4400,7 +5429,8 @@ enum HistoricalArchive {
     private static func recoveredSnapshot(
         from cache: RecoveredDataCache,
         scan: RecoveredArchiveScanDiagnostics,
-        limitations: [RecoveredDataCompleteness.Channel: Int]
+        limitations: [RecoveredDataCompleteness.Channel: Int],
+        includesCompleteScannerImage: Bool = false
     ) -> RecoveredDataSnapshot {
         let orderedLimitations = recoveredBudgetChannelOrder.compactMap { channel in
             limitations[channel].map {
@@ -4426,7 +5456,69 @@ enum HistoricalArchive {
                         limitations: limitations,
                         channels: [.skinTemperature]
                      ),
-                     budgetLimitations: orderedLimitations)
+                     budgetLimitations: orderedLimitations,
+                     automaticCacheAuthority:
+                        includesCompleteScannerImage
+                            ? automaticRecoveredDataCacheAuthority(
+                                from: cache,
+                                limitations: limitations
+                              )
+                            : nil)
+    }
+
+    /// Builds authority from the cache's scanner offsets, never from a later
+    /// filesystem stat. This keeps the persisted UI image and its source cursor
+    /// exactly paired even when a writer appends between scan EOF and the
+    /// asynchronous checkpoint write.
+    private static func automaticRecoveredDataCacheAuthority(
+        from cache: RecoveredDataCache,
+        limitations: [RecoveredDataCompleteness.Channel: Int]
+    ) -> AutomaticRecoveredDataCacheAuthority? {
+        guard cache.budget == .production,
+              cache.coveredSince.isFinite,
+              limitations.isEmpty,
+              cache.truncatedChannels.isEmpty,
+              !cache.fileStates.isEmpty,
+              cache.fileStates.count
+                <= maximumAutomaticRecoveredDataCacheAuthoritySourceCount else {
+            return nil
+        }
+        let sources: [AutomaticRecoveredDataCacheAuthority.Source] = cache
+            .fileStates.values.compactMap { state in
+                guard let identifier = state.resourceIdentifier else {
+                    return nil
+                }
+                return .init(
+                    path: state.path,
+                    processedOffset: state.processedOffset,
+                    modificationTime: state.modificationTime,
+                    resourceIdentifier: identifier
+                )
+            }
+            .sorted { $0.path < $1.path }
+        guard sources.count == cache.fileStates.count else { return nil }
+        let authority = AutomaticRecoveredDataCacheAuthority(
+            version: AutomaticRecoveredDataCacheAuthority.schema,
+            coveredSince: cache.coveredSince,
+            sources: sources
+        )
+        // Validate the compact form itself against an exact-EOF descriptor
+        // image. Later descriptors may only preserve this reuse plan or turn it
+        // into a separately bounded append plan.
+        let descriptors = sources.map { source in
+            AtriaHistoricalJSONLRecentScanner.FileDescriptor(
+                url: URL(fileURLWithPath: source.path),
+                size: source.processedOffset,
+                modificationTime: source.modificationTime,
+                resourceIdentifier: source.resourceIdentifier
+            )
+        }
+        guard automaticRecoveredDataCacheAuthorityRestorationPlan(
+            authority,
+            since: Date(timeIntervalSince1970: cache.coveredSince),
+            descriptors: descriptors
+        ) != nil else { return nil }
+        return authority
     }
 
     /// Test/replay adapter for the same independent metric gates used by the
@@ -5575,7 +6667,7 @@ enum HistoricalArchive {
         }
     }
 
-    fileprivate struct GravitySample {
+    fileprivate struct GravitySample: Codable, Equatable {
         let timestamp: TimeInterval
         let sequence: Int
         let x: Double
@@ -5773,6 +6865,12 @@ enum HistoricalArchive {
     }
 
 #if DEBUG
+    static func resetRecoveredDataCacheForTesting() {
+        recoveredDataCacheLock.lock()
+        recoveredDataCache = nil
+        recoveredDataCacheLock.unlock()
+    }
+
     static func resetRecentGravityCacheForTesting() {
         recentGravityCacheLock.lock()
         recentGravityLoadGeneration &+= 1

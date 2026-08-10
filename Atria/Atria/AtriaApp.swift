@@ -103,6 +103,7 @@ private final class AtriaAppDependencies {
     let store: SessionStore
     let workoutRouteRecorder: AtriaWorkoutRouteRecorder
     let workoutRuntime: AtriaWorkoutRuntime
+    private var durableStepReceiptObserver: NSObjectProtocol?
 
     init() {
         let store = SessionStore()
@@ -163,11 +164,36 @@ private final class AtriaAppDependencies {
                     timeout: .seconds(120)
                 )
             }
+            ble.onConnectedRawCatchUpPublicationYield = {
+                [weak store] reason, budgetSeconds in
+                guard let store else { return false }
+                return await store.performConnectedRawCatchUpPublicationYield(
+                    reason: reason,
+                    budgetSeconds: budgetSeconds
+                )
+            }
+            ble.connectedRawCatchUpPublicationYieldIsNeeded = {
+                [weak store] in
+                store?.connectedRawCatchUpPublicationYieldIsNeeded() ?? false
+            }
         }
         self.ble = ble
         self.store = store
         self.workoutRouteRecorder = workoutRouteRecorder
         self.workoutRuntime = workoutRuntime
+        durableStepReceiptObserver = NotificationCenter.default.addObserver(
+            forName: AtriaWhoop4MotionTickDailyStore.didSaveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak store] _ in
+            MainActor.assumeIsolated {
+                guard let store else { return }
+                WidgetSnapshotPublisher.scheduleDurableStepPatch(
+                    store: store,
+                    reason: "durable_strap_steps"
+                )
+            }
+        }
         store.onRecoveredDataRecomputePublished = { [weak store, weak ble] revision, reason in
             guard let store, let ble else { return }
             WidgetSnapshotPublisher.schedulePublish(
@@ -194,6 +220,14 @@ private final class AtriaAppDependencies {
                         issuedAt: issuedAt
                     )
                 }
+            )
+        }
+    }
+
+    deinit {
+        if let durableStepReceiptObserver {
+            NotificationCenter.default.removeObserver(
+                durableStepReceiptObserver
             )
         }
     }
@@ -346,6 +380,16 @@ struct AtriaApp: App {
                         foregroundBLETransitionTask?.cancel()
                         foregroundBLETransitionTask = nil
                         recordScenePhase("background", reason: "scene_background")
+                        _ = ble
+                            .releaseConnectedRawCatchUpPublicationYieldForLifecycle(
+                                reason: "scene_background"
+                            )
+                        // A connected-raw publication yield owns only an
+                        // attended foreground throttle lease. Revoke that
+                        // exact bounded scan before suspension; a later real
+                        // BGProcessing task mints its own lease and resumes the
+                        // durable bootstrap checkpoint.
+                        store.endBackgroundArchiveProjectionThrottle()
                         store.suspendRecoveredDataPublicationLeaseForBackground(
                             reason: "scene_background"
                         )
@@ -404,6 +448,10 @@ struct AtriaApp: App {
                             guard !Task.isCancelled, scenePhase == .active else { return }
                             ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
                                                            maxHR: store.profile.maxHR)
+                            _ = ble
+                                .offerConnectedRawCatchUpPublicationYieldIfNeeded(
+                                    reason: "scene_active_after_interactive_frame"
+                                )
                             store.resumeDeferredForegroundArchiveWork(
                                 reason: "scene_active_after_interactive_frame"
                             )
@@ -779,7 +827,9 @@ struct AtriaApp: App {
         // flush debt OR a >=30 min stale frontier, so a falsely-cleared ticket
         // with residual strap records still requests the tight 60s cadence
         // instead of parking the next window 2h out.
-        let backlogPending = AtriaBLEManager.drainableStrapBacklogPendingFromDefaults()
+        let backlogPending =
+            AtriaBLEManager.drainableStrapBacklogPendingFromDefaults()
+            || SessionStore.automaticRecoveredDataBootstrapIntentIsPending
         request.earliestBeginDate = Date(
             timeIntervalSinceNow: backgroundProcessingEarliestDelay(
                 backlogPending: backlogPending

@@ -387,7 +387,7 @@ final class AtriaBLEBackgroundFastLaneTests: XCTestCase {
         ))
         let restore = String(source[restoreStart.lowerBound..<restoreEnd.lowerBound])
         let canonicalAdmission = try XCTUnwrap(
-            restore.range(of: "connectedPeripheralRetainer.admitConnected(restoredPeripheral)")
+            restore.range(of: "connectedPeripheralRetainer.adoptRestoredConnected(")
         )
         let epochActivation = try XCTUnwrap(
             restore.range(of: "bleCallbackEpochFence.activate(")

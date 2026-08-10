@@ -576,10 +576,23 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
         XCTAssertFalse(shared.contains("openAppWhenRun = true"))
         XCTAssertTrue(shared.contains("@Dependency(default: AtriaLiveWorkoutCommandHandler.unavailable)"))
         XCTAssertTrue(shared.contains("guard let canonicalState = await commandHandler.apply"))
-        XCTAssertEqual(project.components(separatedBy:
-            "AtriaLiveWorkoutControlIntent.swift in Atria Sources").count - 1, 2)
-        XCTAssertEqual(project.components(separatedBy:
-            "AtriaLiveWorkoutControlIntent.swift in Widget Sources").count - 1, 2)
+        let appSourcesStart = try XCTUnwrap(project.range(
+            of: "1A0000000000000000000006 /* Sources */ = {"
+        ))
+        let widgetSourcesStart = try XCTUnwrap(project.range(
+            of: "1A000000000000000000001C /* Sources */ = {",
+            range: appSourcesStart.upperBound..<project.endIndex
+        ))
+        let testsSourcesStart = try XCTUnwrap(project.range(
+            of: "1A0000000000000000000027 /* Sources */ = {",
+            range: widgetSourcesStart.upperBound..<project.endIndex
+        ))
+        let appSources = String(project[appSourcesStart.lowerBound..<widgetSourcesStart.lowerBound])
+        let widgetSources = String(project[widgetSourcesStart.lowerBound..<testsSourcesStart.lowerBound])
+        XCTAssertEqual(appSources.components(separatedBy:
+            "AtriaShared/AtriaLiveWorkoutControlIntent.swift in Sources").count - 1, 1)
+        XCTAssertEqual(widgetSources.components(separatedBy:
+            "AtriaShared/AtriaLiveWorkoutControlIntent.swift in Sources").count - 1, 1)
         XCTAssertTrue(app.contains("AppDependencyManager.shared.add"))
     }
 

@@ -1467,8 +1467,8 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         ))
         XCTAssertTrue(finish.contains("samePeripheral"))
         XCTAssertFalse(finish.contains("reconcileRangeLossBackfillPendingWithArchive("))
-        XCTAssertTrue(finalizer.contains("let rangeLossResolved = terminalAndLiveRestored\n            && reconcileRangeLossBackfillPendingWithArchive("))
-        XCTAssertTrue(finalizer.contains("if terminalAndLiveRestored && offlineHistoricalSyncReachedTerminal"))
+        XCTAssertTrue(finalizer.contains("let rangeLossResolved = !compactMotionBankOnly\n            && terminalAndLiveRestored\n            && reconcileRangeLossBackfillPendingWithArchive("))
+        XCTAssertTrue(finalizer.contains("if !compactMotionBankOnly,\n           !connectedRawHistoryCatchUpContinuationPending,\n           terminalAndLiveRestored && offlineHistoricalSyncReachedTerminal"))
         XCTAssertTrue(finalizer.contains("scheduleFullDrainConsumerMaterialization(transportGeneration: generation)"))
         XCTAssertTrue(finalizer.contains("lastCompletedHistoricalSyncReachedTerminal = terminalAndLiveRestored\n            && offlineHistoricalSyncReachedTerminal"))
         XCTAssertTrue(finalizer.contains("lastCompletedHistoricalSyncHasOnboardingAuthority = terminalAndLiveRestored\n            && onboardingTransportAuthority"))
@@ -1690,9 +1690,13 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
             "assignIfChanged(",
             "AtriaDebugLog(",
         ]
+        let executablePolicy = policy
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
         for api in statefulAPIs {
             XCTAssertFalse(
-                policy.contains(api),
+                executablePolicy.contains(api),
                 "Historical recovery policy must remain pure; found stateful API \(api)"
             )
         }

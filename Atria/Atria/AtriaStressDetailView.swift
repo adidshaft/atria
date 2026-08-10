@@ -8,20 +8,32 @@ import SwiftUI
 /// fills gaps or manufactures a baseline.
 struct AtriaStressDetailReading: Identifiable, Equatable {
     let date: Date
-    /// The evidence coordinate this reading belongs to. Cardiac-arousal points
-    /// remain queryable but are never plotted on the numeric Stress timeline.
+    /// The evidence provenance this reading belongs to. Complete version-3
+    /// HR-only estimates remain on the same numeric physiological-stress line.
     let evidenceMode: AtriaStressEvidenceMode
     let score: Double
-    /// Persisted/inferred qualitative band. Cardiac arousal is always capped at
-    /// Medium, including an exact activation at the numeric High boundary.
+    /// Persisted/inferred qualitative band on the v3 Calm / Moderate / High
+    /// scale.
     let level: AtriaStressLevel
+    let heartRate: Double?
+    let rmssd: Double?
+    let motionContext: AtriaPhysiologicalStressModel.MotionContext
+    let sleepContext: AtriaPhysiologicalStressModel.SleepContext
+    let confidence: AtriaPhysiologicalStressModel.Confidence
+    let baselineLearning: Bool
 
     var id: TimeInterval { date.timeIntervalSinceReferenceDate }
 
     init(date: Date,
          score: Double,
          evidenceMode: AtriaStressEvidenceMode = .physiologicalStress,
-         level: AtriaStressLevel? = nil) {
+         level: AtriaStressLevel? = nil,
+         heartRate: Double? = nil,
+         rmssd: Double? = nil,
+         motionContext: AtriaPhysiologicalStressModel.MotionContext = .unavailable,
+         sleepContext: AtriaPhysiologicalStressModel.SleepContext = .unavailable,
+         confidence: AtriaPhysiologicalStressModel.Confidence = .low,
+         baselineLearning: Bool = false) {
         self.date = date
         self.evidenceMode = evidenceMode
         let boundedScore = score.isFinite
@@ -32,10 +44,13 @@ struct AtriaStressDetailReading: Identifiable, Equatable {
             activation: boundedScore / AtriaStressEvidenceProjection.maximumDisplayValue,
             mode: evidenceMode
         )
-        let proposedLevel = level ?? projection.qualitativeLevel
-        self.level = evidenceMode == .cardiacArousal && proposedLevel == .high
-            ? .medium
-            : proposedLevel
+        self.level = level ?? projection.qualitativeLevel
+        self.heartRate = heartRate
+        self.rmssd = rmssd
+        self.motionContext = motionContext
+        self.sleepContext = sleepContext
+        self.confidence = confidence
+        self.baselineLearning = baselineLearning
     }
 
     init(historyPoint: AtriaStressMonitorStore.StressHistoryPoint) {
@@ -43,7 +58,14 @@ struct AtriaStressDetailReading: Identifiable, Equatable {
         self.init(date: historyPoint.t,
                   score: projection.displayValue,
                   evidenceMode: projection.mode,
-                  level: historyPoint.level)
+                  level: historyPoint.level,
+                  heartRate: historyPoint.minuteFact?.meanHeartRate,
+                  rmssd: historyPoint.minuteFact?.rmssd,
+                  motionContext: historyPoint.minuteFact?.motionContext ?? .unavailable,
+                  sleepContext: historyPoint.minuteFact?.sleepContext ?? .unavailable,
+                  confidence: historyPoint.minuteFact?.confidence
+                    ?? (historyPoint.hrvAvailable ? .medium : .low),
+                  baselineLearning: historyPoint.minuteFact?.baselineLearning ?? false)
     }
 }
 
@@ -70,6 +92,7 @@ enum AtriaStressDetailHistoryWindow {
 struct AtriaStressDetailInput: Equatable {
     let state: AtriaStressState
     let readings: [AtriaStressDetailReading]
+    let heartRateReadings: [AtriaStressMonitorStore.HeartRateHistoryPoint]
     let elevatedEvidence: AtriaStressElevatedEvidence
     /// Time the current state was actually evaluated. Nil is rendered honestly
     /// as an untimed state rather than being replaced with `Date()`.
@@ -86,6 +109,7 @@ struct AtriaStressDetailInput: Equatable {
 
     init(state: AtriaStressState,
          readings: [AtriaStressDetailReading],
+         heartRateReadings: [AtriaStressMonitorStore.HeartRateHistoryPoint] = [],
          updatedAt: Date?,
          distributionComparison: AtriaStressDistributionComparison? = nil,
          trendDays: [AtriaStressDistributionArchive.Day] = [],
@@ -93,6 +117,15 @@ struct AtriaStressDetailInput: Equatable {
         self.state = state
         let framedReadings = AtriaStressDetailHistoryWindow.framed(readings)
         self.readings = framedReadings
+        let heartRateEnd = heartRateReadings.map(\.t).max()
+        self.heartRateReadings = heartRateReadings
+            .filter {
+                guard let heartRateEnd else { return false }
+                return $0.t >= heartRateEnd.addingTimeInterval(
+                    -AtriaStressTimelineWindow.expandedDefault
+                ) && $0.t <= heartRateEnd
+            }
+            .sorted { $0.t < $1.t }
         self.elevatedEvidence = AtriaStressElevatedEvidence.analyze(framedReadings)
         self.updatedAt = updatedAt
         self.distributionComparison = distributionComparison
@@ -102,12 +135,14 @@ struct AtriaStressDetailInput: Equatable {
 
     init(state: AtriaStressState,
          history: [AtriaStressMonitorStore.StressHistoryPoint],
+         heartRateHistory: [AtriaStressMonitorStore.HeartRateHistoryPoint] = [],
          updatedAt: Date?,
          distributionComparison: AtriaStressDistributionComparison? = nil,
          trendDays: [AtriaStressDistributionArchive.Day] = [],
          loggedContext: [AtriaStressLoggedContext] = []) {
         self.init(state: state,
                   readings: history.map(AtriaStressDetailReading.init(historyPoint:)),
+                  heartRateReadings: heartRateHistory,
                   updatedAt: updatedAt,
                   distributionComparison: distributionComparison,
                   trendDays: trendDays,
@@ -118,15 +153,29 @@ struct AtriaStressDetailInput: Equatable {
         AtriaStressPresentation.make(state: state)
     }
 
-    /// Numeric 0...3 Stress is present only for qualified HR+HRV evidence.
-    /// HR-only cardiac arousal deliberately returns nil rather than occupying a
-    /// capped portion of the Stress scale.
+    /// Continuous 0...3 physiological-stress estimate. HR-only readings remain
+    /// numeric but are explicitly labeled lower-confidence in the model fact.
     var score: Double? {
         presentation.numericScore
     }
 
     var tint: Color {
         state.level?.tint ?? Metrics.electricStress
+    }
+}
+
+enum AtriaStressAccessibilityCopy {
+    static func heroLabel(state: AtriaStressState, score: Double?) -> String {
+        guard let score else {
+            return "Physiological stress, \(state.label)"
+        }
+        // Version 3 deliberately keeps HR-only estimates in the same
+        // `.physiologicalStress` presentation mode. Provenance must therefore
+        // come from the canonical minute fact, never the presentation enum.
+        let provenance = state.minuteFact?.isHROnly == true
+            ? ", HR-only estimate, lower confidence"
+            : ""
+        return "Physiological stress \(score.formatted(.number.precision(.fractionLength(1)))) out of 3, \(state.label)\(provenance)"
     }
 }
 
@@ -314,6 +363,13 @@ enum AtriaStressDetailCopy {
     static let relaxButtonTitle = "Relax · 3 min"
 }
 
+enum AtriaStressTimelineMetric: String, CaseIterable, Identifiable {
+    case stress = "Stress"
+    case heartRate = "Heart rate"
+
+    var id: String { rawValue }
+}
+
 /// Full-screen, native Stress experience inspired by the supplied design.
 /// Content cards are intentionally static surfaces; Liquid Glass is reserved
 /// for actions so the scrolling timeline stays inexpensive on-device.
@@ -327,8 +383,9 @@ struct AtriaStressDetailView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     @State private var freshnessNow = Date()
+    @State private var selectedTimelineMetric: AtriaStressTimelineMetric = .stress
     // Knowledge slice 5 (2026-08-01): the ⓘ presents the richer spec §20
-    // "About Stress" education sheet directly, self-contained. `onInfo` is kept
+    // "About physiological stress" education sheet directly, self-contained. `onInfo` is kept
     // for source compatibility with existing call sites.
     @State private var showAbout = false
 
@@ -422,7 +479,7 @@ struct AtriaStressDetailView: View {
                     .frame(width: 40, height: 40)
             }
             .atriaGlassIconAction(tint: .primary, size: 40)
-            .accessibilityLabel("About Stress")
+            .accessibilityLabel("About physiological stress")
 
             if stressFreshness == .live {
                 Label("Live", systemImage: "circle.fill")
@@ -486,42 +543,60 @@ struct AtriaStressDetailView: View {
                 }
             }
 
+            if projection.stressPoints.count >= 2 {
+                Picker("Timeline metric", selection: $selectedTimelineMetric) {
+                    ForEach(AtriaStressTimelineMetric.allCases) { metric in
+                        Text(metric.rawValue).tag(metric)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityHint("Switches between physiological stress and measured heart rate")
+            }
+
             switch projection.presentation {
             case .physiologicalStress where projection.stressPoints.count >= 2:
-                AtriaStressTimelineChart(
-                    points: projection.stressPoints,
-                    elevatedWindows: input.elevatedEvidence.windows,
-                    tint: input.tint,
-                    tintKey: input.state.level?.rawValue ?? -1
-                )
-                .equatable()
-                .frame(height: 142)
-                .accessibilityLabel(timelineAccessibilityLabel(points: projection.stressPoints))
-                .atriaInspectableGraph(
-                    AtriaInspectableGraph(
-                        title: "Stress timeline",
-                        subtitle: "Observed HR + HRV readings only; blanks are collection gaps",
-                        content: .timeSeries([
-                            .init(title: "Stress",
-                                  unit: "",
-                                  tint: input.tint,
-                                  points: projection.stressPoints.map {
-                                      .init(date: $0.reading.date,
-                                            value: $0.reading.score,
-                                            segment: $0.segment)
-                                  })
-                        ])
-                    )
-                )
+                Group {
+                    if selectedTimelineMetric == .stress {
+                        AtriaStressTimelineChart(
+                            points: projection.stressPoints,
+                            elevatedWindows: input.elevatedEvidence.windows,
+                            tint: input.tint,
+                            tintKey: input.state.level?.rawValue ?? -1
+                        )
+                        .frame(height: 184)
+                        .accessibilityLabel(timelineAccessibilityLabel(points: projection.stressPoints))
+                        .atriaInspectableGraph(
+                            AtriaInspectableGraph(
+                                title: "Physiological stress timeline",
+                                subtitle: "Five-minute estimates each minute; HR-only points are lower confidence and blanks are telemetry gaps",
+                                content: .timeSeries([
+                                    .init(title: "Physiological stress",
+                                          unit: "",
+                                          tint: input.tint,
+                                          points: projection.stressPoints.map {
+                                              .init(date: $0.reading.date,
+                                                    value: $0.reading.score,
+                                                    segment: $0.segment)
+                                          })
+                                ])
+                            )
+                        )
+                    } else if !input.heartRateReadings.isEmpty {
+                        AtriaStressHeartRateTimelineChart(points: input.heartRateReadings)
+                            .frame(height: 184)
+                            .accessibilityLabel("Measured heart rate timeline; blanks are telemetry gaps")
+                    } else {
+                        Text("Measured minute heart rate will appear here as live observations arrive.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 90, alignment: .leading)
+                    }
+                }
                 // Full-bleed plot inside the card (2026-08-05 width audit).
                 .padding(.horizontal, -16)
 
             case .cardiacArousal:
-                AtriaCardiacArousalTimelineChart(points: projection.cardiacArousalPoints)
-                    .equatable()
-                    .frame(height: 142)
-                    .padding(.horizontal, -16)
-                Text("HR only · qualitative Calm / Low / Medium bands · no 0–3 Stress score or High claim")
+                Text("HR-only estimate · lower confidence")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -655,7 +730,7 @@ struct AtriaStressDetailView: View {
     }
 
     private func timelineAccessibilityLabel(points: [AtriaStressTimelinePoint]) -> String {
-        let base = "Stress timeline with \(points.count) measured readings"
+        let base = "Physiological stress timeline with \(points.count) measured readings"
         guard let countText = input.elevatedEvidence.countText else { return base }
         return "\(base), \(countText.lowercased())"
     }
@@ -673,23 +748,18 @@ struct AtriaStressDetailView: View {
     }
 
     private var heroAccessibilityLabel: String {
-        if let score = input.score {
-            return "Stress \(score.formatted(.number.precision(.fractionLength(1)))) out of 3, \(input.state.label)"
-        }
-        if input.presentation.evidenceMode == .cardiacArousal {
-            return "Cardiac arousal, \(input.state.label), qualitative heart-rate evidence; no numeric Stress score"
-        }
-        return "Stress, \(input.state.label)"
+        AtriaStressAccessibilityCopy.heroLabel(state: input.state,
+                                               score: input.score)
     }
 
     private var timelineEmptyText: String {
         switch timelineProjection.presentation {
         case .physiologicalStress:
-            return "A second measured HR + HRV reading will begin the Stress line."
+            return "A second measured reading will begin the physiological stress line."
         case .cardiacArousal:
-            return "Cardiac arousal is shown as qualitative HR-only bands."
+            return "A second HR-only estimate will begin the physiological stress line."
         case .empty:
-            return "Timeline starts with the first measured HR + HRV or HR-only reading."
+            return "Timeline starts with the first complete five-minute estimate."
         }
     }
 
@@ -711,18 +781,11 @@ private struct AtriaStressGauge: View {
     var body: some View {
         VStack(spacing: 3) {
             ZStack {
-                if evidenceMode == .cardiacArousal {
-                    Circle()
-                        .fill(tint.opacity(0.10))
-                    Circle()
-                        .stroke(tint.opacity(0.24), lineWidth: 1)
-                } else {
-                    Circle()
-                        .trim(from: arcStart, to: arcStart + arcSpan)
-                        .stroke(.secondary.opacity(0.16),
-                                style: StrokeStyle(lineWidth: 18, lineCap: .round))
-                        .rotationEffect(.degrees(90))
-                }
+                Circle()
+                    .trim(from: arcStart, to: arcStart + arcSpan)
+                    .stroke(.secondary.opacity(0.16),
+                            style: StrokeStyle(lineWidth: 18, lineCap: .round))
+                    .rotationEffect(.degrees(90))
 
                 if let score {
                     Circle()
@@ -737,32 +800,19 @@ private struct AtriaStressGauge: View {
                         .animation(reduceMotion ? nil : .smooth(duration: 0.55), value: score)
                 }
 
-                if evidenceMode == .cardiacArousal {
-                    VStack(spacing: 5) {
-                        Image(systemName: "heart.fill")
-                            .font(.title2.weight(.bold))
-                            .foregroundStyle(tint)
-                        Text(label)
-                            .font(.system(size: 30, weight: .bold, design: .rounded))
-                        Text("HR only")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    VStack(spacing: 2) {
-                        Text(scoreText)
-                            .font(.system(size: 43, weight: .bold, design: .rounded).monospacedDigit())
-                            .contentTransition(.numericText())
-                        Text(label)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
+                VStack(spacing: 2) {
+                    Text(scoreText)
+                        .font(.system(size: 43, weight: .bold, design: .rounded).monospacedDigit())
+                        .contentTransition(.numericText())
+                    Text(label)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
                 }
             }
             .frame(width: 170, height: 170)
 
             if evidenceMode == .cardiacArousal {
-                Text("Qualitative cardiac-arousal evidence · no numeric Stress score")
+                Text("HR-only estimate · lower confidence")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
@@ -782,15 +832,12 @@ private struct AtriaStressGauge: View {
     }
 
     private static var thresholdSummary: String {
-        String(format: "Low %.2f · Medium %.2f · High %.2f",
-               AtriaStressEvidenceProjection.lowStartsAt,
-               AtriaStressEvidenceProjection.mediumStartsAt,
-               AtriaStressEvidenceProjection.highStartsAt)
+        "Calm 0–1 · Moderate 1–2 · High 2–3"
     }
 }
 
 /// Daily stress trend (§3.3): one stacked bar per MEASURED day — the share of
-/// measured physiological-Stress samples spent Calm + Low / Medium / High,
+/// measured physiological-stress samples spent Calm / Moderate / High,
 /// from the same persisted
 /// distribution archive the "Today vs typical" card reads. Honesty: a bar only
 /// claims measured time (never wall-clock coverage); days without enough
@@ -886,8 +933,8 @@ struct AtriaStressDailyTrendCard: View {
                 chart(framed)
                     .padding(.horizontal, -16)
                 HStack(spacing: 14) {
-                    legend(color: .green, label: "Calm + Low")
-                    legend(color: .yellow, label: "Medium")
+                    legend(color: .green, label: "Calm")
+                    legend(color: .yellow, label: "Moderate")
                     legend(color: .red, label: "High")
                 }
                 Text("Share of measured time per day. Days without enough measured readings stay blank.")
@@ -912,10 +959,10 @@ struct AtriaStressDailyTrendCard: View {
             ForEach(framed, id: \.day) { day in
                 if let fractions = day.distribution.fractions {
                     BarMark(x: .value("Day", calendar.startOfDay(for: day.day), unit: .day),
-                            y: .value("Calm + Low", fractions.calm))
+                            y: .value("Calm", fractions.calm))
                         .foregroundStyle(.green)
                     BarMark(x: .value("Day", calendar.startOfDay(for: day.day), unit: .day),
-                            y: .value("Medium", fractions.medium))
+                            y: .value("Moderate", fractions.medium))
                         .foregroundStyle(.yellow)
                     BarMark(x: .value("Day", calendar.startOfDay(for: day.day), unit: .day),
                             y: .value("High", fractions.high))
@@ -923,6 +970,7 @@ struct AtriaStressDailyTrendCard: View {
                 }
             }
         }
+        .atriaGraphPlotSurface()
         .chartXScale(domain: xDomain)
         .chartYScale(domain: 0...1)
         .chartXAxis {
@@ -981,8 +1029,8 @@ private struct AtriaStressDistributionCard: View {
             if let typical = comparison.typical {
                 distributionRow(label: "Typical", distribution: typical)
                 HStack(spacing: 14) {
-                    legend(color: .green, label: "Calm + Low")
-                    legend(color: .yellow, label: "Medium")
+                    legend(color: .green, label: "Calm")
+                    legend(color: .yellow, label: "Moderate")
                     legend(color: .red, label: "High")
                 }
             } else {
@@ -1033,8 +1081,8 @@ private struct AtriaStressDistributionCard: View {
         label: String,
         fractions: (calm: Double, medium: Double, high: Double)
     ) -> String {
-        "\(label): \(Int((fractions.calm * 100).rounded())) percent calm or low, "
-            + "\(Int((fractions.medium * 100).rounded())) percent medium, "
+        "\(label): \(Int((fractions.calm * 100).rounded())) percent calm, "
+            + "\(Int((fractions.medium * 100).rounded())) percent moderate, "
             + "\(Int((fractions.high * 100).rounded())) percent high"
     }
 }
@@ -1062,45 +1110,33 @@ struct AtriaStressTimelinePoint: Identifiable, Equatable {
     var id: TimeInterval { reading.id }
 
     /// Split readings around real gaps so Charts never draws data Atria did not
-    /// observe. HR-only cardiac arousal is retained by the source collection but
-    /// omitted from this numeric Stress projection; every omitted sample breaks
-    /// the line so two Stress points are never connected across another metric.
+    /// observe. HR-only estimates stay on the same continuous scale with their
+    /// lower-confidence provenance; they are never moved into categorical rows.
     /// Kept internal for focused unit testing.
     static func segment(_ readings: [AtriaStressDetailReading],
-                        gapThreshold: TimeInterval = 5 * 60) -> [AtriaStressTimelinePoint] {
+                        gapThreshold: TimeInterval = AtriaPhysiologicalStressModel.maximumFactContinuityGap) -> [AtriaStressTimelinePoint] {
         let sorted = readings.sorted { $0.date < $1.date }
         var segment = 0
         var previousStressDate: Date?
-        var omittedEvidenceSincePreviousStress = false
         var output: [AtriaStressTimelinePoint] = []
         output.reserveCapacity(sorted.count)
 
         for reading in sorted {
-            guard reading.evidenceMode == .physiologicalStress else {
-                if previousStressDate != nil {
-                    omittedEvidenceSincePreviousStress = true
-                }
-                continue
-            }
-
             if let previousStressDate,
-               omittedEvidenceSincePreviousStress
-                    || reading.date.timeIntervalSince(previousStressDate) > gapThreshold {
+               reading.date.timeIntervalSince(previousStressDate) > gapThreshold {
                 segment += 1
             }
 
             output.append(AtriaStressTimelinePoint(reading: reading,
                                                    segment: segment))
             previousStressDate = reading.date
-            omittedEvidenceSincePreviousStress = false
         }
         return output
     }
 }
 
-/// A qualitative HR-only cardiac-arousal observation. Its vertical coordinate
-/// is a category (Calm / Low / Medium), never a numeric Stress score; High is
-/// structurally impossible in this projection.
+/// Compatibility projection for consumers that still request HR-only points.
+/// Rendering remains continuous on Atria's 0...3 physiological-stress scale.
 struct AtriaCardiacArousalTimelinePoint: Identifiable, Equatable {
     let reading: AtriaStressDetailReading
     let segment: Int
@@ -1113,7 +1149,7 @@ struct AtriaCardiacArousalTimelinePoint: Identifiable, Equatable {
     }
 
     static func segment(_ readings: [AtriaStressDetailReading],
-                        gapThreshold: TimeInterval = 5 * 60) -> [Self] {
+                        gapThreshold: TimeInterval = AtriaPhysiologicalStressModel.maximumFactContinuityGap) -> [Self] {
         let sorted = readings.sorted { $0.date < $1.date }
         var segment = 0
         var previousArousalDate: Date?
@@ -1148,17 +1184,17 @@ enum AtriaStressTimelineEvidencePresentation: Equatable {
 
     var title: String {
         switch self {
-        case .physiologicalStress: return "Stress timeline"
-        case .cardiacArousal: return "Cardiac arousal"
+        case .physiologicalStress: return "Physiological stress"
+        case .cardiacArousal: return "Physiological stress"
         case .empty: return "Timeline"
         }
     }
 }
 
-/// Pure selection contract for the expanded history card. Numeric Stress wins
-/// when any qualified HR+HRV point exists. If none exists, retained HR-only
-/// evidence becomes a useful qualitative cardiac-arousal timeline instead of a
-/// blank or a fabricated 0...3 Stress trace.
+/// Pure selection contract for the expanded history card. Every model-emitted
+/// reading occupies the same continuous 0...3 coordinate; HR-only provenance
+/// remains attached for confidence and inspection copy. The cardiac-arousal
+/// array is retained only for legacy compatibility and is not a second chart.
 struct AtriaStressTimelineEvidenceProjection: Equatable {
     let stressPoints: [AtriaStressTimelinePoint]
     let cardiacArousalPoints: [AtriaCardiacArousalTimelinePoint]
@@ -1170,14 +1206,13 @@ struct AtriaStressTimelineEvidenceProjection: Equatable {
 
     var presentation: AtriaStressTimelineEvidencePresentation {
         if !stressPoints.isEmpty { return .physiologicalStress }
-        if !cardiacArousalPoints.isEmpty { return .cardiacArousal }
         return .empty
     }
 
     var displayedReadings: [AtriaStressDetailReading] {
         switch presentation {
         case .physiologicalStress: return stressPoints.map(\.reading)
-        case .cardiacArousal: return cardiacArousalPoints.map(\.reading)
+        case .cardiacArousal: return stressPoints.map(\.reading)
         case .empty: return []
         }
     }
@@ -1197,6 +1232,7 @@ private struct AtriaStressTimelineChart: View, Equatable {
     // (e.g. the surrounding ScrollView claims the two-finger touch), so a
     // stale start-window can't snap the zoom back on the next pinch.
     @GestureState private var pinchBase: TimeInterval? = nil
+    @State private var selectedDate: Date?
 
     private var xDomain: ClosedRange<Date> {
         let last = points.map(\.reading.date).max() ?? Date()
@@ -1213,10 +1249,52 @@ private struct AtriaStressTimelineChart: View, Equatable {
 
     var body: some View {
         Chart {
-            ForEach(Self.thresholdRules, id: \.value) { threshold in
-                RuleMark(y: .value(threshold.label, threshold.value))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                    .foregroundStyle(.secondary.opacity(0.24))
+            RectangleMark(xStart: .value("Calm start", xDomain.lowerBound),
+                          xEnd: .value("Calm end", xDomain.upperBound),
+                          yStart: .value("Calm floor", 0),
+                          yEnd: .value("Calm ceiling", 1))
+                .foregroundStyle(Metrics.electricGreen.opacity(0.055))
+            RectangleMark(xStart: .value("Moderate start", xDomain.lowerBound),
+                          xEnd: .value("Moderate end", xDomain.upperBound),
+                          yStart: .value("Moderate floor", 1),
+                          yEnd: .value("Moderate ceiling", 2))
+                .foregroundStyle(Metrics.electricYellow.opacity(0.045))
+            RectangleMark(xStart: .value("High start", xDomain.lowerBound),
+                          xEnd: .value("High end", xDomain.upperBound),
+                          yStart: .value("High floor", 2),
+                          yEnd: .value("High ceiling", 3))
+                .foregroundStyle(Metrics.electricRed.opacity(0.045))
+
+            RuleMark(y: .value("Calm to moderate", 1))
+                .lineStyle(StrokeStyle(lineWidth: 0.75))
+                .foregroundStyle(.secondary.opacity(0.18))
+            RuleMark(y: .value("Moderate to high", 2))
+                .lineStyle(StrokeStyle(lineWidth: 0.75))
+                .foregroundStyle(.secondary.opacity(0.18))
+
+            ForEach(points.filter {
+                $0.reading.sleepContext == .asleep
+            }) { point in
+                RectangleMark(
+                    xStart: .value("Sleep start", point.reading.date.addingTimeInterval(-30)),
+                    xEnd: .value("Sleep end", point.reading.date.addingTimeInterval(30)),
+                    yStart: .value("Sleep floor", 0),
+                    yEnd: .value("Sleep ceiling", 3)
+                )
+                .foregroundStyle(Color.indigo.opacity(0.09))
+            }
+
+            ForEach(points.filter {
+                $0.reading.motionContext.qualified
+                    && $0.reading.motionContext.kind == .activity
+            }) { point in
+                RectangleMark(
+                    xStart: .value("Activity start", point.reading.date.addingTimeInterval(-30)),
+                    xEnd: .value("Activity end", point.reading.date.addingTimeInterval(30)),
+                    yStart: .value("Activity floor", 0),
+                    yEnd: .value("Activity ceiling", 3)
+                )
+                .foregroundStyle(Color.orange.opacity(0.075))
             }
 
             ForEach(elevatedWindows) { window in
@@ -1233,21 +1311,42 @@ private struct AtriaStressTimelineChart: View, Equatable {
                          y: .value("Stress", point.reading.score),
                          series: .value("Segment", point.segment))
                     .interpolationMethod(.linear)
-                    .foregroundStyle(tint.opacity(0.12))
+                    .foregroundStyle(.linearGradient(
+                        colors: [
+                            Metrics.electricGreen.opacity(0.04),
+                            Metrics.electricYellow.opacity(0.10),
+                            Metrics.electricRed.opacity(0.16),
+                        ],
+                        startPoint: .bottom,
+                        endPoint: .top
+                    ))
 
                 LineMark(x: .value("Time", point.reading.date),
                          y: .value("Stress", point.reading.score),
                          series: .value("Segment", point.segment))
                     .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 1.5,
-                                           lineCap: .round,
-                                           lineJoin: .round))
-                    // The fixed 0–3 gradient communicates increasing intensity;
-                    // dashed rules, not integer ticks or color changes, mark the
-                    // exact band boundaries.
-                    .foregroundStyle(.linearGradient(colors: [.blue, .green, .orange],
+                    .lineStyle(AtriaChartVisualGrammar.traceLine)
+                    .foregroundStyle(.linearGradient(colors: [Metrics.electricGreen,
+                                                               Metrics.electricYellow,
+                                                               Metrics.electricRed],
                                                       startPoint: .bottom,
                                                       endPoint: .top))
+            }
+
+            if let selectedPoint {
+                RuleMark(x: .value("Inspected time", selectedPoint.reading.date))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+                    .foregroundStyle(.primary.opacity(0.28))
+                PointMark(x: .value("Inspected time", selectedPoint.reading.date),
+                          y: .value("Inspected stress", selectedPoint.reading.score))
+                    .symbolSize(42)
+                    .foregroundStyle(.primary)
+                    .annotation(position: .top,
+                                alignment: .center,
+                                overflowResolution: .init(x: .fit(to: .chart),
+                                                          y: .disabled)) {
+                        inspectionCard(selectedPoint.reading)
+                    }
             }
         }
         .chartYScale(domain: 0...AtriaStressEvidenceProjection.maximumDisplayValue)
@@ -1278,7 +1377,7 @@ private struct AtriaStressTimelineChart: View, Equatable {
                 .background(.secondary.opacity(0.035))
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-        .gesture(
+        .simultaneousGesture(
             MagnifyGesture()
                 .updating($pinchBase) { _, base, _ in
                     // Capture the window at pinch start exactly once; frozen for
@@ -1292,20 +1391,112 @@ private struct AtriaStressTimelineChart: View, Equatable {
                         maxWindow: AtriaStressTimelineWindow.expandedDefault)
                 }
         )
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                Rectangle()
+                    .fill(.clear)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                guard let plotFrame = proxy.plotFrame else { return }
+                                let frame = geometry[plotFrame]
+                                let x = value.location.x - frame.origin.x
+                                guard x >= 0, x <= frame.width,
+                                      let date: Date = proxy.value(atX: x) else { return }
+                                selectedDate = nearestPoint(to: date)?.reading.date
+                            }
+                    )
+            }
+        }
         .accessibilityLabel(Self.timelineAccessibilityLabel)
+        .accessibilityHint("Drag across the chart to inspect time, score, heart rate, HRV, motion context, and confidence")
     }
 
-    private static let thresholdRules: [(label: String, value: Double)] = [
-        ("Low starts", AtriaStressEvidenceProjection.lowStartsAt),
-        ("Medium starts", AtriaStressEvidenceProjection.mediumStartsAt),
-        ("High starts", AtriaStressEvidenceProjection.highStartsAt),
-    ]
+    private var selectedPoint: AtriaStressTimelinePoint? {
+        selectedDate.flatMap(nearestPoint(to:))
+    }
+
+    private func nearestPoint(to date: Date) -> AtriaStressTimelinePoint? {
+        points.min {
+            abs($0.reading.date.timeIntervalSince(date))
+                < abs($1.reading.date.timeIntervalSince(date))
+        }
+    }
+
+    @ViewBuilder
+    private func inspectionCard(_ reading: AtriaStressDetailReading) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(reading.date.formatted(date: .omitted, time: .shortened))
+                .font(.caption2.weight(.semibold))
+            Text("\(reading.score.formatted(.number.precision(.fractionLength(2)))) · \(AtriaPhysiologicalStressModel.Zone.resolve(score: reading.score).rawValue)")
+                .font(.caption.monospacedDigit().weight(.bold))
+            Text(reading.heartRate.map { "HR \(Int($0.rounded())) bpm" } ?? "HR unavailable")
+            Text(reading.rmssd.map { "RMSSD \($0.formatted(.number.precision(.fractionLength(1)))) ms" }
+                ?? "HR-only estimate")
+            Text("\(reading.motionContext.displayName) · \(reading.confidence.displayName) confidence")
+            if reading.baselineLearning { Text("Personal baseline learning") }
+        }
+        .font(.caption2)
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+        .accessibilityElement(children: .combine)
+    }
 
     private static var timelineAccessibilityLabel: String {
-        String(format: "Stress timeline, scale 0 through 3. Low starts at %.2f, Medium at %.2f, and High at %.2f. Pinch to zoom between 24 and 4 hours.",
-               AtriaStressEvidenceProjection.lowStartsAt,
-               AtriaStressEvidenceProjection.mediumStartsAt,
-               AtriaStressEvidenceProjection.highStartsAt)
+        "Physiological stress timeline, scale 0 through 3. Calm is 0 to 1, Moderate is 1 to 2, and High is 2 to 3. Gaps are not connected. Pinch to zoom between 24 and 4 hours."
+    }
+}
+
+private struct AtriaStressHeartRateTimelineChart: View {
+    let points: [AtriaStressMonitorStore.HeartRateHistoryPoint]
+
+    private var segmentedPoints: [(point: AtriaStressMonitorStore.HeartRateHistoryPoint,
+                                   segment: Int)] {
+        var segment = 0
+        var previous: Date?
+        return points.sorted { $0.t < $1.t }.map { point in
+            if let previous,
+               point.t.timeIntervalSince(previous)
+                > AtriaPhysiologicalStressModel.maximumFactContinuityGap {
+                segment += 1
+            }
+            previous = point.t
+            return (point, segment)
+        }
+    }
+
+    private var xDomain: ClosedRange<Date> {
+        let end = points.map(\.t).max() ?? Date()
+        return end.addingTimeInterval(-AtriaStressTimelineWindow.expandedDefault)...end
+    }
+
+    var body: some View {
+        Chart(segmentedPoints, id: \.point.id) { item in
+            LineMark(x: .value("Time", item.point.t),
+                     y: .value("Heart rate", item.point.bpm),
+                     series: .value("Segment", item.segment))
+                .interpolationMethod(.linear)
+                .lineStyle(AtriaChartVisualGrammar.traceLine)
+                .foregroundStyle(Metrics.electricRed)
+        }
+        .chartXScale(domain: xDomain)
+        .chartYAxisLabel("bpm")
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                AxisGridLine().foregroundStyle(.clear)
+                AxisTick().foregroundStyle(.clear)
+                AxisValueLabel(format: .dateTime.hour().minute())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .chartPlotStyle { plot in
+            plot
+                .background(.secondary.opacity(0.035))
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
     }
 }
 
@@ -1329,33 +1520,44 @@ struct AtriaCardiacArousalTimelineChart: View, Equatable {
 
     var body: some View {
         Chart {
+            RectangleMark(xStart: .value("Calm start", xDomain.lowerBound),
+                          xEnd: .value("Calm end", xDomain.upperBound),
+                          yStart: .value("Calm floor", 0),
+                          yEnd: .value("Calm ceiling", 1))
+                .foregroundStyle(Metrics.electricGreen.opacity(0.055))
+            RectangleMark(xStart: .value("Moderate start", xDomain.lowerBound),
+                          xEnd: .value("Moderate end", xDomain.upperBound),
+                          yStart: .value("Moderate floor", 1),
+                          yEnd: .value("Moderate ceiling", 2))
+                .foregroundStyle(Metrics.electricYellow.opacity(0.045))
+            RectangleMark(xStart: .value("High start", xDomain.lowerBound),
+                          xEnd: .value("High end", xDomain.upperBound),
+                          yStart: .value("High floor", 2),
+                          yEnd: .value("High ceiling", 3))
+                .foregroundStyle(Metrics.electricRed.opacity(0.045))
+
             ForEach(points) { point in
                 LineMark(x: .value("Time", point.reading.date),
-                         y: .value("Cardiac arousal band", point.level.rawValue),
+                         y: .value("Physiological stress", point.reading.score),
                          series: .value("Segment", point.segment))
-                    .interpolationMethod(.stepCenter)
-                    .lineStyle(StrokeStyle(lineWidth: 1.25,
-                                           lineCap: .round,
-                                           lineJoin: .round,
-                                           dash: [4, 4]))
-                    .foregroundStyle(.secondary.opacity(0.56))
-
-                PointMark(x: .value("Time", point.reading.date),
-                          y: .value("Cardiac arousal band", point.level.rawValue))
-                    .symbolSize(18)
-                    .foregroundStyle(point.level.tint)
+                    .interpolationMethod(.linear)
+                    .lineStyle(AtriaChartVisualGrammar.traceLine)
+                    .foregroundStyle(.linearGradient(colors: [Metrics.electricGreen,
+                                                               Metrics.electricYellow,
+                                                               Metrics.electricRed],
+                                                      startPoint: .bottom,
+                                                      endPoint: .top))
             }
         }
-        .chartYScale(domain: -0.25...2.25)
+        .chartYScale(domain: 0...3)
         .chartXScale(domain: xDomain)
         .chartYAxis {
-            AxisMarks(values: [0, 1, 2]) { value in
+            AxisMarks(values: [0, 1, 2, 3]) { value in
                 AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
                 AxisTick().foregroundStyle(.clear)
                 AxisValueLabel {
-                    if let rawValue = value.as(Int.self),
-                       let level = AtriaStressLevel(rawValue: rawValue) {
-                        Text(level.title)
+                    if let score = value.as(Int.self) {
+                        Text("\(score)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -1379,8 +1581,7 @@ struct AtriaCardiacArousalTimelineChart: View, Equatable {
     }
 
     private var accessibilitySummary: String {
-        let levels = Set(points.map(\.level.title)).sorted().joined(separator: ", ")
-        return "Cardiac arousal timeline with \(points.count) HR-only readings. Qualitative bands shown: \(levels). No numeric Stress score or High claim."
+        "Physiological stress timeline with \(points.count) lower-confidence HR-only estimates on a zero through three scale. Missing telemetry remains a gap."
     }
 }
 

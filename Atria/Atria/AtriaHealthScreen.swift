@@ -1502,15 +1502,15 @@ struct AtriaHealthScreen: View {
 
     // MARK: Stress (AtriaStressMonitor)
 
-    /// Downsample the bounded live/restored physiological-Stress history for
-    /// display. HR-only cardiac-arousal points stay in persistence for their own
-    /// surface, but are omitted here and force a visible segment break. The raw
-    /// ring can reach 5,760 points (48h @ 30s); the strip drew an AreaMark + a
-    /// LineMark PER point (~2880 marks) on every body eval — the worst scroll-jank
+    /// Downsample the bounded live/restored physiological-stress history for
+    /// display. Complete v3 HR-only facts stay on this same line with their
+    /// lower-confidence provenance. The raw ring can reach 2,880 points (48h @
+    /// one minute); drawing an AreaMark + LineMark per fact on every body eval
+    /// would make this the worst scroll-jank
     /// offender on Vitals. Bucket each contiguous run so the whole strip stays near
     /// `targetTotal` display points, averaging the REAL activation per bucket
-    /// (nothing synthesized). A gap longer than 5 minutes (well beyond the ~30s
-    /// cadence) starts a NEW segment so Swift Charts leaves a real blank instead of
+    /// (nothing synthesized). A gap longer than the scorer's 90-second
+    /// continuity boundary starts a NEW segment so Swift Charts leaves a blank instead of
     /// interpolating across a stretch the strap wasn't read — the honesty contract
     /// the store comments promise. Runs in `.onChange`, never in body; the reduced
     /// array feeds an Equatable chart subview so unrelated re-renders (the 5s stress
@@ -1521,9 +1521,7 @@ struct AtriaHealthScreen: View {
                                   targetTotal: Int = 110) -> [StressStripPoint] {
         guard history.count > 1 else { return [] }
 
-        // Contiguous numeric-Stress runs, split on a >5min telemetry gap or an
-        // intervening HR-only cardiac-arousal point. This never connects two
-        // different evidence coordinates as though they were one metric.
+        // Contiguous v3 runs split at the exact scorer continuity boundary.
         var segments: [[AtriaStressMonitorStore.StressHistoryPoint]] = []
         var current: [AtriaStressMonitorStore.StressHistoryPoint] = []
         for point in history.sorted(by: { $0.t < $1.t }) {
@@ -1535,7 +1533,8 @@ struct AtriaHealthScreen: View {
                 continue
             }
             if let previous = current.last,
-               point.t.timeIntervalSince(previous.t) > 5 * 60 {
+               point.t.timeIntervalSince(previous.t)
+                    > AtriaPhysiologicalStressModel.maximumFactContinuityGap {
                 segments.append(current)
                 current = []
             }
@@ -1574,7 +1573,7 @@ struct AtriaHealthScreen: View {
     /// Time-bucket one contiguous run to ~`targetBuckets` points, averaging the
     /// numeric Stress score of the samples that fall in each bucket (the real
     /// mean, matching the HR chart's `smoothedBuckets`). The shared evidence
-    /// projection owns the 0...1 to 0...3 conversion and filters HR-only points.
+    /// projection owns the 0...1 to 0...3 conversion for full and HR-only facts.
     private static func bucketStressSegment(_ segment: [AtriaStressMonitorStore.StressHistoryPoint],
                                             targetBuckets: Int) -> [(t: Date, value: Double)] {
         guard let first = segment.first?.t, let last = segment.last?.t, last > first,
@@ -1760,6 +1759,7 @@ private struct AtriaHealthStressSection: View {
             AtriaStressDetailView(
                 input: AtriaStressDetailInput(state: stressMonitorStore.state,
                                               history: stressMonitorStore.history,
+                                              heartRateHistory: stressMonitorStore.heartRateHistory,
                                               updatedAt: lastStressEvaluationAt,
                                               distributionComparison: stressMonitorStore.distributionComparison(),
                                               trendDays: stressMonitorStore.dailyTrendDays(),
@@ -2550,7 +2550,7 @@ struct AtriaSleepStressCard: View {
                                      y: .value("Load", point.reading.score),
                                      series: .value("Segment", point.segment))
                                 .interpolationMethod(.linear)
-                                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                                .lineStyle(AtriaChartVisualGrammar.traceLine)
                                 .foregroundStyle(.linearGradient(colors: [.blue, .green, .orange],
                                                                   startPoint: .bottom,
                                                                   endPoint: .top))
@@ -2574,13 +2574,14 @@ struct AtriaSleepStressCard: View {
                                      y: .value("BPM", point.bpm),
                                      series: .value("Segment", point.segment))
                                 .interpolationMethod(.linear)
-                                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                                .lineStyle(AtriaChartVisualGrammar.traceLine)
                                 .foregroundStyle(.linearGradient(colors: [.red, .orange],
                                                                   startPoint: .bottom,
                                                                   endPoint: .top))
                         }
                     }
                 }
+                .atriaGraphPlotSurface()
                 .chartYScale(domain: mode == .load ? 0...3 : heartRateDomain)
                 .chartBackground { proxy in
                     // Draw the typical band as a background layer, decoupled from

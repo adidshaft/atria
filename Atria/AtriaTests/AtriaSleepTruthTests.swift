@@ -88,23 +88,27 @@ final class AtriaSleepTruthTests: XCTestCase {
                 confidence: "confirmed",
                 source: "overnight_sleep",
                 confirmed: true,
-                stageSegments: []
+                stageSegments: [],
+                eventTimeZoneIdentifier: "UTC"
             )
         }
 
-        let first = savedNight(id: "first", wakeDay: 1, wakeHour: 8, durationHours: 8)
-        let second = savedNight(id: "second", wakeDay: 2, wakeHour: 8, durationHours: 8)
-        let laterIrregular = savedNight(id: "later", wakeDay: 3, wakeHour: 15, durationHours: 4)
+        let regular = (1...5).map {
+            savedNight(id: "regular-\($0)", wakeDay: $0, wakeHour: 8, durationHours: 8)
+        }
+        let first = regular[0]
+        let fifth = regular[4]
+        let laterIrregular = savedNight(id: "later", wakeDay: 6, wakeHour: 15, durationHours: 4)
         let snapshot = SleepHistorySnapshot(
-            nights: [laterIrregular, second, first],
-            confirmedCount: 3,
+            nights: [laterIrregular] + Array(regular.reversed()),
+            confirmedCount: 6,
             candidateCount: 0
         )
 
         XCTAssertNil(snapshot.sleepConsistencyPercent(asOf: first.day,
                                                       calendar: calendar),
                      "one night cannot create historical consistency")
-        XCTAssertEqual(snapshot.sleepConsistencyPercent(asOf: second.day,
+        XCTAssertEqual(snapshot.sleepConsistencyPercent(asOf: fifth.day,
                                                         calendar: calendar),
                        100,
                        "a later irregular night must not rewrite the prior morning")
@@ -112,7 +116,7 @@ final class AtriaSleepTruthTests: XCTestCase {
                                                         calendar: calendar),
                        snapshot.sleepConsistencyPercent)
         XCTAssertLessThan(snapshot.sleepConsistencyPercent ?? 100, 100)
-        XCTAssertNil(snapshot.sleepConsistencyPercent(asOf: date(4, 0),
+        XCTAssertNil(snapshot.sleepConsistencyPercent(asOf: date(7, 0),
                                                       calendar: calendar),
                      "a no-sleep day must not masquerade as an observed consistency row")
     }

@@ -55,6 +55,7 @@ struct AtriaCoachContext: Equatable {
     let stressText: String
     let stressMetricTitle: String
     let stressEvidenceMode: AtriaStressEvidenceMode?
+    let stressIsHROnlyEstimate: Bool
     let baselineSamples: Int
     let sessionsCount: Int
 
@@ -63,8 +64,9 @@ struct AtriaCoachContext: Equatable {
          recoveryText: String,
          hrvText: String,
          stressText: String,
-         stressMetricTitle: String = "Stress",
+         stressMetricTitle: String = "Physiological stress",
          stressEvidenceMode: AtriaStressEvidenceMode? = nil,
+         stressIsHROnlyEstimate: Bool = false,
          baselineSamples: Int,
          sessionsCount: Int) {
         self.guidance = guidance
@@ -74,21 +76,26 @@ struct AtriaCoachContext: Equatable {
         self.stressText = stressText
         self.stressMetricTitle = stressMetricTitle
         self.stressEvidenceMode = stressEvidenceMode
+        self.stressIsHROnlyEstimate = stressIsHROnlyEstimate
         self.baselineSamples = baselineSamples
         self.sessionsCount = sessionsCount
     }
 }
 
-/// One wording policy for local coaching. HR-only evidence remains useful, but
-/// it must never enter an insight sentence under the physiological Stress name.
+/// One wording policy for local coaching. Version-3 HR-only evidence remains a
+/// numeric physiological-stress estimate, but the clause must disclose its
+/// lower confidence and never imply a psychological diagnosis.
 enum AtriaCoachStressPresentation {
     static func clause(context: AtriaCoachContext) -> String {
-        let title = context.stressMetricTitle
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedTitle = title.isEmpty ? "Stress" : title
+        // One truthful metric name across current and legacy restored context.
+        // The evidence suffix, not a second metric title, discloses HR-only.
+        let resolvedTitle = "Physiological stress"
+        if context.stressIsHROnlyEstimate {
+            return "\(resolvedTitle) \(context.stressText) (HR-only estimate; lower confidence)"
+        }
         switch context.stressEvidenceMode {
         case .cardiacArousal:
-            return "Cardiac arousal \(context.stressText) (HR only; not a numeric Stress score)"
+            return "\(resolvedTitle) \(context.stressText) (HR-only estimate; lower confidence)"
         case .physiologicalStress, nil:
             return "\(resolvedTitle) \(context.stressText)"
         }

@@ -393,14 +393,17 @@ final class AtriaHistoricalVerifiedConsumerReaderTests: XCTestCase {
                   aggregateSnapshot: snapshot,
                   requestedStart: range.lowerBound,
                   requestedEnd: range.upperBound)
-        let dailyProof = try AtriaHistoricalDailyConsumerProjection.InspectionProof.make(
-            generationIdentifier: prepared.generationIdentifier,
-            catalogSnapshot: prepared.catalogSnapshot,
-            dependencyChunks: prepared.dependencyChunks,
-            closedCoverageIntervals: prepared.closedCoverageIntervals.map {
-                .init(start: $0.start, end: $0.end, recordCount: $0.recordCount)
-            }
-        )
+        let dailyProof = try AtriaHistoricalDailyConsumerProjection
+            .makeSourceBoundInspectionProof(
+                source: fixture.aggregate,
+                dependencyChunks: prepared.dependencyChunks,
+                configuration: config.daily,
+                generationIdentifier: prepared.generationIdentifier,
+                catalogSnapshot: prepared.catalogSnapshot,
+                closedCoverageIntervals: prepared.closedCoverageIntervals.map {
+                    .init(start: $0.start, end: $0.end, recordCount: $0.recordCount)
+                }
+            )
         let sessionProof = try AtriaHistoricalSessionInspectionProof.make(
             generationIdentifier: prepared.generationIdentifier,
             catalogSnapshot: prepared.catalogSnapshot,

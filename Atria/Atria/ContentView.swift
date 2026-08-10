@@ -722,6 +722,11 @@ struct OnboardingConnectionStatusView: View {
         if bluetoothRecovery == .permissionDenied {
             return "Bluetooth access needed"
         }
+        if !ble.isBluetoothReady, ble.status != .poweredOff {
+            return ble.status == .connecting
+                ? "Bluetooth is recovering"
+                : "Bluetooth is unavailable"
+        }
         switch ble.status {
         case .poweredOff: return "Bluetooth is off"
         case .scanning, .disconnected: return "Searching for your strap…"
@@ -735,6 +740,9 @@ struct OnboardingConnectionStatusView: View {
     private var subtitle: String {
         if bluetoothRecovery == .permissionDenied {
             return "Allow Atria to use Bluetooth in Settings, then return to connect your strap."
+        }
+        if !ble.isBluetoothReady, ble.status != .poweredOff {
+            return "Atria will retry automatically when Bluetooth becomes available."
         }
         switch ble.status {
         case .poweredOff: return "Turn on Bluetooth in Control Center or Settings to connect."

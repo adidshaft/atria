@@ -221,7 +221,7 @@ final class AtriaRecoveredRRProjectionTests: XCTestCase {
         XCTAssertTrue(doffSnapshot.skinTemperatureRawPoints.isEmpty)
     }
 
-    func testConfirmedSleepWindowsPublishRecoveredTemperatureWithoutSleepTaggedSessions() {
+    func testConfirmedSleepWindowsDoNotPublishUnvalidatedRecoveredTemperature() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let firstMorning = Date(timeIntervalSince1970: 1_780_000_000)
@@ -299,11 +299,10 @@ final class AtriaRecoveredRRProjectionTests: XCTestCase {
             confirmedSleeps: sleeps,
             calendar: calendar
         )
-        let result = projection.deviations
-        let fourthDay = calendar.startOfDay(for: sleeps[3].end)
-        XCTAssertEqual(projection.baselineNightCount, 4)
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[fourthDay] ?? .nan, 4.0, accuracy: 0.000_001)
+        XCTAssertNil(AtriaResearchProbe.productionSkinTemperatureDecoder)
+        XCTAssertEqual(projection.baselineNightCount, 0)
+        XCTAssertTrue(projection.deviations.isEmpty,
+                      "Confirmed windows cannot turn an unvalidated research offset into Celsius")
     }
 
     func testTemperatureBudgetFailsOnlyTemperatureChannel() {

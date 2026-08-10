@@ -3,6 +3,7 @@ import Charts
 import CryptoKit
 import Combine
 import Darwin
+import Accelerate
 
 private struct ConfirmedWorkoutHRRehydrationAttemptPayload: Encodable {
     let algorithmVersion: String
@@ -625,6 +626,93 @@ private final class SavedSessionRangeLocalHRVCache: @unchecked Sendable {
     }
 }
 
+enum AtriaSleepSettlementAbort: Error, Equatable, Sendable {
+    case deadlineExceeded
+}
+
+/// One monotonic deadline shared by compact motion, candidate aggregation,
+/// wake detection, HRV/respiration, and stage preparation. Tests may inject a
+/// deterministic monotonic clock; production always uses Dispatch uptime.
+struct AtriaSleepSettlementDeadline: Sendable {
+    let uptimeNanoseconds: UInt64
+    private let monotonicNow: @Sendable () -> UInt64
+
+    init(
+        uptimeNanoseconds: UInt64,
+        monotonicNow: @escaping @Sendable () -> UInt64 = {
+            DispatchTime.now().uptimeNanoseconds
+        }
+    ) {
+        self.uptimeNanoseconds = uptimeNanoseconds
+        self.monotonicNow = monotonicNow
+    }
+
+    @inline(__always)
+    func checkpoint() throws {
+        if monotonicNow() >= uptimeNanoseconds {
+            throw AtriaSleepSettlementAbort.deadlineExceeded
+        }
+    }
+}
+
+/// Per-settlement spectral kernels for the bounded compact respiratory lane.
+/// A 90-second RSA estimate always resamples to at most 361 values, but an
+/// all-night candidate evaluates prefixes of that same basis hundreds of
+/// times. Computing the identical maximum-length sine/cosine basis once removes
+/// tens of millions of repeated transcendental calls without changing the
+/// estimator's frequency grid, accumulation order, cadence, or gates.
+private struct AtriaCompactRespiratoryKernelBank {
+    struct Kernels {
+        let cosines: [[Double]]
+        let sines: [[Double]]
+    }
+
+    static let maximumSampleCount = 361
+    private var value: Kernels?
+
+    mutating func kernels(
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> Kernels {
+        if let value {
+            try cooperativeDeadline.checkpoint()
+            return value
+        }
+
+        var cosines: [[Double]] = []
+        var sines: [[Double]] = []
+        cosines.reserveCapacity(43)
+        sines.reserveCapacity(43)
+        let sampleRate = 4.0
+        for breathsPerMinute in stride(
+            from: 9.0,
+            through: 30.0,
+            by: 0.5
+        ) {
+            try cooperativeDeadline.checkpoint()
+            let frequency = breathsPerMinute / 60.0
+            var cosine: [Double] = []
+            var sine: [Double] = []
+            cosine.reserveCapacity(Self.maximumSampleCount)
+            sine.reserveCapacity(Self.maximumSampleCount)
+            for index in 0..<Self.maximumSampleCount {
+                if index.isMultiple(of: 256) {
+                    try cooperativeDeadline.checkpoint()
+                }
+                let angle = 2.0 * Double.pi * frequency
+                    * Double(index) / sampleRate
+                cosine.append(cos(angle))
+                sine.append(sin(angle))
+            }
+            cosines.append(cosine)
+            sines.append(sine)
+        }
+        let kernels = Kernels(cosines: cosines, sines: sines)
+        value = kernels
+        try cooperativeDeadline.checkpoint()
+        return kernels
+    }
+}
+
 /// A finished heart-rate session, persisted locally (no cloud, no manufacturer account).
 struct SavedSession: Codable, Identifiable {
     private static let respiratoryRateCache = SavedSessionRespiratoryRateCache()
@@ -791,6 +879,23 @@ struct SavedSession: Codable, Identifiable {
                 || point.source == .verifiedWhoop4HistoricalV24
         }
     }
+
+    fileprivate func hasQualifiedRRProvenance(
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> Bool {
+        guard let rrPoints, !rrPoints.isEmpty else { return false }
+        for (index, point) in rrPoints.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            if point.source != .standardHeartRateMeasurement2A37,
+               point.source != .verifiedWhoop4HistoricalV24 {
+                return false
+            }
+        }
+        try cooperativeDeadline.checkpoint()
+        return true
+    }
     var referenceValidatedHRV: Int? {
         hasQualifiedStandardRRProvenance && hrvReferenceValidated == true ? hrv : nil
     }
@@ -865,22 +970,69 @@ struct SavedSession: Codable, Identifiable {
     /// never concatenate raw RR intervals across a reconnect boundary.
     func qualifiedLnRMSSDWindows(in absoluteStart: Date? = nil,
                                  end absoluteEnd: Date? = nil) -> [Double] {
+        // The legacy path is deliberately unlimited. Compact latest-night
+        // settlement uses the checked overload below so every RR-row loop
+        // shares the worker's single absolute deadline.
+        (try? qualifiedLnRMSSDWindowsCore(
+            in: absoluteStart,
+            end: absoluteEnd,
+            cooperativeDeadline: nil
+        )) ?? []
+    }
+
+    func qualifiedLnRMSSDWindows(
+        in absoluteStart: Date? = nil,
+        end absoluteEnd: Date? = nil,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> [Double] {
+        try qualifiedLnRMSSDWindowsCore(
+            in: absoluteStart,
+            end: absoluteEnd,
+            cooperativeDeadline: cooperativeDeadline
+        )
+    }
+
+    private func qualifiedLnRMSSDWindowsCore(
+        in absoluteStart: Date?,
+        end absoluteEnd: Date?,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> [Double] {
+        try cooperativeDeadline?.checkpoint()
         let minimumBeatCount = Self.minimumQualifiedRRBeatCount()
-        guard hasQualifiedRRProvenance,
+        let provenanceQualified: Bool
+        if let cooperativeDeadline {
+            provenanceQualified = try hasQualifiedRRProvenance(
+                cooperativeDeadline: cooperativeDeadline
+            )
+        } else {
+            provenanceQualified = hasQualifiedRRProvenance
+        }
+        guard provenanceQualified,
               let rrPoints, rrPoints.count >= minimumBeatCount else { return [] }
-        let sorted = rrPoints
-            .compactMap { point -> (t: Double, ms: Double)? in
-                let absoluteTime = start.addingTimeInterval(max(0, point.t))
-                if let absoluteStart, absoluteTime < absoluteStart { return nil }
-                if let absoluteEnd, absoluteTime > absoluteEnd { return nil }
-                return (t: point.t, ms: Double(point.ms))
+        var sorted: [(t: Double, ms: Double)] = []
+        sorted.reserveCapacity(rrPoints.count)
+        for (index, point) in rrPoints.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
             }
-            .sorted { $0.t < $1.t }
+            let absoluteTime = start.addingTimeInterval(max(0, point.t))
+            if let absoluteStart, absoluteTime < absoluteStart { continue }
+            if let absoluteEnd, absoluteTime > absoluteEnd { continue }
+            sorted.append((t: point.t, ms: Double(point.ms)))
+        }
+        try Self.cooperativeStableSort(
+            &sorted,
+            cooperativeDeadline: cooperativeDeadline,
+            areInIncreasingOrder: { $0.t < $1.t }
+        )
         guard sorted.count >= minimumBeatCount else { return [] }
 
         var segments: [[(t: Double, ms: Double)]] = []
         var current: [(t: Double, ms: Double)] = []
-        for point in sorted {
+        for (index, point) in sorted.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
             if let last = current.last {
                 let gap = point.t - last.t
                 if gap <= 0 || gap > HRVSnapshot.maxReadyRRGapSeconds {
@@ -893,7 +1045,10 @@ struct SavedSession: Codable, Identifiable {
         if current.count >= 2 { segments.append(current) }
 
         var lnRMSSDs: [Double] = []
-        for segment in segments {
+        for (segmentIndex, segment) in segments.enumerated() {
+            if segmentIndex.isMultiple(of: 16) {
+                try cooperativeDeadline?.checkpoint()
+            }
             guard let first = segment.first, let final = segment.last,
                   (300...2000).contains(first.ms) else { continue }
             // RR values end at their timestamps. Tile from the beginning of the
@@ -906,21 +1061,52 @@ struct SavedSession: Codable, Identifiable {
             var lowerIndex = segment.startIndex
             var upperIndex = segment.startIndex
             while windowEnd <= finalEnd {
+                try cooperativeDeadline?.checkpoint()
                 let windowStart = windowEnd - 300
                 while lowerIndex < segment.endIndex, segment[lowerIndex].t <= windowStart {
                     lowerIndex += 1
+                    if lowerIndex.isMultiple(of: 256) {
+                        try cooperativeDeadline?.checkpoint()
+                    }
                 }
                 if upperIndex < lowerIndex { upperIndex = lowerIndex }
                 while upperIndex < segment.endIndex, segment[upperIndex].t <= windowEnd {
                     upperIndex += 1
+                    if upperIndex.isMultiple(of: 256) {
+                        try cooperativeDeadline?.checkpoint()
+                    }
                 }
-                let window = Array(segment[lowerIndex..<upperIndex])
-                if let lnRMSSD = Self.qualifiedLnRMSSD(window) {
+                let windowCount = upperIndex - lowerIndex
+                if cooperativeDeadline != nil, windowCount > 4_096 {
+                    windowEnd += 300
+                    continue
+                }
+                let window: [(t: Double, ms: Double)]
+                if cooperativeDeadline != nil {
+                    var checkedWindow: [(t: Double, ms: Double)] = []
+                    checkedWindow.reserveCapacity(windowCount)
+                    if lowerIndex < upperIndex {
+                        for index in lowerIndex..<upperIndex {
+                            if index.isMultiple(of: 256) {
+                                try cooperativeDeadline?.checkpoint()
+                            }
+                            checkedWindow.append(segment[index])
+                        }
+                    }
+                    window = checkedWindow
+                } else {
+                    window = Array(segment[lowerIndex..<upperIndex])
+                }
+                if let lnRMSSD = try Self.qualifiedLnRMSSDCore(
+                    window,
+                    cooperativeDeadline: cooperativeDeadline
+                ) {
                     lnRMSSDs.append(lnRMSSD)
                 }
                 windowEnd += 300
             }
         }
+        try cooperativeDeadline?.checkpoint()
         return lnRMSSDs
     }
 
@@ -938,6 +1124,14 @@ struct SavedSession: Codable, Identifiable {
     }
 
     static func qualifiedLnRMSSD(_ samples: [(t: Double, ms: Double)]) -> Double? {
+        try? qualifiedLnRMSSDCore(samples, cooperativeDeadline: nil)
+    }
+
+    private static func qualifiedLnRMSSDCore(
+        _ samples: [(t: Double, ms: Double)],
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> Double? {
+        try cooperativeDeadline?.checkpoint()
         let minimumBeatCount = minimumQualifiedRRBeatCount()
         guard samples.count >= minimumBeatCount,
               let first = samples.first,
@@ -949,11 +1143,19 @@ struct SavedSession: Codable, Identifiable {
               last.t - (first.t - first.ms / 1_000)
                 >= 300 - HRVSnapshot.maxReadyRRGapSeconds else { return nil }
         for index in 1..<samples.count {
+            if index.isMultiple(of: 128) {
+                try cooperativeDeadline?.checkpoint()
+            }
             let gap = samples[index].t - samples[index - 1].t
             guard gap > 0, gap <= HRVSnapshot.maxReadyRRGapSeconds else { return nil }
         }
-        let kept = samples.enumerated().compactMap { index, sample -> (ordinal: Int, value: Double)? in
-            guard (300...2000).contains(sample.ms) else { return nil }
+        var kept: [(ordinal: Int, value: Double)] = []
+        kept.reserveCapacity(samples.count)
+        for (index, sample) in samples.enumerated() {
+            if index.isMultiple(of: 128) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            guard (300...2000).contains(sample.ms) else { continue }
             let lower = max(samples.startIndex, index - 2)
             let upper = min(samples.index(before: samples.endIndex), index + 2)
             let local = samples[lower...upper].map(\.ms).filter { (300...2000).contains($0) }.sorted()
@@ -962,20 +1164,81 @@ struct SavedSession: Codable, Identifiable {
                 let median = local.count.isMultiple(of: 2)
                     ? (local[middle - 1] + local[middle]) / 2
                     : local[middle]
-                guard median > 0, abs(sample.ms - median) / median <= 0.20 else { return nil }
+                if median <= 0 || abs(sample.ms - median) / median > 0.20 {
+                    continue
+                }
             }
-            return (ordinal: index, value: sample.ms)
+            kept.append((ordinal: index, value: sample.ms))
         }
         guard kept.count >= minimumBeatCount,
               Double(kept.count) / Double(samples.count) >= 0.75 else { return nil }
+        try cooperativeDeadline?.checkpoint()
         let diffs = AtriaHRVSuccessiveDifferences.adjacentValues(kept)
         let minimumDifferenceCount = max(
             1,
             Int(ceil(Double(max(0, kept.count - 1)) * 0.70))
         )
         guard diffs.count >= minimumDifferenceCount else { return nil }
-        let rmssd = sqrt(diffs.map { $0 * $0 }.reduce(0, +) / Double(diffs.count))
+        var squaredSum = 0.0
+        for (index, diff) in diffs.enumerated() {
+            if index.isMultiple(of: 128) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            squaredSum += diff * diff
+        }
+        let rmssd = sqrt(squaredSum / Double(diffs.count))
         return rmssd > 0 ? log(rmssd) : nil
+    }
+
+    private static func cooperativeStableSort<Element>(
+        _ values: inout [Element],
+        cooperativeDeadline: AtriaSleepSettlementDeadline?,
+        areInIncreasingOrder: (Element, Element) -> Bool
+    ) throws {
+        guard values.count > 1 else { return }
+        // The bottom-up merge exists solely to expose checkpoints to bounded
+        // settlement. Ordinary workout/history replay has no deadline; using
+        // the cooperative implementation there copied two full arrays and ran
+        // Swift-level merge passes for every readiness window. Instruments
+        // found this path at the top of the physical CPU-limit profile.
+        guard cooperativeDeadline != nil else {
+            values.sort(by: areInIncreasingOrder)
+            return
+        }
+        var source = values
+        var destination = values
+        var width = 1
+        while width < source.count {
+            try cooperativeDeadline?.checkpoint()
+            var lower = 0
+            while lower < source.count {
+                let middle = min(lower + width, source.count)
+                let upper = min(lower + width + width, source.count)
+                var left = lower
+                var right = middle
+                var output = lower
+                while output < upper {
+                    if output.isMultiple(of: 256) {
+                        try cooperativeDeadline?.checkpoint()
+                    }
+                    if left < middle,
+                       (right >= upper
+                        || !areInIncreasingOrder(source[right], source[left])) {
+                        destination[output] = source[left]
+                        left += 1
+                    } else {
+                        destination[output] = source[right]
+                        right += 1
+                    }
+                    output += 1
+                }
+                lower = upper
+            }
+            swap(&source, &destination)
+            width = width > source.count / 2 ? source.count : width * 2
+        }
+        values = source
+        try cooperativeDeadline?.checkpoint()
     }
 
     private static func minimumQualifiedRRBeatCount(windowSeconds: TimeInterval = 300) -> Int {
@@ -5367,6 +5630,14 @@ private enum SessionBackupIOResult: @unchecked Sendable {
     case failure(SessionBackupIOFailure)
 }
 
+fileprivate struct CooperativeBPMStats {
+    let values: [Int]
+    let sortedValues: [Int]
+    let sum: Int
+    let roundedAverage: Int
+    let peak: Int
+}
+
 extension SavedSession {
     /// Standard BLE Heart Rate (`2A37`) can legitimately arrive in short bursts
     /// instead of at a perfect 1 Hz cadence. Use this only for HR/workout/strain
@@ -5449,6 +5720,87 @@ extension SavedSession {
         return abs(rrImpliedMedianBPM - Double(avg)) > Self.workoutRRAgreementToleranceBPM
     }
 
+    fileprivate func cooperativeBPMStats(
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> CooperativeBPMStats {
+        try cooperativeDeadline?.checkpoint()
+        var values: [Int] = []
+        values.reserveCapacity(points.count)
+        var sum = 0
+        for (index, point) in points.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            values.append(point.bpm)
+            sum += point.bpm
+        }
+        var sortedValues = values
+        try Self.cooperativeStableSort(
+            &sortedValues,
+            cooperativeDeadline: cooperativeDeadline,
+            areInIncreasingOrder: <
+        )
+        try cooperativeDeadline?.checkpoint()
+        return .init(
+            values: values,
+            sortedValues: sortedValues,
+            sum: sum,
+            roundedAverage: values.isEmpty
+                ? 0
+                : Int((Double(sum) / Double(values.count)).rounded()),
+            peak: sortedValues.last ?? 0
+        )
+    }
+
+    private func hrRRDisagreesWithReportedHR(
+        averageHR: Int,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> Bool {
+        try cooperativeDeadline.checkpoint()
+        guard try hasQualifiedRRProvenance(
+                cooperativeDeadline: cooperativeDeadline
+              ),
+              let rrPoints,
+              rrPoints.count >= 3 else { return false }
+        let cacheKey = respiratoryRateCacheKey(rrPoints: rrPoints)
+        let cached = Self.rrImpliedMedianCache.lookup(cacheKey)
+        try cooperativeDeadline.checkpoint()
+        let median: Double?
+        if cached.hit {
+            median = cached.value
+        } else {
+            var implied: [Double] = []
+            implied.reserveCapacity(rrPoints.count)
+            for (index, point) in rrPoints.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try cooperativeDeadline.checkpoint()
+                }
+                if point.ms > 0 {
+                    implied.append(60_000.0 / Double(point.ms))
+                }
+            }
+            try Self.cooperativeStableSort(
+                &implied,
+                cooperativeDeadline: cooperativeDeadline,
+                areInIncreasingOrder: <
+            )
+            if implied.count >= 3 {
+                let middle = implied.count / 2
+                median = implied.count.isMultiple(of: 2)
+                    ? (implied[middle - 1] + implied[middle]) / 2
+                    : implied[middle]
+            } else {
+                median = nil
+            }
+            try cooperativeDeadline.checkpoint()
+            Self.rrImpliedMedianCache.store(median, for: cacheKey)
+            try cooperativeDeadline.checkpoint()
+        }
+        guard let median else { return false }
+        return abs(median - Double(averageHR))
+            > Self.workoutRRAgreementToleranceBPM
+    }
+
     /// Ghost-workout gating hardening (2026-07-05): `contactCompromisedOverride`/
     /// `rrDisagreementOverride`/`rrSampleCountOverride` let a stitched/aggregate
     /// caller supply the WORST-of-source-chunks contact signal and the SUM of
@@ -5462,24 +5814,108 @@ extension SavedSession {
                           contactCompromisedOverride: Bool? = nil,
                           rrDisagreementOverride: Bool? = nil,
                           rrSampleCountOverride: Int? = nil) -> WorkoutReadiness {
-        let sustained = sustainedElevatedEvidence(rest: rest, maxHR: maxHR, thresholdFraction: thresholdFraction)
+        try! workoutReadinessCore(
+            rest: rest,
+            maxHR: maxHR,
+            thresholdFraction: thresholdFraction,
+            contactCompromisedOverride: contactCompromisedOverride,
+            rrDisagreementOverride: rrDisagreementOverride,
+            rrSampleCountOverride: rrSampleCountOverride,
+            preparedBPMStats: nil,
+            cooperativeDeadline: nil
+        )
+    }
+
+    func workoutReadiness(
+        rest: Int,
+        maxHR: Int,
+        thresholdFraction: Double = 0.50,
+        contactCompromisedOverride: Bool? = nil,
+        rrDisagreementOverride: Bool? = nil,
+        rrSampleCountOverride: Int? = nil,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> WorkoutReadiness {
+        try workoutReadinessCore(
+            rest: rest,
+            maxHR: maxHR,
+            thresholdFraction: thresholdFraction,
+            contactCompromisedOverride: contactCompromisedOverride,
+            rrDisagreementOverride: rrDisagreementOverride,
+            rrSampleCountOverride: rrSampleCountOverride,
+            preparedBPMStats: nil,
+            cooperativeDeadline: cooperativeDeadline
+        )
+    }
+
+    fileprivate func workoutReadiness(
+        rest: Int,
+        maxHR: Int,
+        cooperativeDeadline: AtriaSleepSettlementDeadline,
+        preparedBPMStats: CooperativeBPMStats
+    ) throws -> WorkoutReadiness {
+        try workoutReadinessCore(
+            rest: rest,
+            maxHR: maxHR,
+            thresholdFraction: 0.50,
+            contactCompromisedOverride: nil,
+            rrDisagreementOverride: nil,
+            rrSampleCountOverride: nil,
+            preparedBPMStats: preparedBPMStats,
+            cooperativeDeadline: cooperativeDeadline
+        )
+    }
+
+    private func workoutReadinessCore(
+        rest: Int,
+        maxHR: Int,
+        thresholdFraction: Double,
+        contactCompromisedOverride: Bool?,
+        rrDisagreementOverride: Bool?,
+        rrSampleCountOverride: Int?,
+        preparedBPMStats: CooperativeBPMStats?,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> WorkoutReadiness {
+        try cooperativeDeadline?.checkpoint()
+        let sustained = try sustainedElevatedEvidenceCore(
+            rest: rest,
+            maxHR: maxHR,
+            thresholdFraction: thresholdFraction,
+            cooperativeDeadline: cooperativeDeadline
+        )
         let thresholdHR = Self.workoutElevatedThreshold(rest: rest, maxHR: maxHR, fraction: thresholdFraction)
         let borderlineThresholdHR = max(rest, thresholdHR - Self.workoutBorderlineThresholdMarginBPM)
-        let borderline = sustainedEvidence(minimumHR: borderlineThresholdHR)
+        let borderline = try sustainedEvidenceCore(
+            minimumHR: borderlineThresholdHR,
+            cooperativeDeadline: cooperativeDeadline
+        )
         // ONE bpm materialization + ONE sort per readiness call (2026-08-05
         // allocation audit): `bpms` is a computed property, and this function
         // used to re-map the whole points array ~20× per call (plus 3 sorts
         // via percentileHR) — ~184 transient bytes per point per call across
         // a tree that replays every session, aggregate, and window. Values
         // are byte-identical; only the copies are gone.
-        let bpmValues = points.map(\.bpm)
-        let sortedBPMValues = bpmValues.sorted()
-        let avgBPM: Int = bpmValues.isEmpty
-            ? 0
-            : Int((Double(bpmValues.reduce(0, +)) / Double(bpmValues.count)).rounded())
-        let peakBPM = sortedBPMValues.last ?? 0
-        let samplesAboveThreshold = bpmValues.filter { $0 >= thresholdHR }.count
-        let samplesAboveBorderline = bpmValues.filter { $0 >= borderlineThresholdHR }.count
+        let bpmStats = if let preparedBPMStats {
+            preparedBPMStats
+        } else {
+            try cooperativeBPMStats(
+                cooperativeDeadline: cooperativeDeadline
+            )
+        }
+        let bpmValues = bpmStats.values
+        let sortedBPMValues = bpmStats.sortedValues
+        var samplesAboveThreshold = 0
+        var samplesAboveBorderline = 0
+        for (index, bpm) in bpmValues.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            if bpm >= thresholdHR { samplesAboveThreshold += 1 }
+            if bpm >= borderlineThresholdHR {
+                samplesAboveBorderline += 1
+            }
+        }
+        let avgBPM = bpmStats.roundedAverage
+        let peakBPM = bpmStats.peak
         let elevatedSeconds = sustained.total
         let observedDuration = sustained.observedDuration
         let requiredElevatedSeconds = min(max(observedDuration * 0.35, 5 * 60), 20 * 60)
@@ -5506,7 +5942,17 @@ extension SavedSession {
         let impliedArtifact = peakOverRest >= Self.workoutImpliedArtifactPeakOverRestFloor
             && effectiveRRSampleCount == 0
         let contactCompromised = (contactCompromisedOverride ?? hrContactCompromised) || impliedArtifact
-        let rrDisagreement = rrDisagreementOverride ?? hrRRDisagreesWithReportedHR
+        let rrDisagreement: Bool
+        if let rrDisagreementOverride {
+            rrDisagreement = rrDisagreementOverride
+        } else if let cooperativeDeadline {
+            rrDisagreement = try hrRRDisagreesWithReportedHR(
+                averageHR: avgBPM,
+                cooperativeDeadline: cooperativeDeadline
+            )
+        } else {
+            rrDisagreement = hrRRDisagreesWithReportedHR
+        }
         let ready = observedDuration >= 10 * 60
             && streamCoveragePercent >= 75
             && elevatedSeconds >= requiredElevatedSeconds
@@ -5733,8 +6179,30 @@ extension SavedSession {
                                                                                 droppedGapSeconds: TimeInterval,
                                                                                 maxGap: TimeInterval,
                                                                                 gapCount: Int) {
+        try! sustainedElevatedEvidenceCore(
+            rest: rest,
+            maxHR: maxHR,
+            thresholdFraction: thresholdFraction,
+            cooperativeDeadline: nil
+        )
+    }
+
+    private func sustainedElevatedEvidenceCore(
+        rest: Int,
+        maxHR: Int,
+        thresholdFraction: Double,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> (total: TimeInterval,
+                 longestBout: TimeInterval,
+                 observedDuration: TimeInterval,
+                 droppedGapSeconds: TimeInterval,
+                 maxGap: TimeInterval,
+                 gapCount: Int) {
         let elevatedThreshold = Self.workoutElevatedThreshold(rest: rest, maxHR: maxHR, fraction: thresholdFraction)
-        return sustainedEvidence(minimumHR: elevatedThreshold)
+        return try sustainedEvidenceCore(
+            minimumHR: elevatedThreshold,
+            cooperativeDeadline: cooperativeDeadline
+        )
     }
 
     private func sustainedEvidence(minimumHR: Int) -> (total: TimeInterval,
@@ -5743,6 +6211,22 @@ extension SavedSession {
                                                        droppedGapSeconds: TimeInterval,
                                                        maxGap: TimeInterval,
                                                        gapCount: Int) {
+        try! sustainedEvidenceCore(
+            minimumHR: minimumHR,
+            cooperativeDeadline: nil
+        )
+    }
+
+    private func sustainedEvidenceCore(
+        minimumHR: Int,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> (total: TimeInterval,
+                 longestBout: TimeInterval,
+                 observedDuration: TimeInterval,
+                 droppedGapSeconds: TimeInterval,
+                 maxGap: TimeInterval,
+                 gapCount: Int) {
+        try cooperativeDeadline?.checkpoint()
         guard points.count > 1 else { return (0, 0, 0, 0, 0, 0) }
         var total: TimeInterval = 0
         var currentBout: TimeInterval = 0
@@ -5752,6 +6236,9 @@ extension SavedSession {
         var maxGap: TimeInterval = 0
         var gapCount = 0
         for i in 1..<points.count {
+            if i.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
             let dt = max(0, points[i].t - points[i - 1].t)
             if dt > Self.workoutContinuityGapLimit {
                 droppedGapSeconds += dt
@@ -5781,6 +6268,7 @@ extension SavedSession {
                 currentBout = 0
             }
         }
+        try cooperativeDeadline?.checkpoint()
         return (total, longestBout, observedDuration, droppedGapSeconds, maxGap, gapCount)
     }
 
@@ -5794,7 +6282,7 @@ extension SavedSession {
     }
 
     private static func percentileHR(_ percentile: Double, values: [Int]) -> Int {
-        percentileHR(percentile, presorted: values.sorted())
+        return percentileHR(percentile, presorted: values.sorted())
     }
 
     private static func percentileHR(_ percentile: Double, presorted sorted: [Int]) -> Int {
@@ -5844,9 +6332,587 @@ extension SavedSession {
     }
 }
 
+/// Admission state for the current-cycle compact receipt lane. A notification
+/// storm may retain one running read and the latest reason for one trailing
+/// read, but it can never enqueue a read per notification.
+struct AtriaCurrentCycleStepReceiptReadCoalescer: Equatable {
+    enum Phase: Equatable {
+        case idle
+        case reading(startedAt: TimeInterval)
+        case cooldown(notBefore: TimeInterval)
+    }
+
+    enum CooldownActivation: Equatable {
+        case wait(TimeInterval)
+        case start(String)
+        case idle
+    }
+
+    private(set) var phase: Phase = .idle
+    private(set) var trailingReason: String?
+
+    var inFlight: Bool {
+        phase != .idle
+    }
+
+    /// Returns `true` only when the caller should enqueue a worker. While a
+    /// worker is active, newer requests replace the single trailing reason.
+    mutating func admit(reason: String, now: TimeInterval) -> Bool {
+        guard phase == .idle else {
+            trailingReason = reason
+            return false
+        }
+        phase = .reading(startedAt: now)
+        return true
+    }
+
+    /// Completes the active worker and returns the delay for one reserved
+    /// cooldown wake-up. Even a fast read with no request waiting yet retains
+    /// the slot until `minimumStartInterval` has passed, so a 2 Hz notification
+    /// stream cannot turn into a 2 Hz full compact decode loop.
+    mutating func finish(
+        now: TimeInterval,
+        minimumStartInterval: TimeInterval
+    ) -> TimeInterval? {
+        guard case .reading(let startedAt) = phase else { return nil }
+        let notBefore = startedAt + max(0, minimumStartInterval)
+        if now < notBefore || trailingReason != nil {
+            let deadline = max(now, notBefore)
+            phase = .cooldown(notBefore: deadline)
+            return max(0, deadline - now)
+        }
+        phase = .idle
+        return nil
+    }
+
+    /// Resolves the single cooldown timer. Requests received during the wait
+    /// only replace `trailingReason`; the latest one becomes the next worker.
+    mutating func activateCooldown(now: TimeInterval) -> CooldownActivation {
+        guard case .cooldown(let notBefore) = phase else { return .idle }
+        guard now >= notBefore else { return .wait(notBefore - now) }
+        guard let reason = trailingReason else {
+            phase = .idle
+            return .idle
+        }
+        trailingReason = nil
+        phase = .reading(startedAt: now)
+        return .start(reason)
+    }
+
+    mutating func cancel() {
+        phase = .idle
+        trailingReason = nil
+    }
+
+    var outstandingWorkUpperBound: Int {
+        (inFlight ? 1 : 0) + (trailingReason == nil ? 0 : 1)
+    }
+}
+
+/// The compact receipt lane is deliberately bounded to the open physiological
+/// cycle and the one cycle that closed at its wake boundary. The role is kept
+/// explicit so an empty newly opened cycle can invalidate presentation without
+/// preventing the immediately prior cycle from finishing its durable receipt.
+struct AtriaCurrentCycleStepReceiptWindow: Equatable, Sendable {
+    enum Role: String, Equatable, Hashable, Sendable {
+        case current
+        case immediatelyPrior = "immediately_prior"
+    }
+
+    let role: Role
+    let interval: DateInterval
+}
+
+/// Immutable-content identity for the launch workout aggregate pass. History
+/// and review can materialize distinct Swift array storage for byte-identical
+/// canonical sessions, especially when crossing detached-task boundaries, so
+/// storage addresses are too strict and miss the rendezvous. A linear SHA-256
+/// pass over exact HR/RR rows is tiny beside the multi-window replay it removes.
+/// Scalar fields that affect aggregation remain value-keyed.
+private struct AtriaWorkoutAggregateSessionFlightIdentity: Hashable, Sendable {
+    let id: UUID
+    let startBitPattern: UInt64
+    let endBitPattern: UInt64
+    let label: String
+    let eventTimeZoneIdentifier: String?
+    let pointContentDigest: Data
+    let pointCount: Int
+    let rrContentDigest: Data
+    let rrCount: Int
+    let motionHintCount: Int?
+    let motionHintKinds: String?
+    let hrRaw2A37: Int?
+    let hrAccepted: Int?
+    let hrZero: Int?
+    let hrArtifactHeld: Int?
+    let hrArtifactDropped: Int?
+    let hrRawGaps: Int?
+    let hrAcceptedGaps: Int?
+    let hrMaxRawGapBitPattern: UInt64?
+    let hrMaxAcceptedGapBitPattern: UInt64?
+    let hrRRMismatch: Int?
+
+    init(_ session: SavedSession) {
+        id = session.id
+        startBitPattern = session.start.timeIntervalSinceReferenceDate.bitPattern
+        endBitPattern = session.end.timeIntervalSinceReferenceDate.bitPattern
+        label = session.label
+        eventTimeZoneIdentifier = session.eventTimeZoneIdentifier
+        var pointHasher = SHA256()
+        for point in session.points {
+            Self.update(point.t.bitPattern, hasher: &pointHasher)
+            Self.update(Int64(point.bpm), hasher: &pointHasher)
+        }
+        pointContentDigest = Data(pointHasher.finalize())
+        pointCount = session.points.count
+        var rrHasher = SHA256()
+        for point in session.rrPoints ?? [] {
+            Self.update(point.t.bitPattern, hasher: &rrHasher)
+            Self.update(Int64(point.ms), hasher: &rrHasher)
+            let source: UInt8 = switch point.source {
+            case .none: 0
+            case .standardHeartRateMeasurement2A37: 1
+            case .validatedProprietaryRealtime: 2
+            case .verifiedWhoop4HistoricalV24: 3
+            }
+            Self.update(source, hasher: &rrHasher)
+        }
+        rrContentDigest = Data(rrHasher.finalize())
+        rrCount = session.rrPoints?.count ?? 0
+        motionHintCount = session.motionHintCount
+        motionHintKinds = session.motionHintKinds
+        hrRaw2A37 = session.hrRaw2A37
+        hrAccepted = session.hrAccepted
+        hrZero = session.hrZero
+        hrArtifactHeld = session.hrArtifactHeld
+        hrArtifactDropped = session.hrArtifactDropped
+        hrRawGaps = session.hrRawGaps
+        hrAcceptedGaps = session.hrAcceptedGaps
+        hrMaxRawGapBitPattern = session.hrMaxRawGap?.bitPattern
+        hrMaxAcceptedGapBitPattern = session.hrMaxAcceptedGap?.bitPattern
+        hrRRMismatch = session.hrRRMismatch
+    }
+
+    /// A total order is part of the cluster identity and its execution input.
+    /// Start-only ordering is insufficient: two equal-start chunks can arrive
+    /// in opposite array order, changing the aggregate id and stitched rows
+    /// while otherwise producing the same flight key.
+    static func canonicalOrder(_ lhs: SavedSession, _ rhs: SavedSession) -> Bool {
+        if lhs.start != rhs.start { return lhs.start < rhs.start }
+        if lhs.end != rhs.end { return lhs.end < rhs.end }
+        return lhs.id.uuidString < rhs.id.uuidString
+    }
+
+    private static func update<Value: FixedWidthInteger>(
+        _ value: Value,
+        hasher: inout SHA256
+    ) {
+        var littleEndian = value.littleEndian
+        withUnsafeBytes(of: &littleEndian) {
+            hasher.update(bufferPointer: $0)
+        }
+    }
+}
+
+private struct AtriaWorkoutAggregateFlightKey: Hashable, Sendable {
+    let sessions: [AtriaWorkoutAggregateSessionFlightIdentity]
+    let rest: Int
+    let maxHR: Int
+    let thresholdFractionBitPattern: UInt64
+    let calendarIdentifier: String
+    let calendarTimeZoneIdentifier: String
+    let calendarLocaleIdentifier: String?
+    let firstWeekday: Int
+    let minimumDaysInFirstWeek: Int
+}
+
+/// The corpus-level flight above cannot rendezvous History's complete source
+/// image with workout review's 24-hour slice: their outer keys are correctly
+/// different even when one or more expensive clusters are byte-identical.
+/// Key the already-resolved cluster independently so those common units share
+/// one replay without suppressing older History-only clusters.
+private struct AtriaWorkoutAggregateClusterFlightKey: Hashable, Sendable {
+    let orderedSessions: [AtriaWorkoutAggregateSessionFlightIdentity]
+    let dayBitPattern: UInt64
+    let rest: Int
+    let maxHR: Int
+    let thresholdFractionBitPattern: UInt64
+    let calendarIdentifier: String
+    let calendarTimeZoneIdentifier: String
+    let calendarLocaleIdentifier: String?
+    let firstWeekday: Int
+    let minimumDaysInFirstWeek: Int
+}
+
+/// Process-wide rather than `SessionStore`-instance-wide because launch can
+/// briefly have two consumers (History and the review cache) projecting the
+/// same loaded canonical corpus. Serializing would only defer the second CPU
+/// bill; this shares the first result exactly and retains it only long enough
+/// for an adjacent launch consumer to rendezvous.
+private final class AtriaWorkoutAggregateSingleFlight: @unchecked Sendable {
+    private final class Entry: @unchecked Sendable {
+        let finished = DispatchGroup()
+        // Keep the exact source snapshot alive for the rendezvous grace so the
+        // shared result and its audit input have one bounded lifetime.
+        let retainedSessions: [SavedSession]
+        var result: [AggregateWorkoutCandidate]?
+
+        init(retainedSessions: [SavedSession]) {
+            self.retainedSessions = retainedSessions
+            finished.enter()
+        }
+    }
+
+    private let lock = NSLock()
+    private var entries: [AtriaWorkoutAggregateFlightKey: Entry] = [:]
+#if DEBUG
+    private var executionCount = 0
+    private var sharedResultCount = 0
+#endif
+
+    func run(
+        key: AtriaWorkoutAggregateFlightKey,
+        retaining sessions: [SavedSession],
+        operation: () -> [AggregateWorkoutCandidate]
+    ) -> [AggregateWorkoutCandidate] {
+        lock.lock()
+        if let existing = entries[key] {
+#if DEBUG
+            sharedResultCount += 1
+#endif
+            lock.unlock()
+            existing.finished.wait()
+            return existing.result ?? []
+        }
+        let entry = Entry(retainedSessions: sessions)
+        entries[key] = entry
+#if DEBUG
+        executionCount += 1
+#endif
+        lock.unlock()
+
+        let result = operation()
+        lock.lock()
+        entry.result = result
+        lock.unlock()
+        entry.finished.leave()
+
+        // Cover both truly concurrent launch callers and the common adjacent
+        // hand-off after one queue unblocks. The bounded grace period prevents
+        // a large aggregate result from becoming a process-lifetime cache.
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + 2
+        ) { [weak self, weak entry] in
+            guard let self, let entry else { return }
+            self.lock.lock()
+            if self.entries[key] === entry {
+                self.entries.removeValue(forKey: key)
+            }
+            self.lock.unlock()
+        }
+        return result
+    }
+
+#if DEBUG
+    func resetCountersForTesting() {
+        lock.lock()
+        executionCount = 0
+        sharedResultCount = 0
+        entries.removeAll()
+        lock.unlock()
+    }
+
+    func countersForTesting() -> (executions: Int, sharedResults: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (executionCount, sharedResultCount)
+    }
+
+#endif
+}
+
+/// Process-wide cluster rendezvous shared by the independently keyed History
+/// and workout-review corpus flights. Completed values have both a short TTL
+/// and a strict count ceiling; active values are never evicted, because doing
+/// so would permit a duplicate replay while the first operation is running.
+private final class AtriaWorkoutAggregateClusterSingleFlight: @unchecked Sendable {
+    private final class Entry: @unchecked Sendable {
+        let finished = DispatchGroup()
+        let retainedSessions: [SavedSession]
+        var result: [AggregateWorkoutCandidate]?
+
+        init(retainedSessions: [SavedSession]) {
+            self.retainedSessions = retainedSessions
+            finished.enter()
+        }
+    }
+
+    private struct CompletedEntry {
+        let key: AtriaWorkoutAggregateClusterFlightKey
+        let entry: Entry
+    }
+
+    private let lock = NSLock()
+    private let maximumRetainedResults = 16
+    private let resultTimeToLive: TimeInterval = 10
+    private var entries: [AtriaWorkoutAggregateClusterFlightKey: Entry] = [:]
+    private var completedEntries: [CompletedEntry] = []
+#if DEBUG
+    private var executionCount = 0
+    private var sharedResultCount = 0
+    private var executionCountsBySessionID: [UUID: Int] = [:]
+    private var sharedResultCountsBySessionID: [UUID: Int] = [:]
+#endif
+
+    func run(
+        key: AtriaWorkoutAggregateClusterFlightKey,
+        retaining sessions: [SavedSession],
+        operation: () -> [AggregateWorkoutCandidate]
+    ) -> [AggregateWorkoutCandidate] {
+        lock.lock()
+        if let existing = entries[key] {
+#if DEBUG
+            sharedResultCount += 1
+            for sessionID in Set(key.orderedSessions.map(\.id)) {
+                sharedResultCountsBySessionID[sessionID, default: 0] += 1
+            }
+#endif
+            lock.unlock()
+            existing.finished.wait()
+            lock.lock()
+            let result = existing.result ?? []
+            lock.unlock()
+            return result
+        }
+
+        let entry = Entry(retainedSessions: sessions)
+        entries[key] = entry
+#if DEBUG
+        executionCount += 1
+        for sessionID in Set(key.orderedSessions.map(\.id)) {
+            executionCountsBySessionID[sessionID, default: 0] += 1
+        }
+#endif
+        lock.unlock()
+
+        let result = operation()
+        lock.lock()
+        entry.result = result
+        completedEntries.append(CompletedEntry(key: key, entry: entry))
+        while completedEntries.count > maximumRetainedResults {
+            let expired = completedEntries.removeFirst()
+            if entries[expired.key] === expired.entry {
+                entries.removeValue(forKey: expired.key)
+            }
+        }
+        lock.unlock()
+        entry.finished.leave()
+
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + resultTimeToLive
+        ) { [weak self, weak entry] in
+            guard let self, let entry else { return }
+            self.lock.lock()
+            if self.entries[key] === entry {
+                self.entries.removeValue(forKey: key)
+            }
+            self.completedEntries.removeAll { $0.entry === entry }
+            self.lock.unlock()
+        }
+        return result
+    }
+
+#if DEBUG
+    func resetCountersForTesting() {
+        lock.lock()
+        executionCount = 0
+        sharedResultCount = 0
+        executionCountsBySessionID.removeAll()
+        sharedResultCountsBySessionID.removeAll()
+        entries.removeAll()
+        completedEntries.removeAll()
+        lock.unlock()
+    }
+
+    func countersForTesting() -> (executions: Int, sharedResults: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (executionCount, sharedResultCount)
+    }
+
+    func countersForTesting(
+        sessionID: UUID
+    ) -> (executions: Int, sharedResults: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (
+            executionCountsBySessionID[sessionID, default: 0],
+            sharedResultCountsBySessionID[sessionID, default: 0]
+        )
+    }
+#endif
+}
+
+/// Main-actor state machine for the non-cancellable workout-review worker.
+/// Invalidation marks the active result stale but deliberately preserves its
+/// sentinel. While it drains, consumer requests replace one trailing key; the
+/// completion releases the active slot before that latest request is admitted.
+struct AtriaWorkoutReviewRefreshGate<Key: Equatable & Sendable>: Sendable {
+    enum RequestDisposition: Equatable, Sendable {
+        case start
+        case joinedActive
+        case coalescedTrailing
+    }
+
+    struct Completion: Equatable, Sendable {
+        let completedKey: Key
+        let activeWasInvalidated: Bool
+        let trailingKey: Key?
+    }
+
+    private(set) var activeKey: Key?
+    private(set) var trailingKey: Key?
+    private(set) var activeWasInvalidated = false
+
+    mutating func request(_ key: Key) -> RequestDisposition {
+        guard let activeKey else {
+            self.activeKey = key
+            trailingKey = nil
+            activeWasInvalidated = false
+            return .start
+        }
+        if activeKey == key, !activeWasInvalidated {
+            // This active replay already satisfies the newest consumer. Any
+            // older, different trailing request is no longer authoritative.
+            trailingKey = nil
+            return .joinedActive
+        }
+        trailingKey = key
+        return .coalescedTrailing
+    }
+
+    mutating func invalidate() {
+        guard activeKey != nil else { return }
+        activeWasInvalidated = true
+    }
+
+    mutating func finish(completedKey: Key) -> Completion? {
+        guard activeKey == completedKey else { return nil }
+        let completion = Completion(
+            completedKey: completedKey,
+            activeWasInvalidated: activeWasInvalidated,
+            trailingKey: trailingKey
+        )
+        activeKey = nil
+        trailingKey = nil
+        activeWasInvalidated = false
+        return completion
+    }
+
+    mutating func cancel() {
+        activeKey = nil
+        trailingKey = nil
+        activeWasInvalidated = false
+    }
+
+    var outstandingWorkUpperBound: Int {
+        (activeKey == nil ? 0 : 1) + (trailingKey == nil ? 0 : 1)
+    }
+}
+
+/// Transaction-local accounting for stress replay publications that cannot be
+/// exposed while recovered data is provisional. The gate stores only booleans;
+/// deciding whether a concrete workout/session mutation is relevant remains at
+/// the authoritative mutation callsite.
+struct AtriaStressReplayTerminalPublicationGate: Equatable, Sendable {
+    struct RollbackOutcome: Equatable, Sendable {
+        let shouldPublish: Bool
+        let requiresSessionAuthorityPublication: Bool
+    }
+
+    private(set) var transactionIsActive = false
+    private(set) var mutationSnapshotIsRegistered = false
+    private var preservedMutationBeforeSnapshot = false
+    private var preservedSessionMutation = false
+    private var preservedWorkoutAdditionAfterSnapshot = false
+
+    mutating func beginTransaction() {
+        transactionIsActive = true
+        mutationSnapshotIsRegistered = false
+        preservedMutationBeforeSnapshot = false
+        preservedSessionMutation = false
+        preservedWorkoutAdditionAfterSnapshot = false
+    }
+
+    mutating func registerMutationSnapshot() {
+        guard transactionIsActive else { return }
+        mutationSnapshotIsRegistered = true
+    }
+
+    /// A context mutation before the recovered rollback image is captured is
+    /// part of that image and therefore survives rollback. Once the snapshot
+    /// exists, sleeps and edits/deletes of existing workouts are rolled back.
+    mutating func observeNonWorkoutContextMutation() {
+        guard transactionIsActive,
+              !mutationSnapshotIsRegistered else { return }
+        preservedMutationBeforeSnapshot = true
+    }
+
+    /// Rollback's workout merge preserves only additions whose IDs were absent
+    /// from its snapshot. The callsite supplies the state of the complete
+    /// authoritative workout image, so an add followed by delete clears this
+    /// pending edge instead of publishing a false mutation.
+    mutating func observeWorkoutContextMutation(
+        preservesQualifiedAdditionAfterSnapshot: Bool
+    ) {
+        guard transactionIsActive else { return }
+        if mutationSnapshotIsRegistered {
+            preservedWorkoutAdditionAfterSnapshot =
+                preservesQualifiedAdditionAfterSnapshot
+        } else {
+            preservedMutationBeforeSnapshot = true
+        }
+    }
+
+    /// Raw live sessions are outside the recovered rollback image. A delete or
+    /// shrink accepted during the transaction therefore survives either
+    /// terminal outcome.
+    mutating func observePreservedSessionMutation() {
+        guard transactionIsActive else { return }
+        preservedSessionMutation = true
+    }
+
+    mutating func commitTransaction() {
+        reset()
+    }
+
+    mutating func rollbackTransaction() -> RollbackOutcome {
+        let outcome = RollbackOutcome(
+            shouldPublish: preservedMutationBeforeSnapshot
+                || preservedSessionMutation
+                || preservedWorkoutAdditionAfterSnapshot,
+            requiresSessionAuthorityPublication: preservedSessionMutation
+        )
+        reset()
+        return outcome
+    }
+
+    private mutating func reset() {
+        transactionIsActive = false
+        mutationSnapshotIsRegistered = false
+        preservedMutationBeforeSnapshot = false
+        preservedSessionMutation = false
+        preservedWorkoutAdditionAfterSnapshot = false
+    }
+}
+
 /// Loads/saves sessions to a JSON file in the app's Documents directory.
 @MainActor
 final class SessionStore: ObservableObject {
+    nonisolated private static let workoutAggregateSingleFlight =
+        AtriaWorkoutAggregateSingleFlight()
+    nonisolated private static let workoutAggregateClusterSingleFlight =
+        AtriaWorkoutAggregateClusterSingleFlight()
     static let historicalRecoveryNeededNotification = Notification.Name("AtriaHistoricalRecoveryNeeded")
     static let historicalRecoveryResolvedNotification = Notification.Name("AtriaHistoricalRecoveryResolved")
     /// Emitted only after one archive revision has crossed the complete
@@ -5854,6 +6920,285 @@ final class SessionStore: ObservableObject {
     static let recoveredDataRecomputeDidPublishNotification = Notification.Name(
         "AtriaRecoveredDataRecomputeDidPublish"
     )
+    /// Exact-store edge for a durable change to the qualified workout/sleep
+    /// intervals used as historical physiological-stress context. The object is
+    /// always the `SessionStore` whose canonical confirmed-record write
+    /// completed. Derived/recovered transactions publish only through their
+    /// existing complete recompute fence, never through this mutation edge.
+    static let stressContextDidPublishNotification = Notification.Name(
+        "AtriaStressContextDidPublish"
+    )
+    /// Exact-store terminal edge for replay-source mutations that do not flow
+    /// through the ordinary workout/sleep context or recovered-success edges:
+    /// saved-session removal/shrink, rollback-preserved live context, and one
+    /// complete backup-restore publication.
+    static let stressReplayDidPublishNotification = Notification.Name(
+        "AtriaStressReplayDidPublish"
+    )
+    /// Exact-store terminal edge emitted after a recovered-data rollback has
+    /// restored its final canonical image and released the active mutation
+    /// ticket. Home uses it only to settle an O(1) pending calibration
+    /// fingerprint; it is not an unconditional historical-replay trigger.
+    static let stressCalibrationFenceDidReleaseNotification = Notification.Name(
+        "AtriaStressCalibrationFenceDidRelease"
+    )
+
+    private struct WorkoutStressContextAuthority: Equatable {
+        let start: Date
+        let end: Date
+        let intensity: Double
+    }
+
+    private struct WorkoutStressContextMutation {
+        let previous: UserConfirmedWorkout?
+        let next: UserConfirmedWorkout?
+
+        var changesAuthority: Bool {
+            SessionStore.workoutStressContextAuthority(previous)
+                != SessionStore.workoutStressContextAuthority(next)
+        }
+    }
+
+    private struct SleepStressContextAuthority: Equatable {
+        let start: Date
+        let end: Date
+    }
+
+    /// Constant-size projection used only where a callsite edits one existing
+    /// workout. Exclusions are immutable on those merge/edit paths; a future
+    /// exclusion editor must explicitly request publication at its own edge.
+    private nonisolated static func workoutStressContextAuthority(
+        _ workout: UserConfirmedWorkout
+    ) -> WorkoutStressContextAuthority? {
+        guard workout.start.timeIntervalSinceReferenceDate.isFinite,
+              workout.end.timeIntervalSinceReferenceDate.isFinite,
+              workout.end > workout.start else { return nil }
+        let userConfirmed = workout.confidence
+            .localizedCaseInsensitiveContains("user_confirmed")
+        let recoveredMotion = workout.activityCalibrationEvidence.flatMap {
+            evidence -> Double? in
+            guard evidence.status == "ready",
+                  evidence.motion.provenance == AtriaRecoveredMotionEpoch.source,
+                  evidence.motion.validatedCoverageFraction >= 0.80,
+                  let intensity = evidence.motion.meanMovementIntensity,
+                  intensity.isFinite,
+                  (0...1).contains(intensity),
+                  intensity >= 0.08 else { return nil }
+            return min(max(intensity, 0.35), 1)
+        }
+        guard userConfirmed || recoveredMotion != nil else { return nil }
+        return WorkoutStressContextAuthority(
+            start: workout.start,
+            end: workout.end,
+            intensity: recoveredMotion ?? 0.65
+        )
+    }
+
+    private nonisolated static func workoutStressContextAuthority(
+        _ workout: UserConfirmedWorkout?
+    ) -> WorkoutStressContextAuthority? {
+        guard let workout else { return nil }
+        return workoutStressContextAuthority(workout)
+    }
+
+    private nonisolated static func sleepStressContextAuthority(
+        _ sleep: UserConfirmedSleep
+    ) -> SleepStressContextAuthority? {
+        guard confirmedSleepIsPhysiologicalMainSleep(sleep),
+              sleep.start.timeIntervalSinceReferenceDate.isFinite,
+              sleep.end.timeIntervalSinceReferenceDate.isFinite else { return nil }
+        let userQualified = sleep.source.hasPrefix("manual_")
+            || sleep.source.hasPrefix("user_adjusted_")
+            || sleep.confidence.hasPrefix("user_confirmed_")
+        guard sleep.motionValidated || userQualified else { return nil }
+        return SleepStressContextAuthority(start: sleep.start, end: sleep.end)
+    }
+
+    private nonisolated static func sleepStressContextAuthority(
+        _ sleep: UserConfirmedSleep?
+    ) -> SleepStressContextAuthority? {
+        guard let sleep else { return nil }
+        return sleepStressContextAuthority(sleep)
+    }
+
+    /// O(1) publication edge. Context authority is decided by the mutation
+    /// callsite that already owns the single added/removed/edited record; this
+    /// boundary never walks confirmed history on MainActor.
+    private func publishStressContextIfNeeded(
+        deferDerivedPublication: Bool,
+        publicationRequested: Bool,
+        rollbackWorkoutMutation: WorkoutStressContextMutation? = nil
+    ) {
+        guard publicationRequested,
+              !deferDerivedPublication else { return }
+        if stressReplayPublicationIsDeferred {
+            if let mutation = rollbackWorkoutMutation {
+                if stressReplayTerminalPublicationGate
+                    .mutationSnapshotIsRegistered {
+                    if let previousID = mutation.previous?.id,
+                       recoveredStressReplayPreservedWorkoutAdditionIDs
+                        .contains(previousID) {
+                        recoveredStressReplayPreservedWorkoutAdditionIDs
+                            .remove(previousID)
+                        if let next = mutation.next,
+                           Self.workoutStressContextAuthority(next) != nil {
+                            recoveredStressReplayPreservedWorkoutAdditionIDs
+                                .insert(next.id)
+                        }
+                    } else if mutation.previous == nil,
+                              let next = mutation.next,
+                              Self.workoutStressContextAuthority(next) != nil {
+                        recoveredStressReplayPreservedWorkoutAdditionIDs
+                            .insert(next.id)
+                    }
+                }
+                stressReplayTerminalPublicationGate
+                    .observeWorkoutContextMutation(
+                        preservesQualifiedAdditionAfterSnapshot:
+                            !recoveredStressReplayPreservedWorkoutAdditionIDs
+                                .isEmpty
+                    )
+            } else {
+                stressReplayTerminalPublicationGate
+                    .observeNonWorkoutContextMutation()
+            }
+            return
+        }
+        NotificationCenter.default.post(
+            name: Self.stressContextDidPublishNotification,
+            object: self
+        )
+    }
+
+    /// The source array/caches are already authoritative when this is called.
+    /// During a recovered transaction raw session mutations are preserved by
+    /// rollback, so defer their one generic edge to the terminal outcome.
+    private func publishStressReplayTerminalMutationIfNeeded(reason: String) {
+        if stressReplayPublicationIsDeferred {
+            stressReplayTerminalPublicationGate
+                .observePreservedSessionMutation()
+            return
+        }
+        publishStressReplayTerminalEdge(reason: reason)
+    }
+
+    private func publishStressReplayTerminalEdge(reason: String) {
+        NotificationCenter.default.post(
+            name: Self.stressReplayDidPublishNotification,
+            object: self,
+            userInfo: ["reason": reason]
+        )
+    }
+
+    private func publishStressCalibrationFenceDidRelease(reason: String) {
+        NotificationCenter.default.post(
+            name: Self.stressCalibrationFenceDidReleaseNotification,
+            object: self,
+            userInfo: ["reason": reason]
+        )
+    }
+
+    /// Replace only the COW replay-source storage. Existing History
+    /// presentation remains on its prior verified generation until the normal
+    /// detached rebuild lands; stress replay can immediately snapshot the exact
+    /// canonical session authority without walking HR/RR rows on MainActor.
+    private func publishHistoricalStressSessionAuthority() {
+        historySnapshot = HistorySnapshot(
+            recoveredSessions: cachedCanonicalSessions,
+            detections: historySnapshot.detections,
+            trends: historySnapshot.trends,
+            rollups: historySnapshot.rollups,
+            preservingPresentationFrom: historySnapshot
+        )
+    }
+
+    nonisolated static func stressReplaySessionHasInput(
+        _ session: SavedSession
+    ) -> Bool {
+        !session.points.isEmpty
+            || !(session.rrPoints?.isEmpty ?? true)
+            || !(session.recoveredMotionEpochs?.isEmpty ?? true)
+    }
+
+    /// Constant-time conservative removal test for an in-place SavedSession
+    /// replacement. Live checkpoints normally grow; only a lost boundary/row
+    /// prefix or suffix needs a historical replay to remove stale minute facts.
+    nonisolated static func stressReplaySessionInputShrank(
+        previous: SavedSession?,
+        next: SavedSession
+    ) -> Bool {
+        guard let previous,
+              stressReplaySessionHasInput(previous) else { return false }
+        if next.start > previous.start || next.end < previous.end { return true }
+        if next.points.count < previous.points.count
+            || (next.rrPoints?.count ?? 0) < (previous.rrPoints?.count ?? 0)
+            || (next.recoveredMotionEpochs?.count ?? 0)
+                < (previous.recoveredMotionEpochs?.count ?? 0) {
+            return true
+        }
+        if let oldFirst = previous.points.first?.t,
+           let newFirst = next.points.first?.t,
+           newFirst > oldFirst { return true }
+        if let oldLast = previous.points.last?.t,
+           let newLast = next.points.last?.t,
+           newLast < oldLast { return true }
+        if let oldFirst = previous.rrPoints?.first?.t,
+           let newFirst = next.rrPoints?.first?.t,
+           newFirst > oldFirst { return true }
+        if let oldLast = previous.rrPoints?.last?.t,
+           let newLast = next.rrPoints?.last?.t,
+           newLast < oldLast { return true }
+        if let oldFirst = previous.recoveredMotionEpochs?.first?.start,
+           let newFirst = next.recoveredMotionEpochs?.first?.start,
+           newFirst > oldFirst { return true }
+        if let oldLast = previous.recoveredMotionEpochs?.last?.end,
+           let newLast = next.recoveredMotionEpochs?.last?.end,
+           newLast < oldLast { return true }
+        return false
+    }
+
+    #if DEBUG
+    nonisolated static func debugWorkoutStressContextAuthorityChanged(
+        previous: UserConfirmedWorkout?,
+        next: UserConfirmedWorkout?
+    ) -> Bool {
+        workoutStressContextAuthority(previous)
+            != workoutStressContextAuthority(next)
+    }
+
+    nonisolated static func debugSleepStressContextAuthorityChanged(
+        previous: UserConfirmedSleep?,
+        next: UserConfirmedSleep?
+    ) -> Bool {
+        sleepStressContextAuthority(previous)
+            != sleepStressContextAuthority(next)
+    }
+
+    /// Persistence-free deterministic seam for notification contract tests.
+    /// Production callers reach the same helper only after their atomic worker
+    /// has returned and the exact store's canonical arrays are installed.
+    func debugPublishStressContextMutationForTesting(
+        deferDerivedPublication: Bool = false,
+        publicationRequested: Bool = true
+    ) {
+        publishStressContextIfNeeded(
+            deferDerivedPublication: deferDerivedPublication,
+            publicationRequested: publicationRequested
+        )
+    }
+
+    func debugPublishStressReplayTerminalEdgeForTesting(
+        reason: String = "debug_terminal"
+    ) {
+        publishStressReplayTerminalEdge(reason: reason)
+    }
+
+    func debugPublishStressCalibrationFenceDidReleaseForTesting(
+        reason: String = "debug_calibration_terminal"
+    ) {
+        publishStressCalibrationFenceDidRelease(reason: reason)
+    }
+    #endif
     /// Posted by the history "Detected activities" surface (2026-07-17) so the
     /// Home shell — which owns the guided review sheet — can present the
     /// existing `AtriaWorkoutReviewDraft` flow for a chosen candidate.
@@ -5879,12 +7224,18 @@ final class SessionStore: ObservableObject {
             )
         }
     }
-    struct WorkoutReviewCacheKey: Equatable {
-        let canonicalSessionsRevision: Int
+    struct WorkoutReviewCacheKey: Equatable, Sendable {
+        let sourceSessionsRevision: Int
         let confirmedWorkoutsRevision: Int
         let liveFiveMinuteBucket: Int
         let restingHR: Int
         let maxHR: Int
+    }
+
+    enum WorkoutReviewCacheCompletionAction: Equatable, Sendable {
+        case discardSuperseded
+        case retryLatest
+        case publish
     }
 
     struct SleepReviewCacheKey: Equatable {
@@ -5939,19 +7290,132 @@ final class SessionStore: ObservableObject {
     /// solely from immutable arrays/scalars here; the unchecked annotation is
     /// intentionally confined to this cross-executor carrier.
     struct ForegroundSleepSettlementProposal: @unchecked Sendable {
+        struct PreparedSleepWindowMetrics: Equatable, Sendable {
+            let sessions: Int
+            let samples: Int
+            let avgHR: Int
+            let peakHR: Int
+            let restingHR: Int
+            let hrv: Int?
+            let hrvWindowCount: Int
+        }
+
+        struct AutoSleepCandidateKey: Hashable, Sendable {
+            let kind: String
+            let start: Date
+            let end: Date
+
+            init(_ candidate: AggregateSleepCandidate) {
+                kind = candidate.kind
+                start = candidate.start
+                end = candidate.end
+            }
+        }
+
+        struct PreparedAutoSleepMaterialization: @unchecked Sendable {
+            let key: AutoSleepCandidateKey
+            let candidate: AggregateSleepCandidate
+            let classification: AutoSleepClassification
+            let metrics: PreparedSleepWindowMetrics
+            let respiratoryRate: Double?
+            let stageSegments: [SleepStageSegment]?
+            let preparedAt: Date
+        }
+
         struct WakeBoundary: @unchecked Sendable {
             let candidate: AggregateSleepCandidate?
+            let preparedCandidate: PreparedAutoSleepMaterialization?
             let blocker: String
             let windowEndMinute: Int
             let nowMinute: Int
             let learnedWindow: Bool
+
+            init(
+                candidate: AggregateSleepCandidate?,
+                preparedCandidate: PreparedAutoSleepMaterialization? = nil,
+                blocker: String,
+                windowEndMinute: Int,
+                nowMinute: Int,
+                learnedWindow: Bool
+            ) {
+                self.candidate = candidate
+                self.preparedCandidate = preparedCandidate
+                self.blocker = blocker
+                self.windowEndMinute = windowEndMinute
+                self.nowMinute = nowMinute
+                self.learnedWindow = learnedWindow
+            }
         }
 
         let fingerprint: ForegroundSleepSettlementFingerprint
         let preparedAt: Date
         let sourceSessions: [SavedSession]
         let strongCandidates: [AggregateSleepCandidate]
+        let preparedStrongCandidates: [PreparedAutoSleepMaterialization]
         let wakeBoundary: WakeBoundary
+
+        init(
+            fingerprint: ForegroundSleepSettlementFingerprint,
+            preparedAt: Date,
+            sourceSessions: [SavedSession],
+            strongCandidates: [AggregateSleepCandidate],
+            preparedStrongCandidates: [PreparedAutoSleepMaterialization] = [],
+            wakeBoundary: WakeBoundary
+        ) {
+            self.fingerprint = fingerprint
+            self.preparedAt = preparedAt
+            self.sourceSessions = sourceSessions
+            self.strongCandidates = strongCandidates
+            self.preparedStrongCandidates = preparedStrongCandidates
+            self.wakeBoundary = wakeBoundary
+        }
+    }
+
+    enum CompactLatestNightSettlementFailure:
+        Equatable, Sendable, Error {
+        case invalidWindow
+        case thermalCritical
+        case missingStrapIdentity
+        case noRecentSessions
+        case sessionCapExceeded
+        case heartRateCapExceeded
+        case rrCapExceeded
+        case sessionIntegrityFailure
+        case deadlineExceeded
+        case compactMotion(
+            AtriaWhoop4MotionTickCompactStore.LatestNightReadFailure
+        )
+        case compactSourceChanged
+    }
+
+    struct CompactLatestNightSessionSlice: @unchecked Sendable {
+        let start: Date
+        let end: Date
+        let sessions: [SavedSession]
+        let heartRateRows: Int
+        let rrRows: Int
+    }
+
+    struct CompactLatestNightSettlementProposal: @unchecked Sendable {
+        let settlement: ForegroundSleepSettlementProposal
+        let sourceStrapIdentifier: UUID
+        let compactReceipt:
+            AtriaWhoop4MotionTickCompactStore.LatestNightSourceReceipt
+        let commitAuthority:
+            AtriaWhoop4MotionTickCompactStore.LatestNightCommitAuthority
+        let sessionCount: Int
+        let heartRateRows: Int
+        let rrRows: Int
+    }
+
+    enum CompactLatestNightSettlementPreparation: @unchecked Sendable {
+        case ready(CompactLatestNightSettlementProposal)
+        case withheld(CompactLatestNightSettlementFailure)
+    }
+
+    enum CompactLatestNightRetryAction: Equatable, Sendable {
+        case retry(delaySeconds: TimeInterval, nextRemainingAttempts: Int)
+        case awaitSourceOrSceneEdge
     }
 
     /// Main-actor identity captured before an explicit workout confirmation
@@ -6194,6 +7658,20 @@ final class SessionStore: ObservableObject {
         let activeSessionID: UUID?
         let hasSavedToday: Bool
         let sessionsCount: Int
+    }
+
+    /// Immutable authority for an off-MainActor Home aggregate refresh. Array
+    /// fields are COW retains captured after SessionStore has atomically
+    /// published its caches; the existing pure reducer may then scan them on a
+    /// utility worker without reading actor-isolated mutable state.
+    struct HomeSavedAggregateSourceSnapshot: @unchecked Sendable {
+        let canonicalSessions: [SavedSession]
+        let archiveHeartRatePoints: [HistoricalArchive.HeartRatePoint]
+        let confirmedSleeps: [UserConfirmedSleep]
+        let profile: AthleteProfile
+        let rawSessions: [SavedSession]
+        let rawSessionCount: Int
+        let latestRawSession: SavedSession?
     }
 
     /// The exact saved strap-step prefix needed at a workout action boundary.
@@ -6895,6 +8373,7 @@ final class SessionStore: ObservableObject {
     /// the app becomes active instead of blocking CoreBluetooth restoration.
     private var deferredSessionBoundaryDerivedPublicationPending = false
     private var deferredSessionBoundaryDerivedPublicationGeneration: UInt64 = 0
+    private var deferredSessionBoundaryStressReplayTerminalEdgePending = false
     typealias SessionPersistenceWriter = @Sendable (
         _ sessions: [SavedSession],
         _ hotURL: URL,
@@ -6988,7 +8467,17 @@ final class SessionStore: ObservableObject {
     private var biologicalAgeSourceSessionsRevision = 0
     private var workoutReviewCacheGeneration = 0
     private var workoutReviewCacheKey: WorkoutReviewCacheKey?
-    private var pendingWorkoutReviewCacheKey: WorkoutReviewCacheKey?
+    private var workoutReviewRefreshGate =
+        AtriaWorkoutReviewRefreshGate<WorkoutReviewCacheKey>()
+    private struct WorkoutReviewCacheRefreshRequest {
+        let key: WorkoutReviewCacheKey
+        let restingHR: Int
+        let maxHR: Int
+        let now: Date
+        let source: String
+    }
+    private var trailingWorkoutReviewCacheRefreshRequest:
+        WorkoutReviewCacheRefreshRequest?
     private var pendingWorkoutReviewCacheWorkItem: DispatchWorkItem?
     private var cachedWorkoutReviewCandidate: WorkoutReviewCandidate?
     /// All qualifying unconfirmed windows for the same cache key, newest
@@ -7007,6 +8496,12 @@ final class SessionStore: ObservableObject {
     /// launch a second 96 MiB JSONL tail read after recovery already streamed
     /// and verified the same source.
     private var cachedRecoveredArchiveHeartRatePoints: [HistoricalArchive.HeartRatePoint] = []
+    /// Exact complete-line scanner offsets paired with the current recovered
+    /// UI projection. This value comes from the same immutable archive snapshot
+    /// as the sessions below; a later filesystem stat may validate it but can
+    /// never advance it.
+    private var cachedRecoveredAutomaticCacheAuthority:
+        HistoricalArchive.AutomaticRecoveredDataCacheAuthority?
     private var cachedHistoricalCycleStart: Date?
     private var historicalTodayHeartRateRevision = 0
     private var historicalArchiveStatusRevision = 0
@@ -7019,6 +8514,12 @@ final class SessionStore: ObservableObject {
     private let recoveredDataPublicationFence = AtriaRecoveredDataPublicationFence()
     private var recoveredDataRecompute = AtriaRecoveredDataRecomputeCoordinator()
     private let recoveredDataMutationTransaction = AtriaRecoveredDataMutationTransaction()
+    private var stressReplayTerminalPublicationGate =
+        AtriaStressReplayTerminalPublicationGate()
+    /// IDs of callsite-known live workout additions accepted after the exact
+    /// rollback snapshot. Insert/remove is constant-time; no confirmed-history
+    /// scan is performed merely to decide whether a terminal edge is needed.
+    private var recoveredStressReplayPreservedWorkoutAdditionIDs = Set<String>()
     private struct RecoveredDataTimeoutContext {
         let ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
         let phase: String
@@ -7046,8 +8547,26 @@ final class SessionStore: ObservableObject {
         ((_ isExactRecoveryPublication: Bool) -> Bool)?
     private var deferredRecoveredDataRecomputationReason: String?
     private var deferredRecoveredDataRecomputationIsExact = false
-    private static let automaticRecoveredProjectionFreshnessIntentKey =
+    /// Latest-wins generation for the metadata-only automatic admission check.
+    /// No coordinator ticket or mutation transaction exists until this exact
+    /// generation proves cache reuse or an append-only tail within 8 MiB.
+    private var automaticRecoveredProjectionAdmissionGeneration: UInt64 = 0
+    nonisolated private static let automaticRecoveredProjectionFreshnessIntentKey =
         "atria.recoveredProjection.automaticFreshnessRequestedAt.v1"
+    nonisolated private static let automaticRecoveredDataBootstrapIntentKey =
+        "atria.recoveredProjection.currentWindowBootstrapRequestedAt.v1"
+    nonisolated static var automaticRecoveredDataBootstrapIntentIsPending:
+        Bool {
+        let defaults = UserDefaults.standard
+        return defaults.object(
+            forKey: automaticRecoveredDataBootstrapIntentKey
+        ) != nil
+            || defaults.object(
+                forKey: automaticRecoveredProjectionFreshnessIntentKey
+            ) != nil
+            || HistoricalArchive
+                .automaticRecoveredDataBootstrapCheckpointExists
+    }
     var onRecoveredDataRecomputePublished: ((UInt64, String) -> Void)?
     /// Fired only after the deferred canonical-session load has rebuilt and
     /// verified the persisted confirmed-sleep -> daily metric -> rollup chain.
@@ -7119,6 +8638,24 @@ final class SessionStore: ObservableObject {
     nonisolated private static let historySnapshotProjectionQueue =
         HistoricalArchive.consumerProjectionQueue
     private var historicalArchiveStatusObserver: NSObjectProtocol?
+    /// Archive durability posts once per raw history ACK. Keep those cheap
+    /// notifications out of the retained 24–48 h derived pipeline: a material
+    /// frontier may publish only while BLE reports no raw/motion owner, and a
+    /// sub-threshold ordinary append waits for a genuinely quiet interval.
+    private var automaticRecoveredArchiveIdleTask: Task<Void, Never>?
+    private var automaticRecoveredArchiveIdleGeneration: UInt64 = 0
+    private var automaticRecoveredArchiveLastOfferedFrontierUnix:
+        TimeInterval? = {
+        let defaults = UserDefaults.standard
+        let key = AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+        guard defaults.object(forKey: key) != nil else { return nil }
+        let value = defaults.double(forKey: key)
+        return value > 0 && value.isFinite ? value : nil
+    }()
+    nonisolated static let automaticRecoveredArchiveMaterialFrontierInterval:
+        TimeInterval = 5 * 60
+    nonisolated static let automaticRecoveredArchiveIdleInterval:
+        TimeInterval = 30
     private var motionBankOffloadObserver: NSObjectProtocol?
     private var motionCompactStoreObserver: NSObjectProtocol?
     private var systemTimeZoneObserver: NSObjectProtocol?
@@ -7152,6 +8689,11 @@ final class SessionStore: ObservableObject {
         label: "com.adidshaft.atria.current-cycle-step-receipt",
         qos: .utility
     )
+    /// Compact-store synchronization can notify near 2 Hz during catch-up.
+    /// Five seconds keeps current steps responsive without repeatedly decoding
+    /// the entire open physiological-cycle shard on an iPhone performance core.
+    nonisolated static let currentCycleStepReceiptMinimumStartInterval:
+        TimeInterval = 5
     nonisolated private static let workoutStepNegativeAttemptsKey =
         "atria.confirmedWorkoutSteps.negativeAttempts.v1"
     nonisolated private static let maximumWorkoutStepNegativeAttempts = 64
@@ -7161,6 +8703,8 @@ final class SessionStore: ObservableObject {
     private var workoutStepEvidenceRescheduleRequested = false
     private var workoutStepEvidenceGeneration = 0
     private var currentCycleStepReceiptGeneration = 0
+    private var currentCycleStepReceiptReadCoalescer =
+        AtriaCurrentCycleStepReceiptReadCoalescer()
     private var currentCycleStepCompactMigrationInFlight = false
     private var currentCycleStepCompactMigrationGeneration = 0
     private var currentCycleStepReceiptDeferredUntilForeground = false
@@ -7241,6 +8785,8 @@ final class SessionStore: ObservableObject {
         let archiveStatus: HistoricalArchiveStatus
         let historicalTodayHeartRatePoints: [HistoricalArchive.HeartRatePoint]
         let recoveredArchiveHeartRatePoints: [HistoricalArchive.HeartRatePoint]
+        let recoveredAutomaticCacheAuthority:
+            HistoricalArchive.AutomaticRecoveredDataCacheAuthority?
         let historicalCycleStart: Date?
         let behaviorInsights: [AtriaInsight]
         let behaviorCorrelations: [BehaviorCorrelationSummary]
@@ -8065,6 +9611,49 @@ final class SessionStore: ObservableObject {
         compactReadQualified ? .publishCompact : .compactOnlyMissing
     }
 
+    /// Resolves exactly two wake-to-wake receipt windows: the open cycle first,
+    /// followed by the cycle that ended at the open cycle's boundary. Asking the
+    /// shared physiological-cycle kernel about the instant immediately before
+    /// the boundary preserves main-sleep, resumed-sleep, no-sleep fallback,
+    /// initial fallback, event-time-zone, and DST behavior without inventing a
+    /// civil-midnight backfill lane.
+    nonisolated static func currentAndPriorStepReceiptWindows(
+        now: Date,
+        confirmedSleeps: [UserConfirmedSleep],
+        calendar: Calendar
+    ) -> [AtriaCurrentCycleStepReceiptWindow] {
+        let currentCycle = AtriaPhysiologicalCycle.current(
+            now: now,
+            confirmedSleeps: confirmedSleeps,
+            calendar: calendar
+        )
+        guard currentCycle.start <= now else { return [] }
+
+        let current = AtriaCurrentCycleStepReceiptWindow(
+            role: .current,
+            interval: .init(start: currentCycle.start, end: now)
+        )
+        let instantBeforeBoundary = currentCycle.start.addingTimeInterval(
+            -0.001
+        )
+        let priorCycle = AtriaPhysiologicalCycle.current(
+            now: instantBeforeBoundary,
+            confirmedSleeps: confirmedSleeps,
+            calendar: calendar
+        )
+        guard priorCycle.start < currentCycle.start else { return [current] }
+        return [
+            current,
+            .init(
+                role: .immediatelyPrior,
+                interval: .init(
+                    start: priorCycle.start,
+                    end: currentCycle.start
+                )
+            ),
+        ]
+    }
+
     nonisolated static func completedPriorCivilDayWindows(
         now: Date,
         cycleStart: Date,
@@ -8096,102 +9685,135 @@ final class SessionStore: ObservableObject {
             currentCycleStepReceiptDeferredUntilForeground = false
             return
         }
-        let identifiers =
-            AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers()
-        guard let strapIdentifier = identifiers.first else {
+        guard currentCycleStepReceiptReadCoalescer.admit(
+            reason: reason,
+            now: Self.currentCycleStepReceiptMonotonicNow()
+        ) else {
             AtriaDebugLog(
-                "ATRIADBG whoop4_daily_steps status=receipt_refresh_skipped reason=%@ detail=missing_strap_identifier",
-                reason
+                "ATRIADBG whoop4_daily_steps status=receipt_refresh_coalesced reason=%@ trailing_reason=%@ outstanding_upper_bound=%d",
+                reason,
+                currentCycleStepReceiptReadCoalescer.trailingReason ?? reason,
+                currentCycleStepReceiptReadCoalescer.outstandingWorkUpperBound
             )
             return
         }
+        startCurrentCycleStrapStepReceiptRead(reason: reason)
+    }
+
+    private func startCurrentCycleStrapStepReceiptRead(reason: String) {
         currentCycleStepReceiptGeneration &+= 1
         let generation = currentCycleStepReceiptGeneration
-        let now = Date()
-        let cycleStart = AtriaPhysiologicalCycle.current(
-            now: now,
-            confirmedSleeps: cachedConfirmedSleeps,
-            calendar: .current
-        ).start
-        let coverage = AtriaWhoop4MotionBankCoverageLedger.intervals(
-            intersecting: .init(start: cycleStart, end: now),
-            strapIdentifier: strapIdentifier,
-            now: now
-        )
-        guard !coverage.isEmpty else {
-            AtriaDebugLog(
-                "ATRIADBG whoop4_daily_steps status=receipt_refresh_skipped reason=%@ detail=no_bank_coverage_this_cycle cycle_start=%.3f",
-                reason,
-                cycleStart.timeIntervalSince1970
-            )
-            // 2026-07-31: a freshly rolled cycle legitimately has no banked
-            // coverage yet. Returning silently froze every surface on the
-            // pre-rollover projection; post the lightweight invalidation so
-            // Home and widgets re-resolve and can disclose the prior-cycle
-            // receipt honestly instead of an unexplained "--".
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(
-                    name: AtriaWhoop4MotionTickDailyStore.didSaveNotification,
-                    object: nil
-                )
-            }
-            return
-        }
+        // The worker derives its clock, cycle and bank coverage after it
+        // actually reaches the serial lane. A coalesced trailing admission
+        // captures this snapshot again, after any intervening sleep mutation.
+        let confirmedSleeps = cachedConfirmedSleeps
         Self.currentCycleStepReceiptQueue.async { [weak self] in
-            let compactFingerprintBefore =
-                AtriaWhoop4MotionTickCompactStore.shared.sourceFingerprint(
-                    start: cycleStart,
-                    end: now,
-                    strapIdentifier: strapIdentifier
-                )
-            let compactRead = AtriaWhoop4MotionTickCompactStore.shared
-                .motionTickDayEvidenceRead(
-                    start: cycleStart,
-                    end: now,
-                    bankCoverage: coverage,
-                    strapIdentifier: strapIdentifier
-                )
-            let compactFingerprintAfter =
-                AtriaWhoop4MotionTickCompactStore.shared.sourceFingerprint(
-                    start: cycleStart,
-                    end: now,
-                    strapIdentifier: strapIdentifier
-                )
-            let compactQualified: Bool
-            if case .qualified = compactRead {
-                compactQualified = true
-            } else {
-                compactQualified = false
-            }
-            switch Self.currentCycleStepReceiptReadPlan(
-                compactReadQualified: compactQualified
-            ) {
-            case .publishCompact:
-                Self.completeCurrentCycleStrapStepReceiptRead(
-                    compactRead,
-                    stableCompleteRead:
-                        compactFingerprintBefore == compactFingerprintAfter,
-                    reason: reason,
+            var postsEmptyCycleInvalidation = false
+            defer {
+                Self.scheduleCurrentCycleStepReceiptReadFinish(
                     generation: generation,
-                    coverageCount: coverage.count,
-                    strapIdentifier: strapIdentifier,
+                    reason: reason,
+                    postsEmptyCycleInvalidation:
+                        postsEmptyCycleInvalidation,
                     owner: self
                 )
-            case .compactOnlyMissing:
-                DispatchQueue.main.async { [weak self] in
-                    guard let self,
-                          self.currentCycleStepReceiptGeneration
-                            == generation else { return }
-                    self.currentCycleStepReceiptDeferredUntilForeground = false
-                }
+            }
+
+            let identifiers =
+                AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers()
+            guard let strapIdentifier = identifiers.first else {
                 AtriaDebugLog(
-                    "ATRIADBG whoop4_daily_steps status=compact_only_missing reason=%@ generation=%d coverage_intervals=%d action=wait_for_compact_checkpoint_or_safe_bounded_migration",
+                    "ATRIADBG whoop4_daily_steps status=receipt_refresh_skipped reason=%@ generation=%d detail=missing_strap_identifier",
                     reason,
-                    generation,
-                    coverage.count
+                    generation
                 )
+                return
+            }
+            let now = Date()
+            let receiptWindows = Self.currentAndPriorStepReceiptWindows(
+                now: now,
+                confirmedSleeps: confirmedSleeps,
+                calendar: .current
+            )
+            for window in receiptWindows {
+                let coverage = AtriaWhoop4MotionBankCoverageLedger.intervals(
+                    intersecting: window.interval,
+                    strapIdentifier: strapIdentifier,
+                    now: now
+                )
+                if coverage.isEmpty {
+                    AtriaDebugLog(
+                        "ATRIADBG whoop4_daily_steps status=receipt_refresh_skipped reason=%@ generation=%d window=%@ detail=no_bank_coverage window_start=%.3f window_end=%.3f",
+                        reason,
+                        generation,
+                        window.role.rawValue,
+                        window.interval.start.timeIntervalSince1970,
+                        window.interval.end.timeIntervalSince1970
+                    )
+                    if window.role == .current {
+                        // A freshly rolled cycle legitimately has no banked
+                        // coverage. Re-resolve Home/widgets, but continue to
+                        // the prior cycle so its late compact rows can advance.
+                        postsEmptyCycleInvalidation = true
+                    }
+                    continue
+                }
+                let compactFingerprintBefore =
+                    AtriaWhoop4MotionTickCompactStore.shared.sourceFingerprint(
+                        start: window.interval.start,
+                        end: window.interval.end,
+                        strapIdentifier: strapIdentifier
+                    )
+                let compactRead = AtriaWhoop4MotionTickCompactStore.shared
+                    .motionTickDayEvidenceRead(
+                        start: window.interval.start,
+                        end: window.interval.end,
+                        bankCoverage: coverage,
+                        strapIdentifier: strapIdentifier
+                    )
+                let compactFingerprintAfter =
+                    AtriaWhoop4MotionTickCompactStore.shared.sourceFingerprint(
+                        start: window.interval.start,
+                        end: window.interval.end,
+                        strapIdentifier: strapIdentifier
+                    )
+                let compactQualified: Bool
+                if case .qualified = compactRead {
+                    compactQualified = true
+                } else {
+                    compactQualified = false
+                }
+                switch Self.currentCycleStepReceiptReadPlan(
+                    compactReadQualified: compactQualified
+                ) {
+                case .publishCompact:
+                    Self.completeCurrentCycleStrapStepReceiptRead(
+                        compactRead,
+                        stableCompleteRead:
+                            compactFingerprintBefore
+                                == compactFingerprintAfter,
+                        reason: reason,
+                        generation: generation,
+                        windowRole: window.role,
+                        coverageCount: coverage.count,
+                        strapIdentifier: strapIdentifier
+                    )
+                case .compactOnlyMissing:
+                    AtriaDebugLog(
+                        "ATRIADBG whoop4_daily_steps status=compact_only_missing reason=%@ generation=%d window=%@ coverage_intervals=%d action=wait_for_compact_checkpoint_or_safe_bounded_migration",
+                        reason,
+                        generation,
+                        window.role.rawValue,
+                        coverage.count
+                    )
+                }
             }
         }
+    }
+
+    nonisolated private static func currentCycleStepReceiptMonotonicNow()
+        -> TimeInterval {
+        TimeInterval(DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
     }
 
     nonisolated private static func
@@ -8200,15 +9822,16 @@ final class SessionStore: ObservableObject {
             stableCompleteRead: Bool,
             reason: String,
             generation: Int,
+            windowRole: AtriaCurrentCycleStepReceiptWindow.Role,
             coverageCount: Int,
-            strapIdentifier: String,
-            owner: SessionStore?
+            strapIdentifier: String
         ) {
         guard case .qualified(let evidence) = read else {
             AtriaDebugLog(
-                "ATRIADBG whoop4_daily_steps status=receipt_refresh_missing reason=%@ generation=%d coverage_intervals=%d complete=%d",
+                "ATRIADBG whoop4_daily_steps status=receipt_refresh_missing reason=%@ generation=%d window=%@ coverage_intervals=%d complete=%d",
                 reason,
                 generation,
+                windowRole.rawValue,
                 coverageCount,
                 stableCompleteRead ? 1 : 0
             )
@@ -8219,12 +9842,6 @@ final class SessionStore: ObservableObject {
                 evidence,
                 strapIdentifier: strapIdentifier
             )
-            DispatchQueue.main.async { [weak owner] in
-                guard let owner,
-                      owner.currentCycleStepReceiptGeneration
-                        == generation else { return }
-                owner.currentCycleStepReceiptDeferredUntilForeground = false
-            }
             // On relaunch the strongest receipt may already be durable. `save`
             // correctly performs no write in that case, but Home can have
             // rendered before CoreBluetooth republished the saved strap identity.
@@ -8238,9 +9855,10 @@ final class SessionStore: ObservableObject {
                 }
             }
             AtriaDebugLog(
-                "ATRIADBG whoop4_daily_steps status=receipt_refresh_complete reason=%@ generation=%d changed=%d steps=%d known_s=%d missing_s=%d",
+                "ATRIADBG whoop4_daily_steps status=receipt_refresh_complete reason=%@ generation=%d window=%@ changed=%d steps=%d known_s=%d missing_s=%d",
                 reason,
                 generation,
+                windowRole.rawValue,
                 changed ? 1 : 0,
                 evidence.steps,
                 evidence.knownCoverageSeconds,
@@ -8248,11 +9866,97 @@ final class SessionStore: ObservableObject {
             )
         } catch {
             AtriaDebugLog(
-                "ATRIADBG whoop4_daily_steps status=receipt_save_failed reason=%@ generation=%d error=%@",
+                "ATRIADBG whoop4_daily_steps status=receipt_save_failed reason=%@ generation=%d window=%@ error=%@",
                 reason,
                 generation,
+                windowRole.rawValue,
                 error.localizedDescription
             )
+        }
+    }
+
+    nonisolated private static func scheduleCurrentCycleStepReceiptReadFinish(
+        generation: Int,
+        reason: String,
+        postsEmptyCycleInvalidation: Bool,
+        owner: SessionStore?
+    ) {
+        DispatchQueue.main.async { [weak owner] in
+            owner?.finishCurrentCycleStepReceiptRead(
+                generation: generation,
+                reason: reason,
+                postsEmptyCycleInvalidation:
+                    postsEmptyCycleInvalidation
+            )
+        }
+    }
+
+    private func finishCurrentCycleStepReceiptRead(
+        generation: Int,
+        reason: String,
+        postsEmptyCycleInvalidation: Bool
+    ) {
+        guard currentCycleStepReceiptGeneration == generation else {
+            AtriaDebugLog(
+                "ATRIADBG whoop4_daily_steps status=receipt_refresh_finish_ignored reason=%@ generation=%d active_generation=%d",
+                reason,
+                generation,
+                currentCycleStepReceiptGeneration
+            )
+            return
+        }
+        if postsEmptyCycleInvalidation {
+            NotificationCenter.default.post(
+                name: AtriaWhoop4MotionTickDailyStore.didSaveNotification,
+                object: nil
+            )
+        }
+        currentCycleStepReceiptDeferredUntilForeground = false
+        guard let cooldownDelay =
+                currentCycleStepReceiptReadCoalescer.finish(
+                    now: Self.currentCycleStepReceiptMonotonicNow(),
+                    minimumStartInterval:
+                        Self.currentCycleStepReceiptMinimumStartInterval
+                ) else { return }
+        AtriaDebugLog(
+            "ATRIADBG whoop4_daily_steps status=receipt_refresh_cooldown completed_reason=%@ delay_s=%.3f trailing_reason=%@",
+            reason,
+            cooldownDelay,
+            currentCycleStepReceiptReadCoalescer.trailingReason ?? "none"
+        )
+        scheduleCurrentCycleStepReceiptCooldown(after: cooldownDelay)
+    }
+
+    private func scheduleCurrentCycleStepReceiptCooldown(after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, delay)) {
+            [weak self] in
+            self?.handleCurrentCycleStepReceiptCooldown()
+        }
+    }
+
+    private func handleCurrentCycleStepReceiptCooldown() {
+        switch currentCycleStepReceiptReadCoalescer.activateCooldown(
+            now: Self.currentCycleStepReceiptMonotonicNow()
+        ) {
+        case .wait(let remaining):
+            scheduleCurrentCycleStepReceiptCooldown(after: remaining)
+        case .idle:
+            break
+        case .start(let trailingReason):
+            guard AtriaWhoop4GravityCadenceStepModel
+                    .releaseDailyAuthorityQualified else {
+                currentCycleStepReceiptReadCoalescer.cancel()
+                currentCycleStepReceiptDeferredUntilForeground = false
+                return
+            }
+            AtriaDebugLog(
+                "ATRIADBG whoop4_daily_steps status=receipt_refresh_trailing_start trailing_reason=%@ minimum_interval_s=%.1f",
+                trailingReason,
+                Self.currentCycleStepReceiptMinimumStartInterval
+            )
+            // The cooldown activation is already the admission. Capture the
+            // newest confirmed-sleep snapshot and enqueue exactly one worker.
+            startCurrentCycleStrapStepReceiptRead(reason: trailingReason)
         }
     }
 
@@ -9498,7 +11202,15 @@ final class SessionStore: ObservableObject {
     private func runRecoveredHeartRateProjection(
         ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
     ) {
-        let cutoff = Date().addingTimeInterval(-14 * 24 * 60 * 60)
+        let automaticCurrentCycleCutoff: Date?
+        switch ticket.scope {
+        case .full:
+            automaticCurrentCycleCutoff = nil
+        case .automaticCurrentCycle(let since):
+            automaticCurrentCycleCutoff = since
+        }
+        let cutoff = automaticCurrentCycleCutoff
+            ?? Date().addingTimeInterval(-14 * 24 * 60 * 60)
         var liveSessions = sessions
         if let active = activeJournalSessionIfFresh() {
             liveSessions.append(active)
@@ -9536,21 +11248,23 @@ final class SessionStore: ObservableObject {
                 reserveForSafeBackground()
                 return
             }
-            // Ordinary automatic requests are fenced before ticket creation.
-            // This global diagnostic is therefore reachable only by the
-            // separately authorized exact/manual projection lane.
-            let diagnostics = HistoricalArchive.diagnostics()
-            guard !diagnostics.exists || diagnostics.parseOK else {
-                DispatchQueue.main.async { [weak self, ticket] in
-                    guard let self else { return }
-                    self.handleRecoveredDataRecomputeEffects(
-                        self.recoveredDataRecompute.projectionCompleted(
-                            ticket: ticket,
-                            failureReason: "archive_parse_failed"
+            if automaticCurrentCycleCutoff == nil {
+                // Global diagnostics is restricted to exact/manual/full work.
+                // The automatic current-cycle lane was admitted from file
+                // metadata and may not enumerate an unrelated archive image.
+                let diagnostics = HistoricalArchive.diagnostics()
+                guard !diagnostics.exists || diagnostics.parseOK else {
+                    DispatchQueue.main.async { [weak self, ticket] in
+                        guard let self else { return }
+                        self.handleRecoveredDataRecomputeEffects(
+                            self.recoveredDataRecompute.projectionCompleted(
+                                ticket: ticket,
+                                failureReason: "archive_parse_failed"
+                            )
                         )
-                    )
+                    }
+                    return
                 }
-                return
             }
             // Per-stage dying threads inside the recompute (2026-08-04): the
             // snapshot materialization, HR projection, and session emission
@@ -9583,6 +11297,54 @@ final class SessionStore: ObservableObject {
                             scannedByteCount: statistics.byteCount
                         )
                     }
+                }
+                if ticket.reason.hasPrefix(
+                    "bg_projection_current_window_bootstrap"
+                ), let backgroundProjectionLease {
+                    let step = HistoricalArchive
+                        .performAutomaticRecoveredDataBootstrapStep(
+                            since: cutoff,
+                            lease: backgroundProjectionLease,
+                            maximumBytesPerStep:
+                                HistoricalArchive
+                                    .maximumAutomaticRecoveredDataIncrementalBytes
+                        )
+                    switch step {
+                    case .ready(let readBytes):
+                        AtriaDebugLog(
+                            "ATRIADBG recovered_bootstrap status=ready bytes=%d action=bounded_publication",
+                            readBytes
+                        )
+                    case .progressed(let readBytes, let remainingBytes):
+                        AtriaDebugLog(
+                            "ATRIADBG recovered_bootstrap status=progress bytes=%d remaining=%llu action=retain_bg_intent",
+                            readBytes,
+                            remainingBytes
+                        )
+                        return nil
+                    case .deferred(let reason):
+                        AtriaDebugLog(
+                            "ATRIADBG recovered_bootstrap status=deferred reason=%@ action=retain_bg_intent",
+                            reason
+                        )
+                        return nil
+                    case .invalidated(let reason):
+                        AtriaDebugLog(
+                            "ATRIADBG recovered_bootstrap status=invalidated reason=%@ action=restart_next_safe_bg_window",
+                            reason
+                        )
+                        return nil
+                    }
+                }
+                if automaticCurrentCycleCutoff != nil {
+                    return HistoricalArchive
+                        .makeAutomaticallyAdmittedRecoveredDataSnapshot(
+                            since: cutoff,
+                            maximumIncrementalBytes:
+                                HistoricalArchive
+                                    .maximumAutomaticRecoveredDataIncrementalBytes,
+                            onScanProgress: onScanProgress
+                        )
                 }
                 if let backgroundProjectionLease {
                     return HistoricalArchive
@@ -9711,6 +11473,8 @@ final class SessionStore: ObservableObject {
                         recoveredSkinTemperatureProjection,
                         recoveredSkinTemperatureCandidateFrameCount)
             }
+            let recoveredAutomaticCacheAuthority =
+                recoveredSnapshot.automaticCacheAuthority
             Task { @MainActor [weak self, ticket] in
                 self?.renewRecoveredProjectionLease(
                     ticket: ticket,
@@ -9724,6 +11488,7 @@ final class SessionStore: ObservableObject {
                 recoveredSessions,
                 recoveredSkinTemperatureProjection,
                 recoveredSkinTemperatureCandidateFrameCount,
+                recoveredAutomaticCacheAuthority,
                 projection,
                 rrProjection,
                 ticket
@@ -9751,29 +11516,76 @@ final class SessionStore: ObservableObject {
                 }
 
                 let previous = self.cachedRecoveredHeartRateSessions
-                self.cachedRecoveredHeartRateSessions = recoveredSessions
-                self.cachedRecoveredSkinTemperatureDeviationByDay =
-                    recoveredSkinTemperatureProjection.deviations
+                let publishedRecoveredSessions: [SavedSession]
+                if automaticCurrentCycleCutoff != nil {
+                    publishedRecoveredSessions =
+                        Self.mergedAutomaticallyRecoveredSessions(
+                            previous: previous,
+                            incoming: recoveredSessions
+                        )
+                } else {
+                    publishedRecoveredSessions = recoveredSessions
+                }
+                self.cachedRecoveredHeartRateSessions =
+                    publishedRecoveredSessions
+                if automaticCurrentCycleCutoff != nil {
+                    self.cachedRecoveredSkinTemperatureDeviationByDay = self
+                        .cachedRecoveredSkinTemperatureDeviationByDay
+                        .merging(
+                            recoveredSkinTemperatureProjection.deviations,
+                            uniquingKeysWith: { _, newest in newest }
+                        )
+                } else {
+                    self.cachedRecoveredSkinTemperatureDeviationByDay =
+                        recoveredSkinTemperatureProjection.deviations
+                }
                 self.cachedRecoveredSkinTemperatureBaselineNightCount =
-                    recoveredSkinTemperatureProjection.baselineNightCount
+                    automaticCurrentCycleCutoff == nil
+                        ? recoveredSkinTemperatureProjection.baselineNightCount
+                        : max(
+                            self.cachedRecoveredSkinTemperatureBaselineNightCount,
+                            recoveredSkinTemperatureProjection.baselineNightCount
+                        )
                 self.cachedRecoveredSkinTemperatureCandidateFrameCount =
-                    recoveredSkinTemperatureCandidateFrameCount
+                    automaticCurrentCycleCutoff == nil
+                        ? recoveredSkinTemperatureCandidateFrameCount
+                        : max(
+                            self.cachedRecoveredSkinTemperatureCandidateFrameCount,
+                            recoveredSkinTemperatureCandidateFrameCount
+                        )
                 self.cachedSkinTemperatureDeviationSummary = nil
-                self.cachedRecoveredArchiveHeartRatePoints = archivePoints
+                if automaticCurrentCycleCutoff != nil {
+                    self.cachedRecoveredArchiveHeartRatePoints =
+                        Self.mergedAutomaticallyRecoveredHeartRatePoints(
+                            previous:
+                                self.cachedRecoveredArchiveHeartRatePoints,
+                            incoming: archivePoints
+                        )
+                } else {
+                    self.cachedRecoveredArchiveHeartRatePoints = archivePoints
+                }
+                self.cachedRecoveredAutomaticCacheAuthority =
+                    recoveredAutomaticCacheAuthority
                 let cacheInterval = Self.historicalStrainCacheInterval(
                     now: Date(),
                     confirmedSleeps: self.cachedConfirmedSleeps,
                     calendar: .current
                 )
-                self.cachedHistoricalTodayHeartRatePoints = archivePoints.filter {
-                    $0.t >= cacheInterval.start && $0.t < cacheInterval.end
-                }
+                self.cachedHistoricalTodayHeartRatePoints = self
+                    .cachedRecoveredArchiveHeartRatePoints.filter {
+                        $0.t >= cacheInterval.start && $0.t < cacheInterval.end
+                    }
                 self.cachedHistoricalCycleStart = cacheInterval.start
-                self.invalidateDailyDerivedDays(for: previous + recoveredSessions)
+                let invalidationSessions = automaticCurrentCycleCutoff == nil
+                    ? previous + recoveredSessions
+                    : recoveredSessions
+                self.invalidateDailyDerivedDays(for: invalidationSessions)
                 self.setCachedCanonicalSessions(Self.makeCanonicalSessions(
-                    from: self.sessions + recoveredSessions
+                    from: self.sessions + publishedRecoveredSessions
                 ))
-                self.refreshLatestHRVSourcesFromCanonicalSessions()
+                if automaticCurrentCycleCutoff == nil {
+                    self.refreshLatestHRVSourcesFromCanonicalSessions()
+                }
                 self.recoveryProjectionCache.invalidate()
                 self.cachedHomeSavedAggregate = nil
                 self.cachedTodayTRIMP = nil
@@ -9785,7 +11597,8 @@ final class SessionStore: ObservableObject {
                 // timestamped staging cannot cover the full sleep.
                 guard await self.rebuildConfirmedSleepRecoveredMotionProvenance(
                     reason: "historical_projection_\(ticket.reason)",
-                    deferDerivedPublication: true
+                    deferDerivedPublication: true,
+                    affectedSince: automaticCurrentCycleCutoff
                 ) else {
                     self.handleRecoveredDataRecomputeEffects(
                         self.recoveredDataRecompute.projectionCompleted(
@@ -9797,7 +11610,8 @@ final class SessionStore: ObservableObject {
                 }
                 guard await self.backfillConfirmedSleepStagesFromSessions(
                     reason: "historical_projection_\(ticket.reason)",
-                    deferDerivedPublication: true
+                    deferDerivedPublication: true,
+                    affectedSince: automaticCurrentCycleCutoff
                 ) else {
                     self.handleRecoveredDataRecomputeEffects(
                         self.recoveredDataRecompute.projectionCompleted(
@@ -9810,7 +11624,8 @@ final class SessionStore: ObservableObject {
                 let hrvRequalification = await self.requalifyPersistedConfirmedSleepHRVFromSessionsIfNeeded(
                     self.cachedCanonicalSessions,
                     reason: "historical_projection_\(ticket.reason)",
-                    deferDerivedPublication: true
+                    deferDerivedPublication: true,
+                    affectedSince: automaticCurrentCycleCutoff
                 )
                 guard hrvRequalification.succeeded else {
                     self.handleRecoveredDataRecomputeEffects(
@@ -9821,11 +11636,13 @@ final class SessionStore: ObservableObject {
                     )
                     return
                 }
-                self.rebuildBaselineFromEligibleSessions(
-                    reason: "historical_projection_\(ticket.reason)",
-                    refreshDiagnosticsCache: false,
-                    refreshDerivedCaches: false
-                )
+                if automaticCurrentCycleCutoff == nil {
+                    self.rebuildBaselineFromEligibleSessions(
+                        reason: "historical_projection_\(ticket.reason)",
+                        refreshDiagnosticsCache: false,
+                        refreshDerivedCaches: false
+                    )
+                }
                 self.handleRecoveredDataRecomputeEffects(
                     self.recoveredDataRecompute.projectionCompleted(ticket: ticket)
                 )
@@ -9983,6 +11800,132 @@ final class SessionStore: ObservableObject {
         historyTransportOwnsLink || (!onboardingComplete && !allowsIncompleteOnboarding)
     }
 
+    enum AutomaticRecoveredArchiveProjectionTrigger: Equatable, Sendable {
+        case archiveDidUpdate
+        case transportIdle
+        case terminalOrUserRefresh
+    }
+
+    /// Pure cadence/ownership fence for archive-backed derived work. Compact
+    /// step receipts have their own bounded notification lane and do not pass
+    /// through this gate. No trigger, including a five-minute raw frontier,
+    /// may overlap BLE's raw-history or motion transport authority.
+    nonisolated static func shouldOfferAutomaticRecoveredArchiveProjection(
+        trigger: AutomaticRecoveredArchiveProjectionTrigger,
+        historyTransportOwnsLink: Bool,
+        observedFrontierUnix: TimeInterval?,
+        lastOfferedFrontierUnix: TimeInterval?,
+        materialFrontierInterval: TimeInterval =
+            automaticRecoveredArchiveMaterialFrontierInterval
+    ) -> Bool {
+        guard !historyTransportOwnsLink,
+              materialFrontierInterval > 0,
+              materialFrontierInterval.isFinite else { return false }
+        switch trigger {
+        case .transportIdle, .terminalOrUserRefresh:
+            return true
+        case .archiveDidUpdate:
+            guard let observedFrontierUnix,
+                  let lastOfferedFrontierUnix,
+                  observedFrontierUnix.isFinite,
+                  lastOfferedFrontierUnix.isFinite else { return false }
+            return observedFrontierUnix - lastOfferedFrontierUnix
+                >= materialFrontierInterval
+        }
+    }
+
+    private func automaticRecoveredArchiveObservedFrontierUnix()
+        -> TimeInterval? {
+        let defaults = UserDefaults.standard
+        let key = AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+        guard defaults.object(forKey: key) != nil else { return nil }
+        let value = defaults.double(forKey: key)
+        return value > 0 && value.isFinite ? value : nil
+    }
+
+    private func recordAutomaticRecoveredArchiveProjectionOffer() {
+        guard let frontier = automaticRecoveredArchiveObservedFrontierUnix()
+        else { return }
+        automaticRecoveredArchiveLastOfferedFrontierUnix = max(
+            automaticRecoveredArchiveLastOfferedFrontierUnix ?? frontier,
+            frontier
+        )
+    }
+
+    private func scheduleAutomaticRecoveredArchiveIdleOffer() {
+        automaticRecoveredArchiveIdleGeneration &+= 1
+        let generation = automaticRecoveredArchiveIdleGeneration
+        automaticRecoveredArchiveIdleTask?.cancel()
+        automaticRecoveredArchiveIdleTask = Task {
+            @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(
+                Self.automaticRecoveredArchiveIdleInterval
+            ))
+            guard !Task.isCancelled,
+                  let self,
+                  generation == self.automaticRecoveredArchiveIdleGeneration
+            else { return }
+            self.automaticRecoveredArchiveIdleTask = nil
+            let transportOwnsLink =
+                self.recoveredDataRecomputationDeferralProvider?(false)
+                    ?? false
+            guard Self.shouldOfferAutomaticRecoveredArchiveProjection(
+                trigger: .transportIdle,
+                historyTransportOwnsLink: transportOwnsLink,
+                observedFrontierUnix:
+                    self.automaticRecoveredArchiveObservedFrontierUnix(),
+                lastOfferedFrontierUnix:
+                    self.automaticRecoveredArchiveLastOfferedFrontierUnix
+            ) else {
+                self.retainDeferredRecoveredDataRecomputation(
+                    reason: "archive_did_update_transport_idle",
+                    isExactRecoveryPublication: false
+                )
+                return
+            }
+            if self.requestRecoveredDataRecomputation(
+                reason: "archive_did_update_transport_idle"
+            ) {
+                self.recordAutomaticRecoveredArchiveProjectionOffer()
+            }
+        }
+    }
+
+    private func handleAutomaticRecoveredArchiveDidUpdate() {
+        let observedFrontier =
+            automaticRecoveredArchiveObservedFrontierUnix()
+        let transportOwnsLink =
+            recoveredDataRecomputationDeferralProvider?(false) ?? false
+        if Self.shouldOfferAutomaticRecoveredArchiveProjection(
+            trigger: .archiveDidUpdate,
+            historyTransportOwnsLink: transportOwnsLink,
+            observedFrontierUnix: observedFrontier,
+            lastOfferedFrontierUnix:
+                automaticRecoveredArchiveLastOfferedFrontierUnix
+        ) {
+            automaticRecoveredArchiveIdleGeneration &+= 1
+            automaticRecoveredArchiveIdleTask?.cancel()
+            automaticRecoveredArchiveIdleTask = nil
+            if requestRecoveredDataRecomputation(
+                reason: "archive_did_update_material_frontier"
+            ) {
+                recordAutomaticRecoveredArchiveProjectionOffer()
+            }
+            return
+        }
+        if transportOwnsLink {
+            automaticRecoveredArchiveIdleGeneration &+= 1
+            automaticRecoveredArchiveIdleTask?.cancel()
+            automaticRecoveredArchiveIdleTask = nil
+            retainDeferredRecoveredDataRecomputation(
+                reason: "archive_did_update",
+                isExactRecoveryPublication: false
+            )
+            return
+        }
+        scheduleAutomaticRecoveredArchiveIdleOffer()
+    }
+
     /// A durable exact-recovery authority owns the shared archive projection
     /// lane until its app-facing publication fence commits. Ordinary archive
     /// notifications and launch hydration may arrive while that authority is
@@ -10015,17 +11958,14 @@ final class SessionStore: ObservableObject {
         let pendingIsExact = deferredRecoveredDataRecomputationIsExact
         deferredRecoveredDataRecomputationReason = nil
         deferredRecoveredDataRecomputationIsExact = false
-        if pendingReason.hasPrefix("archive_did_update"), !pendingIsExact {
-            reserveAutomaticRecoveredProjectionFreshness(
-                reason: "\(pendingReason)_after_\(reason)"
-            )
-            return
-        }
         guard requestRecoveredDataRecomputation(
             reason: "\(pendingReason)_after_\(reason)",
             allowsIncompleteOnboarding: pendingIsExact,
             isExactRecoveryPublication: pendingIsExact
         ) else { return }
+        if pendingReason.hasPrefix("archive_did_update") {
+            recordAutomaticRecoveredArchiveProjectionOffer()
+        }
         AtriaDebugLog(
             "ATRIADBG recovered_projection status=resumed reason=%@ exact=%d",
             reason,
@@ -10038,12 +11978,247 @@ final class SessionStore: ObservableObject {
     ) {
         UserDefaults.standard.set(
             Date().timeIntervalSince1970,
-            forKey: Self.automaticRecoveredProjectionFreshnessIntentKey
+            forKey: Self.automaticRecoveredDataBootstrapIntentKey
         )
         AtriaDebugLog(
-            "ATRIADBG recovered_projection status=automatic_intent_reserved reason=%@ action=reuse_persisted_projection_until_explicit_recovery",
+            "ATRIADBG recovered_projection status=automatic_intent_reserved reason=%@ action=schedule_bounded_current_window_bootstrap",
             reason
         )
+    }
+
+    nonisolated static func recoveredCurrentCheckpointSourceIsReusable(
+        previous: HistoricalArchive.ConsumerSourceFingerprint,
+        current: HistoricalArchive.ConsumerSourceFingerprint
+    ) -> Bool {
+        guard !previous.sources.isEmpty else { return false }
+        let currentByPath = Dictionary(
+            uniqueKeysWithValues: current.sources.map { ($0.path, $0) }
+        )
+        return previous.sources.allSatisfy { old in
+            guard let new = currentByPath[old.path],
+                  old.resourceIdentifier == new.resourceIdentifier,
+                  new.size >= old.size else { return false }
+            if new.size == old.size {
+                return new.modificationTimeMilliseconds
+                    == old.modificationTimeMilliseconds
+            }
+            // A compressed artifact is immutable/all-or-nothing. Physical
+            // growth can only be treated as append-only for ordinary JSONL with
+            // a stable filesystem identity. A missing identifier cannot prove
+            // the path was not atomically replaced by a larger file.
+            return old.resourceIdentifier != nil
+                && URL(fileURLWithPath: old.path).pathExtension
+                    != AtriaHistoricalSealedJSONLCompression.artifactExtension
+        }
+    }
+
+    nonisolated private static func readRecoveredCurrentCheckpoint(
+        from url: URL,
+        now: Date = Date()
+    ) -> RecoveredCurrentCheckpoint? {
+        guard let data = try? Data(contentsOf: url),
+              let checkpoint = try? JSONDecoder().decode(
+                RecoveredCurrentCheckpoint.self,
+                from: data
+              ),
+              checkpoint.version == RecoveredCurrentCheckpoint.schema,
+              checkpoint.generatedAt <= now.addingTimeInterval(5 * 60),
+              now.timeIntervalSince(checkpoint.generatedAt)
+                <= recoveredCurrentCheckpointMaximumAge,
+              checkpoint.recoveredSessions.count
+                <= recoveredCurrentCheckpointMaximumSessions,
+              checkpoint.recoveredSessions.reduce(0, {
+                  $0 + $1.points.count
+              }) <= recoveredCurrentCheckpointMaximumHeartRatePoints,
+              recoveredCurrentCheckpointSourceIsReusable(
+                previous: checkpoint.sourceFingerprint,
+                current: HistoricalArchive.consumerSourceFingerprint()
+              ) else { return nil }
+        return checkpoint
+    }
+
+    nonisolated static func boundedRecoveredCurrentCheckpointSessions(
+        _ sessions: [SavedSession],
+        cutoff: Date,
+        maximumSessions: Int = recoveredCurrentCheckpointMaximumSessions,
+        maximumHeartRatePoints: Int =
+            recoveredCurrentCheckpointMaximumHeartRatePoints
+    ) -> [SavedSession] {
+        guard maximumSessions > 0, maximumHeartRatePoints > 0 else {
+            return []
+        }
+        var remainingPoints = maximumHeartRatePoints
+        var newest: [SavedSession] = []
+        for session in sessions
+            .filter({ $0.end > cutoff })
+            .sorted(by: { $0.end > $1.end }) {
+            guard newest.count < maximumSessions,
+                  session.points.count <= remainingPoints else { continue }
+            newest.append(session)
+            remainingPoints -= session.points.count
+        }
+        return makeCanonicalSessions(from: newest)
+    }
+
+    /// A cold-restored scanner cache contains only the delta after the paired
+    /// UI checkpoint. Automatic publication therefore unions that delta with
+    /// the checkpoint image; replacing everything after the cutoff would erase
+    /// sleep/HR/RR/motion evidence that was intentionally not serialized twice.
+    nonisolated static func mergedAutomaticallyRecoveredSessions(
+        previous: [SavedSession],
+        incoming: [SavedSession]
+    ) -> [SavedSession] {
+        makeCanonicalSessions(from: previous + incoming)
+    }
+
+    /// Linear exact-timestamp merge for the sorted archive HR images. Incoming
+    /// evidence wins at the same timestamp, matching incremental scanner
+    /// semantics without an unbounded dictionary allocation.
+    nonisolated static func mergedAutomaticallyRecoveredHeartRatePoints(
+        previous: [HistoricalArchive.HeartRatePoint],
+        incoming: [HistoricalArchive.HeartRatePoint]
+    ) -> [HistoricalArchive.HeartRatePoint] {
+        var result: [HistoricalArchive.HeartRatePoint] = []
+        result.reserveCapacity(previous.count + incoming.count)
+        var previousIndex = 0
+        var incomingIndex = 0
+        while previousIndex < previous.count
+                || incomingIndex < incoming.count {
+            let previousDate = previousIndex < previous.count
+                ? previous[previousIndex].t
+                : .distantFuture
+            let incomingDate = incomingIndex < incoming.count
+                ? incoming[incomingIndex].t
+                : .distantFuture
+            let timestamp = min(previousDate, incomingDate)
+            var selected: HistoricalArchive.HeartRatePoint?
+            while previousIndex < previous.count,
+                  previous[previousIndex].t == timestamp {
+                selected = previous[previousIndex]
+                previousIndex += 1
+            }
+            while incomingIndex < incoming.count,
+                  incoming[incomingIndex].t == timestamp {
+                selected = incoming[incomingIndex]
+                incomingIndex += 1
+            }
+            if let selected { result.append(selected) }
+        }
+        return result
+    }
+
+    private func applyRecoveredCurrentCheckpoint(
+        _ checkpoint: RecoveredCurrentCheckpoint,
+        scannerAuthorityRestored: Bool
+    ) {
+        cachedRecoveredHeartRateSessions = checkpoint.recoveredSessions
+        let recoveredArchiveHeartRatePoints = checkpoint.recoveredSessions
+            .flatMap { session in
+                session.points.map {
+                    HistoricalArchive.HeartRatePoint(
+                        t: session.start.addingTimeInterval(max(0, $0.t)),
+                        bpm: $0.bpm
+                    )
+                }
+            }
+            .sorted { $0.t < $1.t }
+        cachedRecoveredArchiveHeartRatePoints = recoveredArchiveHeartRatePoints
+        let cacheInterval = Self.historicalStrainCacheInterval(
+            now: Date(),
+            confirmedSleeps: cachedConfirmedSleeps,
+            calendar: .current
+        )
+        cachedHistoricalTodayHeartRatePoints = recoveredArchiveHeartRatePoints
+            .filter {
+                $0.t >= cacheInterval.start && $0.t < cacheInterval.end
+            }
+        cachedHistoricalCycleStart = cacheInterval.start
+        cachedRecoveredSkinTemperatureDeviationByDay = Dictionary(
+            uniqueKeysWithValues: checkpoint.temperatureDays.map {
+                ($0.day, $0.deviationCelsius)
+            }
+        )
+        cachedRecoveredSkinTemperatureBaselineNightCount =
+            checkpoint.temperatureBaselineNightCount
+        cachedRecoveredSkinTemperatureCandidateFrameCount =
+            checkpoint.temperatureCandidateFrameCount
+        cachedRecoveredAutomaticCacheAuthority = scannerAuthorityRestored
+            ? checkpoint.automaticCacheAuthority
+            : nil
+        cachedSkinTemperatureDeviationSummary = nil
+    }
+
+    private func persistRecoveredCurrentCheckpoint() {
+        let now = Date()
+        let cutoff = Self.automaticRecoveredDataProjectionCutoff(
+            now: now,
+            confirmedSleeps: cachedConfirmedSleeps,
+            calendar: .current
+        )
+        let recoveredSessions = Self.boundedRecoveredCurrentCheckpointSessions(
+            cachedRecoveredHeartRateSessions,
+            cutoff: cutoff
+        )
+        guard !recoveredSessions.isEmpty else { return }
+        let temperatureDays = cachedRecoveredSkinTemperatureDeviationByDay
+            .filter { $0.key >= Calendar.current.startOfDay(for: cutoff) }
+            .map {
+                RecoveredCurrentCheckpoint.TemperatureDay(
+                    day: $0.key,
+                    deviationCelsius: $0.value
+                )
+            }
+            .sorted { $0.day < $1.day }
+        let baselineNightCount =
+            cachedRecoveredSkinTemperatureBaselineNightCount
+        let candidateFrameCount =
+            cachedRecoveredSkinTemperatureCandidateFrameCount
+        guard let automaticCacheAuthority =
+                cachedRecoveredAutomaticCacheAuthority else { return }
+        let destination = recoveredCurrentCheckpointURL
+        Self.historySnapshotProjectionQueue.async {
+            let sourceBefore = HistoricalArchive.consumerSourceFingerprint()
+            guard !sourceBefore.sources.isEmpty,
+                  HistoricalArchive
+                    .automaticRecoveredDataCacheAuthorityHasBoundedCurrentPlan(
+                        automaticCacheAuthority,
+                        since: cutoff
+                    ) else { return }
+            let checkpoint = RecoveredCurrentCheckpoint(
+                version: RecoveredCurrentCheckpoint.schema,
+                generatedAt: now,
+                cutoff: cutoff,
+                sourceFingerprint: sourceBefore,
+                automaticCacheAuthority: automaticCacheAuthority,
+                recoveredSessions: recoveredSessions,
+                temperatureDays: temperatureDays,
+                temperatureBaselineNightCount: baselineNightCount,
+                temperatureCandidateFrameCount: candidateFrameCount
+            )
+            guard let data = try? JSONEncoder().encode(checkpoint),
+                  HistoricalArchive.consumerSourceFingerprint()
+                    == sourceBefore else { return }
+            do {
+                try FileManager.default.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                try data.write(to: destination, options: .atomic)
+                HistoricalArchive
+                    .removeAutomaticRecoveredDataBootstrapCheckpoint()
+                UserDefaults.standard.removeObject(
+                    forKey: Self.automaticRecoveredDataBootstrapIntentKey
+                )
+                UserDefaults.standard.removeObject(
+                    forKey: Self.automaticRecoveredProjectionFreshnessIntentKey
+                )
+            } catch {
+                AtriaDebugLog(
+                    "ATRIADBG recovered_projection checkpoint_write_failed error=%@",
+                    error.localizedDescription
+                )
+            }
+        }
     }
 
     private func retainDeferredRecoveredDataRecomputation(
@@ -10064,46 +12239,46 @@ final class SessionStore: ObservableObject {
         reason: String,
         allowsIncompleteOnboarding: Bool = false,
         isExactRecoveryPublication: Bool = false,
-        backgroundProjectionAllowed: Bool = false
+        backgroundProjectionAllowed: Bool = false,
+        automaticCurrentCycleCutoff: Date? = nil
     ) -> Bool {
         guard !restoreInitializationBlocked else { return false }
-        if Self.shouldReserveAutomaticRecoveredDataProjectionForSafeBackground(
-            reason: reason,
-            isExactRecoveryPublication: isExactRecoveryPublication,
-            backgroundProjectionAllowed: backgroundProjectionAllowed
-        ) {
-            // Raw history and app-facing caches are already durable. Ordinary
-            // cold-load/archive-update freshness therefore persists intent and
-            // reuses the last projection; it never mints a coordinator ticket.
-            // Exact/manual completion-fenced recovery remains separately
-            // authorized and is not weakened by this release safety fence.
-            reserveAutomaticRecoveredProjectionFreshness(reason: reason)
-            AtriaDebugLog(
-                "ATRIADBG recovered_projection status=reserved_for_safe_background reason=%@ action=reuse_persisted_projection",
-                reason
+        let shouldRetainDeferredRequest =
+            Self.shouldRetainDeferredRecoveredDataRequest(
+                reason: reason,
+                backgroundProjectionAllowed: backgroundProjectionAllowed
             )
-            return false
-        }
         if Self.shouldDeferRecoveredDataRecomputationForExactRecovery(
             exactRecoveryOwnsPriority:
                 HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(),
             isExactRecoveryPublication: isExactRecoveryPublication
         ) {
-            retainDeferredRecoveredDataRecomputation(
-                reason: reason,
-                isExactRecoveryPublication: isExactRecoveryPublication
-            )
+            if shouldRetainDeferredRequest {
+                retainDeferredRecoveredDataRecomputation(
+                    reason: reason,
+                    isExactRecoveryPublication: isExactRecoveryPublication
+                )
+            }
             AtriaDebugLog(
                 "ATRIADBG recovered_projection status=deferred reason=%@ exact_recovery_priority=1 action=coalesce_until_required_publication",
                 reason
             )
             return false
         }
+        let isMetadataQualifiedAutomaticRequest =
+            Self.isMetadataQualifiedAutomaticRecoveredDataProjectionReason(
+                reason: reason,
+                isExactRecoveryPublication: isExactRecoveryPublication,
+                backgroundProjectionAllowed: backgroundProjectionAllowed
+            )
         if !allowsIncompleteOnboarding,
            !backgroundProjectionAllowed,
-           !Self.shouldStartAutomaticArchiveProjection(
+           !Self.shouldStartBoundedAutomaticRecoveredDataProjection(
                 applicationIsActive:
-                    UIApplication.shared.applicationState == .active
+                    UIApplication.shared.applicationState == .active,
+                thermalState: ProcessInfo.processInfo.thermalState,
+                isLowPowerModeEnabled:
+                    ProcessInfo.processInfo.isLowPowerModeEnabled
            ) {
             retainDeferredRecoveredDataRecomputation(
                 reason: reason,
@@ -10124,15 +12299,29 @@ final class SessionStore: ObservableObject {
             onboardingComplete: profile.hasCompletedOnboarding,
             allowsIncompleteOnboarding: allowsIncompleteOnboarding
         ) {
-            retainDeferredRecoveredDataRecomputation(
-                reason: reason,
-                isExactRecoveryPublication: isExactRecoveryPublication
-            )
+            if shouldRetainDeferredRequest {
+                retainDeferredRecoveredDataRecomputation(
+                    reason: reason,
+                    isExactRecoveryPublication: isExactRecoveryPublication
+                )
+            }
             AtriaDebugLog("ATRIADBG recovered_projection status=deferred reason=%@ history_owner=%d onboarding_complete=%d action=coalesce_until_history_finalizer",
                           reason,
                           historyTransportOwnsLink ? 1 : 0,
                           profile.hasCompletedOnboarding ? 1 : 0)
             return false
+        }
+        if isMetadataQualifiedAutomaticRequest,
+           automaticCurrentCycleCutoff == nil {
+            return scheduleAutomaticRecoveredDataProjectionAdmission(
+                reason: reason,
+                allowsIncompleteOnboarding: allowsIncompleteOnboarding
+            )
+        }
+        if isExactRecoveryPublication {
+            // Invalidate a metadata result that was captured before this exact
+            // authority arrived. Its callback must not mint an older ticket.
+            automaticRecoveredProjectionAdmissionGeneration &+= 1
         }
         deferredRecoveredDataRecomputationReason = nil
         deferredRecoveredDataRecomputationIsExact = false
@@ -10148,36 +12337,221 @@ final class SessionStore: ObservableObject {
         }
         let effects = recoveredDataRecompute.request(
             archiveRevision: archiveRevision,
-            reason: reason
+            reason: reason,
+            scope: automaticCurrentCycleCutoff.map {
+                .automaticCurrentCycle(since: $0)
+            } ?? .full
         )
         handleRecoveredDataRecomputeEffects(effects)
         // Establish the coordinator's projection ownership before offering
         // workout rehydration. With a cold recovered-HR cache, the automatic
         // archive-update consumer then waits for that exact projection instead
         // of racing it with a 1.5M-point raw archive scan.
-        if reason.hasPrefix("archive_did_update") {
+        if reason.hasPrefix("archive_did_update"),
+           automaticCurrentCycleCutoff == nil {
             scheduleConfirmedWorkoutArchiveRehydration(reason: reason)
         }
         return true
     }
 
-    /// Ordinary launch/cache invalidations are freshness requests, not terminal
-    /// recovery authorities. They retain durable intent but create no projection
-    /// revision/ticket, because every ticket fans out into global derived
-    /// consumers. Exact/manual recovery remains completion-fenced.
+    /// A leased resumable bootstrap cannot be replayed from the legacy
+    /// reason-only deferred slot: replay would lose both its BG lease and
+    /// automatic cutoff, laundering bounded work into `.full`. Its durable
+    /// intent is the only retry authority and must acquire a fresh BG lease.
+    nonisolated static func shouldRetainDeferredRecoveredDataRequest(
+        reason: String,
+        backgroundProjectionAllowed: Bool
+    ) -> Bool {
+        !(backgroundProjectionAllowed
+            && reason.hasPrefix(
+                "bg_projection_current_window_bootstrap"
+            ))
+    }
+
+    /// These two ordinary reasons may enter only through a metadata preflight.
+    /// Exact/manual and separately leased background work keep the full pipeline.
     nonisolated static func
-        shouldReserveAutomaticRecoveredDataProjectionForSafeBackground(
+        isMetadataQualifiedAutomaticRecoveredDataProjectionReason(
             reason: String,
             isExactRecoveryPublication: Bool,
             backgroundProjectionAllowed: Bool
         ) -> Bool {
-        guard !isExactRecoveryPublication else { return false }
-        if reason == "deferred_session_load" { return true }
-        if reason.hasPrefix("archive_did_update") { return true }
-        guard !backgroundProjectionAllowed else { return false }
-        return false
+        guard !isExactRecoveryPublication,
+              !backgroundProjectionAllowed else { return false }
+        return reason.hasPrefix("deferred_session_load")
+            || reason.hasPrefix("archive_did_update")
     }
 
+    nonisolated static func shouldStartBoundedAutomaticRecoveredDataProjection(
+        applicationIsActive: Bool,
+        thermalState: ProcessInfo.ThermalState,
+        isLowPowerModeEnabled: Bool
+    ) -> Bool {
+        applicationIsActive
+            && thermalState != .serious
+            && thermalState != .critical
+            && !isLowPowerModeEnabled
+    }
+
+    /// A productive same-link raw catch-up yield may publish only work whose
+    /// inputs are already durable and whose archive read is byte-bounded. The
+    /// BLE owner keeps its exact continuation token throughout this pause, so
+    /// this guard is deliberately stricter than ordinary foreground refresh:
+    /// heat or Low Power Mode returns the turn to raw transfer without opening
+    /// any canonical JSONL source.
+    nonisolated static func shouldStartConnectedRawCatchUpPublicationYield(
+        applicationIsActive: Bool,
+        thermalState: ProcessInfo.ThermalState,
+        isLowPowerModeEnabled: Bool
+    ) -> Bool {
+        applicationIsActive
+            && thermalState != .serious
+            && thermalState != .critical
+            && !isLowPowerModeEnabled
+    }
+
+    /// A local publication turn cannot advance the current physiological cycle
+    /// until the fsynced raw frontier has actually reached that cycle. Keeping
+    /// this check ahead of BLE's yield token prevents a deep chronological
+    /// catch-up from pausing for a projection whose Gate-4/current-cycle inputs
+    /// are still entirely in the future. The durable frontier is the authority;
+    /// compact rows written ahead of it are a rebuildable derivative only.
+    nonisolated static func connectedRawCatchUpPublicationYieldIsNeeded(
+        bootstrapIntentPending: Bool,
+        durableFrontierUnix: TimeInterval?,
+        currentCycleStart: Date
+    ) -> Bool {
+        let cycleStartUnix = currentCycleStart.timeIntervalSince1970
+        guard bootstrapIntentPending,
+              let durableFrontierUnix,
+              durableFrontierUnix.isFinite,
+              durableFrontierUnix > 0,
+              cycleStartUnix.isFinite else {
+            return false
+        }
+        return durableFrontierUnix >= cycleStartUnix
+    }
+
+    /// Main-actor bridge used by the BLE fairness callback. Cycle ownership is
+    /// resolved from the same confirmed-sleep image used by current Gate-4 and
+    /// dashboard publication; no archive read or radio action occurs here.
+    func connectedRawCatchUpPublicationYieldIsNeeded(
+        now: Date = Date(),
+        defaults: UserDefaults = .standard,
+        calendar: Calendar = .current
+    ) -> Bool {
+        let frontierKey = AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+        let frontier: TimeInterval? = defaults.object(forKey: frontierKey) != nil
+            ? defaults.double(forKey: frontierKey)
+            : nil
+        let cycleStart = AtriaPhysiologicalCycle.current(
+            now: now,
+            confirmedSleeps: cachedConfirmedSleeps,
+            calendar: calendar
+        ).start
+        return Self.connectedRawCatchUpPublicationYieldIsNeeded(
+            bootstrapIntentPending:
+                Self.automaticRecoveredDataBootstrapIntentIsPending,
+            durableFrontierUnix: frontier,
+            currentCycleStart: cycleStart
+        )
+    }
+
+    nonisolated static func automaticRecoveredDataProjectionCutoff(
+        now: Date,
+        confirmedSleeps: [UserConfirmedSleep],
+        calendar: Calendar = .current,
+        maximumLookback: TimeInterval = 48 * 60 * 60
+    ) -> Date {
+        let cycleStart = AtriaPhysiologicalCycle.current(
+            now: now,
+            confirmedSleeps: confirmedSleeps,
+            calendar: calendar
+        ).start
+        let latestMainSleepStart = confirmedSleeps
+            .filter {
+                !confirmedSleepSourceIsNap(
+                    source: $0.source,
+                    duration: $0.duration
+                )
+            }
+            .max(by: { $0.end < $1.end })?
+            .start
+        // First-use/upgrade has no confirmed sleep yet. A 06:00 physiological
+        // cycle floor would make an afternoon launch discard the preceding
+        // night before the bounded auto-confirm step can evaluate it. Include
+        // one bounded prior-night window without widening beyond the existing
+        // 48-hour hard limit.
+        let priorNightFloor = max(
+            calendar.startOfDay(for: now).addingTimeInterval(-12 * 60 * 60),
+            now.addingTimeInterval(-36 * 60 * 60)
+        )
+        let desired = latestMainSleepStart.map { min($0, cycleStart) }
+            ?? min(cycleStart, priorNightFloor)
+        return max(desired, now.addingTimeInterval(-maximumLookback))
+    }
+
+    @discardableResult
+    private func scheduleAutomaticRecoveredDataProjectionAdmission(
+        reason: String,
+        allowsIncompleteOnboarding: Bool
+    ) -> Bool {
+        automaticRecoveredProjectionAdmissionGeneration &+= 1
+        let generation = automaticRecoveredProjectionAdmissionGeneration
+        let cutoff = Self.automaticRecoveredDataProjectionCutoff(
+            now: Date(),
+            confirmedSleeps: cachedConfirmedSleeps,
+            calendar: .current
+        )
+        let maximumBytes =
+            HistoricalArchive.maximumAutomaticRecoveredDataIncrementalBytes
+        Self.historySnapshotProjectionQueue.async { [weak self] in
+            let admitted = HistoricalArchive
+                .automaticRecoveredDataProjectionHasBoundedIncrementalPlan(
+                    since: cutoff,
+                    maximumIncrementalBytes: maximumBytes
+                )
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      self.automaticRecoveredProjectionAdmissionGeneration
+                        == generation else { return }
+                guard admitted else {
+                    self.reserveAutomaticRecoveredProjectionFreshness(
+                        reason: reason
+                    )
+                    AtriaDebugLog(
+                        "ATRIADBG recovered_projection status=reserved_metadata_plan reason=%@ detail=rebuild_compressed_replaced_or_oversize max_bytes=%llu action=retain_current_checkpoint",
+                        reason,
+                        maximumBytes
+                    )
+                    return
+                }
+                guard Self.shouldStartBoundedAutomaticRecoveredDataProjection(
+                    applicationIsActive:
+                        UIApplication.shared.applicationState == .active,
+                    thermalState: ProcessInfo.processInfo.thermalState,
+                    isLowPowerModeEnabled:
+                        ProcessInfo.processInfo.isLowPowerModeEnabled
+                ) else {
+                    self.retainDeferredRecoveredDataRecomputation(
+                        reason: reason,
+                        isExactRecoveryPublication: false
+                    )
+                    return
+                }
+                _ = self.requestRecoveredDataRecomputation(
+                    reason: reason,
+                    allowsIncompleteOnboarding: allowsIncompleteOnboarding,
+                    automaticCurrentCycleCutoff: cutoff
+                )
+            }
+        }
+        return true
+    }
+
+    /// Compatibility seam retained for existing callers that only need the
+    /// active-app check. New automatic archive publication must use the stricter
+    /// thermal/Low-Power guard above.
     nonisolated static func shouldStartAutomaticArchiveProjection(
         applicationIsActive: Bool
     ) -> Bool {
@@ -10221,21 +12595,6 @@ final class SessionStore: ObservableObject {
         reason: String,
         budgetSeconds: TimeInterval = 240
     ) -> Bool {
-        guard Self.shouldExecuteAutomaticFullBackgroundProjection() else {
-            // The raw archive is already durable. Persist freshness intent and
-            // reuse the last app-facing projection without entering the
-            // unbounded rebuild/projector graph.
-            UserDefaults.standard.set(
-                Date().timeIntervalSince1970,
-                forKey: Self
-                    .backgroundRecoveredProjectionMaintenanceIntentKey
-            )
-            AtriaDebugLog(
-                "ATRIADBG bg_projection status=reserved_automatic_full_disabled reason=%@ action=reuse_cache_or_bounded_incremental_only",
-                reason
-            )
-            return false
-        }
         let allowed = Self.shouldStartBackgroundArchiveProjection(
             thermalState: ProcessInfo.processInfo.thermalState,
             isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled,
@@ -10244,6 +12603,38 @@ final class SessionStore: ObservableObject {
         guard allowed else {
             AtriaDebugLog("ATRIADBG bg_projection status=skipped reason=%@ action=guard_unsafe", reason)
             return false
+        }
+        if !Self.shouldExecuteAutomaticFullBackgroundProjection() {
+            // Real BGProcessing, after BLE/motion catch-up, is the only owner
+            // of the resumable first-install/oversize current-window seed. The
+            // durable intent keeps the scheduler at its tight cadence until a
+            // paired UI+scanner checkpoint is atomically published.
+            UserDefaults.standard.set(
+                Date().timeIntervalSince1970,
+                forKey: Self.automaticRecoveredDataBootstrapIntentKey
+            )
+            let cutoff = Self.automaticRecoveredDataProjectionCutoff(
+                now: Date(),
+                confirmedSleeps: cachedConfirmedSleeps,
+                calendar: .current
+            )
+            AtriaBackgroundProjectionThrottle.shared.begin(
+                budgetSeconds: budgetSeconds
+            )
+            let started = requestRecoveredDataRecomputation(
+                reason: "bg_projection_current_window_bootstrap_\(reason)",
+                allowsIncompleteOnboarding: false,
+                isExactRecoveryPublication: false,
+                backgroundProjectionAllowed: true,
+                automaticCurrentCycleCutoff: cutoff
+            )
+            if !started { AtriaBackgroundProjectionThrottle.shared.end() }
+            AtriaDebugLog(
+                "ATRIADBG bg_projection status=%@ reason=%@ scope=current_window_bootstrap",
+                started ? "started" : "deferred",
+                reason
+            )
+            return started
         }
         AtriaBackgroundProjectionThrottle.shared.begin(budgetSeconds: budgetSeconds)
         let started = requestRecoveredDataRecomputation(
@@ -10254,6 +12645,96 @@ final class SessionStore: ObservableObject {
         if !started { AtriaBackgroundProjectionThrottle.shared.end() }
         AtriaDebugLog("ATRIADBG bg_projection status=%@ reason=%@", started ? "started" : "deferred", reason)
         return started
+    }
+
+    /// Starts one current-window bootstrap pass for the explicit BLE fairness
+    /// yield. The caller has already required an active, cool, non-LPM phone;
+    /// unlike unattended BGProcessing, this attended <=8 MiB pass does not
+    /// impose an additional 50% battery threshold. Scope is supplied explicitly
+    /// so the request can never degrade into the `.full` projection pipeline.
+    @discardableResult
+    private func requestConnectedRawCatchUpBoundedProjection(
+        reason: String,
+        budgetSeconds: TimeInterval
+    ) -> Bool {
+        UserDefaults.standard.set(
+            Date().timeIntervalSince1970,
+            forKey: Self.automaticRecoveredDataBootstrapIntentKey
+        )
+        let cutoff = Self.automaticRecoveredDataProjectionCutoff(
+            now: Date(),
+            confirmedSleeps: cachedConfirmedSleeps,
+            calendar: .current
+        )
+        AtriaBackgroundProjectionThrottle.shared.begin(
+            budgetSeconds: budgetSeconds
+        )
+        let started = requestRecoveredDataRecomputation(
+            reason: "bg_projection_current_window_bootstrap_\(reason)",
+            allowsIncompleteOnboarding: false,
+            isExactRecoveryPublication: false,
+            backgroundProjectionAllowed: true,
+            automaticCurrentCycleCutoff: cutoff
+        )
+        if !started { AtriaBackgroundProjectionThrottle.shared.end() }
+        return started
+    }
+
+    /// Gives app-facing current-cycle evidence one finite turn between exact
+    /// connected raw-history slices. Gate-4 compact motion is refreshed first
+    /// and is independent of archive projection. The only heavier admission is
+    /// the dedicated resumable <=8 MiB current-window bootstrap above; its
+    /// explicit cutoff cannot enter the automatic full projection pipeline.
+    ///
+    /// This method does not own BLE authority. The manager retains its exact
+    /// continuation token while awaiting this result and resumes transport only
+    /// from a later accepted 2A37 callback.
+    func performConnectedRawCatchUpPublicationYield(
+        reason: String,
+        budgetSeconds: TimeInterval
+    ) async -> Bool {
+        refreshCurrentCycleStrapStepReceipt(
+            reason: "connected_raw_publication_yield_\(reason)"
+        )
+        guard Self.automaticRecoveredDataBootstrapIntentIsPending else {
+            AtriaDebugLog(
+                "ATRIADBG recovered_projection status=connected_raw_yield_complete reason=%@ action=compact_refreshed_no_bootstrap_intent",
+                reason
+            )
+            return true
+        }
+        guard Self.shouldStartConnectedRawCatchUpPublicationYield(
+            applicationIsActive:
+                UIApplication.shared.applicationState == .active,
+            thermalState: ProcessInfo.processInfo.thermalState,
+            isLowPowerModeEnabled:
+                ProcessInfo.processInfo.isLowPowerModeEnabled
+        ) else {
+            AtriaDebugLog(
+                "ATRIADBG recovered_projection status=connected_raw_yield_deferred reason=%@ action=compact_only_environment_unsafe",
+                reason
+            )
+            return false
+        }
+
+        let finiteBudget = min(120, max(15, budgetSeconds))
+        let priorRevision = recoveredDataPublicationFence.archiveRevision
+        guard requestConnectedRawCatchUpBoundedProjection(
+            reason: "connected_raw_publication_yield_\(reason)",
+            budgetSeconds: finiteBudget
+        ) else { return false }
+        defer { endBackgroundArchiveProjectionThrottle() }
+
+        // Unlike the public terminal-recovery waiter, this local fairness turn
+        // must not clamp up to the full multi-component pipeline duration. A
+        // bootstrap chunk that is incomplete fails its revision fence and
+        // keeps durable intent; a ready chunk publishes the single bounded
+        // current-cycle/latest-night component. Either result returns the BLE
+        // turn within this exact finite budget.
+        return await recoveredDataPublicationFence.awaitPublication(
+            after: priorRevision,
+            timeout: .seconds(Int(finiteBudget.rounded(.up)))
+        )
     }
 
     /// Release the background projection throttle (call after the cycle's
@@ -10267,6 +12748,10 @@ final class SessionStore: ObservableObject {
         ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
     ) -> Bool {
         guard recoveredDataMutationTransaction.begin(ticket: ticket) else { return false }
+        stressReplayTerminalPublicationGate.beginTransaction()
+        recoveredStressReplayPreservedWorkoutAdditionIDs.removeAll(
+            keepingCapacity: true
+        )
         return true
     }
 
@@ -10304,6 +12789,8 @@ final class SessionStore: ObservableObject {
             archiveStatus: historicalArchiveStatus,
             historicalTodayHeartRatePoints: cachedHistoricalTodayHeartRatePoints,
             recoveredArchiveHeartRatePoints: cachedRecoveredArchiveHeartRatePoints,
+            recoveredAutomaticCacheAuthority:
+                cachedRecoveredAutomaticCacheAuthority,
             historicalCycleStart: cachedHistoricalCycleStart,
             behaviorInsights: behaviorInsights,
             behaviorCorrelations: behaviorCorrelationSummariesCache,
@@ -10342,6 +12829,8 @@ final class SessionStore: ObservableObject {
         }
         if !registered {
             dailyRollupStore.endRecoveredDataPublicationFence()
+        } else {
+            stressReplayTerminalPublicationGate.registerMutationSnapshot()
         }
         return registered
     }
@@ -10435,6 +12924,8 @@ final class SessionStore: ObservableObject {
         historicalArchiveStatus = snapshot.archiveStatus
         cachedHistoricalTodayHeartRatePoints = snapshot.historicalTodayHeartRatePoints
         cachedRecoveredArchiveHeartRatePoints = snapshot.recoveredArchiveHeartRatePoints
+        cachedRecoveredAutomaticCacheAuthority =
+            snapshot.recoveredAutomaticCacheAuthority
         cachedHistoricalCycleStart = snapshot.historicalCycleStart
         behaviorInsights = snapshot.behaviorInsights
         behaviorCorrelationSummariesCache = snapshot.behaviorCorrelations
@@ -10510,6 +13001,10 @@ final class SessionStore: ObservableObject {
     ) -> Bool {
         guard recoveredDataMutationTransaction.rollbackOperationCount > 0,
               recoveredDataMutationTransaction.commit(ticket: ticket) else { return false }
+        stressReplayTerminalPublicationGate.commitTransaction()
+        recoveredStressReplayPreservedWorkoutAdditionIDs.removeAll(
+            keepingCapacity: true
+        )
         dailyRollupStore.endRecoveredDataPublicationFence()
         scheduleDailyMetricPersist(reason: "recovered_transaction_commit", delay: 0)
         return true
@@ -10520,6 +13015,11 @@ final class SessionStore: ObservableObject {
     ) -> Bool {
         let hadPreparedMutation = recoveredDataMutationTransaction.rollbackOperationCount > 0
         guard recoveredDataMutationTransaction.rollback(ticket: ticket) else { return false }
+        let stressReplayOutcome = stressReplayTerminalPublicationGate
+            .rollbackTransaction()
+        recoveredStressReplayPreservedWorkoutAdditionIDs.removeAll(
+            keepingCapacity: true
+        )
         if hadPreparedMutation {
             dailyRollupStore.endRecoveredDataPublicationFence()
         }
@@ -10527,11 +13027,32 @@ final class SessionStore: ObservableObject {
         // image was provisional. Rollback restored the prior canonical image;
         // rerun the required refresh rather than publishing either intermediate.
         refreshRequiredHistorySnapshotIfPending()
+        if stressReplayOutcome.requiresSessionAuthorityPublication {
+            publishHistoricalStressSessionAuthority()
+        }
+        if stressReplayOutcome.shouldPublish {
+            publishStressReplayTerminalEdge(
+                reason: "recovered_rollback_preserved_live_mutation"
+            )
+        }
+        publishStressCalibrationFenceDidRelease(
+            reason: "recovered_rollback_final_state"
+        )
         return true
     }
 
     var recoveredDataArchiveRevisionSnapshot: UInt64 {
         recoveredDataPublicationFence.archiveRevision
+    }
+
+    /// O(1), exact-store guard for consumers with their own coalesced replay
+    /// triggers. An active mutation ticket spans the entire provisional
+    /// recovered image and is cleared only by commit/rollback; callers should
+    /// wait for `recoveredDataRecomputeDidPublishNotification` instead of
+    /// consuming baseline/context publishers while this is true.
+    var stressReplayPublicationIsDeferred: Bool {
+        recoveredDataMutationTransaction.activeTicket != nil
+            || restorePersistenceFenceActive
     }
 
     nonisolated static var recoveredDataMaximumPipelineWaitSeconds: Int {
@@ -10626,15 +13147,34 @@ final class SessionStore: ObservableObject {
                     ticket: ticket
                 )
 
-            case .startDerived(let ticket, _):
+            case .startDerived(let ticket, let components):
                 // Projection and derived fan-out are separate bounded phases.
                 // Sharing one 30-second clock caused a valid 207 MB physical
                 // archive scan to leave only a few seconds for eight derived
                 // consumers, which then failed despite real forward progress.
-                armRecoveredDataRecomputeTimeout(ticket: ticket,
-                                                 phase: "derived",
-                                                 component: .archiveStatusAndCycleHeartRate)
-                runRecoveredArchiveStatusStep(ticket: ticket)
+                if case .automaticCurrentCycle = ticket.scope {
+                    guard components.contains(
+                        .currentCycleAndLatestNight
+                    ) else {
+                        _ = completeRecoveredDataComponent(
+                            ticket: ticket,
+                            component: .currentCycleAndLatestNight,
+                            succeeded: false
+                        )
+                        continue
+                    }
+                    armRecoveredDataRecomputeTimeout(
+                        ticket: ticket,
+                        phase: "derived",
+                        component: .currentCycleAndLatestNight
+                    )
+                    runRecoveredCurrentCyclePublicationStep(ticket: ticket)
+                } else {
+                    armRecoveredDataRecomputeTimeout(ticket: ticket,
+                                                     phase: "derived",
+                                                     component: .archiveStatusAndCycleHeartRate)
+                    runRecoveredArchiveStatusStep(ticket: ticket)
+                }
 
             case .superseded(let ticket):
                 recoveredDataProjectionLeaseRenewals.removeValue(
@@ -10687,6 +13227,36 @@ final class SessionStore: ObservableObject {
                 let rolledBack = recoveredDataMutationTransaction.rollback(
                     ticket: ticket
                 )
+                if rolledBack {
+                    let stressReplayOutcome =
+                        stressReplayTerminalPublicationGate
+                            .rollbackTransaction()
+                    recoveredStressReplayPreservedWorkoutAdditionIDs.removeAll(
+                        keepingCapacity: true
+                    )
+                    if stressReplayOutcome.requiresSessionAuthorityPublication {
+                        publishHistoricalStressSessionAuthority()
+                    }
+                    if stressReplayOutcome.shouldPublish {
+                        publishStressReplayTerminalEdge(
+                            reason:
+                                "recovered_reservation_rollback_preserved_live_mutation"
+                        )
+                    }
+                    publishStressCalibrationFenceDidRelease(
+                        reason: "recovered_reservation_rollback_final_state"
+                    )
+                }
+                if ticket.reason.hasPrefix(
+                    "bg_projection_current_window_bootstrap"
+                ) {
+                    // Wake the BGTask waiter after one bounded chunk. No
+                    // publication occurred, so this revision fails closed;
+                    // the durable bootstrap intent schedules the next chunk.
+                    recoveredDataPublicationFence.fail(
+                        through: ticket.archiveRevision
+                    )
+                }
                 AtriaDebugLog(
                     "ATRIADBG recovered_projection status=reserved_for_safe_background reason=%@ generation=%llu archive_revision=%llu rollback=%d action=reuse_persisted_projection",
                     ticket.reason,
@@ -10772,18 +13342,26 @@ final class SessionStore: ObservableObject {
                     forKey: ticket.generation
                 )
                 guard commitRecoveredDataMutationTransaction(ticket: ticket) else {
+                    // A publish with no registered recovered mutation cannot
+                    // commit, but its active ticket still fenced calibration
+                    // observations. Roll it back through the ordinary terminal
+                    // helper so pending profile/fallback state cannot strand.
+                    let terminalCleanupSucceeded =
+                        rollbackRecoveredDataMutationTransaction(ticket: ticket)
                     recoveredDataPublicationFence.fail(through: ticket.archiveRevision)
                     releaseExactRecoveryArchivePriority(
                         for: ticket,
                         reason: "commit_rejected"
                     )
-                    AtriaDebugLog("ATRIADBG recovered_transaction status=commit_rejected generation=%llu archive_revision=%llu",
+                    AtriaDebugLog("ATRIADBG recovered_transaction status=commit_rejected generation=%llu archive_revision=%llu terminal_cleanup=%d",
                                   ticket.generation,
-                                  ticket.archiveRevision)
+                                  ticket.archiveRevision,
+                                  terminalCleanupSucceeded ? 1 : 0)
                     continue
                 }
                 refreshHomeDashboardDiagnosticsCache()
                 publishDashboardRevision()
+                persistRecoveredCurrentCheckpoint()
                 recoveredDataPublicationFence.publish(
                     through: ticket.archiveRevision
                 )
@@ -10897,6 +13475,59 @@ final class SessionStore: ObservableObject {
             context.ticket.generation,
             context.ticket.archiveRevision
         )
+    }
+
+    /// The automatic lane publishes only data whose inputs were already
+    /// constrained to the captured current-cycle/latest-night cutoff. It never
+    /// calls archive diagnostics, lifetime HistorySnapshot construction,
+    /// workout rehydration, trends, training load, or behavior fan-out.
+    private func runRecoveredCurrentCyclePublicationStep(
+        ticket: AtriaRecoveredDataRecomputeCoordinator.Ticket
+    ) {
+        guard case .automaticCurrentCycle = ticket.scope else {
+            _ = completeRecoveredDataComponent(
+                ticket: ticket,
+                component: .currentCycleAndLatestNight,
+                succeeded: false
+            )
+            return
+        }
+        autoConfirmSleepOnForegroundIfUseful(
+            reason: "bounded_recovered_\(ticket.reason)",
+            force: true,
+            deferDerivedPublication: true,
+            evaluationLookbackDays: 2,
+            maximumEvaluationSessions: 192,
+            autoConfirmLimit: 1
+        ) { [weak self] succeeded in
+            guard let self else { return }
+            guard succeeded else {
+                _ = self.completeRecoveredDataComponent(
+                    ticket: ticket,
+                    component: .currentCycleAndLatestNight,
+                    succeeded: false
+                )
+                return
+            }
+            // Construct only the compact nightly projection (max 84 rows) from
+            // already-persisted rollups and the latest confirmed sleep records.
+            // The lifetime HistorySnapshot/daily-rollup projector is purposely
+            // not reachable from this method.
+            self.sleepHistorySnapshot = SleepHistorySnapshot(
+                rollups: self.historySnapshot.rollups,
+                confirmedSleeps: self.cachedConfirmedSleeps,
+                dismissedCandidates: self.dismissedSleepCandidates
+            )
+            self.cachedHomeSavedAggregate = nil
+            self.cachedTodayTRIMP = nil
+            self.cachedSkinTemperatureDeviationSummary = nil
+            self.recoveryProjectionCache.invalidate()
+            _ = self.completeRecoveredDataComponent(
+                ticket: ticket,
+                component: .currentCycleAndLatestNight,
+                succeeded: true
+            )
+        }
     }
 
     private func runRecoveredArchiveStatusStep(
@@ -11246,7 +13877,8 @@ final class SessionStore: ObservableObject {
                  .overviewTrends,
                  .trainingLoad,
                  .todayHeartRateZones,
-                 .behaviorInsights:
+                 .behaviorInsights,
+                 .currentCycleAndLatestNight:
                 nextComponent = nil
             }
             AtriaDebugLog("ATRIADBG recovered_derived status=progress generation=%llu archive_revision=%llu completed=%@ remaining=%d next=%@ lease_reset_s=%d",
@@ -13412,22 +16044,54 @@ final class SessionStore: ObservableObject {
                                                           activeSessionID: UUID? = nil,
                                                           skinTemperatureDeviationByDay: [Date: Double]? = nil,
                                                           calendar: Calendar = .current) -> [SavedDailyMetric] {
-        // Overnight recovery must never be sourced from a nap. Naps remain in
-        // `napNights` for same-day sleep-credit, but only main-sleep evidence is
-        // allowed to populate the frozen morning duration/HRV/RHR row. Without
-        // this filter, a correctly detected recent nap can replace the night's
-        // sleep in the daily rollup simply because it shares the same civil day.
-        let sleepByDay = Dictionary(uniqueKeysWithValues: sleep.nights
-            .filter { $0.confirmed && !$0.isNapEvidence }
-            .map { (calendar.startOfDay(for: $0.day), $0) })
+        // Overnight recovery must never be sourced from a nap or a confirmed
+        // short rest. Use the same >=3h/source/bounds gate as the physiological
+        // cycle, then key the night by its canonical final wake in the event
+        // time zone. A linked resumed segment may move that final wake across
+        // civil midnight while `Night.day` intentionally retains the original
+        // main record's Activity identity.
+        var sleepByDay: [Date: SleepHistorySnapshot.Night] = [:]
+        for night in sleep.nights {
+            guard confirmedSleepIsPhysiologicalMainSleep(night) else { continue }
+            let day = morningMetricDay(for: night, calendar: calendar)
+            if let existing = sleepByDay[day] {
+                if physiologicalMainSleepNight(
+                    night,
+                    isPreferredTo: existing
+                ) {
+                    sleepByDay[day] = night
+                }
+            } else {
+                sleepByDay[day] = night
+            }
+        }
         let resolvedSkinTemperatureDeviationByDay = skinTemperatureDeviationByDay
             ?? finalizedSkinTemperatureDeviationByMorningDay(sessions: sessions,
                                                              activeSessionID: activeSessionID,
                                                              calendar: calendar)
-        return rollups
-            .sorted { $0.day > $1.day }
-            .map { rollup in
-                let day = calendar.startOfDay(for: rollup.day)
+        // Preserve the first authoritative row for a normalized civil day,
+        // matching mergeDailyMetricHistory's existing duplicate-day contract.
+        // This also prevents two travel-rematerialized rows from emitting two
+        // persisted metrics with the same daily identity.
+        var rollupByDay: [Date: DailyRollup] = [:]
+        for rollup in rollups {
+            let day = calendar.startOfDay(for: rollup.day)
+            if rollupByDay[day] == nil {
+                rollupByDay[day] = rollup
+            }
+        }
+        let projectionDays = Set(rollupByDay.keys)
+            .union(sleepByDay.keys)
+
+        // A confirmed main sleep is independently durable physiological
+        // evidence. Do not require a session-derived activity rollup to exist
+        // for the same civil day before publishing its frozen sleep, RHR, HRV,
+        // respiration and recovery fields. A sleep-only day keeps activity
+        // fields nil; no strain or coverage is inferred from the sleep record.
+        return projectionDays
+            .sorted(by: >)
+            .map { day in
+                let rollup = rollupByDay[day]
                 let night = sleepByDay[day]
                 // Confirmed main sleep is the authoritative historical source.
                 // DailyRollup is session-start-day based and can legitimately
@@ -13473,9 +16137,9 @@ final class SessionStore: ObservableObject {
                                             asOf: day,
                                             calendar: calendar
                                         ),
-                                        strain: rollup.strain > 0 ? rollup.strain : nil,
-                                        strainCoverageFraction: rollup.strainCoverageFraction,
-                                        strainEvidenceQuality: rollup.strainEvidenceQuality,
+                                        strain: rollup.flatMap { $0.strain > 0 ? $0.strain : nil },
+                                        strainCoverageFraction: rollup?.strainCoverageFraction,
+                                        strainEvidenceQuality: rollup?.strainEvidenceQuality,
                                         skinTemperatureDeviationCelsius: resolvedSkinTemperatureDeviationByDay[day],
                                         // This bulk historical rebuild may run
                                         // after the personal baseline has
@@ -13558,11 +16222,12 @@ final class SessionStore: ObservableObject {
             // minter so the persisted recovery + trend point never outlive the night
             // they describe.
             let todayIsAuthoritative = normalizedAuthoritativeDays.contains(today)
-            let confirmedNight = sleep.nights.first(where: {
-                !$0.isNapEvidence
-                    && calendar.isDate(morningMetricDay(for: $0, calendar: calendar),
-                                       inSameDayAs: today)
-            })
+            let confirmedNight = canonicalPhysiologicalMainSleepNight(
+                for: today,
+                in: sleep.nights,
+                completedBy: now,
+                calendar: calendar
+            )
             let confirmedNightStillMatches = confirmedNight.map {
                 frozenRecoveryMatchesConfirmedNight(frozen: frozenToday, night: $0)
             } ?? false
@@ -13845,18 +16510,21 @@ final class SessionStore: ObservableObject {
                                                                  skinTemperatureSourceValidated: Bool = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable,
                                                                  calendar: Calendar = .current) -> SavedDailyMetric? {
         let hour = calendar.component(.hour, from: now)
-        let confirmedMainSleep = sleep.nights.first {
-            $0.confirmed
-                && !$0.isNapEvidence
-                && ($0.end ?? $0.day) <= now
-                && calendar.isDate(morningMetricDay(for: $0, calendar: calendar), inSameDayAs: day)
-        }
+        let confirmedMainSleep = canonicalPhysiologicalMainSleepNight(
+            for: day,
+            in: sleep.nights,
+            completedBy: now,
+            calendar: calendar
+        )
         // A confirmed wake is the boundary, regardless of wall-clock hour. This
         // lets a shift worker's 02:00 wake settle recovery. The legacy 04:00 gate
         // remains only for first-run wear fallback when no confirmed main sleep
         // exists anywhere yet; it cannot mint a second civil-day recovery while
         // the previous physiological cycle is still active.
-        let hasAnyConfirmedMainSleep = sleep.nights.contains { $0.confirmed && !$0.isNapEvidence }
+        let hasAnyConfirmedMainSleep = sleep.nights.contains {
+            confirmedSleepIsPhysiologicalMainSleep($0)
+                && ($0.end ?? .distantFuture) <= now
+        }
         guard confirmedMainSleep != nil || hasAnyConfirmedMainSleep || hour >= 4 else { return nil }
 
         let sleepAnchoredSession = confirmedMainSleep.flatMap { confirmedSleep in
@@ -14361,6 +17029,45 @@ final class SessionStore: ObservableObject {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return dir.appendingPathComponent("biological-age-cache.json")
     }()
+    private let recoveredCurrentCheckpointURL: URL = {
+        let dir = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        )[0]
+        return dir
+            .appendingPathComponent("atria-projections", isDirectory: true)
+            .appendingPathComponent(
+                "recovered-current-cycle-v1.json",
+                isDirectory: false
+            )
+    }()
+
+    private struct RecoveredCurrentCheckpoint: Codable, @unchecked Sendable {
+        nonisolated static let schema = 2
+
+        struct TemperatureDay: Codable, Sendable {
+            let day: Date
+            let deviationCelsius: Double
+        }
+
+        let version: Int
+        let generatedAt: Date
+        let cutoff: Date
+        let sourceFingerprint:
+            HistoricalArchive.ConsumerSourceFingerprint
+        let automaticCacheAuthority:
+            HistoricalArchive.AutomaticRecoveredDataCacheAuthority
+        let recoveredSessions: [SavedSession]
+        let temperatureDays: [TemperatureDay]
+        let temperatureBaselineNightCount: Int
+        let temperatureCandidateFrameCount: Int
+    }
+
+    nonisolated private static let recoveredCurrentCheckpointMaximumAge:
+        TimeInterval = 72 * 60 * 60
+    nonisolated private static let recoveredCurrentCheckpointMaximumSessions = 256
+    nonisolated private static let recoveredCurrentCheckpointMaximumHeartRatePoints =
+        200_000
 
     init(restoreInitialization: RestoreInitialization = .live,
          journalAnswers: AtriaJournalAnswerStore = AtriaJournalAnswerStore()) {
@@ -14413,13 +17120,7 @@ final class SessionStore: ObservableObject {
                                                                                       queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                // Ordinary archive updates persist freshness intent only.
-                // Even a small raw tail would enter whole-archive derived
-                // consumers after projection, so it may not mint a coordinator
-                // ticket in the release path.
-                self.reserveAutomaticRecoveredProjectionFreshness(
-                    reason: "archive_did_update"
-                )
+                self.handleAutomaticRecoveredArchiveDidUpdate()
                 // A terminal history drain can seal a raw chunk while the app
                 // stays in the foreground for days. Retain that maintenance
                 // intent, but never let this live/archive callback enumerate
@@ -14613,6 +17314,7 @@ final class SessionStore: ObservableObject {
         }
         pendingSleepReviewCacheWorkItem?.cancel()
         pendingWorkoutReviewCacheWorkItem?.cancel()
+        automaticRecoveredArchiveIdleTask?.cancel()
         recoveredDataRecomputeTimeoutTask?.cancel()
         recoveredDataRecomputeTimeoutContext = nil
         recoveredDataProjectionLeaseRenewals.removeAll()
@@ -15230,7 +17932,10 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    private func setCachedConfirmedSleeps(_ sleeps: [UserConfirmedSleep]) {
+    private func setCachedConfirmedSleeps(
+        _ sleeps: [UserConfirmedSleep],
+        refreshDerivedCaches: Bool = true
+    ) {
         cachedConfirmedSleeps = sleeps
         backupCanonicalRevision &+= 1
         confirmedSleepsRevision &+= 1
@@ -15239,8 +17944,13 @@ final class SessionStore: ObservableObject {
         cachedHomeSavedAggregate = nil
         cachedTodayTRIMP = nil
         lastTodayHRZoneMinutesCheckpointRefreshAt = nil
-        refreshTodayHRZoneMinutesCache(deferred: true)
-        invalidateSleepReviewCache(reason: "confirmed_sleeps")
+        if refreshDerivedCaches {
+            refreshTodayHRZoneMinutesCache(deferred: true)
+        }
+        invalidateSleepReviewCache(
+            reason: "confirmed_sleeps",
+            scheduleRefresh: refreshDerivedCaches
+        )
     }
 
     private func setLatestReferenceValidatedHRVSource(_ source: LatestSessionMetricSource?) {
@@ -15557,6 +18267,21 @@ final class SessionStore: ObservableObject {
                                                 rawSessionCount: sessions.count)
         cachedHomeSavedAggregate = aggregate
         return aggregate
+    }
+
+    /// O(1) MainActor capture: no filtering, sorting, HR integration, or array
+    /// element walk is performed here. Callers own staleness rejection for the
+    /// worker result (Home uses its generation/latest-wins gate).
+    func homeSavedAggregateSourceSnapshot() -> HomeSavedAggregateSourceSnapshot {
+        HomeSavedAggregateSourceSnapshot(
+            canonicalSessions: cachedCanonicalSessions,
+            archiveHeartRatePoints: cachedHistoricalTodayHeartRatePoints,
+            confirmedSleeps: cachedConfirmedSleeps,
+            profile: profile,
+            rawSessions: sessions,
+            rawSessionCount: sessions.count,
+            latestRawSession: sessions.first
+        )
     }
 
     func workoutSavedStepPrefix(activeSessionID: UUID? = nil,
@@ -17898,6 +20623,10 @@ final class SessionStore: ObservableObject {
         }
         reconcileSessionsBeforeLiveUpsert(reason: "add")
         let replacedSession = sessions.first(where: { $0.id == s.id })
+        let stressReplayInputShrank = Self.stressReplaySessionInputShrank(
+            previous: replacedSession,
+            next: s
+        )
         let mode = upsertSession(s)
         markSessionPersistenceDirty(affectedSessions: [s] + (replacedSession.map { [$0] } ?? []))
         if let replacedSession {
@@ -17915,6 +20644,9 @@ final class SessionStore: ObservableObject {
         if deferDerivedPublication {
             deferredSessionBoundaryDerivedPublicationGeneration &+= 1
             deferredSessionBoundaryDerivedPublicationPending = true
+            deferredSessionBoundaryStressReplayTerminalEdgePending =
+                deferredSessionBoundaryStressReplayTerminalEdgePending
+                    || stressReplayInputShrank
             // The automatic backup writer is already a coalescing utility
             // worker. Queue it now so the fast canonical flush is not the only
             // durable copy, but do not run any analytical projection on the
@@ -17954,6 +20686,14 @@ final class SessionStore: ObservableObject {
                   s.motionEvidenceValidatedValue ? 1 : 0)
         }
         writeAutomaticSessionBackup(reason: "session-add")
+        if stressReplayInputShrank
+            || deferredSessionBoundaryStressReplayTerminalEdgePending {
+            deferredSessionBoundaryStressReplayTerminalEdgePending = false
+            publishHistoricalStressSessionAuthority()
+            publishStressReplayTerminalMutationIfNeeded(
+                reason: "saved_session_shrank"
+            )
+        }
         return true
     }
 
@@ -17995,6 +20735,14 @@ final class SessionStore: ObservableObject {
                 self.refreshTodayHRZoneMinutesCache(deferred: true)
                 self.recomputeBehaviorInsights()
                 self.publishDashboardRevision()
+                if self.deferredSessionBoundaryStressReplayTerminalEdgePending {
+                    self.deferredSessionBoundaryStressReplayTerminalEdgePending =
+                        false
+                    self.publishHistoricalStressSessionAuthority()
+                    self.publishStressReplayTerminalMutationIfNeeded(
+                        reason: "deferred_saved_session_shrank"
+                    )
+                }
                 AtriaDebugLog(
                     "ATRIADBG session_store_add status=derived_resumed reason=%@ sessions=%d generation=%llu",
                     reason,
@@ -18133,6 +20881,11 @@ final class SessionStore: ObservableObject {
         }
         let now = Date()
         reconcileSessionsBeforeLiveUpsert(reason: "checkpoint")
+        let previousSession = sessions.first(where: { $0.id == s.id })
+        let stressReplayInputShrank = Self.stressReplaySessionInputShrank(
+            previous: previousSession,
+            next: s
+        )
         _ = upsertSession(s, isLiveCheckpoint: true)
         markSessionPersistenceDirty(affectedSessions: [s])
         let refreshHRV = Self.shouldRefreshHRVOnLiveCheckpoint(
@@ -18178,6 +20931,12 @@ final class SessionStore: ObservableObject {
                   s.motionHintCountValue,
                   s.motionHintKindsValue,
                   s.motionEvidenceValidatedValue ? 1 : 0)
+        }
+        if stressReplayInputShrank {
+            publishHistoricalStressSessionAuthority()
+            publishStressReplayTerminalMutationIfNeeded(
+                reason: "saved_session_checkpoint_shrank"
+            )
         }
         return true
     }
@@ -18322,6 +21081,9 @@ final class SessionStore: ObservableObject {
     func delete(_ offsets: IndexSet) {
         guard canonicalMutationAllowed else { return }
         let removedSessions = offsets.compactMap { sessions.indices.contains($0) ? sessions[$0] : nil }
+        let removedStressReplayInput = removedSessions.contains(
+            where: Self.stressReplaySessionHasInput
+        )
         sessions.remove(atOffsets: offsets)
         markSessionPersistenceDirty(affectedSessions: removedSessions)
         invalidateDailyDerivedDays(for: removedSessions)
@@ -18331,6 +21093,12 @@ final class SessionStore: ObservableObject {
         recomputeBehaviorInsights()
         scheduleSessionFilePersist(reason: "delete", delay: 0.10)
         writeAutomaticSessionBackup(reason: "session-delete")
+        if removedStressReplayInput {
+            publishHistoricalStressSessionAuthority()
+            publishStressReplayTerminalMutationIfNeeded(
+                reason: "saved_session_deleted"
+            )
+        }
     }
 
     private func invalidateDailyDerivedDays(for sessions: [SavedSession],
@@ -18436,6 +21204,17 @@ final class SessionStore: ObservableObject {
               self.profile.maxHR,
               self.profile.measuredMaxHR)
         writeAutomaticSessionBackup(reason: "onboarding")
+        let hadDeferredRecoveredProjection =
+            deferredRecoveredDataRecomputationReason != nil
+        resumeDeferredRecoveredDataRecomputation(
+            reason: "onboarding_completed"
+        )
+        if !hadDeferredRecoveredProjection,
+           Self.automaticRecoveredDataBootstrapIntentIsPending {
+            _ = requestRecoveredDataRecomputation(
+                reason: "deferred_session_load_after_onboarding"
+            )
+        }
     }
 
     func completeOnboardingFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
@@ -20123,7 +22902,8 @@ final class SessionStore: ObservableObject {
                                       maxHR: Int,
                                       source: String = "ui",
                                       now: Date = Date()) -> WorkoutReviewCandidate? {
-        guard hasCompletedDeferredSessionLoad else {
+        guard !restoreInitializationBlocked,
+              hasCompletedDeferredSessionLoad else {
             AtriaDebugLog("ATRIADBG workout_review_candidate status=deferred source=%@ reason=store_not_loaded rest_hr=%d max_hr=%d",
                           source,
                           rest,
@@ -20154,7 +22934,8 @@ final class SessionStore: ObservableObject {
                                       maxHR: Int,
                                       source: String = "history_ui",
                                       now: Date = Date()) -> [WorkoutReviewCandidate] {
-        guard hasCompletedDeferredSessionLoad else { return [] }
+        guard !restoreInitializationBlocked,
+              hasCompletedDeferredSessionLoad else { return [] }
         let requestedKey = workoutReviewKey(rest: rest, maxHR: maxHR, now: now)
         if workoutReviewCacheKey != requestedKey {
             scheduleWorkoutReviewCacheRefresh(rest: rest,
@@ -20171,31 +22952,70 @@ final class SessionStore: ObservableObject {
     private func workoutReviewKey(rest: Int,
                                   maxHR: Int,
                                   now: Date = Date()) -> WorkoutReviewCacheKey {
-        // Workout review must advance with live canonical checkpoints even
-        // when sleep-review recomputation is intentionally suppressed.
-        WorkoutReviewCacheKey(canonicalSessionsRevision: canonicalSessionsRevision,
-                              confirmedWorkoutsRevision: confirmedWorkoutsRevision,
-                              liveFiveMinuteBucket: Int(now.timeIntervalSince1970 / (5 * 60)),
-                              restingHR: rest,
-                              maxHR: maxHR)
+        // Finalized/load authority changes invalidate immediately. A live HR
+        // checkpoint deliberately does not: the replay can take longer than
+        // the checkpoint cadence, so keying it on `canonicalSessionsRevision`
+        // made every completion stale and self-retry forever. The fsynced
+        // active journal still advances this projection on the bounded five-
+        // minute bucket published by `handleActiveJournalSleepReviewIdentity`.
+        Self.workoutReviewCacheKey(
+            sourceSessionsRevision: biologicalAgeSourceSessionsRevision,
+            confirmedWorkoutsRevision: confirmedWorkoutsRevision,
+            now: now,
+            restingHR: rest,
+            maxHR: maxHR
+        )
+    }
+
+    nonisolated static func workoutReviewCacheKey(
+        sourceSessionsRevision: Int,
+        confirmedWorkoutsRevision: Int,
+        now: Date,
+        restingHR: Int,
+        maxHR: Int
+    ) -> WorkoutReviewCacheKey {
+        WorkoutReviewCacheKey(
+            sourceSessionsRevision: sourceSessionsRevision,
+            confirmedWorkoutsRevision: confirmedWorkoutsRevision,
+            liveFiveMinuteBucket: Int(now.timeIntervalSince1970 / (5 * 60)),
+            restingHR: restingHR,
+            maxHR: maxHR
+        )
     }
 
     private func scheduleWorkoutReviewCacheRefresh(rest: Int,
                                                    maxHR: Int,
                                                    now: Date,
                                                    source: String) {
+        guard !restoreInitializationBlocked else { return }
         let requestedKey = workoutReviewKey(rest: rest, maxHR: maxHR, now: now)
         if workoutReviewCacheKey == requestedKey { return }
+
+        let request = WorkoutReviewCacheRefreshRequest(
+            key: requestedKey,
+            restingHR: rest,
+            maxHR: maxHR,
+            now: now,
+            source: source
+        )
 
         // Cancelling a DispatchWorkItem after it has begun does not interrupt
         // its aggregate replay. A live checkpoint used to replace that item
         // every few seconds, leaving several expensive scans alive at once.
-        // Keep one worker in flight and let its stale-result path rebuild once
-        // from the newest evidence when it finishes.
-        if pendingWorkoutReviewCacheWorkItem != nil {
-            pendingWorkoutReviewCacheKey = requestedKey
+        // Keep its sentinel through every invalidation and retain at most the
+        // latest consumer request as a trailing replay.
+        switch workoutReviewRefreshGate.request(requestedKey) {
+        case .joinedActive:
+            trailingWorkoutReviewCacheRefreshRequest = nil
+            AtriaDebugLog("ATRIADBG workout_review_cache status=joined source=%@", source)
+            return
+        case .coalescedTrailing:
+            trailingWorkoutReviewCacheRefreshRequest = request
             AtriaDebugLog("ATRIADBG workout_review_cache status=coalesced source=%@", source)
             return
+        case .start:
+            trailingWorkoutReviewCacheRefreshRequest = nil
+            break
         }
 
         workoutReviewCacheGeneration &+= 1
@@ -20224,33 +23044,56 @@ final class SessionStore: ObservableObject {
                                                                       maxHR: maxHR)
             let candidate = candidates.first
             DispatchQueue.main.async { [weak self] in
-                guard let self,
-                      Self.shouldPublishWorkoutReviewCache(completedGeneration: generation,
-                                                           currentGeneration: self.workoutReviewCacheGeneration) else {
-                    return
-                }
-                guard requestedKey == self.workoutReviewKey(rest: rest,
-                                                            maxHR: maxHR,
-                                                            now: now) else {
-                    // A live checkpoint can advance while the utility worker
-                    // is reading the journal. Clear this worker's pending slot
-                    // and immediately rebuild from the newer evidence; do not
-                    // strand the cache empty until another scene transition.
-                    self.pendingWorkoutReviewCacheKey = nil
-                    self.pendingWorkoutReviewCacheWorkItem = nil
+                guard let self else { return }
+                let currentKey = self.workoutReviewKey(
+                    rest: rest,
+                    maxHR: maxHR,
+                    now: now
+                )
+                let completionAction = Self.workoutReviewCacheCompletionAction(
+                    completedGeneration: generation,
+                    currentGeneration: self.workoutReviewCacheGeneration,
+                    requestedKey: requestedKey,
+                    currentKey: currentKey
+                )
+
+                // Release the non-cancellable worker's sentinel for every
+                // completion action. In particular, an invalidated generation
+                // must not return early and strand the gate forever.
+                guard let gateCompletion = self.workoutReviewRefreshGate.finish(
+                    completedKey: requestedKey
+                ) else { return }
+                self.pendingWorkoutReviewCacheWorkItem = nil
+                let trailingRequest =
+                    self.trailingWorkoutReviewCacheRefreshRequest
+                self.trailingWorkoutReviewCacheRefreshRequest = nil
+
+                if let trailingRequest {
+                    assert(gateCompletion.trailingKey == trailingRequest.key)
+                    // Recompute authority only at admission: several source
+                    // invalidations may have coalesced after this consumer made
+                    // its request. Main-actor serialization makes this exactly
+                    // one launch after the old worker has fully completed.
                     self.scheduleWorkoutReviewCacheRefresh(
-                        rest: rest,
-                        maxHR: maxHR,
+                        rest: trailingRequest.restingHR,
+                        maxHR: trailingRequest.maxHR,
                         now: Date(),
-                        source: "stale_\(source)"
+                        source: "stale_\(trailingRequest.source)"
                     )
                     return
+                }
+
+                switch completionAction {
+                case .discardSuperseded, .retryLatest:
+                    // Invalidation alone does not create background work. A
+                    // later consumer request will admit the newest authority.
+                    return
+                case .publish:
+                    break
                 }
                 self.workoutReviewCacheKey = requestedKey
                 self.cachedWorkoutReviewCandidate = candidate
                 self.cachedWorkoutReviewCandidates = candidates
-                self.pendingWorkoutReviewCacheKey = nil
-                self.pendingWorkoutReviewCacheWorkItem = nil
                 self.dashboardRevision &+= 1
                 AtriaDebugLog("ATRIADBG workout_review_cache status=published source=%@ generation=%d sessions=%d has_candidate=%d candidate_windows=%d",
                               source,
@@ -20260,7 +23103,6 @@ final class SessionStore: ObservableObject {
                               candidates.count)
             }
         }
-        pendingWorkoutReviewCacheKey = requestedKey
         pendingWorkoutReviewCacheWorkItem = workItem
         DispatchQueue.global(qos: .utility).async(execute: workItem)
     }
@@ -20286,6 +23128,21 @@ final class SessionStore: ObservableObject {
     nonisolated static func shouldPublishWorkoutReviewCache(completedGeneration: Int,
                                                             currentGeneration: Int) -> Bool {
         completedGeneration == currentGeneration
+    }
+
+    nonisolated static func workoutReviewCacheCompletionAction(
+        completedGeneration: Int,
+        currentGeneration: Int,
+        requestedKey: WorkoutReviewCacheKey,
+        currentKey: WorkoutReviewCacheKey
+    ) -> WorkoutReviewCacheCompletionAction {
+        guard shouldPublishWorkoutReviewCache(
+            completedGeneration: completedGeneration,
+            currentGeneration: currentGeneration
+        ) else {
+            return .discardSuperseded
+        }
+        return requestedKey == currentKey ? .publish : .retryLatest
     }
 
     nonisolated static func freshWorkoutReviewCandidate(_ candidate: WorkoutReviewCandidate?,
@@ -21048,7 +23905,10 @@ final class SessionStore: ObservableObject {
                                              zoneSeconds: enriched.zoneSeconds,
                                              eventTimeZoneIdentifier: TimeZone.current.identifier)
         existing.append(confirmed)
-        guard await saveConfirmedWorkouts(existing) else {
+        guard await saveConfirmedWorkouts(
+            existing,
+            stressContextMutation: .init(previous: nil, next: confirmed)
+        ) else {
             AtriaDebugLog("ATRIADBG workout_confirm status=store_failed id=%@ source=%@ start=%@ end=%@ action=retain_pending_intent",
                           confirmed.id,
                           source,
@@ -21338,7 +24198,13 @@ final class SessionStore: ObservableObject {
             )
             if merged != already {
                 existing[index] = merged
-                guard await saveConfirmedWorkouts(existing) else { return nil }
+                guard await saveConfirmedWorkouts(
+                    existing,
+                    stressContextMutation: .init(
+                        previous: already,
+                        next: merged
+                    )
+                ) else { return nil }
             }
             settleWorkoutCandidateAfterCanonicalSave(
                 confirmed: merged,
@@ -21414,7 +24280,10 @@ final class SessionStore: ObservableObject {
             workoutStepsCapturedAt: request.workoutSteps == nil ? nil : request.workoutStepsCapturedAt
         )
         existing.append(confirmed)
-        guard await saveConfirmedWorkouts(existing) else {
+        guard await saveConfirmedWorkouts(
+            existing,
+            stressContextMutation: .init(previous: nil, next: confirmed)
+        ) else {
             AtriaDebugLog("ATRIADBG workout_confirm status=store_failed id=%@ source=%@ start=%@ end=%@ action=retain_pending_intent",
                           confirmed.id,
                           request.source,
@@ -21617,7 +24486,13 @@ final class SessionStore: ObservableObject {
             )
             if merged != already {
                 existing[index] = merged
-                guard await saveConfirmedWorkouts(existing) else { return nil }
+                guard await saveConfirmedWorkouts(
+                    existing,
+                    stressContextMutation: .init(
+                        previous: already,
+                        next: merged
+                    )
+                ) else { return nil }
             }
             settleWorkoutCandidateAfterCanonicalSave(
                 confirmed: merged,
@@ -21702,7 +24577,10 @@ final class SessionStore: ObservableObject {
                                              workoutStepsAreEstimated: workoutSteps == nil ? nil : (workoutStepsAreEstimated ?? true),
                                              workoutStepsCapturedAt: workoutSteps == nil ? nil : workoutStepsCapturedAt)
         existing.append(confirmed)
-        guard await saveConfirmedWorkouts(existing) else {
+        guard await saveConfirmedWorkouts(
+            existing,
+            stressContextMutation: .init(previous: nil, next: confirmed)
+        ) else {
             AtriaDebugLog("ATRIADBG workout_confirm status=store_failed id=%@ source=%@ start=%@ end=%@ action=retain_pending_intent",
                           confirmed.id,
                           source,
@@ -21803,7 +24681,13 @@ final class SessionStore: ObservableObject {
             if merged != existing {
                 var workouts = cachedConfirmedWorkouts
                 workouts[index] = merged
-                guard await saveConfirmedWorkouts(workouts) else { return nil }
+                guard await saveConfirmedWorkouts(
+                    workouts,
+                    stressContextMutation: .init(
+                        previous: existing,
+                        next: merged
+                    )
+                ) else { return nil }
             }
             settleWorkoutCandidateAfterCanonicalSave(
                 confirmed: merged,
@@ -21876,7 +24760,10 @@ final class SessionStore: ObservableObject {
         )
         var workouts = cachedConfirmedWorkouts
         workouts.append(confirmed)
-        guard await saveConfirmedWorkouts(workouts) else {
+        guard await saveConfirmedWorkouts(
+            workouts,
+            stressContextMutation: .init(previous: nil, next: confirmed)
+        ) else {
             AtriaDebugLog("ATRIADBG workout_confirm status=store_failed reason=metadata_only source=%@ id=%@",
                           source,
                           id)
@@ -22365,7 +25252,8 @@ final class SessionStore: ObservableObject {
     @discardableResult
     private func saveConfirmedWorkouts(
         _ workouts: [UserConfirmedWorkout],
-        deferDerivedPublication: Bool = false
+        deferDerivedPublication: Bool = false,
+        stressContextMutation: WorkoutStressContextMutation? = nil
     ) async -> Bool {
         let base = cachedConfirmedWorkouts
         await Self.confirmedRecordTransactionGate.acquire()
@@ -22444,6 +25332,12 @@ final class SessionStore: ObservableObject {
                       sorted.count,
                       bytes,
                       mirrorSucceeded ? 1 : 0)
+        publishStressContextIfNeeded(
+            deferDerivedPublication: deferDerivedPublication,
+            publicationRequested:
+                stressContextMutation?.changesAuthority ?? false,
+            rollbackWorkoutMutation: stressContextMutation
+        )
         return true
     }
 
@@ -22461,7 +25355,10 @@ final class SessionStore: ObservableObject {
     func deleteConfirmedWorkout(id: String) async -> Bool {
         guard let removed = cachedConfirmedWorkouts.first(where: { $0.id == id }) else { return false }
         let filtered = cachedConfirmedWorkouts.filter { $0.id != id }
-        guard await saveConfirmedWorkouts(filtered) else { return false }
+        guard await saveConfirmedWorkouts(
+            filtered,
+            stressContextMutation: .init(previous: removed, next: nil)
+        ) else { return false }
         addDismissedWorkoutCandidate(start: removed.start, end: removed.end)
         invalidateWorkoutReviewCache()
         dashboardRevision &+= 1
@@ -22609,9 +25506,11 @@ final class SessionStore: ObservableObject {
 
     private func invalidateWorkoutReviewCache() {
         workoutReviewCacheGeneration &+= 1
-        pendingWorkoutReviewCacheWorkItem?.cancel()
-        pendingWorkoutReviewCacheWorkItem = nil
-        pendingWorkoutReviewCacheKey = nil
+        // DispatchWorkItem cancellation cannot interrupt an aggregate replay.
+        // Preserve the running sentinel so a consumer can only replace the one
+        // trailing request; completion will release the slot before launching
+        // that latest request.
+        workoutReviewRefreshGate.invalidate()
         cachedWorkoutReviewCandidate = nil
         cachedWorkoutReviewCandidates = []
         workoutReviewCacheKey = nil
@@ -23181,6 +26080,9 @@ final class SessionStore: ObservableObject {
                     ? (profile.hasEnergyProfile ? nil : "needs_profile")
                     : "estimate",
                 zoneSeconds: editZoneSummary.isEmpty ? nil : editZoneSummary.storage,
+                    zoneBoundaries: editZoneSummary.isEmpty
+                        ? nil
+                        : AtriaHRRZoneBoundaries(restingHR: rest, maxHR: maxHR),
                     eventTimeZoneIdentifier: old.eventTimeZoneIdentifier ?? TimeZone.current.identifier,
                     workoutSteps: nil,
                     workoutStepsAreEstimated: nil,
@@ -23219,6 +26121,7 @@ final class SessionStore: ObservableObject {
                 activeEnergyKilocalories: old.activeEnergyKilocalories,
                 activeEnergyConfidence: old.activeEnergyConfidence,
                 zoneSeconds: old.zoneSeconds,
+                zoneBoundaries: old.zoneBoundaries,
                 eventTimeZoneIdentifier: old.eventTimeZoneIdentifier,
                 workoutSteps: old.workoutSteps,
                 workoutStepsAreEstimated: old.workoutStepsAreEstimated,
@@ -23229,9 +26132,23 @@ final class SessionStore: ObservableObject {
         guard replacement != old else { return .success(old) }
         var updated = cachedConfirmedWorkouts
         updated[oldIndex] = replacement
-        guard await saveConfirmedWorkouts(updated) else { return .failure(.persistenceFailed) }
+        guard await saveConfirmedWorkouts(
+            updated,
+            // This guided editor owns bounds and pause exclusions in one
+            // transaction. A successful replacement is therefore the bounded
+            // authority edge; never rescan all workout history here.
+            stressContextMutation: .init(previous: old, next: replacement)
+        ) else {
+            return .failure(.persistenceFailed)
+        }
         dashboardRevision &+= 1
-        return .success(replacement)
+        // Persistence may settle canonical fields such as a newly frozen HRR
+        // boundary receipt. Return the exact record that crossed the atomic
+        // store boundary instead of the pre-commit constructor.
+        return .success(
+            cachedConfirmedWorkouts.first(where: { $0.id == replacement.id })
+                ?? replacement
+        )
     }
 
     /// Source-compatible metadata/window editor for callers that do not expose
@@ -23422,7 +26339,10 @@ final class SessionStore: ObservableObject {
                             secondsFromGMT: input.secondsFromGMT)
     }
 
-    private func invalidateSleepReviewCache(reason: String) {
+    private func invalidateSleepReviewCache(
+        reason: String,
+        scheduleRefresh: Bool = true
+    ) {
         sleepReviewCacheGeneration &+= 1
         sleepReviewCacheKey = nil
         sleepReviewCacheInputKey = nil
@@ -23435,9 +26355,13 @@ final class SessionStore: ObservableObject {
         // overlapping sleep actionable for another frame.
         pendingSleepReviewNightForUI = nil
         napReviewCandidateNightsForUI = []
-        scheduleSleepReviewCacheRefresh(rest: baseline.restingInt ?? 60,
-                                        calendar: .current,
-                                        reason: reason)
+        if scheduleRefresh {
+            scheduleSleepReviewCacheRefresh(
+                rest: baseline.restingInt ?? 60,
+                calendar: .current,
+                reason: reason
+            )
+        }
     }
 
     private func scheduleSleepReviewCacheRefresh(rest: Int,
@@ -24098,7 +27022,11 @@ final class SessionStore: ObservableObject {
                                                      candidateEnd: end)
         }
         existing.append(confirmed)
-        guard await saveConfirmedSleeps(existing) else { return nil }
+        guard await saveConfirmedSleeps(
+            existing,
+            publishStressContext:
+                Self.sleepStressContextAuthority(confirmed) != nil
+        ) else { return nil }
         // Confirm permanently settles the detector suggestion only after the
         // canonical record is durable. A failed write must never dismiss the
         // sole actionable candidate and leave Activity empty.
@@ -24124,7 +27052,11 @@ final class SessionStore: ObservableObject {
                       confirmed.motionValidated ? 1 : 0,
                       confirmed.stageSegments?.count ?? 0,
                       confirmed.reason)
-        return confirmed
+        // Persistence may freeze a new adaptive sleep-need receipt. Return
+        // the settled canonical image, not the pre-settlement constructor, so
+        // an immediate unchanged Save is genuinely idempotent.
+        return cachedConfirmedSleeps.first(where: { $0.id == confirmed.id })
+            ?? confirmed
     }
 
     private func reviewedSleepSource(for night: SleepHistorySnapshot.Night) -> String {
@@ -24236,6 +27168,404 @@ final class SessionStore: ObservableObject {
     nonisolated static let foregroundSleepEvaluationLookbackDays = 7
     nonisolated static let foregroundSleepEvaluationMaximumSessions = 512
 
+    /// Hard ceilings for the archive-free latest-night publisher. The motion
+    /// side owns its independent 2-shard/10 MiB/200k-row limits; these cap the
+    /// already-decoded physiology carried into the existing sleep gates.
+    nonisolated static let compactLatestNightMaximumSessions = 64
+    nonisolated static let compactLatestNightMaximumHeartRateRows = 80_000
+    nonisolated static let compactLatestNightMaximumRRRows = 80_000
+    /// The research stage engine is optional presentation evidence, not a
+    /// sleep-save gate. It has no checked API in this target, so compact
+    /// settlement calls it only for a demonstrably small input and otherwise
+    /// publishes the qualified sleep/HRV/respiration without fabricated stages.
+    nonisolated static let compactLatestNightMaximumStagingRows = 4_096
+    nonisolated static let compactLatestNightMaximumRespirationWindowRows = 4_096
+    nonisolated static let compactLatestNightDeadlineSeconds: TimeInterval = 2
+
+    /// Latest-night horizon: the detector's 14-hour maximum sleep span plus a
+    /// six-hour wake/settlement allowance. A rolling 20 hours can intersect at
+    /// most two UTC compact shards and structurally keeps ~1 Hz physiology
+    /// below the independent 80k-row ceilings.
+    nonisolated static func compactLatestNightWindow(
+        now: Date
+    ) -> DateInterval? {
+        let unix = now.timeIntervalSince1970
+        guard unix.isFinite, unix > 20 * 60 * 60 else { return nil }
+        let start = now.addingTimeInterval(-20 * 60 * 60)
+        guard now > start else { return nil }
+        return DateInterval(start: start, end: now)
+    }
+
+    nonisolated static func compactLatestNightSessionSlice(
+        from canonicalSessions: [SavedSession],
+        now: Date,
+        deadlineUptimeNanoseconds: UInt64
+    ) -> Result<
+        CompactLatestNightSessionSlice,
+        CompactLatestNightSettlementFailure
+    > {
+        guard let window = compactLatestNightWindow(now: now) else {
+            return .failure(.invalidWindow)
+        }
+        var sessions: [SavedSession] = []
+        sessions.reserveCapacity(min(
+            canonicalSessions.count,
+            compactLatestNightMaximumSessions
+        ))
+        var heartRateRows = 0
+        var rrRows = 0
+        func deadlineExceeded() -> Bool {
+            DispatchTime.now().uptimeNanoseconds
+                >= deadlineUptimeNanoseconds
+        }
+        for (index, source) in canonicalSessions.enumerated() {
+            if index.isMultiple(of: 64), deadlineExceeded() {
+                return .failure(.deadlineExceeded)
+            }
+            guard source.end > window.start,
+                  source.start < window.end else {
+                continue
+            }
+            guard source.start.timeIntervalSince1970.isFinite,
+                  source.end.timeIntervalSince1970.isFinite,
+                  source.end > source.start else {
+                return .failure(.sessionIntegrityFailure)
+            }
+            guard sessions.count < compactLatestNightMaximumSessions else {
+                return .failure(.sessionCapExceeded)
+            }
+            let clippedStart = max(source.start, window.start)
+            let clippedEnd = min(source.end, window.end)
+            guard clippedEnd > clippedStart else { continue }
+
+            // This is a rolling evidence horizon, not a pair of adjacent
+            // ownership buckets. Keep the end inclusive to match legacy
+            // confirmed-window physiology and the compact motion reader; a
+            // connection UUID remains the de-duplication authority.
+            var points: [SavedSession.Point] = []
+            points.reserveCapacity(min(
+                source.points.count,
+                compactLatestNightMaximumHeartRateRows - heartRateRows
+            ))
+            for (pointIndex, point) in source.points.enumerated() {
+                if pointIndex.isMultiple(of: 256), deadlineExceeded() {
+                    return .failure(.deadlineExceeded)
+                }
+                guard point.t.isFinite else {
+                    return .failure(.sessionIntegrityFailure)
+                }
+                let timestamp = source.start.addingTimeInterval(max(0, point.t))
+                guard timestamp >= clippedStart,
+                      timestamp <= clippedEnd else { continue }
+                guard heartRateRows + points.count
+                        < compactLatestNightMaximumHeartRateRows else {
+                    return .failure(.heartRateCapExceeded)
+                }
+                points.append(.init(
+                    t: timestamp.timeIntervalSince(clippedStart),
+                    bpm: point.bpm
+                ))
+            }
+
+            var boundedRR: [SavedSession.RRPoint] = []
+            if let sourceRR = source.rrPoints {
+                var wholeSessionRRProvenanceQualified = true
+                var qualifiedRRWouldExceedCap = false
+                boundedRR.reserveCapacity(min(
+                    sourceRR.count,
+                    compactLatestNightMaximumRRRows - rrRows
+                ))
+                for (rrIndex, point) in sourceRR.enumerated() {
+                    if rrIndex.isMultiple(of: 256), deadlineExceeded() {
+                        return .failure(.deadlineExceeded)
+                    }
+                    guard point.t.isFinite else {
+                        return .failure(.sessionIntegrityFailure)
+                    }
+                    if point.source != .standardHeartRateMeasurement2A37,
+                       point.source != .verifiedWhoop4HistoricalV24 {
+                        wholeSessionRRProvenanceQualified = false
+                    }
+                    let timestamp = source.start.addingTimeInterval(
+                        max(0, point.t)
+                    )
+                    guard timestamp >= clippedStart,
+                          timestamp <= clippedEnd else { continue }
+                    if rrRows + boundedRR.count
+                        >= compactLatestNightMaximumRRRows {
+                        qualifiedRRWouldExceedCap = true
+                        continue
+                    }
+                    boundedRR.append(.init(
+                        t: timestamp.timeIntervalSince(clippedStart),
+                        ms: point.ms,
+                        source: point.source
+                    ))
+                }
+                if !wholeSessionRRProvenanceQualified {
+                    // Legacy local HRV/respiration first qualifies the entire
+                    // connection before range filtering. Preserve that exact
+                    // no-upgrade rule: clipping cannot discard a mixed-source
+                    // row and turn the remaining RR into qualified evidence.
+                    boundedRR.removeAll(keepingCapacity: false)
+                } else if qualifiedRRWouldExceedCap {
+                    return .failure(.rrCapExceeded)
+                }
+            }
+            // A session with no in-window HR cannot source a latest-night
+            // sleep candidate. Ignoring it avoids spending the 64-session
+            // authority on a connection whose evidence lies wholly outside
+            // the compact motion window.
+            guard !points.isEmpty else { continue }
+            let session = compactLatestNightClippedSession(
+                source,
+                start: clippedStart,
+                end: clippedEnd,
+                points: points,
+                rrPoints: boundedRR.isEmpty ? nil : boundedRR
+            )
+            sessions.append(session)
+            heartRateRows += points.count
+            rrRows += boundedRR.count
+        }
+        guard !sessions.isEmpty else {
+            return .failure(.noRecentSessions)
+        }
+        guard DispatchTime.now().uptimeNanoseconds
+                < deadlineUptimeNanoseconds else {
+            return .failure(.deadlineExceeded)
+        }
+        return .success(.init(
+            start: window.start,
+            end: window.end,
+            sessions: sessions,
+            heartRateRows: heartRateRows,
+            rrRows: rrRows
+        ))
+    }
+
+    /// Value-semantic window projection used only by the bounded compact
+    /// publisher. Absolute sample times are retained while offsets are rebased
+    /// to the clipped start. Full-session physiology summaries are cleared so
+    /// only the retained, provenance-qualified RR rows can derive HRV/resp.
+    private nonisolated static func compactLatestNightClippedSession(
+        _ source: SavedSession,
+        start: Date,
+        end: Date,
+        points: [SavedSession.Point],
+        rrPoints: [SavedSession.RRPoint]?
+    ) -> SavedSession {
+        var clipped = SavedSession(
+            id: source.id,
+            start: start,
+            end: end,
+            label: source.label,
+            points: points
+        )
+        clipped.hrv = nil
+        clipped.hrvSDNN = nil
+        clipped.respiratoryRate = nil
+        clipped.rrPoints = rrPoints
+        clipped.hrvReferenceValidated = false
+        clipped.motionHintCount = source.motionHintCount
+        clipped.motionHintKinds = source.motionHintKinds
+        clipped.motionEvidenceSource = source.motionEvidenceSource
+        clipped.motionEvidenceValidated = source.motionEvidenceValidated
+        clipped.motionShortCount = source.motionShortCount
+        clipped.motionShortMean = source.motionShortMean
+        clipped.motionShortMin = source.motionShortMin
+        clipped.motionShortMax = source.motionShortMax
+        clipped.motionShortOverOneCount = source.motionShortOverOneCount
+        clipped.imuSampleCount = source.imuSampleCount
+        clipped.imuFrameCount = source.imuFrameCount
+        clipped.imuSampleRateHz = source.imuSampleRateHz
+        clipped.imuScale = source.imuScale
+        clipped.imuEndian = source.imuEndian
+        clipped.imuStillnessRatio = source.imuStillnessRatio
+        clipped.imuMovementIntensity = source.imuMovementIntensity
+        clipped.imuActivityBursts = source.imuActivityBursts
+        clipped.imuValidationState = source.imuValidationState
+        // Recovered compact epochs are attached from the exact same clipped
+        // motion receipt after this slice succeeds.
+        clipped.recoveredMotionEpochs = nil
+        clipped.strapStepResearchCount = source.strapStepResearchCount
+        clipped.strapStepResearchAgreement = source.strapStepResearchAgreement
+        clipped.strapStepResearchState = source.strapStepResearchState
+        clipped.sleepWakeResearchState = source.sleepWakeResearchState
+        clipped.sleepWakeResearchConfidence = source.sleepWakeResearchConfidence
+        clipped.sleepWakeResearchReason = source.sleepWakeResearchReason
+        clipped.sensorResearchProbeFrames = source.sensorResearchProbeFrames
+        clipped.spo2ResearchCandidateFrames = source.spo2ResearchCandidateFrames
+        clipped.skinTempResearchCandidateFrames = source.skinTempResearchCandidateFrames
+        clipped.skinTempResearchCandidateValueSum = source.skinTempResearchCandidateValueSum
+        clipped.skinTempResearchCandidateValueCount = source.skinTempResearchCandidateValueCount
+        clipped.spo2ResearchCandidateOffset64ValueSum =
+            source.spo2ResearchCandidateOffset64ValueSum
+        clipped.spo2ResearchCandidateOffset64ValueCount =
+            source.spo2ResearchCandidateOffset64ValueCount
+        clipped.spo2ResearchCandidateOffset66ValueSum =
+            source.spo2ResearchCandidateOffset66ValueSum
+        clipped.spo2ResearchCandidateOffset66ValueCount =
+            source.spo2ResearchCandidateOffset66ValueCount
+        // Temperature has no validated decoder and must never cross this lane.
+        clipped.decodedSkinTemperatureCelsius = nil
+        clipped.biologicalSex = source.biologicalSex
+        clipped.activeCalories = source.activeCalories
+        clipped.caloriesConfidence = source.caloriesConfidence
+        // Preserve conservative source audit counters. They cover the original
+        // connection and may reject a clipped candidate, but can never relax a
+        // contact-artifact gate.
+        clipped.hrRaw2A37 = source.hrRaw2A37
+        clipped.hrAccepted = source.hrAccepted
+        clipped.hrZero = source.hrZero
+        clipped.hrArtifactHeld = source.hrArtifactHeld
+        clipped.hrArtifactDropped = source.hrArtifactDropped
+        clipped.hrRawGaps = source.hrRawGaps
+        clipped.hrAcceptedGaps = source.hrAcceptedGaps
+        clipped.hrMaxRawGap = source.hrMaxRawGap
+        clipped.hrMaxAcceptedGap = source.hrMaxAcceptedGap
+        clipped.hrRRMismatch = source.hrRRMismatch
+        clipped.strengthSets = source.strengthSets
+        clipped.kind = source.kind
+        clipped.excludedIntervals = source.excludedIntervals
+        clipped.eventTimeZoneIdentifier = source.eventTimeZoneIdentifier
+        return clipped
+    }
+
+    /// Builds a proposal entirely from resident saved sessions and the compact
+    /// fixed-width motion derivative. It invokes the existing candidate,
+    /// staging, respiratory-rate, and HRV math without changing any gate.
+    nonisolated static func makeCompactLatestNightSettlementPreparation(
+        fingerprint: ForegroundSleepSettlementFingerprint,
+        canonicalSessions: [SavedSession],
+        now: Date,
+        rest: Int,
+        maxHR: Int,
+        learnedWindow: (start: Int, end: Int)?,
+        strapIdentifier: String?,
+        thermalState: ProcessInfo.ThermalState,
+        compactStore: AtriaWhoop4MotionTickCompactStore = .shared,
+        autoConfirmLimit: Int = 2,
+        deadlineUptimeNanoseconds suppliedDeadline: UInt64? = nil
+    ) -> CompactLatestNightSettlementPreparation {
+        precondition(!Thread.isMainThread)
+        guard thermalState != .critical else {
+            return .withheld(.thermalCritical)
+        }
+        guard let strapIdentifier,
+              let sourceStrapIdentifier = UUID(uuidString: strapIdentifier)
+        else {
+            return .withheld(.missingStrapIdentity)
+        }
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        let localBudget = UInt64(
+            compactLatestNightDeadlineSeconds * 1_000_000_000
+        )
+        let localDeadline = startedAt.addingReportingOverflow(
+            localBudget
+        ).partialValue
+        let deadline = min(suppliedDeadline ?? localDeadline, localDeadline)
+        let cooperativeDeadline = AtriaSleepSettlementDeadline(
+            uptimeNanoseconds: deadline
+        )
+        let slice: CompactLatestNightSessionSlice
+        switch compactLatestNightSessionSlice(
+            from: canonicalSessions,
+            now: now,
+            deadlineUptimeNanoseconds: deadline
+        ) {
+        case .success(let prepared):
+            slice = prepared
+        case .failure(let failure):
+            return .withheld(failure)
+        }
+        let motionRead = compactStore.latestNightMotionRead(
+            start: slice.start,
+            end: slice.end,
+            strapIdentifier: strapIdentifier,
+            thermalState: thermalState,
+            deadlineUptimeNanoseconds: deadline
+        )
+        let compactEvidence: AtriaWhoop4MotionTickCompactStore
+            .LatestNightMotionEvidence
+        switch motionRead {
+        case .qualified(let evidence):
+            compactEvidence = evidence
+        case .incomplete(let failure):
+            return .withheld(.compactMotion(failure))
+        }
+        var sessions: [SavedSession] = []
+        sessions.reserveCapacity(slice.sessions.count)
+        do {
+            for source in slice.sessions {
+                try cooperativeDeadline.checkpoint()
+                var attachedEpochs: [AtriaRecoveredMotionEpoch] = []
+                attachedEpochs.reserveCapacity(min(
+                    compactEvidence.epochs.count,
+                    2_000
+                ))
+                for (index, epoch) in compactEvidence.epochs.enumerated() {
+                    if index.isMultiple(of: 256) {
+                        try cooperativeDeadline.checkpoint()
+                    }
+                    if epoch.end > source.start,
+                       epoch.start < source.end {
+                        attachedEpochs.append(epoch)
+                    }
+                }
+                var session = source
+                session.recoveredMotionEpochs = attachedEpochs.isEmpty
+                    ? nil : attachedEpochs
+                session.decodedSkinTemperatureCelsius = nil
+                sessions.append(session)
+            }
+        } catch {
+            return .withheld(.deadlineExceeded)
+        }
+        // Keep newest-first semantics expected by foreground evaluation after
+        // attaching epochs. Sorting at most 64 session headers is bounded.
+        sessions.sort { $0.start > $1.start }
+        guard DispatchTime.now().uptimeNanoseconds < deadline else {
+            return .withheld(.deadlineExceeded)
+        }
+        let settlement: ForegroundSleepSettlementProposal
+        do {
+            settlement = try makeForegroundSleepSettlementProposal(
+                fingerprint: fingerprint,
+                canonicalSessions: sessions,
+                activeJournalSession: nil,
+                now: now,
+                rest: rest,
+                maxHR: maxHR,
+                learnedWindow: learnedWindow,
+                lookbackDays: 2,
+                maximumSessions: compactLatestNightMaximumSessions,
+                historicalMotionPolicy: .attachedCompactOnly,
+                cooperativeDeadline: cooperativeDeadline,
+                autoConfirmLimit: min(max(0, autoConfirmLimit), 2)
+            )
+        } catch {
+            return .withheld(.deadlineExceeded)
+        }
+        guard let commitAuthority = compactStore
+            .mintLatestNightCommitAuthority(
+                for: compactEvidence.receipt,
+                strapIdentifier: strapIdentifier,
+                deadlineUptimeNanoseconds: deadline
+        ) else {
+            return .withheld(.compactSourceChanged)
+        }
+        return .ready(.init(
+            settlement: settlement,
+            sourceStrapIdentifier: sourceStrapIdentifier,
+            compactReceipt: compactEvidence.receipt,
+            commitAuthority: commitAuthority,
+            sessionCount: sessions.count,
+            heartRateRows: slice.heartRateRows,
+            rrRows: slice.rrRows
+        ))
+    }
+
     nonisolated static func foregroundSleepEvaluationSessions(
         from newestFirstCanonicalSessions: [SavedSession],
         activeJournalSession: SavedSession?,
@@ -24290,6 +27620,8 @@ final class SessionStore: ObservableObject {
         evaluationLookbackDays: Int = foregroundSleepEvaluationLookbackDays,
         maximumEvaluationSessions: Int = foregroundSleepEvaluationMaximumSessions,
         autoConfirmLimit: Int = 2,
+        compactRetryRemainingAttempts: Int = 1,
+        staleRetryRemainingAttempts: Int = 1,
         completion: ((Bool) -> Void)? = nil
     ) {
         guard hasCompletedDeferredSessionLoad else {
@@ -24365,32 +27697,91 @@ final class SessionStore: ObservableObject {
         )
         let canonicalSessions = cachedCanonicalSessions
         let learnedWindow = Self.learnedDutyCycleSleepWindow(defaults: .standard)
+        // Read only the persisted strap identity. This publisher never asks the
+        // BLE manager to connect, request history, pause HR, or change cadence.
+        let compactStrapIdentifier = AtriaWhoop4MotionTickDailyStore
+            .persistedStrapIdentifiers()
+            .first
+        let preparationThermalState = ProcessInfo.processInfo.thermalState
         let workItem = DispatchWorkItem { [weak self] in
             guard !Thread.isMainThread else {
                 assertionFailure("Foreground sleep settlement must not build on the main thread")
                 return
             }
-            // File read/decode, live-sample sort/map, recent-session merge,
-            // historical-motion lookup and candidate aggregation all happen on
-            // this utility worker. The main actor receives only an immutable
-            // proposal and performs bounded persistence/UI mutation.
-            let activeJournalSession = SessionStore.loadResidentJournalSessionForSleepEvaluation(
-                now: now
-            )
-            let proposal = SessionStore.makeForegroundSleepSettlementProposal(
+            let preparation = SessionStore
+                .makeCompactLatestNightSettlementPreparation(
                 fingerprint: fingerprint,
                 canonicalSessions: canonicalSessions,
-                activeJournalSession: activeJournalSession,
                 now: now,
                 rest: rest,
                 maxHR: maxHR,
                 learnedWindow: learnedWindow,
-                lookbackDays: evaluationLookbackDays,
-                maximumSessions: maximumEvaluationSessions
+                strapIdentifier: compactStrapIdentifier,
+                thermalState: preparationThermalState,
+                autoConfirmLimit: autoConfirmLimit
             )
+            guard case .ready(let prepared) = preparation else {
+                let failure: CompactLatestNightSettlementFailure
+                if case .withheld(let reason) = preparation {
+                    failure = reason
+                } else {
+                    failure = .compactSourceChanged
+                }
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          generation
+                            == self.foregroundSleepSettlementGeneration else {
+                        return
+                    }
+                    self.pendingForegroundSleepSettlementWorkItem = nil
+                    self.lastForegroundSleepAutoConfirmAt = now
+                        .addingTimeInterval(-20 * 60)
+                    AtriaDebugLog(
+                        "ATRIADBG sleep_foreground_compact status=withheld reason=%@ source=%@",
+                        String(describing: failure),
+                        reason
+                    )
+                    self.scheduleCompactLatestNightSettlementRetry(
+                        reason: reason,
+                        remainingAttempts: compactRetryRemainingAttempts
+                    )
+                    self.finishForegroundSleepSettlementCompletions(
+                        succeeded: false
+                    )
+                }
+                return
+            }
+            let proposal = prepared.settlement
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                guard Self.shouldCommitForegroundSleepSettlement(
+                // The saved link owns replacement. A preparation from the
+                // former strap must never survive a re-pair even when no
+                // compact row mutation occurred between mint and commit.
+                let currentCompactStrapIdentifier =
+                    AtriaWhoop4MotionTickDailyStore
+                        .persistedStrapIdentifiers()
+                        .first
+                let compactSourceIsCurrent: Bool
+                if let currentCompactStrapIdentifier,
+                   UUID(uuidString: currentCompactStrapIdentifier)
+                    == prepared.sourceStrapIdentifier,
+                   prepared.commitAuthority.sourceStrapIdentifier
+                    == prepared.sourceStrapIdentifier {
+                    compactSourceIsCurrent =
+                        AtriaWhoop4MotionTickCompactStore.shared
+                        .consumeLatestNightCommitAuthority(
+                            prepared.commitAuthority,
+                            currentStrapIdentifier:
+                                currentCompactStrapIdentifier
+                        )
+                } else {
+                    compactSourceIsCurrent = false
+                }
+                let commitThermalIsCritical =
+                    ProcessInfo.processInfo.thermalState == .critical
+                guard !commitThermalIsCritical,
+                      compactSourceIsCurrent,
+                      Self.shouldCommitForegroundSleepSettlement(
                     completedGeneration: generation,
                     currentGeneration: self.foregroundSleepSettlementGeneration,
                     preparedFingerprint: proposal.fingerprint,
@@ -24405,20 +27796,47 @@ final class SessionStore: ObservableObject {
                 ) else {
                     if generation == self.foregroundSleepSettlementGeneration {
                         self.pendingForegroundSleepSettlementWorkItem = nil
+                        if commitThermalIsCritical {
+                            AtriaDebugLog(
+                                "ATRIADBG sleep_foreground_compact status=withheld reason=thermal_critical_at_commit source=%@",
+                                reason
+                            )
+                            self.finishForegroundSleepSettlementCompletions(
+                                succeeded: false
+                            )
+                            return
+                        }
                         // The source changed while this worker was building.
                         // Retry immediately from the newer immutable snapshot;
                         // do not let the ordinary 30-minute cadence turn safe
                         // stale-result rejection into a missed morning settle.
-                        self.lastForegroundSleepAutoConfirmAt = nil
-                        self.autoConfirmSleepOnForegroundIfUseful(
-                            reason: "stale_\(reason)",
-                            now: Date(),
-                            force: force,
-                            deferDerivedPublication: deferDerivedPublication,
-                            evaluationLookbackDays: evaluationLookbackDays,
-                            maximumEvaluationSessions: maximumEvaluationSessions,
-                            autoConfirmLimit: autoConfirmLimit
-                        )
+                        if staleRetryRemainingAttempts > 0 {
+                            self.lastForegroundSleepAutoConfirmAt = nil
+                            self.autoConfirmSleepOnForegroundIfUseful(
+                                reason: "stale_\(reason)",
+                                now: Date(),
+                                force: force,
+                                deferDerivedPublication:
+                                    deferDerivedPublication,
+                                evaluationLookbackDays:
+                                    evaluationLookbackDays,
+                                maximumEvaluationSessions:
+                                    maximumEvaluationSessions,
+                                autoConfirmLimit: autoConfirmLimit,
+                                compactRetryRemainingAttempts:
+                                    compactRetryRemainingAttempts,
+                                staleRetryRemainingAttempts:
+                                    staleRetryRemainingAttempts - 1
+                            )
+                        } else {
+                            // One immediate CAS retry is enough to absorb a
+                            // normal append race. Continued churn waits for a
+                            // later source/scene edge instead of hot-looping.
+                            self.lastForegroundSleepAutoConfirmAt = nil
+                            self.finishForegroundSleepSettlementCompletions(
+                                succeeded: false
+                            )
+                        }
                     }
                     AtriaDebugLog("ATRIADBG sleep_foreground_settlement status=discarded_stale reason=%@ generation=%d current_generation=%d",
                                   reason,
@@ -24426,6 +27844,18 @@ final class SessionStore: ObservableObject {
                                   self.foregroundSleepSettlementGeneration)
                     return
                 }
+                AtriaDebugLog(
+                    "ATRIADBG sleep_foreground_compact status=prepared source=%@ sessions=%d hr=%d rr=%d shards=%d bytes=%d motion_rows=%d fingerprint=%@ thermal=%d",
+                    reason,
+                    prepared.sessionCount,
+                    prepared.heartRateRows,
+                    prepared.rrRows,
+                    prepared.compactReceipt.shardCount,
+                    prepared.compactReceipt.mappedBytes,
+                    prepared.compactReceipt.rowCount,
+                    prepared.compactReceipt.sourceFingerprint,
+                    preparationThermalState.rawValue
+                )
                 self.pendingForegroundSleepSettlementWorkItem = nil
                 var persistenceSucceeded = true
                 var saved = await self.autoConfirmStrongSleepCandidates(
@@ -24433,8 +27863,11 @@ final class SessionStore: ObservableObject {
                     limit: autoConfirmLimit,
                     sourceSessions: proposal.sourceSessions,
                     precomputedStrongCandidates: proposal.strongCandidates,
+                    precomputedMaterializations:
+                        proposal.preparedStrongCandidates,
                     evaluationNow: proposal.preparedAt,
                     deferDerivedPublication: deferDerivedPublication,
+                    archiveFreeLatestNightSettlement: true,
                     persistenceFailure: { persistenceSucceeded = false }
                 )
                 if !saved && persistenceSucceeded {
@@ -24443,26 +27876,18 @@ final class SessionStore: ObservableObject {
                         reason: reason,
                         sourceSessions: proposal.sourceSessions,
                         deferDerivedPublication: deferDerivedPublication,
+                        archiveFreeLatestNightSettlement: true,
                         persistenceFailure: { persistenceSucceeded = false }
                     )
                 }
-                if !deferDerivedPublication {
-                    self.refreshHistorySnapshotCache(deferred: true)
-                }
-                // A foreground/wake settlement that is not strong enough to
-                // auto-save may still have a review-only sleep candidate. Build
-                // that projection immediately on the utility queue so opening
-                // Home after waking does not wait for a later UI invalidation.
-                self.scheduleSleepReviewCacheRefresh(
-                    rest: self.baseline.restingInt ?? 60,
-                    calendar: .current,
-                    reason: "foreground_settlement_\(reason)"
-                )
                 if !saved && persistenceSucceeded && !inExtendReCheckWindow {
                     // Back the rate limit off to ~10 min on failure so a
                     // transient blocker does not cost the whole 30-minute window.
                     self.lastForegroundSleepAutoConfirmAt = now.addingTimeInterval(-20 * 60)
-                    self.scheduleSleepReadinessRetryIfUseful(reason: reason)
+                    self.scheduleCompactLatestNightSettlementRetry(
+                        reason: reason,
+                        remainingAttempts: compactRetryRemainingAttempts
+                    )
                 }
                 self.finishForegroundSleepSettlementCompletions(succeeded: persistenceSucceeded)
             }
@@ -24475,6 +27900,52 @@ final class SessionStore: ObservableObject {
         let completions = pendingForegroundSleepSettlementCompletions
         pendingForegroundSleepSettlementCompletions.removeAll(keepingCapacity: true)
         completions.forEach { $0(succeeded) }
+    }
+
+    nonisolated static func compactLatestNightRetryAction(
+        remainingAttempts: Int,
+        delaySeconds: TimeInterval = 10 * 60
+    ) -> CompactLatestNightRetryAction {
+        guard remainingAttempts > 0,
+              delaySeconds.isFinite,
+              delaySeconds > 0 else {
+            return .awaitSourceOrSceneEdge
+        }
+        return .retry(
+            delaySeconds: delaySeconds,
+            nextRemainingAttempts: remainingAttempts - 1
+        )
+    }
+
+    /// Compact failures never enter the legacy readiness scheduler: that path
+    /// performs bounded-recent HistoricalArchive work immediately and again on
+    /// every retry. One delayed compact attempt is enough; continued failure
+    /// waits for a new durable-source or scene edge.
+    private func scheduleCompactLatestNightSettlementRetry(
+        reason: String,
+        remainingAttempts: Int
+    ) {
+        switch Self.compactLatestNightRetryAction(
+            remainingAttempts: remainingAttempts
+        ) {
+        case .awaitSourceOrSceneEdge:
+            pendingSleepReadinessRetry?.cancel()
+            pendingSleepReadinessRetry = nil
+        case .retry(let delaySeconds, let nextRemainingAttempts):
+            pendingSleepReadinessRetry?.cancel()
+            pendingSleepReadinessRetry = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(delaySeconds))
+                guard !Task.isCancelled, let self else { return }
+                self.pendingSleepReadinessRetry = nil
+                self.lastForegroundSleepAutoConfirmAt = nil
+                self.autoConfirmSleepOnForegroundIfUseful(
+                    reason: "compact_retry_\(reason)",
+                    now: Date(),
+                    force: true,
+                    compactRetryRemainingAttempts: nextRemainingAttempts
+                )
+            }
+        }
     }
 
     private func foregroundSleepSettlementFingerprint(
@@ -24512,7 +27983,8 @@ final class SessionStore: ObservableObject {
         maxHR: Int,
         learnedWindow: (start: Int, end: Int)?,
         lookbackDays: Int = foregroundSleepEvaluationLookbackDays,
-        maximumSessions: Int = foregroundSleepEvaluationMaximumSessions
+        maximumSessions: Int = foregroundSleepEvaluationMaximumSessions,
+        historicalMotionPolicy: HistoricalSleepMotionPolicy = .boundedRecent
     ) -> ForegroundSleepSettlementProposal {
         let foregroundSessions = foregroundSleepEvaluationSessions(
             from: canonicalSessions,
@@ -24526,7 +27998,7 @@ final class SessionStore: ObservableObject {
             rest: rest,
             maxHR: maxHR,
             calendar: .current,
-            historicalMotionPolicy: .boundedRecent
+            historicalMotionPolicy: historicalMotionPolicy
         ).filter {
             isAutoConfirmableMainSleepCandidate(
                 $0,
@@ -24541,7 +28013,8 @@ final class SessionStore: ObservableObject {
             now: now,
             learnedWindow: learnedWindow,
             baselineRestingIsTrusted: fingerprint.baselineRestingIsTrusted,
-            baselineRestingIsNearTrusted: fingerprint.baselineRestingIsNearTrusted
+            baselineRestingIsNearTrusted: fingerprint.baselineRestingIsNearTrusted,
+            historicalMotionPolicy: historicalMotionPolicy
         )
         return ForegroundSleepSettlementProposal(
             fingerprint: fingerprint,
@@ -24552,13 +28025,198 @@ final class SessionStore: ObservableObject {
         )
     }
 
+    /// Checked latest-night variant. It shares one absolute deadline across
+    /// candidate aggregation, wake detection, and every derived physiology
+    /// materialization that the MainActor will later commit.
+    nonisolated static func makeForegroundSleepSettlementProposal(
+        fingerprint: ForegroundSleepSettlementFingerprint,
+        canonicalSessions: [SavedSession],
+        activeJournalSession: SavedSession?,
+        now: Date,
+        rest: Int,
+        maxHR: Int,
+        learnedWindow: (start: Int, end: Int)?,
+        lookbackDays: Int = foregroundSleepEvaluationLookbackDays,
+        maximumSessions: Int = foregroundSleepEvaluationMaximumSessions,
+        historicalMotionPolicy: HistoricalSleepMotionPolicy = .boundedRecent,
+        cooperativeDeadline: AtriaSleepSettlementDeadline,
+        autoConfirmLimit: Int = 2
+    ) throws -> ForegroundSleepSettlementProposal {
+        try cooperativeDeadline.checkpoint()
+        let foregroundSessions = foregroundSleepEvaluationSessions(
+            from: canonicalSessions,
+            activeJournalSession: activeJournalSession,
+            now: now,
+            lookbackDays: lookbackDays,
+            maximumSessions: maximumSessions
+        )
+        try cooperativeDeadline.checkpoint()
+        let aggregated = try aggregateSleepCandidates(
+            in: foregroundSessions,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: .current,
+            historicalMotionPolicy: historicalMotionPolicy,
+            cooperativeDeadline: cooperativeDeadline,
+            includeResumedReviewCandidates: false
+        )
+        var strongCandidates: [AggregateSleepCandidate] = []
+        strongCandidates.reserveCapacity(aggregated.count)
+        for candidate in aggregated {
+            try cooperativeDeadline.checkpoint()
+            if isAutoConfirmableMainSleepCandidate(
+                candidate,
+                baselineRestingIsTrusted:
+                    fingerprint.baselineRestingIsTrusted,
+                baselineRestingIsNearTrusted:
+                    fingerprint.baselineRestingIsNearTrusted
+            ) {
+                strongCandidates.append(candidate)
+            }
+        }
+        var wakeBoundary = try prepareWakeBoundarySleep(
+            sourceSessions: foregroundSessions,
+            rest: rest,
+            maxHR: maxHR,
+            now: now,
+            learnedWindow: learnedWindow,
+            baselineRestingIsTrusted:
+                fingerprint.baselineRestingIsTrusted,
+            baselineRestingIsNearTrusted:
+                fingerprint.baselineRestingIsNearTrusted,
+            historicalMotionPolicy: historicalMotionPolicy,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        var preparedStrong: [ForegroundSleepSettlementProposal
+            .PreparedAutoSleepMaterialization] = []
+        let boundedLimit = min(max(0, autoConfirmLimit), 2)
+        if boundedLimit > 0 {
+            for candidate in strongCandidates where preparedStrong.count < boundedLimit {
+                try cooperativeDeadline.checkpoint()
+                guard sleepCandidateIsSettledForClosedAutoConfirmation(
+                    candidateEnd: candidate.end,
+                    now: now
+                ) else { continue }
+                if let prepared = try preparedAutoSleepMaterialization(
+                    candidate: candidate,
+                    sourceSessions: foregroundSessions,
+                    fingerprint: fingerprint,
+                    preparedAt: now,
+                    cooperativeDeadline: cooperativeDeadline
+                ) {
+                    preparedStrong.append(prepared)
+                }
+            }
+        }
+        if let wakeCandidate = wakeBoundary.candidate {
+            let preparedWake = try preparedAutoSleepMaterialization(
+                candidate: wakeCandidate,
+                sourceSessions: foregroundSessions,
+                fingerprint: fingerprint,
+                preparedAt: now,
+                cooperativeDeadline: cooperativeDeadline
+            )
+            wakeBoundary = .init(
+                candidate: wakeCandidate,
+                preparedCandidate: preparedWake,
+                blocker: preparedWake == nil
+                    ? "candidate_materialization_withheld"
+                    : wakeBoundary.blocker,
+                windowEndMinute: wakeBoundary.windowEndMinute,
+                nowMinute: wakeBoundary.nowMinute,
+                learnedWindow: wakeBoundary.learnedWindow
+            )
+        }
+        try cooperativeDeadline.checkpoint()
+        return .init(
+            fingerprint: fingerprint,
+            preparedAt: now,
+            sourceSessions: foregroundSessions,
+            strongCandidates: strongCandidates,
+            preparedStrongCandidates: preparedStrong,
+            wakeBoundary: wakeBoundary
+        )
+    }
+
+    private nonisolated static func preparedAutoSleepMaterialization(
+        candidate: AggregateSleepCandidate,
+        sourceSessions: [SavedSession],
+        fingerprint: ForegroundSleepSettlementFingerprint,
+        preparedAt: Date,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> ForegroundSleepSettlementProposal
+        .PreparedAutoSleepMaterialization? {
+        try cooperativeDeadline.checkpoint()
+        let classification = autoSleepClassification(
+            for: candidate,
+            baselineRestingIsTrusted:
+                fingerprint.baselineRestingIsTrusted,
+            baselineRestingIsNearTrusted:
+                fingerprint.baselineRestingIsNearTrusted
+        )
+        guard classification.allowsAutomaticPersistence else { return nil }
+        let metrics = try confirmedSleepWindowMetrics(
+            from: sourceSessions,
+            start: candidate.start,
+            end: candidate.end,
+            rest: candidate.restingHR,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        let respiratoryRate = try confirmedSleepRespiratoryRate(
+            from: sourceSessions,
+            start: candidate.start,
+            end: candidate.end,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        var stageSegments = try sleepStageResearchSegments(
+            from: sourceSessions,
+            start: candidate.start,
+            end: candidate.end,
+            restingHR: candidate.restingHR,
+            isNap: candidate.kind == "nap_candidate",
+            motionValidated: classification.motionValidated,
+            maximumRows: compactLatestNightMaximumStagingRows,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        if !stageSegments.isEmpty,
+           !AtriaSleepStageIntegrity.validates(
+                stageSegments,
+                start: candidate.start,
+                end: candidate.end,
+                duration: candidate.duration,
+                span: candidate.span
+           ) {
+            stageSegments.removeAll(keepingCapacity: false)
+        }
+        try cooperativeDeadline.checkpoint()
+        return .init(
+            key: .init(candidate),
+            candidate: candidate,
+            classification: classification,
+            metrics: .init(
+                sessions: metrics.sessions,
+                samples: metrics.samples,
+                avgHR: metrics.avgHR,
+                peakHR: metrics.peakHR,
+                restingHR: metrics.restingHR,
+                hrv: metrics.hrv,
+                hrvWindowCount: metrics.hrvWindowCount
+            ),
+            respiratoryRate: respiratoryRate,
+            stageSegments: stageSegments.isEmpty ? nil : stageSegments,
+            preparedAt: preparedAt
+        )
+    }
+
     @discardableResult
     private func autoConfirmStrongSleepCandidates(reason: String,
                                                    limit: Int = 2,
                                                    sourceSessions: [SavedSession]? = nil,
                                                    precomputedStrongCandidates: [AggregateSleepCandidate]? = nil,
+                                                   precomputedMaterializations: [ForegroundSleepSettlementProposal.PreparedAutoSleepMaterialization] = [],
                                                    evaluationNow: Date = Date(),
                                                    deferDerivedPublication: Bool = false,
+                                                   archiveFreeLatestNightSettlement: Bool = false,
                                                    persistenceFailure: (() -> Void)? = nil) async -> Bool {
         let rest = baseline.restingInt ?? 60
         let now = evaluationNow
@@ -24607,6 +28265,7 @@ final class SessionStore: ObservableObject {
         var existing = cachedConfirmedSleeps
         var saved = 0
         var firstSavedOvernight: UserConfirmedSleep?
+        var stressContextChanged = false
         for candidate in candidates.prefix(limit) {
             guard !dismissedSleepCandidates.contains(where: {
                 $0.suppresses(start: candidate.start, end: candidate.end)
@@ -24633,6 +28292,21 @@ final class SessionStore: ObservableObject {
                 ))
                 continue
             }
+            let preparedMaterialization = precomputedMaterializations.first {
+                $0.key == .init(candidate)
+            }
+            if archiveFreeLatestNightSettlement {
+                guard let preparedMaterialization,
+                      preparedMaterialization.classification
+                        == classification else {
+                    DetectionEventLog.append(DetectionEvent(
+                        kind: "sleepCandidateSkipped",
+                        reason: "compact_materialization_stale_or_missing",
+                        detail: "Prepared sleep physiology no longer matches the current classification (source: \(reason))"
+                    ))
+                    continue
+                }
+            }
             let id = confirmedSleepID(start: candidate.start,
                                      end: candidate.end,
                                      source: classification.source)
@@ -24640,11 +28314,16 @@ final class SessionStore: ObservableObject {
             // in place instead of skipping the candidate as a duplicate (user
             // 2026-07-08). applySleepExtend is extend-only and never touches a
             // manual/adjusted night, so it can't clobber a user override.
-            if applySleepExtend(to: &existing,
-                                candidate: candidate,
-                                classification: classification,
-                                reason: "\(reason)_extend",
-                                sourceSessions: sourceSessions) != nil {
+            if let extended = applySleepExtend(
+                to: &existing,
+                candidate: candidate,
+                classification: classification,
+                reason: "\(reason)_extend",
+                sourceSessions: sourceSessions,
+                precomputedMaterialization: preparedMaterialization
+            ) {
+                stressContextChanged = stressContextChanged
+                    || Self.sleepStressContextAuthority(extended) != nil
                 saved += 1
                 continue
             }
@@ -24653,15 +28332,27 @@ final class SessionStore: ObservableObject {
             }
             guard let insertionBase = Self.sleepInsertionBase(existing: existing, candidate: candidate) else { continue }
 
-            let confirmed = buildAutoConfirmedSleep(from: candidate,
-                                                     classification: classification,
-                                                     reason: reason,
-                                                     sourceSessions: sourceSessions)
+            let confirmed: UserConfirmedSleep
+            if let preparedMaterialization {
+                confirmed = buildAutoConfirmedSleep(
+                    from: preparedMaterialization,
+                    reason: reason
+                )
+            } else {
+                confirmed = buildAutoConfirmedSleep(
+                    from: candidate,
+                    classification: classification,
+                    reason: reason,
+                    sourceSessions: sourceSessions
+                )
+            }
             existing = insertionBase
             existing.append(confirmed)
             if candidate.kind != "nap_candidate", firstSavedOvernight == nil {
                 firstSavedOvernight = confirmed
             }
+            stressContextChanged = stressContextChanged
+                || Self.sleepStressContextAuthority(confirmed) != nil
             saved += 1
         }
 
@@ -24679,7 +28370,11 @@ final class SessionStore: ObservableObject {
             pendingSleepSettlementRetry = nil
         }
         guard await saveConfirmedSleeps(existing,
-                                  deferDerivedPublication: deferDerivedPublication) else {
+                                  deferDerivedPublication: deferDerivedPublication,
+                                  archiveFreeLatestNightSettlement:
+                                    archiveFreeLatestNightSettlement,
+                                  publishStressContext:
+                                    stressContextChanged) else {
             persistenceFailure?()
             AtriaDebugLog("ATRIADBG sleep_auto_confirm status=store_failed source=%@ saved=%d", reason, saved)
             return false
@@ -24781,6 +28476,51 @@ final class SessionStore: ObservableObject {
         return Self.copyConfirmedSleep(sleep, stageSegments: nil)
     }
 
+    /// Scalar-only materialization for the compact lane. Stage/HRV/respiration
+    /// were derived and integrity-checked on the utility worker; this method
+    /// performs no session scan and no model work on the MainActor.
+    private func buildAutoConfirmedSleep(
+        from prepared: ForegroundSleepSettlementProposal
+            .PreparedAutoSleepMaterialization,
+        reason: String,
+        existingEventTimeZoneIdentifier: String? = nil
+    ) -> UserConfirmedSleep {
+        let candidate = prepared.candidate
+        let classification = prepared.classification
+        precondition(classification.allowsAutomaticPersistence)
+        return UserConfirmedSleep(
+            id: confirmedSleepID(
+                start: candidate.start,
+                end: candidate.end,
+                source: classification.source
+            ),
+            createdAt: Date(),
+            start: candidate.start,
+            end: candidate.end,
+            source: classification.source,
+            confidence: classification.confidence,
+            sessions: candidate.sessions,
+            samples: candidate.samples,
+            avgHR: candidate.avgHR,
+            peakHR: candidate.peakHR,
+            restingHR: candidate.restingHR,
+            hrv: prepared.metrics.hrv,
+            hrvWindowCount: prepared.metrics.hrvWindowCount,
+            respiratoryRate: prepared.respiratoryRate,
+            duration: candidate.duration,
+            span: candidate.span,
+            reason: "\(reason); \(candidate.reason)",
+            motionSource: classification.motionSource,
+            motionValidated: classification.motionValidated,
+            stageSegments: prepared.stageSegments,
+            eventTimeZoneIdentifier: Self.autoSleepEventTimeZoneIdentifier(
+                for: candidate,
+                existingEventTimeZoneIdentifier:
+                    existingEventTimeZoneIdentifier
+            )
+        )
+    }
+
     // MARK: - Wake-boundary sleep confirm (WHOOP-parity finalize-at-wake)
 
     /// Constants for the wake-boundary evaluation path: confirms the still-open
@@ -24860,25 +28600,144 @@ final class SessionStore: ObservableObject {
                                                        restingHR: Int,
                                                        delta: Int = WakeBoundaryDefaults.sustainedWakeHRDelta,
                                                        lookback: TimeInterval = WakeBoundaryDefaults.sustainedWakeLookback) -> Date? {
-        let points = session.points.sorted { $0.t < $1.t }
+        try? sustainedWakeOnsetCore(
+            in: session,
+            restingHR: restingHR,
+            delta: delta,
+            lookback: lookback,
+            cooperativeDeadline: nil
+        )
+    }
+
+    nonisolated static func sustainedWakeOnset(
+        in session: SavedSession,
+        restingHR: Int,
+        delta: Int = WakeBoundaryDefaults.sustainedWakeHRDelta,
+        lookback: TimeInterval = WakeBoundaryDefaults.sustainedWakeLookback,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> Date? {
+        try sustainedWakeOnsetCore(
+            in: session,
+            restingHR: restingHR,
+            delta: delta,
+            lookback: lookback,
+            cooperativeDeadline: cooperativeDeadline
+        )
+    }
+
+    private nonisolated static func sustainedWakeOnsetCore(
+        in session: SavedSession,
+        restingHR: Int,
+        delta: Int,
+        lookback: TimeInterval,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> Date? {
+        try cooperativeDeadline?.checkpoint()
+        var points = session.points
+        try cooperativeStableSort(
+            &points,
+            cooperativeDeadline: cooperativeDeadline,
+            areInIncreasingOrder: { $0.t < $1.t }
+        )
         guard points.count >= 3 else { return nil }
         let threshold = restingHR + delta
+        var uniqueBPMSet = Set<Int>()
+        var uniqueBPM: [Int] = []
+        for (index, point) in points.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            if uniqueBPMSet.insert(point.bpm).inserted {
+                uniqueBPM.append(point.bpm)
+            }
+        }
+        try cooperativeStableSort(
+            &uniqueBPM,
+            cooperativeDeadline: cooperativeDeadline,
+            areInIncreasingOrder: <
+        )
+        var bpmIndices: [Int: Int] = [:]
+        bpmIndices.reserveCapacity(uniqueBPM.count)
+        for (index, bpm) in uniqueBPM.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            bpmIndices[bpm] = index
+        }
+        struct FenwickTree {
+            var values: [Int]
+
+            init(count: Int) {
+                values = Array(repeating: 0, count: count + 1)
+            }
+
+            mutating func add(index: Int, delta: Int) {
+                var position = index + 1
+                while position < values.count {
+                    values[position] += delta
+                    position += position & -position
+                }
+            }
+
+            func value(atZeroBasedRank rank: Int) -> Int {
+                var position = 0
+                var bit = 1
+                while bit < values.count { bit <<= 1 }
+                var remaining = rank + 1
+                var step = bit
+                while step > 0 {
+                    let next = position + step
+                    if next < values.count,
+                       values[next] < remaining {
+                        position = next
+                        remaining -= values[next]
+                    }
+                    step >>= 1
+                }
+                return position
+            }
+        }
+
         var rollingMedians: [Int] = []
         rollingMedians.reserveCapacity(points.count)
         var windowStart = 0
+        var counts = FenwickTree(count: uniqueBPM.count)
         for i in 0..<points.count {
+            if i.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            guard let currentIndex = bpmIndices[points[i].bpm] else {
+                return nil
+            }
+            counts.add(index: currentIndex, delta: 1)
             while points[windowStart].t < points[i].t - lookback {
+                guard let removedIndex = bpmIndices[points[windowStart].bpm]
+                else { return nil }
+                counts.add(index: removedIndex, delta: -1)
                 windowStart += 1
             }
-            let window = points[windowStart...i].map(\.bpm).sorted()
-            let mid = window.count / 2
-            let median = window.count.isMultiple(of: 2) ? (window[mid - 1] + window[mid]) / 2 : window[mid]
+            let windowCount = i - windowStart + 1
+            let mid = windowCount / 2
+            let upperBPM = uniqueBPM[counts.value(atZeroBasedRank: mid)]
+            let median: Int
+            if windowCount.isMultiple(of: 2) {
+                let lowerBPM = uniqueBPM[
+                    counts.value(atZeroBasedRank: mid - 1)
+                ]
+                median = (lowerBPM + upperBPM) / 2
+            } else {
+                median = upperBPM
+            }
             rollingMedians.append(median)
         }
+        try cooperativeDeadline?.checkpoint()
         guard let lastMedian = rollingMedians.last, lastMedian >= threshold else { return nil }
         var onsetIndex = rollingMedians.count - 1
         while onsetIndex > 0, rollingMedians[onsetIndex - 1] >= threshold {
             onsetIndex -= 1
+            if onsetIndex.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
         }
         return session.start.addingTimeInterval(points[onsetIndex].t)
     }
@@ -24888,9 +28747,31 @@ final class SessionStore: ObservableObject {
     /// `aggregateSleepCandidates(in:...)` computes avgHR/SD/median/P90/
     /// elevatedFraction over the sleep portion only, with `end == wakePoint`.
     private nonisolated static func sessionTrimmedAtWakePoint(_ session: SavedSession, wakePoint: Date) -> SavedSession? {
+        try? sessionTrimmedAtWakePointCore(
+            session,
+            wakePoint: wakePoint,
+            cooperativeDeadline: nil
+        )
+    }
+
+    private nonisolated static func sessionTrimmedAtWakePointCore(
+        _ session: SavedSession,
+        wakePoint: Date,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> SavedSession? {
+        try cooperativeDeadline?.checkpoint()
         guard wakePoint > session.start else { return nil }
         let cutoff = wakePoint.timeIntervalSince(session.start)
-        let trimmedPoints = session.points.filter { $0.t <= cutoff }
+        var trimmedPoints: [SavedSession.Point] = []
+        trimmedPoints.reserveCapacity(session.points.count)
+        for (index, point) in session.points.enumerated() {
+            if index.isMultiple(of: 512) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            if point.t <= cutoff {
+                trimmedPoints.append(point)
+            }
+        }
         guard trimmedPoints.count >= 2 else { return nil }
         return SavedSession(id: session.id,
                            start: session.start,
@@ -24915,18 +28796,88 @@ final class SessionStore: ObservableObject {
                                                                rest: Int,
                                                                maxHR: Int,
                                                                calendar: Calendar,
-                                                               now: Date) -> AggregateSleepCandidate? {
-        let wakePoint = sustainedWakeOnset(in: session, restingHR: rest)
+                                                               now: Date,
+                                                               historicalMotionPolicy: HistoricalSleepMotionPolicy = .boundedRecent) -> AggregateSleepCandidate? {
+        try? wakeBoundarySleepCandidateCore(
+            session: session,
+            windowEndMinute: windowEndMinute,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar,
+            now: now,
+            historicalMotionPolicy: historicalMotionPolicy,
+            resolvedWakeOnset: nil,
+            shouldComputeWakeOnset: true,
+            cooperativeDeadline: nil
+        )
+    }
+
+    private nonisolated static func wakeBoundarySleepCandidate(
+        session: SavedSession,
+        windowEndMinute: Int,
+        rest: Int,
+        maxHR: Int,
+        calendar: Calendar,
+        now: Date,
+        historicalMotionPolicy: HistoricalSleepMotionPolicy,
+        resolvedWakeOnset: Date?,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> AggregateSleepCandidate? {
+        try wakeBoundarySleepCandidateCore(
+            session: session,
+            windowEndMinute: windowEndMinute,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar,
+            now: now,
+            historicalMotionPolicy: historicalMotionPolicy,
+            resolvedWakeOnset: resolvedWakeOnset,
+            shouldComputeWakeOnset: false,
+            cooperativeDeadline: cooperativeDeadline
+        )
+    }
+
+    private nonisolated static func wakeBoundarySleepCandidateCore(
+        session: SavedSession,
+        windowEndMinute: Int,
+        rest: Int,
+        maxHR: Int,
+        calendar: Calendar,
+        now: Date,
+        historicalMotionPolicy: HistoricalSleepMotionPolicy,
+        resolvedWakeOnset: Date?,
+        shouldComputeWakeOnset: Bool,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> AggregateSleepCandidate? {
+        try cooperativeDeadline?.checkpoint()
+        let detectedWakeOnset = shouldComputeWakeOnset
+            ? try sustainedWakeOnsetCore(
+                in: session,
+                restingHR: rest,
+                delta: WakeBoundaryDefaults.sustainedWakeHRDelta,
+                lookback: WakeBoundaryDefaults.sustainedWakeLookback,
+                cooperativeDeadline: cooperativeDeadline
+            ) : resolvedWakeOnset
+        let wakePoint = detectedWakeOnset
             ?? nearestMinuteOfDayInstant(after: session.start,
                                          minuteOfDay: windowEndMinute,
                                          calendar: calendar,
                                          upperBound: now)
-        guard let wakePoint, let trimmed = sessionTrimmedAtWakePoint(session, wakePoint: wakePoint) else { return nil }
-        let candidates = aggregateSleepCandidates(in: [trimmed],
-                                                  rest: rest,
-                                                  maxHR: maxHR,
-                                                  calendar: calendar,
-                                                  historicalMotionPolicy: .boundedRecent)
+        guard let wakePoint,
+              let trimmed = try sessionTrimmedAtWakePointCore(
+                session,
+                wakePoint: wakePoint,
+                cooperativeDeadline: cooperativeDeadline
+              ) else { return nil }
+        let candidates = try aggregateSleepCandidatesCore(
+            in: [trimmed],
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar,
+            historicalMotionPolicy: historicalMotionPolicy,
+            cooperativeDeadline: cooperativeDeadline,
+            includeResumedReviewCandidates: false
+        )
         // Never enter the nap_candidate branch here: the night anchor is only
         // ever a session whose start fell inside the sleep window, so the
         // trimmed candidate stays "overnight_sleep"; a nap-shaped result would
@@ -24945,7 +28896,8 @@ final class SessionStore: ObservableObject {
         now: Date,
         learnedWindow: (start: Int, end: Int)?,
         baselineRestingIsTrusted: Bool,
-        baselineRestingIsNearTrusted: Bool = false
+        baselineRestingIsNearTrusted: Bool = false,
+        historicalMotionPolicy: HistoricalSleepMotionPolicy = .boundedRecent
     ) -> ForegroundSleepSettlementProposal.WakeBoundary {
         let calendar = Calendar.current
         let windowStart = learnedWindow?.start ?? WakeBoundaryDefaults.fallbackWindowStartMin
@@ -25002,7 +28954,8 @@ final class SessionStore: ObservableObject {
                                                          rest: rest,
                                                          maxHR: maxHR,
                                                          calendar: calendar,
-                                                         now: now),
+                                                         now: now,
+                                                         historicalMotionPolicy: historicalMotionPolicy),
               isAutoConfirmableMainSleepCandidate(
                 candidate,
                 baselineRestingIsTrusted: baselineRestingIsTrusted,
@@ -25021,6 +28974,112 @@ final class SessionStore: ObservableObject {
                      learnedWindow: learnedWindow != nil)
     }
 
+    private nonisolated static func prepareWakeBoundarySleep(
+        sourceSessions: [SavedSession],
+        rest: Int,
+        maxHR: Int,
+        now: Date,
+        learnedWindow: (start: Int, end: Int)?,
+        baselineRestingIsTrusted: Bool,
+        baselineRestingIsNearTrusted: Bool = false,
+        historicalMotionPolicy: HistoricalSleepMotionPolicy = .boundedRecent,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> ForegroundSleepSettlementProposal.WakeBoundary {
+        try cooperativeDeadline.checkpoint()
+        let calendar = Calendar.current
+        let windowStart = learnedWindow?.start
+            ?? WakeBoundaryDefaults.fallbackWindowStartMin
+        let windowEnd = learnedWindow?.end
+            ?? WakeBoundaryDefaults.fallbackWindowEndMin
+        let nowMinute = minutesOfDay(now, calendar: calendar)
+        let pastWindowEnd = nowMinute >= windowEnd
+        let fallbackMorningCoreOK = learnedWindow != nil
+            || (nowMinute >= WakeBoundaryDefaults.fallbackMorningCoreStartMin
+                && nowMinute <= WakeBoundaryDefaults.fallbackMorningCoreEndMin)
+        guard pastWindowEnd, fallbackMorningCoreOK else {
+            return .init(
+                candidate: nil,
+                blocker: "before_window_end",
+                windowEndMinute: windowEnd,
+                nowMinute: nowMinute,
+                learnedWindow: learnedWindow != nil
+            )
+        }
+
+        var nightSession: SavedSession?
+        for (index, session) in sourceSessions.enumerated() {
+            if index.isMultiple(of: 8) {
+                try cooperativeDeadline.checkpoint()
+            }
+            let inside = minuteInsideWindow(
+                minutesOfDay(session.start, calendar: calendar),
+                start: windowStart,
+                end: windowEnd
+            )
+            guard inside,
+                  now.timeIntervalSince(session.start)
+                    >= WakeBoundaryDefaults.minNightAnchorAge else { continue }
+            if nightSession == nil || session.start > nightSession!.start {
+                nightSession = session
+            }
+        }
+        guard let nightSession else {
+            return .init(
+                candidate: nil,
+                blocker: "no_night_anchor",
+                windowEndMinute: windowEnd,
+                nowMinute: nowMinute,
+                learnedWindow: learnedWindow != nil
+            )
+        }
+        let wakeOnset = try sustainedWakeOnset(
+            in: nightSession,
+            restingHR: rest,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        guard wakeOnset != nil || nowMinute > windowEnd else {
+            return .init(
+                candidate: nil,
+                blocker: "tail_not_awake",
+                windowEndMinute: windowEnd,
+                nowMinute: nowMinute,
+                learnedWindow: learnedWindow != nil
+            )
+        }
+        guard let candidate = try wakeBoundarySleepCandidate(
+            session: nightSession,
+            windowEndMinute: windowEnd,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar,
+            now: now,
+            historicalMotionPolicy: historicalMotionPolicy,
+            resolvedWakeOnset: wakeOnset,
+            cooperativeDeadline: cooperativeDeadline
+        ),
+        isAutoConfirmableMainSleepCandidate(
+            candidate,
+            baselineRestingIsTrusted: baselineRestingIsTrusted,
+            baselineRestingIsNearTrusted: baselineRestingIsNearTrusted
+        ) else {
+            return .init(
+                candidate: nil,
+                blocker: "candidate_did_not_clear_gates",
+                windowEndMinute: windowEnd,
+                nowMinute: nowMinute,
+                learnedWindow: learnedWindow != nil
+            )
+        }
+        try cooperativeDeadline.checkpoint()
+        return .init(
+            candidate: candidate,
+            blocker: "none",
+            windowEndMinute: windowEnd,
+            nowMinute: nowMinute,
+            learnedWindow: learnedWindow != nil
+        )
+    }
+
     /// Applies a precomputed wake-boundary result. Only bounded overlap checks,
     /// persistence and published-state mutations remain on the MainActor.
     @discardableResult
@@ -25029,6 +29088,7 @@ final class SessionStore: ObservableObject {
         reason: String,
         sourceSessions: [SavedSession]? = nil,
         deferDerivedPublication: Bool = false,
+        archiveFreeLatestNightSettlement: Bool = false,
         persistenceFailure: (() -> Void)? = nil
     ) async -> Bool {
         guard let candidate = preparation.candidate else {
@@ -25089,6 +29149,20 @@ final class SessionStore: ObservableObject {
             ))
             return false
         }
+        let preparedMaterialization = preparation.preparedCandidate
+        if archiveFreeLatestNightSettlement {
+            guard let preparedMaterialization,
+                  preparedMaterialization.key == .init(candidate),
+                  preparedMaterialization.classification
+                    == classification else {
+                DetectionEventLog.append(DetectionEvent(
+                    kind: "sleepCandidateSkipped",
+                    reason: "compact_wake_materialization_stale_or_missing",
+                    detail: "Prepared wake physiology no longer matches the current classification (source: \(reason))"
+                ))
+                return false
+            }
+        }
 
         guard !dismissedSleepCandidates.contains(where: {
             $0.suppresses(start: candidate.start, end: candidate.end)
@@ -25103,10 +29177,6 @@ final class SessionStore: ObservableObject {
         // checked only against already-persisted records (`cachedConfirmedSleeps`),
         // never the in-flight candidate itself, so this can't self-match.
         var existing = cachedConfirmedSleeps
-        let confirmed = buildAutoConfirmedSleep(from: candidate,
-                                                classification: classification,
-                                                reason: "\(reason)_wake_boundary",
-                                                sourceSessions: sourceSessions)
         // Wake-then-sleep-again on a continuous (all-day-wear) recording: the live
         // night session's wake boundary moved later, so grow the confirmed night in
         // place rather than skip it as an overlap (user 2026-07-08). This is the
@@ -25116,9 +29186,16 @@ final class SessionStore: ObservableObject {
                                            candidate: candidate,
                                            classification: classification,
                                            reason: "\(reason)_wake_boundary_extend",
-                                           sourceSessions: sourceSessions) {
+                                           sourceSessions: sourceSessions,
+                                           precomputedMaterialization:
+                                            preparedMaterialization) {
             guard await saveConfirmedSleeps(existing,
-                                      deferDerivedPublication: deferDerivedPublication) else {
+                                      deferDerivedPublication: deferDerivedPublication,
+                                      archiveFreeLatestNightSettlement:
+                                        archiveFreeLatestNightSettlement,
+                                      publishStressContext:
+                                        Self.sleepStressContextAuthority(extended)
+                                            != nil) else {
                 persistenceFailure?()
                 return false
             }
@@ -25127,6 +29204,20 @@ final class SessionStore: ObservableObject {
             DetectionEventLog.append(DetectionEvent(kind: "sleepAutoConfirmed",
                                                      detail: "extended to \(isoString(extended.end)) (wake boundary)"))
             return true
+        }
+        let confirmed: UserConfirmedSleep
+        if let preparedMaterialization {
+            confirmed = buildAutoConfirmedSleep(
+                from: preparedMaterialization,
+                reason: "\(reason)_wake_boundary"
+            )
+        } else {
+            confirmed = buildAutoConfirmedSleep(
+                from: candidate,
+                classification: classification,
+                reason: "\(reason)_wake_boundary",
+                sourceSessions: sourceSessions
+            )
         }
         guard !existing.contains(where: { $0.id == confirmed.id }),
               let insertionBase = Self.sleepInsertionBase(existing: existing, candidate: candidate) else {
@@ -25140,7 +29231,12 @@ final class SessionStore: ObservableObject {
         existing = insertionBase
         existing.append(confirmed)
         guard await saveConfirmedSleeps(existing,
-                                  deferDerivedPublication: deferDerivedPublication) else {
+                                  deferDerivedPublication: deferDerivedPublication,
+                                  archiveFreeLatestNightSettlement:
+                                    archiveFreeLatestNightSettlement,
+                                  publishStressContext:
+                                    Self.sleepStressContextAuthority(confirmed)
+                                        != nil) else {
             persistenceFailure?()
             return false
         }
@@ -25166,18 +29262,32 @@ final class SessionStore: ObservableObject {
                                   candidate: AggregateSleepCandidate,
                                   classification: AutoSleepClassification,
                                   reason: String,
-                                  sourceSessions: [SavedSession]? = nil) -> UserConfirmedSleep? {
+                                  sourceSessions: [SavedSession]? = nil,
+                                  precomputedMaterialization: ForegroundSleepSettlementProposal.PreparedAutoSleepMaterialization? = nil) -> UserConfirmedSleep? {
         guard classification.allowsAutomaticPersistence else { return nil }
         guard Self.sleepExtendReplacement(existing: existing, candidate: candidate) else { return nil }
         let eventTimeZoneIdentifier = existing.first {
             Self.isExtendableAutoNight($0) && Self.sleepWindowsOverlap($0, candidate: candidate)
         }?.eventTimeZoneIdentifier
         existing.removeAll { Self.isExtendableAutoNight($0) && Self.sleepWindowsOverlap($0, candidate: candidate) }
-        let extended = buildAutoConfirmedSleep(from: candidate,
-                                               classification: classification,
-                                               reason: reason,
-                                               sourceSessions: sourceSessions,
-                                               existingEventTimeZoneIdentifier: eventTimeZoneIdentifier)
+        let extended: UserConfirmedSleep
+        if let precomputedMaterialization {
+            extended = buildAutoConfirmedSleep(
+                from: precomputedMaterialization,
+                reason: reason,
+                existingEventTimeZoneIdentifier:
+                    eventTimeZoneIdentifier
+            )
+        } else {
+            extended = buildAutoConfirmedSleep(
+                from: candidate,
+                classification: classification,
+                reason: reason,
+                sourceSessions: sourceSessions,
+                existingEventTimeZoneIdentifier:
+                    eventTimeZoneIdentifier
+            )
+        }
         existing.append(extended)
         if let banner = autoSleepLoggedBanner, banner.start < candidate.end, banner.end > candidate.start {
             autoSleepLoggedBanner = AutoSleepLoggedBanner(id: extended.id,
@@ -25645,6 +29755,7 @@ final class SessionStore: ObservableObject {
         guard end > start else { return nil }
         let sleepSource = isNap ? "manual_nap" : "manual_sleep"
         let id = confirmedSleepID(start: start, end: end, source: sleepSource)
+        let previouslySaved = cachedConfirmedSleeps.first { $0.id == id }
         var existing = cachedConfirmedSleeps.filter { $0.id != id }
         let duration = end.timeIntervalSince(start)
         let metrics = confirmedSleepWindowMetrics(start: start, end: end, rest: rest)
@@ -25673,7 +29784,12 @@ final class SessionStore: ObservableObject {
         existing.append(confirmed)
         // A user may legitimately re-add a window they previously dismissed
         // or deleted. Their explicit save supersedes that detector tombstone.
-        guard await saveConfirmedSleeps(existing) else { return nil }
+        guard await saveConfirmedSleeps(
+            existing,
+            publishStressContext:
+                Self.sleepStressContextAuthority(previouslySaved)
+                    != Self.sleepStressContextAuthority(confirmed)
+        ) else { return nil }
         clearDismissedSleepCandidates(overlappingStart: start, end: end)
         refreshSleepSnapshotAfterCandidateSettlement()
         AtriaDebugLog("ATRIADBG sleep_manual status=saved id=%@ source=%@ start=%@ end=%@ duration_s=%.0f kind=%@ stages=%d",
@@ -25749,9 +29865,13 @@ final class SessionStore: ObservableObject {
         // sensor-research rather than a manual estimate (see
         // `shouldPreserveConfirmedSleepStageSegments`).
         let confidence = motionValidated ? "user_adjusted_motion_validated" : "user_adjusted_hr_only"
+        let previouslySaved = existingID
+            .flatMap { existingID in
+                cachedConfirmedSleeps.first { $0.id == existingID }
+            }
+            ?? cachedConfirmedSleeps.first { $0.id == id }
         var remaining = cachedConfirmedSleeps.filter { $0.id != id && (existingID == nil || $0.id != existingID) }
-        let eventTimeZoneIdentifier = existingID
-            .flatMap { existingID in cachedConfirmedSleeps.first { $0.id == existingID }?.eventTimeZoneIdentifier }
+        let eventTimeZoneIdentifier = previouslySaved?.eventTimeZoneIdentifier
             ?? TimeZone.current.identifier
         let staged = UserConfirmedSleep(id: id,
                                         createdAt: Date(),
@@ -25797,7 +29917,12 @@ final class SessionStore: ObservableObject {
         // candidate immediately after a successful Save. Keep the original
         // suggestion settled while the newly confirmed record remains the
         // authoritative, editable Activity item.
-        guard await saveConfirmedSleeps(remaining) else { return nil }
+        guard await saveConfirmedSleeps(
+            remaining,
+            publishStressContext:
+                Self.sleepStressContextAuthority(previouslySaved)
+                    != Self.sleepStressContextAuthority(confirmed)
+        ) else { return nil }
         clearDismissedSleepCandidates(overlappingStart: start, end: end)
         if let settlingCandidateWindow,
            settlingCandidateWindow.end > settlingCandidateWindow.start {
@@ -25884,7 +30009,11 @@ final class SessionStore: ObservableObject {
     @discardableResult
     func deleteConfirmedSleep(id: String) async -> Bool {
         guard let removed = cachedConfirmedSleeps.first(where: { $0.id == id }) else { return false }
-        guard await saveConfirmedSleeps(cachedConfirmedSleeps.filter { $0.id != id }) else { return false }
+        guard await saveConfirmedSleeps(
+            cachedConfirmedSleeps.filter { $0.id != id },
+            publishStressContext:
+                Self.sleepStressContextAuthority(removed) != nil
+        ) else { return false }
         addDismissedSleepCandidate(start: removed.start, end: removed.end)
         refreshSleepSnapshotAfterCandidateSettlement()
         if autoSleepLoggedBanner?.sleepID == id { autoSleepLoggedBanner = nil }
@@ -26013,7 +30142,11 @@ final class SessionStore: ObservableObject {
                                            stageSegments: stageSegments.isEmpty ? nil : stageSegments,
                                            eventTimeZoneIdentifier: TimeZone.current.identifier)
         existing.append(confirmed)
-        guard await saveConfirmedSleeps(existing) else { return nil }
+        guard await saveConfirmedSleeps(
+            existing,
+            publishStressContext:
+                Self.sleepStressContextAuthority(confirmed) != nil
+        ) else { return nil }
         AtriaDebugLog("ATRIADBG sleep_confirm status=confirmed id=%@ source=%@ candidate_source=%@ start=%@ end=%@ duration_s=%.0f span_s=%.0f sessions=%d samples=%d avg_hr=%d peak_hr=%d rest_hr=%d sleep_rhr=%d confidence=%@ motion_source=%@ motion_validated=%d stage_research_segments=%d reason=%@ metric_promotions=0 auto_gate_e_unchanged=1 healthkit_source=none local_only=1",
               confirmed.id,
               source,
@@ -26051,34 +30184,118 @@ final class SessionStore: ObservableObject {
         end: Date,
         rest: Int
     ) -> (sessions: Int, samples: Int, avgHR: Int, peakHR: Int, restingHR: Int, hrv: Int?, hrvWindowCount: Int) {
-        let overlapping = sessions.filter { session in
-            session.end > start && session.start < end && (!session.points.isEmpty || session.rrPoints?.isEmpty == false)
+        (try? confirmedSleepWindowMetricsCore(
+            from: sessions,
+            start: start,
+            end: end,
+            rest: rest,
+            cooperativeDeadline: nil
+        )) ?? (0, 0, 0, 0, rest, nil, 0)
+    }
+
+    nonisolated static func confirmedSleepWindowMetrics(
+        from sessions: [SavedSession],
+        start: Date,
+        end: Date,
+        rest: Int,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> (sessions: Int, samples: Int, avgHR: Int, peakHR: Int, restingHR: Int, hrv: Int?, hrvWindowCount: Int) {
+        try confirmedSleepWindowMetricsCore(
+            from: sessions,
+            start: start,
+            end: end,
+            rest: rest,
+            cooperativeDeadline: cooperativeDeadline
+        )
+    }
+
+    private nonisolated static func confirmedSleepWindowMetricsCore(
+        from sessions: [SavedSession],
+        start: Date,
+        end: Date,
+        rest: Int,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> (sessions: Int, samples: Int, avgHR: Int, peakHR: Int, restingHR: Int, hrv: Int?, hrvWindowCount: Int) {
+        try cooperativeDeadline?.checkpoint()
+        var overlapping: [SavedSession] = []
+        overlapping.reserveCapacity(sessions.count)
+        for (index, session) in sessions.enumerated() {
+            if index.isMultiple(of: 16) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            if session.end > start,
+               session.start < end,
+               (!session.points.isEmpty || session.rrPoints?.isEmpty == false) {
+                overlapping.append(session)
+            }
         }
         var values: [Int] = []
-        for session in overlapping {
-            for point in session.points {
+        for (sessionIndex, session) in overlapping.enumerated() {
+            try cooperativeDeadline?.checkpoint()
+            for (pointIndex, point) in session.points.enumerated() {
+                if pointIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
                 let sampleTime = session.start.addingTimeInterval(max(0, point.t))
                 if sampleTime >= start && sampleTime <= end && point.bpm > 0 {
                     values.append(point.bpm)
                 }
             }
+            if sessionIndex.isMultiple(of: 8) {
+                try cooperativeDeadline?.checkpoint()
+            }
         }
-        let avg = values.isEmpty ? 0 : values.reduce(0, +) / values.count
-        let peak = values.max() ?? 0
-        let resting = values.isEmpty ? rest : Self.percentileHR(0.05, values: values)
+        var sum = 0
+        var peak = 0
+        for (index, value) in values.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            sum += value
+            peak = max(peak, value)
+        }
+        let avg = values.isEmpty ? 0 : sum / values.count
+        var orderedValues = values
+        try cooperativeStableSort(
+            &orderedValues,
+            cooperativeDeadline: cooperativeDeadline,
+            areInIncreasingOrder: <
+        )
+        let resting = values.isEmpty
+            ? rest
+            : Self.percentileHR(0.05, presorted: orderedValues)
         // A confirmed sleep commonly spans several connection-bounded
         // sessions. Qualify every five-minute window inside its own session so
         // no RR continuity is invented across reconnects, then combine the
         // already-qualified window scalars for the exact sleep interval.
-        let qualifiedLnRMSSDWindows = overlapping.flatMap {
-            $0.qualifiedLnRMSSDWindows(in: start, end: end)
+        var qualifiedLnRMSSDWindows: [Double] = []
+        for session in overlapping {
+            try cooperativeDeadline?.checkpoint()
+            if let cooperativeDeadline {
+                qualifiedLnRMSSDWindows.append(contentsOf:
+                    try session.qualifiedLnRMSSDWindows(
+                        in: start,
+                        end: end,
+                        cooperativeDeadline: cooperativeDeadline
+                    )
+                )
+            } else {
+                qualifiedLnRMSSDWindows.append(contentsOf:
+                    session.qualifiedLnRMSSDWindows(in: start, end: end)
+                )
+            }
         }
         let hrvWindowCount = qualifiedLnRMSSDWindows.count
         let hrv: Int?
         if hrvWindowCount < 3 {
             hrv = nil
         } else {
-            let sorted = qualifiedLnRMSSDWindows.sorted()
+            var sorted = qualifiedLnRMSSDWindows
+            try cooperativeStableSort(
+                &sorted,
+                cooperativeDeadline: cooperativeDeadline,
+                areInIncreasingOrder: <
+            )
             let middle = sorted.count / 2
             let median = sorted.count.isMultiple(of: 2)
                 ? (sorted[middle - 1] + sorted[middle]) / 2
@@ -26086,6 +30303,7 @@ final class SessionStore: ObservableObject {
             let value = Int(exp(median).rounded())
             hrv = value > 0 ? value : nil
         }
+        try cooperativeDeadline?.checkpoint()
         return (overlapping.count, values.count, avg, peak, resting, hrv, hrvWindowCount)
     }
 
@@ -26100,23 +30318,249 @@ final class SessionStore: ObservableObject {
         end: Date,
         maximumRRGap: TimeInterval = 3
     ) -> Double? {
+        try? confirmedSleepRespiratoryRateCore(
+            from: sessions,
+            start: start,
+            end: end,
+            maximumRRGap: maximumRRGap,
+            cooperativeDeadline: nil
+        )
+    }
+
+    nonisolated static func confirmedSleepRespiratoryRate(
+        from sessions: [SavedSession],
+        start: Date,
+        end: Date,
+        maximumRRGap: TimeInterval = 3,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> Double? {
+        try confirmedSleepRespiratoryRateCore(
+            from: sessions,
+            start: start,
+            end: end,
+            maximumRRGap: maximumRRGap,
+            cooperativeDeadline: cooperativeDeadline
+        )
+    }
+
+    /// Deadline-aware, result-equivalent compact form of
+    /// `AtriaAnalytics.RespRateRsa.estimate(samples:now:lookback:)`. The only
+    /// optimization is reuse of the exact trigonometric kernels for repeated
+    /// resampled lengths during one settlement proposal.
+    private nonisolated static func compactRespiratoryRateEstimate(
+        samples: [(t: Date, ms: Double)],
+        now: Date,
+        lookback: TimeInterval,
+        kernelBank: inout AtriaCompactRespiratoryKernelBank,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> Double? {
+        try cooperativeDeadline.checkpoint()
+        let lowerBound = now.addingTimeInterval(-lookback)
+        var recentStartIndex: Int?
+        for index in samples.indices {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            if samples[index].t >= lowerBound {
+                recentStartIndex = index
+                break
+            }
+        }
+        guard let recentStartIndex else { return nil }
+        var recentEndIndex = recentStartIndex
+        while recentEndIndex < samples.count,
+              samples[recentEndIndex].t <= now {
+            if recentEndIndex.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            recentEndIndex += 1
+        }
+        let recentCount = recentEndIndex - recentStartIndex
+        guard recentCount >= 20 else { return nil }
+        let first = samples[recentStartIndex].t
+        let last = samples[recentEndIndex - 1].t
+        let duration = last.timeIntervalSince(first)
+        guard duration >= 45 else { return nil }
+
+        let referenceStart = first.timeIntervalSinceReferenceDate
+        var relative: [(t: TimeInterval, ms: Double)] = []
+        relative.reserveCapacity(recentCount)
+        for index in recentStartIndex..<recentEndIndex {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            relative.append((
+                samples[index].t.timeIntervalSinceReferenceDate
+                    - referenceStart,
+                samples[index].ms
+            ))
+        }
+        for index in 1..<relative.count {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            if relative[index].t - relative[index - 1].t > 5.0 {
+                return nil
+            }
+        }
+
+        let sampleRate = 4.0
+        let step = 1.0 / sampleRate
+        let expectedCount = Int(duration / step) + 1
+        guard expectedCount >= Int(45 * sampleRate) else { return nil }
+        var resampled: [Double] = []
+        resampled.reserveCapacity(expectedCount)
+        var sourceIndex = 0
+        for index in 0..<expectedCount {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            let time = Double(index) * step
+            while sourceIndex + 1 < relative.count,
+                  relative[sourceIndex + 1].t < time {
+                sourceIndex += 1
+                if sourceIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline.checkpoint()
+                }
+            }
+            guard sourceIndex + 1 < relative.count else { break }
+            let a = relative[sourceIndex]
+            let b = relative[sourceIndex + 1]
+            let span = b.t - a.t
+            guard span > 0 else { continue }
+            let fraction = (time - a.t) / span
+            resampled.append(a.ms + (b.ms - a.ms) * fraction)
+        }
+        guard resampled.count >= Int(45 * sampleRate) else { return nil }
+        guard resampled.count
+                <= AtriaCompactRespiratoryKernelBank.maximumSampleCount else {
+            return nil
+        }
+
+        var sum = 0.0
+        for (index, value) in resampled.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            sum += value
+        }
+        let mean = sum / Double(resampled.count)
+        var centered: [Double] = []
+        centered.reserveCapacity(resampled.count)
+        var totalPower = 0.0
+        for (index, value) in resampled.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            let centeredValue = value - mean
+            centered.append(centeredValue)
+            totalPower += centeredValue * centeredValue
+        }
+        guard totalPower > 0 else { return nil }
+
+        let kernels = try kernelBank.kernels(
+            cooperativeDeadline: cooperativeDeadline
+        )
+        var bestRate = 0.0
+        var bestPower = 0.0
+        var bandPower = 0.0
+        var rateIndex = 0
+        for breathsPerMinute in stride(
+            from: 9.0,
+            through: 30.0,
+            by: 0.5
+        ) {
+            try cooperativeDeadline.checkpoint()
+            let cosine = kernels.cosines[rateIndex]
+            let sine = kernels.sines[rateIndex]
+            var real = 0.0
+            var sineProjection = 0.0
+            // `centered` is structurally capped at 361 values by the fixed
+            // 90-second/4-Hz resampling above. Accelerate evaluates the same
+            // two dot products without an uninterruptible full-row operation.
+            vDSP_dotprD(
+                centered,
+                1,
+                cosine,
+                1,
+                &real,
+                vDSP_Length(centered.count)
+            )
+            vDSP_dotprD(
+                centered,
+                1,
+                sine,
+                1,
+                &sineProjection,
+                vDSP_Length(centered.count)
+            )
+            let imaginary = -sineProjection
+            try cooperativeDeadline.checkpoint()
+            let power = real * real + imaginary * imaginary
+            bandPower += power
+            if power > bestPower {
+                bestPower = power
+                bestRate = breathsPerMinute
+            }
+            rateIndex += 1
+        }
+        guard bestPower > 0,
+              bestPower / max(bandPower, bestPower) >= 0.18 else {
+            return nil
+        }
+        try cooperativeDeadline.checkpoint()
+        return bestRate
+    }
+
+    private nonisolated static func confirmedSleepRespiratoryRateCore(
+        from sessions: [SavedSession],
+        start: Date,
+        end: Date,
+        maximumRRGap: TimeInterval,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> Double? {
+        try cooperativeDeadline?.checkpoint()
         guard end > start, maximumRRGap > 0 else { return nil }
         var estimates: [Double] = []
+        var compactKernelBank = AtriaCompactRespiratoryKernelBank()
 
-        for session in sessions where session.end > start && session.start < end {
-            guard session.hasQualifiedRRProvenance,
-                  let rrPoints = session.rrPoints else { continue }
-            let samples = rrPoints.compactMap { point -> (t: Date, ms: Double)? in
-                let timestamp = session.start.addingTimeInterval(max(0, point.t))
-                guard timestamp >= start,
-                      timestamp <= end,
-                      (300...2_000).contains(point.ms) else { return nil }
-                return (timestamp, Double(point.ms))
+        for (sessionIndex, session) in sessions.enumerated()
+            where session.end > start && session.start < end {
+            if sessionIndex.isMultiple(of: 8) {
+                try cooperativeDeadline?.checkpoint()
             }
-            .sorted { $0.t < $1.t }
+            let provenanceQualified: Bool
+            if let cooperativeDeadline {
+                provenanceQualified = try session.hasQualifiedRRProvenance(
+                    cooperativeDeadline: cooperativeDeadline
+                )
+            } else {
+                provenanceQualified = session.hasQualifiedRRProvenance
+            }
+            guard provenanceQualified,
+                  let rrPoints = session.rrPoints else { continue }
+            var samples: [(t: Date, ms: Double)] = []
+            samples.reserveCapacity(rrPoints.count)
+            for (pointIndex, point) in rrPoints.enumerated() {
+                if pointIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                let timestamp = session.start.addingTimeInterval(max(0, point.t))
+                if timestamp >= start,
+                   timestamp <= end,
+                   (300...2_000).contains(point.ms) {
+                    samples.append((timestamp, Double(point.ms)))
+                }
+            }
+            try cooperativeStableSort(
+                &samples,
+                cooperativeDeadline: cooperativeDeadline,
+                areInIncreasingOrder: { $0.t < $1.t }
+            )
 
             var run: [(t: Date, ms: Double)] = []
-            func finishRun() {
+            func finishRun() throws {
+                try cooperativeDeadline?.checkpoint()
                 guard run.count >= 20,
                       let first = run.first?.t,
                       let last = run.last?.t,
@@ -26124,37 +30568,99 @@ final class SessionStore: ObservableObject {
                     run.removeAll(keepingCapacity: true)
                     return
                 }
+                func checkedEstimate(at evaluation: Date) throws -> Double? {
+                    guard let cooperativeDeadline else {
+                        return AtriaAnalytics.RespRateRsa.estimate(
+                            samples: run,
+                            now: evaluation,
+                            lookback: 90
+                        )
+                    }
+                    try cooperativeDeadline.checkpoint()
+                    let lowerDate = evaluation.addingTimeInterval(-90)
+                    var lower = 0
+                    var upper = run.count
+                    while lower < upper {
+                        let middle = (lower + upper) / 2
+                        if run[middle].t < lowerDate {
+                            lower = middle + 1
+                        } else {
+                            upper = middle
+                        }
+                    }
+                    let firstIndex = lower
+                    lower = firstIndex
+                    upper = run.count
+                    while lower < upper {
+                        let middle = (lower + upper) / 2
+                        if run[middle].t <= evaluation {
+                            lower = middle + 1
+                        } else {
+                            upper = middle
+                        }
+                    }
+                    let endIndex = lower
+                    let count = max(0, endIndex - firstIndex)
+                    guard count
+                            <= compactLatestNightMaximumRespirationWindowRows else {
+                        return nil
+                    }
+                    var bounded: [(t: Date, ms: Double)] = []
+                    bounded.reserveCapacity(count)
+                    if firstIndex < endIndex {
+                        for index in firstIndex..<endIndex {
+                            if index.isMultiple(of: 256) {
+                                try cooperativeDeadline.checkpoint()
+                            }
+                            bounded.append(run[index])
+                        }
+                    }
+                    try cooperativeDeadline.checkpoint()
+                    return try compactRespiratoryRateEstimate(
+                        samples: bounded,
+                        now: evaluation,
+                        lookback: 90,
+                        kernelBank: &compactKernelBank,
+                        cooperativeDeadline: cooperativeDeadline
+                    )
+                }
                 var evaluation = first.addingTimeInterval(60)
                 while evaluation <= last {
-                    if let rate = AtriaAnalytics.RespRateRsa.estimate(samples: run,
-                                                                     now: evaluation,
-                                                                     lookback: 90) {
+                    try cooperativeDeadline?.checkpoint()
+                    if let rate = try checkedEstimate(at: evaluation) {
                         estimates.append(rate)
                     }
                     evaluation = evaluation.addingTimeInterval(30)
                 }
-                if let rate = AtriaAnalytics.RespRateRsa.estimate(samples: run,
-                                                                 now: last,
-                                                                 lookback: 90) {
+                try cooperativeDeadline?.checkpoint()
+                if let rate = try checkedEstimate(at: last) {
                     estimates.append(rate)
                 }
                 run.removeAll(keepingCapacity: true)
             }
 
-            for sample in samples {
+            for (sampleIndex, sample) in samples.enumerated() {
+                if sampleIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
                 if let previous = run.last {
                     let gap = sample.t.timeIntervalSince(previous.t)
                     if gap <= 0 || gap > maximumRRGap {
-                        finishRun()
+                        try finishRun()
                     }
                 }
                 run.append(sample)
             }
-            finishRun()
+            try finishRun()
         }
 
         guard !estimates.isEmpty else { return nil }
-        let ordered = estimates.sorted()
+        var ordered = estimates
+        try cooperativeStableSort(
+            &ordered,
+            cooperativeDeadline: cooperativeDeadline,
+            areInIncreasingOrder: <
+        )
         let middle = ordered.count / 2
         return ordered.count.isMultiple(of: 2)
             ? (ordered[middle - 1] + ordered[middle]) / 2
@@ -26196,19 +30702,89 @@ final class SessionStore: ObservableObject {
                                                                restingHR: Int,
                                                                isNap: Bool,
                                                                motionValidated: Bool) -> [SleepStageSegment] {
-        let samples = sessions.flatMap { session -> [AtriaSleepWakeResearch.HeartSample] in
-            guard session.end >= start,
-                  session.start <= end,
-                  !session.points.isEmpty else { return [] }
-            return session.points.compactMap { point in
-                let t = session.start.addingTimeInterval(max(0, point.t))
-                guard t >= start && t <= end else { return nil }
-                return AtriaSleepWakeResearch.HeartSample(t: t, bpm: point.bpm)
+        (try? sleepStageResearchSegmentsCore(
+            from: sessions,
+            start: start,
+            end: end,
+            restingHR: restingHR,
+            isNap: isNap,
+            motionValidated: motionValidated,
+            maximumRows: nil,
+            cooperativeDeadline: nil
+        )) ?? []
+    }
+
+    private nonisolated static func sleepStageResearchSegments(
+        from sessions: [SavedSession],
+        start: Date,
+        end: Date,
+        restingHR: Int,
+        isNap: Bool,
+        motionValidated: Bool,
+        maximumRows: Int,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> [SleepStageSegment] {
+        try sleepStageResearchSegmentsCore(
+            from: sessions,
+            start: start,
+            end: end,
+            restingHR: restingHR,
+            isNap: isNap,
+            motionValidated: motionValidated,
+            maximumRows: maximumRows,
+            cooperativeDeadline: cooperativeDeadline
+        )
+    }
+
+    private nonisolated static func sleepStageResearchSegmentsCore(
+        from sessions: [SavedSession],
+        start: Date,
+        end: Date,
+        restingHR: Int,
+        isNap: Bool,
+        motionValidated: Bool,
+        maximumRows: Int?,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> [SleepStageSegment] {
+        try cooperativeDeadline?.checkpoint()
+        var samples: [AtriaSleepWakeResearch.HeartSample] = []
+        var recoveredMotionEpochs: [AtriaRecoveredMotionEpoch] = []
+        for (sessionIndex, session) in sessions.enumerated() {
+            if sessionIndex.isMultiple(of: 8) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            if session.end >= start,
+               session.start <= end,
+               !session.points.isEmpty {
+                for (pointIndex, point) in session.points.enumerated() {
+                    if pointIndex.isMultiple(of: 256) {
+                        try cooperativeDeadline?.checkpoint()
+                    }
+                    let t = session.start.addingTimeInterval(max(0, point.t))
+                    if t >= start, t <= end {
+                        samples.append(.init(t: t, bpm: point.bpm))
+                        if let maximumRows, samples.count > maximumRows {
+                            // Stages are optional; never let the unchecked
+                            // research engine consume an unbounded input.
+                            return []
+                        }
+                    }
+                }
+            }
+            for (epochIndex, epoch) in (session.recoveredMotionEpochs ?? []).enumerated() {
+                if epochIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                if epoch.end > start, epoch.start < end {
+                    recoveredMotionEpochs.append(epoch)
+                    if let maximumRows,
+                       recoveredMotionEpochs.count > maximumRows {
+                        return []
+                    }
+                }
             }
         }
-        let recoveredMotionEpochs = sessions
-            .flatMap { $0.recoveredMotionEpochs ?? [] }
-            .filter { $0.end > start && $0.start < end }
+        try cooperativeDeadline?.checkpoint()
         return AtriaSleepWakeResearch.stageSegments(samples: samples,
                                                     start: start,
                                                     end: end,
@@ -26345,6 +30921,64 @@ final class SessionStore: ObservableObject {
         sleep.end > sleep.start
             && sleep.duration >= AtriaPhysiologicalCycle.minimumMainSleepDuration
             && !confirmedSleepSourceIsNap(source: sleep.source, duration: sleep.duration)
+    }
+
+    /// SleepHistorySnapshot is the common publication source for both the
+    /// bulk daily rebuild and the current-morning freeze. Keep their definition
+    /// of a physiological main sleep identical so a short confirmed rest cannot
+    /// enter one path after being rejected by the other.
+    nonisolated static func confirmedSleepIsPhysiologicalMainSleep(
+        _ night: SleepHistorySnapshot.Night
+    ) -> Bool {
+        guard night.confirmed,
+              let start = night.start,
+              let end = night.end else { return false }
+        return end > start
+            && night.duration >= AtriaPhysiologicalCycle.minimumMainSleepDuration
+            && !confirmedSleepSourceIsNap(
+                source: night.source,
+                duration: night.duration
+            )
+    }
+
+    nonisolated private static func physiologicalMainSleepNight(
+        _ candidate: SleepHistorySnapshot.Night,
+        isPreferredTo existing: SleepHistorySnapshot.Night
+    ) -> Bool {
+        let candidateEnd = candidate.end ?? candidate.day
+        let existingEnd = existing.end ?? existing.day
+        return candidate.duration > existing.duration
+            || (candidate.duration == existing.duration
+                && candidateEnd > existingEnd)
+            || (candidate.duration == existing.duration
+                && candidateEnd == existingEnd
+                && candidate.id < existing.id)
+    }
+
+    /// Canonical morning authority is keyed by the final wake in the event time
+    /// zone, including a linked resumed segment whose wake crosses civil
+    /// midnight. The tie-break is the same deterministic one used by the bulk
+    /// saved-daily-metric union.
+    nonisolated private static func canonicalPhysiologicalMainSleepNight(
+        for day: Date,
+        in nights: [SleepHistorySnapshot.Night],
+        completedBy now: Date,
+        calendar: Calendar
+    ) -> SleepHistorySnapshot.Night? {
+        nights.reduce(nil) { selected, candidate in
+            guard confirmedSleepIsPhysiologicalMainSleep(candidate),
+                  let end = candidate.end,
+                  end <= now,
+                  calendar.isDate(
+                    morningMetricDay(for: candidate, calendar: calendar),
+                    inSameDayAs: day
+                  ) else { return selected }
+            guard let selected else { return candidate }
+            return physiologicalMainSleepNight(
+                candidate,
+                isPreferredTo: selected
+            ) ? candidate : selected
+        }
     }
 
     /// Mints the adaptive target once, at the persistence boundary for a new
@@ -26594,7 +31228,9 @@ final class SessionStore: ObservableObject {
     @discardableResult
     private func saveConfirmedSleeps(
         _ sleeps: [UserConfirmedSleep],
-        deferDerivedPublication: Bool = false
+        deferDerivedPublication: Bool = false,
+        archiveFreeLatestNightSettlement: Bool = false,
+        publishStressContext: Bool = false
     ) async -> Bool {
         let base = cachedConfirmedSleeps
         await Self.confirmedRecordTransactionGate.acquire()
@@ -26672,12 +31308,15 @@ final class SessionStore: ObservableObject {
                     nextStepReceiptCycleStart
                 )
             ) >= 1
-        setCachedConfirmedSleeps(sorted)
+        setCachedConfirmedSleeps(
+            sorted,
+            refreshDerivedCaches: !archiveFreeLatestNightSettlement
+        )
         let baselineInputsChanged = Self.confirmedSleepMutationAffectsBaseline(
             previous: previous,
             next: sorted
         )
-        if baselineInputsChanged {
+        if baselineInputsChanged && !archiveFreeLatestNightSettlement {
             // Confirmed main sleep is the only safe first baseline anchor when
             // no external resting reference exists. Rebuild when its actual
             // time/classification inputs changed, but never perform the much
@@ -26699,15 +31338,28 @@ final class SessionStore: ObservableObject {
                                                     dismissedCandidates: dismissedSleepCandidates)
         if !deferDerivedPublication {
             _ = settleConfirmedMorningAuthority(
-                reason: "confirmed_sleep_save",
-                now: Date()
+                reason: archiveFreeLatestNightSettlement
+                    ? "compact_latest_night_sleep_save"
+                    : "confirmed_sleep_save",
+                now: Date(),
+                preserveExistingSkinTemperature:
+                    !archiveFreeLatestNightSettlement
             )
         }
-        if !deferDerivedPublication {
+        if !deferDerivedPublication
+            && !archiveFreeLatestNightSettlement {
             refreshHistorySnapshotCache(deferred: true)
         }
         if stepReceiptCycleChanged {
-            if deferDerivedPublication {
+            if archiveFreeLatestNightSettlement {
+                // Compact settlement has just changed the physiological
+                // boundary. Recompute the compact-only current-cycle receipt
+                // now; deferring would leave Home on the prior sleep cycle
+                // until an unrelated foreground or BLE event arrived.
+                refreshCurrentCycleStrapStepReceipt(
+                    reason: "compact_latest_night_sleep_cycle_changed"
+                )
+            } else if deferDerivedPublication {
                 currentCycleStepReceiptDeferredUntilForeground = true
             } else {
                 refreshCurrentCycleStrapStepReceipt(
@@ -26727,6 +31379,10 @@ final class SessionStore: ObservableObject {
         } else {
             writeDutyCycleSleepWindow(from: sorted)
         }
+        publishStressContextIfNeeded(
+            deferDerivedPublication: deferDerivedPublication,
+            publicationRequested: publishStressContext
+        )
         return true
     }
 
@@ -26852,13 +31508,20 @@ final class SessionStore: ObservableObject {
     @discardableResult
     private func backfillConfirmedSleepStagesFromSessions(
         reason: String,
-        deferDerivedPublication: Bool = false
+        deferDerivedPublication: Bool = false,
+        affectedSince: Date? = nil
     ) async -> Bool {
         let sourceSessions = canonicalSessions(includeActiveJournal: true)
+            .filter { session in
+                affectedSince.map { session.end > $0 } ?? true
+            }
         guard !sourceSessions.isEmpty, !cachedConfirmedSleeps.isEmpty else { return true }
 
         var repaired = 0
         let updated = cachedConfirmedSleeps.map { sleep -> UserConfirmedSleep in
+            if let affectedSince, sleep.end <= affectedSince {
+                return sleep
+            }
             if let refreshed = refreshedUserAdjustedSleepEvidenceIfNeeded(sleep,
                                                                           sourceSessions: sourceSessions,
                                                                           reason: reason) {
@@ -26960,11 +31623,18 @@ final class SessionStore: ObservableObject {
     /// not change, so changed epoch timing cannot leave stale stages behind.
     private func rebuildConfirmedSleepRecoveredMotionProvenance(
         reason: String,
-        deferDerivedPublication: Bool
+        deferDerivedPublication: Bool,
+        affectedSince: Date? = nil
     ) async -> Bool {
         let sourceSessions = canonicalSessions(includeActiveJournal: true)
+            .filter { session in
+                affectedSince.map { session.end > $0 } ?? true
+            }
         var changed = 0
         let updated = cachedConfirmedSleeps.map { sleep -> UserConfirmedSleep in
+            if let affectedSince, sleep.end <= affectedSince {
+                return sleep
+            }
             let provenance = Self.recoveredMotionProvenance(for: sleep,
                                                             sessions: sourceSessions)
             guard provenance.hasRecoveredEpochs else { return sleep }
@@ -28779,22 +33449,101 @@ final class SessionStore: ObservableObject {
                                                                maxHR: Int,
                                                                calendar: Calendar = .current,
                                                                thresholdFraction: Double = 0.50) -> [AggregateWorkoutCandidate] {
+        // Key exactly the corpus the operation consumes. In particular, the
+        // independently reconstructed >6 h active journal is intentionally
+        // outside workout-chunk aggregation; including its fresh array address
+        // made History and review miss the launch rendezvous even though both
+        // performed identical useful work.
+        let eligible = sessions.filter {
+            !$0.points.isEmpty && $0.duration >= 60 && $0.duration <= 6 * 3600
+        }
+        let key = AtriaWorkoutAggregateFlightKey(
+            sessions: eligible.map(
+                AtriaWorkoutAggregateSessionFlightIdentity.init
+            ),
+            rest: rest,
+            maxHR: maxHR,
+            thresholdFractionBitPattern: thresholdFraction.bitPattern,
+            calendarIdentifier: String(describing: calendar.identifier),
+            calendarTimeZoneIdentifier: calendar.timeZone.identifier,
+            calendarLocaleIdentifier: calendar.locale?.identifier,
+            firstWeekday: calendar.firstWeekday,
+            minimumDaysInFirstWeek: calendar.minimumDaysInFirstWeek
+        )
+        return workoutAggregateSingleFlight.run(
+            key: key,
+            retaining: eligible
+        ) {
+            aggregateWorkoutCandidatesUnshared(
+                in: eligible,
+                rest: rest,
+                maxHR: maxHR,
+                calendar: calendar,
+                thresholdFraction: thresholdFraction
+            )
+        }
+    }
+
+    private nonisolated static func aggregateWorkoutCandidatesUnshared(
+        in sessions: [SavedSession],
+        rest: Int,
+        maxHR: Int,
+        calendar: Calendar,
+        thresholdFraction: Double
+    ) -> [AggregateWorkoutCandidate] {
         // Upper bound (2026-08-05, cold-launch burst root): aggregation
         // exists to stitch SHORT chunks into one workout. An all-day
         // recovered wear session is not a workout chunk — clustering it
         // copied+sorted ~a day of points three ways per cluster and was the
         // ignition inside hist_stage=detections. Single-session readiness
         // still evaluates long sessions on their own path.
-        let eligible = sessions.filter {
-            !$0.points.isEmpty && $0.duration >= 60 && $0.duration <= 6 * 3600
-        }
-        let grouped = Dictionary(grouping: eligible) { session in
+        let grouped = Dictionary(grouping: sessions) { session in
             EventCivilTime.day(containing: session.start,
                                eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
                                outputCalendar: calendar)
         }
-        return grouped.flatMap { day, daySessions in
-            workoutClusters(from: daySessions, maxGap: 30 * 60).flatMap { cluster -> [AggregateWorkoutCandidate] in
+        let clusterPlans: [(day: Date, ordered: [SavedSession])] =
+            grouped.flatMap { day, daySessions in
+                workoutClusters(from: daySessions, maxGap: 30 * 60).map {
+                    (day: day, ordered: $0.sorted(
+                        by: AtriaWorkoutAggregateSessionFlightIdentity.canonicalOrder
+                    ))
+                }
+            }
+            // Evaluate newest common work first so History's superset and the
+            // 24-hour review slice rendezvous before History continues through
+            // its older, independently retained detections.
+            .sorted { lhs, rhs in
+                if lhs.day != rhs.day { return lhs.day > rhs.day }
+                let lhsStart = lhs.ordered.first?.start ?? .distantPast
+                let rhsStart = rhs.ordered.first?.start ?? .distantPast
+                if lhsStart != rhsStart { return lhsStart > rhsStart }
+                let lhsEnd = lhs.ordered.last?.end ?? .distantPast
+                let rhsEnd = rhs.ordered.last?.end ?? .distantPast
+                return lhsEnd > rhsEnd
+            }
+
+        return clusterPlans.flatMap { plan -> [AggregateWorkoutCandidate] in
+            let day = plan.day
+            let ordered = plan.ordered
+            let clusterKey = AtriaWorkoutAggregateClusterFlightKey(
+                orderedSessions: ordered.map(
+                    AtriaWorkoutAggregateSessionFlightIdentity.init
+                ),
+                dayBitPattern: day.timeIntervalSinceReferenceDate.bitPattern,
+                rest: rest,
+                maxHR: maxHR,
+                thresholdFractionBitPattern: thresholdFraction.bitPattern,
+                calendarIdentifier: String(describing: calendar.identifier),
+                calendarTimeZoneIdentifier: calendar.timeZone.identifier,
+                calendarLocaleIdentifier: calendar.locale?.identifier,
+                firstWeekday: calendar.firstWeekday,
+                minimumDaysInFirstWeek: calendar.minimumDaysInFirstWeek
+            )
+            return workoutAggregateClusterSingleFlight.run(
+                key: clusterKey,
+                retaining: ordered
+            ) {
               // Per-cluster dying thread (2026-08-05, THE cold-launch burst):
               // an all-day recovered cluster copies + sorts its whole day of
               // points and replays readiness up to three ways; ~14 day
@@ -28802,9 +33551,8 @@ final class SessionStore: ObservableObject {
               // inside hist_stage=detections. Each cluster's garbage now dies
               // before the next cluster starts.
               AtriaTransientWorkThread.run(name: "atria.aggregate-cluster") { () -> [AggregateWorkoutCandidate] in
-                guard let start = cluster.map(\.start).min(),
-                      let end = cluster.map(\.end).max() else { return [] }
-                let ordered = cluster.sorted { $0.start < $1.start }
+                guard let start = ordered.map(\.start).min(),
+                      let end = ordered.map(\.end).max() else { return [] }
                 let points = ordered.flatMap { session in
                     session.points.map { point in
                         SavedSession.Point(t: session.start.addingTimeInterval(point.t).timeIntervalSince(start),
@@ -28912,11 +33660,54 @@ final class SessionStore: ObservableObject {
         }
     }
 
+#if DEBUG
+    nonisolated static func resetWorkoutAggregateSingleFlightForTesting() {
+        workoutAggregateSingleFlight.resetCountersForTesting()
+        workoutAggregateClusterSingleFlight.resetCountersForTesting()
+    }
+
+    nonisolated static func workoutAggregateSingleFlightCountersForTesting()
+        -> (executions: Int, sharedResults: Int) {
+        workoutAggregateSingleFlight.countersForTesting()
+    }
+
+    nonisolated static func workoutAggregateClusterSingleFlightCountersForTesting()
+        -> (executions: Int, sharedResults: Int) {
+        workoutAggregateClusterSingleFlight.countersForTesting()
+    }
+
+    nonisolated static func workoutAggregateClusterSingleFlightCountersForTesting(
+        sessionID: UUID
+    ) -> (executions: Int, sharedResults: Int) {
+        workoutAggregateClusterSingleFlight.countersForTesting(
+            sessionID: sessionID
+        )
+    }
+
+    nonisolated static func aggregateWorkoutCandidatesForTesting(
+        in sessions: [SavedSession],
+        rest: Int,
+        maxHR: Int,
+        calendar: Calendar = .current,
+        thresholdFraction: Double = 0.50
+    ) -> [AggregateWorkoutCandidate] {
+        aggregateWorkoutCandidates(
+            in: sessions,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar,
+            thresholdFraction: thresholdFraction
+        )
+    }
+#endif
+
     private nonisolated static func stitchedObservedWorkoutPoints(from sessions: [SavedSession]) -> (points: [SavedSession.Point], duration: TimeInterval)? {
         var stitched: [SavedSession.Point] = []
         var cursor: TimeInterval = 0
         let resetGap = SavedSession.workoutContinuityGapLimit + 1
-        for session in sessions.sorted(by: { $0.start < $1.start }) {
+        for session in sessions.sorted(
+            by: AtriaWorkoutAggregateSessionFlightIdentity.canonicalOrder
+        ) {
             let points = session.points.sorted { lhs, rhs in
                 if lhs.t != rhs.t { return lhs.t < rhs.t }
                 return lhs.bpm < rhs.bpm
@@ -29168,6 +33959,11 @@ final class SessionStore: ObservableObject {
     enum HistoricalSleepMotionPolicy {
         case fullArchive
         case boundedRecent
+        /// External motion reads are forbidden, but timestamped compact epochs
+        /// already attached to each bounded session remain authoritative.
+        /// Unlike deterministic replay, the small device-use journal may still
+        /// clamp a provably awake leading edge.
+        case attachedCompactOnly
         /// Deterministic saved-record replay. Only motion provenance embedded in
         /// the decoded sessions may participate; mutable on-device archives are
         /// deliberately excluded from the result.
@@ -29219,11 +34015,55 @@ final class SessionStore: ObservableObject {
         return clamped > start ? clamped : start
     }
 
-    nonisolated static func aggregateSleepCandidates(in sourceSessions: [SavedSession],
-                                                             rest: Int,
-                                                             maxHR: Int,
-                                                             calendar: Calendar = .current,
-                                                             historicalMotionPolicy: HistoricalSleepMotionPolicy = .boundedRecent) -> [AggregateSleepCandidate] {
+    nonisolated static func aggregateSleepCandidates(
+        in sourceSessions: [SavedSession],
+        rest: Int,
+        maxHR: Int,
+        calendar: Calendar = .current,
+        historicalMotionPolicy: HistoricalSleepMotionPolicy = .boundedRecent
+    ) -> [AggregateSleepCandidate] {
+        // An absent deadline preserves the legacy result exactly.
+        (try? aggregateSleepCandidatesCore(
+            in: sourceSessions,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar,
+            historicalMotionPolicy: historicalMotionPolicy,
+            cooperativeDeadline: nil,
+            includeResumedReviewCandidates: true
+        )) ?? []
+    }
+
+    nonisolated static func aggregateSleepCandidates(
+        in sourceSessions: [SavedSession],
+        rest: Int,
+        maxHR: Int,
+        calendar: Calendar = .current,
+        historicalMotionPolicy: HistoricalSleepMotionPolicy,
+        cooperativeDeadline: AtriaSleepSettlementDeadline,
+        includeResumedReviewCandidates: Bool = false
+    ) throws -> [AggregateSleepCandidate] {
+        try aggregateSleepCandidatesCore(
+            in: sourceSessions,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar,
+            historicalMotionPolicy: historicalMotionPolicy,
+            cooperativeDeadline: cooperativeDeadline,
+            includeResumedReviewCandidates: includeResumedReviewCandidates
+        )
+    }
+
+    private nonisolated static func aggregateSleepCandidatesCore(
+        in sourceSessions: [SavedSession],
+        rest: Int,
+        maxHR: Int,
+        calendar: Calendar,
+        historicalMotionPolicy: HistoricalSleepMotionPolicy,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?,
+        includeResumedReviewCandidates: Bool
+    ) throws -> [AggregateSleepCandidate] {
+        try cooperativeDeadline?.checkpoint()
         var fullArchiveMotionSnapshot: HistoricalArchive.MotionArchiveSnapshot?
         func historicalMotionDiagnostics(start: Date, end: Date) -> HistoricalArchive.MotionWindowDiagnostics {
             switch historicalMotionPolicy {
@@ -29237,9 +34077,10 @@ final class SessionStore: ObservableObject {
                 return fullArchiveMotionSnapshot!.diagnostics(start: start, end: end)
             case .boundedRecent:
                 return HistoricalArchive.boundedMotionWindowDiagnostics(start: start, end: end)
-            case .sessionOnly:
+            case .attachedCompactOnly, .sessionOnly:
                 return HistoricalArchive.MotionWindowDiagnostics(
-                    status: "session_only",
+                    status: historicalMotionPolicy == .sessionOnly
+                        ? "session_only" : "attached_compact_only",
                     reason: "external motion archive excluded from deterministic replay",
                     rows: 0,
                     validatedRows: 0,
@@ -29256,18 +34097,47 @@ final class SessionStore: ObservableObject {
                 )
             }
         }
-        let eligible = sourceSessions.filter { session in
+        var eligible: [SavedSession] = []
+        eligible.reserveCapacity(sourceSessions.count)
+        var sessionHRStats: [UUID: CooperativeBPMStats] = [:]
+        sessionHRStats.reserveCapacity(sourceSessions.count)
+        for session in sourceSessions {
+            try cooperativeDeadline?.checkpoint()
+            let isEligible: Bool = try {
+            () throws -> Bool in
             guard session.duration >= AggregateSleepCandidate.minimumFragmentDuration,
                   !session.points.isEmpty else { return false }
             // Eligibility must be robust to an isolated optical/contact spike.
             // Using the raw maximum here used to discard an entire otherwise
             // low-HR sleep fragment before the cluster-level median/P90 and
             // elevated-fraction checks ever had a chance to evaluate it.
-            let sessionHR = session.bpms
-            let sessionP05 = Self.percentileHR(0.05, values: sessionHR)
-            let sessionP90 = Self.percentileHR(0.90, values: sessionHR)
-            let elevatedFraction = Double(sessionHR.filter { $0 >= rest + 35 }.count)
+            let bpmStats = try session.cooperativeBPMStats(
+                cooperativeDeadline: cooperativeDeadline
+            )
+            sessionHRStats[session.id] = bpmStats
+            let sessionHR = bpmStats.values
+            let sessionP05 = Self.percentileHR(
+                0.05,
+                presorted: bpmStats.sortedValues
+            )
+            let sessionP90 = Self.percentileHR(
+                0.90,
+                presorted: bpmStats.sortedValues
+            )
+            var elevatedCount = 0
+            for (index, bpm) in sessionHR.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                if bpm >= rest + 35 { elevatedCount += 1 }
+            }
+            let elevatedFraction = Double(elevatedCount)
                 / Double(max(1, sessionHR.count))
+            let sessionAverage = bpmStats.roundedAverage
+            let sessionStandardDeviation = try cooperativeStandardDeviation(
+                sessionHR,
+                cooperativeDeadline: cooperativeDeadline
+            )
             let eventCalendar = EventCivilTime.eventCalendar(timeZoneIdentifier: session.eventTimeZoneIdentifier,
                                                              fallback: calendar)
             let startHour = eventCalendar.component(.hour, from: session.start)
@@ -29276,11 +34146,11 @@ final class SessionStore: ObservableObject {
             let daytimeNapWindow = !overnight && startHour >= 11 && endHour <= 20
             let shortLowHRNapLike = session.duration >= AggregateSleepCandidate.napMinimumDuration
                 && session.duration <= AggregateSleepCandidate.napMaximumSpan
-                && session.avg <= rest + 12
+                && sessionAverage <= rest + 12
                 && sessionP90 <= rest + 30
                 && elevatedFraction <= 0.08
             let napLike = daytimeNapWindow && shortLowHRNapLike
-            let lowHR = session.avg <= rest + 18
+            let lowHR = sessionAverage <= rest + 18
                 && sessionP90 <= rest + 35
                 && elevatedFraction <= 0.12
             // Motion is resolved only after the eligible fragments have been
@@ -29296,12 +34166,12 @@ final class SessionStore: ObservableObject {
                 // close to the trusted baseline. A uniformly elevated active
                 // interval cannot define its own convenient sleep baseline.
                 && sessionP05 <= rest + 12
-                && session.avg <= sessionP05 + 15
+                && sessionAverage <= sessionP05 + 15
                 && sessionP90 <= sessionP05 + 30
                 && elevatedFraction <= 0.18
             let longOvernightReviewLike = overnight
                 && session.duration >= AggregateSleepCandidate.strictMinimumDuration
-                && session.avg <= rest + 22
+                && sessionAverage <= rest + 22
                 && sessionP90 <= rest + 45
                 && elevatedFraction <= 0.18
             // A trusted-baseline auto-confirm decision is made later, but the
@@ -29312,20 +34182,34 @@ final class SessionStore: ObservableObject {
             // resulting aggregate. (2026-07-18 shift-work truth fix)
             let longStableHROnlyMainSleepLike = session.duration >= AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration
                 && session.duration <= AggregateSleepCandidate.maximumAutoConfirmMainSleepSpan
-                && session.avg <= rest + 12
-                && standardDeviation(sessionHR.map(Double.init)) <= 9.5
+                && sessionAverage <= rest + 12
+                && sessionStandardDeviation <= 9.5
                 && sessionP90 <= rest + 18
                 && elevatedFraction < 0.05
             // A full shift-work sleep can arrive in several one-to-three-hour
             // journal chunks. The aggregate still demands five dense hours and
             // is review-only; this only admits independently dense fragments.
             let denseLongHROnlyReviewFragment = session.duration >= 60 * 60
-                && session.avg <= rest + 18
-                && standardDeviation(sessionHR.map(Double.init)) <= 9.5
+                && sessionAverage <= rest + 18
+                && sessionStandardDeviation <= 9.5
                 && sessionP90 <= rest + 35
                 && elevatedFraction < 0.12
                 && Double(session.rrPoints?.count ?? 0) / max(1, session.duration) >= 0.60
-            let notWorkout = !session.workoutReadiness(rest: rest, maxHR: maxHR).ready
+            let workoutReadiness: WorkoutReadiness
+            if let cooperativeDeadline {
+                workoutReadiness = try session.workoutReadiness(
+                    rest: rest,
+                    maxHR: maxHR,
+                    cooperativeDeadline: cooperativeDeadline,
+                    preparedBPMStats: bpmStats
+                )
+            } else {
+                workoutReadiness = session.workoutReadiness(
+                    rest: rest,
+                    maxHR: maxHR
+                )
+            }
+            let notWorkout = !workoutReadiness.ready
             return ((overnight && lowHR)
                 || motionEligibleOvernightFragment
                 || longOvernightReviewLike
@@ -29333,56 +34217,191 @@ final class SessionStore: ObservableObject {
                 || denseLongHROnlyReviewFragment
                 || napLike
                 || shortLowHRNapLike) && notWorkout
+            }()
+            try cooperativeDeadline?.checkpoint()
+            if isEligible {
+                eligible.append(session)
+            }
         }
         // Cluster first, then assign the wake-day. Bucketing each fragment first
         // splits a single night when one fragment ends before midnight and the
         // next begins just after it.
-        let clusters = Self.sleepClusters(from: eligible.sorted { $0.start < $1.start },
-                                          maxGap: 2 * 60 * 60,
-                                          rest: rest,
-                                          calendar: calendar)
-            .flatMap(Self.splitShortPreludeFromDenseSleepCluster)
-        let candidates: [AggregateSleepCandidate] = clusters.compactMap { cluster -> AggregateSleepCandidate? in
-                let capturedDuration = cluster.reduce(0) { $0 + $1.duration }
-                let gaps = zip(cluster, cluster.dropFirst()).map { previous, next in
-                    max(0, next.start.timeIntervalSince(previous.end))
+        let clusters: [[SavedSession]]
+        if let cooperativeDeadline {
+            var orderedEligible = eligible
+            try cooperativeStableSort(
+                &orderedEligible,
+                cooperativeDeadline: cooperativeDeadline,
+                areInIncreasingOrder: { $0.start < $1.start }
+            )
+            let initial = try sleepClusters(
+                fromPresorted: orderedEligible,
+                maxGap: 2 * 60 * 60,
+                rest: rest,
+                calendar: calendar,
+                sessionHRStats: sessionHRStats,
+                cooperativeDeadline: cooperativeDeadline
+            )
+            var split: [[SavedSession]] = []
+            split.reserveCapacity(initial.count)
+            for cluster in initial {
+                try cooperativeDeadline.checkpoint()
+                split.append(contentsOf:
+                    try splitShortPreludeFromDenseSleepCluster(
+                        cluster,
+                        sessionHRStats: sessionHRStats,
+                        cooperativeDeadline: cooperativeDeadline
+                    )
+                )
+            }
+            clusters = split
+        } else {
+            clusters = Self.sleepClusters(
+                from: eligible.sorted { $0.start < $1.start },
+                maxGap: 2 * 60 * 60,
+                rest: rest,
+                calendar: calendar
+            ).flatMap(Self.splitShortPreludeFromDenseSleepCluster)
+        }
+        try cooperativeDeadline?.checkpoint()
+        var candidates: [AggregateSleepCandidate] = []
+        candidates.reserveCapacity(clusters.count)
+        for cluster in clusters {
+            try cooperativeDeadline?.checkpoint()
+            let candidate: AggregateSleepCandidate? = try {
+                () throws -> AggregateSleepCandidate? in
+                try cooperativeDeadline?.checkpoint()
+                var capturedDuration = 0.0
+                var gaps: [TimeInterval] = []
+                gaps.reserveCapacity(max(0, cluster.count - 1))
+                var previousSession: SavedSession?
+                for session in cluster {
+                    try cooperativeDeadline?.checkpoint()
+                    capturedDuration += session.duration
+                    if let previousSession {
+                        gaps.append(max(
+                            0,
+                            session.start.timeIntervalSince(
+                                previousSession.end
+                            )
+                        ))
+                    }
+                    previousSession = session
                 }
-                let maxGap = gaps.max() ?? 0
+                var maxGap = 0.0
+                var briefGapCredit = 0.0
+                for gap in gaps {
+                    try cooperativeDeadline?.checkpoint()
+                    maxGap = max(maxGap, gap)
+                    if gap
+                        <= AggregateSleepCandidate.briefSleepGapCreditMax {
+                        briefGapCredit += gap
+                    }
+                }
                 // Credit brief between-session dropouts (<= 20 min) toward sleep:
                 // these sit between two clearly-asleep low-HR sessions in the
                 // overnight window, so they were almost certainly still-asleep
                 // time lost to a momentary strap blip. Long gaps stay excluded.
-                let briefGapCredit = gaps
-                    .filter { $0 <= AggregateSleepCandidate.briefSleepGapCreditMax }
-                    .reduce(0, +)
                 let totalDuration = capturedDuration + briefGapCredit
 
-                let allHR = cluster.flatMap(\.bpms)
+                var allHR: [Int] = []
+                var sampleDates: [Date] = []
+                allHR.reserveCapacity(cluster.reduce(0) {
+                    $0 + $1.points.count
+                })
+                sampleDates.reserveCapacity(allHR.capacity)
+                var hrSum = 0
+                var peak = 0
+                var elevatedCount = 0
+                for session in cluster {
+                    try cooperativeDeadline?.checkpoint()
+                    guard let stats = sessionHRStats[session.id] else {
+                        return nil
+                    }
+                    for (index, bpm) in stats.values.enumerated() {
+                        if index.isMultiple(of: 256) {
+                            try cooperativeDeadline?.checkpoint()
+                        }
+                        allHR.append(bpm)
+                        hrSum += bpm
+                        peak = max(peak, bpm)
+                        if bpm >= rest + 35 { elevatedCount += 1 }
+                    }
+                    for (index, point) in session.points.enumerated() {
+                        if index.isMultiple(of: 256) {
+                            try cooperativeDeadline?.checkpoint()
+                        }
+                        sampleDates.append(
+                            session.start.addingTimeInterval(
+                                min(max(0, point.t), session.duration)
+                            )
+                        )
+                    }
+                }
                 guard !allHR.isEmpty, let start = cluster.first?.start, let end = cluster.last?.end else { return nil }
                 let span = end.timeIntervalSince(start)
-                let sampleDates = cluster.flatMap { session in
-                    session.points.map { point in
-                        session.start.addingTimeInterval(min(max(0, point.t), session.duration))
-                    }
-                }.sorted()
+                let hrStandardDeviation = try cooperativeStandardDeviation(
+                    allHR,
+                    cooperativeDeadline: cooperativeDeadline
+                )
+                try cooperativeStableSort(
+                    &allHR,
+                    cooperativeDeadline: cooperativeDeadline,
+                    areInIncreasingOrder: <
+                )
+                try cooperativeStableSort(
+                    &sampleDates,
+                    cooperativeDeadline: cooperativeDeadline,
+                    areInIncreasingOrder: <
+                )
                 let binSeconds: TimeInterval = 5 * 60
                 let expectedHRBins = max(1, Int(ceil(span / binSeconds)))
-                let observedHRBins = Set(sampleDates.map { sample in
-                    min(expectedHRBins - 1,
-                        max(0, Int(sample.timeIntervalSince(start) / binSeconds)))
-                }).count
+                var observedHRBinSet = Set<Int>()
+                observedHRBinSet.reserveCapacity(expectedHRBins)
+                var maximumHRSampleGap = 0.0
+                var previousDate = start
+                for (index, sample) in sampleDates.enumerated() {
+                    if index.isMultiple(of: 256) {
+                        try cooperativeDeadline?.checkpoint()
+                    }
+                    observedHRBinSet.insert(
+                        min(
+                            expectedHRBins - 1,
+                            max(
+                                0,
+                                Int(sample.timeIntervalSince(start)
+                                    / binSeconds)
+                            )
+                        )
+                    )
+                    maximumHRSampleGap = max(
+                        maximumHRSampleGap,
+                        max(0, sample.timeIntervalSince(previousDate))
+                    )
+                    previousDate = sample
+                }
+                maximumHRSampleGap = max(
+                    maximumHRSampleGap,
+                    max(0, end.timeIntervalSince(previousDate))
+                )
+                let observedHRBins = observedHRBinSet.count
                 let hrObservedCoverageFraction = Double(observedHRBins) / Double(expectedHRBins)
-                let hrGapBoundaries = [start] + sampleDates + [end]
-                let maximumHRSampleGap = zip(hrGapBoundaries, hrGapBoundaries.dropFirst())
-                    .map { max(0, $1.timeIntervalSince($0)) }
-                    .max() ?? span
-                let avg = allHR.reduce(0, +) / allHR.count
-                let peak = allHR.max() ?? 0
-                let hrStandardDeviation = standardDeviation(allHR.map(Double.init))
-                let resting = Self.percentileHR(0.05, values: allHR)
-                let medianHR = Self.percentileHR(0.50, values: allHR)
-                let hrP90 = Self.percentileHR(0.90, values: allHR)
-                let elevatedSampleFraction = Double(allHR.filter { $0 >= rest + 35 }.count) / Double(allHR.count)
+                let avg = hrSum / allHR.count
+                let resting = Self.percentileHR(
+                    0.05,
+                    presorted: allHR
+                )
+                let medianHR = Self.percentileHR(
+                    0.50,
+                    presorted: allHR
+                )
+                let hrP90 = Self.percentileHR(
+                    0.90,
+                    presorted: allHR
+                )
+                let elevatedSampleFraction = Double(elevatedCount)
+                    / Double(allHR.count)
+                try cooperativeDeadline?.checkpoint()
                 let strictDurationReady = totalDuration >= AggregateSleepCandidate.strictMinimumDuration
                 let fragmentedFallbackReady = cluster.count > 1
                     && span >= AggregateSleepCandidate.fragmentedMinimumSpan
@@ -29420,9 +34439,17 @@ final class SessionStore: ObservableObject {
                 // been resolved below.
                 let napPhysiologyReady = daytimeNapCandidateReady || shortLowHRNapCandidateReady
                 let hrSampleCoverageFraction = min(1, Double(allHR.count) / max(1, totalDuration))
-                let rrSampleCount = cluster.reduce(0) { $0 + ($1.rrPoints?.count ?? 0) }
+                var rrSampleCount = 0
+                var maximumAcceptedHRGap = 0.0
+                for session in cluster {
+                    try cooperativeDeadline?.checkpoint()
+                    rrSampleCount += session.rrPoints?.count ?? 0
+                    maximumAcceptedHRGap = max(
+                        maximumAcceptedHRGap,
+                        session.hrMaxAcceptedGapValue
+                    )
+                }
                 let rrSampleCoverageFraction = min(1, Double(rrSampleCount) / max(1, totalDuration))
-                let maximumAcceptedHRGap = cluster.map(\.hrMaxAcceptedGapValue).max() ?? 0
                 // Dense independent HR + RR can support a truthful sleep
                 // review prompt before the stricter five-hour HR-only automatic
                 // confirmation floor. Previously this exception stopped at the
@@ -29494,34 +34521,90 @@ final class SessionStore: ObservableObject {
                         || napPhysiologyReady
                         || denseMorningHROnlyReviewReady
                         || denseLongHROnlyReviewReady else { return nil }
-                let motionHintCount = cluster.reduce(0) { $0 + $1.motionHintCountValue }
+                var motionHintCount = 0
+                var recoveredEpochs: [AtriaRecoveredMotionEpoch] = []
+                for session in cluster {
+                    try cooperativeDeadline?.checkpoint()
+                    motionHintCount += session.motionHintCountValue
+                    let epochs = session.recoveredMotionEpochs ?? []
+                    recoveredEpochs.reserveCapacity(
+                        recoveredEpochs.count + epochs.count
+                    )
+                    for (index, epoch) in epochs.enumerated() {
+                        if index.isMultiple(of: 256) {
+                            try cooperativeDeadline?.checkpoint()
+                        }
+                        recoveredEpochs.append(epoch)
+                    }
+                }
                 let motionHintKinds = Self.motionHintKindsSummary(for: cluster)
-                let recoveredEpochs = cluster.flatMap { $0.recoveredMotionEpochs ?? [] }
-                let recoveredMotion = AtriaRecoveredMotionAnalytics.sleepProvenance(
+                let recoveredMotion = try cooperativeRecoveredMotionSleepProvenance(
                     epochs: recoveredEpochs,
                     start: start,
-                    end: end
+                    end: end,
+                    cooperativeDeadline: cooperativeDeadline
                 )
+                try cooperativeDeadline?.checkpoint()
                 let historicalMotion: HistoricalArchive.MotionWindowDiagnostics
                 if recoveredMotion.hasRecoveredEpochs {
-                    let bounded = recoveredEpochs.filter { $0.end > start && $0.start < end }
-                    let validated = bounded.filter(\.measurementValidated)
-                    let p95 = validated.compactMap(\.p95VectorDelta)
+                    var bounded: [AtriaRecoveredMotionEpoch] = []
+                    var validated: [AtriaRecoveredMotionEpoch] = []
+                    var p95: [Double] = []
+                    var boundedRows = 0
+                    var validatedRows = 0
+                    var firstEpochStart: Date?
+                    var lastEpochEnd: Date?
+                    for (index, epoch) in recoveredEpochs.enumerated() {
+                        if index.isMultiple(of: 256) {
+                            try cooperativeDeadline?.checkpoint()
+                        }
+                        guard epoch.end > start,
+                              epoch.start < end else { continue }
+                        bounded.append(epoch)
+                        boundedRows += epoch.rows
+                        firstEpochStart = min(
+                            firstEpochStart ?? epoch.start,
+                            epoch.start
+                        )
+                        lastEpochEnd = max(
+                            lastEpochEnd ?? epoch.end,
+                            epoch.end
+                        )
+                        if epoch.measurementValidated {
+                            validated.append(epoch)
+                            validatedRows += epoch.validatedRows
+                            if let value = epoch.p95VectorDelta {
+                                p95.append(value)
+                            }
+                        }
+                    }
+                    var p95Sum = 0.0
+                    for (index, value) in p95.enumerated() {
+                        if index.isMultiple(of: 256) {
+                            try cooperativeDeadline?.checkpoint()
+                        }
+                        p95Sum += value
+                    }
                     historicalMotion = .init(
                         status: recoveredMotion.measurementSufficient ? "ready" : "learning",
                         reason: recoveredMotion.measurementSufficient
                             ? "recovered_epoch_measurement_validated"
                             : "recovered_epoch_coverage_insufficient",
-                        rows: bounded.reduce(0) { $0 + $1.rows },
-                        validatedRows: validated.reduce(0) { $0 + $1.validatedRows },
+                        rows: boundedRows,
+                        validatedRows: validatedRows,
                         coverageSeconds: Int((recoveredMotion.validatedCoverageFraction * span).rounded()),
                         spanSeconds: Int(span.rounded()),
                         meanVectorDelta: recoveredMotion.meanMovementIntensity,
-                        p95VectorDelta: p95.isEmpty ? nil : p95.reduce(0, +) / Double(p95.count),
+                        p95VectorDelta: p95.isEmpty
+                            ? nil : p95Sum / Double(p95.count),
                         magnitudeMean: nil,
                         magnitudeStdDev: nil,
-                        archiveFirstUnix: Int((bounded.map(\.start).min() ?? start).timeIntervalSince1970),
-                        archiveLastUnix: Int((bounded.map(\.end).max() ?? end).timeIntervalSince1970),
+                        archiveFirstUnix: Int(
+                            (firstEpochStart ?? start).timeIntervalSince1970
+                        ),
+                        archiveLastUnix: Int(
+                            (lastEpochEnd ?? end).timeIntervalSince1970
+                        ),
                         nearestSeparationSeconds: Int(recoveredMotion.maximumGapSeconds.rounded()),
                         lowMotionReady: recoveredMotion.lowMotionValidated
                     )
@@ -29531,8 +34614,14 @@ final class SessionStore: ObservableObject {
                 // Legacy whole-session booleans are trustworthy only when the
                 // entire clustered window carries the claim. One still fragment
                 // must never validate a disconnected night.
-                let sessionMotionValidated = !cluster.isEmpty
-                    && cluster.allSatisfy(\.motionEvidenceValidatedValue)
+                var sessionMotionValidated = !cluster.isEmpty
+                for session in cluster {
+                    try cooperativeDeadline?.checkpoint()
+                    if !session.motionEvidenceValidatedValue {
+                        sessionMotionValidated = false
+                        break
+                    }
+                }
                 let motionValidated = recoveredMotion.hasRecoveredEpochs
                     ? recoveredMotion.lowMotionValidated
                     : (historicalMotion.lowMotionReady || sessionMotionValidated)
@@ -29645,10 +34734,12 @@ final class SessionStore: ObservableObject {
                 // blocks ≥10 min — brief rollovers are normal sleep movement.
                 // Flows into downstream review/auto-confirm gates fail-closed
                 // (net duration is smaller, never larger).
-                let motionAwakeSeconds = AtriaRecoveredMotionAnalytics
-                    .sustainedAwakeSeconds(epochs: recoveredEpochs,
-                                           start: start,
-                                           end: end)
+                let motionAwakeSeconds = try cooperativeSustainedAwakeSeconds(
+                    epochs: recoveredEpochs,
+                    start: start,
+                    end: end,
+                    cooperativeDeadline: cooperativeDeadline
+                )
                 // 2026-08-06 sleep-onset device-use clamp (user-caught 12:53am
                 // false onset while the phone was in active use past 2am; see
                 // `clampedSleepOnset`). Deterministic replay (`.sessionOnly`)
@@ -29659,6 +34750,7 @@ final class SessionStore: ObservableObject {
                 if historicalMotionPolicy == .sessionOnly {
                     clampedStart = start
                 } else {
+                    try cooperativeDeadline?.checkpoint()
                     clampedStart = Self.clampedSleepOnset(
                         start: start,
                         end: end,
@@ -29670,6 +34762,7 @@ final class SessionStore: ObservableObject {
                             ? AggregateSleepCandidate.napMinimumDuration
                             : AggregateSleepCandidate.strictMinimumDuration
                     )
+                    try cooperativeDeadline?.checkpoint()
                 }
                 let onsetClampSeconds = max(0, clampedStart.timeIntervalSince(start))
                 if onsetClampSeconds > 0 {
@@ -29689,7 +34782,7 @@ final class SessionStore: ObservableObject {
                                                duration: max(0, totalDuration - motionAwakeSeconds - onsetClampSeconds),
                                                span: end.timeIntervalSince(clampedStart),
                                                maxGap: maxGap,
-                                               samples: cluster.reduce(0) { $0 + $1.points.count },
+                                               samples: allHR.count,
                                                hrObservedCoverageFraction: hrObservedCoverageFraction,
                                                maximumHRSampleGap: maximumHRSampleGap,
                                                avgHR: avg,
@@ -29725,20 +34818,232 @@ final class SessionStore: ObservableObject {
                                                historicalMotionValidated: historicalMotion.lowMotionReady,
                                                denseMorningHROnlyReviewQualified: denseMorningHROnlyReviewReady,
                                                denseLongHROnlyReviewQualified: denseLongHROnlyReviewReady)
+            }()
+            try cooperativeDeadline?.checkpoint()
+            if let candidate {
+                candidates.append(candidate)
+            }
         }
-        let resumed = resumedSleepReviewCandidates(
-            in: sourceSessions,
-            after: candidates,
-            rest: rest,
-            maxHR: maxHR,
-            calendar: calendar
-        )
-        return (candidates + resumed)
-            .sorted {
+        let resumed = includeResumedReviewCandidates
+            ? resumedSleepReviewCandidates(
+                in: sourceSessions,
+                after: candidates,
+                rest: rest,
+                maxHR: maxHR,
+                calendar: calendar
+            ) : []
+        try cooperativeDeadline?.checkpoint()
+        var result = candidates + resumed
+        let ordering: (AggregateSleepCandidate, AggregateSleepCandidate)
+            -> Bool = {
                 if $0.day != $1.day { return $0.day > $1.day }
                 if $0.start != $1.start { return $0.start < $1.start }
                 return $0.duration > $1.duration
             }
+        if let cooperativeDeadline {
+            try cooperativeStableSort(
+                &result,
+                cooperativeDeadline: cooperativeDeadline,
+                areInIncreasingOrder: ordering
+            )
+        } else {
+            result.sort(by: ordering)
+        }
+        return result
+    }
+
+    private nonisolated static func cooperativeRecoveredMotionSleepProvenance(
+        epochs: [AtriaRecoveredMotionEpoch],
+        start: Date,
+        end: Date,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> AtriaRecoveredMotionAnalytics.SleepProvenance {
+        try cooperativeDeadline?.checkpoint()
+        var bounded: [AtriaRecoveredMotionEpoch] = []
+        bounded.reserveCapacity(epochs.count)
+        for (index, epoch) in epochs.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            if epoch.end > start, epoch.start < end {
+                bounded.append(epoch)
+            }
+        }
+        try cooperativeStableSort(
+            &bounded,
+            cooperativeDeadline: cooperativeDeadline,
+            areInIncreasingOrder: { $0.start < $1.start }
+        )
+        guard end > start, !bounded.isEmpty else {
+            return .init(
+                hasRecoveredEpochs: false,
+                measurementSufficient: false,
+                lowMotionValidated: false,
+                validatedCoverageFraction: 0,
+                lowMotionCoverageFraction: 0,
+                meanMovementIntensity: nil,
+                maximumGapSeconds: max(0, end.timeIntervalSince(start)),
+                source: "\(AtriaRecoveredMotionEpoch.source)_missing"
+            )
+        }
+        var validated: [AtriaRecoveredMotionEpoch] = []
+        var lowMotion: [AtriaRecoveredMotionEpoch] = []
+        var intensitySum = 0.0
+        var intensityCount = 0
+        validated.reserveCapacity(bounded.count)
+        lowMotion.reserveCapacity(bounded.count)
+        for (index, epoch) in bounded.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            guard epoch.measurementValidated else { continue }
+            validated.append(epoch)
+            if epoch.lowMotionQualified { lowMotion.append(epoch) }
+            if let value = epoch.movementIntensity {
+                intensitySum += value
+                intensityCount += 1
+            }
+        }
+        let duration = end.timeIntervalSince(start)
+        let validatedCoverage = try cooperativeRecoveredMotionCoveredDuration(
+            validated,
+            start: start,
+            end: end,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        let lowMotionCoverage = try cooperativeRecoveredMotionCoveredDuration(
+            lowMotion,
+            start: start,
+            end: end,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        let validatedFraction = min(1, validatedCoverage / duration)
+        let lowMotionFraction = validatedCoverage > 0
+            ? min(1, lowMotionCoverage / validatedCoverage)
+            : 0
+        var cursor = start
+        var maximumGap = 0.0
+        for (index, epoch) in validated.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            let lower = max(start, epoch.start)
+            let upper = min(end, epoch.end)
+            guard upper > lower else { continue }
+            maximumGap = max(
+                maximumGap,
+                lower.timeIntervalSince(cursor)
+            )
+            cursor = max(cursor, upper)
+        }
+        maximumGap = max(maximumGap, end.timeIntervalSince(cursor))
+        let meanIntensity = intensityCount == 0
+            ? nil : intensitySum / Double(intensityCount)
+        let sufficient = duration >= 20 * 60
+            && validatedFraction >= 0.80
+            && maximumGap <= 90
+            && intensityCount > 0
+        let lowMotionValidated = sufficient
+            && lowMotionFraction >= 0.72
+            && (meanIntensity ?? .infinity) <= 0.18
+        try cooperativeDeadline?.checkpoint()
+        return .init(
+            hasRecoveredEpochs: true,
+            measurementSufficient: sufficient,
+            lowMotionValidated: lowMotionValidated,
+            validatedCoverageFraction: validatedFraction,
+            lowMotionCoverageFraction: lowMotionFraction,
+            meanMovementIntensity: meanIntensity,
+            maximumGapSeconds: maximumGap,
+            source: sufficient
+                ? AtriaRecoveredMotionEpoch.source
+                : "\(AtriaRecoveredMotionEpoch.source)_insufficient"
+        )
+    }
+
+    private nonisolated static func cooperativeRecoveredMotionCoveredDuration(
+        _ epochs: [AtriaRecoveredMotionEpoch],
+        start: Date,
+        end: Date,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> TimeInterval {
+        var currentStart: Date?
+        var currentEnd: Date?
+        var total = 0.0
+        for (index, epoch) in epochs.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            let lower = max(start, epoch.start)
+            let upper = min(end, epoch.end)
+            guard upper > lower else { continue }
+            guard let existingEnd = currentEnd else {
+                currentStart = lower
+                currentEnd = upper
+                continue
+            }
+            if lower <= existingEnd {
+                currentEnd = max(existingEnd, upper)
+            } else {
+                total += existingEnd.timeIntervalSince(currentStart ?? lower)
+                currentStart = lower
+                currentEnd = upper
+            }
+        }
+        if let currentStart, let currentEnd {
+            total += currentEnd.timeIntervalSince(currentStart)
+        }
+        return total
+    }
+
+    private nonisolated static func cooperativeSustainedAwakeSeconds(
+        epochs: [AtriaRecoveredMotionEpoch],
+        start: Date,
+        end: Date,
+        minimumBlock: TimeInterval = 10 * 60,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> TimeInterval {
+        var wakeEpochs: [AtriaRecoveredMotionEpoch] = []
+        wakeEpochs.reserveCapacity(epochs.count)
+        for (index, epoch) in epochs.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            if epoch.end > start,
+               epoch.start < end,
+               epoch.measurementValidated,
+               !epoch.lowMotionQualified {
+                wakeEpochs.append(epoch)
+            }
+        }
+        try cooperativeStableSort(
+            &wakeEpochs,
+            cooperativeDeadline: cooperativeDeadline,
+            areInIncreasingOrder: { $0.start < $1.start }
+        )
+        guard let first = wakeEpochs.first else { return 0 }
+        var total = 0.0
+        var blockStart = max(first.start, start)
+        var blockEnd = min(first.end, end)
+        for (index, epoch) in wakeEpochs.dropFirst().enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            let lower = max(epoch.start, start)
+            let upper = min(epoch.end, end)
+            if lower.timeIntervalSince(blockEnd) <= 60 {
+                blockEnd = max(blockEnd, upper)
+            } else {
+                let length = blockEnd.timeIntervalSince(blockStart)
+                if length >= minimumBlock { total += length }
+                blockStart = lower
+                blockEnd = upper
+            }
+        }
+        let finalLength = blockEnd.timeIntervalSince(blockStart)
+        if finalLength >= minimumBlock { total += finalLength }
+        try cooperativeDeadline?.checkpoint()
+        return total
     }
 
     /// Isolates a substantial later-morning sleep-shaped segment from tiny
@@ -33508,8 +38813,10 @@ final class SessionStore: ObservableObject {
         finishForegroundSleepSettlementCompletions(succeeded: false)
         pendingSleepReviewCacheWorkItem?.cancel()
         pendingSleepReviewCacheWorkItem = nil
-        pendingWorkoutReviewCacheWorkItem?.cancel()
-        pendingWorkoutReviewCacheWorkItem = nil
+        // This worker is non-interruptible once submitted. Preserve its active
+        // sentinel, mark the result stale, and let completion drain any queued
+        // request through the blocked scheduler without starting new work.
+        invalidateWorkoutReviewCache()
         recoveredDataRecomputeTimeoutTask?.cancel()
         recoveredDataRecomputeTimeoutTask = nil
         recoveredDataRecomputeTimeoutContext = nil
@@ -33537,9 +38844,22 @@ final class SessionStore: ObservableObject {
 
         await beginRestorePersistenceFence()
         var shouldReleaseRestoreFence = true
+        var shouldPublishStressReplayAfterRestore = false
         defer {
             if shouldReleaseRestoreFence {
                 endRestorePersistenceFence()
+                if shouldPublishStressReplayAfterRestore {
+                    publishHistoricalStressSessionAuthority()
+                    publishStressReplayTerminalEdge(reason: "backup_restore")
+                } else {
+                    // A failed non-retained restore still releases the same
+                    // calibration deferral fence. Independent fallback-rest
+                    // changes may have survived while I/O was in flight, so
+                    // let Home compare the final state without forcing replay.
+                    publishStressCalibrationFenceDidRelease(
+                        reason: "backup_restore_finished_without_apply"
+                    )
+                }
             }
         }
 
@@ -33648,6 +38968,7 @@ final class SessionStore: ObservableObject {
                     cachedHomeDashboardDiagnostics = nil
                     refreshHomeDashboardDiagnosticsCache()
                     publishDashboardRevision()
+                    shouldPublishStressReplayAfterRestore = true
                     return true
 
                 case .verification(_), .preparedRestore(_):
@@ -34415,6 +39736,49 @@ final class SessionStore: ObservableObject {
         return clusters
     }
 
+    private nonisolated static func sleepClusters(
+        fromPresorted sessions: [SavedSession],
+        maxGap: TimeInterval,
+        rest: Int,
+        calendar: Calendar,
+        sessionHRStats: [UUID: CooperativeBPMStats],
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> [[SavedSession]] {
+        var clusters: [[SavedSession]] = []
+        for (index, session) in sessions.enumerated() {
+            if index.isMultiple(of: 8) {
+                try cooperativeDeadline.checkpoint()
+            }
+            guard var current = clusters.popLast() else {
+                clusters.append([session])
+                continue
+            }
+            let gap = max(
+                0,
+                session.start.timeIntervalSince(
+                    current.last?.end ?? session.start
+                )
+            )
+            let shouldSplit = try shouldSplitPostWakeNap(
+                from: current,
+                next: session,
+                rest: rest,
+                calendar: calendar,
+                sessionHRStats: sessionHRStats,
+                cooperativeDeadline: cooperativeDeadline
+            )
+            if gap <= maxGap, !shouldSplit {
+                current.append(session)
+                clusters.append(current)
+            } else {
+                clusters.append(current)
+                clusters.append([session])
+            }
+        }
+        try cooperativeDeadline.checkpoint()
+        return clusters
+    }
+
     /// A short, isolated low-HR prelude must not hide a later independently
     /// substantial sleep merely because the generic broken-sleep cluster
     /// allowance is two hours. This is deliberately asymmetric: a meaningful
@@ -34471,6 +39835,87 @@ final class SessionStore: ObservableObject {
         return [ordered]
     }
 
+    private nonisolated static func splitShortPreludeFromDenseSleepCluster(
+        _ cluster: [SavedSession],
+        sessionHRStats: [UUID: CooperativeBPMStats],
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> [[SavedSession]] {
+        try cooperativeDeadline.checkpoint()
+        guard cluster.count >= 3 else { return [cluster] }
+        // The checked caller already supplies a start-sorted cluster.
+        let ordered = cluster
+        let count = ordered.count
+        var prefixDuration = Array(repeating: 0.0, count: count + 1)
+        var prefixHRSum = Array(repeating: 0, count: count + 1)
+        var prefixHRCount = Array(repeating: 0, count: count + 1)
+        for index in 0..<count {
+            try cooperativeDeadline.checkpoint()
+            guard let stats = sessionHRStats[ordered[index].id] else {
+                throw AtriaSleepSettlementAbort.deadlineExceeded
+            }
+            prefixDuration[index + 1] = prefixDuration[index]
+                + ordered[index].duration
+            prefixHRSum[index + 1] = prefixHRSum[index] + stats.sum
+            prefixHRCount[index + 1] = prefixHRCount[index]
+                + stats.values.count
+        }
+        var suffixMaximumGap = Array(repeating: 0.0, count: count + 1)
+        if count > 1 {
+            for index in stride(from: count - 2, through: 0, by: -1) {
+                try cooperativeDeadline.checkpoint()
+                let gap = max(
+                    0,
+                    ordered[index + 1].start.timeIntervalSince(
+                        ordered[index].end
+                    )
+                )
+                suffixMaximumGap[index] = max(
+                    gap,
+                    suffixMaximumGap[index + 1]
+                )
+            }
+        }
+        let totalDuration = prefixDuration[count]
+        let totalHRSum = prefixHRSum[count]
+        let totalHRCount = prefixHRCount[count]
+        for splitIndex in 1..<count {
+            try cooperativeDeadline.checkpoint()
+            let prefixEnd = ordered[splitIndex - 1].end
+            let suffixStart = ordered[splitIndex].start
+            let separatingGap = max(
+                0,
+                suffixStart.timeIntervalSince(prefixEnd)
+            )
+            let prefixCaptured = prefixDuration[splitIndex]
+            let suffixCaptured = totalDuration - prefixCaptured
+            let prefixCount = prefixHRCount[splitIndex]
+            let suffixCount = totalHRCount - prefixCount
+            let prefixAverage = prefixCount == 0
+                ? 0
+                : Double(prefixHRSum[splitIndex]) / Double(prefixCount)
+            let suffixAverage = suffixCount == 0
+                ? 0
+                : Double(totalHRSum - prefixHRSum[splitIndex])
+                    / Double(suffixCount)
+            let shortPrelude = prefixCaptured < 90 * 60
+            let physiologicallyDistinctPrelude = prefixCaptured < 2 * 60 * 60
+                && prefixAverage >= suffixAverage + 8
+            guard separatingGap > 90 * 60,
+                  shortPrelude || physiologicallyDistinctPrelude,
+                  suffixCaptured
+                    >= AggregateSleepCandidate.strictMinimumDuration,
+                  suffixMaximumGap[splitIndex]
+                    <= AggregateSleepCandidate.briefSleepGapCreditMax else {
+                continue
+            }
+            return [
+                Array(ordered[..<splitIndex]),
+                Array(ordered[splitIndex...])
+            ]
+        }
+        return [ordered]
+    }
+
     private nonisolated static func shouldSplitPostWakeNap(from current: [SavedSession],
                                                            next: SavedSession,
                                                            rest: Int,
@@ -34520,9 +39965,68 @@ final class SessionStore: ObservableObject {
         return postWakeWindow && shortLowHRRest
     }
 
+    private nonisolated static func shouldSplitPostWakeNap(
+        from current: [SavedSession],
+        next: SavedSession,
+        rest: Int,
+        calendar: Calendar,
+        sessionHRStats: [UUID: CooperativeBPMStats],
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> Bool {
+        try cooperativeDeadline.checkpoint()
+        guard let start = current.first?.start,
+              let end = current.last?.end else { return false }
+        var duration = 0.0
+        for session in current {
+            try cooperativeDeadline.checkpoint()
+            duration += session.duration
+        }
+        guard duration
+                >= AggregateSleepCandidate.strictMinimumDuration else {
+            return false
+        }
+        let currentEventCalendar = EventCivilTime.eventCalendar(
+            timeZoneIdentifier: current.first?.eventTimeZoneIdentifier,
+            fallback: calendar
+        )
+        let startHour = currentEventCalendar.component(.hour, from: start)
+        let endHour = currentEventCalendar.component(.hour, from: end)
+        let mainOvernight = startHour >= 20 || startHour <= 5 || endHour <= 11
+        guard mainOvernight else { return false }
+        let gap = max(0, next.start.timeIntervalSince(end))
+        let likelyResumedMainSleep = gap
+            <= AggregateSleepCandidate.briefSleepGapCreditMax
+            || (duration
+                    < AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration
+                && gap <= 60 * 60)
+        guard !likelyResumedMainSleep else { return false }
+        if gap > 90 * 60,
+           next.duration < AggregateSleepCandidate.napMinimumDuration {
+            return true
+        }
+        let nextEventCalendar = EventCivilTime.eventCalendar(
+            timeZoneIdentifier: next.eventTimeZoneIdentifier,
+            fallback: calendar
+        )
+        let nextStartHour = nextEventCalendar.component(.hour, from: next.start)
+        let nextEndHour = nextEventCalendar.component(.hour, from: next.end)
+        let postWakeWindow = nextStartHour >= 8 && nextEndHour <= 20
+        guard let stats = sessionHRStats[next.id] else {
+            throw AtriaSleepSettlementAbort.deadlineExceeded
+        }
+        let shortLowHRRest = next.duration
+                >= AggregateSleepCandidate.napMinimumDuration
+            && next.duration <= AggregateSleepCandidate.napMaximumSpan
+            && stats.roundedAverage <= rest + 12
+            && stats.peak <= rest + 55
+        return postWakeWindow && shortLowHRRest
+    }
+
     private nonisolated static func workoutClusters(from sessions: [SavedSession], maxGap: TimeInterval) -> [[SavedSession]] {
         var clusters: [[SavedSession]] = []
-        for session in sessions.sorted(by: { $0.start < $1.start }) {
+        for session in sessions.sorted(
+            by: AtriaWorkoutAggregateSessionFlightIdentity.canonicalOrder
+        ) {
             guard var current = clusters.popLast() else {
                 clusters.append([session])
                 continue
@@ -34541,10 +40045,66 @@ final class SessionStore: ObservableObject {
 
     private nonisolated static func percentileHR(_ percentile: Double, values: [Int]) -> Int {
         guard !values.isEmpty else { return 0 }
-        let sorted = values.sorted()
+        return percentileHR(percentile, presorted: values.sorted())
+    }
+
+    private nonisolated static func percentileHR(_ percentile: Double, presorted sorted: [Int]) -> Int {
+        guard !sorted.isEmpty else { return 0 }
         let clamped = min(max(percentile, 0), 1)
         let index = min(sorted.count - 1, max(0, Int((Double(sorted.count - 1) * clamped).rounded(.down))))
         return sorted[index]
+    }
+
+    /// Bottom-up stable merge sort with checkpoints inside every full-row
+    /// pass. Checked compact settlement uses this instead of an uninterruptible
+    /// standard-library sort for inputs that may reach the 80k total cap.
+    private nonisolated static func cooperativeStableSort<Element>(
+        _ values: inout [Element],
+        cooperativeDeadline: AtriaSleepSettlementDeadline?,
+        areInIncreasingOrder: (Element, Element) -> Bool
+    ) throws {
+        guard values.count > 1 else { return }
+        // Preserve checkpoints only for the bounded compact-settlement path.
+        // Unchecked historical projections should use Swift's optimized sort
+        // instead of allocating two arrays for a Swift-level merge loop.
+        guard cooperativeDeadline != nil else {
+            values.sort(by: areInIncreasingOrder)
+            return
+        }
+        var source = values
+        var destination = values
+        var width = 1
+        while width < source.count {
+            try cooperativeDeadline?.checkpoint()
+            var lower = 0
+            while lower < source.count {
+                let middle = min(lower + width, source.count)
+                let upper = min(lower + width + width, source.count)
+                var left = lower
+                var right = middle
+                var output = lower
+                while output < upper {
+                    if output.isMultiple(of: 256) {
+                        try cooperativeDeadline?.checkpoint()
+                    }
+                    if left < middle,
+                       (right >= upper
+                        || !areInIncreasingOrder(source[right], source[left])) {
+                        destination[output] = source[left]
+                        left += 1
+                    } else {
+                        destination[output] = source[right]
+                        right += 1
+                    }
+                    output += 1
+                }
+                lower = upper
+            }
+            swap(&source, &destination)
+            width = width > source.count / 2 ? source.count : width * 2
+        }
+        values = source
+        try cooperativeDeadline?.checkpoint()
     }
 
     private nonisolated static func standardDeviation(_ values: [Double]) -> Double {
@@ -34552,6 +40112,30 @@ final class SessionStore: ObservableObject {
         let mean = values.reduce(0, +) / Double(values.count)
         let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count)
         return sqrt(variance)
+    }
+
+    private nonisolated static func cooperativeStandardDeviation(
+        _ values: [Int],
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> Double {
+        guard values.count >= 2 else { return 0 }
+        var sum = 0.0
+        for (index, value) in values.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            sum += Double(value)
+        }
+        let mean = sum / Double(values.count)
+        var squaredDeviationSum = 0.0
+        for (index, value) in values.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            squaredDeviationSum += pow(Double(value) - mean, 2)
+        }
+        try cooperativeDeadline?.checkpoint()
+        return sqrt(squaredDeviationSum / Double(values.count))
     }
 
     private func formatInt(_ value: Int?) -> String {
@@ -34573,6 +40157,7 @@ final class SessionStore: ObservableObject {
     private func loadPersistedSessionsDeferred() {
         let sourceURL = url
         let coldURL = coldSessionsURL
+        let recoveredCheckpointURL = recoveredCurrentCheckpointURL
         let currentBaseline = baseline
         let currentProfile = profile
         let currentConfirmedSleeps = cachedConfirmedSleeps
@@ -34582,9 +40167,13 @@ final class SessionStore: ObservableObject {
         // other .utility-QoS background work. .userInitiated keeps it ahead of
         // that without touching the main actor before the decode is ready to
         // hop back.
-        Task.detached(priority: .userInitiated) { [sourceURL, coldURL, currentBaseline, currentProfile, currentConfirmedSleeps] in
+        Task.detached(priority: .userInitiated) { [sourceURL, coldURL, recoveredCheckpointURL, currentBaseline, currentProfile, currentConfirmedSleeps] in
             let startedAt = CFAbsoluteTimeGetCurrent()
             let loadNow = Date()
+            let recoveredCheckpoint = Self.readRecoveredCurrentCheckpoint(
+                from: recoveredCheckpointURL,
+                now: loadNow
+            )
             var decoded: [SavedSession] = []
             var sourcePreservationFence = false
             var hotSourceNeedsBoundedRewrite = false
@@ -34691,8 +40280,35 @@ final class SessionStore: ObservableObject {
             let elapsedMS = Int(((CFAbsoluteTimeGetCurrent() - startedAt) * 1000).rounded())
             let shouldPreserveSource = sourcePreservationFence
             let shouldRewriteHotSource = hotSourceNeedsBoundedRewrite
+            let reusableRecoveredCheckpoint = recoveredCheckpoint.flatMap {
+                Self.recoveredCurrentCheckpointSourceIsReusable(
+                    previous: $0.sourceFingerprint,
+                    current: HistoricalArchive.consumerSourceFingerprint()
+                ) ? $0 : nil
+            }
+            let recoveredProjectionCutoff =
+                Self.automaticRecoveredDataProjectionCutoff(
+                    now: loadNow,
+                    confirmedSleeps: currentConfirmedSleeps,
+                    calendar: .current
+                )
+            let recoveredScannerAuthorityRestored =
+                reusableRecoveredCheckpoint.map {
+                    HistoricalArchive
+                        .restoreAutomaticRecoveredDataCacheAuthority(
+                            $0.automaticCacheAuthority,
+                            since: recoveredProjectionCutoff
+                        )
+                } ?? false
             await MainActor.run {
                 self.sessionSourcePreservationFenceActive = shouldPreserveSource
+                if let reusableRecoveredCheckpoint {
+                    self.applyRecoveredCurrentCheckpoint(
+                        reusableRecoveredCheckpoint,
+                        scannerAuthorityRestored:
+                            recoveredScannerAuthorityRestored
+                    )
+                }
                 self.finishDeferredLoad(
                     loadedSessions,
                     preparation: preparation,
@@ -35246,7 +40862,8 @@ final class SessionStore: ObservableObject {
         reason: String,
         now: Date = Date(),
         completion: ((Bool) -> Void)? = nil,
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        preserveExistingSkinTemperature: Bool = true
     ) -> Bool {
         guard canonicalMutationAllowed,
               recoveredDataMutationTransaction.activeTicket == nil,
@@ -35281,6 +40898,7 @@ final class SessionStore: ObservableObject {
             baseline: baseline,
             maxHR: profile.maxHR,
             now: now,
+            skinTemperatureSourceValidated: false,
             calendar: calendar
         ),
         metric.sleepStart == projectedNight.start,
@@ -35312,10 +40930,14 @@ final class SessionStore: ObservableObject {
             rollup.fitnessAgeDelta = existing.fitnessAgeDelta
             if rollup.vitals == nil { rollup.vitals = existing.vitals }
             if rollup.strain == nil { rollup.strain = existing.strain }
-            if rollup.skinTemperatureDeviationCelsius == nil {
+            if preserveExistingSkinTemperature,
+               rollup.skinTemperatureDeviationCelsius == nil {
                 rollup.skinTemperatureDeviationCelsius =
                     existing.skinTemperatureDeviationCelsius
             }
+        }
+        if !preserveExistingSkinTemperature {
+            rollup.skinTemperatureDeviationCelsius = nil
         }
 
         dailyMetricHistory = metrics
@@ -35425,11 +41047,25 @@ final class SessionStore: ObservableObject {
         _ sourceSessions: [SavedSession],
         reason: String,
         deferDerivedPublication: Bool = false,
+        affectedSince: Date? = nil,
         calendar: Calendar = .current
     ) async -> ConfirmedSleepHRVRequalificationOutcome {
         let before = cachedConfirmedSleeps
-        let after = Self.requalifiedConfirmedSleepHRVRecords(before,
-                                                              sessions: sourceSessions)
+        let proposed = Self.requalifiedConfirmedSleepHRVRecords(
+            before,
+            sessions: affectedSince.map { cutoff in
+                sourceSessions.filter { $0.end > cutoff }
+            } ?? sourceSessions
+        )
+        let proposedByID = Dictionary(
+            uniqueKeysWithValues: proposed.map { ($0.id, $0) }
+        )
+        let after = before.map { sleep in
+            guard affectedSince.map({ sleep.end > $0 }) ?? true else {
+                return sleep
+            }
+            return proposedByID[sleep.id] ?? sleep
+        }
         guard after != before else {
             return ConfirmedSleepHRVRequalificationOutcome(changed: false,
                                                             succeeded: true)

@@ -14,6 +14,12 @@ final class AtriaRecoveredDataPublicationFence {
 
     private(set) var archiveRevision: UInt64 = 0
     private(set) var lastPublishedRevision: UInt64 = 0
+    /// Failure is a terminal result for the exact revision just like publish.
+    /// Persist the high-water mark so a fast off-main refusal that re-enters the
+    /// MainActor before a waiter is installed cannot turn into a full timeout.
+    /// A later publish of the same revision still wins (publication is checked
+    /// first), and a newer revision remains independently awaitable.
+    private(set) var lastFailedRevision: UInt64 = 0
     private var waiters: [UUID: Waiter] = [:]
     var pendingWaiterCount: Int { waiters.count }
 
@@ -38,6 +44,7 @@ final class AtriaRecoveredDataPublicationFence {
         let targetRevision = archiveRevision
         guard targetRevision > priorRevision else { return true }
         guard lastPublishedRevision < targetRevision else { return true }
+        guard lastFailedRevision < targetRevision else { return false }
         guard !Task.isCancelled else { return false }
 
         let id = UUID()
@@ -77,11 +84,14 @@ final class AtriaRecoveredDataPublicationFence {
     }
 
     func fail(through revision: UInt64) {
+        lastFailedRevision = max(lastFailedRevision, revision)
         finishWaiters(through: revision, succeeded: false)
     }
 
     func failAll() {
-        finishWaiters(through: .max, succeeded: false)
+        // Fail only work that actually exists. Persisting `.max` would poison
+        // every future archive generation in this process.
+        fail(through: archiveRevision)
     }
 
     private func finishWaiter(id: UUID, succeeded: Bool) {

@@ -515,6 +515,43 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.rawURL.path))
     }
 
+    func testCrossCivilBoundaryDependencyPublishesAndVerifiedReaderRebuildsDailyProof() throws {
+        let fixture = try makeMultiSourceFixture()
+        let target = try XCTUnwrap(fixture.snapshot.aggregates.max {
+            $0.source.firstTimestamp < $1.source.firstTimestamp
+        })
+        let report = try AtriaHistoricalConsumerProjectionCoordinator(
+            completionStore: fixture.completionStore,
+            receiptLedger: fixture.ledger
+        ).publishEligibleReceipts(
+            catalogStore: fixture.catalogStore,
+            aggregateReader: fixture.aggregateReader,
+            configuration: configuration(),
+            shouldAbortBetweenSources: { false }
+        )
+        XCTAssertEqual(report.published.count, 10)
+        XCTAssertTrue(report.deferredSources.isEmpty)
+
+        let verified = AtriaHistoricalVerifiedConsumerReader(
+            aggregateReader: fixture.aggregateReader,
+            completionStore: fixture.completionStore,
+            receiptLedger: fixture.ledger
+        ).readSource(
+            chunkID: target.source.chunkID,
+            catalogStore: fixture.catalogStore,
+            configuration: configuration()
+        )
+        XCTAssertTrue(verified.hasCompleteConsumerCoverage)
+        guard case .available(let daily) = verified.dailyMetrics,
+              case .available(let steps) = verified.steps else {
+            return XCTFail(
+                "both daily consumers must verify from the source-bound proof"
+            )
+        }
+        XCTAssertEqual(daily.dependencies.map(\.chunkID), [target.source.chunkID])
+        XCTAssertEqual(steps.dependencies.map(\.chunkID), [target.source.chunkID])
+    }
+
     func testBackgroundAbortBetweenSourcesDefersRemainderAndResumesNextPass() throws {
         let fixture = try makeMultiSourceFixture()
         let coordinator = AtriaHistoricalConsumerProjectionCoordinator(
@@ -730,7 +767,10 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
             calendar: utcCalendar(),
             makeIdentifier: { identifiers.removeFirst() }
         )
-        _ = try catalogStore.loadOrRecover(discoveredLegacyURLs: [], now: start)
+        _ = try catalogStore.loadOrRecover(
+            discoveredLegacyURLs: [],
+            now: start.addingTimeInterval(-12 * 60 * 60)
+        )
         let aggregates = root.appendingPathComponent("aggregates-v2")
         let manifests = root.appendingPathComponent("retention-manifests-v2")
         let encoder = JSONEncoder()
@@ -738,7 +778,10 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
 
         var firstAggregate: AtriaHistoricalAggregateChunk?
         var firstRawURL: URL?
-        for offset in [TimeInterval(0), 7_200] {
+        // The earlier source is inside the later source's 12-hour sleep
+        // history, but outside its civil-day daily dependency. This reproduces
+        // the physical invalidInspectionProof terminal failure.
+        for offset in [TimeInterval(-11 * 60 * 60), 0] {
             let sourceStart = start.addingTimeInterval(offset)
             let sourceEnd = sourceStart.addingTimeInterval(3_600)
             let active = try catalogStore.activeChunkDescriptor()
@@ -794,7 +837,7 @@ final class AtriaHistoricalConsumerProjectionCoordinatorTests: XCTestCase {
             directoryURL: root.appendingPathComponent("drain-completions-v1")
         )
         let requestedStart = start.addingTimeInterval(-48 * 60 * 60)
-        let requestedEnd = start.addingTimeInterval(7_200 + 3_600 + 48 * 60 * 60)
+        let requestedEnd = start.addingTimeInterval(3_600 + 48 * 60 * 60)
         _ = try completionStore.recordTerminal(
             generation: 1,
             terminalBatchNumber: 2,

@@ -661,6 +661,155 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         XCTAssertGreaterThan(largestPixelDimension(of: prepared), 0)
     }
 
+    func testHomeCoreLiveCadenceNeverRefreshesSavedArchiveAggregate() throws {
+        let source = try appSource("AtriaHomeView.swift")
+        let cadenceStart = try XCTUnwrap(source.range(
+            of: "let throttledCoreLiveChanges = Publishers.MergeMany(["
+        ))
+        let cadenceEnd = try XCTUnwrap(source.range(
+            of: "let pulseRateChanges = ble.$heartRate",
+            range: cadenceStart.upperBound..<source.endIndex
+        ))
+        let cadence = String(source[cadenceStart.lowerBound..<cadenceEnd.lowerBound])
+        XCTAssertTrue(cadence.contains("ble.$sessionSampleCount"))
+        XCTAssertTrue(cadence.contains("self?.publishCoreLive()"))
+        XCTAssertFalse(cadence.contains("requestSavedAggregateRefresh"))
+        XCTAssertFalse(cadence.contains("refreshSavedAggregate"))
+
+        let publishStart = try XCTUnwrap(source.range(
+            of: "private func publishCoreLive()"
+        ))
+        let publishEnd = try XCTUnwrap(source.range(
+            of: "func refreshDurableStepReceipt()",
+            range: publishStart.upperBound..<source.endIndex
+        ))
+        let publish = String(source[publishStart.lowerBound..<publishEnd.lowerBound])
+        XCTAssertTrue(publish.contains("refreshLiveSessionDerivedIfNeeded()"))
+        XCTAssertFalse(publish.contains("requestSavedAggregateRefresh"))
+        XCTAssertFalse(publish.contains("makeSavedAggregateRefreshInput"))
+        XCTAssertFalse(publish.contains("homeSavedAggregate("))
+        XCTAssertFalse(publish.contains("observedHeartRateUnionSeconds("))
+    }
+
+    func testHomeSavedAggregateRefreshGateBoundsBurstToOneActiveAndOneTrailing() {
+        var gate = AtriaHomeSavedAggregateRefreshGate()
+        XCTAssertEqual(gate.request(), .start(1))
+
+        for _ in 0..<100 {
+            XCTAssertEqual(gate.request(), .coalesced)
+            XCTAssertEqual(gate.outstandingWorkUpperBound, 2)
+            XCTAssertEqual(gate.inFlightGeneration, 1)
+        }
+
+        XCTAssertEqual(gate.latestGeneration, 101)
+        XCTAssertEqual(gate.trailingGeneration, 101)
+        XCTAssertEqual(gate.complete(1), .start(101))
+        XCTAssertEqual(gate.outstandingWorkUpperBound, 1)
+        XCTAssertEqual(gate.complete(101), .publish)
+        XCTAssertEqual(gate.outstandingWorkUpperBound, 0)
+    }
+
+    func testHomeSavedAggregateRefreshGateRejectsEveryStaleCompletion() {
+        var gate = AtriaHomeSavedAggregateRefreshGate()
+        XCTAssertEqual(gate.request(), .start(1))
+        XCTAssertEqual(gate.request(), .coalesced)
+        XCTAssertEqual(gate.complete(1), .start(2))
+
+        XCTAssertEqual(gate.request(), .coalesced)
+        XCTAssertEqual(gate.complete(1), .ignored,
+                       "a duplicate old callback must not disturb the active generation")
+        XCTAssertEqual(gate.complete(2), .start(3),
+                       "a result made stale while running must not publish")
+        XCTAssertEqual(gate.complete(2), .ignored)
+        XCTAssertEqual(gate.complete(3), .publish)
+    }
+
+    func testHomeSavedAggregateRefreshUsesSerialLatestWinsAuthorityLane() throws {
+        let source = try appSource("AtriaHomeView.swift")
+        XCTAssertTrue(source.contains(
+            "label: \"com.adidshaft.atria.home-saved-aggregate\""
+        ))
+        XCTAssertTrue(source.contains(
+            "requestSavedAggregateRefresh(reason: \"dashboard_revision\")"
+        ))
+        XCTAssertTrue(source.contains(
+            "requestSavedAggregateRefresh(reason: \"history_snapshot\")"
+        ))
+        XCTAssertTrue(source.contains(
+            "requestSavedAggregateRefresh(reason: \"profile\")"
+        ))
+        XCTAssertTrue(source.contains(
+            "requestSavedAggregateRefresh(reason: \"baseline\")"
+        ))
+        XCTAssertTrue(source.contains(
+            "requestSavedAggregateRefresh(reason: \"physiological_cycle_rollover\")"
+        ))
+        XCTAssertTrue(source.contains("case .start(let nextGeneration):"))
+        XCTAssertTrue(source.contains("case .publish:"))
+
+        let snapshotStart = try XCTUnwrap(source.range(
+            of: "private func savedAggregateRefreshInputSnapshot("
+        ))
+        let workerStart = try XCTUnwrap(source.range(
+            of: "private nonisolated static func makeSavedAggregate(\n        input:",
+            range: snapshotStart.upperBound..<source.endIndex
+        ))
+        let snapshot = String(
+            source[snapshotStart.lowerBound..<workerStart.lowerBound]
+        )
+        XCTAssertTrue(snapshot.contains(
+            "source: store.homeSavedAggregateSourceSnapshot()"
+        ))
+        XCTAssertTrue(snapshot.contains("baseline: store.baseline"))
+        XCTAssertFalse(snapshot.contains("homeSavedAggregate("),
+                       "MainActor may retain COW authority, not run the aggregate reducer")
+        XCTAssertFalse(snapshot.contains("currentRestingContext("))
+        XCTAssertFalse(snapshot.contains("restingStable"))
+        XCTAssertFalse(snapshot.contains("freshHRVSampleCount("))
+        XCTAssertFalse(snapshot.contains("observedHeartRateUnionSeconds("))
+
+        let workerEnd = try XCTUnwrap(source.range(
+            of: "private func scheduleSavedAggregateCycleRolloverRefresh()",
+            range: workerStart.upperBound..<source.endIndex
+        ))
+        let worker = String(source[workerStart.lowerBound..<workerEnd.lowerBound])
+        XCTAssertTrue(worker.contains("SessionStore.homeSavedAggregate("))
+        XCTAssertTrue(worker.contains(".map(\\.restingStable)"))
+        XCTAssertTrue(worker.contains(
+            "archiveHeartRatePoints: input.source.archiveHeartRatePoints"
+        ))
+        XCTAssertTrue(worker.contains("input.baseline.freshHRVSampleCount("))
+        XCTAssertTrue(worker.contains("observedHeartRateUnionSeconds("))
+        XCTAssertTrue(worker.contains("sessions: input.source.rawSessions"))
+        XCTAssertTrue(worker.contains(
+            "rawSessionCount: input.source.rawSessionCount"
+        ),
+                      "the worker must preserve the captured publication authority")
+
+        let sessionsSource = try appSource("Sessions.swift")
+        let sourceCaptureStart = try XCTUnwrap(sessionsSource.range(
+            of: "func homeSavedAggregateSourceSnapshot()"
+        ))
+        let sourceCaptureEnd = try XCTUnwrap(sessionsSource.range(
+            of: "func workoutSavedStepPrefix(",
+            range: sourceCaptureStart.upperBound..<sessionsSource.endIndex
+        ))
+        let sourceCapture = String(
+            sessionsSource[sourceCaptureStart.lowerBound..<sourceCaptureEnd.lowerBound]
+        )
+        XCTAssertTrue(sourceCapture.contains(
+            "canonicalSessions: cachedCanonicalSessions"
+        ))
+        XCTAssertTrue(sourceCapture.contains(
+            "archiveHeartRatePoints: cachedHistoricalTodayHeartRatePoints"
+        ))
+        XCTAssertTrue(sourceCapture.contains("rawSessions: sessions"))
+        XCTAssertFalse(sourceCapture.contains(".map"))
+        XCTAssertFalse(sourceCapture.contains(".filter"))
+        XCTAssertFalse(sourceCapture.contains(".sorted"))
+        XCTAssertFalse(sourceCapture.contains("homeSavedAggregate("))
+    }
+
     private func testImage(size: CGSize) -> UIImage {
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1

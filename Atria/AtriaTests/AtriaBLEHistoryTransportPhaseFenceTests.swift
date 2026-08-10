@@ -25,6 +25,32 @@ final class AtriaBLEHistoryTransportPhaseFenceTests: XCTestCase {
         XCTAssertFalse(fence.deactivate(ifMatching: 11).isActive)
     }
 
+    func testServeTokenIsCapturedAtCallbackBoundaryAndCannotCrossGeneration() {
+        let fence = AtriaBLEHistoryTransportPhaseFence()
+        let beforeServe = fence.activate(generation: 12)
+
+        XCTAssertNil(beforeServe.serveToken)
+        XCTAssertFalse(fence.acceptsServe(beforeServe, generation: 12))
+
+        let serving = fence.armServe(ifMatching: 12)
+        XCTAssertNotNil(serving?.serveToken)
+        XCTAssertFalse(
+            fence.acceptsServe(beforeServe, generation: 12),
+            "a callback captured before this generation's 0x16 must stay rejected"
+        )
+        XCTAssertTrue(fence.acceptsServe(try! XCTUnwrap(serving), generation: 12))
+
+        let nextPage = fence.armServe(ifMatching: 12)
+        XCTAssertNotEqual(serving?.serveToken, nextPage?.serveToken)
+        XCTAssertFalse(fence.acceptsServe(try! XCTUnwrap(serving), generation: 12))
+        XCTAssertTrue(fence.acceptsServe(try! XCTUnwrap(nextPage), generation: 12))
+
+        let next = fence.activate(generation: 13)
+        XCTAssertNil(next.serveToken)
+        XCTAssertFalse(fence.acceptsServe(try! XCTUnwrap(nextPage), generation: 12))
+        XCTAssertFalse(fence.acceptsServe(try! XCTUnwrap(nextPage), generation: 13))
+    }
+
     func testExplicitHistoryProfileIsScopedToItsOwningGeneration() {
         let fence = AtriaBLEHistoryTransportPhaseFence()
         let explicit = fence.activate(generation: 21, usesExplicitHistoryProfile: true)

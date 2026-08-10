@@ -3690,9 +3690,9 @@ enum AtriaVitalsStressTimelineProjection {
         return AtriaStressTimelineEvidenceProjection.make(readings: Array(readings))
     }
 
-    /// Compatibility projection for callers that explicitly need numeric
-    /// physiological Stress. The Vitals surface itself uses `evidence` so an
-    /// HR-only day can render cardiac arousal rather than a conflicting blank.
+    /// Compatibility projection for callers that explicitly need the numeric
+    /// physiological-stress points. Complete v3 HR-only estimates remain on
+    /// this same continuous line with lower-confidence provenance.
     static func points(
         history: [AtriaStressMonitorStore.StressHistoryPoint],
         referenceDate: Date,
@@ -3705,8 +3705,8 @@ enum AtriaVitalsStressTimelineProjection {
 }
 
 enum AtriaVitalsStressTimelineCopy {
-    static let gapNote = "Observed readings only · gaps mean no stress score was recorded."
-    static let accessibilityLabel = "Stress timeline with observed HR plus HRV readings, scale 0 through 3. Low starts at 0.60, Medium at 1.35, and High at 2.16. Collection gaps remain blank. Pinch to zoom between 12 and 4 hours."
+    static let gapNote = "Five-minute estimates · HR-only is lower confidence · gaps remain blank."
+    static let accessibilityLabel = "Physiological stress timeline, scale 0 through 3. Calm is 0 to 1, Moderate is 1 to 2, and High is 2 to 3. HR-only estimates are lower confidence. Collection gaps remain blank. Pinch to zoom between 12 and 4 hours."
 }
 
 /// One top-level monitoring surface keeps the two live signals on the same
@@ -3795,9 +3795,7 @@ private struct AtriaVitalsLiveSignalCard: View {
                     // The selected segment already names the metric. Repeating
                     // “stress” in every tier made the empty state feel like a
                     // feature pitch rather than a useful live surface.
-                    Text(stressPresentation.evidenceMode == .cardiacArousal
-                         ? "Cardiac arousal"
-                         : "Current reading")
+                    Text("Current reading")
                         .font(.subheadline.weight(.bold))
                     Text(stressPresentation.detail)
                         .font(.caption)
@@ -3805,7 +3803,9 @@ private struct AtriaVitalsLiveSignalCard: View {
                         .lineLimit(2)
                 }
                 Spacer(minLength: 8)
-                Text(stressPresentation.value)
+                Text(stressPresentation.numericScore.map {
+                    "\($0.formatted(.number.precision(.fractionLength(1)))) / 3"
+                } ?? AtriaCompactMetricPresentation.noValue)
                     .font(.system(.title2, design: .rounded, weight: .black))
                     .monospacedDigit()
                     .foregroundStyle(stressState.level?.tint ?? .secondary)
@@ -3839,17 +3839,11 @@ private struct AtriaVitalsLiveSignalCard: View {
 
             if projection.presentation == .physiologicalStress {
                 HStack(spacing: 0) {
-                    stressScaleItem("0.00", "Calm", tint: .blue)
-                    stressScaleItem("0.60", "Low", tint: .green)
-                    stressScaleItem("1.35", "Medium", tint: .orange)
-                    stressScaleItem("2.16", "High", tint: .red)
+                    stressScaleItem("0–1", "Calm", tint: Metrics.electricGreen)
+                    stressScaleItem("1–2", "Moderate", tint: Metrics.electricYellow)
+                    stressScaleItem("2–3", "High", tint: Metrics.electricRed)
                 }
-                .accessibilityLabel("Stress scale: Calm from 0, Low from 0.60, Medium from 1.35, High from 2.16")
-            } else if projection.presentation == .cardiacArousal {
-                Text("HR only · qualitative Calm / Low / Medium bands · no 0–3 Stress score or High claim")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("Physiological stress scale: Calm from 0 to 1, Moderate from 1 to 2, High from 2 to 3")
             }
 
             // A gap note is valuable beside a real timeline, but repeats the
@@ -3864,10 +3858,7 @@ private struct AtriaVitalsLiveSignalCard: View {
     }
 
     private var stressEmptyTitle: String {
-        if stressPresentation.evidenceMode == .cardiacArousal {
-            return "Starting cardiac arousal"
-        }
-        return isConnected ? "Preparing your baseline" : "Strap disconnected"
+        isConnected ? "Preparing physiological stress" : "Strap disconnected"
     }
 
     private var stressEmptySystemImage: String {
@@ -3875,11 +3866,8 @@ private struct AtriaVitalsLiveSignalCard: View {
     }
 
     private var stressEmptyDescription: String {
-        if stressPresentation.evidenceMode == .cardiacArousal {
-            return "Keep wearing your strap. The first HR-only Calm, Low, or Medium band will appear here without a numeric Stress claim."
-        }
         return isConnected
-            ? "Keep wearing your strap. Your 0–3 score will appear once your baseline is ready."
+            ? "Keep wearing your strap. A complete five-minute cardiac window produces the first 0–3 estimate; HR-only estimates are labeled lower confidence."
             : "Reconnect your strap to resume live readings. Recent measured readings remain visible when available."
     }
 
@@ -4074,6 +4062,7 @@ private struct AtriaVitalsStressTimelineChart: View {
     // two-finger touch mid-pinch. A manually-reset @State would keep a stale
     // start-window and snap the zoom back on the next pinch (review 2026-08-08).
     @GestureState private var pinchBase: TimeInterval? = nil
+    @State private var selectedDate: Date?
 
     private var xDomain: ClosedRange<Date> {
         referenceDate.addingTimeInterval(-visibleSeconds)...referenceDate
@@ -4081,34 +4070,93 @@ private struct AtriaVitalsStressTimelineChart: View {
 
     var body: some View {
         Chart {
-            RuleMark(y: .value("Low starts", AtriaStressEvidenceProjection.lowStartsAt))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                .foregroundStyle(.secondary.opacity(0.24))
-            RuleMark(y: .value("Medium starts", AtriaStressEvidenceProjection.mediumStartsAt))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                .foregroundStyle(.secondary.opacity(0.24))
-            RuleMark(y: .value("High starts", AtriaStressEvidenceProjection.highStartsAt))
-                .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                .foregroundStyle(.secondary.opacity(0.24))
+            RectangleMark(xStart: .value("Calm start", xDomain.lowerBound),
+                          xEnd: .value("Calm end", xDomain.upperBound),
+                          yStart: .value("Calm floor", 0),
+                          yEnd: .value("Calm ceiling", 1))
+                .foregroundStyle(Metrics.electricGreen.opacity(0.055))
+            RectangleMark(xStart: .value("Moderate start", xDomain.lowerBound),
+                          xEnd: .value("Moderate end", xDomain.upperBound),
+                          yStart: .value("Moderate floor", 1),
+                          yEnd: .value("Moderate ceiling", 2))
+                .foregroundStyle(Metrics.electricYellow.opacity(0.045))
+            RectangleMark(xStart: .value("High start", xDomain.lowerBound),
+                          xEnd: .value("High end", xDomain.upperBound),
+                          yStart: .value("High floor", 2),
+                          yEnd: .value("High ceiling", 3))
+                .foregroundStyle(Metrics.electricRed.opacity(0.045))
+
+            RuleMark(y: .value("Calm to moderate", 1))
+                .lineStyle(StrokeStyle(lineWidth: 0.75))
+                .foregroundStyle(.secondary.opacity(0.18))
+            RuleMark(y: .value("Moderate to high", 2))
+                .lineStyle(StrokeStyle(lineWidth: 0.75))
+                .foregroundStyle(.secondary.opacity(0.18))
+
+            ForEach(points.filter {
+                $0.reading.sleepContext == .asleep
+            }) { point in
+                RectangleMark(
+                    xStart: .value("Sleep start", point.reading.date.addingTimeInterval(-30)),
+                    xEnd: .value("Sleep end", point.reading.date.addingTimeInterval(30)),
+                    yStart: .value("Sleep floor", 0),
+                    yEnd: .value("Sleep ceiling", 3)
+                )
+                .foregroundStyle(Color.indigo.opacity(0.09))
+            }
+
+            ForEach(points.filter {
+                $0.reading.motionContext.qualified
+                    && $0.reading.motionContext.kind == .activity
+            }) { point in
+                RectangleMark(
+                    xStart: .value("Activity start", point.reading.date.addingTimeInterval(-30)),
+                    xEnd: .value("Activity end", point.reading.date.addingTimeInterval(30)),
+                    yStart: .value("Activity floor", 0),
+                    yEnd: .value("Activity ceiling", 3)
+                )
+                .foregroundStyle(Color.orange.opacity(0.075))
+            }
 
             ForEach(points) { point in
                 AreaMark(x: .value("Time", point.reading.date),
                          y: .value("Stress", point.reading.score),
                          series: .value("Segment", point.segment))
                     .interpolationMethod(.linear)
-                    .foregroundStyle(.linearGradient(colors: [.blue.opacity(0.14), .green.opacity(0.08), .orange.opacity(0.04)],
+                    .foregroundStyle(.linearGradient(colors: [Metrics.electricGreen.opacity(0.04),
+                                                               Metrics.electricYellow.opacity(0.10),
+                                                               Metrics.electricRed.opacity(0.16)],
                                                       startPoint: .bottom,
                                                       endPoint: .top))
                 LineMark(x: .value("Time", point.reading.date),
                          y: .value("Stress", point.reading.score),
                          series: .value("Segment", point.segment))
                     .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-                    .foregroundStyle(.linearGradient(colors: [.blue, .green, .orange],
+                    .lineStyle(AtriaChartVisualGrammar.traceLine)
+                    .foregroundStyle(.linearGradient(colors: [Metrics.electricGreen,
+                                                               Metrics.electricYellow,
+                                                               Metrics.electricRed],
                                                       startPoint: .bottom,
                                                       endPoint: .top))
             }
+
+            if let selectedPoint {
+                RuleMark(x: .value("Inspected time", selectedPoint.reading.date))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+                    .foregroundStyle(.primary.opacity(0.28))
+                PointMark(x: .value("Inspected time", selectedPoint.reading.date),
+                          y: .value("Inspected stress", selectedPoint.reading.score))
+                    .symbolSize(36)
+                    .foregroundStyle(.primary)
+                    .annotation(position: .top,
+                                alignment: .center,
+                                overflowResolution: .init(x: .fit(to: .chart),
+                                                          y: .disabled)) {
+                        inspectionCard(selectedPoint.reading)
+                    }
+            }
         }
+        .atriaGraphPlotSurface()
         .chartYScale(domain: 0...AtriaStressEvidenceProjection.maximumDisplayValue)
         .chartXScale(domain: xDomain)
         .chartYAxis {
@@ -4134,7 +4182,7 @@ private struct AtriaVitalsStressTimelineChart: View {
         }
         .padding(.vertical, 8)
         .padding(.trailing, 8)
-        .gesture(
+        .simultaneousGesture(
             MagnifyGesture()
                 .updating($pinchBase) { _, base, _ in
                     // Capture the window at pinch start exactly once; frozen for
@@ -4148,7 +4196,59 @@ private struct AtriaVitalsStressTimelineChart: View {
                         maxWindow: AtriaStressTimelineWindow.inlineDefault)
                 }
         )
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                Rectangle()
+                    .fill(.clear)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                guard let plotFrame = proxy.plotFrame else { return }
+                                let frame = geometry[plotFrame]
+                                let x = value.location.x - frame.origin.x
+                                guard x >= 0, x <= frame.width,
+                                      let date: Date = proxy.value(atX: x) else { return }
+                                selectedDate = nearestPoint(to: date)?.reading.date
+                            }
+                    )
+            }
+        }
         .accessibilityLabel(AtriaVitalsStressTimelineCopy.accessibilityLabel)
+        .accessibilityHint("Drag across the chart to inspect time, score, heart rate, HRV availability, motion context, and confidence")
+    }
+
+    private var selectedPoint: AtriaStressTimelinePoint? {
+        selectedDate.flatMap(nearestPoint(to:))
+    }
+
+    private func nearestPoint(to date: Date) -> AtriaStressTimelinePoint? {
+        points.min {
+            abs($0.reading.date.timeIntervalSince(date))
+                < abs($1.reading.date.timeIntervalSince(date))
+        }
+    }
+
+    @ViewBuilder
+    private func inspectionCard(_ reading: AtriaStressDetailReading) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(reading.date.formatted(date: .omitted, time: .shortened))
+                .font(.caption2.weight(.semibold))
+            Text("\(reading.score.formatted(.number.precision(.fractionLength(2)))) · \(AtriaPhysiologicalStressModel.Zone.resolve(score: reading.score).rawValue)")
+                .font(.caption.monospacedDigit().weight(.bold))
+            Text(reading.heartRate.map { "HR \(Int($0.rounded())) bpm" }
+                ?? "HR unavailable")
+            Text(reading.rmssd.map {
+                "RMSSD \($0.formatted(.number.precision(.fractionLength(1)))) ms"
+            } ?? "HR-only estimate")
+            Text("\(reading.motionContext.displayName) · \(reading.confidence.displayName) confidence")
+        }
+        .font(.caption2)
+        .foregroundStyle(.primary)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
+        .accessibilityElement(children: .combine)
     }
 }
 

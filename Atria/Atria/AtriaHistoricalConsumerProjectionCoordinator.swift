@@ -705,7 +705,11 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
         configuration: Configuration,
         settledAt: Date
     ) throws -> [AtriaHistoricalConsumerReceiptLedger.Published] {
-        let dailyProof = try makeDailyProof(prepared)
+        let dailyProof = try makeDailyProof(
+            source: source,
+            prepared: prepared,
+            configuration: configuration.daily
+        )
         let sessionProof = try makeSessionProof(prepared)
         var published: [AtriaHistoricalConsumerReceiptLedger.Published] = []
         published.append(try AtriaHistoricalActivityProjection.publishReceipt(
@@ -869,16 +873,21 @@ struct AtriaHistoricalConsumerProjectionCoordinator {
     }
 
     private func makeDailyProof(
-        _ prepared: AtriaHistoricalActivityInspectionProofFactory.Prepared
+        source: AtriaHistoricalAggregateChunk,
+        prepared: AtriaHistoricalActivityInspectionProofFactory.Prepared,
+        configuration: AtriaHistoricalDailyConsumerProjection.Configuration
     ) throws -> AtriaHistoricalDailyConsumerProjection.InspectionProof {
-        try .make(
-            generationIdentifier: prepared.generationIdentifier,
-            catalogSnapshot: prepared.catalogSnapshot,
-            dependencyChunks: prepared.dependencyChunks,
-            closedCoverageIntervals: prepared.closedCoverageIntervals.map {
-                .init(start: $0.start, end: $0.end, recordCount: $0.recordCount)
-            }
-        )
+        try AtriaHistoricalDailyConsumerProjection
+            .makeSourceBoundInspectionProof(
+                source: source,
+                dependencyChunks: prepared.dependencyChunks,
+                configuration: configuration,
+                generationIdentifier: prepared.generationIdentifier,
+                catalogSnapshot: prepared.catalogSnapshot,
+                closedCoverageIntervals: prepared.closedCoverageIntervals.map {
+                    .init(start: $0.start, end: $0.end, recordCount: $0.recordCount)
+                }
+            )
     }
 
     private func makeSessionProof(

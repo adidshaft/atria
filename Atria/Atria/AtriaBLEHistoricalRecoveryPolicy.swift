@@ -548,6 +548,491 @@ extension AtriaBLEManager {
         return true
     }
 
+    /// Mints the process-local proof for one non-destructive raw-history slice
+    /// over the already-canonical realtime connection. This is deliberately
+    /// stricter than the ordinary history-request policy: a reason string,
+    /// `force`, persisted pending tuple, or foreground lifecycle race can never
+    /// satisfy it. The stateful caller still has to bind the proof to the exact
+    /// `CBPeripheral` object/callback epoch and atomically claim that canonical
+    /// object before publishing a transport generation.
+    ///
+    /// A materially stale foreground may also enter automatically. This does
+    /// not turn lifecycle state or a reason string into authority: the caller
+    /// must still mint the exact callback-source token on an accepted 2A37
+    /// boundary and win the canonical-object claim synchronously.
+    nonisolated static func shouldMintConnectedRawHistoryCatchUpAuthority(
+        applicationIsBackground: Bool,
+        queuedPullIntent: Bool,
+        foregroundAutomaticBacklog: Bool,
+        strapBacklogPending: Bool,
+        verifiedRawHistoryCapability: Bool,
+        exactCallbackSourceAvailable: Bool,
+        syncInProgress: Bool,
+        linkConnected: Bool,
+        thermalPressureActive: Bool,
+        connectedAt: Date?,
+        acceptedSampleCount: Int,
+        lastAcceptedHRAt: Date?,
+        activeExplicitWorkout: Bool,
+        now: Date,
+        stableConnectionInterval: TimeInterval = 60,
+        acceptedFreshnessWindow: TimeInterval = 45,
+        minimumSamples: Int = 10
+    ) -> Bool {
+        guard applicationIsBackground
+                || queuedPullIntent
+                || foregroundAutomaticBacklog,
+              strapBacklogPending,
+              verifiedRawHistoryCapability,
+              exactCallbackSourceAvailable,
+              !syncInProgress,
+              linkConnected,
+              !thermalPressureActive,
+              !activeExplicitWorkout,
+              acceptedSampleCount >= minimumSamples,
+              let connectedAt,
+              let lastAcceptedHRAt else { return false }
+        let connectionAge = now.timeIntervalSince(connectedAt)
+        let acceptedAge = now.timeIntervalSince(lastAcceptedHRAt)
+        guard connectionAge >= stableConnectionInterval,
+              acceptedAge >= 0,
+              acceptedAge <= acceptedFreshnessWindow else { return false }
+        return true
+    }
+
+    /// The persisted workout intent can reach its terminal value just before
+    /// the in-memory motion lease is released. Treat either representation (or
+    /// a live calibration hold) as explicit motion ownership so a raw 0x16
+    /// generation cannot enter that release gap.
+    nonisolated static func explicitMotionOwnershipBlocksHistory(
+        pendingWorkoutIntentActive: Bool,
+        inMemoryLeaseHeld: Bool,
+        calibrationHoldActive: Bool
+    ) -> Bool {
+        pendingWorkoutIntentActive
+            || inMemoryLeaseHeld
+            || calibrationHoldActive
+    }
+
+    /// A failed reacquisition after a productive connected-raw slice owns no
+    /// radio. Release its logical continuation so present 0x69 capture can
+    /// recover, but hold the next raw attempt for one meaningful bank interval
+    /// instead of recreating the physically observed 6-15 second ticket loop.
+    nonisolated static func connectedRawNoRadioRetryNotBefore(
+        priorContinuationPending: Bool,
+        admissionStarted: Bool,
+        historyOwnerActive: Bool,
+        failedAt: Date,
+        minimumPresentCaptureInterval: TimeInterval = 120
+    ) -> Date? {
+        guard priorContinuationPending,
+              !admissionStarted,
+              !historyOwnerActive,
+              minimumPresentCaptureInterval.isFinite,
+              minimumPresentCaptureInterval >= 0 else { return nil }
+        return failedAt.addingTimeInterval(minimumPresentCaptureInterval)
+    }
+
+    /// A newly armed factual bank is not immediately cut into another tiny
+    /// ticket by raw admission later in the same accepted-HR callback.
+    nonisolated static func connectedRawPresentBankRetryNotBefore(
+        bankArmedForCurrentConnection: Bool,
+        bankArmedAt: Date?,
+        now: Date,
+        minimumPresentCaptureInterval: TimeInterval = 120
+    ) -> Date? {
+        guard bankArmedForCurrentConnection,
+              let bankArmedAt,
+              minimumPresentCaptureInterval.isFinite,
+              minimumPresentCaptureInterval >= 0 else { return nil }
+        let deadline = bankArmedAt.addingTimeInterval(
+            minimumPresentCaptureInterval
+        )
+        return now < deadline ? deadline : nil
+    }
+
+    struct GlobalFrontierEvaluationCoalescer: Equatable {
+        private(set) var trailingRequested = false
+
+        /// Returns true only when the caller may start immediately. While any
+        /// shared compact evaluation is active, arbitrarily many raw slice
+        /// boundaries collapse into one fresh trailing request.
+        mutating func request(whileEvaluationInFlight: Bool) -> Bool {
+            guard whileEvaluationInFlight else { return true }
+            trailingRequested = true
+            return false
+        }
+
+        mutating func consumeTrailingRequest() -> Bool {
+            guard trailingRequested else { return false }
+            trailingRequested = false
+            return true
+        }
+    }
+
+    enum ConnectedRawHistoryCatchUpThermalDisposition: Equatable {
+        case fullRate
+        case boundedSeriousDuty
+        case parkCritical
+    }
+
+    /// Low Power Mode never strands durable raw history. Nominal/fair serves
+    /// continuously; serious heat receives short duty-cycled serves; only
+    /// critical heat parks completely. Optional motion-bank history retains
+    /// its separate, stricter power policy.
+    nonisolated static func connectedRawHistoryCatchUpThermalDisposition(
+        thermalState: ProcessInfo.ThermalState
+    ) -> ConnectedRawHistoryCatchUpThermalDisposition {
+        switch thermalState {
+        case .critical:
+            return .parkCritical
+        case .serious:
+            return .boundedSeriousDuty
+        case .nominal, .fair:
+            return .fullRate
+        @unknown default:
+            return .boundedSeriousDuty
+        }
+    }
+
+    nonisolated static func shouldParkConnectedRawHistoryCatchUpForPowerPressure(
+        thermalState: ProcessInfo.ThermalState
+    ) -> Bool {
+        connectedRawHistoryCatchUpThermalDisposition(
+            thermalState: thermalState
+        ) == .parkCritical
+    }
+
+    /// Normal raw-slice completion is owned by the matching ACK callback, not
+    /// this timer. Critical heat may stop immediately. Invalid time input fails
+    /// closed, while a genuine no-progress transport is owned by the existing
+    /// history idle watchdog so this polling timer can never cut a live page.
+    nonisolated static func connectedRawHistoryCatchUpBudgetDisposition(
+        startedAt: Date,
+        lastAcceptedHeartRateAt: Date?,
+        now: Date,
+        liveSilenceLimit: TimeInterval,
+        thermalState: ProcessInfo.ThermalState,
+        durableBoundaryReached: Bool,
+        seriousDutyMaximum: TimeInterval = 45
+    ) -> ConnectedMotionBankHistoryBudgetDisposition {
+        let elapsed = now.timeIntervalSince(startedAt)
+        switch connectedRawHistoryCatchUpThermalDisposition(
+            thermalState: thermalState
+        ) {
+        case .parkCritical:
+            return .finishForPowerPressure
+        case .boundedSeriousDuty, .fullRate:
+            break
+        }
+
+        // WHOOP does not interleave 2A37 while serving one proprietary page.
+        // Treating that expected silence as a mid-page failure made every
+        // slice pay the full 22/00 + discovery setup, then preserve/replay an
+        // uncommitted suffix. Normal slice termination is therefore decided
+        // synchronously at a confirmed ACK boundary. A negative clock is the
+        // only absolute-budget failure this task owns.
+        guard elapsed >= 0 else {
+            return .finishForAbsoluteBudget
+        }
+        guard let lastAcceptedHeartRateAt,
+              now.timeIntervalSince(lastAcceptedHeartRateAt) >= 0 else {
+            return .finishForLiveHeartRateSilence
+        }
+        _ = liveSilenceLimit
+        if durableBoundaryReached {
+            // An earlier ACK is durable progress, not slice completion. Keep
+            // serving until the fourth matching ACK callback ends the burst.
+            return .keepServing
+        }
+        if elapsed >= max(1, seriousDutyMaximum) {
+            // No ACK by the former wall-clock cap is not permission to cut an
+            // in-flight page. The progress-clocked history idle watchdog owns
+            // the true-stall exit and preserves the exact realtime link.
+            return .keepServing
+        }
+        return .keepServing
+    }
+
+    /// Selects a finite clean-ACK burst which amortizes the expensive history
+    /// handshake without ignoring real heat. Physical 2A37 evidence showed a
+    /// nominal/fair link remains live at roughly 1 Hz throughout sixteen-page
+    /// raw serves. Serious heat retains the proven four-page duty slice, while
+    /// critical heat is parked by the independent budget fence before this
+    /// value can authorize any continuation.
+    nonisolated static func connectedRawHistoryCatchUpTargetAcknowledgedPages(
+        thermalState: ProcessInfo.ThermalState
+    ) -> Int {
+        switch connectedRawHistoryCatchUpThermalDisposition(
+            thermalState: thermalState
+        ) {
+        case .fullRate:
+            return 16
+        case .boundedSeriousDuty:
+            return 4
+        case .parkCritical:
+            return 1
+        }
+    }
+
+    /// A productive connected raw slice amortizes the expensive history
+    /// handshake across a thermal-qualified number of complete WHOOP pages.
+    /// The caller invokes this
+    /// only after canonical durability and the matching ACK have both
+    /// succeeded, so returning true can never cut through a page or discard an
+    /// unacknowledged suffix. Critical heat remains owned by the independent
+    /// immediate budget fence above.
+    nonisolated static func shouldFinishConnectedRawHistoryCatchUpAtACKBoundary(
+        acknowledgedPages: Int,
+        minimumAcknowledgedPages: Int = 4
+    ) -> Bool {
+        acknowledgedPages >= max(1, minimumAcknowledgedPages)
+    }
+
+    /// A local ACK-boundary yield can leave the strap finishing the next page
+    /// after the old callback phase has retired. A new exact raw generation may
+    /// consume historical ingress only when the callback itself captured that
+    /// generation's armed serve token and its durable admission attempt already
+    /// exists. Looking at current state later is a TOCTOU: a predecessor frame
+    /// can queue before 0x16, then reach MainActor after 0x16. Other history
+    /// modes keep their existing protocol handling.
+    nonisolated static func shouldAcceptConnectedRawHistoryIngress(
+        exactRawAuthorityActive: Bool,
+        callbackCapturedCurrentServe: Bool,
+        admissionAttemptAvailable: Bool
+    ) -> Bool {
+        guard exactRawAuthorityActive else { return true }
+        return callbackCapturedCurrentServe && admissionAttemptAvailable
+    }
+
+    /// A page-continuation command is only a silence fallback. Once a frame
+    /// captured under the current serve token has crossed the ingress gate, it
+    /// proves that the strap is already serving that page and any armed 0x16
+    /// fallback must be cancelled. Generation matching prevents a delayed frame
+    /// from cancelling a newer generation's continuation; `ingressAccepted`
+    /// keeps rejected predecessor callbacks completely observational.
+    nonisolated static func shouldCancelHistoricalPageContinuationForFrame(
+        activeGeneration: UInt64?,
+        continuationGeneration: UInt64?,
+        frameGeneration: UInt64,
+        ingressAccepted: Bool,
+        callbackCapturedCurrentServe: Bool
+    ) -> Bool {
+        ingressAccepted
+            && callbackCapturedCurrentServe
+            && activeGeneration == frameGeneration
+            && continuationGeneration == frameGeneration
+    }
+
+    /// `admissionBatchScheduled` is deliberately not a blocker. Scheduling is
+    /// MainActor-local and the task cannot pop the unread suffix while the
+    /// synchronous ACK finalizer is executing. In-flight classification,
+    /// popped deferred metadata, persistence, flush, or ACK work still makes
+    /// the dequeue cursor non-durable and therefore fails closed.
+    nonisolated static func shouldRetireConnectedRawConsumedPrefix(
+        exactCleanACKFinishAuthority: Bool,
+        durableBoundaryReached: Bool,
+        acknowledgedPages: Int,
+        pendingPersistenceCount: Int,
+        admissionBatchInFlight: Bool,
+        admissionBatchScheduled: Bool,
+        hasDeferredEvent: Bool,
+        durableFlushInFlight: Bool,
+        hasPendingACK: Bool,
+        ackGateDeferringCallbacks: Bool
+    ) -> Bool {
+        _ = admissionBatchScheduled
+        return exactCleanACKFinishAuthority
+            && durableBoundaryReached
+            && acknowledgedPages > 0
+            && pendingPersistenceCount == 0
+            && !admissionBatchInFlight
+            && !hasDeferredEvent
+            && !durableFlushInFlight
+            && !hasPendingACK
+            && !ackGateDeferringCallbacks
+    }
+
+    enum ConnectedRawHistoryCatchUpContinuationDisposition: Equatable {
+        case complete
+        case awaitThermalRecovery
+        case yieldForPublication(TimeInterval)
+        case resumeAfter(TimeInterval)
+        case retryAfter(TimeInterval)
+    }
+
+    struct HistoricalMotionBankCutoverState: Equatable {
+        let processArmed: Bool
+        let persistedEnabled: Bool
+        let prearmRequested: Bool
+    }
+
+    /// An accepted history serve closes firmware bank 0x69. Keeping either
+    /// armed bit true would both invent coverage and suppress the real 69/01
+    /// successor arm, so the only honest local mirror is fixed and explicit.
+    nonisolated static func historicalMotionBankStateAfterHistoryServeCutover()
+        -> HistoricalMotionBankCutoverState {
+        .init(
+            processArmed: false,
+            persistedEnabled: false,
+            prearmRequested: true
+        )
+    }
+
+    /// A connected-raw continuation is one logical FIFO owner across its
+    /// bounded live-restoration gaps. Ordinary all-day rearm cannot interleave
+    /// 69/01 with that owner. An explicit workout/calibration may preempt only
+    /// after the physical history owner has already released transport.
+    nonisolated static func historicalMotionBankRearmBlockedByRawOwnership(
+        historyTransportActive: Bool,
+        rawContinuationPending: Bool,
+        postHistoryRawRestorationActive: Bool,
+        explicitPresentCapturePriority: Bool
+    ) -> Bool {
+        historyTransportActive
+            || (!explicitPresentCapturePriority
+                && (rawContinuationPending
+                    || postHistoryRawRestorationActive))
+    }
+
+    /// Productive raw slices chain on a later accepted-HR boundary instead of
+    /// waiting behind the global history-attempt timestamp. Zero-progress or
+    /// protocol-failure attempts retain the conservative backoff. When bounded
+    /// app-facing work is already pending, a finite publication yield
+    /// releases only the process-local projection fence; it never recreates a
+    /// BLE authority. Pending work yields after one proven productive slice;
+    /// a fair/nominal slice already spans sixteen clean page ACKs, which is a
+    /// sufficiently bounded quantum. Serious heat keeps its four-page raw duty
+    /// because the app-facing worker refuses that environment; a pending intent
+    /// alone must never create an empty 120-second cooling loop.
+    /// With no pending publication work, the existing small periodic duty pause
+    /// remains the only interruption.
+    nonisolated static func connectedRawHistoryCatchUpContinuationDisposition(
+        backlogPending: Bool,
+        cursorCaughtUp: Bool,
+        durableRows: Int,
+        frontierAdvanceSeconds: TimeInterval,
+        thermalState: ProcessInfo.ThermalState,
+        durableProgressAuthorized: Bool,
+        thermalInterruption: Bool,
+        consecutiveProductiveSlices: Int,
+        publicationYieldNeeded: Bool = false,
+        publicationYieldRunnable: Bool = true,
+        productiveDelay: TimeInterval = 2,
+        dutyPauseAfterSlices: Int = 8,
+        dutyPause: TimeInterval = 8,
+        zeroProgressDelay: TimeInterval = 120,
+        publicationYieldBudget: TimeInterval = 120,
+        publicationYieldAfterSlices: Int = 1
+    ) -> ConnectedRawHistoryCatchUpContinuationDisposition {
+        guard !cursorCaughtUp, backlogPending else { return .complete }
+        let thermalDisposition = connectedRawHistoryCatchUpThermalDisposition(
+            thermalState: thermalState
+        )
+        if thermalDisposition == .parkCritical, thermalInterruption {
+            return .awaitThermalRecovery
+        }
+        let productive = durableProgressAuthorized
+            && (durableRows > 0 || frontierAdvanceSeconds > 0)
+        guard productive else {
+            return .retryAfter(max(1, zeroProgressDelay))
+        }
+        guard thermalDisposition != .parkCritical else {
+            return .awaitThermalRecovery
+        }
+        let nextProductiveCount = max(0, consecutiveProductiveSlices) + 1
+        if publicationYieldNeeded,
+           publicationYieldRunnable,
+           thermalDisposition == .fullRate,
+           nextProductiveCount >= max(1, publicationYieldAfterSlices) {
+            return .yieldForPublication(max(1, publicationYieldBudget))
+        }
+        if nextProductiveCount >= max(1, dutyPauseAfterSlices) {
+            return .resumeAfter(max(1, dutyPause))
+        }
+        return .resumeAfter(max(1, productiveDelay))
+    }
+
+    /// The raw continuation is still pending during an app-facing yield, but
+    /// that scheduling hint must not masquerade as archive/radio ownership.
+    /// Actual transport state remains covered by the caller's independent
+    /// historical-ownership predicate.
+    nonisolated static func connectedRawHistoryCatchUpContinuationDefersProjection(
+        continuationPending: Bool,
+        publicationYieldActive: Bool
+    ) -> Bool {
+        continuationPending && !publicationYieldActive
+    }
+
+    /// A publication yield is finite and token-local. Success, a cleared durable
+    /// intent, or completion of its one bounded offer ends it early; the absolute
+    /// deadline is only the safety terminal for an offer still in flight. Closing
+    /// this gate authorizes scheduling only—the next accepted 2A37 callback must
+    /// still mint a new exact transport authority.
+    nonisolated static func connectedRawHistoryCatchUpPublicationYieldShouldRemainActive(
+        publicationNeeded: Bool,
+        publicationSucceeded: Bool,
+        publicationAttemptCompleted: Bool = false,
+        now: Date,
+        deadline: Date
+    ) -> Bool {
+        guard publicationNeeded,
+              !publicationSucceeded,
+              !publicationAttemptCompleted,
+              now.timeIntervalSince(deadline) < 0 else { return false }
+        return true
+    }
+
+    struct ConnectedRawHistoryCatchUpSliceProgress: Equatable {
+        let durableRows: Int
+        let durationSeconds: TimeInterval
+        let rowsPerSecond: Double
+        let frontierAdvanceSeconds: TimeInterval
+    }
+
+    nonisolated static func connectedRawHistoryCatchUpSliceProgress(
+        durableRows: Int,
+        startedAt: Date,
+        finishedAt: Date,
+        startFrontierUnix: TimeInterval,
+        endFrontierUnix: TimeInterval
+    ) -> ConnectedRawHistoryCatchUpSliceProgress {
+        let duration = max(0.001, finishedAt.timeIntervalSince(startedAt))
+        let rows = max(0, durableRows)
+        return .init(
+            durableRows: rows,
+            durationSeconds: duration,
+            rowsPerSecond: Double(rows) / duration,
+            frontierAdvanceSeconds: max(
+                0,
+                endFrontierUnix - startFrontierUnix
+            )
+        )
+    }
+
+    /// Advances the display-only strap-history frontier exclusively from
+    /// generation-fenced timestamps released by a successful canonical flush.
+    /// Clock-corrupt future rows are ignored and the persisted value is never
+    /// regressed. Returning nil means there is no newer trustworthy fact.
+    nonisolated static func advancedDurableHistoricalFrontier(
+        existing: TimeInterval,
+        durableEffectiveUnix: [UInt32],
+        now: Date,
+        futureTolerance: TimeInterval = 5 * 60
+    ) -> TimeInterval? {
+        guard existing.isFinite,
+              existing >= 0,
+              now.timeIntervalSince1970.isFinite,
+              futureTolerance.isFinite,
+              futureTolerance >= 0 else { return nil }
+        let ceiling = now.timeIntervalSince1970 + futureTolerance
+        guard let newest = durableEffectiveUnix
+            .map(TimeInterval.init)
+            .filter({ $0 > 0 && $0 <= ceiling })
+            .max(), newest > existing else { return nil }
+        return newest
+    }
+
     /// Coalesces a deferred transport request without erasing the authority
     /// which admitted it. This matters for debug/physical forced recovery:
     /// its evidence label is caller supplied and therefore cannot be recovered
@@ -589,15 +1074,14 @@ extension AtriaBLEManager {
 
     enum WorkoutHistoricalTransportPreemptionDisposition: Equatable {
         case noHistoryOwner
-        case finishPreservingRealtimeOwner
         case disconnectConnectedHistoryOwner
         case interruptOfflineHistoryOwner
     }
 
-    /// Starting a workout outranks history commands, but it does not outrank
-    /// the healthy standard-HR connection used by a non-destructive motion-bank
-    /// generation. That generation is ended locally; only a genuinely
-    /// exclusive connected history owner requires a physical disconnect.
+    /// Starting a workout outranks history commands. A local owner release is
+    /// not proof that WHOOP stopped serving its current FIFO page, even when
+    /// standard HR shares the link. Every connected history owner therefore
+    /// crosses a physical disconnect fence before 69/01 can arm on a new epoch.
     nonisolated static func workoutHistoricalTransportPreemptionDisposition(
         syncInProgress: Bool,
         historyProbeActive: Bool,
@@ -607,11 +1091,7 @@ extension AtriaBLEManager {
         guard syncInProgress || historyProbeActive else {
             return .noHistoryOwner
         }
-        if syncInProgress,
-           preservesConnectedRealtimeOwner,
-           linkConnected {
-            return .finishPreservingRealtimeOwner
-        }
+        _ = preservesConnectedRealtimeOwner
         return linkConnected
             ? .disconnectConnectedHistoryOwner
             : .interruptOfflineHistoryOwner

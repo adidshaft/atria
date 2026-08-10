@@ -1435,6 +1435,8 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertEqual(saved.start, editedStart)
         XCTAssertEqual(saved.end, editedEnd)
         XCTAssertEqual(saved.createdAt, original.createdAt)
+        XCTAssertEqual(saved.zoneBoundaries,
+                       AtriaHRRZoneBoundaries(restingHR: 60, maxHR: 190))
         XCTAssertNotEqual(saved.id, original.id)
         XCTAssertFalse(store.confirmedWorkouts.contains(where: { $0.id == original.id }))
         XCTAssertEqual(store.confirmedWorkouts.filter { $0.id == saved.id }, [saved])

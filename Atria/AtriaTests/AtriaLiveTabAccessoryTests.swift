@@ -113,7 +113,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         XCTAssertTrue(island.contains("if reduceMotion"))
         XCTAssertTrue(island.contains(".contentTransition(.numericText())"))
         XCTAssertTrue(island.contains(".animation(.snappy(duration: 0.22), value: value)"))
-        XCTAssertTrue(island.contains(".symbolEffect(.pulse, options: .nonRepeating, value: heartRate)"))
+        XCTAssertTrue(island.contains(".atriaLiveActivityValueTransition(isLive ? heartRate : -1)"))
         XCTAssertTrue(island.contains(".symbolEffect(.bounce, options: .nonRepeating, value: isPaused)"))
         XCTAssertTrue(island.contains("AtriaDynamicIslandCompactHeartRate"))
         XCTAssertFalse(island.contains("Timer."))
@@ -128,7 +128,7 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
 
         XCTAssertTrue(home.contains("guard batteryLevel >= 0 else { return \"questionmark.circle\" }"))
         XCTAssertTrue(widget.contains("guard state.batteryLevel >= 0 else { return \"questionmark.circle\" }"))
-        XCTAssertTrue(widget.contains("if batteryAvailability == .live"),
+        XCTAssertTrue(widget.contains("if showsBattery, batteryAvailability == .live"),
                       "Live Activity must render battery only after the freshness helper validates a nonnegative level")
     }
 

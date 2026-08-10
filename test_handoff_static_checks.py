@@ -8326,7 +8326,7 @@ class HandoffStaticChecks(unittest.TestCase):
             "Queue missed data sync; live tracking stays uninterrupted",
             ".atriaCardAction(prominent: false, tint: .cyan)",
             ".background(Color(uiColor: .secondarySystemBackground),",
-            "requestOfflineHistoricalSyncIfNeeded(reason: \"home_missed_data_banner\",\n                                                             force: true)",
+            "ble.queueConnectedRawHistoryCatchUpIntent(\n                    reason: \"home_missed_data_banner\"",
         ]:
             assert_contains(self, home, needle)
 
@@ -10673,6 +10673,7 @@ class HandoffStaticChecks(unittest.TestCase):
             ".refreshable { await refresh() }",
             "private func handleConnectivityRefresh() async",
             "ble.requestStrapStatusRead(reason: \"pull_to_refresh\")",
+            "ble.queueConnectedRawHistoryCatchUpIntent(\n                reason: \"pull_to_refresh\"",
             "showConnectivityPill = true",
             "return \"Refreshing strap…\"",
             "Self.debugLaunchFixtureValue(arguments: arguments) == \"refresh-connectivity-pill\"",

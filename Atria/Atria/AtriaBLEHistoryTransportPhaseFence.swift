@@ -11,10 +11,18 @@ final class AtriaBLEHistoryTransportPhaseFence: @unchecked Sendable {
     struct Snapshot: Equatable, Sendable {
         let generation: UInt64?
         let usesExplicitHistoryProfile: Bool
+        /// Non-nil only after this generation has issued its own first 0x16
+        /// serve request. Captured synchronously at CoreBluetooth delegate
+        /// entry so work queued before the request cannot acquire authority
+        /// later on the MainActor.
+        let serveToken: UInt64?
 
-        init(generation: UInt64?, usesExplicitHistoryProfile: Bool = false) {
+        init(generation: UInt64?,
+             usesExplicitHistoryProfile: Bool = false,
+             serveToken: UInt64? = nil) {
             self.generation = generation
             self.usesExplicitHistoryProfile = usesExplicitHistoryProfile
+            self.serveToken = serveToken
         }
 
         var isActive: Bool { generation != nil }
@@ -30,6 +38,8 @@ final class AtriaBLEHistoryTransportPhaseFence: @unchecked Sendable {
     private let lock = NSLock()
     private var generation: UInt64?
     private var usesExplicitHistoryProfile = false
+    private var serveToken: UInt64?
+    private var nextServeToken: UInt64 = 0
     private var realtimeRestoreHandoff: RealtimeRestoreHandoff?
 
     func activate(generation: UInt64,
@@ -42,8 +52,10 @@ final class AtriaBLEHistoryTransportPhaseFence: @unchecked Sendable {
         realtimeRestoreHandoff = nil
         self.generation = generation
         self.usesExplicitHistoryProfile = usesExplicitHistoryProfile
+        serveToken = nil
         let snapshot = Snapshot(generation: generation,
-                                usesExplicitHistoryProfile: usesExplicitHistoryProfile)
+                                usesExplicitHistoryProfile: usesExplicitHistoryProfile,
+                                serveToken: nil)
         lock.unlock()
         return snapshot
     }
@@ -54,9 +66,11 @@ final class AtriaBLEHistoryTransportPhaseFence: @unchecked Sendable {
         if expectedGeneration == nil || generation == expectedGeneration {
             generation = nil
             usesExplicitHistoryProfile = false
+            serveToken = nil
         }
         let snapshot = Snapshot(generation: generation,
-                                usesExplicitHistoryProfile: usesExplicitHistoryProfile)
+                                usesExplicitHistoryProfile: usesExplicitHistoryProfile,
+                                serveToken: serveToken)
         lock.unlock()
         return snapshot
     }
@@ -78,6 +92,7 @@ final class AtriaBLEHistoryTransportPhaseFence: @unchecked Sendable {
         }
         generation = nil
         usesExplicitHistoryProfile = false
+        serveToken = nil
         realtimeRestoreHandoff = RealtimeRestoreHandoff(
             peripheralID: peripheralID,
             interruptedGeneration: expectedGeneration,
@@ -164,9 +179,52 @@ final class AtriaBLEHistoryTransportPhaseFence: @unchecked Sendable {
     func snapshot() -> Snapshot {
         lock.lock()
         let snapshot = Snapshot(generation: generation,
-                                usesExplicitHistoryProfile: usesExplicitHistoryProfile)
+                                usesExplicitHistoryProfile: usesExplicitHistoryProfile,
+                                serveToken: serveToken)
         lock.unlock()
         return snapshot
+    }
+
+    /// Mints a fresh token for exactly the currently active generation's next
+    /// 0x16 request. Every page/retry receives a distinct token: a fragment
+    /// captured under a predecessor command can therefore never combine with
+    /// or authorize callbacks from the next command. A new generation starts
+    /// unarmed.
+    @discardableResult
+    func armServe(ifMatching expectedGeneration: UInt64) -> Snapshot? {
+        lock.lock()
+        guard generation == expectedGeneration else {
+            lock.unlock()
+            return nil
+        }
+        nextServeToken &+= 1
+        if nextServeToken == 0 { nextServeToken = 1 }
+        serveToken = nextServeToken
+        let snapshot = Snapshot(
+            generation: generation,
+            usesExplicitHistoryProfile: usesExplicitHistoryProfile,
+            serveToken: serveToken
+        )
+        lock.unlock()
+        return snapshot
+    }
+
+    /// Validates the immutable token captured at delegate entry. Reading only
+    /// current MainActor state is insufficient: a predecessor callback may be
+    /// queued before 0x16 and applied after it.
+    func acceptsServe(
+        _ snapshot: Snapshot,
+        generation expectedGeneration: UInt64
+    ) -> Bool {
+        guard snapshot.generation == expectedGeneration,
+              let expectedServeToken = snapshot.serveToken else {
+            return false
+        }
+        lock.lock()
+        let accepted = generation == expectedGeneration
+            && serveToken == expectedServeToken
+        lock.unlock()
+        return accepted
     }
 
     func accepts(_ snapshot: Snapshot, generation expectedGeneration: UInt64) -> Bool {

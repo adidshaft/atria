@@ -90,15 +90,23 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         case (.verifiedCanonical, .partial):
             // Progress framing, not a failure grade (2026-08-08 user note): the
             // strap motion engine IS counting; the day just fills in as more
-            // motion syncs off the strap. "Partial · X% covered" read as broken.
+            // motion syncs off the strap. Keep the card copy compact while
+            // naming the exact durable frontier so the user can tell how old
+            // the subtotal is without opening diagnostics.
             if let coverageFraction {
                 let coverage = Int((coverageFraction * 100).rounded())
-                if count == 0 {
-                    return "Syncing today's steps from your strap · \(coverage)% so far"
+                if let capturedAt {
+                    return "\(coverage)% · through "
+                        + capturedAt.formatted(
+                            date: .omitted,
+                            time: .shortened
+                        )
                 }
-                return "Today so far · \(coverage)% synced from strap"
+                return "\(coverage)% synced"
             }
-            return "Syncing steps from your strap"
+            return capturedAt.map {
+                "Through " + $0.formatted(date: .omitted, time: .shortened)
+            } ?? "Syncing steps"
         case (.live, .partial):
             return isValidated ? "Today so far · live" : "Today so far · estimate"
         default:
@@ -151,7 +159,13 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             }
             return "\(count) steps. Verified complete day."
         case (.verifiedCanonical, .partial):
-            return "At least \(count) steps so far, still syncing from your strap."
+            let coverage = coverageFraction.map {
+                "\(Int(($0 * 100).rounded())) percent"
+            } ?? "partially"
+            let frontier = capturedAt.map {
+                ", through \($0.formatted(date: .omitted, time: .shortened))"
+            } ?? ""
+            return "At least \(count) steps, \(coverage) synced from your strap\(frontier)."
         case (.live, .partial):
             return "\(isValidated ? "\(count)" : "Approximately \(count)") steps today so far."
         default:

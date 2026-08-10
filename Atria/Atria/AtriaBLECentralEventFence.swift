@@ -65,6 +65,35 @@ final class AtriaBLECentralEventFence: @unchecked Sendable {
         }
     }
 
+    /// Conditionally retires the exact manager generation after every callback
+    /// already admitted to its serial delegate lane has returned. The
+    /// predicate runs on that lane immediately before retirement, so a
+    /// `didConnect` edge queued ahead of the barrier can publish its live epoch
+    /// and veto a stale-transition repair without a check/teardown race.
+    @discardableResult
+    func retireIfAccepted(
+        _ central: AnyObject,
+        token: Token,
+        afterDraining delegateQueue: DispatchQueue?,
+        shouldRetire: @escaping () -> Bool,
+        synchronizedTeardown: @escaping () -> Void = {}
+    ) -> Bool {
+        var didRetire = false
+        let retireIfStillAccepted = {
+            guard self.accepts(token, central: central),
+                  shouldRetire() else { return }
+            self.retire(central)
+            synchronizedTeardown()
+            didRetire = true
+        }
+        if let delegateQueue {
+            delegateQueue.sync(execute: retireIfStillAccepted)
+        } else {
+            retireIfStillAccepted()
+        }
+        return didRetire
+    }
+
     /// Captures callback authority at delegate entry. A callback from a
     /// retired manager receives no token and must return before side effects.
     func capture(_ central: AnyObject) -> Token? {

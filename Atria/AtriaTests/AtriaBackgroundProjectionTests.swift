@@ -45,9 +45,110 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertFalse(guarded(thermal: .nominal, lowPower: false, battery: .unknown, level: -1.0))
     }
 
+    func testConnectedRawPublicationYieldRequiresCoolActiveForeground() {
+        XCTAssertTrue(
+            SessionStore.shouldStartConnectedRawCatchUpPublicationYield(
+                applicationIsActive: true,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false
+            )
+        )
+        XCTAssertTrue(
+            SessionStore.shouldStartConnectedRawCatchUpPublicationYield(
+                applicationIsActive: true,
+                thermalState: .fair,
+                isLowPowerModeEnabled: false
+            )
+        )
+        XCTAssertFalse(
+            SessionStore.shouldStartConnectedRawCatchUpPublicationYield(
+                applicationIsActive: false,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false
+            )
+        )
+        XCTAssertFalse(
+            SessionStore.shouldStartConnectedRawCatchUpPublicationYield(
+                applicationIsActive: true,
+                thermalState: .serious,
+                isLowPowerModeEnabled: false
+            )
+        )
+        XCTAssertFalse(
+            SessionStore.shouldStartConnectedRawCatchUpPublicationYield(
+                applicationIsActive: true,
+                thermalState: .critical,
+                isLowPowerModeEnabled: false
+            )
+        )
+        XCTAssertFalse(
+            SessionStore.shouldStartConnectedRawCatchUpPublicationYield(
+                applicationIsActive: true,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: true
+            )
+        )
+    }
+
+    func testConnectedRawPublicationYieldWaitsForDurableCurrentCycleFrontier() {
+        let cycleStart = Date(timeIntervalSince1970: 10_000)
+        func needed(
+            intent: Bool = true,
+            frontier: TimeInterval?
+        ) -> Bool {
+            SessionStore.connectedRawCatchUpPublicationYieldIsNeeded(
+                bootstrapIntentPending: intent,
+                durableFrontierUnix: frontier,
+                currentCycleStart: cycleStart
+            )
+        }
+
+        XCTAssertFalse(needed(frontier: nil))
+        XCTAssertFalse(needed(frontier: .nan))
+        XCTAssertFalse(needed(frontier: 0))
+        XCTAssertFalse(needed(frontier: 9_999.999))
+        XCTAssertTrue(needed(frontier: 10_000))
+        XCTAssertTrue(needed(frontier: 10_001))
+        XCTAssertFalse(needed(intent: false, frontier: 10_001))
+    }
+
+    func testFirstUseAfternoonCutoffIncludesPriorNightWithoutExceeding48Hours() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 9,
+            hour: 16
+        ))!
+        let expectedPriorNightFloor = calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 8,
+            hour: 12
+        ))!
+
+        let cutoff = SessionStore.automaticRecoveredDataProjectionCutoff(
+            now: now,
+            confirmedSleeps: [],
+            calendar: calendar
+        )
+
+        XCTAssertEqual(cutoff, expectedPriorNightFloor)
+        XCTAssertGreaterThanOrEqual(
+            cutoff,
+            now.addingTimeInterval(-48 * 60 * 60)
+        )
+        XCTAssertLessThan(
+            cutoff,
+            calendar.startOfDay(for: now),
+            "first-use afternoon projection must retain the preceding night"
+        )
+    }
+
     // MARK: Foreground admission
 
-    func testOrdinaryColdLaunchAndArchiveUpdatesUseSafeBackgroundLane() {
+    func testOrdinaryColdLaunchAndArchiveUpdatesRequireMetadataAdmission() {
         for reason in [
             "deferred_session_load",
             "archive_did_update",
@@ -55,38 +156,38 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         ] {
             XCTAssertTrue(
                 SessionStore
-                    .shouldReserveAutomaticRecoveredDataProjectionForSafeBackground(
+                    .isMetadataQualifiedAutomaticRecoveredDataProjectionReason(
                         reason: reason,
                         isExactRecoveryPublication: false,
                         backgroundProjectionAllowed: false
                     ),
-                "\(reason) must reuse durable app-facing caches in foreground"
+                "\(reason) must pass cheap metadata before a ticket exists"
             )
         }
     }
 
-    func testOnlyExactAndExplicitUserProjectionBypassOrdinaryReservation() {
+    func testExactBackgroundAndExplicitUserWorkBypassAutomaticMetadataLane() {
         XCTAssertFalse(
             SessionStore
-                .shouldReserveAutomaticRecoveredDataProjectionForSafeBackground(
+                .isMetadataQualifiedAutomaticRecoveredDataProjectionReason(
                     reason: "archive_did_update",
                     isExactRecoveryPublication: true,
                     backgroundProjectionAllowed: false
                 ),
             "terminal exact recovery retains its completion-fenced projection"
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             SessionStore
-                .shouldReserveAutomaticRecoveredDataProjectionForSafeBackground(
+                .isMetadataQualifiedAutomaticRecoveredDataProjectionReason(
                     reason: "deferred_session_load",
                     isExactRecoveryPublication: false,
                     backgroundProjectionAllowed: true
                 ),
-            "ordinary cold-load freshness cannot mint a background ticket"
+            "a leased background request uses its separate guarded lane"
         )
         XCTAssertFalse(
             SessionStore
-                .shouldReserveAutomaticRecoveredDataProjectionForSafeBackground(
+                .isMetadataQualifiedAutomaticRecoveredDataProjectionReason(
                     reason: "explicit_user_repair",
                     isExactRecoveryPublication: false,
                     backgroundProjectionAllowed: false
@@ -94,24 +195,44 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         )
     }
 
-    func testMetadataTailCannotMintAnOrdinaryProjectionTicket() {
+    func testRefusedBGBootstrapCannotReplayAsUnleasedFullProjection() {
+        let reason = "bg_projection_current_window_bootstrap_bg_projection"
+        XCTAssertFalse(SessionStore.shouldRetainDeferredRecoveredDataRequest(
+            reason: reason,
+            backgroundProjectionAllowed: true
+        ), "a BG bootstrap refusal must retry only from its durable intent")
+        XCTAssertFalse(SessionStore
+            .isMetadataQualifiedAutomaticRecoveredDataProjectionReason(
+                reason: reason,
+                isExactRecoveryPublication: false,
+                backgroundProjectionAllowed: false
+            ), "losing the typed scope would otherwise mint a full ticket")
+        XCTAssertTrue(SessionStore
+            .isMetadataQualifiedAutomaticRecoveredDataProjectionReason(
+                reason: "deferred_session_load_after_onboarding",
+                isExactRecoveryPublication: false,
+                backgroundProjectionAllowed: false
+            ), "onboarding fallback stays on metadata-qualified bounded work")
+    }
+
+    func testOnlyNamedOrdinaryReasonsCanReachMetadataPreflight() {
         XCTAssertTrue(
             SessionStore
-                .shouldReserveAutomaticRecoveredDataProjectionForSafeBackground(
+                .isMetadataQualifiedAutomaticRecoveredDataProjectionReason(
                     reason: "archive_did_update",
                     isExactRecoveryPublication: false,
                     backgroundProjectionAllowed: false
                 ),
-            "even a small tail fans out into global derived consumers"
+            "archive updates may proceed only after bounded plan qualification"
         )
         XCTAssertTrue(
             SessionStore
-                .shouldReserveAutomaticRecoveredDataProjectionForSafeBackground(
+                .isMetadataQualifiedAutomaticRecoveredDataProjectionReason(
                     reason: "deferred_session_load",
                     isExactRecoveryPublication: false,
                     backgroundProjectionAllowed: false
                 ),
-            "cold launch remains background-only even if a stale caller claims a tail"
+            "cold load may reuse the compact checkpoint/process cache"
         )
     }
 
@@ -130,13 +251,101 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         )
         XCTAssertTrue(
             SessionStore
-                .shouldReserveAutomaticRecoveredDataProjectionForSafeBackground(
+                .isMetadataQualifiedAutomaticRecoveredDataProjectionReason(
                     reason: "archive_did_update",
                     isExactRecoveryPublication: false,
                     backgroundProjectionAllowed: false
                 ),
-            "ordinary archive updates persist intent and mint no ticket"
+            "ordinary archive updates never enter the full background graph"
         )
+    }
+
+    func testBoundedAutomaticProjectionPreservesForegroundThermalSafety() {
+        XCTAssertTrue(SessionStore.shouldStartBoundedAutomaticRecoveredDataProjection(
+            applicationIsActive: true,
+            thermalState: .nominal,
+            isLowPowerModeEnabled: false
+        ))
+        XCTAssertFalse(SessionStore.shouldStartBoundedAutomaticRecoveredDataProjection(
+            applicationIsActive: false,
+            thermalState: .nominal,
+            isLowPowerModeEnabled: false
+        ))
+        XCTAssertFalse(SessionStore.shouldStartBoundedAutomaticRecoveredDataProjection(
+            applicationIsActive: true,
+            thermalState: .serious,
+            isLowPowerModeEnabled: false
+        ))
+        XCTAssertFalse(SessionStore.shouldStartBoundedAutomaticRecoveredDataProjection(
+            applicationIsActive: true,
+            thermalState: .nominal,
+            isLowPowerModeEnabled: true
+        ))
+    }
+
+    func testManyRawACKsCoalesceAcrossContinuationGapsAndNeverOverlapTransport() {
+        let baseline: TimeInterval = 1_800_000_000
+        var offerCount = 0
+        // One hundred durability notifications can advance hours while the
+        // same exact raw/motion authority remains pending. None may start the
+        // expensive retained-window projector between continuation slices.
+        for ack in 1...100 {
+            if SessionStore.shouldOfferAutomaticRecoveredArchiveProjection(
+                trigger: .archiveDidUpdate,
+                historyTransportOwnsLink: true,
+                observedFrontierUnix: baseline + TimeInterval(ack * 60),
+                lastOfferedFrontierUnix: baseline
+            ) {
+                offerCount += 1
+            }
+        }
+        XCTAssertEqual(offerCount, 0)
+        XCTAssertFalse(SessionStore
+            .shouldOfferAutomaticRecoveredArchiveProjection(
+                trigger: .transportIdle,
+                historyTransportOwnsLink: true,
+                observedFrontierUnix: baseline + 6_000,
+                lastOfferedFrontierUnix: baseline
+            ))
+        XCTAssertFalse(SessionStore
+            .shouldOfferAutomaticRecoveredArchiveProjection(
+                trigger: .terminalOrUserRefresh,
+                historyTransportOwnsLink: true,
+                observedFrontierUnix: baseline + 6_000,
+                lastOfferedFrontierUnix: baseline
+            ))
+    }
+
+    func testArchiveProjectionOffersAtFiveMinuteFrontierOrTrueIdleOrTerminal() {
+        let baseline: TimeInterval = 1_800_000_000
+        XCTAssertFalse(SessionStore
+            .shouldOfferAutomaticRecoveredArchiveProjection(
+                trigger: .archiveDidUpdate,
+                historyTransportOwnsLink: false,
+                observedFrontierUnix: baseline + 299,
+                lastOfferedFrontierUnix: baseline
+            ))
+        XCTAssertTrue(SessionStore
+            .shouldOfferAutomaticRecoveredArchiveProjection(
+                trigger: .archiveDidUpdate,
+                historyTransportOwnsLink: false,
+                observedFrontierUnix: baseline + 300,
+                lastOfferedFrontierUnix: baseline
+            ))
+        XCTAssertTrue(SessionStore
+            .shouldOfferAutomaticRecoveredArchiveProjection(
+                trigger: .transportIdle,
+                historyTransportOwnsLink: false,
+                observedFrontierUnix: nil,
+                lastOfferedFrontierUnix: nil
+            ))
+        XCTAssertTrue(SessionStore
+            .shouldOfferAutomaticRecoveredArchiveProjection(
+                trigger: .terminalOrUserRefresh,
+                historyTransportOwnsLink: false,
+                observedFrontierUnix: nil,
+                lastOfferedFrontierUnix: nil
+            ))
     }
 
     func testColdAutomaticWorkoutUpdateWaitsForBoundedRecoveredProjection() {
@@ -329,7 +538,8 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
     private func incrementalSource(
         size: UInt64,
         startOffset: UInt64,
-        pathExtension: String = "jsonl"
+        pathExtension: String = "jsonl",
+        hasStableIdentity: Bool = true
     ) -> AtriaHistoricalJSONLRecentScanner.Source {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
@@ -339,7 +549,8 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
                 url: url,
                 size: size,
                 modificationTime: 1,
-                resourceIdentifier: UUID().uuidString
+                resourceIdentifier:
+                    hasStableIdentity ? UUID().uuidString : nil
             ),
             startOffset: startOffset
         )
@@ -366,6 +577,116 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         case missingTicket
     }
 
+    private func temporaryProjectionDirectory() -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("AtriaBackgroundProjectionTests")
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: directory)
+            HistoricalArchive.resetRecoveredDataCacheForTesting()
+        }
+        return directory
+    }
+
+    private func runProjectionOffMain<T>(_ body: @escaping () -> T) -> T {
+        let completed = expectation(description: "projection completed off main")
+        var result: T?
+        DispatchQueue.global(qos: .userInitiated).async {
+            result = body()
+            completed.fulfill()
+        }
+        // `body` intentionally exercises the production background path. It
+        // writes bounded diagnostics through UserDefaults, whose change
+        // notification can synchronously rendezvous with the main queue.
+        // Blocking main on a DispatchSemaphore deadlocks that legitimate
+        // delivery. XCTest's waiter services the run loop while preserving
+        // the assertion that the projection itself executes off-main.
+        wait(for: [completed], timeout: 30)
+        return result!
+    }
+
+    private func bootstrapHeartRateRecordLine(unix: UInt32) throws -> Data {
+        let record = HistoricalArchive.Record(
+            schema: HistoricalArchive.schema,
+            capturedAt: Date(timeIntervalSince1970: TimeInterval(unix)),
+            source: "0x2f",
+            layoutVersion: HistoricalArchive.layoutVersion,
+            sequence: 24,
+            command: 0x2f,
+            unix7: unix,
+            subsec11: 0,
+            flash13: unix,
+            payloadLength: 1,
+            whoofHR17: 72,
+            whoofRRNum18: 0,
+            whoofRR19: [],
+            kRR64: [],
+            gravityX36: nil,
+            gravityY40: nil,
+            gravityZ44: nil,
+            gravityMagnitude: nil,
+            gravityValidated: false,
+            candidateRR: [],
+            rawPayloadHex: "00",
+            clockDeviceRef: unix,
+            clockWallRef: unix,
+            clockDriftSeconds: 0,
+            clockCorrectedUnix7: unix,
+            clockCorrectionStatus: "clock_ref_present",
+            currentSessionUsable: true,
+            metricUsable: true,
+            usabilityReason: "test_bootstrap"
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        var data = try encoder.encode(record)
+        data.append(0x0A)
+        return data
+    }
+
+    private func writeOversizeBootstrapFixture(
+        to url: URL,
+        terminalUnix: UInt32
+    ) throws {
+        let maximum = Int(
+            HistoricalArchive.maximumAutomaticRecoveredDataIncrementalBytes
+        )
+        let paddingCount = 2_000
+        let filler = Data((
+            "{\"unix7\":1,\"padding\":\""
+                + String(repeating: "a", count: paddingCount)
+                + "\"}\n"
+        ).utf8)
+        var data = Data()
+        data.reserveCapacity(maximum + filler.count + 1_024)
+        while data.count <= maximum + 1_024 {
+            data.append(filler)
+        }
+        data.append(try bootstrapHeartRateRecordLine(unix: terminalUnix))
+        try data.write(to: url, options: .atomic)
+    }
+
+    private func descriptor(
+        for url: URL,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws -> AtriaHistoricalJSONLRecentScanner.FileDescriptor {
+        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(
+            for: [url]
+        )
+        guard let descriptor = descriptors.first else {
+            XCTFail("fixture must have a stable filesystem descriptor",
+                    file: file,
+                    line: line)
+            throw ProjectionTestError.missingTicket
+        }
+        return descriptor
+    }
+
     func testAutomaticRecoveredProjectionAdmitsCacheReuse() {
         XCTAssertTrue(
             HistoricalArchive.automaticRecoveredDataProjectionPlanIsBounded(
@@ -387,22 +708,34 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
     }
 
     func testAutomaticRecoveredProjectionBoundaryIsInclusive() {
+        let maximum = HistoricalArchive
+            .maximumAutomaticRecoveredDataIncrementalBytes
         XCTAssertTrue(
             HistoricalArchive.automaticRecoveredDataProjectionPlanIsBounded(
                 .incremental([
-                    incrementalSource(size: 5_096, startOffset: 1_000),
+                    incrementalSource(
+                        size: maximum / 2 + 1_000,
+                        startOffset: 1_000
+                    ),
+                    incrementalSource(
+                        size: maximum / 2 + 2_000,
+                        startOffset: 2_000
+                    ),
                 ]),
-                maximumIncrementalBytes: 4_096
+                maximumIncrementalBytes: maximum
             )
         )
         XCTAssertFalse(
             HistoricalArchive.automaticRecoveredDataProjectionPlanIsBounded(
                 .incremental([
-                    incrementalSource(size: 5_097, startOffset: 1_000),
+                    incrementalSource(
+                        size: maximum + 1_001,
+                        startOffset: 1_000
+                    ),
                 ]),
-                maximumIncrementalBytes: 4_096
+                maximumIncrementalBytes: maximum
             ),
-            "boundary + 1 byte belongs to the guarded background lane"
+            "8 MiB boundary + 1 byte belongs to the guarded background lane"
         )
     }
 
@@ -413,6 +746,24 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
                 .rebuild([source]),
                 maximumIncrementalBytes: 4_096
             )
+        )
+        XCTAssertTrue(
+            HistoricalArchive.automaticRecoveredDataProjectionPlanIsBounded(
+                .rebuild([source]),
+                maximumIncrementalBytes: 4_096,
+                allowsBoundedRebuild: true
+            ),
+            "a genuinely cold first install may seed one fully bounded source"
+        )
+        XCTAssertFalse(
+            HistoricalArchive.automaticRecoveredDataProjectionPlanIsBounded(
+                .rebuild([
+                    incrementalSource(size: 4_097, startOffset: 0),
+                ]),
+                maximumIncrementalBytes: 4_096,
+                allowsBoundedRebuild: true
+            ),
+            "the cold rebuild authority is still byte-exact and inclusive"
         )
         XCTAssertFalse(
             HistoricalArchive.automaticRecoveredDataProjectionPlanIsBounded(
@@ -428,6 +779,378 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
                 maximumIncrementalBytes: 4_096
             ),
             "compressed expansion is not bounded by on-disk byte count"
+        )
+        XCTAssertFalse(
+            HistoricalArchive.automaticRecoveredDataProjectionPlanIsBounded(
+                .incremental([
+                    incrementalSource(
+                        size: 1_024,
+                        startOffset: 0,
+                        hasStableIdentity: false
+                    ),
+                ]),
+                maximumIncrementalBytes: 4_096
+            ),
+            "append-only authority requires stable filesystem identity"
+        )
+    }
+
+    func testColdScannerAuthorityRestoresReuseAndExactEightMiBAppend() {
+        let since = Date(timeIntervalSince1970: 1_800_000_000)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("jsonl")
+            .standardizedFileURL
+        let processedOffset: UInt64 = 4_096
+        let authority = HistoricalArchive
+            .AutomaticRecoveredDataCacheAuthority(
+                version: HistoricalArchive
+                    .AutomaticRecoveredDataCacheAuthority.schema,
+                coveredSince: since.timeIntervalSince1970,
+                sources: [.init(
+                    path: url.path,
+                    processedOffset: processedOffset,
+                    modificationTime: 10,
+                    resourceIdentifier: "stable-source"
+                )]
+            )
+        let unchanged = AtriaHistoricalJSONLRecentScanner.FileDescriptor(
+            url: url,
+            size: processedOffset,
+            modificationTime: 10,
+            resourceIdentifier: "stable-source"
+        )
+
+        HistoricalArchive.resetRecoveredDataCacheForTesting()
+        XCTAssertTrue(HistoricalArchive.restoreAutomaticRecoveredDataCacheAuthority(
+            authority,
+            since: since,
+            descriptors: [unchanged]
+        ))
+        XCTAssertTrue(HistoricalArchive
+            .automaticRecoveredDataProjectionHasBoundedIncrementalPlan(
+                since: since,
+                descriptors: [unchanged]
+            ))
+
+        HistoricalArchive.resetRecoveredDataCacheForTesting()
+        let maximum = HistoricalArchive
+            .maximumAutomaticRecoveredDataIncrementalBytes
+        let appended = AtriaHistoricalJSONLRecentScanner.FileDescriptor(
+            url: url,
+            size: processedOffset + maximum,
+            modificationTime: 11,
+            resourceIdentifier: "stable-source"
+        )
+        XCTAssertTrue(HistoricalArchive.restoreAutomaticRecoveredDataCacheAuthority(
+            authority,
+            since: since,
+            descriptors: [appended]
+        ))
+        guard case .incremental(let sources) = HistoricalArchive
+            .automaticRecoveredDataCacheAuthorityRestorationPlan(
+                authority,
+                since: since,
+                descriptors: [appended]
+            ) else {
+            HistoricalArchive.resetRecoveredDataCacheForTesting()
+            return XCTFail("expected exact append-only tail")
+        }
+        XCTAssertEqual(sources.map(\.startOffset), [processedOffset])
+        XCTAssertEqual(sources.map(\.descriptor.size), [processedOffset + maximum])
+        HistoricalArchive.resetRecoveredDataCacheForTesting()
+    }
+
+    func testColdScannerAuthorityNeverAdvancesToLaterFingerprintEOF() {
+        let since = Date(timeIntervalSince1970: 1_800_000_000)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("jsonl")
+            .standardizedFileURL
+        let scanEOF: UInt64 = 8_192
+        let laterFingerprintEOF: UInt64 = scanEOF + 2_048
+        let authority = HistoricalArchive
+            .AutomaticRecoveredDataCacheAuthority(
+                version: HistoricalArchive
+                    .AutomaticRecoveredDataCacheAuthority.schema,
+                coveredSince: since.timeIntervalSince1970,
+                sources: [.init(
+                    path: url.path,
+                    processedOffset: scanEOF,
+                    modificationTime: 10,
+                    resourceIdentifier: "same-inode"
+                )]
+            )
+        let descriptor = AtriaHistoricalJSONLRecentScanner.FileDescriptor(
+            url: url,
+            size: laterFingerprintEOF,
+            modificationTime: 11,
+            resourceIdentifier: "same-inode"
+        )
+
+        guard case .incremental(let sources) = HistoricalArchive
+            .automaticRecoveredDataCacheAuthorityRestorationPlan(
+                authority,
+                since: since,
+                descriptors: [descriptor]
+            ) else { return XCTFail("post-scan append must remain readable") }
+        XCTAssertEqual(sources.count, 1)
+        XCTAssertEqual(
+            sources[0].startOffset,
+            scanEOF,
+            "a later source fingerprint may validate growth but cannot skip the row appended after the successful scan"
+        )
+        XCTAssertEqual(
+            sources[0].descriptor.size - sources[0].startOffset,
+            2_048
+        )
+    }
+
+    func testColdCheckpointBaseIsUnionedWithIncrementalSessionAndHeartRateDelta() {
+        let baseStart = Date(timeIntervalSince1970: 1_800_000_000)
+        let deltaStart = baseStart.addingTimeInterval(600)
+        let base = SavedSession(
+            id: UUID(),
+            start: baseStart,
+            end: baseStart.addingTimeInterval(300),
+            label: "Recovered wear",
+            points: [.init(t: 0, bpm: 60)],
+            respiratoryRate: nil,
+            rrPoints: []
+        )
+        let delta = SavedSession(
+            id: UUID(),
+            start: deltaStart,
+            end: deltaStart.addingTimeInterval(300),
+            label: "Recovered wear",
+            points: [.init(t: 0, bpm: 70)],
+            respiratoryRate: nil,
+            rrPoints: []
+        )
+        let sessions = SessionStore.mergedAutomaticallyRecoveredSessions(
+            previous: [base],
+            incoming: [delta]
+        )
+        XCTAssertEqual(Set(sessions.map(\.id)), Set([base.id, delta.id]))
+
+        let sharedTimestamp = baseStart.addingTimeInterval(60)
+        let heartRate = SessionStore
+            .mergedAutomaticallyRecoveredHeartRatePoints(
+                previous: [
+                    .init(t: baseStart, bpm: 60),
+                    .init(t: sharedTimestamp, bpm: 61),
+                ],
+                incoming: [
+                    .init(t: sharedTimestamp, bpm: 71),
+                    .init(t: deltaStart, bpm: 72),
+                ]
+            )
+        XCTAssertEqual(heartRate, [
+            .init(t: baseStart, bpm: 60),
+            .init(t: sharedTimestamp, bpm: 71),
+            .init(t: deltaStart, bpm: 72),
+        ])
+    }
+
+    func testColdScannerAuthorityFailsClosedForOversizeReplacementTruncationAndCompression() {
+        let since = Date(timeIntervalSince1970: 1_800_000_000)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("jsonl")
+            .standardizedFileURL
+        let offset: UInt64 = 4_096
+        let authority = HistoricalArchive
+            .AutomaticRecoveredDataCacheAuthority(
+                version: HistoricalArchive
+                    .AutomaticRecoveredDataCacheAuthority.schema,
+                coveredSince: since.timeIntervalSince1970,
+                sources: [.init(
+                    path: url.path,
+                    processedOffset: offset,
+                    modificationTime: 10,
+                    resourceIdentifier: "original"
+                )]
+            )
+        func plan(
+            url candidateURL: URL = url,
+            size: UInt64,
+            modified: TimeInterval,
+            identity: String
+        ) -> AtriaHistoricalJSONLRecentScanner.Plan? {
+            HistoricalArchive
+                .automaticRecoveredDataCacheAuthorityRestorationPlan(
+                    authority,
+                    since: since,
+                    descriptors: [.init(
+                        url: candidateURL,
+                        size: size,
+                        modificationTime: modified,
+                        resourceIdentifier: identity
+                    )]
+                )
+        }
+        let maximum = HistoricalArchive
+            .maximumAutomaticRecoveredDataIncrementalBytes
+        XCTAssertNil(plan(
+            size: offset + maximum + 1,
+            modified: 11,
+            identity: "original"
+        ))
+        XCTAssertNil(plan(
+            size: offset + 1,
+            modified: 11,
+            identity: "replacement"
+        ))
+        XCTAssertNil(plan(
+            size: offset - 1,
+            modified: 11,
+            identity: "original"
+        ))
+        XCTAssertNil(plan(
+            url: url.deletingPathExtension().appendingPathExtension(
+                AtriaHistoricalSealedJSONLCompression.artifactExtension
+            ),
+            size: offset + 1,
+            modified: 11,
+            identity: "original"
+        ))
+    }
+
+    func testNoCheckpointOversizeBootstrapResumesAcrossProcessAndPublishesCurrentEvidence()
+        throws {
+        let directory = temporaryProjectionDirectory()
+        let sourceURL = directory.appendingPathComponent("current.jsonl")
+        let checkpointURL = directory.appendingPathComponent("bootstrap.plist")
+        let terminalUnix: UInt32 = 1_800_000_000
+        let since = Date(timeIntervalSince1970: TimeInterval(terminalUnix - 60))
+        try writeOversizeBootstrapFixture(
+            to: sourceURL,
+            terminalUnix: terminalUnix
+        )
+        let sourceDescriptor = try descriptor(for: sourceURL)
+        let maximum = HistoricalArchive
+            .maximumAutomaticRecoveredDataIncrementalBytes
+        XCTAssertGreaterThan(sourceDescriptor.size, maximum)
+
+        HistoricalArchive.resetRecoveredDataCacheForTesting()
+        let first = HistoricalArchive
+            .performAutomaticRecoveredDataBootstrapStepForTesting(
+                since: since,
+                descriptors: { [sourceDescriptor] },
+                checkpointURL: checkpointURL,
+                maximumBytesPerStep: maximum
+            )
+        guard case .progressed(let firstRead, let remaining) = first else {
+            return XCTFail("first >8 MiB pass must persist and yield: \(first)")
+        }
+        XCTAssertLessThanOrEqual(UInt64(firstRead), maximum)
+        XCTAssertGreaterThan(remaining, 0)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: checkpointURL.path
+        ))
+
+        // A new process has no in-memory recovered cache. The durable cursor
+        // must resume near the tail, not reread the first 8 MiB.
+        HistoricalArchive.resetRecoveredDataCacheForTesting()
+        let second = HistoricalArchive
+            .performAutomaticRecoveredDataBootstrapStepForTesting(
+                since: since,
+                descriptors: { [sourceDescriptor] },
+                checkpointURL: checkpointURL,
+                maximumBytesPerStep: maximum
+            )
+        guard case .ready(let secondRead) = second else {
+            return XCTFail("relaunch must finish the retained tail: \(second)")
+        }
+        XCTAssertLessThanOrEqual(UInt64(secondRead), maximum)
+        XCTAssertLessThan(
+            secondRead,
+            128 * 1_024,
+            "the persisted complete-line cursor must prevent an 8 MiB reread"
+        )
+
+        let snapshot = runProjectionOffMain {
+            HistoricalArchive
+                .makeAutomaticallyAdmittedRecoveredDataSnapshotForTesting(
+                    since: since,
+                    descriptors: [sourceDescriptor]
+                )
+        }
+        XCTAssertEqual(snapshot?.scan.byteCount, 0)
+        XCTAssertEqual(snapshot?.heartRatePoints, [
+            .init(
+                t: Date(timeIntervalSince1970: TimeInterval(terminalUnix)),
+                bpm: 72
+            ),
+        ])
+        XCTAssertEqual(snapshot?.physiologyCompleteness, .complete)
+        XCTAssertNotNil(snapshot?.automaticCacheAuthority)
+    }
+
+    func testBootstrapWorkerRevalidationRejectsReplacementTruncationAndCompression()
+        throws {
+        let directory = temporaryProjectionDirectory()
+        let sourceURL = directory.appendingPathComponent("current.jsonl")
+        try writeOversizeBootstrapFixture(
+            to: sourceURL,
+            terminalUnix: 1_800_000_000
+        )
+        let initial = try descriptor(for: sourceURL)
+        let since = Date(timeIntervalSince1970: 1_799_999_940)
+        let maximum = HistoricalArchive
+            .maximumAutomaticRecoveredDataIncrementalBytes
+
+        func run(
+            name: String,
+            final: AtriaHistoricalJSONLRecentScanner.FileDescriptor
+        ) -> HistoricalArchive.AutomaticRecoveredDataBootstrapStepResult {
+            HistoricalArchive.resetRecoveredDataCacheForTesting()
+            let checkpointURL = directory
+                .appendingPathComponent("\(name).plist")
+            var offerCount = 0
+            return HistoricalArchive
+                .performAutomaticRecoveredDataBootstrapStepForTesting(
+                    since: since,
+                    descriptors: {
+                        offerCount += 1
+                        return offerCount == 1 ? [initial] : [final]
+                    },
+                    checkpointURL: checkpointURL,
+                    maximumBytesPerStep: maximum
+                )
+        }
+
+        let replacement = AtriaHistoricalJSONLRecentScanner.FileDescriptor(
+            url: initial.url,
+            size: initial.size,
+            modificationTime: initial.modificationTime + 1,
+            resourceIdentifier: "replacement-inode"
+        )
+        XCTAssertEqual(
+            run(name: "replacement", final: replacement),
+            .invalidated(reason: "source_replaced")
+        )
+        let truncation = AtriaHistoricalJSONLRecentScanner.FileDescriptor(
+            url: initial.url,
+            size: initial.size - 1,
+            modificationTime: initial.modificationTime + 1,
+            resourceIdentifier: initial.resourceIdentifier
+        )
+        XCTAssertEqual(
+            run(name: "truncation", final: truncation),
+            .invalidated(reason: "source_truncated")
+        )
+        let compressed = AtriaHistoricalJSONLRecentScanner.FileDescriptor(
+            url: initial.url.deletingPathExtension().appendingPathExtension(
+                AtriaHistoricalSealedJSONLCompression.artifactExtension
+            ),
+            size: initial.size,
+            modificationTime: initial.modificationTime,
+            resourceIdentifier: initial.resourceIdentifier
+        )
+        XCTAssertEqual(
+            run(name: "compressed", final: compressed),
+            .invalidated(reason: "source_image_unbounded_or_compressed")
         )
     }
 
@@ -503,7 +1226,118 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertEqual(coordinator.phase, .projecting(trailing))
     }
 
-    func testColdLaunchGatePrecedesProjectionRequestAndMotionUsesEventualSafeLane()
+    func testAutomaticCurrentCycleTicketStartsOnlyBoundedPublicationComponent()
+        throws {
+        var coordinator = AtriaRecoveredDataRecomputeCoordinator()
+        let cutoff = Date(timeIntervalSince1970: 12_345)
+        let ticket = try recoveredProjectionTicket(coordinator.request(
+            archiveRevision: 1,
+            reason: "archive_did_update",
+            scope: .automaticCurrentCycle(since: cutoff)
+        ))
+
+        XCTAssertEqual(ticket.scope, .automaticCurrentCycle(since: cutoff))
+        let effects = coordinator.projectionCompleted(ticket: ticket)
+        guard effects.count == 1,
+              case .startDerived(let derivedTicket, let components) = effects[0]
+        else {
+            return XCTFail("expected the bounded derived publication component")
+        }
+        XCTAssertEqual(derivedTicket, ticket)
+        XCTAssertEqual(components, [.currentCycleAndLatestNight])
+        XCTAssertTrue(
+            components.isDisjoint(
+                with: AtriaRecoveredDataRecomputeCoordinator
+                    .sessionStoreComponents
+            ),
+            "automatic publication cannot enter any full/global component"
+        )
+    }
+
+    func testRecoveredCurrentCheckpointAcceptsOnlyStableOrAppendOnlySources() {
+        let jsonlPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("checkpoint.jsonl").path
+        let compressedPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("checkpoint")
+            .appendingPathExtension(
+                AtriaHistoricalSealedJSONLCompression.artifactExtension
+            ).path
+        func source(
+            path: String = jsonlPath,
+            size: UInt64,
+            modified: Int64,
+            identity: String = "same"
+        ) -> HistoricalArchive.ConsumerSourceFingerprint.Source {
+            .init(
+                path: path,
+                size: size,
+                modificationTimeMilliseconds: modified,
+                resourceIdentifier: identity
+            )
+        }
+        func fingerprint(
+            _ source: HistoricalArchive.ConsumerSourceFingerprint.Source
+        ) -> HistoricalArchive.ConsumerSourceFingerprint {
+            .init(catalogGeneration: 1, sources: [source])
+        }
+        let previous = fingerprint(source(size: 1_000, modified: 10))
+
+        XCTAssertTrue(SessionStore.recoveredCurrentCheckpointSourceIsReusable(
+            previous: previous,
+            current: fingerprint(source(size: 1_000, modified: 10))
+        ))
+        XCTAssertTrue(SessionStore.recoveredCurrentCheckpointSourceIsReusable(
+            previous: previous,
+            current: fingerprint(source(size: 1_100, modified: 11))
+        ), "ordinary JSONL growth is append-only compatible")
+        XCTAssertFalse(SessionStore.recoveredCurrentCheckpointSourceIsReusable(
+            previous: previous,
+            current: fingerprint(source(size: 999, modified: 11))
+        ), "truncation invalidates the compact checkpoint")
+        XCTAssertFalse(SessionStore.recoveredCurrentCheckpointSourceIsReusable(
+            previous: previous,
+            current: fingerprint(source(
+                size: 1_000,
+                modified: 10,
+                identity: "replacement"
+            ))
+        ))
+        let unidentified = HistoricalArchive.ConsumerSourceFingerprint(
+            catalogGeneration: 1,
+            sources: [.init(
+                path: jsonlPath,
+                size: 1_000,
+                modificationTimeMilliseconds: 10,
+                resourceIdentifier: nil
+            )]
+        )
+        XCTAssertFalse(SessionStore.recoveredCurrentCheckpointSourceIsReusable(
+            previous: unidentified,
+            current: .init(
+                catalogGeneration: 1,
+                sources: [.init(
+                    path: jsonlPath,
+                    size: 1_100,
+                    modificationTimeMilliseconds: 11,
+                    resourceIdentifier: nil
+                )]
+            )
+        ), "growth without stable filesystem identity is not proven append-only")
+        XCTAssertFalse(SessionStore.recoveredCurrentCheckpointSourceIsReusable(
+            previous: fingerprint(source(
+                path: compressedPath,
+                size: 1_000,
+                modified: 10
+            )),
+            current: fingerprint(source(
+                path: compressedPath,
+                size: 1_100,
+                modified: 11
+            ))
+        ), "compressed growth is never append-only authority")
+    }
+
+    func testMetadataAdmissionPrecedesBoundedProjectionAndMotionUsesEventualSafeLane()
         throws {
         let testsURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -523,8 +1357,8 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         let request = String(
             sessions[requestStart.lowerBound..<requestEnd.lowerBound]
         )
-        let reservation = try XCTUnwrap(request.range(
-            of: "shouldReserveAutomaticRecoveredDataProjectionForSafeBackground("
+        let metadataOffer = try XCTUnwrap(request.range(
+            of: "scheduleAutomaticRecoveredDataProjectionAdmission("
         ))
         let coordinatorRequest = try XCTUnwrap(request.range(
             of: "recoveredDataRecompute.request("
@@ -536,22 +1370,42 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             of: "scheduleConfirmedWorkoutArchiveRehydration(reason: reason)"
         ))
         XCTAssertLessThan(
-            reservation.lowerBound,
+            metadataOffer.lowerBound,
             revisionFence.lowerBound,
-            "ordinary freshness must return before minting a revision"
+            "ordinary freshness must schedule metadata before minting a revision"
         )
         XCTAssertLessThan(
-            reservation.lowerBound,
+            metadataOffer.lowerBound,
             coordinatorRequest.lowerBound,
-            "ordinary freshness must return before a coordinator ticket exists"
+            "ordinary freshness must schedule metadata before a ticket exists"
         )
         XCTAssertLessThan(
             coordinatorRequest.lowerBound,
             workoutRehydrationOffer.lowerBound,
             "projection ownership must exist before workout repair is offered"
         )
-        XCTAssertTrue(request.contains(
-            "status=reserved_for_safe_background"
+        let admissionStart = try XCTUnwrap(sessions.range(
+            of: "private func scheduleAutomaticRecoveredDataProjectionAdmission("
+        ))
+        let admissionEnd = try XCTUnwrap(sessions.range(
+            of: "nonisolated static func shouldStartAutomaticArchiveProjection(",
+            range: admissionStart.upperBound..<sessions.endIndex
+        ))
+        let admission = String(
+            sessions[admissionStart.lowerBound..<admissionEnd.lowerBound]
+        )
+        let metadataPreflight = try XCTUnwrap(admission.range(
+            of: "automaticRecoveredDataProjectionHasBoundedIncrementalPlan("
+        ))
+        let admittedRequest = try XCTUnwrap(admission.range(
+            of: "requestRecoveredDataRecomputation("
+        ))
+        XCTAssertLessThan(metadataPreflight.lowerBound, admittedRequest.lowerBound)
+        XCTAssertTrue(admission.contains(
+            "automaticCurrentCycleCutoff: cutoff"
+        ))
+        XCTAssertTrue(admission.contains(
+            "status=reserved_metadata_plan"
         ))
         let observerStart = try XCTUnwrap(sessions.range(
             of: "self.historicalArchiveStatusObserver ="
@@ -564,19 +1418,19 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             sessions[observerStart.lowerBound..<observerEnd.lowerBound]
         )
         XCTAssertTrue(observer.contains(
-            "reserveAutomaticRecoveredProjectionFreshness("
+            "handleAutomaticRecoveredArchiveDidUpdate()"
         ))
+        XCTAssertFalse(observer.contains(
+            "requestRecoveredDataRecomputation("
+        ), "a raw ACK notification must first pass cadence/ownership coalescing")
         XCTAssertTrue(observer.contains(
             "reserveArchiveCompactionForSafeBackground()"
         ))
         XCTAssertFalse(observer.contains(
             "compactHistoricalArchiveIfUseful("
         ), "archive callbacks must only retain a future BGProcessing intent")
-        XCTAssertFalse(observer.contains(
-            "requestRecoveredDataRecomputation(reason: \"archive_did_update\")"
-        ), "archive notifications must persist intent without a ticket")
-        XCTAssertFalse(sessions.contains(
-            "scheduleAutomaticArchiveUpdateProjectionAdmission("
+        XCTAssertTrue(sessions.contains(
+            "scheduleAutomaticRecoveredDataProjectionAdmission("
         ))
         XCTAssertFalse(sessions.contains(
             "automaticIncrementalProjectionArchiveRevisions"
@@ -592,18 +1446,24 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
             sessions[fullBackgroundStart.lowerBound..<fullBackgroundEnd.lowerBound]
         )
         let fullBackgroundFence = try XCTUnwrap(fullBackground.range(
-            of: "guard Self.shouldExecuteAutomaticFullBackgroundProjection() else {"
+            of: "if !Self.shouldExecuteAutomaticFullBackgroundProjection() {"
         ))
         let throttleBegin = try XCTUnwrap(fullBackground.range(
             of: "AtriaBackgroundProjectionThrottle.shared.begin("
         ))
-        let unboundedRequest = try XCTUnwrap(fullBackground.range(
-            of: "requestRecoveredDataRecomputation("
+        let boundedBootstrapRequest = try XCTUnwrap(fullBackground.range(
+            of: "bg_projection_current_window_bootstrap_"
         ))
         XCTAssertLessThan(fullBackgroundFence.lowerBound, throttleBegin.lowerBound)
-        XCTAssertLessThan(fullBackgroundFence.lowerBound, unboundedRequest.lowerBound)
+        XCTAssertLessThan(
+            fullBackgroundFence.lowerBound,
+            boundedBootstrapRequest.lowerBound
+        )
         XCTAssertTrue(fullBackground.contains(
-            "status=reserved_automatic_full_disabled"
+            "automaticCurrentCycleCutoff: cutoff"
+        ))
+        XCTAssertTrue(fullBackground.contains(
+            "scope=current_window_bootstrap"
         ))
         let workoutRehydrationStart = try XCTUnwrap(sessions.range(
             of: "private func scheduleConfirmedWorkoutArchiveRehydration("
@@ -744,21 +1604,56 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         let worker = String(
             sessions[workerStart.lowerBound..<workerEnd.lowerBound]
         )
+        XCTAssertTrue(worker.contains(
+            "if automaticCurrentCycleCutoff == nil"
+        ))
         XCTAssertTrue(worker.contains("HistoricalArchive.diagnostics()"))
         XCTAssertFalse(worker.contains(
             "automaticRecoveredDataProjectionHasBoundedIncrementalPlan("
-        ))
-        XCTAssertFalse(worker.contains(
+        ), "the worker performs authoritative admission, not another metadata offer")
+        XCTAssertTrue(worker.contains(
             "makeAutomaticallyAdmittedRecoveredDataSnapshot("
         ))
         XCTAssertTrue(worker.contains(
             "projectionReservedForSafeBackground(ticket: ticket)"
         ))
 
+        let boundedStepStart = try XCTUnwrap(sessions.range(
+            of: "private func runRecoveredCurrentCyclePublicationStep("
+        ))
+        let boundedStepEnd = try XCTUnwrap(sessions.range(
+            of: "private func runRecoveredArchiveStatusStep(",
+            range: boundedStepStart.upperBound..<sessions.endIndex
+        ))
+        let boundedStep = String(
+            sessions[boundedStepStart.lowerBound..<boundedStepEnd.lowerBound]
+        )
+        XCTAssertTrue(boundedStep.contains("evaluationLookbackDays: 2"))
+        XCTAssertTrue(boundedStep.contains("maximumEvaluationSessions: 192"))
+        XCTAssertTrue(boundedStep.contains("autoConfirmLimit: 1"))
+        XCTAssertTrue(boundedStep.contains("SleepHistorySnapshot("))
+        for forbidden in [
+            "HistoricalArchive.diagnostics(",
+            "refreshHistorySnapshotCache(",
+            "scheduleConfirmedWorkoutArchiveRehydration(",
+            "refreshOverviewTrendPointsCache(",
+            "refreshTrainingLoadSummaryCache(",
+            "refreshTodayHRZoneMinutesCache(",
+            "recomputeBehaviorInsights(",
+        ] {
+            XCTAssertFalse(
+                boundedStep.contains(forbidden),
+                "bounded current publication must not reach \(forbidden)"
+            )
+        }
+
         let app = try String(
             contentsOf: sourcesURL.appendingPathComponent("AtriaApp.swift"),
             encoding: .utf8
         )
+        XCTAssertTrue(app.contains(
+            "|| SessionStore.automaticRecoveredDataBootstrapIntentIsPending"
+        ), "a retained multi-pass bootstrap must keep BGProcessing scheduled")
         let motionStart = try XCTUnwrap(app.range(of: "var motionDrained = false"))
         let hrStart = try XCTUnwrap(app.range(
             of: "// HR drain:",
@@ -833,6 +1728,86 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         ), "foreground entry must revoke an already-running cooperative pass")
     }
 
+    func testConnectedRawPublicationYieldIsCompactFirstAndCannotEnterFullProjection()
+        throws {
+        let testsURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let sourcesURL = testsURL.deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        let sessions = try String(
+            contentsOf: sourcesURL.appendingPathComponent("Sessions.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(sessions.range(
+            of: "func performConnectedRawCatchUpPublicationYield("
+        ))
+        let end = try XCTUnwrap(sessions.range(
+            of: "/// Release the background projection throttle",
+            range: start.upperBound..<sessions.endIndex
+        ))
+        let body = String(sessions[start.lowerBound..<end.lowerBound])
+        let compact = try XCTUnwrap(body.range(
+            of: "refreshCurrentCycleStrapStepReceipt("
+        ))
+        let environment = try XCTUnwrap(body.range(
+            of: "shouldStartConnectedRawCatchUpPublicationYield("
+        ))
+        let boundedBootstrap = try XCTUnwrap(body.range(
+            of: "requestConnectedRawCatchUpBoundedProjection("
+        ))
+        XCTAssertLessThan(compact.lowerBound, environment.lowerBound)
+        XCTAssertLessThan(environment.lowerBound, boundedBootstrap.lowerBound)
+        XCTAssertFalse(body.contains("HistoricalArchive."))
+        XCTAssertFalse(body.contains("requestRecoveredDataRecomputation("))
+        XCTAssertFalse(body.contains("requestAndAwaitRecoveredDataPublication("))
+        XCTAssertFalse(body.contains("compactHistoricalArchiveIfUseful("))
+
+        let helperStart = try XCTUnwrap(sessions.range(
+            of: "private func requestConnectedRawCatchUpBoundedProjection("
+        ))
+        let helperEnd = try XCTUnwrap(sessions.range(
+            of: "/// Gives app-facing current-cycle evidence one finite turn",
+            range: helperStart.upperBound..<sessions.endIndex
+        ))
+        let helper = String(
+            sessions[helperStart.lowerBound..<helperEnd.lowerBound]
+        )
+        XCTAssertTrue(helper.contains(
+            "reason: \"bg_projection_current_window_bootstrap_\\(reason)\""
+        ))
+        XCTAssertTrue(helper.contains(
+            "backgroundProjectionAllowed: true"
+        ))
+        XCTAssertTrue(helper.contains(
+            "automaticCurrentCycleCutoff: cutoff"
+        ))
+        XCTAssertFalse(helper.contains("scope: .full"))
+        XCTAssertFalse(helper.contains("HistoricalArchive."))
+
+        let app = try String(
+            contentsOf: sourcesURL.appendingPathComponent("AtriaApp.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(app.contains(
+            "ble.onConnectedRawCatchUpPublicationYield ="
+        ))
+        XCTAssertTrue(app.contains(
+            "store.performConnectedRawCatchUpPublicationYield("
+        ))
+        XCTAssertTrue(app.contains(
+            "ble.connectedRawCatchUpPublicationYieldIsNeeded ="
+        ))
+        XCTAssertTrue(app.contains(
+            "store?.connectedRawCatchUpPublicationYieldIsNeeded() ?? false"
+        ))
+        XCTAssertTrue(app.contains(
+            ".releaseConnectedRawCatchUpPublicationYieldForLifecycle("
+        ))
+        XCTAssertTrue(app.contains(
+            ".offerConnectedRawCatchUpPublicationYieldIfNeeded("
+        ))
+    }
+
     func testProductionHasNoAutomaticArchiveWideMaintenanceCallSite() throws {
         let testsURL = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -886,6 +1861,35 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         XCTAssertLessThan(releaseFence.lowerBound, archiveEntry.lowerBound)
         XCTAssertTrue(driver.contains(
             "status=reserved_automatic_execution_disabled"
+        ))
+    }
+
+    func testCompletingOnboardingReplaysRetainedRecoveredProjectionAfterProfileSave()
+        throws {
+        let testsURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let sessionsURL = testsURL.deletingLastPathComponent()
+            .appendingPathComponent("Atria/Sessions.swift")
+        let source = try String(contentsOf: sessionsURL, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(
+            of: "func completeOnboarding(with profile: AthleteProfile)"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "func completeOnboardingFromLaunchIfRequested(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        let save = try XCTUnwrap(body.range(of: "self.profile.save()"))
+        let resume = try XCTUnwrap(body.range(
+            of: "resumeDeferredRecoveredDataRecomputation("
+        ))
+        XCTAssertLessThan(save.lowerBound, resume.lowerBound)
+        XCTAssertTrue(body.contains("reason: \"onboarding_completed\""))
+        XCTAssertTrue(body.contains(
+            "Self.automaticRecoveredDataBootstrapIntentIsPending"
+        ))
+        XCTAssertTrue(body.contains(
+            "reason: \"deferred_session_load_after_onboarding\""
         ))
     }
 

@@ -42,13 +42,47 @@ enum AtriaWhoop4MotionBankCoverageLedger {
     }
 
     struct OffloadTicket: Codable, Equatable, Sendable {
+        enum RecoveryMode: String, Codable, Sendable {
+            case directOffload
+            case awaitingGlobalFrontier
+        }
+
         let id: String
         let strapIdentifier: String
         let start: Date
         let end: Date
         let armedConnectionStartedAt: Date?
+        /// Older persisted tickets decode as nil and retain their historical
+        /// direct-offload behavior. Raw-cutover tickets are frontier-owned and
+        /// must never enter the generic exact-ticket selector: WHOOP serves
+        /// only forward from read_cursor, not from this wall-clock interval.
+        let recoveryMode: RecoveryMode?
         var attempts: Int
         var lastAttemptAt: Date?
+
+        var effectiveRecoveryMode: RecoveryMode {
+            recoveryMode ?? .directOffload
+        }
+
+        init(
+            id: String,
+            strapIdentifier: String,
+            start: Date,
+            end: Date,
+            armedConnectionStartedAt: Date?,
+            recoveryMode: RecoveryMode? = nil,
+            attempts: Int,
+            lastAttemptAt: Date?
+        ) {
+            self.id = id
+            self.strapIdentifier = strapIdentifier
+            self.start = start
+            self.end = end
+            self.armedConnectionStartedAt = armedConnectionStartedAt
+            self.recoveryMode = recoveryMode
+            self.attempts = attempts
+            self.lastAttemptAt = lastAttemptAt
+        }
     }
 
     private struct State: Codable, Equatable {
@@ -92,15 +126,18 @@ enum AtriaWhoop4MotionBankCoverageLedger {
         save(state, defaults: defaults)
     }
 
+    @discardableResult
     static func close(
         at date: Date,
         strapIdentifier: String,
         armedConnectionStartedAt: Date? = nil,
+        recoveryMode: OffloadTicket.RecoveryMode = .directOffload,
         defaults: UserDefaults = .standard
-    ) {
+    ) -> OffloadTicket? {
         var state = load(defaults: defaults)
-        guard state.strapIdentifier == strapIdentifier else { return }
-        guard let start = state.openStart else { return }
+        guard state.strapIdentifier == strapIdentifier else { return nil }
+        guard let start = state.openStart else { return nil }
+        var closedTicket: OffloadTicket?
         state.openStart = nil
         if date > start {
             state.closed.append(.init(start: start, end: date))
@@ -125,21 +162,27 @@ enum AtriaWhoop4MotionBankCoverageLedger {
                     String(Int64((date.timeIntervalSince1970 * 1_000).rounded())),
                 ].joined(separator: "|")
                 var tickets = state.pendingOffloads ?? []
-                if !tickets.contains(where: { $0.id == id }) {
-                    tickets.append(.init(
+                if let existing = tickets.first(where: { $0.id == id }) {
+                    closedTicket = existing
+                } else {
+                    let ticket = OffloadTicket(
                         id: id,
                         strapIdentifier: strapIdentifier,
                         start: start,
                         end: date,
                         armedConnectionStartedAt: armedConnectionStartedAt,
+                        recoveryMode: recoveryMode,
                         attempts: 0,
                         lastAttemptAt: nil
-                    ))
+                    )
+                    tickets.append(ticket)
+                    closedTicket = ticket
                 }
                 state.pendingOffloads = tickets
             }
         }
         save(state, defaults: defaults)
+        return closedTicket
     }
 
     /// Repairs coverage written by builds that preserved one open bank across
@@ -201,6 +244,7 @@ enum AtriaWhoop4MotionBankCoverageLedger {
                     start: epoch,
                     end: ticket.end,
                     armedConnectionStartedAt: epoch,
+                    recoveryMode: ticket.recoveryMode,
                     attempts: 0,
                     lastAttemptAt: nil
                 )
@@ -212,8 +256,10 @@ enum AtriaWhoop4MotionBankCoverageLedger {
         var uniqueTickets: [String: OffloadTicket] = [:]
         for ticket in repairedTickets {
             if let existing = uniqueTickets[ticket.id] {
-                uniqueTickets[ticket.id] =
-                    existing.attempts <= ticket.attempts ? existing : ticket
+                uniqueTickets[ticket.id] = conservativeDedupe(
+                    existing,
+                    ticket
+                )
             } else {
                 uniqueTickets[ticket.id] = ticket
             }
@@ -286,6 +332,7 @@ enum AtriaWhoop4MotionBankCoverageLedger {
                     end: authority.end,
                     armedConnectionStartedAt:
                         ticket.armedConnectionStartedAt,
+                    recoveryMode: ticket.recoveryMode,
                     attempts: ticket.attempts,
                     lastAttemptAt: ticket.lastAttemptAt
                 )
@@ -295,9 +342,7 @@ enum AtriaWhoop4MotionBankCoverageLedger {
         var unique: [String: OffloadTicket] = [:]
         for ticket in repaired {
             if let existing = unique[ticket.id] {
-                unique[ticket.id] =
-                    existing.attempts <= ticket.attempts
-                        ? existing : ticket
+                unique[ticket.id] = conservativeDedupe(existing, ticket)
             } else {
                 unique[ticket.id] = ticket
             }
@@ -372,7 +417,9 @@ enum AtriaWhoop4MotionBankCoverageLedger {
     ) -> OffloadTicket? {
         let state = load(defaults: defaults)
         guard state.strapIdentifier == strapIdentifier else { return nil }
-        return (state.pendingOffloads ?? []).sorted {
+        return (state.pendingOffloads ?? []).filter {
+            $0.effectiveRecoveryMode == .directOffload
+        }.sorted {
             // A newly completed workout must get one prompt offload attempt
             // before old failed/partial tickets consume another long drain.
             // Once every ticket has been attempted, resume oldest-first retry
@@ -439,7 +486,10 @@ enum AtriaWhoop4MotionBankCoverageLedger {
     ) -> OffloadTicket? {
         var state = load(defaults: defaults)
         guard var tickets = state.pendingOffloads,
-              let index = tickets.firstIndex(where: { $0.id == id }) else {
+              let index = tickets.firstIndex(where: {
+                  $0.id == id
+                      && $0.effectiveRecoveryMode == .directOffload
+              }) else {
             return nil
         }
         tickets[index].attempts += 1
@@ -513,6 +563,7 @@ enum AtriaWhoop4MotionBankCoverageLedger {
         var state = load(defaults: defaults)
         guard let exhausted = state.pendingOffloads?.first(where: {
             $0.id == id
+                && $0.effectiveRecoveryMode == .directOffload
         }) else { return false }
         state.pendingOffloads?.removeAll { $0.id == id }
         save(state, defaults: defaults)
@@ -541,6 +592,7 @@ enum AtriaWhoop4MotionBankCoverageLedger {
             $0.strapIdentifier.caseInsensitiveCompare(strapIdentifier)
                 == .orderedSame
                 && $0.end <= cutoff
+                && $0.effectiveRecoveryMode == .directOffload
         }
         guard !exhausted.isEmpty else { return [] }
         let exhaustedIDs = Set(exhausted.map(\.id))
@@ -741,6 +793,33 @@ enum AtriaWhoop4MotionBankCoverageLedger {
             cachedStandardState = state
             cacheLock.unlock()
         }
+    }
+
+    /// When repair causes two legacy records to converge on one stable ticket
+    /// ID, keep the least-spent attempt record but never downgrade a
+    /// forward-cursor obligation into a targetable exact-window job. WHOOP 4
+    /// cannot seek to that wall-clock interval, so `.awaitingGlobalFrontier`
+    /// is the conservative scheduling authority if either source carried it.
+    private static func conservativeDedupe(
+        _ lhs: OffloadTicket,
+        _ rhs: OffloadTicket
+    ) -> OffloadTicket {
+        let selected = lhs.attempts <= rhs.attempts ? lhs : rhs
+        let recoveryMode: OffloadTicket.RecoveryMode? =
+            lhs.effectiveRecoveryMode == .awaitingGlobalFrontier
+                || rhs.effectiveRecoveryMode == .awaitingGlobalFrontier
+            ? .awaitingGlobalFrontier
+            : selected.recoveryMode
+        return .init(
+            id: selected.id,
+            strapIdentifier: selected.strapIdentifier,
+            start: selected.start,
+            end: selected.end,
+            armedConnectionStartedAt: selected.armedConnectionStartedAt,
+            recoveryMode: recoveryMode,
+            attempts: selected.attempts,
+            lastAttemptAt: selected.lastAttemptAt
+        )
     }
 
     private static func merged(_ values: [Interval]) -> [Interval] {

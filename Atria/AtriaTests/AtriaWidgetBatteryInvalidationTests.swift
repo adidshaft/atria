@@ -169,6 +169,1426 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(patched.layoutGlanceMetrics, current.layoutGlanceMetrics)
     }
 
+    func testDurableStepPatchAdvancesSameCountReceiptWithoutTouchingOtherMetrics()
+        throws {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let olderCapture = Date(timeIntervalSince1970: 1_800)
+        let newerCapture = Date(timeIntervalSince1970: 2_100)
+        var current = deliverySnapshot(
+            steps: 1_976,
+            stepsCapturedAt: olderCapture,
+            heartRate: 151,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_050),
+            strain: 8.4
+        )
+        current.strainDetail = "Partial · sparse HR"
+        current.strainCapturedAt = Date(timeIntervalSince1970: 2_000)
+        current.strainCycleStart = cycleStart
+        current.strainCycleExpiresAt = cycleStart.addingTimeInterval(86_400)
+        current.stepsSource = "verifiedCanonical"
+        current.stepsCompleteness = "partial"
+        current.stepsCoverageFraction = 0.72
+        current.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsCycleStart = cycleStart
+        current.stepsCycleExpiresAt = cycleStart.addingTimeInterval(86_400)
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = olderCapture
+        current.batteryCapturedAt = Date(timeIntervalSince1970: 2_040)
+        current.batteryCorroboratedAt = Date(timeIntervalSince1970: 2_045)
+        current.batteryChargeCapturedAt = Date(timeIntervalSince1970: 2_030)
+
+        let patched = try XCTUnwrap(
+            WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+                current: current,
+                projection: durableProjection(
+                    source: source,
+                    cycleStart: cycleStart,
+                    receiptCapturedAt: newerCapture,
+                    steps: 1_976,
+                    coverage: 0.81
+                ),
+                currentPersistedSourceIdentifier: source,
+                deliveredAt: Date(timeIntervalSince1970: 2_200)
+            )
+        )
+
+        XCTAssertEqual(patched.steps, 1_976)
+        XCTAssertEqual(patched.stepsCapturedAt, newerCapture)
+        XCTAssertEqual(patched.stepsReceiptCapturedAt, newerCapture)
+        XCTAssertEqual(patched.stepsCoverageFraction, 0.81)
+        XCTAssertEqual(patched.heartRate, current.heartRate)
+        XCTAssertEqual(
+            patched.heartRateCapturedAt,
+            current.heartRateCapturedAt
+        )
+        XCTAssertEqual(patched.recoveryPercent, current.recoveryPercent)
+        XCTAssertEqual(patched.recoveryDetail, current.recoveryDetail)
+        XCTAssertEqual(patched.strain, current.strain)
+        XCTAssertEqual(patched.strainDetail, current.strainDetail)
+        XCTAssertEqual(patched.strainCapturedAt, current.strainCapturedAt)
+        XCTAssertEqual(patched.batteryLevel, current.batteryLevel)
+        XCTAssertEqual(patched.batteryCapturedAt, current.batteryCapturedAt)
+        XCTAssertEqual(
+            patched.batteryCorroboratedAt,
+            current.batteryCorroboratedAt
+        )
+        XCTAssertEqual(
+            patched.layoutGlanceMetrics,
+            current.layoutGlanceMetrics
+        )
+        XCTAssertEqual(
+            patched.layoutRingCenterMetric,
+            current.layoutRingCenterMetric
+        )
+    }
+
+    func testDurableStepPatchRejectsOlderSameSourceReceipt() {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        var current = deliverySnapshot(
+            steps: 1_976,
+            stepsCapturedAt: Date(timeIntervalSince1970: 2_100),
+            heartRate: 88,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_100)
+        )
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = Date(timeIntervalSince1970: 2_100)
+
+        XCTAssertNil(WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+            current: current,
+            projection: durableProjection(
+                source: source,
+                cycleStart: cycleStart,
+                receiptCapturedAt: Date(timeIntervalSince1970: 2_000),
+                steps: 1_900
+            ),
+            currentPersistedSourceIdentifier: source,
+            deliveredAt: Date(timeIntervalSince1970: 2_200)
+        ))
+    }
+
+    func testDurableStepPatchRejectsOlderCycleEvenWithLaterClock() {
+        let source = UUID().uuidString
+        let currentCycle = Date(timeIntervalSince1970: 2_000)
+        var current = deliverySnapshot(
+            steps: 1_976,
+            stepsCapturedAt: Date(timeIntervalSince1970: 2_400),
+            heartRate: 88,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_400)
+        )
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = currentCycle
+        current.stepsReceiptCapturedAt = Date(timeIntervalSince1970: 2_400)
+
+        XCTAssertNil(WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+            current: current,
+            projection: durableProjection(
+                source: source,
+                cycleStart: Date(timeIntervalSince1970: 1_000),
+                receiptCapturedAt: Date(timeIntervalSince1970: 2_600),
+                steps: 2_100
+            ),
+            currentPersistedSourceIdentifier: source,
+            deliveredAt: Date(timeIntervalSince1970: 2_700)
+        ))
+    }
+
+    func testNewCycleWithoutReceiptClearsFormerCycleSteps() throws {
+        let source = UUID().uuidString
+        let oldCycle = Date(timeIntervalSince1970: 1_000)
+        let newCycle = Date(timeIntervalSince1970: 86_400)
+        var current = deliverySnapshot(
+            steps: 3_200,
+            stepsCapturedAt: Date(timeIntervalSince1970: 80_000),
+            heartRate: 88,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 86_450)
+        )
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = oldCycle
+        current.stepsReceiptCapturedAt = Date(timeIntervalSince1970: 80_000)
+
+        let patched = try XCTUnwrap(
+            WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+                current: current,
+                projection: durableProjection(
+                    source: source,
+                    cycleStart: newCycle,
+                    receiptCapturedAt: nil,
+                    steps: nil
+                ),
+                currentPersistedSourceIdentifier: source,
+                deliveredAt: Date(timeIntervalSince1970: 86_500)
+            )
+        )
+
+        XCTAssertNil(patched.steps)
+        XCTAssertEqual(patched.stepsReceiptCycleStart, newCycle)
+        XCTAssertNil(patched.stepsReceiptCapturedAt)
+        XCTAssertEqual(patched.heartRate, current.heartRate)
+        XCTAssertEqual(
+            patched.heartRateCapturedAt,
+            current.heartRateCapturedAt
+        )
+    }
+
+    func testDurableStepPatchRejectsDelayedFormerSource() {
+        let currentSource = UUID().uuidString
+        let formerSource = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let current = deliverySnapshot(
+            steps: 700,
+            stepsCapturedAt: Date(timeIntervalSince1970: 1_800),
+            heartRate: 80,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 1_800)
+        )
+
+        XCTAssertNil(WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+            current: current,
+            projection: durableProjection(
+                source: formerSource,
+                cycleStart: cycleStart,
+                receiptCapturedAt: Date(timeIntervalSince1970: 2_000),
+                steps: 900
+            ),
+            currentPersistedSourceIdentifier: currentSource,
+            deliveredAt: Date(timeIntervalSince1970: 2_100)
+        ))
+    }
+
+    func testDurableStepPatchLetsCurrentReplacementSourceSupersedeOldClock()
+        throws {
+        let formerSource = UUID().uuidString
+        let replacementSource = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        var current = deliverySnapshot(
+            steps: 4_000,
+            stepsCapturedAt: Date(timeIntervalSince1970: 2_500),
+            heartRate: 80,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_500)
+        )
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = formerSource
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = Date(timeIntervalSince1970: 2_500)
+
+        let patched = try XCTUnwrap(
+            WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+                current: current,
+                projection: durableProjection(
+                    source: replacementSource,
+                    cycleStart: cycleStart,
+                    receiptCapturedAt: Date(timeIntervalSince1970: 2_000),
+                    steps: 300
+                ),
+                currentPersistedSourceIdentifier: replacementSource,
+                deliveredAt: Date(timeIntervalSince1970: 2_600)
+            )
+        )
+
+        XCTAssertEqual(patched.steps, 300)
+        XCTAssertEqual(
+            patched.stepsReceiptSourceIdentifier,
+            replacementSource
+        )
+        XCTAssertEqual(
+            patched.stepsReceiptCapturedAt,
+            Date(timeIntervalSince1970: 2_000)
+        )
+    }
+
+    func testLegacyExactStepsAreNotPreservedUnderReplacementReceiptSource()
+        throws {
+        let replacementSource = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_100)
+        var legacyExact = deliverySnapshot(
+            steps: 4_000,
+            stepsCapturedAt: Date(timeIntervalSince1970: 1_800),
+            heartRate: 80,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_050)
+        )
+        legacyExact.stepsSource = "verifiedCanonical"
+        legacyExact.stepsCompleteness = "complete"
+        legacyExact.stepsCoverageFraction = 1
+        legacyExact.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        legacyExact.stepsCycleStart = cycleStart
+        legacyExact.stepsCycleExpiresAt =
+            cycleStart.addingTimeInterval(86_400)
+        XCTAssertNil(legacyExact.stepsReceiptSourceIdentifier)
+
+        let patched = try XCTUnwrap(
+            WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+                current: legacyExact,
+                projection: durableProjection(
+                    source: replacementSource,
+                    cycleStart: cycleStart,
+                    receiptCapturedAt: receiptAt,
+                    steps: 300
+                ),
+                currentPersistedSourceIdentifier: replacementSource,
+                deliveredAt: Date(timeIntervalSince1970: 2_200)
+            )
+        )
+
+        XCTAssertEqual(patched.steps, 300)
+        XCTAssertEqual(patched.stepsCapturedAt, receiptAt)
+        XCTAssertEqual(
+            patched.stepsReceiptSourceIdentifier,
+            replacementSource
+        )
+        XCTAssertEqual(patched.stepsReceiptCapturedAt, receiptAt)
+    }
+
+    func testNewerUnresolvedDurableReceiptClearsOnlyOldStepProjection()
+        throws {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        var current = deliverySnapshot(
+            steps: 1_500,
+            stepsCapturedAt: Date(timeIntervalSince1970: 1_800),
+            heartRate: 96,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_050),
+            strain: 6.2
+        )
+        current.stepsSource = "verifiedCanonical"
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = Date(timeIntervalSince1970: 1_800)
+        let newerReceipt = Date(timeIntervalSince1970: 2_100)
+
+        let patched = try XCTUnwrap(
+            WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+                current: current,
+                projection: durableProjection(
+                    source: source,
+                    cycleStart: cycleStart,
+                    receiptCapturedAt: newerReceipt,
+                    steps: nil
+                ),
+                currentPersistedSourceIdentifier: source,
+                deliveredAt: Date(timeIntervalSince1970: 2_200)
+            )
+        )
+
+        XCTAssertNil(patched.steps)
+        XCTAssertNil(patched.stepsCapturedAt)
+        XCTAssertNil(patched.stepsSource)
+        XCTAssertNil(patched.stepsAuthorityVersion)
+        XCTAssertEqual(patched.stepsReceiptCapturedAt, newerReceipt)
+        XCTAssertEqual(patched.heartRate, current.heartRate)
+        XCTAssertEqual(
+            patched.heartRateCapturedAt,
+            current.heartRateCapturedAt
+        )
+        XCTAssertEqual(patched.strain, current.strain)
+        XCTAssertEqual(patched.batteryLevel, current.batteryLevel)
+    }
+
+    func testUnresolvedReceiptCannotOverrideExactCanonicalSteps() throws {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let exactCapturedAt = Date(timeIntervalSince1970: 1_800)
+        let receiptCapturedAt = Date(timeIntervalSince1970: 2_100)
+        var current = deliverySnapshot(
+            steps: 2_450,
+            stepsCapturedAt: exactCapturedAt,
+            heartRate: 96,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_050)
+        )
+        current.stepsSource = "verifiedCanonical"
+        current.stepsCompleteness = "complete"
+        current.stepsCoverageFraction = 1
+        current.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsCycleStart = cycleStart
+        current.stepsCycleExpiresAt = cycleStart.addingTimeInterval(86_400)
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = exactCapturedAt
+
+        let patched = try XCTUnwrap(
+            WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+                current: current,
+                projection: durableProjection(
+                    source: source,
+                    cycleStart: cycleStart,
+                    receiptCapturedAt: receiptCapturedAt,
+                    steps: nil,
+                    receiptInvalidatesIndependentPartial: true
+                ),
+                currentPersistedSourceIdentifier: source,
+                deliveredAt: Date(timeIntervalSince1970: 2_200)
+            )
+        )
+
+        XCTAssertEqual(patched.steps, 2_450)
+        XCTAssertEqual(patched.stepsCapturedAt, exactCapturedAt)
+        XCTAssertEqual(patched.stepsCompleteness, "complete")
+        XCTAssertEqual(patched.stepsCoverageFraction, 1)
+        XCTAssertEqual(patched.stepsReceiptCapturedAt, receiptCapturedAt)
+        XCTAssertNil(patched.stepsDisplayedReceiptContentRevision)
+        XCTAssertEqual(
+            patched.stepsReceiptContentRevision,
+            String(repeating: "a", count: 64)
+        )
+        XCTAssertEqual(
+            patched.stepsReceiptInvalidatesIndependentPartial,
+            true
+        )
+    }
+
+    func testOlderObservedMotionReceiptInvalidatesIndependentPartial()
+        throws {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_000)
+        let currentAt = Date(timeIntervalSince1970: 2_100)
+        let oldRevision = String(repeating: "a", count: 64)
+        let newRevision = String(repeating: "b", count: 64)
+        var current = deliverySnapshot(
+            steps: 300,
+            stepsCapturedAt: currentAt,
+            heartRate: 96,
+            heartRateCapturedAt: currentAt
+        )
+        current.stepsSource = "verifiedCanonical"
+        current.stepsCompleteness = "partial"
+        current.stepsCoverageFraction = 0.8
+        current.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsCycleStart = cycleStart
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = currentAt
+        current.stepsReceiptContentRevision = oldRevision
+        current.stepsDisplayedReceiptContentRevision = nil
+
+        let patched = try XCTUnwrap(
+            WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+                current: current,
+                projection: durableProjection(
+                    source: source,
+                    cycleStart: cycleStart,
+                    receiptCapturedAt: receiptAt,
+                    steps: nil,
+                    receiptContentRevision: newRevision,
+                    receiptInvalidatesIndependentPartial: true
+                ),
+                currentPersistedSourceIdentifier: source,
+                deliveredAt: Date(timeIntervalSince1970: 2_200)
+            )
+        )
+
+        XCTAssertNil(patched.steps)
+        XCTAssertNil(patched.stepsCapturedAt)
+        XCTAssertNil(patched.stepsCompleteness)
+        XCTAssertNil(patched.stepsDisplayedReceiptContentRevision)
+        XCTAssertEqual(patched.stepsReceiptContentRevision, newRevision)
+        XCTAssertEqual(
+            patched.stepsReceiptInvalidatesIndependentPartial,
+            true
+        )
+        XCTAssertEqual(patched.heartRate, current.heartRate)
+        XCTAssertEqual(patched.strain, current.strain)
+        XCTAssertEqual(patched.batteryLevel, current.batteryLevel)
+    }
+
+    func testUnresolvedNewReceiptClearsOlderReceiptOwnedExactCount() throws {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_100)
+        let oldRevision = String(repeating: "a", count: 64)
+        let newRevision = String(repeating: "b", count: 64)
+        var current = deliverySnapshot(
+            steps: 1_500,
+            stepsCapturedAt: receiptAt,
+            heartRate: 96,
+            heartRateCapturedAt: receiptAt
+        )
+        current.stepsSource = "verifiedCanonical"
+        current.stepsCompleteness = "complete"
+        current.stepsCoverageFraction = 1
+        current.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsCycleStart = cycleStart
+        current.stepsCycleExpiresAt = cycleStart.addingTimeInterval(86_400)
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = receiptAt
+        current.stepsReceiptContentRevision = oldRevision
+        current.stepsDisplayedReceiptContentRevision = oldRevision
+
+        let patched = try XCTUnwrap(
+            WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+                current: current,
+                projection: durableProjection(
+                    source: source,
+                    cycleStart: cycleStart,
+                    receiptCapturedAt: receiptAt,
+                    steps: nil,
+                    receiptContentRevision: newRevision
+                ),
+                currentPersistedSourceIdentifier: source,
+                deliveredAt: Date(timeIntervalSince1970: 2_200)
+            )
+        )
+
+        XCTAssertNil(patched.steps)
+        XCTAssertNil(patched.stepsCapturedAt)
+        XCTAssertNil(patched.stepsCompleteness)
+        XCTAssertNil(patched.stepsDisplayedReceiptContentRevision)
+        XCTAssertEqual(patched.stepsReceiptContentRevision, newRevision)
+    }
+
+    func testLaterWeakerReceiptCannotOverrideIndependentPartialCount()
+        throws {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let currentAt = Date(timeIntervalSince1970: 2_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_100)
+        let newRevision = String(repeating: "b", count: 64)
+        var current = deliverySnapshot(
+            steps: 300,
+            stepsCapturedAt: currentAt,
+            heartRate: 96,
+            heartRateCapturedAt: currentAt
+        )
+        current.stepsSource = "verifiedCanonical"
+        current.stepsCompleteness = "partial"
+        current.stepsCoverageFraction = 0.8
+        current.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsCycleStart = cycleStart
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = currentAt
+        current.stepsReceiptContentRevision = String(
+            repeating: "a",
+            count: 64
+        )
+        current.stepsDisplayedReceiptContentRevision = nil
+
+        let patched = try XCTUnwrap(
+            WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+                current: current,
+                projection: durableProjection(
+                    source: source,
+                    cycleStart: cycleStart,
+                    receiptCapturedAt: receiptAt,
+                    steps: 268,
+                    coverage: 0.5,
+                    receiptContentRevision: newRevision
+                ),
+                currentPersistedSourceIdentifier: source,
+                deliveredAt: Date(timeIntervalSince1970: 2_200)
+            )
+        )
+
+        XCTAssertEqual(patched.steps, 300)
+        XCTAssertEqual(patched.stepsCoverageFraction, 0.8)
+        XCTAssertNil(patched.stepsDisplayedReceiptContentRevision)
+        XCTAssertEqual(patched.stepsReceiptContentRevision, newRevision)
+    }
+
+    func testOlderStrongerReceiptReplacesIndependentPartialCount() throws {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_000)
+        let currentAt = Date(timeIntervalSince1970: 2_100)
+        let newRevision = String(repeating: "b", count: 64)
+        var current = deliverySnapshot(
+            steps: 268,
+            stepsCapturedAt: currentAt,
+            heartRate: 96,
+            heartRateCapturedAt: currentAt
+        )
+        current.stepsSource = "verifiedCanonical"
+        current.stepsCompleteness = "partial"
+        current.stepsCoverageFraction = 0.5
+        current.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsCycleStart = cycleStart
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = currentAt
+        current.stepsReceiptContentRevision = String(
+            repeating: "a",
+            count: 64
+        )
+        current.stepsDisplayedReceiptContentRevision = nil
+
+        let patched = try XCTUnwrap(
+            WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+                current: current,
+                projection: durableProjection(
+                    source: source,
+                    cycleStart: cycleStart,
+                    receiptCapturedAt: receiptAt,
+                    steps: 300,
+                    coverage: 0.8,
+                    receiptContentRevision: newRevision
+                ),
+                currentPersistedSourceIdentifier: source,
+                deliveredAt: Date(timeIntervalSince1970: 2_200)
+            )
+        )
+
+        XCTAssertEqual(patched.steps, 300)
+        XCTAssertEqual(patched.stepsCapturedAt, receiptAt)
+        XCTAssertEqual(patched.stepsCoverageFraction, 0.8)
+        XCTAssertEqual(
+            patched.stepsDisplayedReceiptContentRevision,
+            newRevision
+        )
+        XCTAssertEqual(patched.stepsReceiptContentRevision, newRevision)
+    }
+
+    func testCorrectedCompleteReceiptReplacesOlderExactCanonicalCount()
+        throws {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_100)
+        let oldRevision = String(repeating: "a", count: 64)
+        let correctedRevision = String(repeating: "b", count: 64)
+        var current = deliverySnapshot(
+            steps: 1_500,
+            stepsCapturedAt: receiptAt,
+            heartRate: 90,
+            heartRateCapturedAt: receiptAt
+        )
+        current.stepsSource = "verifiedCanonical"
+        current.stepsCompleteness = "complete"
+        current.stepsCoverageFraction = 1
+        current.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsCycleStart = cycleStart
+        current.stepsCycleExpiresAt = cycleStart.addingTimeInterval(86_400)
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = receiptAt
+        current.stepsReceiptContentRevision = oldRevision
+        current.stepsDisplayedReceiptContentRevision = oldRevision
+
+        let corrected = WidgetSnapshotPublisher.DurableStepProjection(
+            authorityVersion:
+                WidgetSnapshotPublisher.qualifiedStepAuthorityVersion,
+            sourceIdentifier: source,
+            cycleStart: cycleStart,
+            cycleExpiresAt: cycleStart.addingTimeInterval(86_400),
+            receiptCapturedAt: receiptAt,
+            receiptContentRevision: correctedRevision,
+            displayedReceiptContentRevision: correctedRevision,
+            receiptInvalidatesIndependentPartial: false,
+            steps: 1_976,
+            stepsAreEstimated: false,
+            stepsCapturedAt: receiptAt,
+            stepsSource: "verifiedCanonical",
+            stepsCompleteness: "complete",
+            stepsCoverageFraction: 1,
+            priorCycleSteps: nil,
+            priorCycleEndedAt: nil
+        )
+        let patched = try XCTUnwrap(
+            WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+                current: current,
+                projection: corrected,
+                currentPersistedSourceIdentifier: source,
+                deliveredAt: Date(timeIntervalSince1970: 2_200)
+            )
+        )
+
+        XCTAssertEqual(patched.steps, 1_976)
+        XCTAssertEqual(patched.stepsCapturedAt, receiptAt)
+        XCTAssertEqual(patched.stepsCompleteness, "complete")
+        XCTAssertEqual(patched.stepsCoverageFraction, 1)
+        XCTAssertEqual(
+            patched.stepsReceiptContentRevision,
+            correctedRevision
+        )
+        XCTAssertEqual(
+            patched.stepsDisplayedReceiptContentRevision,
+            correctedRevision
+        )
+    }
+
+    func testCompleteReceiptCannotOverrideIndependentExactCanonicalCount()
+        throws {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_100)
+        let correctedRevision = String(repeating: "b", count: 64)
+        var current = deliverySnapshot(
+            steps: 1_500,
+            stepsCapturedAt: receiptAt,
+            heartRate: 90,
+            heartRateCapturedAt: receiptAt
+        )
+        current.stepsSource = "verifiedCanonical"
+        current.stepsCompleteness = "complete"
+        current.stepsCoverageFraction = 1
+        current.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsCycleStart = cycleStart
+        current.stepsCycleExpiresAt = cycleStart.addingTimeInterval(86_400)
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = receiptAt
+        current.stepsReceiptContentRevision = String(
+            repeating: "a",
+            count: 64
+        )
+        // Nil is the explicit provenance for an independently projected
+        // canonical row rather than a displayed daily receipt.
+        current.stepsDisplayedReceiptContentRevision = nil
+
+        let receiptProjection = WidgetSnapshotPublisher.DurableStepProjection(
+            authorityVersion:
+                WidgetSnapshotPublisher.qualifiedStepAuthorityVersion,
+            sourceIdentifier: source,
+            cycleStart: cycleStart,
+            cycleExpiresAt: cycleStart.addingTimeInterval(86_400),
+            receiptCapturedAt: receiptAt,
+            receiptContentRevision: correctedRevision,
+            displayedReceiptContentRevision: correctedRevision,
+            receiptInvalidatesIndependentPartial: false,
+            steps: 1_976,
+            stepsAreEstimated: false,
+            stepsCapturedAt: receiptAt,
+            stepsSource: "verifiedCanonical",
+            stepsCompleteness: "complete",
+            stepsCoverageFraction: 1,
+            priorCycleSteps: nil,
+            priorCycleEndedAt: nil
+        )
+        let patched = try XCTUnwrap(
+            WidgetSnapshotPublisher.durableStepPatchedSnapshot(
+                current: current,
+                projection: receiptProjection,
+                currentPersistedSourceIdentifier: source,
+                deliveredAt: Date(timeIntervalSince1970: 2_200)
+            )
+        )
+
+        XCTAssertEqual(patched.steps, 1_500)
+        XCTAssertEqual(patched.stepsCapturedAt, receiptAt)
+        XCTAssertEqual(patched.stepsCompleteness, "complete")
+        XCTAssertNil(patched.stepsDisplayedReceiptContentRevision)
+        XCTAssertEqual(
+            patched.stepsReceiptContentRevision,
+            correctedRevision
+        )
+    }
+
+    func testDelayedLivePatchCannotUndoNewerDurableReceipt() {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_100)
+        var current = deliverySnapshot(
+            steps: 1_976,
+            stepsCapturedAt: receiptAt,
+            heartRate: 90,
+            heartRateCapturedAt: receiptAt
+        )
+        current.stepsSource = "verifiedCanonical"
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = receiptAt
+
+        let patched = WidgetSnapshotPublisher.liveWorkoutPatchedSnapshot(
+            current: current,
+            createdAt: Date(timeIntervalSince1970: 2_200),
+            heartRate: 112,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_200),
+            steps: 1_500,
+            stepsAreEstimated: false,
+            stepsCapturedAt: Date(timeIntervalSince1970: 2_000),
+            stepsSource: "verifiedCanonical",
+            stepsCompleteness: "partial",
+            stepsCoverageFraction: 0.7,
+            stepsAuthorityVersion:
+                WidgetSnapshotPublisher.qualifiedStepAuthorityVersion,
+            strain: current.strain,
+            batteryLevel: current.batteryLevel,
+            batteryChargeStatus: current.batteryChargeStatus ?? "levelOnly",
+            batteryChargeText: current.batteryChargeText ?? "Unavailable"
+        )
+
+        XCTAssertEqual(patched.steps, 1_976)
+        XCTAssertEqual(patched.stepsCapturedAt, receiptAt)
+        XCTAssertEqual(patched.stepsReceiptCapturedAt, receiptAt)
+        XCTAssertEqual(patched.heartRate, 112)
+    }
+
+    func testLaterBroadPublishPreservesAlreadyDeliveredFresherSteps() {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        var current = deliverySnapshot(
+            steps: 1_976,
+            stepsCapturedAt: Date(timeIntervalSince1970: 2_100),
+            heartRate: 90,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_100)
+        )
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = Date(timeIntervalSince1970: 2_100)
+        var staleBroad = deliverySnapshot(
+            steps: 1_500,
+            stepsCapturedAt: Date(timeIntervalSince1970: 1_900),
+            heartRate: 121,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_200),
+            strain: 7.1
+        )
+        staleBroad.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        staleBroad.stepsReceiptSourceIdentifier = source
+        staleBroad.stepsReceiptCycleStart = cycleStart
+        staleBroad.stepsReceiptCapturedAt =
+            Date(timeIntervalSince1970: 1_900)
+
+        let merged = WidgetSnapshotPublisher
+            .snapshotPreservingFresherStepAuthority(
+                candidate: staleBroad,
+                current: current
+            )
+
+        XCTAssertEqual(merged.steps, 1_976)
+        XCTAssertEqual(
+            merged.stepsReceiptCapturedAt,
+            Date(timeIntervalSince1970: 2_100)
+        )
+        XCTAssertEqual(merged.heartRate, staleBroad.heartRate)
+        XCTAssertEqual(
+            merged.heartRateCapturedAt,
+            staleBroad.heartRateCapturedAt
+        )
+        XCTAssertEqual(merged.strain, staleBroad.strain)
+        XCTAssertEqual(merged.recoveryPercent, staleBroad.recoveryPercent)
+        XCTAssertEqual(merged.batteryLevel, staleBroad.batteryLevel)
+        XCTAssertEqual(
+            merged.layoutGlanceMetrics,
+            staleBroad.layoutGlanceMetrics
+        )
+    }
+
+    func testCorrectedSameClockReceiptSurvivesDelayedBroadPublish() {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_100)
+        let staleRevision = String(repeating: "a", count: 64)
+        let correctedRevision = String(repeating: "b", count: 64)
+        var corrected = deliverySnapshot(
+            steps: 1_976,
+            stepsCapturedAt: receiptAt,
+            heartRate: 90,
+            heartRateCapturedAt: receiptAt
+        )
+        corrected.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        corrected.stepsReceiptSourceIdentifier = source
+        corrected.stepsReceiptCycleStart = cycleStart
+        corrected.stepsReceiptCapturedAt = receiptAt
+        corrected.stepsReceiptContentRevision = correctedRevision
+        var staleBroad = deliverySnapshot(
+            steps: 1_500,
+            stepsCapturedAt: receiptAt,
+            heartRate: 121,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_200),
+            strain: 7.1
+        )
+        staleBroad.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        staleBroad.stepsReceiptSourceIdentifier = source
+        staleBroad.stepsReceiptCycleStart = cycleStart
+        staleBroad.stepsReceiptCapturedAt = receiptAt
+        staleBroad.stepsReceiptContentRevision = staleRevision
+
+        let merged = WidgetSnapshotPublisher
+            .snapshotPreservingFresherStepAuthority(
+                candidate: staleBroad,
+                current: corrected,
+                authoritativeReceiptContentRevision: correctedRevision
+            )
+
+        XCTAssertEqual(merged.steps, 1_976)
+        XCTAssertEqual(merged.stepsCapturedAt, receiptAt)
+        XCTAssertEqual(
+            merged.stepsReceiptContentRevision,
+            correctedRevision
+        )
+        XCTAssertEqual(merged.heartRate, staleBroad.heartRate)
+        XCTAssertEqual(
+            merged.heartRateCapturedAt,
+            staleBroad.heartRateCapturedAt
+        )
+        XCTAssertEqual(merged.strain, staleBroad.strain)
+    }
+
+    func testNewDurableRevisionPreservesCurrentStepsWhenBothSnapshotsAreOld() {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_100)
+        let oldRevision = String(repeating: "a", count: 64)
+        let newRevision = String(repeating: "b", count: 64)
+        var current = deliverySnapshot(
+            steps: 1_976,
+            stepsCapturedAt: receiptAt,
+            heartRate: 90,
+            heartRateCapturedAt: receiptAt
+        )
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = receiptAt
+        current.stepsReceiptContentRevision = oldRevision
+        var staleBroad = deliverySnapshot(
+            steps: 1_500,
+            stepsCapturedAt: receiptAt,
+            heartRate: 121,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_200),
+            strain: 7.1
+        )
+        staleBroad.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        staleBroad.stepsReceiptSourceIdentifier = source
+        staleBroad.stepsReceiptCycleStart = cycleStart
+        staleBroad.stepsReceiptCapturedAt = receiptAt
+        staleBroad.stepsReceiptContentRevision = oldRevision
+
+        let merged = WidgetSnapshotPublisher
+            .snapshotPreservingFresherStepAuthority(
+                candidate: staleBroad,
+                current: current,
+                authoritativeReceiptContentRevision: newRevision
+            )
+
+        XCTAssertEqual(merged.steps, current.steps)
+        XCTAssertEqual(merged.stepsCapturedAt, current.stepsCapturedAt)
+        XCTAssertEqual(merged.stepsReceiptContentRevision, oldRevision)
+        XCTAssertEqual(merged.heartRate, staleBroad.heartRate)
+        XCTAssertEqual(
+            merged.heartRateCapturedAt,
+            staleBroad.heartRateCapturedAt
+        )
+        XCTAssertEqual(merged.strain, staleBroad.strain)
+        XCTAssertEqual(merged.recoveryPercent, staleBroad.recoveryPercent)
+        XCTAssertEqual(merged.batteryLevel, staleBroad.batteryLevel)
+    }
+
+    func testIndependentExactBroadRowSurvivesConcurrentReceiptCorrection() {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_100)
+        let oldRevision = String(repeating: "a", count: 64)
+        let newRevision = String(repeating: "b", count: 64)
+        var currentReceiptOwned = deliverySnapshot(
+            steps: 1_976,
+            stepsCapturedAt: receiptAt,
+            heartRate: 90,
+            heartRateCapturedAt: receiptAt
+        )
+        currentReceiptOwned.stepsSource = "verifiedCanonical"
+        currentReceiptOwned.stepsCompleteness = "complete"
+        currentReceiptOwned.stepsCoverageFraction = 1
+        currentReceiptOwned.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        currentReceiptOwned.stepsCycleStart = cycleStart
+        currentReceiptOwned.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        currentReceiptOwned.stepsReceiptSourceIdentifier = source
+        currentReceiptOwned.stepsReceiptCycleStart = cycleStart
+        currentReceiptOwned.stepsReceiptCapturedAt = receiptAt
+        currentReceiptOwned.stepsReceiptContentRevision = oldRevision
+        currentReceiptOwned.stepsDisplayedReceiptContentRevision = oldRevision
+
+        var independentBroad = deliverySnapshot(
+            steps: 1_500,
+            stepsCapturedAt: receiptAt,
+            heartRate: 121,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_200),
+            strain: 7.1
+        )
+        independentBroad.stepsSource = "verifiedCanonical"
+        independentBroad.stepsCompleteness = "complete"
+        independentBroad.stepsCoverageFraction = 1
+        independentBroad.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        independentBroad.stepsCycleStart = cycleStart
+        independentBroad.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        independentBroad.stepsReceiptSourceIdentifier = source
+        independentBroad.stepsReceiptCycleStart = cycleStart
+        independentBroad.stepsReceiptCapturedAt = receiptAt
+        independentBroad.stepsReceiptContentRevision = oldRevision
+        independentBroad.stepsDisplayedReceiptContentRevision = nil
+
+        let merged = WidgetSnapshotPublisher
+            .snapshotPreservingFresherStepAuthority(
+                candidate: independentBroad,
+                current: currentReceiptOwned,
+                authoritativeReceiptContentRevision: newRevision
+            )
+
+        XCTAssertEqual(merged.steps, 1_500)
+        XCTAssertNil(merged.stepsDisplayedReceiptContentRevision)
+        XCTAssertEqual(merged.heartRate, independentBroad.heartRate)
+        XCTAssertEqual(
+            merged.heartRateCapturedAt,
+            independentBroad.heartRateCapturedAt
+        )
+        XCTAssertEqual(merged.strain, independentBroad.strain)
+        XCTAssertEqual(
+            merged.recoveryPercent,
+            independentBroad.recoveryPercent
+        )
+        XCTAssertEqual(merged.batteryLevel, independentBroad.batteryLevel)
+    }
+
+    func testFreshIndependentExactBroadRowWinsWhenBothReceiptDigestsAreOld() {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_100)
+        let oldRevision = String(repeating: "a", count: 64)
+        let newRevision = String(repeating: "b", count: 64)
+        var currentIndependent = deliverySnapshot(
+            steps: 1_976,
+            stepsCapturedAt: receiptAt,
+            heartRate: 90,
+            heartRateCapturedAt: receiptAt
+        )
+        currentIndependent.stepsSource = "verifiedCanonical"
+        currentIndependent.stepsCompleteness = "complete"
+        currentIndependent.stepsCoverageFraction = 1
+        currentIndependent.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        currentIndependent.stepsCycleStart = cycleStart
+        currentIndependent.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        currentIndependent.stepsReceiptSourceIdentifier = source
+        currentIndependent.stepsReceiptCycleStart = cycleStart
+        currentIndependent.stepsReceiptCapturedAt = receiptAt
+        currentIndependent.stepsReceiptContentRevision = oldRevision
+        currentIndependent.stepsDisplayedReceiptContentRevision = nil
+
+        var freshIndependent = deliverySnapshot(
+            steps: 1_500,
+            stepsCapturedAt: receiptAt,
+            heartRate: 121,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_200),
+            strain: 7.1
+        )
+        freshIndependent.stepsSource = "verifiedCanonical"
+        freshIndependent.stepsCompleteness = "complete"
+        freshIndependent.stepsCoverageFraction = 1
+        freshIndependent.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        freshIndependent.stepsCycleStart = cycleStart
+        freshIndependent.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        freshIndependent.stepsReceiptSourceIdentifier = source
+        freshIndependent.stepsReceiptCycleStart = cycleStart
+        freshIndependent.stepsReceiptCapturedAt = receiptAt
+        freshIndependent.stepsReceiptContentRevision = oldRevision
+        freshIndependent.stepsDisplayedReceiptContentRevision = nil
+
+        let merged = WidgetSnapshotPublisher
+            .snapshotPreservingFresherStepAuthority(
+                candidate: freshIndependent,
+                current: currentIndependent,
+                authoritativeReceiptContentRevision: newRevision
+            )
+
+        XCTAssertEqual(merged.steps, 1_500)
+        XCTAssertNil(merged.stepsDisplayedReceiptContentRevision)
+        XCTAssertEqual(merged.heartRate, freshIndependent.heartRate)
+        XCTAssertEqual(
+            merged.heartRateCapturedAt,
+            freshIndependent.heartRateCapturedAt
+        )
+        XCTAssertEqual(merged.strain, freshIndependent.strain)
+        XCTAssertEqual(
+            merged.recoveryPercent,
+            freshIndependent.recoveryPercent
+        )
+        XCTAssertEqual(merged.batteryLevel, freshIndependent.batteryLevel)
+    }
+
+    func testOlderIndependentBroadRowCannotRegressNewerIndependentExact() {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let oldRevision = String(repeating: "a", count: 64)
+        let newRevision = String(repeating: "b", count: 64)
+        let oldAt = Date(timeIntervalSince1970: 2_000)
+        let newAt = Date(timeIntervalSince1970: 2_100)
+        var currentIndependent = deliverySnapshot(
+            steps: 1_976,
+            stepsCapturedAt: newAt,
+            heartRate: 90,
+            heartRateCapturedAt: newAt
+        )
+        currentIndependent.stepsSource = "verifiedCanonical"
+        currentIndependent.stepsCompleteness = "complete"
+        currentIndependent.stepsCoverageFraction = 1
+        currentIndependent.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        currentIndependent.stepsCycleStart = cycleStart
+        currentIndependent.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        currentIndependent.stepsReceiptSourceIdentifier = source
+        currentIndependent.stepsReceiptCycleStart = cycleStart
+        currentIndependent.stepsReceiptCapturedAt = newAt
+        currentIndependent.stepsReceiptContentRevision = oldRevision
+        currentIndependent.stepsDisplayedReceiptContentRevision = nil
+
+        var olderIndependent = deliverySnapshot(
+            steps: 1_500,
+            stepsCapturedAt: oldAt,
+            heartRate: 121,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_200),
+            strain: 7.1
+        )
+        olderIndependent.stepsSource = "verifiedCanonical"
+        olderIndependent.stepsCompleteness = "complete"
+        olderIndependent.stepsCoverageFraction = 1
+        olderIndependent.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        olderIndependent.stepsCycleStart = cycleStart
+        olderIndependent.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        olderIndependent.stepsReceiptSourceIdentifier = source
+        olderIndependent.stepsReceiptCycleStart = cycleStart
+        olderIndependent.stepsReceiptCapturedAt = oldAt
+        olderIndependent.stepsReceiptContentRevision = oldRevision
+        olderIndependent.stepsDisplayedReceiptContentRevision = nil
+
+        let merged = WidgetSnapshotPublisher
+            .snapshotPreservingFresherStepAuthority(
+                candidate: olderIndependent,
+                current: currentIndependent,
+                authoritativeReceiptContentRevision: newRevision
+            )
+
+        XCTAssertEqual(merged.steps, 1_976)
+        XCTAssertEqual(merged.stepsCapturedAt, newAt)
+        XCTAssertNil(merged.stepsDisplayedReceiptContentRevision)
+        XCTAssertEqual(merged.heartRate, olderIndependent.heartRate)
+        XCTAssertEqual(
+            merged.heartRateCapturedAt,
+            olderIndependent.heartRateCapturedAt
+        )
+        XCTAssertEqual(merged.strain, olderIndependent.strain)
+        XCTAssertEqual(
+            merged.recoveryPercent,
+            olderIndependent.recoveryPercent
+        )
+        XCTAssertEqual(merged.batteryLevel, olderIndependent.batteryLevel)
+    }
+
+    func testBroadIndependentPartialsPreferCoverageBeforeReceiptClock() {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let revision = String(repeating: "b", count: 64)
+        let olderAt = Date(timeIntervalSince1970: 2_000)
+        let newerAt = Date(timeIntervalSince1970: 2_100)
+        var current = deliverySnapshot(
+            steps: 300,
+            stepsCapturedAt: newerAt,
+            heartRate: 90,
+            heartRateCapturedAt: newerAt
+        )
+        current.stepsSource = "verifiedCanonical"
+        current.stepsCompleteness = "partial"
+        current.stepsCoverageFraction = 0.8
+        current.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsCycleStart = cycleStart
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = newerAt
+        current.stepsReceiptContentRevision = revision
+        current.stepsDisplayedReceiptContentRevision = nil
+
+        var candidate = deliverySnapshot(
+            steps: 268,
+            stepsCapturedAt: olderAt,
+            heartRate: 121,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_200),
+            strain: 7.1
+        )
+        candidate.stepsSource = "verifiedCanonical"
+        candidate.stepsCompleteness = "partial"
+        candidate.stepsCoverageFraction = 0.5
+        candidate.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        candidate.stepsCycleStart = cycleStart
+        candidate.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        candidate.stepsReceiptSourceIdentifier = source
+        candidate.stepsReceiptCycleStart = cycleStart
+        // Deliberately make the non-owning receipt metadata look newer than
+        // the displayed candidate. It must not order independent partials.
+        candidate.stepsReceiptCapturedAt = newerAt.addingTimeInterval(60)
+        candidate.stepsReceiptContentRevision = revision
+        candidate.stepsDisplayedReceiptContentRevision = nil
+
+        let merged = WidgetSnapshotPublisher
+            .snapshotPreservingFresherStepAuthority(
+                candidate: candidate,
+                current: current,
+                authoritativeReceiptContentRevision: revision
+            )
+
+        XCTAssertEqual(merged.steps, 300)
+        XCTAssertEqual(merged.stepsCoverageFraction, 0.8)
+        XCTAssertEqual(merged.stepsCapturedAt, newerAt)
+        XCTAssertNil(merged.stepsDisplayedReceiptContentRevision)
+        XCTAssertEqual(merged.heartRate, candidate.heartRate)
+        XCTAssertEqual(merged.strain, candidate.strain)
+        XCTAssertEqual(merged.recoveryPercent, candidate.recoveryPercent)
+        XCTAssertEqual(merged.batteryLevel, candidate.batteryLevel)
+    }
+
+    func testEqualIndependentPartialAuthorityChoosesFreshBroadCandidate() {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_100)
+        let revision = String(repeating: "b", count: 64)
+        var current = deliverySnapshot(
+            steps: 300,
+            stepsCapturedAt: receiptAt,
+            heartRate: 90,
+            heartRateCapturedAt: receiptAt
+        )
+        current.stepsSource = "verifiedCanonical"
+        current.stepsCompleteness = "partial"
+        current.stepsCoverageFraction = 0.8
+        current.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsCycleStart = cycleStart
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = receiptAt
+        current.stepsReceiptContentRevision = revision
+        current.stepsDisplayedReceiptContentRevision = nil
+
+        var candidate = deliverySnapshot(
+            steps: 301,
+            stepsCapturedAt: receiptAt,
+            heartRate: 121,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_200),
+            strain: 7.1
+        )
+        candidate.stepsSource = "verifiedCanonical"
+        candidate.stepsCompleteness = "partial"
+        candidate.stepsCoverageFraction = 0.8
+        candidate.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        candidate.stepsCycleStart = cycleStart
+        candidate.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        candidate.stepsReceiptSourceIdentifier = source
+        candidate.stepsReceiptCycleStart = cycleStart
+        candidate.stepsReceiptCapturedAt = receiptAt
+        candidate.stepsReceiptContentRevision = revision
+        candidate.stepsDisplayedReceiptContentRevision = nil
+
+        let merged = WidgetSnapshotPublisher
+            .snapshotPreservingFresherStepAuthority(
+                candidate: candidate,
+                current: current,
+                authoritativeReceiptContentRevision: revision
+            )
+
+        XCTAssertEqual(merged.steps, 301)
+        XCTAssertEqual(merged.stepsCoverageFraction, 0.8)
+        XCTAssertNil(merged.stepsDisplayedReceiptContentRevision)
+        XCTAssertEqual(merged.heartRate, candidate.heartRate)
+        XCTAssertEqual(merged.strain, candidate.strain)
+    }
+
+    func testBroadUnresolvedMotionReceiptInvalidatesIndependentPartial() {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_100)
+        let oldRevision = String(repeating: "a", count: 64)
+        let newRevision = String(repeating: "b", count: 64)
+        var current = deliverySnapshot(
+            steps: 300,
+            stepsCapturedAt: receiptAt,
+            heartRate: 90,
+            heartRateCapturedAt: receiptAt
+        )
+        current.stepsSource = "verifiedCanonical"
+        current.stepsCompleteness = "partial"
+        current.stepsCoverageFraction = 0.8
+        current.stepsAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsCycleStart = cycleStart
+        current.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        current.stepsReceiptSourceIdentifier = source
+        current.stepsReceiptCycleStart = cycleStart
+        current.stepsReceiptCapturedAt = receiptAt
+        current.stepsReceiptContentRevision = oldRevision
+        current.stepsDisplayedReceiptContentRevision = nil
+
+        var candidate = deliverySnapshot(
+            steps: nil,
+            stepsCapturedAt: nil,
+            heartRate: 121,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_200),
+            strain: 7.1
+        )
+        candidate.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        candidate.stepsReceiptSourceIdentifier = source
+        candidate.stepsReceiptCycleStart = cycleStart
+        candidate.stepsReceiptCapturedAt = receiptAt
+        candidate.stepsReceiptContentRevision = newRevision
+        candidate.stepsDisplayedReceiptContentRevision = nil
+        candidate.stepsReceiptInvalidatesIndependentPartial = true
+
+        let merged = WidgetSnapshotPublisher
+            .snapshotPreservingFresherStepAuthority(
+                candidate: candidate,
+                current: current,
+                authoritativeReceiptContentRevision: newRevision
+            )
+
+        XCTAssertNil(merged.steps)
+        XCTAssertNil(merged.stepsCapturedAt)
+        XCTAssertEqual(
+            merged.stepsReceiptInvalidatesIndependentPartial,
+            true
+        )
+        XCTAssertEqual(merged.heartRate, candidate.heartRate)
+        XCTAssertEqual(merged.strain, candidate.strain)
+        XCTAssertEqual(merged.recoveryPercent, candidate.recoveryPercent)
+        XCTAssertEqual(merged.batteryLevel, candidate.batteryLevel)
+    }
+
+    func testCorrectedSameClockReceiptSurvivesDelayedLivePatchWhileHRAdvances() {
+        let source = UUID().uuidString
+        let cycleStart = Date(timeIntervalSince1970: 1_000)
+        let receiptAt = Date(timeIntervalSince1970: 2_100)
+        let correctedRevision = String(repeating: "b", count: 64)
+        var corrected = deliverySnapshot(
+            steps: 1_976,
+            stepsCapturedAt: receiptAt,
+            heartRate: 90,
+            heartRateCapturedAt: receiptAt
+        )
+        corrected.stepsSource = "verifiedCanonical"
+        corrected.stepsReceiptAuthorityVersion =
+            WidgetSnapshotPublisher.qualifiedStepAuthorityVersion
+        corrected.stepsReceiptSourceIdentifier = source
+        corrected.stepsReceiptCycleStart = cycleStart
+        corrected.stepsReceiptCapturedAt = receiptAt
+        corrected.stepsReceiptContentRevision = correctedRevision
+
+        let patched = WidgetSnapshotPublisher.liveWorkoutPatchedSnapshot(
+            current: corrected,
+            createdAt: Date(timeIntervalSince1970: 2_200),
+            heartRate: 112,
+            heartRateCapturedAt: Date(timeIntervalSince1970: 2_200),
+            steps: 1_500,
+            stepsAreEstimated: false,
+            stepsCapturedAt: receiptAt,
+            stepsSource: "verifiedCanonical",
+            stepsCompleteness: "partial",
+            stepsCoverageFraction: 0.7,
+            stepsAuthorityVersion:
+                WidgetSnapshotPublisher.qualifiedStepAuthorityVersion,
+            strain: corrected.strain,
+            batteryLevel: corrected.batteryLevel,
+            batteryChargeStatus:
+                corrected.batteryChargeStatus ?? "levelOnly",
+            batteryChargeText:
+                corrected.batteryChargeText ?? "Unavailable"
+        )
+
+        XCTAssertEqual(patched.steps, 1_976)
+        XCTAssertEqual(patched.stepsCapturedAt, receiptAt)
+        XCTAssertEqual(
+            patched.stepsReceiptContentRevision,
+            correctedRevision
+        )
+        XCTAssertEqual(patched.heartRate, 112)
+        XCTAssertEqual(
+            patched.heartRateCapturedAt,
+            Date(timeIntervalSince1970: 2_200)
+        )
+    }
+
+    func testAppLifetimeDependenciesOwnDurableStepReceiptPublication()
+        throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let appSource = try String(
+            contentsOf: root.appendingPathComponent("Atria/AtriaApp.swift"),
+            encoding: .utf8
+        )
+        let dependenciesStart = try XCTUnwrap(appSource.range(
+            of: "private final class AtriaAppDependencies"
+        ))
+        let dependenciesEnd = try XCTUnwrap(appSource.range(
+            of: "private final class AtriaBackgroundTaskCompletionGate",
+            range: dependenciesStart.upperBound..<appSource.endIndex
+        ))
+        let dependencies = String(appSource[
+            dependenciesStart.lowerBound..<dependenciesEnd.lowerBound
+        ])
+
+        XCTAssertTrue(dependencies.contains(
+            "AtriaWhoop4MotionTickDailyStore.didSaveNotification"
+        ))
+        XCTAssertTrue(dependencies.contains(
+            "WidgetSnapshotPublisher.scheduleDurableStepPatch("
+        ))
+        XCTAssertTrue(dependencies.contains(
+            "NotificationCenter.default.removeObserver("
+        ))
+    }
+
     func testLegacySnapshotWithoutIndependentSensorDatesStillDecodes() throws {
         let legacyJSON = """
         {
@@ -208,6 +1628,11 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         )
         XCTAssertNil(decoded.stepsCycleStart)
         XCTAssertNil(decoded.stepsCycleExpiresAt)
+        XCTAssertNil(decoded.stepsReceiptAuthorityVersion)
+        XCTAssertNil(decoded.stepsReceiptSourceIdentifier)
+        XCTAssertNil(decoded.stepsReceiptCycleStart)
+        XCTAssertNil(decoded.stepsReceiptCapturedAt)
+        XCTAssertNil(decoded.stepsReceiptContentRevision)
         XCTAssertNil(decoded.heartRateCapturedAt)
         XCTAssertNil(decoded.dailyStepGoal)
         XCTAssertNil(decoded.heartRateZoneIndex)
@@ -801,6 +2226,43 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
                        appGroupEnabled: true,
                        widgetTargetPresent: true,
                        complicationTargetPresent: true)
+    }
+
+    private func durableProjection(
+        source: String,
+        cycleStart: Date,
+        receiptCapturedAt: Date?,
+        steps: Int?,
+        coverage: Double = 0.75,
+        receiptContentRevision: String? = nil,
+        receiptInvalidatesIndependentPartial: Bool = false
+    ) -> WidgetSnapshotPublisher.DurableStepProjection {
+        .init(
+            authorityVersion:
+                WidgetSnapshotPublisher.qualifiedStepAuthorityVersion,
+            sourceIdentifier: source,
+            cycleStart: cycleStart,
+            cycleExpiresAt: cycleStart.addingTimeInterval(86_400),
+            receiptCapturedAt: receiptCapturedAt,
+            receiptContentRevision: receiptCapturedAt == nil
+                ? nil
+                : (receiptContentRevision
+                    ?? String(repeating: "a", count: 64)),
+            displayedReceiptContentRevision: steps == nil
+                ? nil
+                : (receiptContentRevision
+                    ?? String(repeating: "a", count: 64)),
+            receiptInvalidatesIndependentPartial:
+                receiptInvalidatesIndependentPartial,
+            steps: steps,
+            stepsAreEstimated: steps == nil ? nil : true,
+            stepsCapturedAt: steps == nil ? nil : receiptCapturedAt,
+            stepsSource: steps == nil ? nil : "verifiedCanonical",
+            stepsCompleteness: steps == nil ? nil : "partial",
+            stepsCoverageFraction: steps == nil ? nil : coverage,
+            priorCycleSteps: nil,
+            priorCycleEndedAt: nil
+        )
     }
 
     func testWidgetStrainCredibilityGateWithholdsClockWithoutRestEvidence() throws {

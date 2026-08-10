@@ -9,9 +9,15 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         source: String = "manual_sleep",
         motionSource: String = "manual",
         motionValidated: Bool = false,
-        stages: [SleepStageSegment]? = nil
+        stages: [SleepStageSegment]? = nil,
+        eventTimeZoneIdentifier: String = "UTC",
+        restingHR: Int = 52,
+        hrv: Int? = 48,
+        hrvWindowCount: Int? = 4,
+        respiratoryRate: Double? = 15.2,
+        id: String = "sleep-fixture"
     ) -> UserConfirmedSleep {
-        UserConfirmedSleep(id: "sleep-fixture",
+        UserConfirmedSleep(id: id,
                            createdAt: start.addingTimeInterval(duration),
                            start: start,
                            end: start.addingTimeInterval(duration),
@@ -21,17 +27,224 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
                            samples: 1_000,
                            avgHR: 60,
                            peakHR: 90,
-                           restingHR: 52,
-                           hrv: 48,
-                           hrvWindowCount: 4,
-                           respiratoryRate: 15.2,
+                           restingHR: restingHR,
+                           hrv: hrv,
+                           hrvWindowCount: hrvWindowCount,
+                           respiratoryRate: respiratoryRate,
                            duration: duration,
                            span: duration,
                            reason: "fixture",
                            motionSource: motionSource,
                            motionValidated: motionValidated,
                            stageSegments: stages,
-                           eventTimeZoneIdentifier: "UTC")
+                           eventTimeZoneIdentifier: eventTimeZoneIdentifier)
+    }
+
+    func testConfirmedMainSleepPublishesDailyMetricAndRollupWithoutSessionRollup() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Kolkata"))
+        let start = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 8,
+            hour: 3,
+            minute: 23
+        )))
+        let duration: TimeInterval = 6 * 60 * 60 + 31 * 60 + 41.692
+        let sleepRecord = confirmedSleep(
+            start: start,
+            duration: duration,
+            source: "user_adjusted_sleep",
+            eventTimeZoneIdentifier: "Asia/Kolkata",
+            restingHR: 59,
+            hrv: 41,
+            hrvWindowCount: 37,
+            respiratoryRate: 11
+        )
+        let sleep = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [sleepRecord],
+            calendar: calendar
+        )
+
+        let metrics = SessionStore.makeSavedDailyMetrics(
+            rollups: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            calendar: calendar
+        )
+        let metric = try XCTUnwrap(metrics.first)
+        XCTAssertEqual(metrics.count, 1)
+        XCTAssertTrue(calendar.isDate(metric.day, inSameDayAs: sleepRecord.end))
+        XCTAssertEqual(metric.sleepStart, sleepRecord.start)
+        XCTAssertEqual(metric.sleepEnd, sleepRecord.end)
+        XCTAssertEqual(metric.sleepDuration, sleepRecord.duration)
+        XCTAssertEqual(metric.hrv, sleepRecord.hrv)
+        XCTAssertEqual(metric.restingHR, sleepRecord.restingHR)
+        XCTAssertEqual(metric.respiratoryRate, sleepRecord.respiratoryRate)
+        XCTAssertNil(metric.strain, "sleep evidence must not invent activity")
+        XCTAssertNil(metric.strainCoverageFraction)
+        XCTAssertNil(metric.strainEvidenceQuality)
+
+        let rollups = SessionStore.makeDailyRollupStoreEntries(
+            metrics: metrics,
+            sessions: [],
+            calendar: calendar
+        )
+        let rollup = try XCTUnwrap(rollups.first)
+        XCTAssertEqual(rollups.count, 1)
+        XCTAssertTrue(calendar.isDate(rollup.day, inSameDayAs: sleepRecord.end))
+        XCTAssertEqual(rollup.sleepSeconds, sleepRecord.duration)
+        XCTAssertEqual(rollup.rhr, sleepRecord.restingHR)
+        XCTAssertEqual(
+            try XCTUnwrap(rollup.lnRMSSD),
+            log(Double(try XCTUnwrap(sleepRecord.hrv))),
+            accuracy: 0.000_001
+        )
+        XCTAssertEqual(rollup.respiratoryRate, sleepRecord.respiratoryRate)
+        XCTAssertNil(rollup.strain, "the published rollup must preserve the activity gap")
+    }
+
+    func testConfirmedShortRestCannotMintSleepOnlyDailyRows() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let start = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 8,
+            hour: 1
+        )))
+        let shortRest = confirmedSleep(
+            start: start,
+            duration: AtriaPhysiologicalCycle.minimumMainSleepDuration - 1,
+            source: "manual_sleep"
+        )
+        let sleep = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [shortRest],
+            calendar: calendar
+        )
+
+        XCTAssertTrue(sleep.nights.contains { $0.id == shortRest.id })
+        XCTAssertTrue(SessionStore.makeSavedDailyMetrics(
+            rollups: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            calendar: calendar
+        ).isEmpty, "a confirmed sub-3h rest cannot create a physiological daily row")
+    }
+
+    func testConfirmedShortRestCannotMintOrRepairCurrentMorningDailyMetric() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 8
+        )))
+        let shortRest = confirmedSleep(
+            start: day.addingTimeInterval(30 * 60),
+            duration: AtriaPhysiologicalCycle.minimumMainSleepDuration - 1,
+            source: "manual_sleep",
+            id: "current-morning-short-rest"
+        )
+        let now = day.addingTimeInterval(3 * 60 * 60 + 45 * 60)
+        let sleep = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [shortRest],
+            calendar: calendar
+        )
+
+        XCTAssertNil(SessionStore.makeMorningFrozenDailyMetric(
+            for: day,
+            computed: [],
+            sessions: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: now,
+            calendar: calendar
+        ), "a confirmed sub-3h rest cannot become current-morning physiology")
+        XCTAssertTrue(SessionStore.mergeDailyMetricHistory(
+            existing: [],
+            computed: [],
+            sessions: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: now,
+            calendar: calendar
+        ).isEmpty, "the current-morning merge cannot mint a row from a short rest")
+
+        let frozenBlank = SavedDailyMetric(
+            day: day,
+            recoveryPercent: nil,
+            recoveryConfidence: "unverified",
+            hrv: nil,
+            restingHR: nil,
+            respiratoryRate: nil,
+            sleepDuration: nil,
+            sleepSpan: nil,
+            sleepStart: nil,
+            sleepEnd: nil,
+            sleepSource: nil,
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: nil
+        )
+        let retained = SessionStore.mergeDailyMetricHistory(
+            existing: [frozenBlank],
+            computed: [],
+            sessions: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(retained, [frozenBlank],
+                       "a short rest cannot repair a blank frozen morning as physiological sleep")
+    }
+
+    func testLinkedResumedSleepPublishesOnCanonicalFinalWakeMorningAcrossMidnight() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let mainStart = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 8,
+            hour: 20,
+            minute: 30
+        )))
+        let main = confirmedSleep(
+            start: mainStart,
+            duration: 3 * 60 * 60,
+            source: "overnight_sleep",
+            id: "main-before-midnight"
+        )
+        let resumed = confirmedSleep(
+            start: main.end.addingTimeInterval(15 * 60),
+            duration: 2 * 60 * 60,
+            source: "resumed_sleep",
+            id: "resumed-after-midnight"
+        )
+        let sleep = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [main, resumed],
+            calendar: calendar
+        )
+
+        let metric = try XCTUnwrap(SessionStore.makeSavedDailyMetrics(
+            rollups: [],
+            sleep: sleep,
+            baseline: PersonalBaseline(),
+            calendar: calendar
+        ).first)
+        XCTAssertTrue(calendar.isDate(metric.day, inSameDayAs: resumed.end))
+        XCTAssertFalse(calendar.isDate(metric.day, inSameDayAs: main.end))
+        XCTAssertEqual(metric.sleepStart, main.start)
+        XCTAssertEqual(metric.sleepEnd, resumed.end)
+        XCTAssertEqual(metric.sleepDuration, main.duration + resumed.duration)
     }
 
     func testConfirmedSleepSavePublishesLightweightSnapshotBeforeDeferredHistory() throws {
@@ -46,7 +259,12 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         )
         let savePath = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(savePath.contains("setCachedConfirmedSleeps(sorted)"))
+        XCTAssertTrue(savePath.contains("setCachedConfirmedSleeps("))
+        XCTAssertTrue(
+            savePath.contains(
+                "refreshDerivedCaches: !archiveFreeLatestNightSettlement"
+            )
+        )
         XCTAssertTrue(savePath.contains("sleepHistorySnapshot = SleepHistorySnapshot("))
         XCTAssertTrue(savePath.contains("confirmedSleeps: sorted"))
         let publicationIndex = try XCTUnwrap(
@@ -81,6 +299,12 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         XCTAssertTrue(savePath.contains(
             "currentCycleStepReceiptDeferredUntilForeground = true"
         ))
+        XCTAssertTrue(savePath.contains(
+            "if archiveFreeLatestNightSettlement {"
+        ))
+        XCTAssertTrue(savePath.contains(
+            "reason: \"compact_latest_night_sleep_cycle_changed\""
+        ), "archive-free sleep settlement must immediately refresh the new compact cycle")
         XCTAssertTrue(savePath.contains(
             "reason: \"confirmed_sleep_cycle_changed\""
         ))

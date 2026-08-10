@@ -44,6 +44,34 @@ final class AtriaBackgroundDrainBacklogTests: XCTestCase {
         XCTAssertFalse(pending(s))
     }
 
+    func testFreshCaughtUpDebtOutranksStaleFrontierUntilObservationExpires() throws {
+        let (s, n) = try makeSuite(); defer { s.removePersistentDomain(forName: n) }
+        s.set(now.timeIntervalSince1970 - 5 * 60, forKey: debtObservedKey)
+        s.set(100, forKey: debtRecordsKey)
+        s.set(now.timeIntervalSince1970 - 8 * 60 * 60, forKey: frontierKey)
+
+        XCTAssertEqual(reason(s), .none,
+                       "fresh verified caught-up debt must suppress the stale phone-frontier fallback")
+        XCTAssertFalse(pending(s),
+                       "a caught-up 0x22 response must not re-arm raw catch-up every retry interval")
+
+        s.set(now.timeIntervalSince1970 - 16 * 60, forKey: debtObservedKey)
+        XCTAssertEqual(reason(s), .frontierStale,
+                       "after the observation expires, one stale-frontier probe may refresh strap truth")
+        XCTAssertTrue(pending(s))
+    }
+
+    func testTicketStillOutranksFreshCaughtUpDebtAndStaleFrontier() throws {
+        let (s, n) = try makeSuite(); defer { s.removePersistentDomain(forName: n) }
+        s.set(true, forKey: ticketKey)
+        s.set(now.timeIntervalSince1970 - 5 * 60, forKey: debtObservedKey)
+        s.set(100, forKey: debtRecordsKey)
+        s.set(now.timeIntervalSince1970 - 8 * 60 * 60, forKey: frontierKey)
+
+        XCTAssertEqual(reason(s), .ticket)
+        XCTAssertTrue(pending(s))
+    }
+
     func testStaleFrontierIsBacklog() throws {
         let (s, n) = try makeSuite(); defer { s.removePersistentDomain(forName: n) }
         s.set(now.timeIntervalSince1970 - 40 * 60, forKey: frontierKey) // 40 min behind

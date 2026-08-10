@@ -5,10 +5,25 @@ import Foundation
 /// corrupt one another. Framing is length-based because sensor payloads can
 /// legitimately contain the 0xAA start byte.
 final class AtriaWhoop4FrameReassembler: @unchecked Sendable {
+    /// Immutable callback-entry scope for one characteristic buffer. Ordinary
+    /// realtime traffic uses the all-nil scope. Historical traffic binds every
+    /// fragment to its transport generation and exact 0x16 serve command, so a
+    /// partial predecessor frame can never inherit a later command's authority.
+    struct Scope: Equatable, Sendable {
+        let historyGeneration: UInt64?
+        let historyServeToken: UInt64?
+
+        static let realtime = Scope(
+            historyGeneration: nil,
+            historyServeToken: nil
+        )
+    }
+
     private let lock = NSLock()
     private let maximumFrameBytes: Int
     private let maximumBufferedBytes: Int
     private var buffers: [String: [UInt8]] = [:]
+    private var scopes: [String: Scope] = [:]
 
     init(maximumFrameBytes: Int = 4_096,
          maximumBufferedBytes: Int = 8_192) {
@@ -16,11 +31,22 @@ final class AtriaWhoop4FrameReassembler: @unchecked Sendable {
         self.maximumBufferedBytes = max(maximumFrameBytes, maximumBufferedBytes)
     }
 
-    func feed(_ fragment: Data, source: String) -> [Data] {
+    func feed(
+        _ fragment: Data,
+        source: String,
+        scope: Scope = .realtime
+    ) -> [Data] {
         guard !fragment.isEmpty else { return [] }
         lock.lock()
         defer { lock.unlock() }
 
+        if scopes[source] != scope {
+            // The old partial bytes were received outside this exact serve
+            // command. Drop only this characteristic's non-authoritative
+            // reassembly cache; other streams remain independent.
+            buffers.removeValue(forKey: source)
+            scopes[source] = scope
+        }
         var buffer = buffers[source, default: []]
         buffer.append(contentsOf: fragment)
         var frames: [Data] = []
@@ -62,8 +88,10 @@ final class AtriaWhoop4FrameReassembler: @unchecked Sendable {
         defer { lock.unlock() }
         if let source {
             buffers.removeValue(forKey: source)
+            scopes.removeValue(forKey: source)
         } else {
             buffers.removeAll(keepingCapacity: true)
+            scopes.removeAll(keepingCapacity: true)
         }
     }
 

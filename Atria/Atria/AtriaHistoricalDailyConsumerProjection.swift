@@ -86,6 +86,33 @@ enum AtriaHistoricalDailyConsumerProjection {
         let closedCoverageIntervals: [ClosedCoverageInterval]
     }
 
+    /// Builds the daily-consumer proof from exactly the dependencies that the
+    /// daily projector will consume. The terminal coordinator prepares one
+    /// wider dependency window for all five consumers (sleep needs additional
+    /// history/lookahead), but those sleep-only adjacent chunks must not be
+    /// signed into a civil-day proof. Publication and verified reads share this
+    /// constructor so their proof bytes cannot drift.
+    static func makeSourceBoundInspectionProof(
+        source: AtriaHistoricalAggregateChunk,
+        dependencyChunks: [AtriaHistoricalAggregateChunk],
+        configuration: Configuration,
+        generationIdentifier: String,
+        catalogSnapshot: Data,
+        closedCoverageIntervals: [ClosedCoverageInterval]
+    ) throws -> InspectionProof {
+        let context = try dailyDependencyContext(
+            source: source,
+            dependencyChunks: dependencyChunks,
+            configuration: configuration
+        )
+        return try .make(
+            generationIdentifier: generationIdentifier,
+            catalogSnapshot: catalogSnapshot,
+            dependencyChunks: context.relevantChunks,
+            closedCoverageIntervals: closedCoverageIntervals
+        )
+    }
+
     struct HeartRateDistribution: Codable, Equatable, Sendable {
         let sampleCount: Int
         let sumBPM: Int64
@@ -443,6 +470,59 @@ enum AtriaHistoricalDailyConsumerProjection {
         let chunks: [AtriaHistoricalAggregateChunk]
     }
 
+    private struct DailyDependencyContext {
+        let dependencyStart: Date
+        let dependencyEnd: Date
+        let relevantChunks: [AtriaHistoricalAggregateChunk]
+    }
+
+    private static func dailyDependencyContext(
+        source: AtriaHistoricalAggregateChunk,
+        dependencyChunks: [AtriaHistoricalAggregateChunk],
+        configuration: Configuration
+    ) throws -> DailyDependencyContext {
+        try validate(configuration)
+        let allChunks = try validatedAndSorted(dependencyChunks)
+        guard let suppliedSource = allChunks.first(where: {
+            $0.source.chunkID == source.source.chunkID
+        }) else {
+            throw ProjectionError.sourceMissing
+        }
+        guard suppliedSource == source else {
+            throw ProjectionError.sourceMismatch
+        }
+
+        var calendar = Calendar(identifier: .gregorian)
+        guard let timeZone = TimeZone(
+            identifier: configuration.timeZoneIdentifier
+        ) else {
+            throw ProjectionError.invalidConfiguration
+        }
+        calendar.timeZone = timeZone
+        let dependencyStart = calendar.startOfDay(
+            for: source.source.firstTimestamp
+        )
+        let lastDayStart = calendar.startOfDay(
+            for: source.source.lastTimestamp
+        )
+        guard let dependencyEnd = calendar.date(
+            byAdding: .day,
+            value: 1,
+            to: lastDayStart
+        ) else {
+            throw ProjectionError.invalidConfiguration
+        }
+        let relevant = allChunks.filter {
+            $0.source.lastTimestamp >= dependencyStart
+                && $0.source.firstTimestamp < dependencyEnd
+        }
+        return .init(
+            dependencyStart: dependencyStart,
+            dependencyEnd: dependencyEnd,
+            relevantChunks: relevant
+        )
+    }
+
     private static func prepare(
         source: AtriaHistoricalAggregateChunk,
         dependencyChunks: [AtriaHistoricalAggregateChunk],
@@ -450,34 +530,26 @@ enum AtriaHistoricalDailyConsumerProjection {
         inspectionProof: InspectionProof,
         completionWatermark: Date
     ) throws -> Prepared {
-        try validate(configuration)
-        let allChunks = try validatedAndSorted(dependencyChunks)
-        guard let suppliedSource = allChunks.first(where: { $0.source.chunkID == source.source.chunkID }) else {
-            throw ProjectionError.sourceMissing
+        let context = try dailyDependencyContext(
+            source: source,
+            dependencyChunks: dependencyChunks,
+            configuration: configuration
+        )
+        guard completionWatermark >= context.dependencyEnd else {
+            throw ProjectionError.insufficientCompletionWatermark
         }
-        guard suppliedSource == source else { throw ProjectionError.sourceMismatch }
-
         var calendar = Calendar(identifier: .gregorian)
         guard let timeZone = TimeZone(identifier: configuration.timeZoneIdentifier) else {
             throw ProjectionError.invalidConfiguration
         }
         calendar.timeZone = timeZone
-        let dependencyStart = calendar.startOfDay(for: source.source.firstTimestamp)
-        let lastDayStart = calendar.startOfDay(for: source.source.lastTimestamp)
-        guard let dependencyEnd = calendar.date(byAdding: .day, value: 1, to: lastDayStart),
-              completionWatermark >= dependencyEnd else {
-            throw ProjectionError.insufficientCompletionWatermark
-        }
-        let relevant = allChunks.filter {
-            $0.source.lastTimestamp >= dependencyStart && $0.source.firstTimestamp < dependencyEnd
-        }
-        let dependencies = try relevant.map(dependency)
+        let dependencies = try context.relevantChunks.map(dependency)
         let evidence = try validatedInspectionEvidence(inspectionProof,
-                                                       covering: dependencyStart...dependencyEnd,
+                                                       covering: context.dependencyStart...context.dependencyEnd,
                                                        dependencies: dependencies)
         var days: [DateInterval] = []
-        var cursor = dependencyStart
-        while cursor < dependencyEnd {
+        var cursor = context.dependencyStart
+        while cursor < context.dependencyEnd {
             guard let next = calendar.date(byAdding: .day, value: 1, to: cursor), next > cursor else {
                 throw ProjectionError.invalidConfiguration
             }
@@ -488,10 +560,10 @@ enum AtriaHistoricalDailyConsumerProjection {
                      source: try projectionSource(source),
                      dependencies: dependencies,
                      inspectionEvidence: evidence,
-                     dependencyStart: dependencyStart,
-                     dependencyEnd: dependencyEnd,
+                     dependencyStart: context.dependencyStart,
+                     dependencyEnd: context.dependencyEnd,
                      days: days,
-                     chunks: relevant)
+                     chunks: context.relevantChunks)
     }
 
     private static func dailyMetrics(

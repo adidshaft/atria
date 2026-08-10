@@ -690,10 +690,8 @@ struct AtriaActivityTimelineStressSample: Equatable, Sendable {
     let t: Date
     let score: Double
     let levelRawValue: Int
-    /// True when a non-Stress evidence point (currently HR-only cardiac
-    /// arousal) occurred since the previous numeric Stress sample. The compact
-    /// chart must leave that interval blank even when it is shorter than the
-    /// ordinary telemetry-gap threshold.
+    /// Compatibility break marker for a rejected legacy evidence point. All
+    /// complete v3 facts—including HR-only estimates—share one numeric line.
     let startsNewSegment: Bool
 
     init(t: Date,
@@ -739,8 +737,9 @@ enum AtriaActivityStressHistoryPresentation {
             return "Detailed stress readings are kept for the past two days; this day is outside that window."
         }
         if isCurrentPhysiologicalDay {
-            if currentState.evidenceMode == .cardiacArousal {
-                return "HR-only cardiac arousal is available; numeric Stress needs qualified HR + HRV."
+            if currentState.minuteFact?.isHROnly == true
+                || currentState.evidenceMode == .cardiacArousal {
+                return "An HR-only physiological-stress estimate is available at lower confidence."
             }
             if currentState.kind == .scored {
                 return "No measured stress reading has been recorded since waking."
@@ -806,7 +805,7 @@ struct AtriaActivityTimelineStressProjection: Equatable, Sendable {
 /// averaged value or a synthetic timestamp. Each real gap remains a new series.
 enum AtriaActivityTimelineSignalProjection {
     static let heartRateGapThreshold: TimeInterval = 2 * 60
-    static let stressGapThreshold: TimeInterval = 5 * 60
+    static let stressGapThreshold = AtriaPhysiologicalStressModel.maximumFactContinuityGap
 
     static func heartRate(
         samples: [HistoricalArchive.HeartRatePoint],
@@ -2145,7 +2144,7 @@ struct AtriaActivityMonitorTab: View {
                 LineMark(x: .value("Time", point.t),
                          y: .value("Stress", point.score),
                          series: .value("Observed run", "stress-\(point.segment)"))
-                    .lineStyle(StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round))
+                    .lineStyle(AtriaChartVisualGrammar.traceLine)
                     .foregroundStyle(Metrics.electricStress)
                 if point.isOnlyPointInSegment {
                     PointMark(x: .value("Time", point.t),
@@ -2164,6 +2163,7 @@ struct AtriaActivityMonitorTab: View {
             }
         }
         .chartXAxis { timelineXAxis(axisTicks) }
+        .atriaGraphPlotSurface()
         .frame(height: 154)
         .chartOverlay { proxy in
             GeometryReader { geometry in
@@ -3046,11 +3046,11 @@ private struct AtriaActivityWorkoutDetailSheet: View {
     private var workoutStressAccessibilityLabel: String {
         switch workoutStressProjection.presentation {
         case .physiologicalStress:
-            return "Stress trace, \(workoutStressProjection.stressPoints.count) HR plus HRV readings during this workout."
+            return "Physiological stress trace, \(workoutStressProjection.stressPoints.count) measured readings during this workout; HR-only readings are lower confidence."
         case .cardiacArousal:
-            return "Cardiac arousal trace, \(workoutStressProjection.cardiacArousalPoints.count) qualitative HR-only readings during this workout; no numeric Stress score."
+            return "Physiological stress trace, \(workoutStressProjection.cardiacArousalPoints.count) legacy HR-only estimates during this workout; lower confidence."
         case .empty:
-            return "No measured Stress or cardiac-arousal readings during this workout."
+            return "No measured physiological-stress readings during this workout."
         }
     }
 
@@ -3100,7 +3100,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
 
                     case .cardiacArousal:
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("Cardiac arousal · HR only")
+                            Text("Physiological stress · HR-only estimate")
                                 .font(.caption2.weight(.bold))
                                 .foregroundStyle(.secondary)
                             AtriaCardiacArousalTimelineChart(
@@ -3108,7 +3108,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                                 referenceDate: workout.end,
                                 window: max(1, workout.end.timeIntervalSince(workout.start))
                             )
-                            Text("Qualitative Calm / Low / Medium bands · no 0–3 Stress score or High claim")
+                            Text("0–3 estimate · lower confidence")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                         }
@@ -4345,11 +4345,8 @@ struct AtriaWorkoutStressTraceSummary: Equatable {
     var high: Double? { points.map(\.reading.score).max() }
 }
 
-/// WHOOP-style in-activity stress trace (2026-08-05 user directive, screenshot
-/// reference): 0–3 scale, min/max annotations, line colored by height so the
-/// band reads directly off the chart. Renders only real qualified HR+HRV Stress
-/// readings — HR-only cardiac arousal is omitted and breaks the line via the
-/// shared segmenting rule.
+/// In-activity physiological-stress trace: the same continuous 0–3 v3 scale,
+/// real gaps, and lower-confidence HR-only provenance as the live timeline.
 struct AtriaWorkoutStressTraceChart: View {
     let readings: [AtriaStressDetailReading]
 
@@ -4370,45 +4367,69 @@ struct AtriaWorkoutStressTraceChart: View {
         let singletonSegments = singletonSegmentIDs
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(String(format: "%.1f low", low))
+                Text(String(format: "%.1f min", low))
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(Metrics.electricGreen)
                 Spacer()
-                Text(String(format: "high %.1f", high))
+                Text(String(format: "max %.1f", high))
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Metrics.electricRed)
             }
             Chart {
-                RuleMark(y: .value("Low starts", AtriaStressEvidenceProjection.lowStartsAt))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                    .foregroundStyle(.secondary.opacity(0.24))
-                RuleMark(y: .value("Medium starts", AtriaStressEvidenceProjection.mediumStartsAt))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                    .foregroundStyle(.secondary.opacity(0.24))
-                RuleMark(y: .value("High starts", AtriaStressEvidenceProjection.highStartsAt))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                    .foregroundStyle(.secondary.opacity(0.24))
+                RectangleMark(xStart: .value("Calm start", points.first?.reading.date ?? .distantPast),
+                              xEnd: .value("Calm end", points.last?.reading.date ?? .distantFuture),
+                              yStart: .value("Calm floor", 0),
+                              yEnd: .value("Calm ceiling", 1))
+                    .foregroundStyle(Metrics.electricGreen.opacity(0.055))
+                RectangleMark(xStart: .value("Moderate start", points.first?.reading.date ?? .distantPast),
+                              xEnd: .value("Moderate end", points.last?.reading.date ?? .distantFuture),
+                              yStart: .value("Moderate floor", 1),
+                              yEnd: .value("Moderate ceiling", 2))
+                    .foregroundStyle(Metrics.electricYellow.opacity(0.045))
+                RectangleMark(xStart: .value("High start", points.first?.reading.date ?? .distantPast),
+                              xEnd: .value("High end", points.last?.reading.date ?? .distantFuture),
+                              yStart: .value("High floor", 2),
+                              yEnd: .value("High ceiling", 3))
+                    .foregroundStyle(Metrics.electricRed.opacity(0.045))
+                RuleMark(y: .value("Calm to moderate", 1))
+                    .lineStyle(StrokeStyle(lineWidth: 0.75))
+                    .foregroundStyle(.secondary.opacity(0.18))
+                RuleMark(y: .value("Moderate to high", 2))
+                    .lineStyle(StrokeStyle(lineWidth: 0.75))
+                    .foregroundStyle(.secondary.opacity(0.18))
 
                 ForEach(points) { point in
+                    AreaMark(x: .value("Time", point.reading.date),
+                             y: .value("Stress", point.reading.score),
+                             series: .value("Segment", point.segment))
+                        .interpolationMethod(.linear)
+                        .foregroundStyle(.linearGradient(
+                            colors: [Metrics.electricGreen.opacity(0.04),
+                                     Metrics.electricYellow.opacity(0.10),
+                                     Metrics.electricRed.opacity(0.16)],
+                            startPoint: .bottom,
+                            endPoint: .top
+                        ))
                     LineMark(x: .value("Time", point.reading.date),
                              y: .value("Stress", point.reading.score),
                              series: .value("Segment", point.segment))
                         // Linear cannot overshoot the two real endpoint scores;
                         // monotone splines can imply a peak/trough never measured.
                         .interpolationMethod(.linear)
-                        .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round))
-                        // Height-mapped color: the gradient spans the fixed 0–3
-                        // axis, so a point's color IS its band — low blue, mid
-                        // green, high amber (the WHOOP reading of the same axis).
+                        .lineStyle(AtriaChartVisualGrammar.traceLine)
                         .foregroundStyle(
-                            .linearGradient(colors: [.blue, .green, .orange],
+                            .linearGradient(colors: [Metrics.electricGreen,
+                                                     Metrics.electricYellow,
+                                                     Metrics.electricRed],
                                             startPoint: .bottom,
                                             endPoint: .top)
                         )
                     if singletonSegments.contains(point.segment) {
                         PointMark(x: .value("Time", point.reading.date),
                                   y: .value("Stress", point.reading.score))
-                            .foregroundStyle(point.reading.score >= 2 ? .orange : .blue)
+                            .foregroundStyle(point.reading.score >= 2
+                                ? Metrics.electricRed
+                                : Metrics.electricGreen)
                             .symbolSize(20)
                     }
                 }
@@ -4427,6 +4448,7 @@ struct AtriaWorkoutStressTraceChart: View {
                         .font(.caption2)
                 }
             }
+            .atriaGraphPlotSurface()
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(workoutStressAccessibilityLabel)

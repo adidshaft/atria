@@ -69,4 +69,72 @@ final class AtriaWhoop4FrameReassemblerTests: XCTestCase {
         )
         XCTAssertEqual(reassembler.bufferedByteCount(source: "stream5"), 0)
     }
+
+    func testHistoricalFragmentCannotCrossServeArmBoundary() throws {
+        let frame = encodeFrame(
+            [0x2f, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]
+        )
+        let split = frame.count / 2
+        let fence = AtriaBLEHistoryTransportPhaseFence()
+        let preServe = fence.activate(generation: 81)
+        let reassembler = AtriaWhoop4FrameReassembler()
+
+        XCTAssertTrue(reassembler.feed(
+            frame.prefix(split),
+            source: "stream5",
+            scope: .init(
+                historyGeneration: preServe.generation,
+                historyServeToken: preServe.serveToken
+            )
+        ).isEmpty)
+        let serving = try XCTUnwrap(fence.armServe(ifMatching: 81))
+        XCTAssertTrue(reassembler.feed(
+            frame.suffix(from: split),
+            source: "stream5",
+            scope: .init(
+                historyGeneration: serving.generation,
+                historyServeToken: serving.serveToken
+            )
+        ).isEmpty)
+
+        reassembler.reset(source: "stream5")
+        XCTAssertEqual(reassembler.feed(
+            frame,
+            source: "stream5",
+            scope: .init(
+                historyGeneration: serving.generation,
+                historyServeToken: serving.serveToken
+            )
+        ), [frame])
+    }
+
+    func testHistoricalFragmentCannotCrossPageCommandBoundary() throws {
+        let frame = encodeFrame(
+            [0x31, 0x74, 0x0e, 0x09, 0x08, 0x07, 0x06]
+        )
+        let split = frame.count / 2
+        let fence = AtriaBLEHistoryTransportPhaseFence()
+        _ = fence.activate(generation: 82)
+        let firstPage = try XCTUnwrap(fence.armServe(ifMatching: 82))
+        let reassembler = AtriaWhoop4FrameReassembler()
+
+        XCTAssertTrue(reassembler.feed(
+            frame.prefix(split),
+            source: "RX/resp",
+            scope: .init(
+                historyGeneration: firstPage.generation,
+                historyServeToken: firstPage.serveToken
+            )
+        ).isEmpty)
+        let nextPage = try XCTUnwrap(fence.armServe(ifMatching: 82))
+        XCTAssertNotEqual(firstPage.serveToken, nextPage.serveToken)
+        XCTAssertTrue(reassembler.feed(
+            frame.suffix(from: split),
+            source: "RX/resp",
+            scope: .init(
+                historyGeneration: nextPage.generation,
+                historyServeToken: nextPage.serveToken
+            )
+        ).isEmpty)
+    }
 }

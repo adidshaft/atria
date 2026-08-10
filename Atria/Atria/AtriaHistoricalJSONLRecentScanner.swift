@@ -266,7 +266,19 @@ struct AtriaHistoricalJSONLRecentScanner {
                             break
                         }
                         let remaining = source.descriptor.size - readOffset
-                        let count = min(chunkSize, Int(remaining))
+                        let remainingBudget = byteBudget.map {
+                            max(0, $0 - statistics.byteCount)
+                        } ?? Int.max
+                        let count = min(
+                            chunkSize,
+                            Int(remaining),
+                            remainingBudget
+                        )
+                        guard count > 0 else {
+                            exhaustedByteBudget = true
+                            complete = false
+                            break
+                        }
                         // Per-CHUNK pool (2026-08-04 footprint kill, final
                         // layer): FileHandle.read returns an AUTORELEASED
                         // NSData-backed chunk, and this loop's thread pool
