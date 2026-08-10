@@ -805,6 +805,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     enum Status: String { case poweredOff = "Bluetooth off", scanning = "Scanning…",
         connecting = "Connecting…", connected = "Connected", disconnected = "Disconnected" }
 
+    enum FirstUseConnectionEvidence: Equatable {
+        case provisionalConnection
+        case whoopService
+        case standardHeartRateMeasurement
+    }
+
+    enum ConnectedIdentityPromotionDisposition: Equatable {
+        case preserveSavedBehavior
+        case awaitFirstUseValidation
+        case promoteFirstUseIdentity
+        case rejectUnqualifiedStandardHeartRate
+    }
+
+    enum ScanDiscoveryMode: Equatable {
+        case filtered
+        case broad
+    }
+
+    struct ScanOrchestrationPlan: Equatable {
+        let mode: ScanDiscoveryMode
+        let schedulesWidening: Bool
+        let schedulesRetry: Bool
+    }
+
     /// User-facing recovery state. This deliberately represents only transport
     /// progress and durable coverage, never a conclusion inferred from rows.
     enum HistoricalRecoveryPresentation: Equatable {
@@ -4654,6 +4678,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// out-of-range connects remain standing forever as before.
     private var scanRetryTask: Task<Void, Never>?
     private var scanWideningTask: Task<Void, Never>?
+    /// A first-use candidate admitted from a WHOOP-specific advertisement or
+    /// name may use discovery/receipt of standard 2A37 as its final validation.
+    /// An unqualified restored 180D peripheral never receives this authority;
+    /// it must expose WHOOP's proprietary service before becoming durable.
+    private var firstUseStandardHeartRateCandidateID: UUID?
+    /// Success accounting remains one edge per physical callback epoch even if
+    /// GATT validation races the deferred didConnect MainActor reducer.
+    private var durableConnectedIdentityRecordedEpoch: UInt64?
     private var pendingScanReason: String?
     private var freshScanFallbackTask: Task<Void, Never>?
     private var batteryChargeExpirationTask: Task<Void, Never>?
@@ -16550,9 +16582,83 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         AtriaDebugLog("ATRIADBG ble_link pending_known_reconnect status=cleared reason=%@", reason)
     }
 
+    nonisolated static func connectedIdentityPromotionDisposition(
+        savedPeripheralIdentifier: UUID?,
+        connectedPeripheralIdentifier: UUID,
+        evidence: FirstUseConnectionEvidence,
+        standardHeartRateCandidateWasWhoopQualified: Bool
+    ) -> ConnectedIdentityPromotionDisposition {
+        if savedPeripheralIdentifier == connectedPeripheralIdentifier {
+            return .preserveSavedBehavior
+        }
+        switch evidence {
+        case .provisionalConnection:
+            return .awaitFirstUseValidation
+        case .whoopService:
+            return .promoteFirstUseIdentity
+        case .standardHeartRateMeasurement:
+            return standardHeartRateCandidateWasWhoopQualified
+                ? .promoteFirstUseIdentity
+                : .rejectUnqualifiedStandardHeartRate
+        }
+    }
+
+    /// The only unsaved-to-saved write. A provisional CoreBluetooth connection
+    /// is not success: first use becomes durable only after WHOOP-specific GATT
+    /// or 2A37 from a candidate already qualified by WHOOP scan identity.
+    @discardableResult
+    static func persistObservedConnectedIdentity(
+        _ identifier: UUID,
+        evidence: FirstUseConnectionEvidence,
+        standardHeartRateCandidateWasWhoopQualified: Bool,
+        defaults: UserDefaults
+    ) -> Bool {
+        let savedIdentifier = defaults
+            .string(forKey: LinkDefaults.savedPeripheralUUID)
+            .flatMap(UUID.init(uuidString:))
+        guard connectedIdentityPromotionDisposition(
+            savedPeripheralIdentifier: savedIdentifier,
+            connectedPeripheralIdentifier: identifier,
+            evidence: evidence,
+            standardHeartRateCandidateWasWhoopQualified:
+                standardHeartRateCandidateWasWhoopQualified
+        ) == .promoteFirstUseIdentity else {
+            return false
+        }
+        defaults.set(
+            identifier.uuidString,
+            forKey: LinkDefaults.savedPeripheralUUID
+        )
+        return true
+    }
+
     private func recordLinkConnected(peripheral: CBPeripheral) {
-        clearPendingKnownReconnect(reason: "did_connect")
+        guard let callbackSource = bleCallbackEpochFence.captureIfAccepted(
+            peripheralID: peripheral.identifier,
+            peripheralObjectID: ObjectIdentifier(peripheral),
+            peripheralConnected: peripheral.state == .connected
+        ) else { return }
+        let callbackEpoch = callbackSource.epoch
         let defaults = UserDefaults.standard
+        guard defaults.string(forKey: LinkDefaults.savedPeripheralUUID)
+                == peripheral.identifier.uuidString else {
+            AtriaDebugLog(
+                "ATRIADBG ble_link status=provisional_connected reason=did_connect peripheral=%@ action=await_whoop_gatt_or_qualified_2a37_validation_saved_identity_unchanged",
+                peripheral.identifier.uuidString
+            )
+            return
+        }
+        clearPendingKnownReconnect(reason: "did_connect")
+        if durableConnectedIdentityRecordedEpoch == callbackEpoch {
+            // Duplicate evidence from the exact saved owner must not inflate
+            // durable success diagnostics, but the idempotent recovery
+            // reducers still need the signal. A restored/service-observed path
+            // can stamp this epoch before didConnect reaches MainActor.
+            scheduleRangeLossBackfillIfNeeded(reason: "did_connect")
+            reconcileHistoricalRecoveryPresentation(reason: "did_connect")
+            return
+        }
+        durableConnectedIdentityRecordedEpoch = callbackEpoch
         if let previousSavedStrap = defaults.string(
             forKey: LinkDefaults.savedPeripheralUUID
         ), previousSavedStrap != peripheral.identifier.uuidString {
@@ -16578,20 +16684,91 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reconcileHistoricalRecoveryPresentation(reason: "did_connect")
     }
 
-    private func recordLinkObservedConnected(reason: String, peripheral: CBPeripheral) {
+    private func recordLinkObservedConnected(
+        reason: String,
+        peripheral: CBPeripheral,
+        callbackSource: AtriaBLECallbackEpochFence.Source,
+        evidence: FirstUseConnectionEvidence
+    ) {
         let defaults = UserDefaults.standard
-        let persistedObservedIdentity = Self.persistObservedConnectedIdentity(
-            peripheral.identifier,
-            defaults: defaults
+        let whoopQualifiedForStandardHeartRate =
+            firstUseStandardHeartRateCandidateID == peripheral.identifier
+        let savedIdentifier = defaults
+            .string(forKey: LinkDefaults.savedPeripheralUUID)
+            .flatMap(UUID.init(uuidString:))
+        let disposition = Self.connectedIdentityPromotionDisposition(
+            savedPeripheralIdentifier: savedIdentifier,
+            connectedPeripheralIdentifier: peripheral.identifier,
+            evidence: evidence,
+            standardHeartRateCandidateWasWhoopQualified:
+                whoopQualifiedForStandardHeartRate
         )
-        if persistedObservedIdentity {
+        switch disposition {
+        case .awaitFirstUseValidation:
             AtriaDebugLog(
-                "ATRIADBG ble_link status=observed_connected_identity_saved reason=%@ peripheral=%@",
+                "ATRIADBG ble_link status=provisional_connected reason=%@ peripheral=%@ action=await_whoop_gatt_or_qualified_2a37_validation",
                 reason,
                 peripheral.identifier.uuidString
             )
+            return
+        case .rejectUnqualifiedStandardHeartRate:
+            AtriaDebugLog(
+                "ATRIADBG ble_link status=validation_rejected reason=%@ peripheral=%@ evidence=generic_2a37 action=retain_unsaved",
+                reason,
+                peripheral.identifier.uuidString
+            )
+            return
+        case .promoteFirstUseIdentity, .preserveSavedBehavior:
+            // Promotion and observed-success publication must revalidate the
+            // complete delegate-entry proof at the mutation site. A UUID and
+            // epoch scalar are insufficient: restoration can vend an
+            // object-distinct peripheral with the same UUID, and a queued
+            // MainActor task can outlive the source that originally admitted
+            // it. Fail closed before touching durable identity or success.
+            guard acceptsBLECallback(
+                source: callbackSource,
+                peripheral: peripheral
+            ) else {
+                AtriaDebugLog(
+                    "ATRIADBG ble_link status=validation_rejected reason=%@ peripheral=%@ evidence=%@ action=stale_exact_callback_source_no_mutation",
+                    reason,
+                    peripheral.identifier.uuidString,
+                    String(describing: evidence)
+                )
+                return
+            }
         }
+        switch disposition {
+        case .promoteFirstUseIdentity:
+            if let savedIdentifier,
+               savedIdentifier != peripheral.identifier {
+                workoutHistoryPreemptionSuccessorGate.retire()
+            }
+            guard Self.persistObservedConnectedIdentity(
+                peripheral.identifier,
+                evidence: evidence,
+                standardHeartRateCandidateWasWhoopQualified:
+                    whoopQualifiedForStandardHeartRate,
+                defaults: defaults
+            ) else { return }
+            clearPendingKnownReconnect(reason: reason)
+            firstUseStandardHeartRateCandidateID = nil
+            scheduleRangeLossBackfillIfNeeded(reason: reason)
+            reconcileHistoricalRecoveryPresentation(reason: reason)
+            AtriaDebugLog(
+                "ATRIADBG ble_link status=validated_identity_saved reason=%@ peripheral=%@ evidence=%@",
+                reason,
+                peripheral.identifier.uuidString,
+                String(describing: evidence)
+            )
+        case .preserveSavedBehavior:
+            break
+        case .awaitFirstUseValidation, .rejectUnqualifiedStandardHeartRate:
+            return
+        }
+        guard durableConnectedIdentityRecordedEpoch != callbackSource.epoch else { return }
         guard defaults.string(forKey: LinkDefaults.lastStatus) != "connected" else { return }
+        durableConnectedIdentityRecordedEpoch = callbackSource.epoch
         let successes = defaults.integer(forKey: LinkDefaults.successes) + 1
         defaults.set(successes, forKey: LinkDefaults.successes)
         defaults.set("connected", forKey: LinkDefaults.lastStatus)
@@ -16605,23 +16782,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               defaults.integer(forKey: LinkDefaults.disconnects),
               defaults.integer(forKey: LinkDefaults.failures),
               peripheral.name ?? deviceName)
-    }
-
-    /// CoreBluetooth may restore a peripheral that is already connected and
-    /// therefore never emit `didConnect`. Persist that observed identity before
-    /// the status de-duplication guard so a fresh iOS bond remains durable
-    /// across relaunch and can own current-cycle receipts.
-    @discardableResult
-    static func persistObservedConnectedIdentity(
-        _ identifier: UUID,
-        defaults: UserDefaults
-    ) -> Bool {
-        let value = identifier.uuidString
-        guard defaults.string(forKey: LinkDefaults.savedPeripheralUUID) != value else {
-            return false
-        }
-        defaults.set(value, forKey: LinkDefaults.savedPeripheralUUID)
-        return true
     }
 
     private func resetLinkDiagnosticsForDebugLaunch(arguments: [String]) {
@@ -20775,7 +20935,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             scanRetryCount = 0
         }
         let allowBroadScan = shouldAllowBroadScan(for: reason)
-        let useBroadScan = shouldUseBroadScanImmediately(for: reason, allowBroadScan: allowBroadScan)
+        let hasEverConnected = UserDefaults.standard.integer(
+            forKey: LinkDefaults.successes
+        ) > 0
+        let scanPlan = Self.scanOrchestrationPlan(
+            broadScanAllowed: allowBroadScan,
+            useBroadImmediately: shouldUseBroadScanImmediately(
+                for: reason,
+                allowBroadScan: allowBroadScan,
+                hasEverConnected: hasEverConnected
+            ),
+            retryCount: scanRetryCount,
+            maximumRetryCount: maxScanRetries
+        )
+        let useBroadScan = scanPlan.mode == .broad
         let requestedMode = useBroadScan ? "broad" : "filtered"
         if status == .scanning,
            peripheral == nil,
@@ -20809,10 +20982,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               allowBroadScan ? 1 : 0)
         central.scanForPeripherals(withServices: useBroadScan ? nil : UUIDs.scanServices,
                                    options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
-        if allowBroadScan && !useBroadScan {
+        if scanPlan.schedulesWidening {
             scheduleScanWidening(reason: reason)
         }
-        scheduleScanRetry(reason: reason)
+        if scanPlan.schedulesRetry {
+            scheduleScanRetry(reason: reason)
+        }
     }
 
     nonisolated static func shouldHoldUnsavedRestoredCandidate(
@@ -20823,16 +20998,51 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return state == .connecting || state == .disconnecting
     }
 
-    private func shouldUseBroadScanImmediately(for reason: String, allowBroadScan: Bool) -> Bool {
+    nonisolated static func scanOrchestrationPlan(
+        broadScanAllowed: Bool,
+        useBroadImmediately: Bool,
+        retryCount: Int,
+        maximumRetryCount: Int
+    ) -> ScanOrchestrationPlan {
+        let mode: ScanDiscoveryMode = broadScanAllowed && useBroadImmediately
+            ? .broad
+            : .filtered
+        return ScanOrchestrationPlan(
+            mode: mode,
+            schedulesWidening: broadScanAllowed && mode == .filtered,
+            schedulesRetry: retryCount < maximumRetryCount
+        )
+    }
+
+    nonisolated static func broadScanStartsImmediately(
+        reason: String,
+        allowBroadScan: Bool,
+        hasEverConnected: Bool,
+        retryCount: Int
+    ) -> Bool {
         guard allowBroadScan else { return false }
-        if isFreshBondScanReason(reason) {
+        if reason == "peer_removed_pairing"
+            || reason == "onboarding_strap"
+            || reason == "onboarding_primary_connect"
+            || reason.hasPrefix("read_only_history_restored_cutover")
+            || reason.contains("_broad")
+            || retryCount > 0 {
             return true
         }
-        if reason.contains("_broad") || scanRetryCount > 0 {
-            return true
-        }
-        let hasEverConnected = UserDefaults.standard.integer(forKey: LinkDefaults.successes) > 0
-        return !hasEverConnected && isInitialAutomaticSetupReason(reason)
+        return !hasEverConnected && Self.isInitialAutomaticSetupReason(reason)
+    }
+
+    private func shouldUseBroadScanImmediately(
+        for reason: String,
+        allowBroadScan: Bool,
+        hasEverConnected: Bool
+    ) -> Bool {
+        Self.broadScanStartsImmediately(
+            reason: reason,
+            allowBroadScan: allowBroadScan,
+            hasEverConnected: hasEverConnected,
+            retryCount: scanRetryCount
+        )
     }
 
     private func shouldAllowBroadScan(for reason: String) -> Bool {
@@ -20875,12 +21085,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         reason.hasPrefix("read_only_history_restored_cutover")
     }
 
-    private func isInitialAutomaticSetupReason(_ reason: String) -> Bool {
+    nonisolated static func isInitialAutomaticSetupReason(_ reason: String) -> Bool {
         reason == "home_appear"
             || reason == "status_disconnected"
             || reason.hasPrefix("connection_guide")
             || reason == "scene_active_resume"
             || reason == "did_fail_to_connect_recovery"
+            || reason == "central_powered_on"
     }
 
     nonisolated static func scanCandidateHasStrapIdentity(
@@ -20892,6 +21103,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             || uppercasedName?.contains("WHO") == true
         return advertisedServices.contains(UUIDs.strapService)
             || hasWhoopName
+    }
+
+    nonisolated static func shouldClaimCurrentScanCandidate(
+        hasStrapIdentity: Bool,
+        isActivelyScanning: Bool,
+        hasCurrentPeripheralOwner: Bool
+    ) -> Bool {
+        hasStrapIdentity && isActivelyScanning && !hasCurrentPeripheralOwner
     }
 
     private func scheduleScanWidening(reason: String) {
@@ -20925,7 +21144,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func scanWideningDelay(for reason: String) -> Duration {
         let hasEverConnected = UserDefaults.standard.integer(forKey: LinkDefaults.successes) > 0
-        if !hasEverConnected && isInitialAutomaticSetupReason(reason) {
+        if !hasEverConnected && Self.isInitialAutomaticSetupReason(reason) {
             return .milliseconds(900)
         }
         return .seconds(2)
@@ -20933,7 +21152,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     private func scanRetryDelay(for reason: String) -> Duration {
         let hasEverConnected = UserDefaults.standard.integer(forKey: LinkDefaults.successes) > 0
-        if !hasEverConnected && isInitialAutomaticSetupReason(reason) {
+        if !hasEverConnected && Self.isInitialAutomaticSetupReason(reason) {
             return .milliseconds(2800)
         }
         return .seconds(5)
@@ -20961,6 +21180,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         central.stopScan()
         isActivelyScanning = false
         peripheral = p
+        let savedIdentifier = UserDefaults.standard
+            .string(forKey: LinkDefaults.savedPeripheralUUID)
+            .flatMap(UUID.init(uuidString:))
+        if savedIdentifier != p.identifier {
+            // Both callers reach `attach` only after WHOOP-specific name or
+            // proprietary-service qualification. This grants standard 2A37
+            // final-validation authority to this exact candidate, never to a
+            // generic 180D peripheral restored without advertisement facts.
+            firstUseStandardHeartRateCandidateID = p.identifier
+        }
         assignIfChanged(\.deviceName, name)
         recomputeConnectionStatus(reason: "attach")
         p.delegate = self
@@ -21632,6 +21861,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     func forgetSavedStrap(reason: String) {
         let defaults = UserDefaults.standard
         defaults.removeObject(forKey: LinkDefaults.savedPeripheralUUID)
+        firstUseStandardHeartRateCandidateID = nil
         workoutHistoryPreemptionSuccessorGate.retire()
         userRequestedDisconnect = true
         reconnectWatchdogTask?.cancel()
@@ -23635,6 +23865,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         at sampleTime: Date,
         callbackSource: AtriaBLECallbackEpochFence.Source?
     ) {
+        if let callbackSource,
+           let connectedPeripheral = peripheral {
+            recordLinkObservedConnected(
+                reason: "accepted_standard_2a37",
+                peripheral: connectedPeripheral,
+                callbackSource: callbackSource,
+                evidence: .standardHeartRateMeasurement
+            )
+        }
         let shouldForceFirstJournalSave = longWearModeEnabled && session.isEmpty
         recordAcceptedHRSample(rate: rate, at: sampleTime)
         // A restored CoreBluetooth link can bypass both didConnect and the
@@ -42006,13 +42245,20 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     : "long_wear_process_restore_gap"
             )
         let restoreCallbackEpoch: UInt64
+        let restoreCallbackSource: AtriaBLECallbackEpochFence.Source?
         if restoredPeripheral.state == .connected {
             restoreCallbackEpoch = bleCallbackEpochFence.activate(
                 peripheralID: restoredPeripheral.identifier,
                 peripheralObjectID: ObjectIdentifier(restoredPeripheral)
             )
+            restoreCallbackSource = AtriaBLECallbackEpochFence.Source(
+                epoch: restoreCallbackEpoch,
+                peripheralID: restoredPeripheral.identifier,
+                peripheralObjectID: ObjectIdentifier(restoredPeripheral)
+            )
         } else {
             restoreCallbackEpoch = bleCallbackEpochFence.epoch
+            restoreCallbackSource = nil
         }
         // A connected restoration does not emit `didConnect`. Assign the
         // delegate and start the same enable-only HR transaction synchronously;
@@ -42138,7 +42384,21 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 ) {
                     return
                 }
-                self.recordLinkObservedConnected(reason: "state_restore_connected", peripheral: restoredPeripheral)
+                if savedPeripheralIdentifier != restoredPeripheral.identifier,
+                   Self.scanCandidateHasStrapIdentity(
+                    advertisedServices: [],
+                    advertisedName: restoredPeripheral.name
+                   ) {
+                    self.firstUseStandardHeartRateCandidateID =
+                        restoredPeripheral.identifier
+                }
+                guard let restoreCallbackSource else { return }
+                self.recordLinkObservedConnected(
+                    reason: "state_restore_connected",
+                    peripheral: restoredPeripheral,
+                    callbackSource: restoreCallbackSource,
+                    evidence: .provisionalConnection
+                )
                 self.scheduleRangeLossBackfillIfNeeded(reason: "state_restore_connected")
                 if self.beginRetiredBatteryProbeRecoveryIfNeeded(restoredPeripheral) {
                     return
@@ -42232,8 +42492,11 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             guard self.centralEventFence.accepts(
                 centralToken,
                 central: central
-            ), self.isActivelyScanning,
-               self.peripheral == nil else { return }   // first current-scan match wins
+            ), Self.shouldClaimCurrentScanCandidate(
+                hasStrapIdentity: isStrap,
+                isActivelyScanning: self.isActivelyScanning,
+                hasCurrentPeripheralOwner: self.peripheral != nil
+            ) else { return }   // first current-scan match wins
             self.lastScanMatchAt = Date()
             AtriaDebugLog("ATRIADBG ble_scan status=matched name=%@ rssi=%@ services=%d",
                   name,
@@ -43670,12 +43933,22 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             }
             return
         }
+        let serviceUUIDs = (peripheral.services ?? []).map(\.uuid)
+        let connectionEvidence: FirstUseConnectionEvidence =
+            serviceUUIDs.contains(Self.UUIDs.strapService)
+                ? .whoopService
+                : .provisionalConnection
         Task { @MainActor in
             guard self.acceptsBLECallback(
                 source: callbackSource,
                 peripheral: peripheral
             ) else { return }
-            self.recordLinkObservedConnected(reason: "service_discovery", peripheral: peripheral)
+            self.recordLinkObservedConnected(
+                reason: "service_discovery",
+                peripheral: peripheral,
+                callbackSource: callbackSource,
+                evidence: connectionEvidence
+            )
         }
         let workoutBankTransportRequested =
             fastLaneDefaults.object(
@@ -43813,7 +44086,6 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         // A strap that attached via name/HR-service matching but does NOT expose
         // the 4.0-class 61080001 service is likely newer hardware (5.0/MG). It must
         // surface as unknown — never silently inherit strap4Class capabilities.
-        let serviceUUIDs = (peripheral.services ?? []).map(\.uuid)
         Task { @MainActor in
             guard self.acceptsBLECallback(
                 source: callbackSource,
@@ -43864,6 +44136,25 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                                  forKey: BackgroundHRDiscoveryDefaults.error)
         } else {
             fastLaneDefaults.removeObject(forKey: BackgroundHRDiscoveryDefaults.error)
+        }
+        let discoveredStandardHeartRateMeasurement = error == nil
+            && service.uuid == Self.UUIDs.heartRateService
+            && (service.characteristics ?? []).contains {
+                $0.uuid == Self.UUIDs.heartRateMeasure
+            }
+        if discoveredStandardHeartRateMeasurement {
+            Task { @MainActor in
+                guard self.acceptsBLECallback(
+                    source: callbackSource,
+                    peripheral: peripheral
+                ) else { return }
+                self.recordLinkObservedConnected(
+                    reason: "standard_2a37_discovery",
+                    peripheral: peripheral,
+                    callbackSource: callbackSource,
+                    evidence: .standardHeartRateMeasurement
+                )
+            }
         }
         if motionHandshakeDiagnostic != nil {
             let characteristics = service.characteristics ?? []
