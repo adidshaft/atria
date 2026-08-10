@@ -137,17 +137,21 @@ struct AtriaTrendChartCard: View {
             // sits directly under the pickers; the range dock, report, balance map,
             // glance board, range lens, position band and dot-strip context follow
             // below the chart as supporting detail.
-            if prepared.series.count < 2 {
+            if prepared.series.isEmpty {
                 emptyState
             } else {
+                // One observed day is still a real reading: render it as a lone
+                // point on a short chart rather than hiding it behind the empty
+                // state. Two-to-four days stay compact; only a genuinely dense
+                // window earns the full-height trend canvas.
                 chart
-                    .frame(height: 210)
+                    .frame(height: sparseTrendChartHeight)
                     // Clip the AreaMark gradient to the chart bounds. Without this
-                    // the area fill bleeds below the 210pt frame; it was previously
+                    // the area fill bleeds below the frame; it was previously
                     // hidden because the chart sat at the card's bottom edge, but
                     // chart-first ordering now places content beneath it.
                     .clipped()
-                if priorComparisonIsAvailable {
+                if prepared.series.count >= 2, priorComparisonIsAvailable {
                     priorComparisonControl
                 }
             }
@@ -474,6 +478,38 @@ struct AtriaTrendChartCard: View {
         coreChart
     }
 
+    // MARK: - Sparse-series grammar (pure policy in AtriaTrendSparseGrammar)
+
+    /// Segments holding a single observed day — an isolated point whose LineMark
+    /// draws nothing, so it must keep an explicit PointMark to stay visible.
+    private var trendSingletonSegments: Set<Int> {
+        AtriaTrendSparseGrammar.singletonSegments(prepared.series.map(\.segment))
+    }
+
+    /// The area fill is a density cue; it appears only once the window has both
+    /// 5+ observations AND meets this range's coverage-confidence target.
+    private var trendAreaAllowed: Bool {
+        AtriaTrendSparseGrammar.areaAllowed(observedCount: prepared.series.count,
+                                            confidenceTargetPoints: range.confidenceTargetPoints)
+    }
+
+    /// Sparse windows (<= 4 observed days) mark every real day so none vanishes.
+    private var trendMarksEveryPoint: Bool {
+        AtriaTrendSparseGrammar.marksEveryPoint(observedCount: prepared.series.count)
+    }
+
+    private func trendPointMarkVisible(_ sample: AtriaTrendPoint.Sample) -> Bool {
+        trendMarksEveryPoint
+            || trendSingletonSegments.contains(sample.segment)
+            || sample.id == prepared.series.last?.id
+    }
+
+    /// Shrinks the card for sparse evidence so two points do not occupy a full
+    /// 210-pt trend canvas.
+    private var sparseTrendChartHeight: CGFloat {
+        AtriaTrendSparseGrammar.chartHeight(observedCount: prepared.series.count)
+    }
+
     private var coreChart: some View {
         Chart {
             if showsPriorComparison {
@@ -483,8 +519,8 @@ struct AtriaTrendChartCard: View {
                         y: .value("Prior \(metric.shortLabel)", ghostSample.value),
                         series: .value("Series", "prior-\(ghostSample.segment)")
                     )
-                    .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                    .interpolationMethod(.monotone)
+                    .lineStyle(AtriaChartVisualGrammar.comparisonLine)
                     // Prior-period line in neutral gray, not the metric tint: a
                     // faint-tint ghost overlapped the solid tinted current line
                     // illegibly. Gray reads clearly as "before" against the tint.
@@ -493,36 +529,49 @@ struct AtriaTrendChartCard: View {
             }
 
             ForEach(prepared.series) { sample in
-                AreaMark(
-                    x: .value("Date", sample.date),
-                    y: .value(metric.shortLabel, sample.value),
-                    series: .value("Series", "current-fill-\(sample.segment)")
-                )
-                .interpolationMethod(.linear)
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: [metric.tint.opacity(0.30), metric.tint.opacity(0.02)],
-                        startPoint: .top, endPoint: .bottom
+                // Area fill is a density signal, not decoration: a handful of
+                // real points must not read as a filled "mountain". It appears
+                // only once the window has 5+ observations AND meets this range's
+                // coverage-confidence target.
+                if trendAreaAllowed {
+                    AreaMark(
+                        x: .value("Date", sample.date),
+                        y: .value(metric.shortLabel, sample.value),
+                        series: .value("Series", "current-fill-\(sample.segment)")
                     )
-                )
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [metric.tint.opacity(0.30), metric.tint.opacity(0.02)],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                    )
+                }
 
+                // A line only ever connects points inside one contiguous run
+                // (same segment); a lone-day segment carries a single datum and
+                // draws nothing, so its PointMark below is what keeps it visible.
                 LineMark(
                     x: .value("Date", sample.date),
                     y: .value(metric.shortLabel, sample.value),
                     series: .value("Series", "current-line-\(sample.segment)")
                 )
-                .interpolationMethod(.linear)
-                .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .interpolationMethod(.monotone)
+                .lineStyle(AtriaChartVisualGrammar.trendLine)
                 .foregroundStyle(metric.tint)
-            }
 
-            if let latest = prepared.series.last {
-                PointMark(
-                    x: .value("Date", latest.date),
-                    y: .value(metric.shortLabel, latest.value)
-                )
-                .symbolSize(70)
-                .foregroundStyle(metric.tint)
+                // A PointMark for EVERY observed day in a sparse window, and for
+                // every isolated (single-day) segment and the latest reading in a
+                // denser one — never only `prepared.series.last`, which left
+                // earlier singleton days invisible.
+                if trendPointMarkVisible(sample) {
+                    PointMark(
+                        x: .value("Date", sample.date),
+                        y: .value(metric.shortLabel, sample.value)
+                    )
+                    .symbolSize(trendMarksEveryPoint ? 54 : 70)
+                    .foregroundStyle(metric.tint)
+                }
             }
 
             if let scrubbed = scrubbedSample {
@@ -3060,6 +3109,42 @@ struct AtriaTrendPoint: Equatable, Identifiable {
 /// observations, sorted, and increments `segment` only when at least one civil
 /// day has no reading. Charts use the segment as their series identity so they
 /// never imply measurements inside an unworn gap.
+/// Pure sparse-series grammar for the trend card. Small samples must read as
+/// discrete evidence (points, maybe a thin in-segment line) rather than a
+/// dramatic filled area; a lone observed day must always keep a visible point.
+/// Kept value-typed so the count/coverage rules are unit-testable without a view.
+enum AtriaTrendSparseGrammar {
+    /// Area fill is a density signal: only for 5+ observations that also meet
+    /// this range's coverage-confidence target. Below that the chart is points
+    /// (and optional thin in-segment lines) with no fill.
+    static func areaAllowed(observedCount: Int, confidenceTargetPoints: Int) -> Bool {
+        observedCount >= max(5, confidenceTargetPoints)
+    }
+
+    /// A sparse window (<= 4 observed days) marks every real day so none of the
+    /// earlier singleton days becomes invisible.
+    static func marksEveryPoint(observedCount: Int) -> Bool {
+        observedCount <= 4
+    }
+
+    /// Segment ids that contain exactly one observed day.
+    static func singletonSegments(_ segments: [Int]) -> Set<Int> {
+        var counts: [Int: Int] = [:]
+        for segment in segments { counts[segment, default: 0] += 1 }
+        return Set(counts.filter { $0.value == 1 }.keys)
+    }
+
+    /// Card height shrinks for sparse evidence so two points never occupy the
+    /// full trend canvas.
+    static func chartHeight(observedCount: Int) -> CGFloat {
+        switch observedCount {
+        case ...1: return 132
+        case 2...4: return 164
+        default: return 210
+        }
+    }
+}
+
 enum AtriaTrendGapPolicy {
     static func assigningSegments(
         to samples: [AtriaTrendPoint.Sample],

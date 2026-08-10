@@ -238,6 +238,74 @@ struct AtriaStressElevatedWindow: Identifiable, Equatable {
     var duration: TimeInterval { max(0, end.timeIntervalSince(start)) }
 }
 
+/// A bounded run of consecutive minute facts that share one context kind
+/// (asleep, or qualified activity). Coalescing contiguous facts into a single
+/// interval replaces the per-minute ±30 s "barcode" — one narrow rectangle per
+/// reading — with one continuous band, without ever bridging a real telemetry
+/// gap or a context change. A run breaks on a non-member reading, on a gap
+/// longer than the shared continuity threshold, or at the end of the series.
+struct AtriaStressContextInterval: Identifiable, Equatable {
+    let start: Date
+    let end: Date
+    let readingCount: Int
+
+    var id: TimeInterval { start.timeIntervalSinceReferenceDate }
+    var duration: TimeInterval { max(0, end.timeIntervalSince(start)) }
+
+    static func intervals(
+        from readings: [AtriaStressDetailReading],
+        gapThreshold: TimeInterval = AtriaPhysiologicalStressModel.maximumFactContinuityGap,
+        minimumWidth: TimeInterval = 60,
+        isMember: (AtriaStressDetailReading) -> Bool
+    ) -> [AtriaStressContextInterval] {
+        let sorted = readings.sorted { $0.date < $1.date }
+        var intervals: [AtriaStressContextInterval] = []
+        var start: Date?
+        var end: Date?
+        var count = 0
+        var previousMemberDate: Date?
+
+        func flush() {
+            guard let start, let end, count > 0 else { return }
+            // A lone or very short run still needs a visible width equal to one
+            // minute fact's own coverage; this is bounded and never bridges the
+            // gap to the next reading (a gap longer than the threshold already
+            // closed the run).
+            let boundedEnd = max(end, start.addingTimeInterval(minimumWidth))
+            intervals.append(AtriaStressContextInterval(start: start,
+                                                        end: boundedEnd,
+                                                        readingCount: count))
+        }
+
+        for reading in sorted {
+            if isMember(reading) {
+                let continuesRun = start != nil && (previousMemberDate.map {
+                    let gap = reading.date.timeIntervalSince($0)
+                    return gap > 0 && gap <= gapThreshold
+                } ?? false)
+                if continuesRun {
+                    end = reading.date
+                    count += 1
+                } else {
+                    flush()
+                    start = reading.date
+                    end = reading.date
+                    count = 1
+                }
+                previousMemberDate = reading.date
+            } else {
+                flush()
+                start = nil
+                end = nil
+                count = 0
+                previousMemberDate = nil
+            }
+        }
+        flush()
+        return intervals
+    }
+}
+
 /// Measured-only elevated-stress evidence for the visible timeline. Atria
 /// integrates only adjacent readings with a plausible 30-second history
 /// cadence; gaps, isolated peaks, and short sparse runs never become windows.
@@ -1272,25 +1340,24 @@ private struct AtriaStressTimelineChart: View, Equatable {
                 .lineStyle(StrokeStyle(lineWidth: 0.75))
                 .foregroundStyle(.secondary.opacity(0.18))
 
-            ForEach(points.filter {
-                $0.reading.sleepContext == .asleep
-            }) { point in
+            ForEach(AtriaStressContextInterval.intervals(from: points.map(\.reading)) {
+                $0.sleepContext == .asleep
+            }) { interval in
                 RectangleMark(
-                    xStart: .value("Sleep start", point.reading.date.addingTimeInterval(-30)),
-                    xEnd: .value("Sleep end", point.reading.date.addingTimeInterval(30)),
+                    xStart: .value("Sleep start", interval.start),
+                    xEnd: .value("Sleep end", interval.end),
                     yStart: .value("Sleep floor", 0),
                     yEnd: .value("Sleep ceiling", 3)
                 )
                 .foregroundStyle(Color.indigo.opacity(0.09))
             }
 
-            ForEach(points.filter {
-                $0.reading.motionContext.qualified
-                    && $0.reading.motionContext.kind == .activity
-            }) { point in
+            ForEach(AtriaStressContextInterval.intervals(from: points.map(\.reading)) {
+                $0.motionContext.qualified && $0.motionContext.kind == .activity
+            }) { interval in
                 RectangleMark(
-                    xStart: .value("Activity start", point.reading.date.addingTimeInterval(-30)),
-                    xEnd: .value("Activity end", point.reading.date.addingTimeInterval(30)),
+                    xStart: .value("Activity start", interval.start),
+                    xEnd: .value("Activity end", interval.end),
                     yStart: .value("Activity floor", 0),
                     yEnd: .value("Activity ceiling", 3)
                 )
