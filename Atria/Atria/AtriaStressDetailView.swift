@@ -1270,9 +1270,9 @@ struct AtriaStressTimelineEvidenceProjection: Equatable {
     static func make(readings: [AtriaStressDetailReading]) -> Self {
         // Ambient / live stress card (Health + Vitals): brief signal hiccups
         // (≤5 min) read as one smooth run, while a genuine dropout still breaks
-        // and stays blank. Focused workout traces keep the stricter
-        // fact-continuity gap (the `segment` default), where a short hole is
-        // meaningful.
+        // and stays blank — the same display-continuity policy every rendered
+        // stress trace now follows. The stricter fact-continuity gap (the
+        // `segment` default) is reserved for coverage accounting, not display.
         Self(stressPoints: AtriaStressTimelinePoint.segment(
                 readings,
                 gapThreshold: AtriaChartVisualGrammar.traceDisplayContinuityGap),

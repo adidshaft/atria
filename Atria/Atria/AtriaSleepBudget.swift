@@ -4,6 +4,20 @@ enum AtriaSleepBudget {
     /// Minimum independent five-minute RR windows required before a sleep
     /// observation can contribute HRV evidence to any product surface.
     static let minimumQualifiedHRVWindows = 3
+
+    /// Upper bound (hours) on accumulated sleep debt fed into any downstream
+    /// calculation. Set to ~one night's need: lost sleep is only partially
+    /// recoverable, so debt must not grow without bound and inflate tonight's
+    /// Sleep Need indefinitely across a long run of short nights.
+    ///
+    /// VALIDATION-GATED: 8.0h is an engineering cap, not a clinically validated
+    /// recovery ceiling; it awaits calibration against real multi-night data.
+    ///
+    /// STRUCTURAL BASIS ONLY: WHOOP's sleep-need patent (US20240252121A1)
+    /// describes a debt term that is scaled AND capped. Atria independently
+    /// adopts the "capped" structure with its own value; it does NOT reproduce
+    /// any undisclosed WHOOP coefficient.
+    static let maxSleepDebtHours: Double = 8.0
     /// Itemized sleep-need math (2026-07-07 design-handoff ledger): the same
     /// four terms sleepNeed() always combined, exposed so UI can show its work.
     struct NeedComponents: Equatable {
@@ -61,7 +75,11 @@ enum AtriaSleepBudget {
         // hard day (15) adds 37 min and an all-out day (21) adds ~69 min. The 8.0
         // floor tracks the recalibrated strain scale (light all-day ≈ 8–9).
         let strainAdder = max(0, min(yesterdayStrain ?? 0, 21) - 8.0) * (0.62 / 7.0)
-        let debtAdder = max(0, debtHours) * 0.5
+        // Defensively clamp the debt input to the same cap the accumulator
+        // applies, so a stale or externally supplied debt value can never
+        // inflate the need beyond the validated-gated bound (see
+        // `maxSleepDebtHours`).
+        let debtAdder = min(max(0, debtHours), maxSleepDebtHours) * 0.5
         let napCredit = max(0, sameDayNapHours) * 0.9
         let total = min(max(safeBase + strainAdder + debtAdder - napCredit, 6), 10)
         return NeedComponents(baseHours: safeBase,
@@ -85,12 +103,15 @@ enum AtriaSleepBudget {
         let recent = nights.suffix(7)
         guard !recent.isEmpty else { return 0 }
         let count = recent.count
-        return recent.enumerated().reduce(0) { total, item in
+        let accumulated = recent.enumerated().reduce(0.0) { total, item in
             let ageFromNewest = count - item.offset - 1
             let decay = pow(0.75, Double(ageFromNewest))
             let shortfall = max(0, item.element.needed - item.element.slept)
             return total + shortfall * decay
         }
+        // Clamp the recency-decayed accumulation to the validated-gated cap so a
+        // long run of short nights cannot compound into an unbounded debt.
+        return min(accumulated, maxSleepDebtHours)
     }
 
     static func performancePercent(slept: Double, needed: Double) -> Int {

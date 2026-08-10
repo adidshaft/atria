@@ -256,8 +256,11 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
     @MainActor
     func testWorkoutMixedProvenanceSharesNumericScaleButRealTimeGapRemainsBlank() throws {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
+        // Display-continuity policy: the workout trace now joins brief hiccups
+        // (≤5 min) and splits only on a genuine >5-min dropout, so the "real
+        // gap" is one second past the display-continuity window.
         let gapStart = start.addingTimeInterval(
-            30 + AtriaPhysiologicalStressModel.maximumFactContinuityGap + 1
+            30 + AtriaChartVisualGrammar.traceDisplayContinuityGap + 1
         )
         let readings = [
             AtriaStressDetailReading(date: start,
@@ -1472,9 +1475,10 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         ))
         let chart = String(source[chartStart.lowerBound..<chartEnd.lowerBound])
 
-        XCTAssertTrue(chart.contains(".interpolationMethod(.linear)"))
-        XCTAssertFalse(chart.contains(".interpolationMethod(.monotone)"),
-                       "Spline overshoot can imply an unmeasured stress peak")
+        XCTAssertTrue(chart.contains(".interpolationMethod(.monotone)"),
+                      "The workout trace now favors a continuous read; monotone is shape-preserving and does not overshoot the two real endpoint scores")
+        XCTAssertFalse(chart.contains(".interpolationMethod(.linear)"),
+                       "Both marks moved off the linear read to the continuous .monotone curve")
         XCTAssertTrue(chart.contains("PointMark("),
                       "An isolated measured run must remain visible as a point")
         XCTAssertTrue(chart.contains("gaps contain no recorded stress score"))

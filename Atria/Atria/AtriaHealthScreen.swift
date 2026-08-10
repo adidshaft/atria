@@ -2492,7 +2492,7 @@ struct AtriaSleepStressCard: View {
     private var points: [AtriaStressTimelinePoint] {
         // Ambient stress trace: brief hiccups (≤5 min) stay one smooth run; a
         // genuine dropout still breaks and stays blank. Strict fact-continuity
-        // is kept for workouts and coverage accounting.
+        // is kept for coverage accounting, not for the rendered trace.
         AtriaStressTimelinePoint.segment(projection.samples.map {
             AtriaStressDetailReading(date: $0.date, score: $0.score)
         }, gapThreshold: AtriaChartVisualGrammar.traceDisplayContinuityGap)

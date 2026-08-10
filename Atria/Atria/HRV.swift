@@ -196,6 +196,109 @@ struct HRVSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+/// Pure, unit-testable selection of the RR window that seeds the morning
+/// recovery HRV read.
+///
+/// PROVENANCE / IP: The physiology adopted here — that the most restorative
+/// autonomic read comes from the last slow-wave (deep) sleep window before
+/// waking — is the STRUCTURAL basis of WHOOP's US9750415B2. Atria adopts only
+/// that window-selection physiology; it keeps its own recovery weights and its
+/// own readiness/quality gates and reproduces none of WHOOP's undisclosed math.
+///
+/// Motion-validated staging is often absent (HR-only nights are common), so
+/// this deliberately FALLS BACK to Atria's existing best-quality rule whenever
+/// no deep segment precedes the waking event (or none of the deep window is
+/// covered by a window that clears the readiness gates).
+enum AtriaRecoveryHRVWindowSelection {
+    /// One candidate ~300s RR window plus the readiness evidence already
+    /// computed for it. `snapshot.isReady` carries the window ≥300s / RR gap
+    /// ≤3s / confidence ≥0.75 (and beat/successive-difference) gates unchanged,
+    /// so this selector never relaxes qualification — it only chooses which
+    /// qualified window is preferred.
+    struct Candidate: Equatable {
+        let start: Date
+        let end: Date
+        let snapshot: HRVSnapshot
+
+        init(start: Date, end: Date, snapshot: HRVSnapshot) {
+            self.start = start
+            self.end = end
+            self.snapshot = snapshot
+        }
+
+        var isReady: Bool { snapshot.isReady }
+    }
+
+    /// True when `lhs` is the better window under Atria's existing quality rule
+    /// (ready first, then more kept beats, then higher confidence, then the
+    /// tighter RR gap). Mirrors `SessionStore.isBetterRRReferenceWindow` so the
+    /// fallback path is byte-for-byte the current behavior.
+    static func isHigherQuality(_ lhs: Candidate, than rhs: Candidate) -> Bool {
+        if lhs.isReady != rhs.isReady { return lhs.isReady }
+        if lhs.snapshot.kept != rhs.snapshot.kept { return lhs.snapshot.kept > rhs.snapshot.kept }
+        if lhs.snapshot.confidencePercent != rhs.snapshot.confidencePercent {
+            return lhs.snapshot.confidencePercent > rhs.snapshot.confidencePercent
+        }
+        return lhs.snapshot.maxRRGapSeconds < rhs.snapshot.maxRRGapSeconds
+    }
+
+    /// The last slow-wave (deep) segment that ENDS at or before the waking
+    /// event. `.sws` folds into `.deep` (as everywhere in display). Returns nil
+    /// when staging is absent or carries no deep segment before waking — the
+    /// common HR-only / shallow-night case that must fall back.
+    static func lastDeepSegmentBeforeWaking(stageSegments: [SleepStageSegment],
+                                            wakeEvent: Date) -> SleepStageSegment? {
+        stageSegments
+            .filter { $0.stage.displayStage == .deep && $0.duration > 0 && $0.end <= wakeEvent }
+            .max { $0.end < $1.end }
+    }
+
+    /// Seconds of overlap between a candidate window and a stage segment.
+    static func overlapSeconds(_ candidate: Candidate,
+                               _ segment: SleepStageSegment) -> TimeInterval {
+        let lower = max(candidate.start, segment.start)
+        let upper = min(candidate.end, segment.end)
+        return max(0, upper.timeIntervalSince(lower))
+    }
+
+    /// Selects the recovery HRV window.
+    ///
+    /// When a deep segment precedes the waking event AND at least one READY
+    /// candidate overlaps it, the ready candidate with the greatest overlap
+    /// (quality as tiebreak) is chosen — HRV from the last SWS window before
+    /// waking. Otherwise selection falls back to the best candidate under
+    /// `isHigherQuality`, which is exactly the current rule. Readiness/quality
+    /// gates are never relaxed; the deep preference only reorders qualified
+    /// windows.
+    static func selectRecoveryWindow(candidates: [Candidate],
+                                     stageSegments: [SleepStageSegment],
+                                     wakeEvent: Date) -> Candidate? {
+        guard let fallback = best(among: candidates) else { return nil }
+        guard let deep = lastDeepSegmentBeforeWaking(stageSegments: stageSegments,
+                                                     wakeEvent: wakeEvent) else {
+            return fallback
+        }
+        let overlapping = candidates.filter { $0.isReady && overlapSeconds($0, deep) > 0 }
+        guard !overlapping.isEmpty else { return fallback }
+        return overlapping.reduce(overlapping[0]) { current, candidate in
+            let candidateOverlap = overlapSeconds(candidate, deep)
+            let currentOverlap = overlapSeconds(current, deep)
+            if candidateOverlap != currentOverlap {
+                return candidateOverlap > currentOverlap ? candidate : current
+            }
+            return isHigherQuality(candidate, than: current) ? candidate : current
+        }
+    }
+
+    /// Best candidate under the existing quality rule; nil for no candidates.
+    static func best(among candidates: [Candidate]) -> Candidate? {
+        candidates.reduce(nil) { current, candidate in
+            guard let current else { return candidate }
+            return isHigherQuality(candidate, than: current) ? candidate : current
+        }
+    }
+}
+
 enum AtriaHRVSuccessiveDifferences {
     /// HRV is defined over successive NN intervals. A rejected beat breaks that
     /// succession, so values on opposite sides of an artifact must never be

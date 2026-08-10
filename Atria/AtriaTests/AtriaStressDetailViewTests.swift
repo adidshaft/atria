@@ -116,13 +116,13 @@ final class AtriaStressDetailViewTests: XCTestCase {
         XCTAssertEqual(AtriaStressTimelinePoint.segment(readings).map(\.segment), [0, 0])
     }
 
-    /// Two-tier display continuity for the ambient / live stress card: under
+    /// Two-tier display continuity for the rendered stress traces: under
     /// `AtriaChartVisualGrammar.traceDisplayContinuityGap` a short signal hiccup
     /// (a few dropped samples, ≤5 min) reads as one smooth run, while a genuine
     /// dropout still breaks into its own segment so Charts never bridges it.
     /// Guards the display policy against a silent regression, and confirms the
-    /// stricter fact-continuity default still breaks the same short hiccup (so
-    /// workout traces, which use the default, keep their exact behavior).
+    /// stricter fact-continuity default still breaks the same short hiccup, so
+    /// coverage-accounting consumers that use the default keep their behavior.
     func testAmbientStressTraceConnectsAShortHiccupButBreaksARealDropout() {
         let displayGap = AtriaChartVisualGrammar.traceDisplayContinuityGap
 
@@ -141,7 +141,8 @@ final class AtriaStressDetailViewTests: XCTestCase {
                        "A dropout longer than five minutes must break the run.")
 
         // The default (fact-continuity) threshold is stricter: the same
-        // 3-minute hiccup breaks, so workout traces are unaffected.
+        // 3-minute hiccup breaks, so coverage-accounting consumers that use the
+        // default are unaffected by the display-continuity policy.
         let strictDefault = AtriaStressTimelinePoint.segment([
             AtriaStressDetailReading(date: now, score: 0.4),
             AtriaStressDetailReading(date: now.addingTimeInterval(3 * 60), score: 0.9)

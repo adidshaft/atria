@@ -109,8 +109,46 @@ enum AtriaStrainLoadModel {
     static let continuousDayLoadFloorHRR = 0.30
     static let continuousDayFullWeightHRR = 0.40
 
-    static let maximumDisplayScore = 21.0
-    static let displayLoadScale = 150.0
+    /// Versioned calibration for the 0...21 strain DISPLAY curve.
+    ///
+    /// PROVENANCE / IP: This is Atria's own monotonic, concave (saturating) map
+    /// from integrated cardiovascular load onto a 0...21 scale. It is NOT
+    /// WHOOP's 0...21 Strain equation — that formula and its coefficients are
+    /// undisclosed/trade-secret. The two constants below are the SINGLE re-fit
+    /// knob for this curve: when Atria has a corpus of real sessions to
+    /// calibrate against, only these values (and `version`) change, and no
+    /// historical score moves until they are deliberately re-fit.
+    ///
+    /// VALIDATION-GATED: the numeric values are engineering calibration, not a
+    /// clinically validated intensity scale.
+    struct DisplayCalibration: Equatable, Sendable {
+        /// Ceiling of the displayed strain scale; the score saturates toward
+        /// this value and never exceeds it.
+        let maximumScore: Double
+        /// Load constant of the saturating exponential. Larger values approach
+        /// the ceiling more slowly, spreading typical sessions across the scale.
+        let loadScale: Double
+        /// Monotonic version tag so any later re-fit of the curve is explicit
+        /// and auditable rather than a silent constant change.
+        let version: Int
+
+        /// The single display-mapping authority. Kept identical in form to the
+        /// prior inline formula so a version bump is the only thing that can
+        /// move a score.
+        func score(fromLoad load: Double) -> Double {
+            guard load.isFinite, load > 0 else { return 0 }
+            let score = maximumScore * (1 - exp(-load / loadScale))
+            return min(max(score, 0), maximumScore)
+        }
+    }
+
+    /// Current shipped display calibration. KEEPS the historical constants
+    /// (21.0 ceiling, 150.0 load scale) so `displayScore(fromLoad:)` output is
+    /// byte-identical to the previous inline formula and every pinned strain
+    /// score is unchanged.
+    static let displayCalibration = DisplayCalibration(maximumScore: 21.0,
+                                                       loadScale: 150.0,
+                                                       version: 1)
 
     /// O(1)-memory streaming integration. Batch calculation below is defined
     /// in terms of this same accumulator, so replay and live ingestion cannot
@@ -262,10 +300,9 @@ enum AtriaStrainLoadModel {
 
     /// Atria-specific, monotonic display calibration over cardiovascular load.
     /// It is deliberately separate from the evidence model and is not a
-    /// validated or proprietary WHOOP 0...21 equation.
+    /// validated or proprietary WHOOP 0...21 equation. All mapping lives in the
+    /// versioned `displayCalibration` so the curve has a single re-fit knob.
     static func displayScore(fromLoad load: Double) -> Double {
-        guard load.isFinite, load > 0 else { return 0 }
-        let score = maximumDisplayScore * (1 - exp(-load / displayLoadScale))
-        return min(max(score, 0), maximumDisplayScore)
+        displayCalibration.score(fromLoad: load)
     }
 }

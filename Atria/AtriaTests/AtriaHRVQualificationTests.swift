@@ -454,4 +454,126 @@ final class AtriaHRVQualificationTests: XCTestCase {
         XCTAssertEqual(decoded.freshHRVSampleCount(now: overnight.end), 0)
         XCTAssertFalse(decoded.hasTrustedHRVBaseline(now: overnight.end))
     }
+
+    // MARK: - Recovery HRV window selection (last SWS before waking)
+
+    private typealias RecoverySelection = AtriaRecoveryHRVWindowSelection
+
+    /// Builds an HRVSnapshot that clears every readiness gate (window ≥300s,
+    /// RR gap ≤3s, confidence ≥0.75, beats, successive differences) so the
+    /// selector's preference — not qualification — is what the tests exercise.
+    private func readyRecoverySnapshot(kept: Int,
+                                       confidence: Double,
+                                       end: Date,
+                                       gap: TimeInterval = 1) -> HRVSnapshot {
+        HRVSnapshot(rmssd: 42,
+                    sdnn: 55,
+                    pnn50: 12,
+                    lnRMSSD: log(42),
+                    confidence: confidence,
+                    kept: kept,
+                    raw: kept,
+                    rejectedOutOfRange: 0,
+                    rejectedDeltaOver20Percent: 0,
+                    rejectedHRMismatch: 0,
+                    interpolated: 0,
+                    successiveDifferenceCount: kept - 1,
+                    windowSeconds: 300,
+                    maxRRGapSeconds: gap,
+                    respiratoryRate: 14,
+                    measurementStart: end.addingTimeInterval(-300),
+                    measurementEnd: end,
+                    analyzedAt: end,
+                    provenance: .sleepRRWindow)
+    }
+
+    func testRecoveryWindowPrefersLastDeepSegmentBeforeWaking() {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        func at(_ minutes: Double) -> Date { base.addingTimeInterval(minutes * 60) }
+        let wake = at(480)
+
+        // Two deep segments; the LAST deep window before waking is [420,455].
+        let segments = [
+            SleepStageSegment(id: "d1", start: at(60), end: at(95), stage: .deep),
+            SleepStageSegment(id: "l1", start: at(95), end: at(400), stage: .light),
+            SleepStageSegment(id: "d2", start: at(420), end: at(455), stage: .deep),
+            SleepStageSegment(id: "w1", start: at(455), end: at(480), stage: .awake)
+        ]
+        XCTAssertEqual(
+            RecoverySelection.lastDeepSegmentBeforeWaking(stageSegments: segments,
+                                                          wakeEvent: wake)?.id,
+            "d2"
+        )
+
+        // Highest-quality window overall, but during light sleep (fallback pick).
+        let remCandidate = RecoverySelection.Candidate(
+            start: at(200), end: at(205),
+            snapshot: readyRecoverySnapshot(kept: 250, confidence: 0.95, end: at(205)))
+        // High-quality window over the EARLY deep segment.
+        let earlyDeepCandidate = RecoverySelection.Candidate(
+            start: at(58), end: at(63),
+            snapshot: readyRecoverySnapshot(kept: 240, confidence: 0.92, end: at(63)))
+        // Lower-quality (still ready) window inside the LAST deep segment.
+        let lastDeepCandidate = RecoverySelection.Candidate(
+            start: at(430), end: at(435),
+            snapshot: readyRecoverySnapshot(kept: 160, confidence: 0.80, end: at(435)))
+        let candidates = [remCandidate, earlyDeepCandidate, lastDeepCandidate]
+
+        // With motion-validated staging the last-deep window wins even though it
+        // is the lowest raw quality of the three.
+        let selected = RecoverySelection.selectRecoveryWindow(candidates: candidates,
+                                                              stageSegments: segments,
+                                                              wakeEvent: wake)
+        XCTAssertEqual(selected, lastDeepCandidate)
+    }
+
+    func testRecoveryWindowFallsBackToQualityRuleWithoutStaging() {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        func at(_ minutes: Double) -> Date { base.addingTimeInterval(minutes * 60) }
+        let wake = at(480)
+
+        let remCandidate = RecoverySelection.Candidate(
+            start: at(200), end: at(205),
+            snapshot: readyRecoverySnapshot(kept: 250, confidence: 0.95, end: at(205)))
+        let earlyDeepCandidate = RecoverySelection.Candidate(
+            start: at(58), end: at(63),
+            snapshot: readyRecoverySnapshot(kept: 240, confidence: 0.92, end: at(63)))
+        let lastDeepCandidate = RecoverySelection.Candidate(
+            start: at(430), end: at(435),
+            snapshot: readyRecoverySnapshot(kept: 160, confidence: 0.80, end: at(435)))
+        let candidates = [remCandidate, earlyDeepCandidate, lastDeepCandidate]
+
+        // HR-only night (no staging) -> current best-quality rule (most kept).
+        let selected = RecoverySelection.selectRecoveryWindow(candidates: candidates,
+                                                              stageSegments: [],
+                                                              wakeEvent: wake)
+        XCTAssertEqual(selected, remCandidate)
+    }
+
+    func testRecoveryWindowFallsBackWhenNoReadyWindowCoversDeepSegment() {
+        let base = Date(timeIntervalSince1970: 1_800_000_000)
+        func at(_ minutes: Double) -> Date { base.addingTimeInterval(minutes * 60) }
+        let wake = at(480)
+        let segments = [
+            SleepStageSegment(id: "d2", start: at(420), end: at(455), stage: .deep),
+            SleepStageSegment(id: "w1", start: at(455), end: at(480), stage: .awake)
+        ]
+
+        let remCandidate = RecoverySelection.Candidate(
+            start: at(200), end: at(205),
+            snapshot: readyRecoverySnapshot(kept: 250, confidence: 0.95, end: at(205)))
+        // The only window over the deep segment fails the RR-gap gate (>3s), so
+        // qualification stays hard and selection falls back to the best ready
+        // window overall.
+        let unreadyDeepCandidate = RecoverySelection.Candidate(
+            start: at(430), end: at(435),
+            snapshot: readyRecoverySnapshot(kept: 200, confidence: 0.90, end: at(435), gap: 5))
+        XCTAssertFalse(unreadyDeepCandidate.isReady)
+
+        let selected = RecoverySelection.selectRecoveryWindow(
+            candidates: [remCandidate, unreadyDeepCandidate],
+            stageSegments: segments,
+            wakeEvent: wake)
+        XCTAssertEqual(selected, remCandidate)
+    }
 }
