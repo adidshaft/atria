@@ -1102,13 +1102,10 @@ private struct AtriaHealthMonitorRowView: View, Equatable {
     }
 
     private var compactRow: some View {
+        // The leading metric glyph (heart / waveform.path.ecg tile) was removed:
+        // it read as a decorative "heartbeat icon on top of the chart" and isn't
+        // needed inside the sparkline card — the row title already names the metric.
         HStack(alignment: .center, spacing: 10) {
-            Image(systemName: row.kind.symbol)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(row.kind.tint)
-                .frame(width: 28, height: 28)
-                .background(AtriaIconTileBackground(cornerRadius: 9, tint: row.kind.tint))
-
             VStack(alignment: .leading, spacing: 7) {
                 Text(row.kind.title)
                     .font(.subheadline.weight(.semibold))

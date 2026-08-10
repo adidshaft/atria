@@ -834,7 +834,13 @@ enum AtriaExactWindowHeartRate {
 
 enum AtriaActivityTimelineSignalProjection {
     static let heartRateGapThreshold: TimeInterval = 2 * 60
-    static let stressGapThreshold = AtriaPhysiologicalStressModel.maximumFactContinuityGap
+    // Display-continuity policy (matches the HR trace and the ambient/live
+    // stress card): brief signal hiccups inside a five-minute window read as one
+    // continuous run, while a genuine >5-min dropout still ends the run and
+    // leaves the interval blank. The strict fact/coverage thresholds
+    // (`maximumFactContinuityGap`) are untouched — this governs only the
+    // rendered trace. The `startsNewSegment` break below stays a hard boundary.
+    static let stressGapThreshold = AtriaChartVisualGrammar.traceDisplayContinuityGap
 
     static func heartRate(
         samples: [HistoricalArchive.HeartRatePoint],
@@ -2193,12 +2199,25 @@ struct AtriaActivityMonitorTab: View {
                 LineMark(x: .value("Time", point.t),
                          y: .value("Stress", point.score),
                          series: .value("Observed run", "stress-\(point.segment)"))
+                    // Continuous green→yellow→red read, matching the HR and
+                    // per-workout stress traces. .monotone joins samples inside
+                    // the display-continuity window without inventing a value;
+                    // genuine >5-min dropouts still break as a new Charts series.
+                    .interpolationMethod(.monotone)
                     .lineStyle(AtriaChartVisualGrammar.traceLine)
-                    .foregroundStyle(Metrics.electricStress)
+                    .foregroundStyle(.linearGradient(colors: [Metrics.electricGreen,
+                                                              Metrics.electricYellow,
+                                                              Metrics.electricRed],
+                                                     startPoint: .bottom,
+                                                     endPoint: .top))
                 if point.isOnlyPointInSegment {
                     PointMark(x: .value("Time", point.t),
                               y: .value("Stress", point.score))
-                        .foregroundStyle(Metrics.electricStress)
+                        .foregroundStyle(.linearGradient(colors: [Metrics.electricGreen,
+                                                                  Metrics.electricYellow,
+                                                                  Metrics.electricRed],
+                                                         startPoint: .bottom,
+                                                         endPoint: .top))
                         .symbolSize(16)
                 }
             }
@@ -4387,7 +4406,13 @@ struct AtriaWorkoutStressTraceSummary: Equatable {
     let points: [AtriaStressTimelinePoint]
 
     init(readings: [AtriaStressDetailReading]) {
-        self.points = AtriaStressTimelinePoint.segment(readings)
+        // Display-continuity policy: brief signal hiccups (≤5 min) read as one
+        // smooth run; only a genuine >5-min dropout still splits the trace and
+        // stays blank. The strict fact-continuity default is left untouched for
+        // consumers that need it.
+        self.points = AtriaStressTimelinePoint.segment(
+            readings,
+            gapThreshold: AtriaChartVisualGrammar.traceDisplayContinuityGap)
     }
 
     var readingCount: Int { points.count }
@@ -4452,7 +4477,7 @@ struct AtriaWorkoutStressTraceChart: View {
                     AreaMark(x: .value("Time", point.reading.date),
                              y: .value("Stress", point.reading.score),
                              series: .value("Segment", point.segment))
-                        .interpolationMethod(.linear)
+                        .interpolationMethod(.monotone)
                         .foregroundStyle(.linearGradient(
                             colors: [Metrics.electricGreen.opacity(0.04),
                                      Metrics.electricYellow.opacity(0.10),
@@ -4463,9 +4488,12 @@ struct AtriaWorkoutStressTraceChart: View {
                     LineMark(x: .value("Time", point.reading.date),
                              y: .value("Stress", point.reading.score),
                              series: .value("Segment", point.segment))
-                        // Linear cannot overshoot the two real endpoint scores;
-                        // monotone splines can imply a peak/trough never measured.
-                        .interpolationMethod(.linear)
+                        // The app now favors a continuous read: .monotone joins
+                        // the real endpoint scores smoothly (matching the live
+                        // and ambient stress traces). It is shape-preserving, so
+                        // it never bridges a genuine >5-min gap — those still
+                        // break as separate segments and stay blank.
+                        .interpolationMethod(.monotone)
                         .lineStyle(AtriaChartVisualGrammar.traceLine)
                         .foregroundStyle(
                             .linearGradient(colors: [Metrics.electricGreen,

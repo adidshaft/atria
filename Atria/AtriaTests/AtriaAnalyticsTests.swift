@@ -2093,6 +2093,39 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(AtriaSleepBudget.performancePercent(slept: -1, needed: 8), 0)
     }
 
+    func testSleepDebtIsCappedAndMildWeeksPassThrough() {
+        // A very short week: every night sleeps 0 of an 8h need. The undecayed
+        // accumulation (8 * (1 + 0.75 + ... 0.75^6) ≈ 25.5h) far exceeds the cap
+        // and must clamp to exactly maxSleepDebtHours.
+        let brutalWeek = Array(repeating: (needed: 8.0, slept: 0.0), count: 7)
+        XCTAssertEqual(AtriaSleepBudget.sleepDebt(nights: brutalWeek),
+                       AtriaSleepBudget.maxSleepDebtHours,
+                       accuracy: 1e-9)
+        XCTAssertEqual(AtriaSleepBudget.maxSleepDebtHours, 8.0, accuracy: 1e-9)
+
+        // A mild week stays well below the cap and is returned unchanged.
+        let mildWeek: [(needed: Double, slept: Double)] = [
+            (needed: 8, slept: 7),
+            (needed: 8, slept: 6),
+            (needed: 8, slept: 8)
+        ]
+        let expectedMild = 1 * 0.75 * 0.75 + 2 * 0.75
+        XCTAssertLessThan(expectedMild, AtriaSleepBudget.maxSleepDebtHours)
+        XCTAssertEqual(AtriaSleepBudget.sleepDebt(nights: mildWeek),
+                       expectedMild,
+                       accuracy: 1e-9)
+
+        // The debtAdder input is defensively clamped: a huge debt cannot push
+        // Sleep Need past base + cap/2, even if a stale value is supplied.
+        let cappedAdder = AtriaSleepBudget.sleepNeedComponents(baseHours: 8,
+                                                               yesterdayStrain: nil,
+                                                               debtHours: 1_000,
+                                                               sameDayNapHours: 0).debtAdderHours
+        XCTAssertEqual(cappedAdder,
+                       AtriaSleepBudget.maxSleepDebtHours * 0.5,
+                       accuracy: 1e-9)
+    }
+
     func testSleepHistorySnapshotSummarizesNeedPerformanceAndNapCredit() {
         let calendar = Calendar(identifier: .gregorian)
         let today = calendar.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
