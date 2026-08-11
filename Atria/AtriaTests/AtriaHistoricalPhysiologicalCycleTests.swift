@@ -126,6 +126,50 @@ final class AtriaHistoricalPhysiologicalCycleTests: XCTestCase {
                           "The assertion must exercise a real output-zone/event-zone date split")
     }
 
+    func testActivityReprojectsStoredWakeDayIntoCallerCalendar() throws {
+        let storageCalendar = calendar(timeZoneIdentifier: "Asia/Kolkata")
+        let projectionCalendar = utc
+        let wakeDay = date(2026, 8, 3, 0, calendar: projectionCalendar)
+        let saved = sleep(
+            id: "utc-wake-kolkata-snapshot",
+            start: date(2026, 8, 3, 5, calendar: projectionCalendar),
+            end: date(2026, 8, 3, 13, calendar: projectionCalendar),
+            eventTimeZoneIdentifier: "UTC"
+        )
+        let snapshot = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [saved],
+            calendar: storageCalendar
+        )
+        let stored = try XCTUnwrap(snapshot.nights.first { $0.id == saved.id })
+
+        XCTAssertFalse(projectionCalendar.isDate(stored.day, inSameDayAs: wakeDay),
+                       "The fixture must preserve the cross-output-calendar mismatch")
+
+        let cycle = AtriaHistoricalPhysiologicalCycle.resolve(
+            displayDay: wakeDay,
+            sleepHistory: snapshot,
+            calendar: projectionCalendar
+        )
+        let wakeDayRows = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot,
+            pendingReview: nil,
+            selectedDay: wakeDay,
+            calendar: projectionCalendar
+        )
+        let priorDayRows = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot,
+            pendingReview: nil,
+            selectedDay: date(2026, 8, 2, 0, calendar: projectionCalendar),
+            calendar: projectionCalendar
+        )
+
+        XCTAssertEqual(cycle.startBoundary, .mainSleep(id: saved.id))
+        XCTAssertEqual(wakeDayRows.map(\.id), [saved.id])
+        XCTAssertTrue(priorDayRows.isEmpty,
+                      "A stored calendar label must not duplicate the sleep onto the prior projected day")
+    }
+
     func testResumedSleepMintsOneBoundaryButBothDurableRowsShareWakeDay() {
         let calendar = utc
         let main = sleep(id: "main",

@@ -527,7 +527,22 @@ enum AtriaActivitySelectedDaySleeps {
             if let mainSleepOwnershipDay,
                night.confirmed,
                !night.isNapEvidence {
-                return calendar.isDate(night.day, inSameDayAs: mainSleepOwnershipDay)
+                // `Night.day` is materialized in the calendar that built the
+                // snapshot. Activity may later project that snapshot in a new
+                // local calendar (travel) or a deterministic test calendar.
+                // Re-derive wake ownership from the factual boundary and its
+                // event-local timezone so the same saved sleep cannot vanish
+                // or move dates when those calendars differ. Legacy day-only
+                // records retain their stored label as the fail-closed fallback.
+                let ownershipDay = night.end.map {
+                    EventCivilTime.day(
+                        containing: $0,
+                        eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
+                        outputCalendar: calendar
+                    )
+                } ?? calendar.startOfDay(for: night.day)
+                return calendar.isDate(ownershipDay,
+                                       inSameDayAs: mainSleepOwnershipDay)
             }
             if let start = night.start, let end = night.end, end > start {
                 // The CURRENT physiological day begins at the anchoring main
