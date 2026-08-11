@@ -765,7 +765,7 @@ struct AtriaHomeView: View {
         // Repurposed 2026-07-06: this slot was the "Plan" tab, whose weekly-plan
         // and routine cards already lived on Today and Journal (pure redundancy).
         // It now hosts the Activity Monitor. The case name / "plan" raw value are
-        // kept so the deep-link token and the pinned tabItem code stay valid.
+        // kept so the deep-link token and the pinned Tab selection value stay valid.
         case plan
         case chat
         case collection
@@ -1281,35 +1281,43 @@ struct AtriaHomeView: View {
                 .allowsHitTesting(false)
 
             TabView(selection: $selectedTab) {
-                tabNavigation(title: "Today", showsHero: false) {
-                    // Always render real content from first frame: the model is
-                    // seeded synchronously (cold-start rollup/widget-snapshot
-                    // seed, see AtriaHomeModel.makeColdStartSnapshot) so there is
-                    // no "Preparing overview" placeholder gate here anymore.
-                    // hasUnlockedPrimaryContent now only gates progressive
-                    // diagnostics kickoff, not the base layout paint.
-                    overviewContent
+                Tab(HomeTab.overview.title,
+                    systemImage: HomeTab.overview.systemImage,
+                    value: HomeTab.overview) {
+                    tabNavigation(title: "Today", showsHero: false) {
+                        // Always render real content from first frame: the model is
+                        // seeded synchronously (cold-start rollup/widget-snapshot
+                        // seed, see AtriaHomeModel.makeColdStartSnapshot) so there is
+                        // no "Preparing overview" placeholder gate here anymore.
+                        // hasUnlockedPrimaryContent now only gates progressive
+                        // diagnostics kickoff, not the base layout paint.
+                        overviewContent
+                    }
                 }
-                .tabItem { Label(HomeTab.overview.title, systemImage: HomeTab.overview.systemImage) }
-                .tag(HomeTab.overview)
 
-                tabNavigation(title: "Vitals", showsHero: false) {
-                    vitalsContent
+                Tab(HomeTab.vitals.title,
+                    systemImage: HomeTab.vitals.systemImage,
+                    value: HomeTab.vitals) {
+                    tabNavigation(title: "Vitals", showsHero: false) {
+                        vitalsContent
+                    }
                 }
-                .tabItem { Label(HomeTab.vitals.title, systemImage: HomeTab.vitals.systemImage) }
-                .tag(HomeTab.vitals)
 
-                tabNavigation(title: "Journal", showsHero: false) {
-                    journalContent
+                Tab(HomeTab.journal.title,
+                    systemImage: HomeTab.journal.systemImage,
+                    value: HomeTab.journal) {
+                    tabNavigation(title: "Journal", showsHero: false) {
+                        journalContent
+                    }
                 }
-                .tabItem { Label(HomeTab.journal.title, systemImage: HomeTab.journal.systemImage) }
-                .tag(HomeTab.journal)
 
-                tabNavigation(title: "Activity", showsHero: false) {
-                    planContent
+                Tab(HomeTab.plan.title,
+                    systemImage: HomeTab.plan.systemImage,
+                    value: HomeTab.plan) {
+                    tabNavigation(title: "Activity", showsHero: false) {
+                        planContent
+                    }
                 }
-                .tabItem { Label(HomeTab.plan.title, systemImage: HomeTab.plan.systemImage) }
-                .tag(HomeTab.plan)
             }
             // iOS 26 already renders the interactive Liquid Glass capsule for
             // the tab items. Keeping the legacy tab-bar material behind that

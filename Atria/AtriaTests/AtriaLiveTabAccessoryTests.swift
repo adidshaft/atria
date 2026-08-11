@@ -64,9 +64,19 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
         let shell = String(source[tabView.lowerBound..<observers.lowerBound])
 
         for destination in ["overview", "vitals", "journal", "plan"] {
-            XCTAssertTrue(shell.contains("Label(HomeTab.\(destination).title"),
-                          "the expanded bar must preserve the \(destination) destination label")
+            XCTAssertTrue(shell.contains("Tab(HomeTab.\(destination).title"),
+                          "the native tab shell must declare the \(destination) destination with modern Tab")
+            XCTAssertTrue(shell.contains("systemImage: HomeTab.\(destination).systemImage"),
+                          "the modern \(destination) tab must preserve its system image")
+            XCTAssertTrue(shell.contains("value: HomeTab.\(destination)"),
+                          "the modern \(destination) tab must preserve its selection value")
         }
+        XCTAssertEqual(shell.components(separatedBy: "value: HomeTab.").count - 1, 4,
+                       "the native shell must contain exactly four modern tab values")
+        XCTAssertFalse(shell.contains(".tabItem"),
+                       "legacy tab-item bridging must not own the iOS 26 minimization path")
+        XCTAssertFalse(shell.contains(".tag(HomeTab."),
+                       "modern Tab values replace legacy tag-based selection")
         XCTAssertTrue(shell.contains(".tabViewBottomAccessory(isEnabled: shouldShowLiveAccessory)"))
         XCTAssertTrue(source.contains("placement == .inline"),
                       "the minimized workout control must continue adapting to the native compact placement")
