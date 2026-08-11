@@ -34,6 +34,23 @@ enum AtriaBehaviorImpact {
                           journalEntries: [BehaviorJournalEntry],
                           referenceDate: Date? = nil,
                           calendar: Calendar = .current) -> [BehaviorImpactSummary] {
+        summariesCancellable(
+            days: days,
+            journalEntries: journalEntries,
+            referenceDate: referenceDate,
+            calendar: calendar,
+            shouldContinue: { true }
+        ) ?? []
+    }
+
+    static func summariesCancellable(
+        days: [Day],
+        journalEntries: [BehaviorJournalEntry],
+        referenceDate: Date? = nil,
+        calendar: Calendar = .current,
+        shouldContinue: () -> Bool
+    ) -> [BehaviorImpactSummary]? {
+        guard shouldContinue() else { return nil }
         let latest = referenceDate
             ?? (days.map(\.day) + journalEntries.map(\.day)).max()
             ?? Date()
@@ -43,53 +60,72 @@ enum AtriaBehaviorImpact {
                                         to: referenceDay)
             ?? referenceDay.addingTimeInterval(TimeInterval(-trailingWindowDays * 24 * 60 * 60))
 
-        let recoveryByDay = Dictionary(uniqueKeysWithValues: days.compactMap { day -> (Date, Double)? in
+        var recoveryByDay: [Date: Double] = [:]
+        for (index, day) in days.enumerated() {
+            if index.isMultiple(of: 64), !shouldContinue() { return nil }
             let key = calendar.startOfDay(for: day.day)
-            guard key >= windowStart, key <= referenceDay, let recovery = day.recoveryPercent else {
-                return nil
+            if key >= windowStart,
+               key <= referenceDay,
+               let recovery = day.recoveryPercent {
+                recoveryByDay[key] = Double(recovery)
             }
-            return (key, Double(recovery))
-        })
+        }
         guard !recoveryByDay.isEmpty else { return [] }
 
-        let entriesByDay = Dictionary(grouping: journalEntries.filter {
-            let day = calendar.startOfDay(for: $0.day)
-            return day >= windowStart && day <= referenceDay
-        }) { calendar.startOfDay(for: $0.day) }
+        var entriesByDay: [Date: [BehaviorJournalEntry]] = [:]
+        for (index, entry) in journalEntries.enumerated() {
+            if index.isMultiple(of: 64), !shouldContinue() { return nil }
+            let day = calendar.startOfDay(for: entry.day)
+            if day >= windowStart, day <= referenceDay {
+                entriesByDay[day, default: []].append(entry)
+            }
+        }
 
-        return BehaviorJournalEntry.Tag.allCases.compactMap { tag in
-            let loggedDayKeys = Set(entriesByDay.compactMap { day, entries in
-                entries.contains { $0.tags.contains(tag) } ? day : nil
-            })
-            let logged = recoveryByDay
-                .filter { loggedDayKeys.contains($0.key) }
-                .map(\.value)
-            let comparison = recoveryByDay
-                .filter { !loggedDayKeys.contains($0.key) }
-                .map(\.value)
+        var result: [BehaviorImpactSummary] = []
+        for tag in BehaviorJournalEntry.Tag.allCases {
+            guard shouldContinue() else { return nil }
+            var loggedDayKeys = Set<Date>()
+            for (day, entries) in entriesByDay {
+                guard shouldContinue() else { return nil }
+                if entries.contains(where: { $0.tags.contains(tag) }) {
+                    loggedDayKeys.insert(day)
+                }
+            }
+            var logged: [Double] = []
+            var comparison: [Double] = []
+            for (index, pair) in recoveryByDay.enumerated() {
+                if index.isMultiple(of: 64), !shouldContinue() { return nil }
+                if loggedDayKeys.contains(pair.key) {
+                    logged.append(pair.value)
+                } else {
+                    comparison.append(pair.value)
+                }
+            }
 
             guard logged.count >= minimumLoggedDays,
                   comparison.count >= minimumComparisonDays else {
-                return nil
+                continue
             }
 
             let impact = mean(logged) - mean(comparison)
-            guard abs(impact) >= minimumImpact else { return nil }
+            guard abs(impact) >= minimumImpact else { continue }
 
             let pValue = welchTwoSidedPValue(logged, comparison)
-            guard pValue < maximumPValue else { return nil }
+            guard pValue < maximumPValue else { continue }
 
-            return BehaviorImpactSummary(tag: tag,
-                                         loggedDays: logged.count,
-                                         comparisonDays: comparison.count,
-                                         impact: impact,
-                                         pValue: pValue)
+            result.append(BehaviorImpactSummary(tag: tag,
+                                                loggedDays: logged.count,
+                                                comparisonDays: comparison.count,
+                                                impact: impact,
+                                                pValue: pValue))
         }
-        .sorted {
+        guard shouldContinue() else { return nil }
+        result.sort {
             if abs($0.impact) != abs($1.impact) { return abs($0.impact) > abs($1.impact) }
             if $0.loggedDays != $1.loggedDays { return $0.loggedDays > $1.loggedDays }
             return $0.tag.rawValue < $1.tag.rawValue
         }
+        return shouldContinue() ? result : nil
     }
 
     static func mean(_ values: [Double]) -> Double {

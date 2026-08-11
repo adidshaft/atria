@@ -190,6 +190,57 @@ final class AtriaRecoveredMotionProjectionTests: XCTestCase {
                        "the frame at 30s belongs only to the second half-open epoch")
     }
 
+    func testMotionProjectionAndEpochAttachmentAbortAtBoundedCheckpoints() {
+        var config = AtriaRecoveredMotionProjection.Configuration.production
+        config.maximumWindowSeconds = 24 * 60 * 60
+        let window = makeWindow(duration: 20_000)
+        let samples = (0..<20_000).map {
+            sample(offset: TimeInterval($0), sequence: $0)
+        }
+        var projectionChecks = 0
+        XCTAssertNil(AtriaRecoveredMotionProjection.projectCancellable(
+            samples: samples,
+            window: window,
+            configuration: config,
+            shouldContinue: {
+                projectionChecks += 1
+                return projectionChecks < 6
+            }
+        ))
+        XCTAssertLessThanOrEqual(projectionChecks, 6)
+
+        var epochChecks = 0
+        XCTAssertNil(AtriaRecoveredMotionProjection.epochFeaturesCancellable(
+            samples: samples,
+            windows: [window],
+            shouldContinue: {
+                epochChecks += 1
+                return epochChecks < 6
+            }
+        ))
+        XCTAssertLessThanOrEqual(epochChecks, 6)
+    }
+
+    func testMotionOrderingRevokesDuringCancellableMergeSort() {
+        var config = AtriaRecoveredMotionProjection.Configuration.production
+        config.maximumWindowSeconds = 24 * 60 * 60
+        let window = makeWindow(duration: 20_000)
+        let samples = (0..<20_000).reversed().map {
+            sample(offset: TimeInterval($0), sequence: $0)
+        }
+        var checks = 0
+        XCTAssertNil(AtriaRecoveredMotionProjection.projectCancellable(
+            samples: samples,
+            window: window,
+            configuration: config,
+            shouldContinue: {
+                checks += 1
+                return checks < 90
+            }
+        ))
+        XCTAssertEqual(checks, 90)
+    }
+
     private func makeWindow(duration: TimeInterval) -> AtriaRecoveredMotionProjection.Window {
         .init(id: "window", start: origin, end: origin.addingTimeInterval(duration))
     }

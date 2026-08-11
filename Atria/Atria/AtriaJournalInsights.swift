@@ -117,6 +117,25 @@ enum AtriaJournalInsights {
                          days: [AtriaBehaviorImpact.Day],
                          referenceDate: Date? = nil,
                          calendar: Calendar = .current) -> [JournalInsight] {
+        insightsCancellable(
+            questionAnswers: questionAnswers,
+            labels: labels,
+            days: days,
+            referenceDate: referenceDate,
+            calendar: calendar,
+            shouldContinue: { true }
+        ) ?? []
+    }
+
+    static func insightsCancellable(
+        questionAnswers: [String: [AnswerDay]],
+        labels: [String: String] = [:],
+        days: [AtriaBehaviorImpact.Day],
+        referenceDate: Date? = nil,
+        calendar: Calendar = .current,
+        shouldContinue: () -> Bool
+    ) -> [JournalInsight]? {
+        guard shouldContinue() else { return nil }
         let latest = referenceDate
             ?? (days.map(\.day) + questionAnswers.values.flatMap { $0.map(\.day) }).max()
             ?? Date()
@@ -127,51 +146,74 @@ enum AtriaJournalInsights {
             ?? referenceDay.addingTimeInterval(TimeInterval(-AtriaBehaviorImpact.trailingWindowDays * 24 * 60 * 60))
 
         // Same day↔recovery pairing convention as AtriaBehaviorImpact.summaries.
-        let recoveryByDay = Dictionary(uniqueKeysWithValues: days.compactMap { day -> (Date, Double)? in
+        var recoveryByDay: [Date: Double] = [:]
+        for (index, day) in days.enumerated() {
+            if index.isMultiple(of: 64), !shouldContinue() { return nil }
             let key = calendar.startOfDay(for: day.day)
-            guard key >= windowStart, key <= referenceDay, let recovery = day.recoveryPercent else {
-                return nil
+            if key >= windowStart,
+               key <= referenceDay,
+               let recovery = day.recoveryPercent {
+                recoveryByDay[key] = Double(recovery)
             }
-            return (key, Double(recovery))
-        })
+        }
         guard !recoveryByDay.isEmpty else { return [] }
 
         var results: [JournalInsight] = []
         for (questionID, answers) in questionAnswers {
-            let windowed = answers.filter {
-                let day = calendar.startOfDay(for: $0.day)
-                return day >= windowStart && day <= referenceDay
-            }
-            let pairs: [(value: Value, recovery: Double)] = windowed.compactMap { answer in
-                guard let recovery = recoveryByDay[calendar.startOfDay(for: answer.day)] else { return nil }
-                return (answer.value, recovery)
+            guard shouldContinue() else { return nil }
+            var pairs: [(value: Value, recovery: Double)] = []
+            for (index, answer) in answers.enumerated() {
+                if index.isMultiple(of: 64), !shouldContinue() { return nil }
+                let day = calendar.startOfDay(for: answer.day)
+                guard day >= windowStart, day <= referenceDay,
+                      let recovery = recoveryByDay[day] else { continue }
+                pairs.append((answer.value, recovery))
             }
             guard !pairs.isEmpty else { continue }
             let label = labels[questionID] ?? questionID
 
-            if let insight = analyze(questionID: questionID, label: label, pairs: pairs) {
+            if let insight = analyze(
+                questionID: questionID,
+                label: label,
+                pairs: pairs,
+                shouldContinue: shouldContinue
+            ) {
                 results.append(insight)
             }
+            guard shouldContinue() else { return nil }
         }
-        return results.sorted {
+        results.sort {
             if $0.effectMagnitude != $1.effectMagnitude { return $0.effectMagnitude > $1.effectMagnitude }
             if $0.pairedDays != $1.pairedDays { return $0.pairedDays > $1.pairedDays }
             return $0.questionID < $1.questionID
         }
+        return shouldContinue() ? results : nil
     }
 
     private static func analyze(questionID: String,
                                 label: String,
-                                pairs: [(value: Value, recovery: Double)]) -> JournalInsight? {
+                                pairs: [(value: Value, recovery: Double)],
+                                shouldContinue: () -> Bool) -> JournalInsight? {
+        guard shouldContinue() else { return nil }
         if pairs.allSatisfy({ if case .boolean = $0.value { return true } else { return false } }) {
-            return booleanInsight(questionID: questionID, label: label, pairs: pairs)
+            return booleanInsight(
+                questionID: questionID,
+                label: label,
+                pairs: pairs,
+                shouldContinue: shouldContinue
+            )
         }
         if pairs.allSatisfy({ if case .timeOfDayMinutes = $0.value { return true } else { return false } }) {
             let timePairs = pairs.compactMap { pair -> (minutes: Int, recovery: Double)? in
                 if case .timeOfDayMinutes(let minutes) = pair.value { return (minutes, pair.recovery) }
                 return nil
             }
-            return thresholdSplitInsight(questionID: questionID, label: label, pairs: timePairs)
+            return thresholdSplitInsightCancellable(
+                questionID: questionID,
+                label: label,
+                pairs: timePairs,
+                shouldContinue: shouldContinue
+            )
         }
         let numeric = pairs.compactMap { pair -> (x: Double, y: Double)? in
             switch pair.value {
@@ -181,15 +223,22 @@ enum AtriaJournalInsights {
             }
         }
         guard numeric.count == pairs.count else { return nil }
-        return rankCorrelationInsight(questionID: questionID, label: label, pairs: numeric)
+        return rankCorrelationInsightCancellable(
+            questionID: questionID,
+            label: label,
+            pairs: numeric,
+            shouldContinue: shouldContinue
+        )
     }
 
     private static func booleanInsight(questionID: String,
                                        label: String,
-                                       pairs: [(value: Value, recovery: Double)]) -> JournalInsight? {
+                                       pairs: [(value: Value, recovery: Double)],
+                                       shouldContinue: () -> Bool) -> JournalInsight? {
         var logged: [Double] = []
         var comparison: [Double] = []
-        for pair in pairs {
+        for (index, pair) in pairs.enumerated() {
+            if index.isMultiple(of: 64), !shouldContinue() { return nil }
             if case .boolean(let isOn) = pair.value {
                 if isOn { logged.append(pair.recovery) } else { comparison.append(pair.recovery) }
             }
@@ -215,6 +264,21 @@ enum AtriaJournalInsights {
     static func thresholdSplitInsight(questionID: String,
                                       label: String,
                                       pairs: [(minutes: Int, recovery: Double)]) -> JournalInsight? {
+        thresholdSplitInsightCancellable(
+            questionID: questionID,
+            label: label,
+            pairs: pairs,
+            shouldContinue: { true }
+        )
+    }
+
+    private static func thresholdSplitInsightCancellable(
+        questionID: String,
+        label: String,
+        pairs: [(minutes: Int, recovery: Double)],
+        shouldContinue: () -> Bool
+    ) -> JournalInsight? {
+        guard shouldContinue() else { return nil }
         guard pairs.count >= minimumSplitTotalDays,
               let minMinutes = pairs.map(\.minutes).min(),
               let maxMinutes = pairs.map(\.minutes).max(),
@@ -223,6 +287,7 @@ enum AtriaJournalInsights {
         var admissible: [(grid: Int, diff: Double, pValue: Double, earlier: [Double], later: [Double])] = []
         let firstGrid = ((minMinutes / splitGridStepMinutes) + 1) * splitGridStepMinutes
         for grid in stride(from: firstGrid, through: maxMinutes, by: splitGridStepMinutes) {
+            guard shouldContinue() else { return nil }
             let later = pairs.filter { $0.minutes >= grid }.map(\.recovery)
             let earlier = pairs.filter { $0.minutes < grid }.map(\.recovery)
             guard later.count >= minimumSideDays, earlier.count >= minimumSideDays else { continue }
@@ -267,18 +332,46 @@ enum AtriaJournalInsights {
     static func rankCorrelationInsight(questionID: String,
                                        label: String,
                                        pairs: [(x: Double, y: Double)]) -> JournalInsight? {
+        rankCorrelationInsightCancellable(
+            questionID: questionID,
+            label: label,
+            pairs: pairs,
+            shouldContinue: { true }
+        )
+    }
+
+    private static func rankCorrelationInsightCancellable(
+        questionID: String,
+        label: String,
+        pairs: [(x: Double, y: Double)],
+        shouldContinue: () -> Bool
+    ) -> JournalInsight? {
+        guard shouldContinue() else { return nil }
         guard pairs.count >= minimumCorrelationPairs,
               Set(pairs.map(\.x)).count >= minimumDistinctValues else { return nil }
-        let xRanks = averageRanks(pairs.map(\.x))
-        let yRanks = averageRanks(pairs.map(\.y))
-        guard let observed = pearson(xRanks, yRanks) else { return nil }
+        guard let xRanks = averageRanksCancellable(
+            pairs.map(\.x),
+            shouldContinue: shouldContinue
+        ), let yRanks = averageRanksCancellable(
+            pairs.map(\.y),
+            shouldContinue: shouldContinue
+        ), let observed = pearsonCancellable(
+            xRanks,
+            yRanks,
+            shouldContinue: shouldContinue
+        ) else { return nil }
 
         var rng = SplitMix64(state: fnv1aHash(questionID))
         var extremeCount = 0
         var shuffled = yRanks
-        for _ in 0..<permutationCount {
+        for iteration in 0..<permutationCount {
+            if iteration.isMultiple(of: 16), !shouldContinue() { return nil }
             shuffled.shuffle(using: &rng)
-            if let permuted = pearson(xRanks, shuffled), abs(permuted) >= abs(observed) - 1e-12 {
+            if let permuted = pearsonCancellable(
+                xRanks,
+                shuffled,
+                shouldContinue: shouldContinue
+            ), abs(permuted) >= abs(observed) - 1e-12 {
                 extremeCount += 1
             }
         }
@@ -291,10 +384,23 @@ enum AtriaJournalInsights {
 
     /// Average ranks with tie groups sharing the mean of the ranks they span.
     static func averageRanks(_ values: [Double]) -> [Double] {
-        let sortedIndices = values.indices.sorted { values[$0] < values[$1] }
+        averageRanksCancellable(values, shouldContinue: { true }) ?? []
+    }
+
+    private static func averageRanksCancellable(
+        _ values: [Double],
+        shouldContinue: () -> Bool
+    ) -> [Double]? {
+        var sortedIndices = Array(values.indices)
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &sortedIndices,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: { values[$0] < values[$1] }
+        ) else { return nil }
         var ranks = [Double](repeating: 0, count: values.count)
         var position = 0
         while position < sortedIndices.count {
+            guard shouldContinue() else { return nil }
             var end = position
             while end + 1 < sortedIndices.count,
                   values[sortedIndices[end + 1]] == values[sortedIndices[position]] {
@@ -310,6 +416,14 @@ enum AtriaJournalInsights {
     }
 
     private static func pearson(_ a: [Double], _ b: [Double]) -> Double? {
+        pearsonCancellable(a, b, shouldContinue: { true })
+    }
+
+    private static func pearsonCancellable(
+        _ a: [Double],
+        _ b: [Double],
+        shouldContinue: () -> Bool
+    ) -> Double? {
         guard a.count == b.count, a.count > 1 else { return nil }
         let meanA = AtriaBehaviorImpact.mean(a)
         let meanB = AtriaBehaviorImpact.mean(b)
@@ -317,6 +431,7 @@ enum AtriaJournalInsights {
         var varianceA = 0.0
         var varianceB = 0.0
         for index in a.indices {
+            if index.isMultiple(of: 64), !shouldContinue() { return nil }
             let deltaA = a[index] - meanA
             let deltaB = b[index] - meanB
             covariance += deltaA * deltaB

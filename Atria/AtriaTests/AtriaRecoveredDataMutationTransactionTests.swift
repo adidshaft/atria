@@ -5,6 +5,21 @@ import XCTest
 final class AtriaRecoveredDataMutationTransactionTests: XCTestCase {
     private typealias Ticket = AtriaRecoveredDataRecomputeCoordinator.Ticket
 
+    private final class RevokingCheckpoint: @unchecked Sendable {
+        private let lock = NSLock()
+        private let accepted: Int
+        private(set) var visits = 0
+
+        init(accepted: Int) { self.accepted = accepted }
+
+        func shouldContinue() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            visits += 1
+            return visits <= accepted
+        }
+    }
+
     private func workout(_ id: String, startOffset: TimeInterval) -> UserConfirmedWorkout {
         let start = Date(timeIntervalSince1970: 1_784_992_347 + startOffset)
         return UserConfirmedWorkout(id: id,
@@ -51,6 +66,76 @@ final class AtriaRecoveredDataMutationTransactionTests: XCTestCase {
                                     zoneSeconds: base.zoneSeconds)
     }
 
+    private func sleep(
+        _ id: String,
+        startOffset: TimeInterval,
+        reason: String = "original"
+    ) -> UserConfirmedSleep {
+        let start = Date(timeIntervalSince1970: 1_800_000_000 + startOffset)
+        let end = start.addingTimeInterval(7_200)
+        return UserConfirmedSleep(
+            id: id,
+            createdAt: end,
+            start: start,
+            end: end,
+            source: "sleep_window",
+            confidence: "user_confirmed_hr_only",
+            sessions: 1,
+            samples: 120,
+            avgHR: 60,
+            peakHR: 70,
+            restingHR: 55,
+            hrv: nil,
+            hrvWindowCount: nil,
+            duration: end.timeIntervalSince(start),
+            span: end.timeIntervalSince(start),
+            reason: reason,
+            motionSource: "unvalidated",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "UTC"
+        )
+    }
+
+    private func mainSleep(
+        _ id: String,
+        start: Date,
+        end: Date
+    ) -> UserConfirmedSleep {
+        UserConfirmedSleep(
+            id: id,
+            createdAt: end,
+            start: start,
+            end: end,
+            source: "manual_sleep",
+            confidence: "user_confirmed_hr_only",
+            sessions: 1,
+            samples: 120,
+            avgHR: 60,
+            peakHR: 70,
+            restingHR: 55,
+            hrv: nil,
+            hrvWindowCount: nil,
+            duration: end.timeIntervalSince(start),
+            span: end.timeIntervalSince(start),
+            reason: "cooperative fixture",
+            motionSource: "manual",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "UTC"
+        )
+    }
+
+    private var profile: AthleteProfile {
+        AthleteProfile(
+            age: 30,
+            measuredMaxHR: 190,
+            maxHRSource: .measured,
+            updated: nil,
+            hasCompletedOnboarding: true
+        )
+    }
+
     func testRollbackKeepsWorkoutsConfirmedWhileTheRecoveredRunWasDeriving() {
         // 2026-07-25: a manual 6-minute walk was confirmed and durably written
         // (confirmed-workouts.json held 40 records), and a relaunch brought the
@@ -86,6 +171,694 @@ final class AtriaRecoveredDataMutationTransactionTests: XCTestCase {
         XCTAssertEqual(merged.first?.label, "Walking", "the pre-run image must win on id")
     }
 
+    func testLifecycleRollbackRebasesConcurrentSleepAddEditAndDelete() {
+        let originalA = sleep("a", startOffset: -20_000)
+        let originalB = sleep("b", startOffset: -10_000)
+        let editedA = sleep(
+            "a",
+            startOffset: -20_000,
+            reason: "manual bounds edit during recovered derivation"
+        )
+        let addedC = sleep("c", startOffset: 0, reason: "manual confirm")
+
+        let merged = SessionStore
+            .mergeConfirmedSleepsPreservingConcurrentAuthority(
+                preRun: [originalA, originalB],
+                concurrentUpserts: [editedA.id: editedA, addedC.id: addedC],
+                concurrentDeletedIDs: [originalB.id]
+            )
+
+        XCTAssertEqual(merged.map(\.id), ["c", "a"])
+        XCTAssertEqual(
+            merged.first(where: { $0.id == "a" })?.reason,
+            editedA.reason,
+            "a user edit after the snapshot must win over rollback"
+        )
+        XCTAssertFalse(merged.contains { $0.id == "b" },
+                       "a concurrent delete must not be resurrected")
+        XCTAssertTrue(merged.contains { $0.id == "c" },
+                      "a concurrent manual confirmation must survive")
+        XCTAssertFalse(merged.contains { $0.id == "recovered-provisional" },
+                       "rollback may restore no recovered-owned provisional row")
+    }
+
+    func testConcurrentSleepMutationDeltaTracksEditsAddsAndTombstones() {
+        let originalA = sleep("a", startOffset: -20_000)
+        let originalB = sleep("b", startOffset: -10_000)
+        let editedA = sleep("a", startOffset: -20_000, reason: "edited")
+        let addedC = sleep("c", startOffset: 0, reason: "added")
+
+        let delta = SessionStore.confirmedSleepMutationDelta(
+            base: [originalA, originalB],
+            desired: [editedA, addedC]
+        )
+        XCTAssertEqual(delta.deletedIDs, [originalB.id])
+        XCTAssertEqual(delta.upserts[editedA.id], editedA)
+        XCTAssertEqual(delta.upserts[addedC.id], addedC)
+    }
+
+    func testOrdinarySleepWriterRetainsDeltaAfterLifecycleGenerationLoss() {
+        XCTAssertTrue(
+            SessionStore.confirmedSleepWriteMustRecordConcurrentAuthority(
+                transactionOrRollbackWasActiveAtStart: true,
+                transactionOrRollbackIsActiveAtCompletion: false,
+                recoveredOwnedMutation: false,
+                completedGeneration: 41,
+                requestedGeneration: 41,
+                currentGeneration: 42
+            ),
+            "rollback generation supersession must not erase a user write that already persisted"
+        )
+        XCTAssertFalse(
+            SessionStore.confirmedSleepWriteMustRecordConcurrentAuthority(
+                transactionOrRollbackWasActiveAtStart: true,
+                transactionOrRollbackIsActiveAtCompletion: false,
+                recoveredOwnedMutation: true,
+                completedGeneration: 41,
+                requestedGeneration: 41,
+                currentGeneration: 42
+            ),
+            "a stale recovered-owned repair must never enter the user-authority rebase"
+        )
+        XCTAssertFalse(
+            SessionStore.confirmedSleepWriteMustRecordConcurrentAuthority(
+                transactionOrRollbackWasActiveAtStart: true,
+                transactionOrRollbackIsActiveAtCompletion: false,
+                recoveredOwnedMutation: false,
+                completedGeneration: 40,
+                requestedGeneration: 41,
+                currentGeneration: 42
+            ),
+            "a result from another writer generation is not this mutation's authority"
+        )
+        XCTAssertTrue(
+            SessionStore.confirmedSleepWriteMustRecordConcurrentAuthority(
+                transactionOrRollbackWasActiveAtStart: false,
+                transactionOrRollbackIsActiveAtCompletion: true,
+                recoveredOwnedMutation: false,
+                completedGeneration: 41,
+                requestedGeneration: 41,
+                currentGeneration: 41
+            ),
+            "a writer that acquired the gate before transaction start must join the current rollback rebase when it completes"
+        )
+    }
+
+    func testRecoveredSnapshotRefusesPreTransactionConfirmedWriter() async {
+        let gate = AtriaConfirmedRecordTransactionGate()
+        XCTAssertTrue(SessionStore.recoveredMutationSnapshotCanRegister(
+            confirmedRecordTransactionHasActiveOwner: false
+        ))
+        await gate.acquire()
+        XCTAssertTrue(gate.hasActiveOwner)
+        XCTAssertFalse(SessionStore.recoveredMutationSnapshotCanRegister(
+            confirmedRecordTransactionHasActiveOwner: gate.hasActiveOwner
+        ), "a writer that predates the ticket must finish before snapshot admission")
+        gate.release()
+        XCTAssertFalse(gate.hasActiveOwner)
+    }
+
+    func testFinalRecoveredComponentWaitsForDurableCheckpointCompletion() {
+        XCTAssertTrue(
+            SessionStore.recoveredComponentRequiresCheckpointPersistence(
+                succeeded: true,
+                pendingComponentCount: 1,
+                checkpointPersistenceCompleted: false
+            )
+        )
+        XCTAssertFalse(
+            SessionStore.recoveredComponentRequiresCheckpointPersistence(
+                succeeded: true,
+                pendingComponentCount: 2,
+                checkpointPersistenceCompleted: false
+            ),
+            "an interior component must not enter the publication checkpoint"
+        )
+        XCTAssertFalse(
+            SessionStore.recoveredComponentRequiresCheckpointPersistence(
+                succeeded: false,
+                pendingComponentCount: 1,
+                checkpointPersistenceCompleted: false
+            ),
+            "failed derivation cannot persist a publishable checkpoint"
+        )
+        XCTAssertFalse(
+            SessionStore.recoveredComponentRequiresCheckpointPersistence(
+                succeeded: true,
+                pendingComponentCount: 1,
+                checkpointPersistenceCompleted: true
+            ),
+            "the persistence callback may complete the component exactly once"
+        )
+    }
+
+    func testRecoveredCheckpointActivationRejectsProvisionalGeneration() {
+        XCTAssertTrue(
+            SessionStore.recoveredCurrentCheckpointPublicationIsCommitted(
+                checkpointIdentity: nil,
+                committedIdentity: nil
+            ),
+            "legacy schema-2 checkpoints remain compatible"
+        )
+        XCTAssertFalse(
+            SessionStore.recoveredCurrentCheckpointPublicationIsCommitted(
+                checkpointIdentity: "generation-a",
+                committedIdentity: nil
+            )
+        )
+        XCTAssertFalse(
+            SessionStore.recoveredCurrentCheckpointPublicationIsCommitted(
+                checkpointIdentity: "generation-a",
+                committedIdentity: "generation-b"
+            )
+        )
+        XCTAssertTrue(
+            SessionStore.recoveredCurrentCheckpointPublicationIsCommitted(
+                checkpointIdentity: "generation-a",
+                committedIdentity: "generation-a"
+            )
+        )
+    }
+
+    func testRecoveredSleepSavePreparesCorpusOffMainBeforeBoundedInstall()
+        throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory.deletingLastPathComponent()
+                .appendingPathComponent("Atria/Sessions.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(
+            of: "private func saveConfirmedSleeps("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "/// Learned sleep window for the capture duty cycle",
+            range: start.upperBound..<source.endIndex
+        ))
+        let path = String(source[start.lowerBound..<end.lowerBound])
+        let detached = try XCTUnwrap(path.range(
+            of: "DispatchQueue.global(qos: .utility).async"
+        ))
+        let preparation = try XCTUnwrap(path.range(
+            of: "Self.prepareConfirmedSleepSave("
+        ))
+        let install = try XCTUnwrap(path.range(
+            of: "setCachedConfirmedSleeps("
+        ))
+        XCTAssertLessThan(detached.lowerBound, preparation.lowerBound)
+        XCTAssertLessThan(preparation.lowerBound, install.lowerBound)
+        XCTAssertTrue(path.contains(
+            "if deferDerivedPublication,\n               let rebuiltBaseline = preparation.rebuiltBaseline"
+        ))
+        XCTAssertTrue(path.contains(
+            "if !deferDerivedPublication {\n            sleepHistorySnapshot = SleepHistorySnapshot("
+        ))
+        XCTAssertFalse(path.contains(
+            "let existingNeedByID = Dictionary(uniqueKeysWithValues: authoritativeCurrent.compactMap"
+        ), "the MainActor save edge must not materialize confirmed-sleep maps")
+
+        let concurrentLog = try XCTUnwrap(path.range(
+            of: "confirmedSleepWriteMustRecordConcurrentAuthority("
+        ))
+        let staleGeneration = try XCTUnwrap(path.range(
+            of: "guard generation == confirmedRecordWriteGeneration"
+        ))
+        XCTAssertLessThan(
+            concurrentLog.lowerBound,
+            staleGeneration.lowerBound,
+            "a durable ordinary writer must log its delta before stale-generation rejection"
+        )
+    }
+
+    func testRecoveredSleepRepairYieldsToConcurrentAddEditAndDelete() {
+        let originalA = sleep("a", startOffset: -20_000)
+        let originalB = sleep("b", startOffset: -10_000)
+        let recoveredRepairA = sleep(
+            "a",
+            startOffset: -20_000,
+            reason: "recovered stage repair"
+        )
+        let userEditedA = sleep(
+            "a",
+            startOffset: -20_000,
+            reason: "user bounds edit"
+        )
+        let userAddedC = sleep("c", startOffset: 0, reason: "user confirm")
+
+        let rebased = SessionStore.rebasedRecoveredConfirmedSleeps(
+            base: [originalA, originalB],
+            desired: [recoveredRepairA, originalB],
+            current: [userEditedA, userAddedC]
+        )
+
+        XCTAssertEqual(rebased.map(\.id), ["a", "c"])
+        XCTAssertEqual(rebased.first(where: { $0.id == "a" }), userEditedA,
+                       "a recovered field repair cannot overwrite a newer user edit")
+        XCTAssertFalse(rebased.contains { $0.id == "b" },
+                       "a user delete cannot be resurrected")
+        XCTAssertTrue(rebased.contains { $0.id == "c" },
+                      "an independent user confirmation must survive")
+
+        let uncontended = SessionStore.rebasedRecoveredConfirmedSleeps(
+            base: [originalA],
+            desired: [recoveredRepairA],
+            current: [originalA]
+        )
+        XCTAssertEqual(uncontended, [recoveredRepairA])
+    }
+
+    func testSleepHistoryConstructionAbortsInsideConfirmedCorpus() {
+        let corpus = (0..<1_024).map {
+            sleep("sleep-\($0)", startOffset: TimeInterval($0 * 10_000))
+        }
+        let checkpoint = RevokingCheckpoint(accepted: 3)
+        let snapshot = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: corpus,
+            shouldContinue: checkpoint.shouldContinue
+        )
+        XCTAssertTrue(snapshot.nights.isEmpty)
+        XCTAssertLessThanOrEqual(checkpoint.visits, 4,
+            "cancellation must stop before walking the remaining corpus")
+    }
+
+    func testSleepHistoryChecksAuthorityBeforeFilteringEvidenceLessRollups() {
+        let reference = Date(timeIntervalSince1970: 1_800_000_000)
+        let rollups = (0..<4_096).map { index in
+            DailyRollup(
+                day: reference.addingTimeInterval(TimeInterval(index) * 86_400),
+                sessions: 0,
+                activityCandidates: 0,
+                workouts: 0,
+                confirmedWorkouts: 0,
+                restCandidates: 0,
+                sleepReady: 0,
+                sleepCandidates: index == 0 ? 1 : 0,
+                duration: 6 * 60 * 60,
+                sleepDuration: nil,
+                sleepSpan: nil,
+                sleepStart: nil,
+                sleepEnd: nil,
+                sleepSource: nil,
+                sleepStageSegments: [],
+                strain: 0,
+                avgHRV: nil,
+                restingHR: nil,
+                avgRespiratoryRate: nil
+            )
+        }
+        let checkpoint = RevokingCheckpoint(accepted: 8)
+
+        let snapshot = SleepHistorySnapshot(
+            rollups: rollups,
+            confirmedSleeps: [],
+            shouldContinue: checkpoint.shouldContinue
+        )
+
+        XCTAssertTrue(snapshot.nights.isEmpty)
+        XCTAssertEqual(checkpoint.visits, 9,
+            "evidence-less rows must reach the same bounded authority checkpoint")
+    }
+
+    func testBaselineRebuildCancelsInsideConfirmedSleepOverlapScan() {
+        let sessionStart = Date(timeIntervalSince1970: 1_800_000_000)
+        let session = SavedSession(
+            id: UUID(),
+            start: sessionStart,
+            end: sessionStart.addingTimeInterval(60 * 60),
+            label: "overlap scan fixture",
+            points: [
+                SavedSession.Point(t: 0, bpm: 55),
+                SavedSession.Point(t: 60 * 60, bpm: 58),
+            ]
+        )
+        var sleeps = (0..<2_048).map { index in
+            let start = sessionStart.addingTimeInterval(
+                TimeInterval(index + 2) * 24 * 60 * 60
+            )
+            return mainSleep(
+                "non-overlap-\(index)",
+                start: start,
+                end: start.addingTimeInterval(6 * 60 * 60)
+            )
+        }
+        sleeps.append(mainSleep(
+            "eventual-overlap",
+            start: sessionStart.addingTimeInterval(-60 * 60),
+            end: session.end
+        ))
+        let checkpoint = RevokingCheckpoint(accepted: 4)
+
+        let rebuilt = SessionStore.rebuildBaselineCancellable(
+            from: [session],
+            previousBaseline: PersonalBaseline(),
+            profile: profile,
+            confirmedSleeps: sleeps,
+            shouldContinue: checkpoint.shouldContinue
+        )
+
+        XCTAssertNil(rebuilt)
+        XCTAssertEqual(checkpoint.visits, 5,
+            "revocation must stop the inner sleep-overlap walk")
+    }
+
+    func testConfirmedSleepExactWindowHRVScanIsCancellable() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let rrPoints = stride(from: 1.0, through: 16 * 60.0, by: 1.0).map {
+            SavedSession.RRPoint(
+                t: $0,
+                ms: Int($0).isMultiple(of: 2) ? 980 : 1_020,
+                source: .standardHeartRateMeasurement2A37
+            )
+        }
+        let session = SavedSession(
+            id: UUID(),
+            start: start,
+            end: start.addingTimeInterval(6 * 60 * 60),
+            label: "exact-window RR fixture",
+            points: [SavedSession.Point(t: 0, bpm: 52)],
+            hrv: 42,
+            rrPoints: rrPoints
+        )
+        let sleep = mainSleep(
+            "exact-window-sleep",
+            start: start,
+            end: session.end
+        )
+        let checkpoint = RevokingCheckpoint(accepted: 10)
+
+        let evidence = SessionStore.confirmedMainSleepHRVEvidenceCancellable(
+            for: session,
+            confirmedSleeps: [sleep],
+            shouldContinue: checkpoint.shouldContinue
+        )
+
+        XCTAssertNil(evidence)
+        XCTAssertEqual(checkpoint.visits, 11,
+            "revocation must interrupt the exact RR-window row scan")
+    }
+
+    func testBaselineRebuildCancelsInsideFinalCanonicalSleepSeed() {
+        let reference = Date(timeIntervalSince1970: 1_800_000_000)
+        let sleeps = (0..<2_048).map { index in
+            let end = reference.addingTimeInterval(
+                TimeInterval(index) * 24 * 60 * 60
+            )
+            return mainSleep(
+                "seed-\(index)",
+                start: end.addingTimeInterval(-6 * 60 * 60),
+                end: end
+            )
+        }
+        let checkpoint = RevokingCheckpoint(accepted: 6)
+
+        let rebuilt = SessionStore.rebuildBaselineCancellable(
+            from: [],
+            previousBaseline: PersonalBaseline(),
+            profile: profile,
+            confirmedSleeps: sleeps,
+            shouldContinue: checkpoint.shouldContinue
+        )
+
+        XCTAssertNil(rebuilt)
+        XCTAssertEqual(checkpoint.visits, 7,
+            "the final canonical seed must not finish after authority revocation")
+    }
+
+    func testHomeAggregateCarriesConfirmedSleepRevisionInCacheIdentity() {
+        let aggregate = SessionStore.homeSavedAggregate(
+            from: [],
+            rest: 55,
+            maxHR: 190,
+            biologicalSex: .unspecified,
+            confirmedSleepsRevision: 17
+        )
+        XCTAssertEqual(aggregate.confirmedSleepsRevision, 17)
+    }
+
+    func testRecoveredInstallFencesCanonicalAndPhysiologicalSleepRevisions() {
+        XCTAssertTrue(SessionStore.recoveredProjectionSourceRevisionsAreCurrent(
+            canonicalRevision: 41,
+            expectedCanonicalRevision: 41,
+            confirmedSleepsRevision: 9,
+            expectedConfirmedSleepsRevision: 9
+        ))
+        XCTAssertFalse(SessionStore.recoveredProjectionSourceRevisionsAreCurrent(
+            canonicalRevision: 42,
+            expectedCanonicalRevision: 41,
+            confirmedSleepsRevision: 9,
+            expectedConfirmedSleepsRevision: 9
+        ))
+        XCTAssertFalse(SessionStore.recoveredProjectionSourceRevisionsAreCurrent(
+            canonicalRevision: 41,
+            expectedCanonicalRevision: 41,
+            confirmedSleepsRevision: 10,
+            expectedConfirmedSleepsRevision: 9
+        ), "a second-sleep edit/delete must fence an obsolete wake cutoff")
+    }
+
+    func testCurrentCycleSleepInstallUsesCapturedCanonicalAndSleepRevisions()
+        throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: testsDirectory.deletingLastPathComponent()
+                .appendingPathComponent("Atria/Sessions.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(
+            of: "private func runRecoveredCurrentCyclePublicationStep("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func runRecoveredArchiveStatusStep(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let path = String(source[start.lowerBound..<end.lowerBound])
+
+        XCTAssertTrue(path.contains(
+            "let sourceCanonicalRevision = self.canonicalSessionsRevision"
+        ))
+        XCTAssertTrue(path.contains(
+            "let sourceConfirmedSleepsRevision ="
+        ))
+        XCTAssertTrue(path.contains(
+            "Self.recoveredProjectionSourceRevisionsAreCurrent("
+        ))
+        let capture = try XCTUnwrap(path.range(
+            of: "let sourceCanonicalRevision = self.canonicalSessionsRevision"
+        ))
+        let worker = try XCTUnwrap(path.range(
+            of: "Self.historySnapshotProjectionQueue.async"
+        ))
+        let install = try XCTUnwrap(path.range(
+            of: "self.sleepHistorySnapshot = prepared"
+        ))
+        let fence = try XCTUnwrap(path.range(
+            of: "Self.recoveredProjectionSourceRevisionsAreCurrent("
+        ))
+        XCTAssertLessThan(capture.lowerBound, worker.lowerBound)
+        XCTAssertLessThan(fence.lowerBound, install.lowerBound)
+    }
+
+    func testRecoveredCompactRetryRequiresExactLiveTicketAuthority() {
+        XCTAssertTrue(SessionStore.recoveredCompactRetryShouldRun(
+            taskIsCancelled: false,
+            authorityShouldContinue: true,
+            scheduledGeneration: 7,
+            currentGeneration: 7
+        ))
+        XCTAssertFalse(SessionStore.recoveredCompactRetryShouldRun(
+            taskIsCancelled: true,
+            authorityShouldContinue: true,
+            scheduledGeneration: 7,
+            currentGeneration: 7
+        ))
+        XCTAssertFalse(SessionStore.recoveredCompactRetryShouldRun(
+            taskIsCancelled: false,
+            authorityShouldContinue: false,
+            scheduledGeneration: 7,
+            currentGeneration: 7
+        ))
+        XCTAssertFalse(SessionStore.recoveredCompactRetryShouldRun(
+            taskIsCancelled: false,
+            authorityShouldContinue: true,
+            scheduledGeneration: 7,
+            currentGeneration: 8
+        ), "a retry captured by the old ticket cannot start after suspension")
+    }
+
+    func testFinalMutationEnvironmentRejectsInactiveForegroundOnly() {
+        XCTAssertTrue(SessionStore.recoveredMainActorMutationEnvironmentAllows(
+            applicationIsActive: true,
+            isExplicitBackgroundAuthority: false
+        ))
+        XCTAssertFalse(SessionStore.recoveredMainActorMutationEnvironmentAllows(
+            applicationIsActive: false,
+            isExplicitBackgroundAuthority: false
+        ))
+        XCTAssertTrue(SessionStore.recoveredMainActorMutationEnvironmentAllows(
+            applicationIsActive: false,
+            isExplicitBackgroundAuthority: true
+        ), "an exact BGProcessing lease remains independent of scene activity")
+    }
+
+    func testRecoveredHistoryAdmissionAndUIKitResumeHaveProductionEdges()
+        throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        let sessions = try String(
+            contentsOf: appDirectory.appendingPathComponent("Sessions.swift"),
+            encoding: .utf8
+        )
+        let historyStart = try XCTUnwrap(sessions.range(
+            of: "private func refreshHistorySnapshotCache("
+        ))
+        let historyEnd = try XCTUnwrap(sessions.range(
+            of: "private struct CurrentCycleStepLegacyMigrationAdmission",
+            range: historyStart.upperBound..<sessions.endIndex
+        ))
+        let history = String(
+            sessions[historyStart.lowerBound..<historyEnd.lowerBound]
+        )
+        let worker = try XCTUnwrap(history.range(
+            of: "Self.historySnapshotProjectionQueue.asyncAfter"
+        ))
+        let admission = String(history[..<worker.lowerBound])
+        let offMain = String(history[worker.lowerBound...])
+        XCTAssertFalse(admission.contains(
+            "canonicalSessions(includeActiveJournal: true)"
+        ))
+        XCTAssertTrue(offMain.contains("loadActiveJournalSessionIfFresh("))
+        XCTAssertTrue(offMain.contains("shouldContinue: executionShouldContinue"))
+
+        let app = try String(
+            contentsOf: appDirectory.appendingPathComponent("AtriaApp.swift"),
+            encoding: .utf8
+        )
+        let activeNotification = try XCTUnwrap(app.range(
+            of: "UIApplication.didBecomeActiveNotification"
+        ))
+        let activeTail = String(app[activeNotification.lowerBound...])
+        XCTAssertTrue(activeTail.contains(
+            "resumeRecoveredDataPublicationLeaseForForeground("
+        ), "UIKit active must replay a SwiftUI-active admission race")
+
+        let publishStart = try XCTUnwrap(sessions.range(of: "case .publish(let ticket):"))
+        let publishEnd = try XCTUnwrap(sessions.range(
+            of: "private func armRecoveredDataRecomputeTimeout(",
+            range: publishStart.upperBound..<sessions.endIndex
+        ))
+        let publish = String(sessions[publishStart.lowerBound..<publishEnd.lowerBound])
+        XCTAssertTrue(publish.contains(
+            "shouldContinueForMainActorMutation("
+        ))
+        XCTAssertTrue(publish.contains(
+            "UIApplication.shared.applicationState == .active"
+        ))
+        let dashboardPublication = try XCTUnwrap(
+            publish.range(of: "publishDashboardRevision()")
+        )
+        let fencePublication = try XCTUnwrap(
+            publish.range(of: "recoveredDataPublicationFence.publish(")
+        )
+        let diagnosticPublication = try XCTUnwrap(
+            publish.range(
+                of: "retireRecoveredDataExecutionIfCurrent(\n                    ticket: ticket,\n                    outcome: \"published\""
+            )
+        )
+        XCTAssertLessThan(
+            dashboardPublication.lowerBound,
+            diagnosticPublication.lowerBound
+        )
+        XCTAssertLessThan(
+            fencePublication.lowerBound,
+            diagnosticPublication.lowerBound,
+            "the diagnostic publish edge must follow the actual publication fence"
+        )
+        XCTAssertFalse(
+            publish.contains("persistRecoveredCurrentCheckpoint()"),
+            "publication may not queue checkpoint I/O and immediately report success"
+        )
+        let activation = try XCTUnwrap(publish.range(
+            of: "recoveredCurrentCheckpointPublicationIdentityKey"
+        ))
+        XCTAssertLessThan(
+            fencePublication.lowerBound,
+            activation.lowerBound,
+            "a crash-visible checkpoint marker must follow the real fence"
+        )
+        XCTAssertLessThan(
+            activation.lowerBound,
+            diagnosticPublication.lowerBound,
+            "the diagnostic edge must follow checkpoint activation"
+        )
+
+        let completionStart = try XCTUnwrap(sessions.range(
+            of: "private func completeRecoveredDataComponent("
+        ))
+        let completionEnd = try XCTUnwrap(sessions.range(
+            of: "/// Re-evaluates only confirmed workouts",
+            range: completionStart.upperBound..<sessions.endIndex
+        ))
+        let completion = String(
+            sessions[completionStart.lowerBound..<completionEnd.lowerBound]
+        )
+        let durableCheckpoint = try XCTUnwrap(completion.range(
+            of: "persistRecoveredCurrentCheckpoint("
+        ))
+        let coordinatorCompletion = try XCTUnwrap(completion.range(
+            of: "recoveredDataRecompute.componentCompleted("
+        ))
+        XCTAssertLessThan(
+            durableCheckpoint.lowerBound,
+            coordinatorCompletion.lowerBound,
+            "the final component must remain pending until checkpoint completion"
+        )
+
+        let suspendStart = try XCTUnwrap(sessions.range(
+            of: "func suspendRecoveredDataPublicationLeaseForBackground("
+        ))
+        let suspendEnd = try XCTUnwrap(sessions.range(
+            of: "func resumeRecoveredDataPublicationLeaseForForeground(",
+            range: suspendStart.upperBound..<sessions.endIndex
+        ))
+        let suspend = String(
+            sessions[suspendStart.lowerBound..<suspendEnd.lowerBound]
+        )
+        XCTAssertTrue(suspend.contains(
+            "pendingRecoveredSleepReadinessRetry?.cancel()"
+        ))
+    }
+
+    func testLifecycleCanonicalRollbackIsAConstantTimeCOWSwap() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let session = SavedSession(
+            id: UUID(),
+            start: start,
+            end: start.addingTimeInterval(60),
+            label: "Recovered",
+            points: [],
+            hrv: nil
+        )
+        let captured = Array(repeating: session, count: 250_000)
+        let capturedAddress = captured.withUnsafeBufferPointer {
+            $0.baseAddress
+        }
+
+        let restored = SessionStore
+            .boundedRecoveredLifecycleCanonicalRestore(captured)
+
+        XCTAssertEqual(restored.count, captured.count)
+        XCTAssertEqual(
+            restored.withUnsafeBufferPointer { $0.baseAddress },
+            capturedAddress,
+            "lifecycle rollback must share the captured buffer, not rebuild or sort it"
+        )
+    }
+
     func testRollbackPersistsTheMergedWorkoutImageInsteadOfTheStaleSnapshot() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
@@ -101,19 +874,27 @@ final class AtriaRecoveredDataMutationTransactionTests: XCTestCase {
             range: start..<sessions.endIndex
         )?.lowerBound)
         let rollback = String(sessions[start..<end])
+        let compactRollback = rollback.filter { !$0.isWhitespace }
 
         XCTAssertTrue(rollback.contains(
             "let restoredConfirmedWorkouts = Self.mergeConfirmedWorkoutsPreservingLiveAdditions("
         ))
-        XCTAssertTrue(rollback.contains(
-            "let restoredConfirmedWorkoutData = try? JSONEncoder().encode(restoredConfirmedWorkouts)"
+        XCTAssertTrue(compactRollback.contains(
+            "letrestoredConfirmedWorkoutData=try?JSONEncoder().encode(restoredConfirmedWorkouts)"
         ))
-        XCTAssertTrue(rollback.contains(
+        XCTAssertTrue(compactRollback.contains(
             "restoreRecoveredFileData(restoredConfirmedWorkoutData,"
         ))
         XCTAssertFalse(rollback.contains(
             "restoreRecoveredFileData(snapshot.confirmedWorkoutFileData,"
         ), "the pre-run file bytes must not overwrite workouts saved during derivation")
+        XCTAssertTrue(rollback.contains("cachedHomeDashboardDiagnostics = nil"))
+        XCTAssertTrue(rollback.contains("cachedHomeSavedAggregate = nil"))
+        XCTAssertTrue(rollback.contains("recoveryProjectionCache.invalidate()"))
+        XCTAssertTrue(rollback.contains("cachedTodayTRIMP = nil"))
+        XCTAssertFalse(rollback.contains(
+            "cachedHomeSavedAggregate = snapshot.homeSavedAggregate"
+        ), "rollback must not restore a cache keyed to the old sleep boundary")
     }
 
     func testInjectedFailureRollsEveryCompletedMutationBackInReverseOrder() {
@@ -229,9 +1010,12 @@ final class AtriaRecoveredDataMutationTransactionTests: XCTestCase {
         let sourceURL = testsURL.deletingLastPathComponent()
             .appendingPathComponent("Atria/Sessions.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let compactSource = source.filter { !$0.isWhitespace }
 
         XCTAssertTrue(source.contains("guard beginRecoveredDataMutationTransaction(ticket: ticket)"))
-        XCTAssertTrue(source.contains("guard self.registerRecoveredDataMutationSnapshot(ticket: ticket)"))
+        XCTAssertTrue(compactSource.contains(
+            "guardself.registerRecoveredDataMutationSnapshot(ticket:ticket)"
+        ))
         XCTAssertTrue(source.contains("rollbackRecoveredDataMutationTransaction(ticket: ticket)"))
         XCTAssertTrue(source.contains("guard commitRecoveredDataMutationTransaction(ticket: ticket)"))
         XCTAssertTrue(source.contains("pendingDailyMetricSaveWorkItem?.cancel()"))

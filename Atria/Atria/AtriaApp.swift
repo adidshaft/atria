@@ -249,6 +249,31 @@ private final class AtriaBackgroundTaskCompletionGate: @unchecked Sendable {
     }
 }
 
+private final class AtriaBackgroundProjectionLeaseOwner: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lease: AtriaBackgroundProjectionThrottle.ActiveLease?
+
+    func set(_ lease: AtriaBackgroundProjectionThrottle.ActiveLease) {
+        lock.lock()
+        self.lease = lease
+        lock.unlock()
+    }
+
+    func current() -> AtriaBackgroundProjectionThrottle.ActiveLease? {
+        lock.lock()
+        defer { lock.unlock() }
+        return lease
+    }
+
+    func clear(
+        _ completed: AtriaBackgroundProjectionThrottle.ActiveLease
+    ) {
+        lock.lock()
+        if lease == completed { lease = nil }
+        lock.unlock()
+    }
+}
+
 @main
 struct AtriaApp: App {
     private static let appRefreshTaskIdentifier = "com.adidshaft.atria.refresh"
@@ -350,13 +375,32 @@ struct AtriaApp: App {
                     // return so a blocked restore can never leave a
                     // backgrounded lane looking foregrounded.
                     switch phase {
-                    case .background:
+                    case .background, .inactive:
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = true
+                        let recoveredLifecycleReason = phase == .background
+                            ? "scene_background" : "scene_inactive"
                         // Revoke the advisory user-initiated review projection
                         // before any background maintenance can begin. The
                         // latest invalidation is coalesced for scene-active.
-                        store.suspendSleepReviewProjectionForBackground(
-                            reason: "scene_background"
+                        if phase == .background {
+                            store.suspendSleepReviewProjectionForBackground(
+                                reason: "scene_background"
+                            )
+                        }
+                        // Retire the attended foreground BG-throttle lease
+                        // before revoking recovered execution. This ordering
+                        // still preserves a later, independently minted real
+                        // BGProcessing lease, and it must run even when a
+                        // retained restore marker blocks ordinary maintenance.
+                        let releasedAttendedProjection = ble
+                            .releaseConnectedRawCatchUpPublicationYieldForLifecycle(
+                                reason: recoveredLifecycleReason
+                            )
+                        if releasedAttendedProjection {
+                            store.endBackgroundArchiveProjectionThrottle()
+                        }
+                        store.suspendRecoveredDataPublicationLeaseForBackground(
+                            reason: recoveredLifecycleReason
                         )
                     case .active:
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = false
@@ -368,6 +412,10 @@ struct AtriaApp: App {
                         // mid-scan (BGTask window ended before end() ran) can
                         // never throttle a live foreground scan (2026-08-08).
                         AtriaBackgroundProjectionThrottle.shared.end()
+                        store
+                            .invalidateRecoveredDataBackgroundExecutionLeaseForForeground(
+                                reason: "scene_active_throttle_end"
+                            )
                     default:
                         break
                     }
@@ -389,19 +437,6 @@ struct AtriaApp: App {
                         foregroundBLETransitionTask?.cancel()
                         foregroundBLETransitionTask = nil
                         recordScenePhase("background", reason: "scene_background")
-                        _ = ble
-                            .releaseConnectedRawCatchUpPublicationYieldForLifecycle(
-                                reason: "scene_background"
-                            )
-                        // A connected-raw publication yield owns only an
-                        // attended foreground throttle lease. Revoke that
-                        // exact bounded scan before suspension; a later real
-                        // BGProcessing task mints its own lease and resumes the
-                        // durable bootstrap checkpoint.
-                        store.endBackgroundArchiveProjectionThrottle()
-                        store.suspendRecoveredDataPublicationLeaseForBackground(
-                            reason: "scene_background"
-                        )
                         AtriaStrapCalibrationArchive.shared.flush()
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = nil
@@ -509,6 +544,9 @@ struct AtriaApp: App {
                     store.resumeDeferredSleepReviewProjectionIfNeeded(
                         reason: "ui_did_become_active"
                     )
+                    store.resumeRecoveredDataPublicationLeaseForForeground(
+                        reason: "ui_did_become_active"
+                    )
                     inactiveFlushTask?.cancel()
                     inactiveFlushTask = nil
                     // `scenePhase == .active` is the single owner of foreground
@@ -546,10 +584,17 @@ struct AtriaApp: App {
         scheduleBackgroundRefresh(reason: "\(reason)_reschedule")
         scheduleBackgroundProcessing(reason: "\(reason)_reschedule")
         let completion = AtriaBackgroundTaskCompletionGate()
+        let recoveredProjectionOwner = AtriaBackgroundProjectionLeaseOwner()
         let work = Task { @MainActor in
             var archiveCompactionLease:
                 SessionStore.ArchiveCompactionBGProcessingLease?
             defer {
+                if let lease = recoveredProjectionOwner.current() {
+                    store.endBackgroundArchiveProjectionThrottle(
+                        lease: lease
+                    )
+                    recoveredProjectionOwner.clear(lease)
+                }
                 if let archiveCompactionLease {
                     store.endArchiveCompactionBGProcessingLease(
                         archiveCompactionLease,
@@ -698,13 +743,17 @@ struct AtriaApp: App {
                     reason: "bg_processing"
                 )
                 let priorProjectionRevision = store.recoveredDataArchiveRevisionSnapshot
-                if store.requestBackgroundArchiveProjectionIfSafe(reason: "bg_projection") {
+                if let lease = store.requestBackgroundArchiveProjectionIfSafe(
+                    reason: "bg_projection"
+                ) {
+                    recoveredProjectionOwner.set(lease)
                     // The timeout arg clamps up to the pipeline fence; the real
                     // bound is the throttle deadline + this task's expiration.
                     _ = await store.awaitRecoveredDataPublication(
                         after: priorProjectionRevision,
                         timeout: .seconds(1))
-                    store.endBackgroundArchiveProjectionThrottle()
+                    store.endBackgroundArchiveProjectionThrottle(lease: lease)
+                    recoveredProjectionOwner.clear(lease)
                 }
                 // Retention accounting is a whole-archive pass even when no
                 // bytes are reclaimed. Offer it last: motion/HR recovery and
@@ -736,7 +785,11 @@ struct AtriaApp: App {
         }
         task.expirationHandler = {
             work.cancel()
-            AtriaBackgroundProjectionThrottle.shared.cancel()
+            if let lease = recoveredProjectionOwner.current() {
+                _ = AtriaBackgroundProjectionThrottle.shared.cancel(
+                    lease: lease
+                )
+            }
             Task { @MainActor in
                 store.invalidateArchiveCompactionBGProcessingLease(
                     reason: "\(reason)_task_expired"

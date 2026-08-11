@@ -48,6 +48,80 @@ enum AtriaAnalytics {
             return estimate(resampledRR: resampled, sampleRate: sampleRate)
         }
 
+        static func estimateCancellable(
+            samples: [(t: Date, ms: Double)],
+            now: Date,
+            lookback: TimeInterval = 90,
+            shouldContinue: () -> Bool
+        ) -> Double? {
+            guard shouldContinue(), !samples.isEmpty else { return nil }
+            let lowerDate = now.addingTimeInterval(-lookback)
+            var lower = 0
+            var upper = samples.count
+            while lower < upper {
+                guard shouldContinue() else { return nil }
+                let middle = (lower + upper) / 2
+                if samples[middle].t < lowerDate {
+                    lower = middle + 1
+                } else {
+                    upper = middle
+                }
+            }
+            guard lower < samples.count else { return nil }
+            var recent: [(t: Date, ms: Double)] = []
+            recent.reserveCapacity(256)
+            var index = lower
+            while index < samples.count, samples[index].t <= now {
+                if index.isMultiple(of: 64), !shouldContinue() { return nil }
+                recent.append(samples[index])
+                index += 1
+            }
+            guard recent.count >= 20,
+                  let first = recent.first?.t,
+                  let last = recent.last?.t else { return nil }
+            let duration = last.timeIntervalSince(first)
+            guard duration >= 45 else { return nil }
+            let origin = first.timeIntervalSinceReferenceDate
+            var relative: [(Double, Double)] = []
+            relative.reserveCapacity(recent.count)
+            for (offset, sample) in recent.enumerated() {
+                if offset.isMultiple(of: 64), !shouldContinue() { return nil }
+                relative.append((
+                    sample.t.timeIntervalSinceReferenceDate - origin,
+                    sample.ms
+                ))
+            }
+            for index in 1..<relative.count {
+                if index.isMultiple(of: 64), !shouldContinue() { return nil }
+                if relative[index].0 - relative[index - 1].0 > 5 { return nil }
+            }
+            let sampleRate = 4.0
+            let step = 1.0 / sampleRate
+            let count = Int(duration / step) + 1
+            guard count >= Int(45 * sampleRate) else { return nil }
+            var resampled: [Double] = []
+            resampled.reserveCapacity(count)
+            var sourceIndex = 0
+            for index in 0..<count {
+                if index.isMultiple(of: 64), !shouldContinue() { return nil }
+                let time = Double(index) * step
+                while sourceIndex + 1 < relative.count,
+                      relative[sourceIndex + 1].0 < time {
+                    sourceIndex += 1
+                }
+                guard sourceIndex + 1 < relative.count else { break }
+                let a = relative[sourceIndex]
+                let b = relative[sourceIndex + 1]
+                let span = b.0 - a.0
+                guard span > 0 else { continue }
+                resampled.append(
+                    a.1 + (b.1 - a.1) * ((time - a.0) / span)
+                )
+            }
+            guard shouldContinue() else { return nil }
+            return estimate(resampledRR: resampled, sampleRate: sampleRate)
+        }
+
         static func estimate(resampledRR: [Double], sampleRate: Double = 4.0) -> Double? {
             guard resampledRR.count >= Int(45 * sampleRate) else { return nil }
             let mean = resampledRR.reduce(0, +) / Double(resampledRR.count)
@@ -874,6 +948,54 @@ enum AtriaAnalytics {
                                            droppedGapSeconds: dropped)
         }
 
+        /// Exact recovered/BG counterpart. The caller-supplied checkpoint is
+        /// also the throttle duty-cycle edge, so the interval walk cannot run
+        /// one full recovered corpus after its ticket or BG generation ends.
+        static func maxHeartRateZoneSeconds(
+            _ series: [(t: Double, bpm: Int)],
+            maxHR: Int,
+            restingHR: Int? = nil,
+            maxGap: TimeInterval = maximumLoadEvidenceGap,
+            shouldContinue: () -> Bool
+        ) -> MaxHeartRateZoneSeconds? {
+            guard shouldContinue(), series.count > 1, maxHR > 0 else {
+                return series.count > 1 && maxHR > 0 ? nil : .empty
+            }
+            var total = MaxHeartRateZoneSeconds.empty
+            for index in 1..<series.count {
+                if index.isMultiple(of: 256), !shouldContinue() { return nil }
+                let dt = series[index].t - series[index - 1].t
+                guard dt > 0 else { continue }
+                if dt > maxGap {
+                    total = MaxHeartRateZoneSeconds(
+                        rest: total.rest,
+                        warmup: total.warmup,
+                        fatBurn: total.fatBurn,
+                        aerobic: total.aerobic,
+                        anaerobic: total.anaerobic,
+                        max: total.max,
+                        droppedGapSeconds: total.droppedGapSeconds + dt
+                    )
+                    continue
+                }
+                let zone = maxHeartRateZoneRawValue(
+                    for: series[index].bpm,
+                    maxHR: maxHR,
+                    restingHR: restingHR
+                )
+                total = MaxHeartRateZoneSeconds(
+                    rest: total.rest + (zone == 0 ? dt : 0),
+                    warmup: total.warmup + (zone == 1 ? dt : 0),
+                    fatBurn: total.fatBurn + (zone == 2 ? dt : 0),
+                    aerobic: total.aerobic + (zone == 3 ? dt : 0),
+                    anaerobic: total.anaerobic + (zone == 4 ? dt : 0),
+                    max: total.max + (zone >= 5 ? dt : 0),
+                    droppedGapSeconds: total.droppedGapSeconds
+                )
+            }
+            return shouldContinue() ? total : nil
+        }
+
         static func maxHeartRateZoneRawValue(for bpm: Int, maxHR: Int, restingHR: Int? = nil) -> Int {
             guard bpm > 0, maxHR > 0 else { return 0 }
             let rest = restingHR ?? 0
@@ -990,6 +1112,69 @@ enum AtriaAnalytics {
             }
             finishCurrent()
             return result
+        }
+
+        static func contiguousSegments(
+            _ samples: [HRSample],
+            excluding excludedIntervals: [ExcludedInterval]?,
+            shouldContinue: () -> Bool
+        ) -> [[HRSample]]? {
+            guard shouldContinue() else { return nil }
+            guard !samples.isEmpty else { return [] }
+            var intervals = (excludedIntervals ?? []).filter {
+                $0.end > $0.start
+            }
+            guard AtriaSleepCooperativeAlgorithms.stableSort(
+                &intervals,
+                shouldContinue: shouldContinue,
+                areInIncreasingOrder: { lhs, rhs in
+                    lhs.start == rhs.start
+                        ? lhs.end < rhs.end
+                        : lhs.start < rhs.start
+                }
+            ) else { return nil }
+            var normalized: [ExcludedInterval] = []
+            for (index, interval) in intervals.enumerated() {
+                if index.isMultiple(of: 64), !shouldContinue() { return nil }
+                if let previous = normalized.last,
+                   interval.start <= previous.end {
+                    normalized[normalized.count - 1] = ExcludedInterval(
+                        start: previous.start,
+                        end: max(previous.end, interval.end)
+                    )
+                } else {
+                    normalized.append(interval)
+                }
+            }
+            guard !normalized.isEmpty else {
+                return shouldContinue() ? [samples] : nil
+            }
+            var result: [[HRSample]] = []
+            var current: [HRSample] = []
+            var intervalIndex = 0
+            func finishCurrent() {
+                guard !current.isEmpty else { return }
+                result.append(current)
+                current.removeAll(keepingCapacity: true)
+            }
+            for (index, sample) in samples.enumerated() {
+                if index.isMultiple(of: 256), !shouldContinue() { return nil }
+                while intervalIndex < normalized.count,
+                      sample.t > normalized[intervalIndex].end {
+                    finishCurrent()
+                    intervalIndex += 1
+                }
+                if intervalIndex < normalized.count {
+                    let interval = normalized[intervalIndex]
+                    if sample.t >= interval.start, sample.t <= interval.end {
+                        finishCurrent()
+                        continue
+                    }
+                }
+                current.append(sample)
+            }
+            finishCurrent()
+            return shouldContinue() ? result : nil
         }
 
         private static func normalizedExcludedIntervals(

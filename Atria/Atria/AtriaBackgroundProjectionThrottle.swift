@@ -20,7 +20,8 @@ final class AtriaBackgroundProjectionThrottle {
     static let shared = AtriaBackgroundProjectionThrottle()
 
     struct ActiveLease: Equatable, Sendable {
-        fileprivate let generation: UInt64
+        let generation: UInt64
+        let deadlineUptime: TimeInterval
     }
 
     private let lock = NSLock()
@@ -31,6 +32,20 @@ final class AtriaBackgroundProjectionThrottle {
     private var sliceStart: TimeInterval = 0
     private var sliceFrames = 0
     private var generation: UInt64 = 0
+    private let sleepFor: (TimeInterval) -> Void
+    private let uptimeNow: () -> TimeInterval
+
+    init(
+        sleepFor: @escaping (TimeInterval) -> Void = {
+            Thread.sleep(forTimeInterval: $0)
+        },
+        uptimeNow: @escaping () -> TimeInterval = {
+            ProcessInfo.processInfo.systemUptime
+        }
+    ) {
+        self.sleepFor = sleepFor
+        self.uptimeNow = uptimeNow
+    }
 
     /// Matches the orphan-replay cooperative batch (AtriaBLEManager) so both
     /// heavy off-main scans yield on the same cadence.
@@ -40,9 +55,10 @@ final class AtriaBackgroundProjectionThrottle {
     /// pass far under this, so it never fires mid-legitimate-scan.
     private static let maximumActiveWindow: TimeInterval = 600
 
-    func begin(budgetSeconds: TimeInterval) {
+    @discardableResult
+    func begin(budgetSeconds: TimeInterval) -> ActiveLease {
         lock.lock(); defer { lock.unlock() }
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = uptimeNow()
         generation &+= 1
         active = true
         cancelled = false
@@ -50,6 +66,7 @@ final class AtriaBackgroundProjectionThrottle {
         sliceStart = now
         deadline = now + max(0, budgetSeconds)
         sliceFrames = 0
+        return .init(generation: generation, deadlineUptime: deadline)
     }
 
     /// Signal the pass to abort at its next checkpoint (e.g. from a BGTask
@@ -57,6 +74,17 @@ final class AtriaBackgroundProjectionThrottle {
     /// the duty cycle keeps running while active.
     func cancel() {
         lock.lock(); cancelled = true; lock.unlock()
+    }
+
+    /// Retires only the captured pass. A late terminal callback from an older
+    /// recovered ticket must never cancel a replacement BGProcessing lease.
+    @discardableResult
+    func cancel(lease: ActiveLease) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard active, lease.generation == generation else { return false }
+        cancelled = true
+        return true
     }
 
     func end() {
@@ -67,12 +95,62 @@ final class AtriaBackgroundProjectionThrottle {
         lock.unlock()
     }
 
+    /// Retires only the owner that began this exact pass. Async cleanup from a
+    /// timed-out/finished generation must not invalidate a replacement lease
+    /// minted while that old owner was unwinding.
+    @discardableResult
+    func end(lease: ActiveLease) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard active, lease.generation == generation else { return false }
+        generation &+= 1
+        active = false
+        cancelled = false
+        return true
+    }
+
     /// Captures the exact background pass. A later `end()` must abort work
     /// that already captured this lease even though the throttle becomes
     /// inactive for new foreground work.
     func captureActiveLease() -> ActiveLease? {
         lock.lock(); defer { lock.unlock() }
-        return active ? .init(generation: generation) : nil
+        return active
+            ? .init(generation: generation, deadlineUptime: deadline) : nil
+    }
+
+    /// Non-sleeping exact-generation check for coordinator and MainActor
+    /// boundaries. Unlike `captureActiveLease`, this rejects cancellation,
+    /// expiration, heat, and Low Power Mode; unlike the cooperative checkpoint,
+    /// it never duty-cycles the calling thread.
+    func activeLeaseShouldContinue(_ lease: ActiveLease) -> Bool {
+        activeLeaseShouldContinue(
+            lease,
+            now: uptimeNow(),
+            thermalState: ProcessInfo.processInfo.thermalState,
+            isLowPowerModeEnabled:
+                ProcessInfo.processInfo.isLowPowerModeEnabled
+        )
+    }
+
+    func activeLeaseShouldContinue(
+        _ lease: ActiveLease,
+        now: TimeInterval,
+        thermalState: ProcessInfo.ThermalState,
+        isLowPowerModeEnabled: Bool
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard active,
+              !cancelled,
+              lease.generation == generation else { return false }
+        guard now < deadline,
+              now - beginUptime <= Self.maximumActiveWindow else {
+            return false
+        }
+        return !Self.environmentRequiresAbort(
+            thermalState: thermalState,
+            isLowPowerModeEnabled: isLowPowerModeEnabled
+        )
     }
 
     var isActive: Bool {
@@ -87,6 +165,24 @@ final class AtriaBackgroundProjectionThrottle {
         thermalState == .serious
             || thermalState == .critical
             || isLowPowerModeEnabled
+    }
+
+    /// A complete work/sleep slice must spend no more than half its elapsed
+    /// time executing. Unlike the orphan-ingress courtesy yield, this exact
+    /// BGProcessing lane can run for minutes and therefore must not cap the
+    /// rest interval: after `workDuration` seconds of CPU work it rests for at
+    /// least `workDuration` seconds. The small floor avoids a zero-ish sleep
+    /// when a fast batch lands inside the uptime clock's resolution.
+    static func backgroundProjectionPauseDuration(
+        workDuration: TimeInterval,
+        processedFrames: Int
+    ) -> TimeInterval {
+        guard processedFrames >= cooperativeBatchSize,
+              workDuration.isFinite,
+              workDuration > 0 else {
+            return 0
+        }
+        return max(0.005, workDuration)
     }
 
     /// MUST be called only off the main thread (the projection scan runs on a
@@ -146,7 +242,7 @@ final class AtriaBackgroundProjectionThrottle {
             lock.unlock()
             return true
         }
-        let now = ProcessInfo.processInfo.systemUptime
+        let now = uptimeNow()
         // Leaked-state backstop: stop throttling rather than throttle forever.
         if now - beginUptime > Self.maximumActiveWindow {
             active = false
@@ -158,15 +254,41 @@ final class AtriaBackgroundProjectionThrottle {
         let frames = sliceFrames
         let elapsed = now - sliceStart
         let pause = frames >= Self.cooperativeBatchSize
-            ? AtriaBLEManager.orphanHistoryReplayPauseDuration(
+            ? Self.backgroundProjectionPauseDuration(
                 workDuration: elapsed,
                 processedFrames: frames)
             : 0
+        let checkpointGeneration = generation
         lock.unlock()
+        if shouldAbort { return true }
         if pause > 0 {
-            Thread.sleep(forTimeInterval: pause)
+            sleepFor(pause)
             lock.lock()
-            sliceStart = ProcessInfo.processInfo.systemUptime
+            // `end()` / `begin()` may replace the exact pass while this
+            // worker sleeps. Never admit that stale worker for another batch
+            // and never reset the replacement generation's duty counters.
+            guard generation == checkpointGeneration else {
+                lock.unlock()
+                return requiredGeneration != nil || inactiveMeansAbort
+            }
+            guard active else {
+                lock.unlock()
+                return inactiveMeansAbort
+            }
+            let resumedNow = uptimeNow()
+            let resumedShouldAbort = cancelled
+                || resumedNow >= deadline
+                || resumedNow - beginUptime > Self.maximumActiveWindow
+                || Self.environmentRequiresAbort(
+                    thermalState: ProcessInfo.processInfo.thermalState,
+                    isLowPowerModeEnabled:
+                        ProcessInfo.processInfo.isLowPowerModeEnabled
+                )
+            guard !resumedShouldAbort else {
+                lock.unlock()
+                return true
+            }
+            sliceStart = resumedNow
             sliceFrames = 0
             lock.unlock()
         }

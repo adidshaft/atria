@@ -2,6 +2,21 @@ import XCTest
 @testable import Atria
 
 final class AtriaRecoveredDataTimeoutPolicyTests: XCTestCase {
+    private final class RevokingCheckpoint: @unchecked Sendable {
+        private let lock = NSLock()
+        private let accepted: Int
+        private(set) var visits = 0
+
+        init(accepted: Int) { self.accepted = accepted }
+
+        func shouldContinue() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            visits += 1
+            return visits <= accepted
+        }
+    }
+
     func testPhysicalProjectionLeaseCoversMeasuredReleaseEvidence() {
         let policy = AtriaRecoveredDataTimeoutPolicy.physicalSessionStore
         let measuredPipelineMilestoneSeconds = 95.923
@@ -195,6 +210,71 @@ final class AtriaRecoveredDataTimeoutPolicyTests: XCTestCase {
             calendar: calendar
         )
 
-        XCTAssertEqual(Set(selected.map(\.id)), [affected.id, active.id])
+        XCTAssertEqual(Set(selected?.map(\.id) ?? []),
+                       [affected.id, active.id])
+    }
+
+    func testRecoveredDailyPreparationCancelsInsideSessionCorpus() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let physiologicalStart = now.addingTimeInterval(-6 * 60 * 60)
+        let sessions = (0..<2_048).map { index in
+            let start = physiologicalStart.addingTimeInterval(
+                TimeInterval(index % 120)
+            )
+            return SavedSession(
+                id: UUID(),
+                start: start,
+                end: start.addingTimeInterval(60),
+                label: "active-\(index)",
+                points: [SavedSession.Point(t: 0, bpm: 70)]
+            )
+        }
+        let checkpoint = RevokingCheckpoint(accepted: 3)
+
+        let selected = SessionStore.recoveredDailyPreparationSessions(
+            sessions: sessions,
+            affectedDays: [now.addingTimeInterval(-3 * 86_400)],
+            physiologicalDayStart: physiologicalStart,
+            now: now,
+            shouldContinue: checkpoint.shouldContinue
+        )
+
+        XCTAssertNil(selected)
+        XCTAssertEqual(checkpoint.visits, 4,
+            "revocation must stop before the remaining session corpus")
+    }
+
+    func testRecoveredDailyPreparationCancelsInsideLongCivilDayWalk() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let start = calendar.date(
+            byAdding: .day,
+            value: -2_000,
+            to: calendar.startOfDay(for: now)
+        )!
+        let end = calendar.date(byAdding: .day, value: 1_000, to: start)!
+        let spanning = SavedSession(
+            id: UUID(),
+            start: start,
+            end: end,
+            label: "long civil span",
+            points: [SavedSession.Point(t: 0, bpm: 70)],
+            eventTimeZoneIdentifier: "UTC"
+        )
+        let checkpoint = RevokingCheckpoint(accepted: 4)
+
+        let selected = SessionStore.recoveredDailyPreparationSessions(
+            sessions: [spanning],
+            affectedDays: [now.addingTimeInterval(-100 * 86_400)],
+            physiologicalDayStart: now.addingTimeInterval(-6 * 60 * 60),
+            now: now,
+            calendar: calendar,
+            shouldContinue: checkpoint.shouldContinue
+        )
+
+        XCTAssertNil(selected)
+        XCTAssertEqual(checkpoint.visits, 5,
+            "revocation must interrupt a single session's civil-day checks")
     }
 }

@@ -99,11 +99,33 @@ enum AtriaRecoveredHeartRateProjection {
         recoveredRRBeats: [AtriaRecoveredRRProjection.Beat] = [],
         timeZoneIdentifier: String = TimeZone.current.identifier
     ) -> [SavedSession] {
+        recoveredSessionsCancellable(
+            from: result,
+            maximumGap: maximumGap,
+            recoveredRRBeats: recoveredRRBeats,
+            timeZoneIdentifier: timeZoneIdentifier,
+            shouldContinue: { true }
+        )!
+    }
+
+    static func recoveredSessionsCancellable(
+        from result: Result,
+        maximumGap: TimeInterval,
+        recoveredRRBeats: [AtriaRecoveredRRProjection.Beat] = [],
+        timeZoneIdentifier: String = TimeZone.current.identifier,
+        shouldContinue: () -> Bool
+    ) -> [SavedSession]? {
         precondition(maximumGap > 0 && maximumGap.isFinite)
+        guard shouldContinue() else { return nil }
         var groups: [[Sample]] = []
         var current: [Sample] = []
+        var sampleVisitCount = 0
         for window in result.windows {
             for sample in window.samples where sample.source == .historicalArchive {
+                sampleVisitCount += 1
+                if sampleVisitCount.isMultiple(of: 256), !shouldContinue() {
+                    return nil
+                }
                 if let previous = current.last,
                    sample.timestamp.timeIntervalSince(previous.timestamp) > maximumGap {
                     groups.append(current)
@@ -113,11 +135,22 @@ enum AtriaRecoveredHeartRateProjection {
             }
         }
         if !current.isEmpty { groups.append(current) }
+        guard shouldContinue() else { return nil }
         guard !groups.isEmpty else { return [] }
 
         var rrBeatsByGroup = Array(repeating: [AtriaRecoveredRRProjection.Beat](),
                                    count: groups.count)
-        for beat in recoveredRRBeats.sorted(by: { $0.timestamp < $1.timestamp }) {
+        guard shouldContinue() else { return nil }
+        var orderedRRBeats = recoveredRRBeats
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &orderedRRBeats,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: { $0.timestamp < $1.timestamp }
+        ) else { return nil }
+        for (beatIndex, beat) in orderedRRBeats.enumerated() {
+            if beatIndex.isMultiple(of: 256), !shouldContinue() {
+                return nil
+            }
             func distance(to index: Int) -> TimeInterval {
                 let samples = groups[index]
                 let first = samples[0].timestamp
@@ -152,7 +185,10 @@ enum AtriaRecoveredHeartRateProjection {
             rrBeatsByGroup[nearestIndex].append(beat)
         }
 
-        return groups.enumerated().map { groupIndex, samples in
+        var sessions: [SavedSession] = []
+        sessions.reserveCapacity(groups.count)
+        for (groupIndex, samples) in groups.enumerated() {
+            guard shouldContinue() else { return nil }
             let heartRateStart = samples[0].timestamp
             let heartRateEnd = samples[samples.count - 1].timestamp
             // An R24 record's beat intervals end at or immediately before its
@@ -161,32 +197,55 @@ enum AtriaRecoveredHeartRateProjection {
             let rrBeats = rrBeatsByGroup[groupIndex]
             let start = min(heartRateStart, rrBeats.first?.timestamp ?? heartRateStart)
             let end = max(heartRateEnd, rrBeats.last?.timestamp ?? heartRateEnd)
-            let maximumObservedGap = zip(samples, samples.dropFirst())
-                .map { $1.timestamp.timeIntervalSince($0.timestamp) }
-                .max() ?? 0
-            return SavedSession(
+            var maximumObservedGap: TimeInterval = 0
+            for (index, pair) in zip(samples, samples.dropFirst()).enumerated() {
+                if index.isMultiple(of: 256), !shouldContinue() {
+                    return nil
+                }
+                maximumObservedGap = max(
+                    maximumObservedGap,
+                    pair.1.timestamp.timeIntervalSince(pair.0.timestamp)
+                )
+            }
+            var points: [SavedSession.Point] = []
+            points.reserveCapacity(samples.count)
+            for (index, sample) in samples.enumerated() {
+                if index.isMultiple(of: 256), !shouldContinue() {
+                    return nil
+                }
+                points.append(.init(
+                    t: max(0, sample.timestamp.timeIntervalSince(start)),
+                    bpm: sample.bpm
+                ))
+            }
+            var rrPoints: [SavedSession.RRPoint] = []
+            rrPoints.reserveCapacity(rrBeats.count)
+            for (index, beat) in rrBeats.enumerated() {
+                if index.isMultiple(of: 256), !shouldContinue() {
+                    return nil
+                }
+                rrPoints.append(.init(
+                    t: max(0, beat.timestamp.timeIntervalSince(start)),
+                    ms: beat.intervalMilliseconds,
+                    source: .verifiedWhoop4HistoricalV24
+                ))
+            }
+            sessions.append(SavedSession(
                 id: stableSessionID(firstSampleKey: samples[0].stableKey),
                 start: start,
                 end: end,
                 label: "Recovered strap HR",
-                points: samples.map {
-                    SavedSession.Point(t: max(0, $0.timestamp.timeIntervalSince(start)), bpm: $0.bpm)
-                },
+                points: points,
                 hrv: nil,
-                rrPoints: rrBeats.isEmpty ? nil : rrBeats.map {
-                    SavedSession.RRPoint(
-                        t: max(0, $0.timestamp.timeIntervalSince(start)),
-                        ms: $0.intervalMilliseconds,
-                        source: .verifiedWhoop4HistoricalV24
-                    )
-                },
+                rrPoints: rrPoints.isEmpty ? nil : rrPoints,
                 hrvReferenceValidated: false,
                 hrAccepted: samples.count,
                 hrAcceptedGaps: 0,
                 hrMaxAcceptedGap: maximumObservedGap,
                 eventTimeZoneIdentifier: timeZoneIdentifier
-            )
+            ))
         }
+        return shouldContinue() ? sessions : nil
     }
 
     static func project(
@@ -194,6 +253,20 @@ enum AtriaRecoveredHeartRateProjection {
         live: [HistoricalArchive.HeartRatePoint] = [],
         configuration: Configuration
     ) -> Result {
+        projectCancellable(
+            historical: historical,
+            live: live,
+            configuration: configuration,
+            shouldContinue: { true }
+        )!
+    }
+
+    static func projectCancellable(
+        historical: [HistoricalArchive.HeartRatePoint],
+        live: [HistoricalArchive.HeartRatePoint] = [],
+        configuration: Configuration,
+        shouldContinue: () -> Bool
+    ) -> Result? {
         struct Candidate {
             let point: HistoricalArchive.HeartRatePoint
             let source: Source
@@ -230,21 +303,38 @@ enum AtriaRecoveredHeartRateProjection {
             }
         }
 
-        historical.forEach { consume($0, source: .historicalArchive) }
-        live.forEach { consume($0, source: .live) }
+        for (index, point) in historical.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return nil }
+            consume(point, source: .historicalArchive)
+        }
+        for (index, point) in live.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return nil }
+            consume(point, source: .live)
+        }
 
-        let samples = selectedByTimestamp.values
-            .sorted { lhs, rhs in lhs.point.t < rhs.point.t }
-            .map { candidate in
-                Sample(stableKey: sampleKey(for: candidate.point.t),
-                       timestamp: candidate.point.t,
-                       bpm: candidate.point.bpm,
-                       source: candidate.source)
-            }
+        guard shouldContinue() else { return nil }
+        var orderedCandidates = Array(selectedByTimestamp.values)
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &orderedCandidates,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: { $0.point.t < $1.point.t }
+        ) else { return nil }
+        var samples: [Sample] = []
+        samples.reserveCapacity(orderedCandidates.count)
+        for (index, candidate) in orderedCandidates.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return nil }
+            samples.append(Sample(
+                stableKey: sampleKey(for: candidate.point.t),
+                timestamp: candidate.point.t,
+                bpm: candidate.point.bpm,
+                source: candidate.source
+            ))
+        }
 
         var grouped: [[Sample]] = []
         var current: [Sample] = []
-        for sample in samples {
+        for (index, sample) in samples.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return nil }
             if let previous = current.last,
                sample.timestamp.timeIntervalSince(previous.timestamp) > configuration.maximumGap {
                 grouped.append(current)
@@ -256,13 +346,25 @@ enum AtriaRecoveredHeartRateProjection {
             grouped.append(current)
         }
 
-        let windows = grouped.map { windowSamples in
-            Window(id: windowKey(for: windowSamples),
-                   samples: windowSamples,
-                   coverage: coverage(for: windowSamples,
-                                      configuration: configuration))
+        var windows: [Window] = []
+        windows.reserveCapacity(grouped.count)
+        for windowSamples in grouped {
+            guard let windowCoverage = coverage(
+                for: windowSamples,
+                configuration: configuration,
+                shouldContinue: shouldContinue
+            ) else { return nil }
+            windows.append(Window(
+                id: windowKey(for: windowSamples),
+                samples: windowSamples,
+                coverage: windowCoverage
+            ))
         }
-        let overallCoverage = coverage(for: samples, configuration: configuration)
+        guard let overallCoverage = coverage(
+            for: samples,
+            configuration: configuration,
+            shouldContinue: shouldContinue
+        ) else { return nil }
         let statistics = Statistics(
             historicalInputCount: historical.count,
             liveInputCount: live.count,
@@ -283,10 +385,13 @@ enum AtriaRecoveredHeartRateProjection {
 
     private static func coverage(
         for samples: [Sample],
-        configuration: Configuration
-    ) -> Coverage {
-        let historicalCount = samples.reduce(into: 0) { count, sample in
-            if sample.source == .historicalArchive { count += 1 }
+        configuration: Configuration,
+        shouldContinue: () -> Bool
+    ) -> Coverage? {
+        var historicalCount = 0
+        for (index, sample) in samples.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return nil }
+            if sample.source == .historicalArchive { historicalCount += 1 }
         }
         let liveCount = samples.count - historicalCount
         guard let first = samples.first?.timestamp,
@@ -307,7 +412,8 @@ enum AtriaRecoveredHeartRateProjection {
         var covered: TimeInterval = 0
         var maximumGap: TimeInterval?
         var splitGaps = 0
-        for pair in zip(samples, samples.dropFirst()) {
+        for (index, pair) in zip(samples, samples.dropFirst()).enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return nil }
             let delta = pair.1.timestamp.timeIntervalSince(pair.0.timestamp)
             maximumGap = max(maximumGap ?? delta, delta)
             if delta > configuration.maximumGap {
@@ -319,6 +425,7 @@ enum AtriaRecoveredHeartRateProjection {
 
         let span = max(0, last.timeIntervalSince(first))
         let boundedCovered = min(span, max(0, covered))
+        guard shouldContinue() else { return nil }
         return Coverage(
             sampleCount: samples.count,
             historicalSampleCount: historicalCount,

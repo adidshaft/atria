@@ -593,13 +593,16 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         )
         let savePath = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(savePath.contains("previousStepReceiptCycleStart"))
-        XCTAssertTrue(savePath.contains("nextStepReceiptCycleStart"))
+        XCTAssertTrue(savePath.contains("preparation.stepReceiptCycleChanged"))
+        XCTAssertTrue(savePath.contains("prepareConfirmedSleepSave("))
+        XCTAssertFalse(savePath.contains(
+            "let previousStepReceiptCycleStart = AtriaPhysiologicalCycle.current"
+        ), "recovered save must not walk physiological history on MainActor")
         XCTAssertTrue(savePath.contains(
             "currentCycleStepReceiptDeferredUntilForeground = true"
         ))
         XCTAssertTrue(savePath.contains(
-            "if archiveFreeLatestNightSettlement {"
+            "else if archiveFreeLatestNightSettlement {"
         ))
         XCTAssertTrue(savePath.contains(
             "reason: \"compact_latest_night_sleep_cycle_changed\""

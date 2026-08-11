@@ -49,22 +49,30 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         case automaticCurrentCycle(since: Date)
     }
 
+    enum ExecutionDomain: Equatable, Sendable {
+        case foreground
+        case explicitBackground
+    }
+
     struct Ticket: Equatable, Sendable {
         let generation: UInt64
         let archiveRevision: UInt64
         let reason: String
         let scope: Scope
+        let executionDomain: ExecutionDomain
 
         init(
             generation: UInt64,
             archiveRevision: UInt64,
             reason: String,
-            scope: Scope = .full
+            scope: Scope = .full,
+            executionDomain: ExecutionDomain = .foreground
         ) {
             self.generation = generation
             self.archiveRevision = archiveRevision
             self.reason = reason
             self.scope = scope
+            self.executionDomain = executionDomain
         }
     }
 
@@ -80,11 +88,20 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         case startDerived(Ticket, Set<Component>)
         /// The run was intentionally discarded because newer durable input won.
         case superseded(Ticket)
+        /// Foreground authority was revoked while this exact ticket was either
+        /// projecting or deriving. The owner must synchronously roll back the
+        /// provisional transaction, but must not fail its publication fence or
+        /// start the retained retry until a later foreground-resume edge.
+        case deferredUntilForeground(Ticket)
         /// An automatic freshness ticket was admitted from cheap metadata, but
         /// its authoritative worker plan was no longer reuse/small-incremental.
         /// The durable archive remains queued for the guarded BGProcessing lane;
         /// this is an intentional retirement, not a recovery failure.
         case reservedForSafeBackground(Ticket)
+        /// A leased background ticket lost its exact throttle generation after
+        /// provisional mutation began. Roll back fully, retain durable bootstrap
+        /// intent, and never launder this work into an ordinary foreground retry.
+        case cancelledForSafeBackground(Ticket)
         /// No dashboard/widget publication is authorized for this run.
         case failed(Ticket, Failure)
         /// The sole effect that authorizes one dashboard/widget publication.
@@ -111,6 +128,7 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         let archiveRevision: UInt64
         let reason: String
         let scope: Scope
+        let executionDomain: ExecutionDomain
     }
 
     // 20s, was 12 (2026-08-04): reclaim after a cycle is gradual; trailing
@@ -123,6 +141,10 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
     private(set) var coalescedRequestCount = 0
     private var nextGeneration: UInt64 = 0
     private var trailingRequest: Request?
+    /// One newest-wins request retained across a lifecycle/thermal/power pause.
+    /// It is deliberately separate from the inter-cycle trailing request: no
+    /// timer is allowed to start this work while the app remains backgrounded.
+    private var foregroundDeferredRequest: Request?
     private let requiredComponents: Set<Component>
     private let automaticCurrentCycleComponents: Set<Component>
 
@@ -142,7 +164,23 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
     mutating func request(archiveRevision: UInt64,
                           reason: String,
                           scope: Scope = .full,
+                          executionDomain: ExecutionDomain = .foreground,
                           now: Date = Date()) -> [Effect] {
+        if executionDomain == .explicitBackground {
+            // A BGProcessing caller owns a newly minted exact throttle lease
+            // and therefore may report success only when it starts now. Never
+            // queue that lease behind, or overwrite, a retained foreground
+            // request whose retry must keep its exact cutoff/revision.
+            guard foregroundDeferredRequest == nil,
+                  trailingRequest == nil,
+                  restingUntil.map({ now >= $0 }) ?? true else { return [] }
+            switch phase {
+            case .idle, .failed:
+                break
+            case .projecting, .deriving:
+                return []
+            }
+        }
         if let latestRequestedArchiveRevision,
            archiveRevision <= latestRequestedArchiveRevision {
             return []
@@ -151,8 +189,19 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         let request = Request(
             archiveRevision: archiveRevision,
             reason: reason,
-            scope: scope
+            scope: scope,
+            executionDomain: executionDomain
         )
+
+        if foregroundDeferredRequest != nil {
+            if let current = foregroundDeferredRequest,
+               request.archiveRevision <= current.archiveRevision {
+                return []
+            }
+            coalescedRequestCount &+= 1
+            foregroundDeferredRequest = request
+            return []
+        }
 
         switch phase {
         case .idle, .failed:
@@ -182,6 +231,7 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
     /// Idempotent: with no queued work, or with a cycle already active
     /// (a manual retry can race the wake), this is a no-op.
     mutating func startPendingTrailing(now: Date = Date()) -> [Effect] {
+        guard foregroundDeferredRequest == nil else { return [] }
         if let restingUntil, now < restingUntil { return [] }
         restingUntil = nil
         switch phase {
@@ -194,6 +244,68 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         }
     }
 
+    /// Parks a rest-window request behind the next safe foreground edge. The
+    /// already-scheduled timer is intentionally left harmless: with the
+    /// request moved out of `trailingRequest`, its callback becomes a no-op.
+    /// Active work is not retired here; `deferActiveUntilForeground` performs
+    /// that exact ticket transition immediately afterward.
+    mutating func parkTrailingUntilForeground() {
+        guard let trailingRequest else { return }
+        if let deferred = foregroundDeferredRequest,
+           deferred.archiveRevision >= trailingRequest.archiveRevision {
+            self.trailingRequest = nil
+            restingUntil = nil
+            return
+        }
+        foregroundDeferredRequest = trailingRequest
+        self.trailingRequest = nil
+        restingUntil = nil
+        if case .failed = phase { phase = .idle }
+    }
+
+    /// Synchronously retires the exact active foreground ticket and keeps only
+    /// the newest active/trailing revision for one later foreground retry. Both
+    /// projecting and deriving phases are valid: the owner decides whether the
+    /// transaction is still empty or needs its full rollback image. Moving to
+    /// idle before returning rejects every late callback from the old generation.
+    mutating func deferActiveUntilForeground(ticket: Ticket) -> [Effect] {
+        switch phase {
+        case .projecting(let active):
+            guard active == ticket else { return [] }
+        case .deriving(let active, _):
+            guard active == ticket else { return [] }
+        case .idle, .failed:
+            return []
+        }
+
+        let activeRequest = Request(
+            archiveRevision: ticket.archiveRevision,
+            reason: ticket.reason,
+            scope: ticket.scope,
+            executionDomain: ticket.executionDomain
+        )
+        let candidates = [activeRequest, trailingRequest,
+                          foregroundDeferredRequest].compactMap { $0 }
+        foregroundDeferredRequest = candidates.max {
+            $0.archiveRevision < $1.archiveRevision
+        }
+        trailingRequest = nil
+        phase = .idle
+        restingUntil = nil
+        return [.deferredUntilForeground(ticket)]
+    }
+
+    /// Scene-active is the sole authority that consumes the retained lifecycle
+    /// request. `start` increments the generation, making the replacement token
+    /// and every callback identity strictly newer than the revoked run.
+    mutating func startDeferredForegroundRetry() -> [Effect] {
+        guard case .idle = phase,
+              let request = foregroundDeferredRequest else { return [] }
+        foregroundDeferredRequest = nil
+        restingUntil = nil
+        return start(request)
+    }
+
     /// Retries the last failed durable input without pretending that a new
     /// archive batch arrived. The new ticket rejects late callbacks from the
     /// failed generation.
@@ -202,7 +314,8 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         restingUntil = nil
         return start(Request(archiveRevision: ticket.archiveRevision,
                              reason: reason,
-                             scope: ticket.scope))
+                             scope: ticket.scope,
+                             executionDomain: ticket.executionDomain))
     }
 
     /// Projection success means the recovered sessions have been installed and
@@ -259,6 +372,25 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         return [retired] + start(trailingRequest)
     }
 
+    mutating func cancelActiveForSafeBackground(ticket: Ticket) -> [Effect] {
+        switch phase {
+        case .projecting(let active):
+            guard active == ticket else { return [] }
+        case .deriving(let active, _):
+            guard active == ticket else { return [] }
+        case .idle, .failed:
+            return []
+        }
+        // A lost exact BG lease is not ordinary foreground authority. Do not
+        // launder either this ticket or a coalesced automatic request into a
+        // foreground scan; the owner retains the durable bootstrap intent and
+        // a later BGProcessing lease starts from that checkpoint.
+        trailingRequest = nil
+        phase = .idle
+        restingUntil = nil
+        return [.cancelledForSafeBackground(ticket)]
+    }
+
     /// Records one real derived completion. Duplicate, out-of-order, and stale
     /// callbacks are ignored. Any failure closes the publication gate.
     mutating func componentCompleted(
@@ -309,7 +441,7 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         case .projecting, .deriving:
             return true
         case .idle, .failed:
-            return trailingRequest != nil
+            return trailingRequest != nil || foregroundDeferredRequest != nil
         }
     }
 
@@ -340,7 +472,8 @@ struct AtriaRecoveredDataRecomputeCoordinator: Sendable {
         let ticket = Ticket(generation: nextGeneration,
                             archiveRevision: request.archiveRevision,
                             reason: request.reason,
-                            scope: request.scope)
+                            scope: request.scope,
+                            executionDomain: request.executionDomain)
         phase = .projecting(ticket)
         return [.startProjection(ticket)]
     }

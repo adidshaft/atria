@@ -242,6 +242,284 @@ final class AtriaRecoveredDataRecomputeCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.projectionCompleted(ticket: ticket), [.publish(ticket)])
     }
 
+    func testProjectingTicketDefersAndResumesExactlyOnceWithCapturedScope()
+        throws {
+        var coordinator = Coordinator()
+        let cutoff = Date(timeIntervalSince1970: 1_786_420_800)
+        let first = try startProjectionTicket(coordinator.request(
+            archiveRevision: 100,
+            reason: "archive_did_update",
+            scope: .automaticCurrentCycle(since: cutoff)
+        ))
+
+        XCTAssertEqual(
+            coordinator.deferActiveUntilForeground(ticket: first),
+            [.deferredUntilForeground(first)]
+        )
+        XCTAssertEqual(coordinator.phase, .idle)
+        XCTAssertTrue(coordinator.startPendingTrailing().isEmpty)
+
+        let retry = try startProjectionTicket(
+            coordinator.startDeferredForegroundRetry()
+        )
+        XCTAssertEqual(retry.archiveRevision, first.archiveRevision)
+        XCTAssertEqual(retry.scope, .automaticCurrentCycle(since: cutoff))
+        XCTAssertGreaterThan(retry.generation, first.generation)
+        XCTAssertTrue(
+            coordinator.startDeferredForegroundRetry().isEmpty,
+            "one scene-active edge may consume the retained request once"
+        )
+    }
+
+    func testUnsafeEdgeParksQueuedInterCycleRequestAndTimerCannotStartIt()
+        throws {
+        var coordinator = Coordinator(requiredComponents: [])
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let cutoff = now.addingTimeInterval(-43_200)
+        let first = try startProjectionTicket(coordinator.request(
+            archiveRevision: 101,
+            reason: "first",
+            scope: .automaticCurrentCycle(since: cutoff),
+            now: now
+        ))
+        XCTAssertTrue(coordinator.request(
+            archiveRevision: 102,
+            reason: "newest_durable_frontier",
+            scope: .automaticCurrentCycle(
+                since: cutoff.addingTimeInterval(3_600)
+            ),
+            now: now
+        ).isEmpty)
+        XCTAssertEqual(
+            coordinator.projectionCompleted(ticket: first, now: now),
+            [
+                .superseded(first),
+                .scheduleTrailingStart(
+                    afterSeconds: Coordinator.interCycleRestSeconds
+                ),
+            ]
+        )
+
+        coordinator.parkTrailingUntilForeground()
+        XCTAssertTrue(
+            coordinator.startPendingTrailing(
+                now: now.addingTimeInterval(10_000)
+            ).isEmpty,
+            "the already-queued timer must be harmless while unsafe"
+        )
+        let retry = try startProjectionTicket(
+            coordinator.startDeferredForegroundRetry()
+        )
+        XCTAssertEqual(retry.archiveRevision, 102)
+        XCTAssertEqual(
+            retry.scope,
+            .automaticCurrentCycle(
+                since: cutoff.addingTimeInterval(3_600)
+            )
+        )
+        XCTAssertGreaterThan(retry.generation, first.generation)
+        XCTAssertTrue(coordinator.startDeferredForegroundRetry().isEmpty)
+    }
+
+    func testDerivingTicketDefersWithoutPublishingAndRejectsOldCallbacks()
+        throws {
+        let components: Set<Coordinator.Component> = [.overviewTrends]
+        var coordinator = Coordinator(requiredComponents: components)
+        let first = try startProjectionTicket(coordinator.request(
+            archiveRevision: 110,
+            reason: "exact"
+        ))
+        XCTAssertEqual(
+            coordinator.projectionCompleted(ticket: first),
+            [.startDerived(first, components)]
+        )
+        XCTAssertEqual(
+            coordinator.deferActiveUntilForeground(ticket: first),
+            [.deferredUntilForeground(first)]
+        )
+        XCTAssertTrue(coordinator.componentCompleted(
+            ticket: first,
+            component: .overviewTrends
+        ).isEmpty)
+        XCTAssertTrue(coordinator.projectionCompleted(ticket: first).isEmpty)
+
+        let retry = try startProjectionTicket(
+            coordinator.startDeferredForegroundRetry()
+        )
+        XCTAssertGreaterThan(retry.generation, first.generation)
+        XCTAssertEqual(retry.archiveRevision, first.archiveRevision)
+    }
+
+    func testNewestDurableRevisionWinsWhileForegroundRetryIsDeferred()
+        throws {
+        var coordinator = Coordinator()
+        let oldCutoff = Date(timeIntervalSince1970: 1_786_400_000)
+        let first = try startProjectionTicket(coordinator.request(
+            archiveRevision: 120,
+            reason: "old",
+            scope: .automaticCurrentCycle(since: oldCutoff)
+        ))
+        XCTAssertTrue(coordinator.request(
+            archiveRevision: 121,
+            reason: "middle",
+            scope: .automaticCurrentCycle(
+                since: oldCutoff.addingTimeInterval(600)
+            )
+        ).isEmpty)
+        _ = coordinator.deferActiveUntilForeground(ticket: first)
+
+        let newestCutoff = oldCutoff.addingTimeInterval(3_600)
+        XCTAssertTrue(coordinator.request(
+            archiveRevision: 122,
+            reason: "frontier_after_second_wake_tail",
+            scope: .automaticCurrentCycle(since: newestCutoff)
+        ).isEmpty)
+        let retry = try startProjectionTicket(
+            coordinator.startDeferredForegroundRetry()
+        )
+        XCTAssertEqual(retry.archiveRevision, 122)
+        XCTAssertEqual(
+            retry.scope,
+            .automaticCurrentCycle(since: newestCutoff)
+        )
+        XCTAssertGreaterThan(retry.generation, first.generation)
+    }
+
+    func testEndedBackgroundTicketCancelsWithoutForegroundRetry() throws {
+        var coordinator = Coordinator()
+        let ticket = try startProjectionTicket(coordinator.request(
+            archiveRevision: 130,
+            reason: "bg_projection_current_window_bootstrap_test",
+            scope: .automaticCurrentCycle(
+                since: Date(timeIntervalSince1970: 1_786_420_800)
+            ),
+            executionDomain: .explicitBackground
+        ))
+        XCTAssertEqual(
+            coordinator.cancelActiveForSafeBackground(ticket: ticket),
+            [.cancelledForSafeBackground(ticket)]
+        )
+        XCTAssertEqual(coordinator.phase, .idle)
+        XCTAssertTrue(coordinator.startDeferredForegroundRetry().isEmpty)
+        XCTAssertTrue(coordinator.projectionCompleted(ticket: ticket).isEmpty)
+    }
+
+    func testExplicitBackgroundRequestCannotOverwriteDeferredForegroundRetry()
+        throws {
+        var coordinator = Coordinator()
+        let cutoff = Date(timeIntervalSince1970: 1_786_420_800)
+        let foreground = try startProjectionTicket(coordinator.request(
+            archiveRevision: 140,
+            reason: "archive_did_update",
+            scope: .automaticCurrentCycle(since: cutoff)
+        ))
+        _ = coordinator.deferActiveUntilForeground(ticket: foreground)
+
+        let rejectedBackground = coordinator.request(
+            archiveRevision: 141,
+            reason: "bg_projection_current_window_bootstrap_race",
+            scope: .automaticCurrentCycle(
+                since: cutoff.addingTimeInterval(3_600)
+            ),
+            executionDomain: .explicitBackground
+        )
+        XCTAssertTrue(rejectedBackground.isEmpty)
+        XCTAssertEqual(coordinator.latestRequestedArchiveRevision, 140)
+
+        let retry = try startProjectionTicket(
+            coordinator.startDeferredForegroundRetry()
+        )
+        XCTAssertEqual(retry.archiveRevision, foreground.archiveRevision)
+        XCTAssertEqual(retry.scope, foreground.scope)
+        XCTAssertEqual(retry.executionDomain, .foreground)
+        XCTAssertGreaterThan(retry.generation, foreground.generation)
+        XCTAssertTrue(coordinator.startDeferredForegroundRetry().isEmpty)
+    }
+
+    func testSessionStoreReportsExplicitBackgroundStartOnlyForActualStartEffect()
+        throws {
+        XCTAssertFalse(SessionStore.explicitBackgroundProjectionDidStart([]))
+        var coordinator = Coordinator()
+        let effects = coordinator.request(
+            archiveRevision: 150,
+            reason: "bg_projection_current_window_bootstrap",
+            scope: .automaticCurrentCycle(
+                since: Date(timeIntervalSince1970: 1_786_420_800)
+            ),
+            executionDomain: .explicitBackground
+        )
+        let ticket = try startProjectionTicket(effects)
+        XCTAssertEqual(ticket.executionDomain, .explicitBackground)
+        XCTAssertTrue(SessionStore.explicitBackgroundProjectionDidStart(effects))
+        XCTAssertFalse(SessionStore.explicitBackgroundProjectionDidStart(
+            [.deferredUntilForeground(ticket)]
+        ))
+    }
+
+    func testThermalAndLowPowerOverlapResumesDeferredTicketExactlyOnce()
+        throws {
+        XCTAssertEqual(
+            SessionStore.recoveredExecutionEnvironmentAction(
+                applicationIsActive: true,
+                thermalState: .serious,
+                isLowPowerModeEnabled: false
+            ),
+            .suspend
+        )
+        XCTAssertEqual(
+            SessionStore.recoveredExecutionEnvironmentAction(
+                applicationIsActive: true,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: true
+            ),
+            .suspend
+        )
+        XCTAssertEqual(
+            SessionStore.recoveredExecutionEnvironmentAction(
+                applicationIsActive: true,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false
+            ),
+            .resume
+        )
+
+        var coordinator = Coordinator(requiredComponents: [])
+        let old = try startProjectionTicket(coordinator.request(
+            archiveRevision: 160,
+            reason: "environment_overlap"
+        ))
+        XCTAssertEqual(
+            coordinator.deferActiveUntilForeground(ticket: old),
+            [.deferredUntilForeground(old)]
+        )
+        // A nominal thermal notification while LPM remains enabled must not
+        // consume the retained retry.
+        XCTAssertTrue(coordinator.startPendingTrailing().isEmpty)
+
+        let fresh = try startProjectionTicket(
+            coordinator.startDeferredForegroundRetry()
+        )
+        XCTAssertGreaterThan(fresh.generation, old.generation)
+        XCTAssertTrue(coordinator.startDeferredForegroundRetry().isEmpty)
+        XCTAssertTrue(coordinator.projectionCompleted(ticket: old).isEmpty)
+        XCTAssertEqual(
+            coordinator.projectionCompleted(ticket: fresh),
+            [.publish(fresh)]
+        )
+        XCTAssertTrue(coordinator.projectionCompleted(ticket: fresh).isEmpty)
+    }
+
+    func testEnvironmentRecoveryWhileInactiveDoesNotStartRetry() {
+        XCTAssertEqual(
+            SessionStore.recoveredExecutionEnvironmentAction(
+                applicationIsActive: false,
+                thermalState: .nominal,
+                isLowPowerModeEnabled: false
+            ),
+            .none
+        )
+    }
+
     private func startProjectionTicket(
         _ effects: [Coordinator.Effect],
         file: StaticString = #filePath,

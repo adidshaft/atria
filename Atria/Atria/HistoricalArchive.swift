@@ -51,6 +51,17 @@ enum HistoricalArchive {
     private static let archiveDateFormatter = ISO8601DateFormatter()
     private static var recentGravityCache: RecentGravityCache?
     private static var recoveredDataCache: RecoveredDataCache?
+    /// Every recovered-cache mutation advances this generation. A publishing
+    /// authority receives the exact generation plus an unforgeable per-install
+    /// tag, so a late revocation can roll back only its own cache image without
+    /// deleting a newer publisher's replacement.
+    private struct RecoveredDataCacheInstallOwnership: Equatable {
+        let generation: UInt64
+        let authorityTag: UUID
+    }
+    private static var recoveredDataCacheMutationGeneration: UInt64 = 0
+    private static var recoveredDataCacheInstallOwnership:
+        RecoveredDataCacheInstallOwnership?
     private static var recentGravityLoadInFlight = false
     private static var recentGravityLoadGeneration: UInt64 = 0
 
@@ -197,16 +208,38 @@ enum HistoricalArchive {
         func recoveredEpochs(
             windows: [AtriaRecoveredMotionProjection.Window]
         ) -> [String: [AtriaRecoveredMotionEpoch]] {
+            recoveredEpochsCancellable(
+                windows: windows,
+                shouldContinue: { true }
+            ) ?? [:]
+        }
+
+        func recoveredEpochsCancellable(
+            windows: [AtriaRecoveredMotionProjection.Window],
+            shouldContinue: () -> Bool
+        ) -> [String: [AtriaRecoveredMotionEpoch]]? {
             guard completeness == .complete else { return [:] }
-            return AtriaRecoveredMotionProjection.epochFeatures(samples: samples.map {
-                .init(timestamp: Date(timeIntervalSince1970: $0.timestamp),
-                      sequence: $0.sequence,
-                      x: $0.x,
-                      y: $0.y,
-                      z: $0.z,
-                      timestampValidated: $0.timestampValidated,
-                      gravityValidated: $0.validated)
-            }, windows: windows)
+            var projectedSamples: [AtriaRecoveredMotionProjection.Sample] = []
+            projectedSamples.reserveCapacity(samples.count)
+            for (index, sample) in samples.enumerated() {
+                if index.isMultiple(of: 256), !shouldContinue() {
+                    return nil
+                }
+                projectedSamples.append(.init(
+                    timestamp: Date(timeIntervalSince1970: sample.timestamp),
+                    sequence: sample.sequence,
+                    x: sample.x,
+                    y: sample.y,
+                    z: sample.z,
+                    timestampValidated: sample.timestampValidated,
+                    gravityValidated: sample.validated
+                ))
+            }
+            return AtriaRecoveredMotionProjection.epochFeaturesCancellable(
+                samples: projectedSamples,
+                windows: windows,
+                shouldContinue: shouldContinue
+            )
         }
     }
 
@@ -224,6 +257,18 @@ enum HistoricalArchive {
             maximumSkinTemperaturePoints: 1_500_000,
             maximumGravitySamples: 750_000,
             maximumMotionReplayIdentities: 750_000
+        )
+
+        /// Ordinary current-cycle freshness is intentionally much smaller than
+        /// exact/manual or leased BGProcessing projection. The paired bootstrap
+        /// checkpoint uses the same bounds, so crossing one never installs a
+        /// partial automatic cache or silently widens a later foreground pass.
+        static let automaticForeground = RecoveredProjectionBudget(
+            maximumHeartRatePoints: 200_000,
+            maximumRRRecords: 200_000,
+            maximumSkinTemperaturePoints: 200_000,
+            maximumGravitySamples: 200_000,
+            maximumMotionReplayIdentities: 200_000
         )
 
         let maximumHeartRatePoints: Int
@@ -248,6 +293,113 @@ enum HistoricalArchive {
             self.maximumGravitySamples = maximumGravitySamples
             self.maximumMotionReplayIdentities = maximumMotionReplayIdentities
         }
+    }
+
+    /// Cache compatibility is deliberately directional. A completed automatic
+    /// bootstrap is a full source image proven under stricter channel and
+    /// aggregate caps, so a production BG continuation may consume it without
+    /// rescanning. The reverse would let an ordinary automatic request inherit
+    /// a production-sized image and bypass its decoded-work admission contract.
+    nonisolated static func recoveredProjectionCacheBudgetIsReusable(
+        cached: RecoveredProjectionBudget,
+        requested: RecoveredProjectionBudget,
+        hasTruncatedChannels: Bool
+    ) -> Bool {
+        if cached == requested { return true }
+        return cached == .automaticForeground
+            && requested == .production
+            && !hasTruncatedChannels
+    }
+
+    struct RecoveredDecodedWorkBudget: Equatable, Sendable {
+        static let automaticForeground = RecoveredDecodedWorkBudget(
+            maximumDecodedRecords: 250_000,
+            maximumCandidateLines: 250_000,
+            maximumRetainedChannelElements: 200_000,
+            maximumRetainedAggregateElements: 250_000
+        )
+
+        let maximumDecodedRecords: Int
+        let maximumCandidateLines: Int
+        let maximumRetainedChannelElements: Int
+        let maximumRetainedAggregateElements: Int
+
+        func admitsRetainedCounts(
+            heartRate: Int,
+            rr: Int,
+            skin: Int,
+            gravity: Int,
+            motionIdentities: Int
+        ) -> Bool {
+            let counts = [heartRate, rr, skin, gravity, motionIdentities]
+            guard counts.allSatisfy({
+                $0 >= 0 && $0 <= maximumRetainedChannelElements
+            }) else { return false }
+            var aggregate = 0
+            for count in counts {
+                let addition = aggregate.addingReportingOverflow(count)
+                guard !addition.overflow,
+                      addition.partialValue
+                        <= maximumRetainedAggregateElements else {
+                    return false
+                }
+                aggregate = addition.partialValue
+            }
+            return true
+        }
+    }
+
+    private struct AutomaticRecoveredDataBootstrapRetainedCounts {
+        let heartRate: Int
+        let rr: Int
+        let skin: Int
+        let gravity: Int
+    }
+
+    /// The bootstrap retains four compact evidence channels and deliberately no
+    /// motion identities. Per-channel limits remain owned by the bootstrap
+    /// projection budget; the independent 250,000-element automatic aggregate
+    /// contract is shared with ordinary current-cycle work. This check walks no
+    /// evidence and is therefore O(1) at every durable/publication boundary.
+    private static func automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+        _ counts: AutomaticRecoveredDataBootstrapRetainedCounts
+    ) -> Bool {
+        guard counts.heartRate >= 0,
+              counts.heartRate
+                <= automaticRecoveredDataBootstrapBudget.maximumHeartRatePoints,
+              counts.rr >= 0,
+              counts.rr
+                <= automaticRecoveredDataBootstrapBudget.maximumRRRecords,
+              counts.skin >= 0,
+              counts.skin
+                <= automaticRecoveredDataBootstrapBudget
+                    .maximumSkinTemperaturePoints,
+              counts.gravity >= 0,
+              counts.gravity
+                <= automaticRecoveredDataBootstrapBudget.maximumGravitySamples
+        else { return false }
+        return RecoveredDecodedWorkBudget.automaticForeground
+            .admitsRetainedCounts(
+                heartRate: counts.heartRate,
+                rr: counts.rr,
+                skin: counts.skin,
+                gravity: counts.gravity,
+                motionIdentities: 0
+            )
+    }
+
+    private static func automaticRecoveredDataBootstrapRetainedCounts(
+        heartRate: [HeartRatePoint],
+        rrAccumulator: AtriaRecoveredRRProjection.Accumulator,
+        skin: [SkinTemperatureRawPoint],
+        gravity: [GravitySample]
+    ) -> AutomaticRecoveredDataBootstrapRetainedCounts {
+        .init(
+            heartRate: heartRate.count,
+            rr: rrAccumulator.acceptedRecordCount,
+            skin: skin.count,
+            gravity: gravity.count
+        )
     }
 
     enum RecoveredDataCompleteness: Equatable, Sendable {
@@ -434,6 +586,330 @@ enum HistoricalArchive {
         var rrAccumulator: AtriaRecoveredRRProjection.Accumulator
         var skinTemperatureRawPoints: [SkinTemperatureRawPoint]
         var gravitySamples: [GravitySample]
+
+        private enum CodingKeys: String, CodingKey {
+            case version
+            case cutoff
+            case updatedAt
+            case sourceFingerprint
+            case sources
+            case heartRatePoints
+            case rrAccumulator
+            case skinTemperatureRawPoints
+            case gravitySamples
+        }
+
+        init(
+            version: Int,
+            cutoff: TimeInterval,
+            updatedAt: TimeInterval,
+            sourceFingerprint: ConsumerSourceFingerprint,
+            sources: [Source],
+            heartRatePoints: [HeartRatePoint],
+            rrAccumulator: AtriaRecoveredRRProjection.Accumulator,
+            skinTemperatureRawPoints: [SkinTemperatureRawPoint],
+            gravitySamples: [GravitySample]
+        ) {
+            self.version = version
+            self.cutoff = cutoff
+            self.updatedAt = updatedAt
+            self.sourceFingerprint = sourceFingerprint
+            self.sources = sources
+            self.heartRatePoints = heartRatePoints
+            self.rrAccumulator = rrAccumulator
+            self.skinTemperatureRawPoints = skinTemperatureRawPoints
+            self.gravitySamples = gravitySamples
+        }
+
+        init(from decoder: Decoder) throws {
+            let authority = decoder.userInfo[
+                .atriaRecoveredCheckpointCodingAuthority
+            ] as? AtriaRecoveredCheckpointCodingAuthority
+            try authority?.checkpoint(
+                stage: "checkpoint_decode_header",
+                index: 0
+            )
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            version = try container.decode(Int.self, forKey: .version)
+            cutoff = try container.decode(
+                TimeInterval.self,
+                forKey: .cutoff
+            )
+            updatedAt = try container.decode(
+                TimeInterval.self,
+                forKey: .updatedAt
+            )
+            sourceFingerprint = try container.decode(
+                ConsumerSourceFingerprint.self,
+                forKey: .sourceFingerprint
+            )
+
+            var sourceContainer = try container.nestedUnkeyedContainer(
+                forKey: .sources
+            )
+            var decodedSources: [Source] = []
+            if let count = sourceContainer.count {
+                guard count <= HistoricalArchive
+                    .maximumAutomaticRecoveredDataCacheAuthoritySourceCount
+                else {
+                    throw AtriaRecoveredCheckpointCodingError
+                        .containerLimitExceeded
+                }
+                decodedSources.reserveCapacity(count)
+            }
+            while !sourceContainer.isAtEnd {
+                let index = decodedSources.count
+                guard index < HistoricalArchive
+                    .maximumAutomaticRecoveredDataCacheAuthoritySourceCount
+                else {
+                    throw AtriaRecoveredCheckpointCodingError
+                        .containerLimitExceeded
+                }
+                if index.isMultiple(of: 16) {
+                    try authority?.checkpoint(
+                        stage: "checkpoint_decode_sources",
+                        index: index
+                    )
+                }
+                decodedSources.append(try sourceContainer.decode(Source.self))
+            }
+            sources = decodedSources
+
+            var heartRateContainer = try container.nestedUnkeyedContainer(
+                forKey: .heartRatePoints
+            )
+            var decodedHeartRate: [HeartRatePoint] = []
+            if let count = heartRateContainer.count {
+                guard count <= HistoricalArchive
+                    .automaticRecoveredDataBootstrapBudget
+                    .maximumHeartRatePoints else {
+                    throw AtriaRecoveredCheckpointCodingError
+                        .containerLimitExceeded
+                }
+                decodedHeartRate.reserveCapacity(count)
+            }
+            while !heartRateContainer.isAtEnd {
+                let index = decodedHeartRate.count
+                guard index < HistoricalArchive
+                    .automaticRecoveredDataBootstrapBudget
+                    .maximumHeartRatePoints else {
+                    throw AtriaRecoveredCheckpointCodingError
+                        .containerLimitExceeded
+                }
+                if index.isMultiple(of: 256) {
+                    try authority?.checkpoint(
+                        stage: "checkpoint_decode_heart_rate",
+                        index: index
+                    )
+                }
+                decodedHeartRate.append(try heartRateContainer.decode(
+                    HeartRatePoint.self
+                ))
+            }
+            heartRatePoints = decodedHeartRate
+            rrAccumulator = try container.decode(
+                AtriaRecoveredRRProjection.Accumulator.self,
+                forKey: .rrAccumulator
+            )
+            guard HistoricalArchive
+                .automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+                    .init(
+                        heartRate: decodedHeartRate.count,
+                        rr: rrAccumulator.acceptedRecordCount,
+                        skin: 0,
+                        gravity: 0
+                    )
+                ) else {
+                throw AtriaRecoveredCheckpointCodingError
+                    .containerLimitExceeded
+            }
+
+            var skinContainer = try container.nestedUnkeyedContainer(
+                forKey: .skinTemperatureRawPoints
+            )
+            var decodedSkin: [SkinTemperatureRawPoint] = []
+            if let count = skinContainer.count {
+                guard count <= HistoricalArchive
+                    .automaticRecoveredDataBootstrapBudget
+                    .maximumSkinTemperaturePoints else {
+                    throw AtriaRecoveredCheckpointCodingError
+                        .containerLimitExceeded
+                }
+                decodedSkin.reserveCapacity(count)
+            }
+            while !skinContainer.isAtEnd {
+                let index = decodedSkin.count
+                guard index < HistoricalArchive
+                    .automaticRecoveredDataBootstrapBudget
+                    .maximumSkinTemperaturePoints else {
+                    throw AtriaRecoveredCheckpointCodingError
+                        .containerLimitExceeded
+                }
+                if index.isMultiple(of: 256) {
+                    try authority?.checkpoint(
+                        stage: "checkpoint_decode_skin",
+                        index: index
+                    )
+                }
+                decodedSkin.append(try skinContainer.decode(
+                    SkinTemperatureRawPoint.self
+                ))
+            }
+            skinTemperatureRawPoints = decodedSkin
+            guard HistoricalArchive
+                .automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+                    .init(
+                        heartRate: decodedHeartRate.count,
+                        rr: rrAccumulator.acceptedRecordCount,
+                        skin: decodedSkin.count,
+                        gravity: 0
+                    )
+                ) else {
+                throw AtriaRecoveredCheckpointCodingError
+                    .containerLimitExceeded
+            }
+
+            var gravityContainer = try container.nestedUnkeyedContainer(
+                forKey: .gravitySamples
+            )
+            var decodedGravity: [GravitySample] = []
+            if let count = gravityContainer.count {
+                guard count <= HistoricalArchive
+                    .automaticRecoveredDataBootstrapBudget
+                    .maximumGravitySamples else {
+                    throw AtriaRecoveredCheckpointCodingError
+                        .containerLimitExceeded
+                }
+                decodedGravity.reserveCapacity(count)
+            }
+            while !gravityContainer.isAtEnd {
+                let index = decodedGravity.count
+                guard index < HistoricalArchive
+                    .automaticRecoveredDataBootstrapBudget
+                    .maximumGravitySamples else {
+                    throw AtriaRecoveredCheckpointCodingError
+                        .containerLimitExceeded
+                }
+                if index.isMultiple(of: 256) {
+                    try authority?.checkpoint(
+                        stage: "checkpoint_decode_gravity",
+                        index: index
+                    )
+                }
+                decodedGravity.append(try gravityContainer.decode(
+                    GravitySample.self
+                ))
+            }
+            gravitySamples = decodedGravity
+            guard HistoricalArchive
+                .automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+                    .init(
+                        heartRate: decodedHeartRate.count,
+                        rr: rrAccumulator.acceptedRecordCount,
+                        skin: decodedSkin.count,
+                        gravity: decodedGravity.count
+                    )
+                ) else {
+                throw AtriaRecoveredCheckpointCodingError
+                    .containerLimitExceeded
+            }
+            try authority?.checkpoint(
+                stage: "checkpoint_decode_complete",
+                index: decodedHeartRate.count + decodedSkin.count
+                    + decodedGravity.count
+            )
+        }
+
+        func encode(to encoder: Encoder) throws {
+            let authority = encoder.userInfo[
+                .atriaRecoveredCheckpointCodingAuthority
+            ] as? AtriaRecoveredCheckpointCodingAuthority
+            guard HistoricalArchive
+                .automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+                    HistoricalArchive
+                        .automaticRecoveredDataBootstrapRetainedCounts(
+                            heartRate: heartRatePoints,
+                            rrAccumulator: rrAccumulator,
+                            skin: skinTemperatureRawPoints,
+                            gravity: gravitySamples
+                        )
+                ) else {
+                throw AtriaRecoveredCheckpointCodingError
+                    .containerLimitExceeded
+            }
+            try authority?.checkpoint(
+                stage: "checkpoint_encode_header",
+                index: 0
+            )
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(version, forKey: .version)
+            try container.encode(cutoff, forKey: .cutoff)
+            try container.encode(updatedAt, forKey: .updatedAt)
+            try container.encode(
+                sourceFingerprint,
+                forKey: .sourceFingerprint
+            )
+
+            var sourceContainer = container.nestedUnkeyedContainer(
+                forKey: .sources
+            )
+            for (index, source) in sources.enumerated() {
+                if index.isMultiple(of: 16) {
+                    try authority?.checkpoint(
+                        stage: "checkpoint_encode_sources",
+                        index: index
+                    )
+                }
+                try sourceContainer.encode(source)
+            }
+
+            var heartRateContainer = container.nestedUnkeyedContainer(
+                forKey: .heartRatePoints
+            )
+            for (index, point) in heartRatePoints.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try authority?.checkpoint(
+                        stage: "checkpoint_encode_heart_rate",
+                        index: index
+                    )
+                }
+                try heartRateContainer.encode(point)
+            }
+            try container.encode(rrAccumulator, forKey: .rrAccumulator)
+
+            var skinContainer = container.nestedUnkeyedContainer(
+                forKey: .skinTemperatureRawPoints
+            )
+            for (index, point) in skinTemperatureRawPoints.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try authority?.checkpoint(
+                        stage: "checkpoint_encode_skin",
+                        index: index
+                    )
+                }
+                try skinContainer.encode(point)
+            }
+
+            var gravityContainer = container.nestedUnkeyedContainer(
+                forKey: .gravitySamples
+            )
+            for (index, sample) in gravitySamples.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try authority?.checkpoint(
+                        stage: "checkpoint_encode_gravity",
+                        index: index
+                    )
+                }
+                try gravityContainer.encode(sample)
+            }
+            try authority?.checkpoint(
+                stage: "checkpoint_encode_complete",
+                index: heartRatePoints.count
+                    + rrAccumulator.acceptedRecordCount
+                    + skinTemperatureRawPoints.count
+                    + gravitySamples.count
+            )
+        }
     }
 
     enum MotionTickWindowRead: Equatable, Sendable {
@@ -2260,6 +2736,16 @@ enum HistoricalArchive {
     }
 
     static func diagnostics() -> Diagnostics {
+        diagnostics(shouldContinue: { true })!
+    }
+
+    /// Exact recovered-pipeline form. Its caller supplies the ticket's
+    /// cooperative authority, so a BG lease duty-cycles inside file/segment
+    /// walks and a foreground token can stop them at the next bounded stride.
+    static func diagnostics(
+        shouldContinue: () -> Bool
+    ) -> Diagnostics? {
+        guard shouldContinue() else { return nil }
         // A catalog-v2 install may have no legacy base file at all. Diagnose
         // the newest real raw chunk rather than treating that healthy layout as
         // a missing archive.
@@ -2286,29 +2772,46 @@ enum HistoricalArchive {
         let attributes = archiveAttributes(for: url)
         let byteCount = attributes.byteCount
         if let index = readDiagnosticsIndex(for: url, attributes: attributes) {
-            let segmentIndexes = rotatedSegmentFileURLs()
-                .filter { $0.standardizedFileURL != url.standardizedFileURL }
-                .compactMap { segmentURL -> DiagnosticsIndex? in
-                let segmentAttributes = archiveAttributes(for: segmentURL)
-                if let segmentIndex = readDiagnosticsIndex(for: segmentURL, attributes: segmentAttributes) {
-                    return segmentIndex
-                }
-                guard segmentAttributes.byteCount <= 8 * 1024 * 1024,
-                      let segmentIndex = scanDiagnosticsIndex(for: segmentURL, attributes: segmentAttributes) else {
+            var segmentIndexes: [DiagnosticsIndex] = []
+            for (segmentOffset, segmentURL) in rotatedSegmentFileURLs()
+                .filter({
+                    $0.standardizedFileURL != url.standardizedFileURL
+                }).enumerated() {
+                if segmentOffset.isMultiple(of: 16), !shouldContinue() {
                     return nil
                 }
+                let segmentAttributes = archiveAttributes(for: segmentURL)
+                if let segmentIndex = readDiagnosticsIndex(for: segmentURL, attributes: segmentAttributes) {
+                    segmentIndexes.append(segmentIndex)
+                    continue
+                }
+                guard segmentAttributes.byteCount <= 8 * 1024 * 1024,
+                      let segmentIndex = scanDiagnosticsIndex(
+                        for: segmentURL,
+                        attributes: segmentAttributes,
+                        shouldContinue: shouldContinue
+                      ) else {
+                    if !shouldContinue() { return nil }
+                    continue
+                }
                 writeDiagnosticsIndex(segmentIndex, for: segmentURL)
-                return segmentIndex
+                segmentIndexes.append(segmentIndex)
             }
             if !segmentIndexes.isEmpty {
-                let aggregate = aggregateDiagnosticsIndex(base: index, segments: segmentIndexes)
+                guard let aggregate = aggregateDiagnosticsIndex(
+                    base: index,
+                    segments: segmentIndexes,
+                    shouldContinue: shouldContinue
+                ) else { return nil }
                 return diagnostics(from: aggregate, reason: "aggregate_index_ok")
             }
             return diagnostics(from: index, reason: index.rows > 0 ? "index_ok" : "empty_archive_index")
         }
 
         guard attributes.byteCount <= maxImmediateDiagnosticsScanBytes else {
-            let probe = quickMetricReadinessProbe()
+            guard let probe = quickMetricReadinessProbe(
+                shouldContinue: shouldContinue
+            ) else { return nil }
             return Diagnostics(exists: true,
                                parseOK: true,
                                rows: probe.rowsScanned,
@@ -2328,10 +2831,15 @@ enum HistoricalArchive {
                                reason: "large_archive_index_missing_probe_\(probe.reason)")
         }
 
-        if let index = scanDiagnosticsIndex(for: url, attributes: attributes) {
+        if let index = scanDiagnosticsIndex(
+            for: url,
+            attributes: attributes,
+            shouldContinue: shouldContinue
+        ) {
             writeDiagnosticsIndex(index, for: url)
             return diagnostics(from: index, reason: index.rows > 0 ? "scanned_index_written" : "empty_archive")
         } else {
+            guard shouldContinue() else { return nil }
             return Diagnostics(exists: true,
                                parseOK: false,
                                rows: 0,
@@ -2353,6 +2861,17 @@ enum HistoricalArchive {
     }
 
     static func quickMetricReadinessProbe(maxRows: Int = 20_000) -> MetricReadinessProbe {
+        quickMetricReadinessProbe(
+            maxRows: maxRows,
+            shouldContinue: { true }
+        )!
+    }
+
+    private static func quickMetricReadinessProbe(
+        maxRows: Int = 20_000,
+        shouldContinue: () -> Bool
+    ) -> MetricReadinessProbe? {
+        guard shouldContinue() else { return nil }
         let url = readableFileURL
         guard FileManager.default.fileExists(atPath: url.path) else {
             return MetricReadinessProbe(ready: false,
@@ -2379,6 +2898,7 @@ enum HistoricalArchive {
         var buffer = [UInt8](repeating: 0, count: chunkSize)
 
         while stream.hasBytesAvailable && rowsScanned < maxRows {
+            guard shouldContinue() else { return nil }
             let readCount = stream.read(&buffer, maxLength: chunkSize)
             if readCount < 0 {
                 return MetricReadinessProbe(ready: false,
@@ -2390,6 +2910,9 @@ enum HistoricalArchive {
             if readCount == 0 { break }
             lineBuffer += String(decoding: buffer.prefix(readCount), as: UTF8.self)
             while let newlineRange = lineBuffer.range(of: "\n"), rowsScanned < maxRows {
+                if rowsScanned.isMultiple(of: 128), !shouldContinue() {
+                    return nil
+                }
                 let line = String(lineBuffer[..<newlineRange.lowerBound])
                 lineBuffer.removeSubrange(..<newlineRange.upperBound)
                 guard !line.isEmpty else { continue }
@@ -2410,6 +2933,7 @@ enum HistoricalArchive {
         }
 
         if rowsScanned < maxRows, !lineBuffer.isEmpty {
+            guard shouldContinue() else { return nil }
             rowsScanned += 1
             if let data = lineBuffer.data(using: .utf8),
                let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -2418,6 +2942,7 @@ enum HistoricalArchive {
             }
         }
 
+        guard shouldContinue() else { return nil }
         return MetricReadinessProbe(ready: metricRows > 0,
                                     rowsScanned: rowsScanned,
                                     metricUsableRows: metricRows,
@@ -3648,9 +4173,13 @@ enum HistoricalArchive {
         defer { recoveredDataCacheLock.unlock() }
         // Never replace a live process cache with an older disk checkpoint.
         guard recoveredDataCache == nil else { return false }
-        recoveredDataCache = RecoveredDataCache(
+        _ = replaceRecoveredDataCacheWhileLocked(with: RecoveredDataCache(
             coveredSince: authority.coveredSince,
-            budget: .production,
+            // This sparse cursor was created by the bounded automatic lane;
+            // preserve that origin so unchanged/tail-only metadata admission
+            // can reuse its exact file states. It is not a production cache,
+            // and therefore does not weaken production -> automatic rejection.
+            budget: .automaticForeground,
             fileStates: states,
             heartRatePoints: [],
             rrAccumulator: .init(),
@@ -3658,7 +4187,7 @@ enum HistoricalArchive {
             gravitySamples: [],
             motionRecordIdentities: [],
             truncatedChannels: []
-        )
+        ))
         return true
     }
 
@@ -3803,22 +4332,89 @@ enum HistoricalArchive {
         return total <= maximumTotalBytes
     }
 
+    private enum AutomaticRecoveredDataBootstrapCheckpointReadResult {
+        case loaded(AutomaticRecoveredDataBootstrapCheckpoint)
+        case invalid
+        case cancelled
+    }
+
+    private enum AutomaticRecoveredDataBootstrapCheckpointWriteResult {
+        case written
+        case failed
+        case cancelled
+    }
+
     private static func readAutomaticRecoveredDataBootstrapCheckpoint(
         from url: URL,
         now: Date,
-        requestedCutoff: Date
-    ) -> AutomaticRecoveredDataBootstrapCheckpoint? {
+        requestedCutoff: Date,
+        shouldContinue: @escaping () -> Bool,
+        onProgress: ((String, Int) -> Void)?
+    ) -> AutomaticRecoveredDataBootstrapCheckpointReadResult {
         guard let attributes = try? FileManager.default.attributesOfItem(
             atPath: url.path
         ),
         let byteCount = (attributes[.size] as? NSNumber)?.uint64Value,
         byteCount > 0,
         byteCount <= maximumAutomaticRecoveredDataBootstrapCheckpointBytes,
-        let data = try? Data(contentsOf: url, options: .mappedIfSafe),
-        var checkpoint = try? PropertyListDecoder().decode(
-            AutomaticRecoveredDataBootstrapCheckpoint.self,
-            from: data
-        ),
+        byteCount <= UInt64(Int.max) else {
+            return .invalid
+        }
+        let authority = AtriaRecoveredCheckpointCodingAuthority(
+            shouldContinue: shouldContinue,
+            onProgress: onProgress,
+            maximumRRRecords: automaticRecoveredDataBootstrapBudget
+                .maximumRRRecords
+        )
+        let data: Data
+        do {
+            try authority.checkpoint(stage: "checkpoint_read", index: 0)
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            var buffer = Data()
+            buffer.reserveCapacity(Int(byteCount))
+            let chunkBytes = 256 * 1_024
+            while buffer.count < Int(byteCount) {
+                try authority.checkpoint(
+                    stage: "checkpoint_read",
+                    index: buffer.count
+                )
+                let requested = min(
+                    chunkBytes,
+                    Int(byteCount) - buffer.count
+                )
+                guard let chunk = try handle.read(upToCount: requested),
+                      !chunk.isEmpty else {
+                    return .invalid
+                }
+                buffer.append(chunk)
+            }
+            try authority.checkpoint(
+                stage: "checkpoint_read_complete",
+                index: buffer.count
+            )
+            data = buffer
+        } catch AtriaRecoveredCheckpointCodingError.authorityRevoked {
+            return .cancelled
+        } catch {
+            return .invalid
+        }
+
+        var checkpoint: AutomaticRecoveredDataBootstrapCheckpoint
+        do {
+            let decoder = PropertyListDecoder()
+            decoder.userInfo[.atriaRecoveredCheckpointCodingAuthority]
+                = authority
+            checkpoint = try decoder.decode(
+                AutomaticRecoveredDataBootstrapCheckpoint.self,
+                from: data
+            )
+        } catch AtriaRecoveredCheckpointCodingError.authorityRevoked {
+            return .cancelled
+        } catch {
+            return .invalid
+        }
+        guard
         checkpoint.version
             == AutomaticRecoveredDataBootstrapCheckpoint.schema,
         checkpoint.cutoff.isFinite,
@@ -3837,69 +4433,231 @@ enum HistoricalArchive {
             <= automaticRecoveredDataBootstrapBudget
                 .maximumSkinTemperaturePoints,
         checkpoint.gravitySamples.count
-            <= automaticRecoveredDataBootstrapBudget.maximumGravitySamples
-        else { return nil }
+            <= automaticRecoveredDataBootstrapBudget.maximumGravitySamples,
+        automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+            automaticRecoveredDataBootstrapRetainedCounts(
+                heartRate: checkpoint.heartRatePoints,
+                rrAccumulator: checkpoint.rrAccumulator,
+                skin: checkpoint.skinTemperatureRawPoints,
+                gravity: checkpoint.gravitySamples
+            )
+        )
+        else { return .invalid }
 
         let requested = requestedCutoff.timeIntervalSince1970
         guard requested.isFinite,
               checkpoint.cutoff <= requested,
               requested - checkpoint.cutoff
                 <= maximumAutomaticRecoveredDataCacheAuthorityWindow else {
-            return nil
+            return .invalid
         }
         if requested > checkpoint.cutoff {
-            checkpoint.cutoff = requested
-            checkpoint.heartRatePoints.removeAll {
-                $0.t.timeIntervalSince1970 < requested
-            }
-            checkpoint.rrAccumulator.prune(before: requested)
-            checkpoint.skinTemperatureRawPoints.removeAll {
-                $0.t.timeIntervalSince1970 < requested
-            }
-            checkpoint.gravitySamples.removeAll {
-                $0.timestamp < requested
+            do {
+                var heartRate: [HeartRatePoint] = []
+                heartRate.reserveCapacity(checkpoint.heartRatePoints.count)
+                for (index, point) in checkpoint.heartRatePoints.enumerated() {
+                    if index.isMultiple(of: 256) {
+                        try authority.checkpoint(
+                            stage: "checkpoint_prune_heart_rate",
+                            index: index
+                        )
+                    }
+                    if point.t.timeIntervalSince1970 >= requested {
+                        heartRate.append(point)
+                    }
+                }
+                var rr = checkpoint.rrAccumulator
+                var rrIndex = 0
+                guard rr.prune(
+                    before: requested,
+                    shouldContinue: {
+                        defer { rrIndex += 256 }
+                        do {
+                            try authority.checkpoint(
+                                stage: "checkpoint_prune_rr",
+                                index: rrIndex
+                            )
+                            return true
+                        } catch {
+                            return false
+                        }
+                    }
+                ) else {
+                    return .cancelled
+                }
+                var skin: [SkinTemperatureRawPoint] = []
+                skin.reserveCapacity(
+                    checkpoint.skinTemperatureRawPoints.count
+                )
+                for (index, point) in checkpoint
+                    .skinTemperatureRawPoints.enumerated() {
+                    if index.isMultiple(of: 256) {
+                        try authority.checkpoint(
+                            stage: "checkpoint_prune_skin",
+                            index: index
+                        )
+                    }
+                    if point.t.timeIntervalSince1970 >= requested {
+                        skin.append(point)
+                    }
+                }
+                var gravity: [GravitySample] = []
+                gravity.reserveCapacity(checkpoint.gravitySamples.count)
+                for (index, sample) in checkpoint.gravitySamples.enumerated() {
+                    if index.isMultiple(of: 256) {
+                        try authority.checkpoint(
+                            stage: "checkpoint_prune_gravity",
+                            index: index
+                        )
+                    }
+                    if sample.timestamp >= requested {
+                        gravity.append(sample)
+                    }
+                }
+                try authority.checkpoint(
+                    stage: "checkpoint_prune_complete",
+                    index: heartRate.count + rr.acceptedRecordCount
+                        + skin.count + gravity.count
+                )
+                checkpoint.cutoff = requested
+                checkpoint.heartRatePoints = heartRate
+                checkpoint.rrAccumulator = rr
+                checkpoint.skinTemperatureRawPoints = skin
+                checkpoint.gravitySamples = gravity
+                guard automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+                    automaticRecoveredDataBootstrapRetainedCounts(
+                        heartRate: checkpoint.heartRatePoints,
+                        rrAccumulator: checkpoint.rrAccumulator,
+                        skin: checkpoint.skinTemperatureRawPoints,
+                        gravity: checkpoint.gravitySamples
+                    )
+                ) else { return .invalid }
+            } catch AtriaRecoveredCheckpointCodingError.authorityRevoked {
+                return .cancelled
+            } catch {
+                return .invalid
             }
         }
-        return checkpoint
+        return .loaded(checkpoint)
     }
 
     private static func writeAutomaticRecoveredDataBootstrapCheckpoint(
         _ checkpoint: AutomaticRecoveredDataBootstrapCheckpoint,
-        to url: URL
-    ) -> Bool {
+        to url: URL,
+        shouldContinue: @escaping () -> Bool,
+        onProgress: ((String, Int) -> Void)?
+    ) -> AutomaticRecoveredDataBootstrapCheckpointWriteResult {
+        guard automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+            automaticRecoveredDataBootstrapRetainedCounts(
+                heartRate: checkpoint.heartRatePoints,
+                rrAccumulator: checkpoint.rrAccumulator,
+                skin: checkpoint.skinTemperatureRawPoints,
+                gravity: checkpoint.gravitySamples
+            )
+        ) else { return .failed }
+        let authority = AtriaRecoveredCheckpointCodingAuthority(
+            shouldContinue: shouldContinue,
+            onProgress: onProgress,
+            maximumRRRecords: automaticRecoveredDataBootstrapBudget
+                .maximumRRRecords
+        )
         let encoder = PropertyListEncoder()
         encoder.outputFormat = .binary
-        guard let data = try? encoder.encode(checkpoint),
-              UInt64(data.count)
+        encoder.userInfo[.atriaRecoveredCheckpointCodingAuthority] = authority
+        let data: Data
+        do {
+            data = try encoder.encode(checkpoint)
+            try authority.checkpoint(
+                stage: "checkpoint_encode_data_complete",
+                index: data.count
+            )
+        } catch AtriaRecoveredCheckpointCodingError.authorityRevoked {
+            return .cancelled
+        } catch {
+            // PropertyListEncoder may wrap an error thrown by a nested
+            // Encodable container. The coding authority records the first
+            // observed revocation before throwing, so cancellation remains
+            // distinguishable from malformed or failed checkpoint encoding.
+            return authority.wasRevoked ? .cancelled : .failed
+        }
+        guard UInt64(data.count)
                 <= maximumAutomaticRecoveredDataBootstrapCheckpointBytes else {
-            return false
+            return .failed
         }
         do {
+            try authority.checkpoint(
+                stage: "checkpoint_write_begin",
+                index: 0
+            )
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            try data.write(to: url, options: .atomic)
-            return true
+            let temporaryURL = url.deletingLastPathComponent()
+                .appendingPathComponent(
+                    ".\(url.lastPathComponent).\(UUID().uuidString).tmp"
+                )
+            defer { try? FileManager.default.removeItem(at: temporaryURL) }
+            guard FileManager.default.createFile(
+                atPath: temporaryURL.path,
+                contents: nil
+            ) else {
+                return .failed
+            }
+            let handle = try FileHandle(forWritingTo: temporaryURL)
+            defer { try? handle.close() }
+            let chunkBytes = 256 * 1_024
+            var offset = 0
+            while offset < data.count {
+                try authority.checkpoint(
+                    stage: "checkpoint_write",
+                    index: offset
+                )
+                let upperBound = min(offset + chunkBytes, data.count)
+                try handle.write(contentsOf: data[offset..<upperBound])
+                offset = upperBound
+            }
+            try handle.synchronize()
+            try authority.checkpoint(
+                stage: "checkpoint_write_complete",
+                index: offset
+            )
+            try handle.close()
+            if FileManager.default.fileExists(atPath: url.path) {
+                _ = try FileManager.default.replaceItemAt(
+                    url,
+                    withItemAt: temporaryURL
+                )
+            } else {
+                try FileManager.default.moveItem(
+                    at: temporaryURL,
+                    to: url
+                )
+            }
+            return .written
+        } catch AtriaRecoveredCheckpointCodingError.authorityRevoked {
+            return .cancelled
         } catch {
             AtriaDebugLog(
                 "ATRIADBG recovered_bootstrap status=checkpoint_write_failed error=%@",
                 error.localizedDescription
             )
-            return false
+            return .failed
         }
     }
 
     private static func makeAutomaticRecoveredDataBootstrapCheckpoint(
         since: Date,
         sourceImage: AutomaticRecoveredDataBootstrapSourceImage,
-        now: Date
+        now: Date,
+        shouldContinue: () -> Bool
     ) -> AutomaticRecoveredDataBootstrapCheckpoint? {
         let cutoff = since.timeIntervalSince1970
-        guard cutoff.isFinite else { return nil }
+        guard cutoff.isFinite, shouldContinue() else { return nil }
 
         recoveredDataCacheLock.lock()
         defer { recoveredDataCacheLock.unlock() }
+        guard shouldContinue() else { return nil }
         let existingCache = recoveredDataCache
         let seed: RecoveredDataCache?
         if let existingCache {
@@ -3907,7 +4665,11 @@ enum HistoricalArchive {
                   cutoff - existingCache.coveredSince
                     <= maximumAutomaticRecoveredDataCacheAuthorityWindow,
                   existingCache.truncatedChannels.isEmpty else { return nil }
-            let pruned = prunedRecoveredCache(existingCache, since: cutoff)
+            guard let pruned = prunedRecoveredCache(
+                existingCache,
+                since: cutoff,
+                shouldContinue: shouldContinue
+            ) else { return nil }
             let plan = AtriaHistoricalJSONLRecentScanner.plan(
                 previousStates: pruned.fileStates,
                 current: sourceImage.descriptors
@@ -3925,7 +4687,15 @@ enum HistoricalArchive {
                 <= automaticRecoveredDataBootstrapBudget
                     .maximumSkinTemperaturePoints,
             pruned.gravitySamples.count
-                <= automaticRecoveredDataBootstrapBudget.maximumGravitySamples
+                <= automaticRecoveredDataBootstrapBudget.maximumGravitySamples,
+            automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+                automaticRecoveredDataBootstrapRetainedCounts(
+                    heartRate: pruned.heartRatePoints,
+                    rrAccumulator: pruned.rrAccumulator,
+                    skin: pruned.skinTemperatureRawPoints,
+                    gravity: pruned.gravitySamples
+                )
+            )
             else { return nil }
             seed = pruned
         } else {
@@ -3933,19 +4703,42 @@ enum HistoricalArchive {
         }
 
         let states = seed?.fileStates ?? [:]
-        let sources = sourceImage.descriptors.map { descriptor in
-            AutomaticRecoveredDataBootstrapCheckpoint.Source(
+        var sources: [AutomaticRecoveredDataBootstrapCheckpoint.Source] = []
+        sources.reserveCapacity(sourceImage.descriptors.count)
+        for (index, descriptor) in sourceImage.descriptors.enumerated() {
+            if index.isMultiple(of: 16), !shouldContinue() { return nil }
+            sources.append(AutomaticRecoveredDataBootstrapCheckpoint.Source(
                 path: descriptor.path,
                 targetSize: descriptor.size,
                 processedOffset:
                     states[descriptor.path]?.processedOffset ?? 0,
                 modificationTime: descriptor.modificationTime,
                 resourceIdentifier: descriptor.resourceIdentifier!
-            )
-        }.sorted { $0.path < $1.path }
+            ))
+        }
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &sources,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: { $0.path < $1.path }
+        ) else { return nil }
         var rr = seed?.rrAccumulator
             ?? AtriaRecoveredRRProjection.Accumulator()
-        rr.prune(before: cutoff)
+        guard rr.prune(
+            before: cutoff,
+            shouldContinue: shouldContinue
+        ) else { return nil }
+        let heartRate = seed?.heartRatePoints ?? []
+        let skin = seed?.skinTemperatureRawPoints ?? []
+        let gravity = seed?.gravitySamples ?? []
+        guard shouldContinue(),
+              automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+                automaticRecoveredDataBootstrapRetainedCounts(
+                    heartRate: heartRate,
+                    rrAccumulator: rr,
+                    skin: skin,
+                    gravity: gravity
+                )
+              ) else { return nil }
         return .init(
             version: AutomaticRecoveredDataBootstrapCheckpoint.schema,
             cutoff: cutoff,
@@ -3955,11 +4748,10 @@ enum HistoricalArchive {
                 descriptors: sourceImage.descriptors
             ),
             sources: sources,
-            heartRatePoints: seed?.heartRatePoints ?? [],
+            heartRatePoints: heartRate,
             rrAccumulator: rr,
-            skinTemperatureRawPoints:
-                seed?.skinTemperatureRawPoints ?? [],
-            gravitySamples: seed?.gravitySamples ?? []
+            skinTemperatureRawPoints: skin,
+            gravitySamples: gravity
         )
     }
 
@@ -4026,27 +4818,42 @@ enum HistoricalArchive {
     }
 
     private static func canonicalizeAutomaticRecoveredDataBootstrapEvidence(
-        _ checkpoint: inout AutomaticRecoveredDataBootstrapCheckpoint
-    ) {
-        checkpoint.heartRatePoints.sort {
+        _ checkpoint: inout AutomaticRecoveredDataBootstrapCheckpoint,
+        shouldContinue: () -> Bool
+    ) -> Bool {
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &checkpoint.heartRatePoints,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: {
             if $0.t != $1.t { return $0.t < $1.t }
             return $0.bpm < $1.bpm
+        }) else { return false }
+        var canonicalHeartRate: [HeartRatePoint] = []
+        canonicalHeartRate.reserveCapacity(checkpoint.heartRatePoints.count)
+        for (index, point) in checkpoint.heartRatePoints.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return false }
+            if canonicalHeartRate.last != point { canonicalHeartRate.append(point) }
         }
-        checkpoint.heartRatePoints = checkpoint.heartRatePoints.reduce(
-            into: []
-        ) { result, point in
-            if result.last != point { result.append(point) }
-        }
-        checkpoint.skinTemperatureRawPoints.sort {
+        checkpoint.heartRatePoints = canonicalHeartRate
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &checkpoint.skinTemperatureRawPoints,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: {
             if $0.t != $1.t { return $0.t < $1.t }
             if $0.raw != $1.raw { return $0.raw < $1.raw }
             return ($0.strapIdentifier ?? "") < ($1.strapIdentifier ?? "")
+        }) else { return false }
+        var canonicalSkin: [SkinTemperatureRawPoint] = []
+        canonicalSkin.reserveCapacity(checkpoint.skinTemperatureRawPoints.count)
+        for (index, point) in checkpoint.skinTemperatureRawPoints.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return false }
+            if canonicalSkin.last != point { canonicalSkin.append(point) }
         }
-        checkpoint.skinTemperatureRawPoints = checkpoint
-            .skinTemperatureRawPoints.reduce(into: []) { result, point in
-                if result.last != point { result.append(point) }
-            }
-        checkpoint.gravitySamples.sort {
+        checkpoint.skinTemperatureRawPoints = canonicalSkin
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &checkpoint.gravitySamples,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: {
             if $0.timestamp != $1.timestamp {
                 return $0.timestamp < $1.timestamp
             }
@@ -4058,12 +4865,15 @@ enum HistoricalArchive {
                 return !$0.validated && $1.validated
             }
             return !$0.timestampValidated && $1.timestampValidated
+        }) else { return false }
+        var canonicalGravity: [GravitySample] = []
+        canonicalGravity.reserveCapacity(checkpoint.gravitySamples.count)
+        for (index, sample) in checkpoint.gravitySamples.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return false }
+            if canonicalGravity.last != sample { canonicalGravity.append(sample) }
         }
-        checkpoint.gravitySamples = checkpoint.gravitySamples.reduce(
-            into: []
-        ) { result, sample in
-            if result.last != sample { result.append(sample) }
-        }
+        checkpoint.gravitySamples = canonicalGravity
+        return shouldContinue()
     }
 
     private static func remainingAutomaticRecoveredDataBootstrapBytes(
@@ -4079,9 +4889,21 @@ enum HistoricalArchive {
     }
 
     private static func installAutomaticRecoveredDataBootstrapCache(
-        _ checkpoint: AutomaticRecoveredDataBootstrapCheckpoint
+        _ checkpoint: AutomaticRecoveredDataBootstrapCheckpoint,
+        retainedCountsForAdmission:
+            AutomaticRecoveredDataBootstrapRetainedCounts? = nil,
+        shouldContinue: () -> Bool,
+        onInstalled: () -> Void = {}
     ) -> Bool {
-        guard remainingAutomaticRecoveredDataBootstrapBytes(checkpoint) == 0,
+        let retainedCounts = retainedCountsForAdmission
+            ?? automaticRecoveredDataBootstrapRetainedCounts(
+                heartRate: checkpoint.heartRatePoints,
+                rrAccumulator: checkpoint.rrAccumulator,
+                skin: checkpoint.skinTemperatureRawPoints,
+                gravity: checkpoint.gravitySamples
+            )
+        guard shouldContinue(),
+              remainingAutomaticRecoveredDataBootstrapBytes(checkpoint) == 0,
               checkpoint.heartRatePoints.count
                 <= automaticRecoveredDataBootstrapBudget
                     .maximumHeartRatePoints,
@@ -4092,7 +4914,10 @@ enum HistoricalArchive {
                     .maximumSkinTemperaturePoints,
               checkpoint.gravitySamples.count
                 <= automaticRecoveredDataBootstrapBudget
-                    .maximumGravitySamples else { return false }
+                    .maximumGravitySamples,
+              automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+                retainedCounts
+              ) else { return false }
         let states = Dictionary(
             uniqueKeysWithValues: checkpoint.sources.map { source in
                 (
@@ -4108,7 +4933,12 @@ enum HistoricalArchive {
         )
         let cache = RecoveredDataCache(
             coveredSince: checkpoint.cutoff,
-            budget: .production,
+            // The resumable bootstrap is the durable half of the bounded
+            // automatic lane, so retain its actual stricter construction
+            // budget. Directional compatibility lets the immediate production
+            // BG continuation consume this complete image, while the inverse
+            // production-to-automatic reuse remains forbidden.
+            budget: .automaticForeground,
             fileStates: states,
             heartRatePoints: checkpoint.heartRatePoints,
             rrAccumulator: checkpoint.rrAccumulator,
@@ -4120,12 +4950,64 @@ enum HistoricalArchive {
             motionRecordIdentities: [],
             truncatedChannels: []
         )
-        recoveredDataCacheLock.lock()
-        recoveredDataCache = cache
-        recoveredDataCacheLock.unlock()
-        recordRetainedCacheFootprint(cache, plan: "bootstrap")
-        return true
+        return installRecoveredDataCacheAtomically(
+            cache,
+            shouldContinue: shouldContinue,
+            onInstalled: {
+                onInstalled()
+                recordRetainedCacheFootprint(
+                    cache,
+                    plan: "bootstrap",
+                    shouldContinue: shouldContinue
+                )
+            }
+        )
     }
+
+#if DEBUG
+    /// Count-only seam for the final bootstrap publication gate. It exercises
+    /// the production installer without allocating 250,001 retained values.
+    static func installAutomaticRecoveredDataBootstrapRetainedCountsForTesting(
+        heartRate: Int,
+        rr: Int,
+        skin: Int,
+        gravity: Int,
+        shouldContinue: () -> Bool = { true },
+        onInstalled: () -> Void = {}
+    ) -> Bool {
+        let checkpoint = AutomaticRecoveredDataBootstrapCheckpoint(
+            version: AutomaticRecoveredDataBootstrapCheckpoint.schema,
+            cutoff: 0,
+            updatedAt: 0,
+            sourceFingerprint: .init(
+                catalogGeneration: nil,
+                sources: []
+            ),
+            sources: [.init(
+                path: "/debug/bootstrap-aggregate.jsonl",
+                targetSize: 0,
+                processedOffset: 0,
+                modificationTime: 0,
+                resourceIdentifier: "debug-bootstrap-aggregate"
+            )],
+            heartRatePoints: [],
+            rrAccumulator: .init(),
+            skinTemperatureRawPoints: [],
+            gravitySamples: []
+        )
+        return installAutomaticRecoveredDataBootstrapCache(
+            checkpoint,
+            retainedCountsForAdmission: .init(
+                heartRate: heartRate,
+                rr: rr,
+                skin: skin,
+                gravity: gravity
+            ),
+            shouldContinue: shouldContinue,
+            onInstalled: onInstalled
+        )
+    }
+#endif
 
     /// Runs exactly one <=8 MiB resumable current-window pass under the live
     /// BGProcessing throttle lease. A completed bootstrap installs a normal
@@ -4149,22 +5031,50 @@ enum HistoricalArchive {
                 automaticRecoveredDataBootstrapSourceImage(since: since)
             },
             shouldContinue: {
+                AtriaBackgroundProjectionThrottle.shared
+                    .activeLeaseShouldContinue(lease)
+            },
+            cooperativeShouldContinue: {
                 !AtriaBackgroundProjectionThrottle.shared
                     .cooperativeCheckpointShouldAbort(
                         lease: lease,
-                        processedDelta: 0
+                        processedDelta: 256
                     )
             }
         )
     }
 
 #if DEBUG
+    /// Exercises the exact production-budget planner used immediately after a
+    /// real resumable BG bootstrap reaches `.ready`, while allowing a fixture
+    /// descriptor image instead of touching the process archive directory.
+    static func makeProductionRecoveredDataSnapshotForTesting(
+        since: Date,
+        descriptors: [AtriaHistoricalJSONLRecentScanner.FileDescriptor]
+    ) -> RecoveredDataSnapshot? {
+        makeRecoveredDataSnapshot(
+            since: since,
+            budget: .production,
+            descriptors: descriptors,
+            started: DispatchTime.now().uptimeNanoseconds,
+            maximumAutomaticIncrementalBytes: nil,
+            decodedWorkBudget: nil,
+            backgroundProjectionLease: nil,
+            executionShouldContinue: { true },
+            onScanProgress: nil
+        )
+    }
+
     static func performAutomaticRecoveredDataBootstrapStepForTesting(
         since: Date,
         descriptors: @escaping () ->
             [AtriaHistoricalJSONLRecentScanner.FileDescriptor]?,
         checkpointURL: URL,
-        maximumBytesPerStep: UInt64
+        maximumBytesPerStep: UInt64,
+        shouldContinue: @escaping () -> Bool = { true },
+        cooperativeShouldContinue: (() -> Bool)? = nil,
+        onStage: ((String) -> Void)? = nil,
+        onCheckpointProgress: ((String, Int) -> Void)? = nil
     ) -> AutomaticRecoveredDataBootstrapStepResult {
         performAutomaticRecoveredDataBootstrapStep(
             since: since,
@@ -4178,7 +5088,11 @@ enum HistoricalArchive {
                     )
                 }
             },
-            shouldContinue: { true }
+            shouldContinue: shouldContinue,
+            cooperativeShouldContinue:
+                cooperativeShouldContinue ?? shouldContinue,
+            onStage: onStage,
+            onCheckpointProgress: onCheckpointProgress
         )
     }
 #endif
@@ -4188,7 +5102,10 @@ enum HistoricalArchive {
         checkpointURL: URL,
         maximumBytesPerStep: UInt64,
         sourceImageProvider: () -> AutomaticRecoveredDataBootstrapSourceImage?,
-        shouldContinue: () -> Bool
+        shouldContinue: () -> Bool,
+        cooperativeShouldContinue: @escaping () -> Bool,
+        onStage: ((String) -> Void)? = nil,
+        onCheckpointProgress: ((String, Int) -> Void)? = nil
     ) -> AutomaticRecoveredDataBootstrapStepResult {
         guard maximumBytesPerStep > 0,
               maximumBytesPerStep
@@ -4210,21 +5127,33 @@ enum HistoricalArchive {
 
         var checkpoint: AutomaticRecoveredDataBootstrapCheckpoint
         if FileManager.default.fileExists(atPath: checkpointURL.path) {
-            guard let restored = readAutomaticRecoveredDataBootstrapCheckpoint(
+            switch readAutomaticRecoveredDataBootstrapCheckpoint(
                 from: checkpointURL,
                 now: now,
-                requestedCutoff: since
-            ) else {
+                requestedCutoff: since,
+                shouldContinue: cooperativeShouldContinue,
+                onProgress: onCheckpointProgress
+            ) {
+            case .loaded(let restored):
+                checkpoint = restored
+            case .cancelled:
+                return .deferred(reason: "background_authority_revoked")
+            case .invalid:
                 try? FileManager.default.removeItem(at: checkpointURL)
                 return .invalidated(reason: "checkpoint_invalid")
             }
-            checkpoint = restored
         } else {
             guard let created = makeAutomaticRecoveredDataBootstrapCheckpoint(
                 since: since,
                 sourceImage: initialImage,
-                now: now
+                now: now,
+                shouldContinue: cooperativeShouldContinue
             ) else {
+                guard cooperativeShouldContinue() else {
+                    return .deferred(
+                        reason: "background_authority_revoked"
+                    )
+                }
                 return .invalidated(reason: "cache_seed_unavailable")
             }
             checkpoint = created
@@ -4235,6 +5164,20 @@ enum HistoricalArchive {
         ) {
             try? FileManager.default.removeItem(at: checkpointURL)
             return .invalidated(reason: invalidation)
+        }
+
+        guard automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+            automaticRecoveredDataBootstrapRetainedCounts(
+                heartRate: checkpoint.heartRatePoints,
+                rrAccumulator: checkpoint.rrAccumulator,
+                skin: checkpoint.skinTemperatureRawPoints,
+                gravity: checkpoint.gravitySamples
+            )
+        ) else {
+            try? FileManager.default.removeItem(at: checkpointURL)
+            return .invalidated(
+                reason: "partial_projection_aggregate_budget_exceeded"
+            )
         }
 
         var limitations = recoveredBudgetLimitations(
@@ -4266,11 +5209,15 @@ enum HistoricalArchive {
         }
         var motionIdentities = Set<AtriaRecoveredMotionReplayIdentity>()
         var strapIdentifierIntern: [String: String] = [:]
+        var retainedAggregateBudgetExceeded = false
         let scanResult = AtriaHistoricalJSONLRecentScanner.scan(
             sources: sources,
             cutoff: checkpoint.cutoff,
             byteBudget: Int(maximumBytesPerStep),
-            shouldContinue: shouldContinue
+            shouldContinue: {
+                !retainedAggregateBudgetExceeded
+                    && cooperativeShouldContinue()
+            }
         ) { line in
             guard let record = Record(scanLine: line) else { return }
             appendRecoveredRecord(
@@ -4286,10 +5233,37 @@ enum HistoricalArchive {
                 motionRecordIdentities: &motionIdentities,
                 strapIdentifierIntern: &strapIdentifierIntern
             )
+            if !automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+                automaticRecoveredDataBootstrapRetainedCounts(
+                    heartRate: checkpoint.heartRatePoints,
+                    rrAccumulator: checkpoint.rrAccumulator,
+                    skin: checkpoint.skinTemperatureRawPoints,
+                    gravity: checkpoint.gravitySamples
+                )
+            ) {
+                retainedAggregateBudgetExceeded = true
+            }
         }
         guard scanResult.statistics.byteCount <= Int(maximumBytesPerStep) else {
             try? FileManager.default.removeItem(at: checkpointURL)
             return .invalidated(reason: "step_byte_budget_exceeded")
+        }
+        guard !retainedAggregateBudgetExceeded,
+              automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+                automaticRecoveredDataBootstrapRetainedCounts(
+                    heartRate: checkpoint.heartRatePoints,
+                    rrAccumulator: checkpoint.rrAccumulator,
+                    skin: checkpoint.skinTemperatureRawPoints,
+                    gravity: checkpoint.gravitySamples
+                )
+              ) else {
+            // The external durable bootstrap intent remains pending; discard
+            // only this over-budget partial image so the next safe window can
+            // restart from a later/pruned cutoff.
+            try? FileManager.default.removeItem(at: checkpointURL)
+            return .invalidated(
+                reason: "partial_projection_aggregate_budget_exceeded"
+            )
         }
         guard !scanResult.cancelled else {
             return .deferred(reason: "background_authority_revoked")
@@ -4310,13 +5284,36 @@ enum HistoricalArchive {
             }
             checkpoint.sources[index].processedOffset = state.processedOffset
         }
-        canonicalizeAutomaticRecoveredDataBootstrapEvidence(&checkpoint)
+        onStage?("before_canonicalization")
+        guard canonicalizeAutomaticRecoveredDataBootstrapEvidence(
+            &checkpoint,
+            shouldContinue: cooperativeShouldContinue
+        ) else {
+            return .deferred(reason: "background_authority_revoked")
+        }
+        onStage?("after_canonicalization")
+        guard automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+            automaticRecoveredDataBootstrapRetainedCounts(
+                heartRate: checkpoint.heartRatePoints,
+                rrAccumulator: checkpoint.rrAccumulator,
+                skin: checkpoint.skinTemperatureRawPoints,
+                gravity: checkpoint.gravitySamples
+            )
+        ) else {
+            try? FileManager.default.removeItem(at: checkpointURL)
+            return .invalidated(
+                reason: "partial_projection_aggregate_budget_exceeded"
+            )
+        }
 
         guard shouldContinue() else {
             return .deferred(reason: "background_authority_revoked")
         }
         guard let finalImage = sourceImageProvider() else {
             return .deferred(reason: "source_revalidation_unavailable")
+        }
+        guard shouldContinue() else {
+            return .deferred(reason: "background_authority_revoked")
         }
         if let invalidation = updateAutomaticRecoveredDataBootstrapSources(
             &checkpoint,
@@ -4325,12 +5322,37 @@ enum HistoricalArchive {
             try? FileManager.default.removeItem(at: checkpointURL)
             return .invalidated(reason: invalidation)
         }
-        checkpoint.updatedAt = Date().timeIntervalSince1970
-        guard writeAutomaticRecoveredDataBootstrapCheckpoint(
-            checkpoint,
-            to: checkpointURL
+        guard automaticRecoveredDataBootstrapRetainedCountsAreAdmissible(
+            automaticRecoveredDataBootstrapRetainedCounts(
+                heartRate: checkpoint.heartRatePoints,
+                rrAccumulator: checkpoint.rrAccumulator,
+                skin: checkpoint.skinTemperatureRawPoints,
+                gravity: checkpoint.gravitySamples
+            )
         ) else {
+            try? FileManager.default.removeItem(at: checkpointURL)
+            return .invalidated(
+                reason: "partial_projection_aggregate_budget_exceeded"
+            )
+        }
+        checkpoint.updatedAt = Date().timeIntervalSince1970
+        onStage?("before_checkpoint_write")
+        switch writeAutomaticRecoveredDataBootstrapCheckpoint(
+            checkpoint,
+            to: checkpointURL,
+            shouldContinue: cooperativeShouldContinue,
+            onProgress: onCheckpointProgress
+        ) {
+        case .cancelled:
+            return .deferred(reason: "background_authority_revoked")
+        case .failed:
             return .deferred(reason: "checkpoint_write_failed")
+        case .written:
+            break
+        }
+        onStage?("after_checkpoint_write")
+        guard shouldContinue() else {
+            return .deferred(reason: "background_authority_revoked")
         }
         let remaining = remainingAutomaticRecoveredDataBootstrapBytes(
             checkpoint
@@ -4341,7 +5363,20 @@ enum HistoricalArchive {
                 remainingBytes: remaining
             )
         }
-        guard installAutomaticRecoveredDataBootstrapCache(checkpoint) else {
+        onStage?("before_cache_install")
+        guard shouldContinue() else {
+            return .deferred(reason: "background_authority_revoked")
+        }
+        guard installAutomaticRecoveredDataBootstrapCache(
+            checkpoint,
+            shouldContinue: shouldContinue,
+            onInstalled: {
+                onStage?("after_bootstrap_cache_install")
+            }
+        ) else {
+            guard shouldContinue() else {
+                return .deferred(reason: "background_authority_revoked")
+            }
             return .invalidated(reason: "completed_cache_install_failed")
         }
         return .ready(readBytes: scanResult.statistics.byteCount)
@@ -4352,7 +5387,7 @@ enum HistoricalArchive {
     /// real snapshot but opens/decodes no history rows. It must stay off-main.
     static func automaticRecoveredDataProjectionHasBoundedIncrementalPlan(
         since: Date,
-        budget: RecoveredProjectionBudget = .production,
+        budget: RecoveredProjectionBudget = .automaticForeground,
         maximumIncrementalBytes: UInt64 =
             maximumAutomaticRecoveredDataIncrementalBytes
     ) -> Bool {
@@ -4376,7 +5411,7 @@ enum HistoricalArchive {
     /// No source is opened or decoded.
     static func automaticRecoveredDataProjectionHasBoundedIncrementalPlan(
         since: Date,
-        budget: RecoveredProjectionBudget = .production,
+        budget: RecoveredProjectionBudget = .automaticForeground,
         descriptors: [AtriaHistoricalJSONLRecentScanner.FileDescriptor],
         maximumIncrementalBytes: UInt64 =
             maximumAutomaticRecoveredDataIncrementalBytes
@@ -4410,9 +5445,11 @@ enum HistoricalArchive {
     /// `nil` means the durable input must wait for the guarded BGProcessing lane.
     static func makeAutomaticallyAdmittedRecoveredDataSnapshot(
         since: Date,
-        budget: RecoveredProjectionBudget = .production,
+        budget: RecoveredProjectionBudget = .automaticForeground,
         maximumIncrementalBytes: UInt64 =
             maximumAutomaticRecoveredDataIncrementalBytes,
+        decodedWorkBudget: RecoveredDecodedWorkBudget = .automaticForeground,
+        executionShouldContinue: @escaping () -> Bool = { true },
         onScanProgress: ((AtriaHistoricalJSONLRecentScanner.Statistics) -> Void)? = nil
     ) -> RecoveredDataSnapshot? {
         precondition(
@@ -4430,7 +5467,9 @@ enum HistoricalArchive {
             descriptors: descriptors,
             started: started,
             maximumAutomaticIncrementalBytes: maximumIncrementalBytes,
+            decodedWorkBudget: decodedWorkBudget,
             backgroundProjectionLease: nil,
+            executionShouldContinue: executionShouldContinue,
             onScanProgress: onScanProgress
         )
     }
@@ -4443,7 +5482,13 @@ enum HistoricalArchive {
         since: Date,
         descriptors: [AtriaHistoricalJSONLRecentScanner.FileDescriptor],
         maximumIncrementalBytes: UInt64 =
-            maximumAutomaticRecoveredDataIncrementalBytes
+            maximumAutomaticRecoveredDataIncrementalBytes,
+        decodedWorkBudget: RecoveredDecodedWorkBudget =
+            .automaticForeground,
+        executionShouldContinue: @escaping () -> Bool = { true },
+        onDecodedWorkCount: ((Int, Int) -> Void)? = nil,
+        onRetainedAggregateCount: ((Int) -> Void)? = nil,
+        onStage: ((String) -> Void)? = nil
     ) -> RecoveredDataSnapshot? {
         precondition(
             !Thread.isMainThread,
@@ -4451,11 +5496,16 @@ enum HistoricalArchive {
         )
         return makeRecoveredDataSnapshot(
             since: since,
-            budget: .production,
+            budget: .automaticForeground,
             descriptors: descriptors,
             started: DispatchTime.now().uptimeNanoseconds,
             maximumAutomaticIncrementalBytes: maximumIncrementalBytes,
+            decodedWorkBudget: decodedWorkBudget,
             backgroundProjectionLease: nil,
+            executionShouldContinue: executionShouldContinue,
+            onDecodedWorkCount: onDecodedWorkCount,
+            onRetainedAggregateCount: onRetainedAggregateCount,
+            onStage: onStage,
             onScanProgress: nil
         )
     }
@@ -4485,6 +5535,37 @@ enum HistoricalArchive {
         )!
     }
 
+    /// Exact/manual foreground form. It retains the production evidence bounds
+    /// but returns nil as soon as its sticky ticket authority is revoked.
+    static func makeCancellableRecoveredDataSnapshot(
+        since: Date,
+        budget: RecoveredProjectionBudget = .production,
+        executionShouldContinue: @escaping () -> Bool,
+        onScanProgress:
+            ((AtriaHistoricalJSONLRecentScanner.Statistics) -> Void)? = nil
+    ) -> RecoveredDataSnapshot? {
+        precondition(
+            !Thread.isMainThread,
+            "Recovered archive decoding must run off the main thread"
+        )
+        let started = DispatchTime.now().uptimeNanoseconds
+        let cutoff = since.timeIntervalSince1970
+        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(
+            for: recentRecoveredReadableFileURLs(since: cutoff)
+        )
+        return makeRecoveredDataSnapshot(
+            since: since,
+            budget: budget,
+            descriptors: descriptors,
+            started: started,
+            maximumAutomaticIncrementalBytes: nil,
+            decodedWorkBudget: nil,
+            backgroundProjectionLease: nil,
+            executionShouldContinue: executionShouldContinue,
+            onScanProgress: onScanProgress
+        )
+    }
+
     /// Cancellable form owned by one exact background-projection throttle
     /// generation. Scene activation, BGTask expiration, or budget expiry makes
     /// this return nil without publishing a partial recovered cache.
@@ -4510,7 +5591,12 @@ enum HistoricalArchive {
             descriptors: descriptors,
             started: started,
             maximumAutomaticIncrementalBytes: nil,
+            decodedWorkBudget: nil,
             backgroundProjectionLease: lease,
+            executionShouldContinue: {
+                AtriaBackgroundProjectionThrottle.shared
+                    .activeLeaseShouldContinue(lease)
+            },
             onScanProgress: onScanProgress
         )
     }
@@ -4837,27 +5923,71 @@ enum HistoricalArchive {
         descriptors: [AtriaHistoricalJSONLRecentScanner.FileDescriptor],
         started: UInt64,
         maximumAutomaticIncrementalBytes: UInt64?,
+        decodedWorkBudget: RecoveredDecodedWorkBudget? = nil,
         backgroundProjectionLease:
             AtriaBackgroundProjectionThrottle.ActiveLease?,
+        executionShouldContinue: @escaping () -> Bool = { true },
+        onDecodedWorkCount: ((Int, Int) -> Void)? = nil,
+        onRetainedAggregateCount: ((Int) -> Void)? = nil,
+        onStage: ((String) -> Void)? = nil,
         onScanProgress: ((AtriaHistoricalJSONLRecentScanner.Statistics) -> Void)?
     ) -> RecoveredDataSnapshot? {
         let cutoff = since.timeIntervalSince1970
 
+        // A background lease has two distinct checks. `executionShouldContinue`
+        // is the non-sleeping exact-generation authority used at admission and
+        // immediately before publication. Archive-sized off-main transforms
+        // additionally participate in the throttle's duty cycle at their
+        // existing 256-element checkpoints. Foreground/manual callers have no
+        // background lease, so this remains only their sticky authority poll.
+        func transformShouldContinue() -> Bool {
+            guard executionShouldContinue() else { return false }
+            guard let backgroundProjectionLease else { return true }
+            return !AtriaBackgroundProjectionThrottle.shared
+                .cooperativeCheckpointShouldAbort(
+                    lease: backgroundProjectionLease,
+                    processedDelta: 256
+                )
+        }
+
         recoveredDataCacheLock.lock()
         defer { recoveredDataCacheLock.unlock() }
 
+        guard executionShouldContinue() else { return nil }
+
         let hadRecoveredDataCache = recoveredDataCache != nil
-        let reusableCache = recoveredDataCache.flatMap { cache in
-            cache.budget == budget
-                && cache.coveredSince <= cutoff
-                && (
-                    maximumAutomaticIncrementalBytes != nil
-                        || cutoff - cache.coveredSince
-                            <= recoveredDataCacheMaximumWindowDrift
-                )
-                ? prunedRecoveredCache(cache, since: cutoff)
-                : nil
+        if let decodedWorkBudget,
+           let cache = recoveredDataCache,
+           !decodedWorkBudget.admitsRetainedCounts(
+                heartRate: cache.heartRatePoints.count,
+                rr: cache.rrAccumulator.acceptedRecordCount,
+                skin: cache.skinTemperatureRawPoints.count,
+                gravity: cache.gravitySamples.count,
+                motionIdentities: cache.motionRecordIdentities.count
+           ) {
+            // O(1) automatic admission: never copy/prune/materialize a retained
+            // million-row cache merely because its scanner plan says `.reuse`.
+            return nil
         }
+        var reusableCache: RecoveredDataCache?
+        if let cache = recoveredDataCache,
+           recoveredProjectionCacheBudgetIsReusable(
+                cached: cache.budget,
+                requested: budget,
+                hasTruncatedChannels: !cache.truncatedChannels.isEmpty
+           ),
+           cache.coveredSince <= cutoff,
+           maximumAutomaticIncrementalBytes != nil
+                || cutoff - cache.coveredSince
+                    <= recoveredDataCacheMaximumWindowDrift {
+            guard let pruned = prunedRecoveredCache(
+                cache,
+                since: cutoff,
+                shouldContinue: transformShouldContinue
+            ) else { return nil }
+            reusableCache = pruned
+        }
+        guard executionShouldContinue() else { return nil }
         let plan = AtriaHistoricalJSONLRecentScanner.plan(
             previousStates: reusableCache?.fileStates,
             current: descriptors
@@ -4876,18 +6006,32 @@ enum HistoricalArchive {
             for channel in reusableCache.truncatedChannels where limitations[channel] == nil {
                 limitations[channel] = recoveredBudgetLimit(for: channel, budget: budget)
             }
-            // Retain even with limitations: truncatedChannels keeps capped
-            // channels honestly budgetExceeded, and discarding the cache here
-            // forced a full-archive rebuild on every recompute (2026-08-04).
-            recoveredDataCache = reusableCache
-            Self.recordRetainedCacheFootprint(reusableCache, plan: "reuse")
-            return recoveredSnapshot(from: reusableCache,
-                                     scan: .init(fileReadCount: 0,
-                                                 byteCount: 0,
-                                                 decodedRecordCount: 0,
-                                                 elapsedMilliseconds: elapsed),
-                                     limitations: limitations,
-                                     includesCompleteScannerImage: true)
+            guard let snapshot = recoveredSnapshot(
+                from: reusableCache,
+                scan: .init(fileReadCount: 0,
+                            byteCount: 0,
+                            decodedRecordCount: 0,
+                            elapsedMilliseconds: elapsed),
+                limitations: limitations,
+                includesCompleteScannerImage: true,
+                shouldContinue: transformShouldContinue
+            ) else { return nil }
+            guard executionShouldContinue() else { return nil }
+            // Retain only after cancellable RR/materialization completed. A
+            // revoked ticket may not install even a pruned cache image.
+            guard installRecoveredDataCacheWhileLocked(
+                reusableCache,
+                shouldContinue: executionShouldContinue,
+                onInstalled: {
+                    onStage?("after_recovered_cache_install")
+                    Self.recordRetainedCacheFootprint(
+                        reusableCache,
+                        plan: "reuse",
+                        shouldContinue: executionShouldContinue
+                    )
+                }
+            ) else { return nil }
+            return snapshot
         }
 
         var decodedRecordCount = 0
@@ -4940,8 +6084,12 @@ enum HistoricalArchive {
 
         var pressureReliefCountdown = 16
         var lastThrottledCandidateCount = 0
+        var candidateWorkCount = 0
+        var decodedWorkBudgetExceeded = false
         func backgroundProjectionShouldContinue() -> Bool {
-            !AtriaBackgroundProjectionThrottle.shared
+            executionShouldContinue()
+                && !decodedWorkBudgetExceeded
+                && !AtriaBackgroundProjectionThrottle.shared
                 .cooperativeCheckpointShouldAbort(
                     lease: backgroundProjectionLease,
                     processedDelta: 0
@@ -4974,6 +6122,14 @@ enum HistoricalArchive {
                 onScanProgress?(statistics)
         }
         func consumeScanCandidate(_ lineData: Data) {
+            guard !decodedWorkBudgetExceeded else { return }
+            candidateWorkCount += 1
+            onDecodedWorkCount?(candidateWorkCount, decodedRecordCount)
+            if let decodedWorkBudget,
+               candidateWorkCount > decodedWorkBudget.maximumCandidateLines {
+                decodedWorkBudgetExceeded = true
+                return
+            }
             // Foundation JSON is banned from this hot path: decode-only
             // bisects proved BOTH JSONDecoder and JSONSerialization retain
             // live memory per parse on iOS 27.0 beta (~2.6GB per scan,
@@ -4983,6 +6139,33 @@ enum HistoricalArchive {
             // JSONDecoder enforced by AtriaRecordScanParserParityTests.
             guard let record = Record(scanLine: lineData) else { return }
             decodedRecordCount += 1
+            onDecodedWorkCount?(candidateWorkCount, decodedRecordCount)
+            if let decodedWorkBudget,
+               decodedRecordCount > decodedWorkBudget.maximumDecodedRecords {
+                decodedWorkBudgetExceeded = true
+                return
+            }
+            if let decodedWorkBudget {
+                let counts = [
+                    heartRate.count,
+                    rrAccumulator.acceptedRecordCount,
+                    skinTemperatureRawPoints.count,
+                    gravity.count,
+                    motionRecordIdentities.count,
+                ]
+                // A single physical row can add at most one element to each
+                // retained channel. Refuse it before decoding its payload when
+                // that worst-case append could cross the declared hard total;
+                // automatic work may be conservative but can never overshoot.
+                guard counts.allSatisfy({
+                    $0 < decodedWorkBudget.maximumRetainedChannelElements
+                }), counts.reduce(0, +)
+                    <= decodedWorkBudget.maximumRetainedAggregateElements - 5
+                else {
+                    decodedWorkBudgetExceeded = true
+                    return
+                }
+            }
             appendRecoveredRecord(record,
                                   cutoff: coveredSince,
                                   budget: budget,
@@ -4996,6 +6179,27 @@ enum HistoricalArchive {
                                   skipMotion: false,
                                   skipRR: false,
                                   skipSkin: false)
+            onRetainedAggregateCount?(
+                heartRate.count
+                    + rrAccumulator.acceptedRecordCount
+                    + skinTemperatureRawPoints.count
+                    + gravity.count
+                    + motionRecordIdentities.count
+            )
+            if let decodedWorkBudget,
+               !decodedWorkBudget.admitsRetainedCounts(
+                    heartRate: heartRate.count,
+                    rr: rrAccumulator.acceptedRecordCount,
+                    skin: skinTemperatureRawPoints.count,
+                    gravity: gravity.count,
+                    motionIdentities: motionRecordIdentities.count
+               ) {
+                // Fresh and incremental automatic scans obey the same total
+                // decoded-work contract as retained-cache reuse. Stop on the
+                // first record that crosses it, before any sort, snapshot, or
+                // cache publication can walk the accumulated image.
+                decodedWorkBudgetExceeded = true
+            }
         }
         // BUDGETED PASSES (2026-08-04, the balloon's architectural fix): the
         // 3-way append bisect proved every per-line lane contributes transient
@@ -5100,14 +6304,21 @@ enum HistoricalArchive {
                 footprint = Self.currentPhysFootprintBytes()
             }
         }
-        guard backgroundProjectionShouldContinue() else { return nil }
+        guard backgroundProjectionShouldContinue(),
+              !decodedWorkBudgetExceeded else { return nil }
         let scanResult = AtriaHistoricalJSONLRecentScanner.Result(
             states: mergedScanStates,
             statistics: priorPassStatistics,
             complete: scanComplete)
-        sortRecoveredData(heartRate: &heartRate,
-                          skinTemperatureRawPoints: &skinTemperatureRawPoints,
-                          gravity: &gravity)
+        guard executionShouldContinue() else { return nil }
+        onStage?("before_recovered_sort")
+        guard sortRecoveredData(
+            heartRate: &heartRate,
+            skinTemperatureRawPoints: &skinTemperatureRawPoints,
+            gravity: &gravity,
+            shouldContinue: transformShouldContinue
+        ) else { return nil }
+        onStage?("after_recovered_sort")
 
         var fileStates: [String: AtriaHistoricalJSONLRecentScanner.FileState]
         if case .incremental = plan {
@@ -5126,6 +6337,25 @@ enum HistoricalArchive {
                                        motionRecordIdentities: motionRecordIdentities,
                                        truncatedChannels: truncatedChannels
                                            .union(limitations.keys))
+        if maximumAutomaticIncrementalBytes != nil,
+           (!limitations.isEmpty || !cache.truncatedChannels.isEmpty) {
+            // Automatic work never installs a partial cache. The caller retains
+            // the durable bootstrap intent for a separately leased BG pass.
+            return nil
+        }
+        guard executionShouldContinue() else { return nil }
+        let elapsed = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
+        guard let snapshot = recoveredSnapshot(
+            from: cache,
+            scan: .init(fileReadCount: scanResult.statistics.fileReadCount,
+                        byteCount: scanResult.statistics.byteCount,
+                        decodedRecordCount: decodedRecordCount,
+                        elapsedMilliseconds: elapsed),
+            limitations: limitations,
+            includesCompleteScannerImage: scanResult.complete,
+            shouldContinue: transformShouldContinue
+        ) else { return nil }
+        guard executionShouldContinue() else { return nil }
         if scanResult.complete {
             // Retain even when a channel capped: `truncatedChannels` keeps that
             // channel reporting budgetExceeded after pruning (so a narrower
@@ -5133,23 +6363,25 @@ enum HistoricalArchive {
             // `recoveredDataCache = nil`), while every complete channel stays
             // incremental instead of paying a full-archive rebuild scan on the
             // next recompute (the 3.45GB jetsam amplifier, 2026-08-04).
-            recoveredDataCache = cache
-            Self.recordRetainedCacheFootprint(cache, plan: "scan")
+            guard installRecoveredDataCacheWhileLocked(
+                cache,
+                shouldContinue: executionShouldContinue,
+                onInstalled: {
+                    onStage?("after_recovered_cache_install")
+                    Self.recordRetainedCacheFootprint(
+                        cache,
+                        plan: "scan",
+                        shouldContinue: executionShouldContinue
+                    )
+                }
+            ) else { return nil }
         } else {
             // A truncated FILE READ leaves fileStates untrustworthy; only this
             // case still discards the cache.
-            recoveredDataCache = nil
+            _ = replaceRecoveredDataCacheWhileLocked(with: nil)
         }
 
-        let elapsed = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
-        return recoveredSnapshot(from: cache,
-                                 scan: .init(fileReadCount: scanResult.statistics.fileReadCount,
-                                             byteCount: scanResult.statistics.byteCount,
-                                             decodedRecordCount: decodedRecordCount,
-                                             elapsedMilliseconds: elapsed),
-                                 limitations: limitations,
-                                 includesCompleteScannerImage:
-                                    scanResult.complete)
+        return snapshot
     }
 
     private static func appendRecoveredRecord(
@@ -5256,19 +6488,31 @@ enum HistoricalArchive {
     private static func sortRecoveredData(
         heartRate: inout [HeartRatePoint],
         skinTemperatureRawPoints: inout [SkinTemperatureRawPoint],
-        gravity: inout [GravitySample]
-    ) {
-        heartRate.sort {
+        gravity: inout [GravitySample],
+        shouldContinue: () -> Bool
+    ) -> Bool {
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &heartRate,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: {
             if $0.t != $1.t { return $0.t < $1.t }
             return $0.bpm < $1.bpm
-        }
+        }) else { return false }
         // RR needs no sort pass here: Accumulator.finish() emits beats in the
         // projection's canonical deterministic order.
-        skinTemperatureRawPoints.sort { $0.t < $1.t }
-        gravity.sort {
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &skinTemperatureRawPoints,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: { $0.t < $1.t }
+        ) else { return false }
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &gravity,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: {
             if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
             return $0.sequence < $1.sequence
-        }
+        }) else { return false }
+        return shouldContinue()
     }
 
     private static func whoop4SkinTemperatureRaw(from record: Record,
@@ -5295,24 +6539,132 @@ enum HistoricalArchive {
         _ cache: RecoveredDataCache,
         since cutoff: TimeInterval
     ) -> RecoveredDataCache {
+        prunedRecoveredCache(
+            cache,
+            since: cutoff,
+            shouldContinue: { true }
+        )!
+    }
+
+    private static func prunedRecoveredCache(
+        _ cache: RecoveredDataCache,
+        since cutoff: TimeInterval,
+        shouldContinue: () -> Bool
+    ) -> RecoveredDataCache? {
+        guard shouldContinue() else { return nil }
         var prunedRR = cache.rrAccumulator
-        prunedRR.prune(before: cutoff)
+        guard prunedRR.prune(
+            before: cutoff,
+            shouldContinue: shouldContinue
+        ) else { return nil }
+        func retained<Value>(
+            _ values: [Value],
+            where predicate: (Value) -> Bool
+        ) -> [Value]? {
+            var result: [Value] = []
+            result.reserveCapacity(values.count)
+            for (index, value) in values.enumerated() {
+                if index.isMultiple(of: 256), !shouldContinue() {
+                    return nil
+                }
+                if predicate(value) { result.append(value) }
+            }
+            return shouldContinue() ? result : nil
+        }
+        guard let heartRate = retained(cache.heartRatePoints, where: {
+                  $0.t.timeIntervalSince1970 >= cutoff
+              }),
+              let skin = retained(cache.skinTemperatureRawPoints, where: {
+                  $0.t.timeIntervalSince1970 >= cutoff
+              }),
+              let gravity = retained(cache.gravitySamples, where: {
+                  $0.timestamp >= cutoff
+              }) else { return nil }
+        var motion = Set<AtriaRecoveredMotionReplayIdentity>()
+        motion.reserveCapacity(cache.motionRecordIdentities.count)
+        for (index, identity) in cache.motionRecordIdentities.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() {
+                return nil
+            }
+            if identity.projectedTimestamp >= cutoff {
+                motion.insert(identity)
+            }
+        }
+        guard shouldContinue() else { return nil }
         return RecoveredDataCache(
             coveredSince: cutoff,
             budget: cache.budget,
             fileStates: cache.fileStates,
-            heartRatePoints: cache.heartRatePoints.filter {
-                $0.t.timeIntervalSince1970 >= cutoff
-            },
+            heartRatePoints: heartRate,
             rrAccumulator: prunedRR,
-            skinTemperatureRawPoints: cache.skinTemperatureRawPoints.filter {
-                $0.t.timeIntervalSince1970 >= cutoff
-            },
-            gravitySamples: cache.gravitySamples.filter { $0.timestamp >= cutoff },
-            motionRecordIdentities: Set(cache.motionRecordIdentities.filter {
-                $0.projectedTimestamp >= cutoff
-            }),
+            skinTemperatureRawPoints: skin,
+            gravitySamples: gravity,
+            motionRecordIdentities: motion,
             truncatedChannels: cache.truncatedChannels
+        )
+    }
+
+    @discardableResult
+    private static func replaceRecoveredDataCacheWhileLocked(
+        with cache: RecoveredDataCache?
+    ) -> RecoveredDataCacheInstallOwnership? {
+        recoveredDataCacheMutationGeneration &+= 1
+        recoveredDataCache = cache
+        guard cache != nil else {
+            recoveredDataCacheInstallOwnership = nil
+            return nil
+        }
+        let ownership = RecoveredDataCacheInstallOwnership(
+            generation: recoveredDataCacheMutationGeneration,
+            authorityTag: UUID()
+        )
+        recoveredDataCacheInstallOwnership = ownership
+        return ownership
+    }
+
+    private static func rollbackRecoveredDataCacheInstallWhileLocked(
+        ownedBy ownership: RecoveredDataCacheInstallOwnership
+    ) {
+        guard recoveredDataCacheInstallOwnership == ownership else { return }
+        _ = replaceRecoveredDataCacheWhileLocked(with: nil)
+    }
+
+    /// Used by ordinary projection, whose planner intentionally holds the cache
+    /// lock from source planning through publication. The post-assignment
+    /// authority check is paired with ownership-scoped rollback; returning false
+    /// can therefore never leave this revoked image reusable.
+    private static func installRecoveredDataCacheWhileLocked(
+        _ cache: RecoveredDataCache,
+        shouldContinue: () -> Bool,
+        onInstalled: () -> Void
+    ) -> Bool {
+        guard shouldContinue(),
+              let ownership = replaceRecoveredDataCacheWhileLocked(with: cache)
+        else { return false }
+        onInstalled()
+        guard recoveredDataCacheInstallOwnership == ownership,
+              shouldContinue() else {
+            rollbackRecoveredDataCacheInstallWhileLocked(ownedBy: ownership)
+            return false
+        }
+        return true
+    }
+
+    /// Bootstrap does not own the ordinary planner's long-lived lock, so hold
+    /// the cache lock across assignment, test seam, footprint edge, and final
+    /// authority validation. No concurrent consumer can derive a snapshot from
+    /// a provisional image that this exact owner is about to roll back.
+    private static func installRecoveredDataCacheAtomically(
+        _ cache: RecoveredDataCache,
+        shouldContinue: () -> Bool,
+        onInstalled: () -> Void
+    ) -> Bool {
+        recoveredDataCacheLock.lock()
+        defer { recoveredDataCacheLock.unlock() }
+        return installRecoveredDataCacheWhileLocked(
+            cache,
+            shouldContinue: shouldContinue,
+            onInstalled: onInstalled
         )
     }
 
@@ -5325,18 +6677,18 @@ enum HistoricalArchive {
     /// as the regression tripwire afterward.
     private static func recordRetainedCacheFootprint(
         _ cache: RecoveredDataCache,
-        plan: String
+        plan: String,
+        shouldContinue: () -> Bool
     ) {
-        let strapIdMaxLen = cache.skinTemperatureRawPoints
-            .map { $0.strapIdentifier?.utf8.count ?? 0 }.max() ?? 0
+        guard shouldContinue() else { return }
         let line = "plan=\(plan) hr=\(cache.heartRatePoints.count)"
             + " rrRecords=\(cache.rrAccumulator.acceptedRecordCount)"
             + " skin=\(cache.skinTemperatureRawPoints.count)"
             + " grav=\(cache.gravitySamples.count)"
             + " motionIDs=\(cache.motionRecordIdentities.count)"
-            + " strapIdMaxLen=\(strapIdMaxLen)"
             + " physMB=\(currentPhysFootprintBytes() / (1024 * 1024))"
             + " at=\(Int(Date().timeIntervalSince1970))"
+        guard shouldContinue() else { return }
         UserDefaults.standard.set(
             line, forKey: "atria.debug.recoveredCacheFootprint.v1"
         )
@@ -5430,8 +6782,14 @@ enum HistoricalArchive {
         from cache: RecoveredDataCache,
         scan: RecoveredArchiveScanDiagnostics,
         limitations: [RecoveredDataCompleteness.Channel: Int],
-        includesCompleteScannerImage: Bool = false
-    ) -> RecoveredDataSnapshot {
+        includesCompleteScannerImage: Bool = false,
+        shouldContinue: () -> Bool = { true }
+    ) -> RecoveredDataSnapshot? {
+        guard shouldContinue(),
+              let rrProjection = cache.rrAccumulator.finish(
+                shouldContinue: shouldContinue
+              ),
+              shouldContinue() else { return nil }
         let orderedLimitations = recoveredBudgetChannelOrder.compactMap { channel in
             limitations[channel].map {
                 RecoveredDataBudgetLimitation(channel: channel, limit: $0)
@@ -5441,8 +6799,9 @@ enum HistoricalArchive {
             limitations: limitations,
             channels: [.gravity, .motionReplayIdentity]
         )
+        guard shouldContinue() else { return nil }
         return .init(heartRatePoints: cache.heartRatePoints,
-                     rrProjection: cache.rrAccumulator.finish(),
+                     rrProjection: rrProjection,
                      skinTemperatureRawPoints: cache.skinTemperatureRawPoints,
                      motion: .init(samples: cache.gravitySamples,
                                    completeness: motionCompleteness),
@@ -5474,7 +6833,8 @@ enum HistoricalArchive {
         from cache: RecoveredDataCache,
         limitations: [RecoveredDataCompleteness.Channel: Int]
     ) -> AutomaticRecoveredDataCacheAuthority? {
-        guard cache.budget == .production,
+        guard (cache.budget == .production
+                || cache.budget == .automaticForeground),
               cache.coveredSince.isFinite,
               limitations.isEmpty,
               cache.truncatedChannels.isEmpty,
@@ -5551,9 +6911,12 @@ enum HistoricalArchive {
                                   motionRecordIdentities: &motionRecordIdentities,
                                   strapIdentifierIntern: &strapIdentifierIntern)
         }
-        sortRecoveredData(heartRate: &heartRate,
-                          skinTemperatureRawPoints: &skinTemperatureRawPoints,
-                          gravity: &gravity)
+        _ = sortRecoveredData(
+            heartRate: &heartRate,
+            skinTemperatureRawPoints: &skinTemperatureRawPoints,
+            gravity: &gravity,
+            shouldContinue: { true }
+        )
         let cache = RecoveredDataCache(coveredSince: cutoff,
                                        budget: budget,
                                        fileStates: [:],
@@ -5570,7 +6933,7 @@ enum HistoricalArchive {
                         decodedRecordCount: records.count,
                         elapsedMilliseconds: 0),
             limitations: limitations
-        )
+        )!
     }
 
 #if DEBUG
@@ -6345,8 +7708,11 @@ enum HistoricalArchive {
     }
 
     private static func scanDiagnosticsIndex(for url: URL,
-                                             attributes: (byteCount: Int, modificationTime: TimeInterval)) -> DiagnosticsIndex? {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+                                             attributes: (byteCount: Int, modificationTime: TimeInterval),
+                                             shouldContinue: () -> Bool) -> DiagnosticsIndex? {
+        guard shouldContinue(),
+              let content = try? String(contentsOf: url, encoding: .utf8),
+              shouldContinue() else { return nil }
         var index = DiagnosticsIndex(fileSize: attributes.byteCount,
                                      modificationTime: attributes.modificationTime,
                                      rows: 0,
@@ -6362,7 +7728,11 @@ enum HistoricalArchive {
                                      correctedUnixLast: nil,
                                      gravityRows: 0,
                                      gravityValidatedRows: 0)
-        for rawLine in content.split(whereSeparator: \.isNewline) {
+        for (lineOffset, rawLine) in content
+            .split(whereSeparator: \.isNewline).enumerated() {
+            if lineOffset.isMultiple(of: 128), !shouldContinue() {
+                return nil
+            }
             let line = String(rawLine).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty else { continue }
             guard let data = line.data(using: .utf8),
@@ -6371,28 +7741,32 @@ enum HistoricalArchive {
             }
             append(object: object, to: &index)
         }
-        return index
+        return shouldContinue() ? index : nil
     }
 
     private static func aggregateDiagnosticsIndex(base: DiagnosticsIndex,
-                                                  segments: [DiagnosticsIndex]) -> DiagnosticsIndex {
-        segments.reduce(base) { partial, segment in
-            DiagnosticsIndex(fileSize: partial.fileSize + segment.fileSize,
-                             modificationTime: max(partial.modificationTime, segment.modificationTime),
-                             rows: partial.rows + segment.rows,
-                             schemas: sortedUnion(partial.schemas, segment.schemas),
-                             layoutVersions: sortedUnion(partial.layoutVersions, segment.layoutVersions),
-                             metricUsableRows: partial.metricUsableRows + segment.metricUsableRows,
-                             currentSessionUsableRows: partial.currentSessionUsableRows + segment.currentSessionUsableRows,
-                             undecodableRows: partial.undecodableRows + segment.undecodableRows,
-                             rawPayloadRows: partial.rawPayloadRows + segment.rawPayloadRows,
-                             unixFirst: minOptional(partial.unixFirst, segment.unixFirst),
-                             unixLast: maxOptional(partial.unixLast, segment.unixLast),
-                             correctedUnixFirst: minOptional(partial.correctedUnixFirst, segment.correctedUnixFirst),
-                             correctedUnixLast: maxOptional(partial.correctedUnixLast, segment.correctedUnixLast),
-                             gravityRows: partial.gravityRows + segment.gravityRows,
-                             gravityValidatedRows: partial.gravityValidatedRows + segment.gravityValidatedRows)
+                                                  segments: [DiagnosticsIndex],
+                                                  shouldContinue: () -> Bool) -> DiagnosticsIndex? {
+        var aggregate = base
+        for (index, segment) in segments.enumerated() {
+            if index.isMultiple(of: 16), !shouldContinue() { return nil }
+            aggregate = DiagnosticsIndex(fileSize: aggregate.fileSize + segment.fileSize,
+                             modificationTime: max(aggregate.modificationTime, segment.modificationTime),
+                             rows: aggregate.rows + segment.rows,
+                             schemas: sortedUnion(aggregate.schemas, segment.schemas),
+                             layoutVersions: sortedUnion(aggregate.layoutVersions, segment.layoutVersions),
+                             metricUsableRows: aggregate.metricUsableRows + segment.metricUsableRows,
+                             currentSessionUsableRows: aggregate.currentSessionUsableRows + segment.currentSessionUsableRows,
+                             undecodableRows: aggregate.undecodableRows + segment.undecodableRows,
+                             rawPayloadRows: aggregate.rawPayloadRows + segment.rawPayloadRows,
+                             unixFirst: minOptional(aggregate.unixFirst, segment.unixFirst),
+                             unixLast: maxOptional(aggregate.unixLast, segment.unixLast),
+                             correctedUnixFirst: minOptional(aggregate.correctedUnixFirst, segment.correctedUnixFirst),
+                             correctedUnixLast: maxOptional(aggregate.correctedUnixLast, segment.correctedUnixLast),
+                             gravityRows: aggregate.gravityRows + segment.gravityRows,
+                             gravityValidatedRows: aggregate.gravityValidatedRows + segment.gravityValidatedRows)
         }
+        return shouldContinue() ? aggregate : nil
     }
 
     private static func diagnostics(from index: DiagnosticsIndex, reason: String) -> Diagnostics {
@@ -6867,8 +8241,35 @@ enum HistoricalArchive {
 #if DEBUG
     static func resetRecoveredDataCacheForTesting() {
         recoveredDataCacheLock.lock()
-        recoveredDataCache = nil
+        _ = replaceRecoveredDataCacheWhileLocked(with: nil)
         recoveredDataCacheLock.unlock()
+    }
+
+    /// Deterministic ownership race: a stale installer is superseded before
+    /// its unwind reaches rollback. The production rollback helper must leave
+    /// the newer generation/tag (and therefore its cache image) untouched.
+    static func staleRecoveredDataCacheRollbackPreservesReplacementForTesting()
+        -> Bool {
+        recoveredDataCacheLock.lock()
+        defer { recoveredDataCacheLock.unlock() }
+        guard let cache = recoveredDataCache,
+              let staleOwnership = replaceRecoveredDataCacheWhileLocked(
+                with: cache
+              ),
+              let replacementOwnership = replaceRecoveredDataCacheWhileLocked(
+                with: cache
+              ) else { return false }
+        rollbackRecoveredDataCacheInstallWhileLocked(
+            ownedBy: staleOwnership
+        )
+        return recoveredDataCache != nil
+            && recoveredDataCacheInstallOwnership == replacementOwnership
+    }
+
+    static var recoveredDataCacheIsInstalledForTesting: Bool {
+        recoveredDataCacheLock.lock()
+        defer { recoveredDataCacheLock.unlock() }
+        return recoveredDataCache != nil
     }
 
     static func resetRecentGravityCacheForTesting() {
@@ -6879,7 +8280,7 @@ enum HistoricalArchive {
         recentGravityCacheLock.unlock()
 
         recoveredDataCacheLock.lock()
-        recoveredDataCache = nil
+        _ = replaceRecoveredDataCacheWhileLocked(with: nil)
         recoveredDataCacheLock.unlock()
 
         // Fixture tests temporarily move the entire archive directory. Any
