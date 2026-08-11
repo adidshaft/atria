@@ -17698,7 +17698,7 @@ final class SessionStore: ObservableObject {
                 forName: ActiveSessionJournal
                     .didWarmSleepReviewCacheNotification,
                 object: nil,
-                queue: .main
+                queue: nil
             ) { [weak self] notification in
                 guard let event = notification.object
                     as? ActiveSessionJournal.SleepReviewCacheWarmEvent else {

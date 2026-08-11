@@ -1905,6 +1905,19 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         let warmPost = try XCTUnwrap(journalLoad.range(of:
             "didWarmSleepReviewCacheNotification"))
         XCTAssertLessThan(journalUnlock.lowerBound, warmPost.lowerBound)
+        let warmObserverStart = try XCTUnwrap(sessions.range(of:
+            "self.activeJournalSleepReviewCacheWarmObserver ="))
+        let warmObserverEnd = try XCTUnwrap(sessions.range(of:
+            "let documentsDirectory =",
+            range: warmObserverStart.upperBound..<sessions.endIndex))
+        let warmObserver = sessions[
+            warmObserverStart.lowerBound..<warmObserverEnd.lowerBound
+        ]
+        XCTAssertTrue(warmObserver.contains("queue: nil"),
+                      "A journal load must not synchronously wait for MainActor notification delivery")
+        XCTAssertFalse(warmObserver.contains("queue: .main"))
+        XCTAssertTrue(warmObserver.contains("Task { @MainActor in"),
+                      "SessionStore mutation must still hop to MainActor")
         let restoreBlockStart = try XCTUnwrap(sessions.range(of:
             "private func enterRetainedRestoreMarkerBlock()"))
         let restoreBlockEnd = try XCTUnwrap(sessions.range(of:
