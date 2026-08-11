@@ -183,6 +183,73 @@ struct AtriaBLEForegroundGlanceCheckpointRetryGate: Sendable {
     }
 }
 
+/// Process-local admission for the durable interrupted-drain authority probe.
+/// Accepted HR arrives at roughly one hertz, but the authority is a canonical,
+/// fully validated recovery record rather than live telemetry. Probe it once
+/// per callback epoch, coalesce while that read is in flight, and only retry a
+/// failed read after a bounded cooldown. A new callback epoch is always allowed
+/// to supersede an older in-flight or completed probe.
+struct AtriaBLEPersistedDrainAuthorityProbeGate: Sendable {
+    private(set) var inFlightEpoch: UInt64?
+    private(set) var completedEpoch: UInt64?
+    private(set) var retryEpoch: UInt64?
+    private(set) var retryNotBefore: Date?
+
+    mutating func begin(
+        epoch: UInt64,
+        now: Date,
+        eligible: Bool
+    ) -> Bool {
+        guard eligible,
+              completedEpoch != epoch,
+              inFlightEpoch != epoch else { return false }
+        if retryEpoch == epoch,
+           let retryNotBefore,
+           now < retryNotBefore {
+            return false
+        }
+        inFlightEpoch = epoch
+        if retryEpoch != epoch {
+            retryEpoch = nil
+            retryNotBefore = nil
+        }
+        return true
+    }
+
+    mutating func finish(
+        epoch: UInt64,
+        succeeded: Bool,
+        now: Date,
+        retryDelay: TimeInterval
+    ) {
+        guard inFlightEpoch == epoch else { return }
+        inFlightEpoch = nil
+        if succeeded {
+            completedEpoch = epoch
+            retryEpoch = nil
+            retryNotBefore = nil
+        } else {
+            retryEpoch = epoch
+            retryNotBefore = now.addingTimeInterval(max(0, retryDelay))
+        }
+    }
+
+    mutating func abandon(epoch: UInt64) {
+        guard inFlightEpoch == epoch else { return }
+        inFlightEpoch = nil
+    }
+}
+
+private enum AtriaBLEPersistedDrainAuthorityProbeResult: Sendable {
+    case loaded(AtriaHistoricalFullDrainCoverageStore.Authority?)
+    case failed(String)
+}
+
+private enum AtriaBLEPersistedDrainAuthorityReleaseResult: Sendable {
+    case released(Bool)
+    case failed(String)
+}
+
 /// A bounded, process-local scheduling claim for an exact motion-bank ticket
 /// whose first transport admission reached the archive-warm gate. This never
 /// authorizes BLE history: warm-ready must re-enter the typed ticket selector,
@@ -1861,6 +1928,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// This is intentionally state-change-only (not per-HR) so field
     /// diagnostics can identify a parked recovery without growing storage.
     private var lastPersistedDrainRearmDiagnostic = ""
+    private var persistedDrainAuthorityProbeGate =
+        AtriaBLEPersistedDrainAuthorityProbeGate()
+    private var persistedDrainAuthorityProbeTask: Task<Void, Never>?
+    private var persistedDrainAuthorityProbeGeneration: UInt64 = 0
+    private var lastPersistedDrainAuthorityStatus = "unprobed"
+    private static let persistedDrainAuthorityProbeRetryDelay: TimeInterval = 60
+    /// Invalidates post-I/O cleanup whenever another request or range-loss
+    /// task is admitted while the exact-ID release is off MainActor. Property
+    /// observers cover every assignment without coupling unrelated call sites
+    /// to the persisted-drain probe implementation.
+    private var persistedDrainRecoveryMutationGeneration: UInt64 = 0
     /// Historical replay temporarily owns the proprietary command pipeline, but
     /// it must not change the user's radio choice when that replay finishes.
     /// In particular, changing profiles here tears down the live R10 transport
@@ -1900,12 +1978,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
     private var pendingOfflineHistoricalSyncRequest:
-        PendingOfflineHistoricalSyncRequest?
+        PendingOfflineHistoricalSyncRequest? {
+        didSet { persistedDrainRecoveryMutationGeneration &+= 1 }
+    }
     /// Process-only association used only to retire a motion-only scheduling
     /// tuple after this same exact ticket atomically publishes a generation.
     /// It is not transport authority and is cleared whenever the tuple is
     /// consumed or replaced by unrelated scheduling state.
-    private var pendingConnectedMotionBankSchedulingTicketID: String?
+    private var pendingConnectedMotionBankSchedulingTicketID: String? {
+        didSet { persistedDrainRecoveryMutationGeneration &+= 1 }
+    }
     /// MainActor-scoped authorization for the request currently passing
     /// through admission. Every deferral uses the shared retain helper, so
     /// this preserves a bank ticket across early-return gates without giving
@@ -2007,7 +2089,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     // still falls back to the slow cadence and never churns the link.
     private let rangeLossBackfillProgressChainInterval: TimeInterval = 8
     private let rangeLossBackfillArmedTimeout: TimeInterval = 180
-    private var rangeLossBackfillTask: Task<Void, Never>?
+    private var rangeLossBackfillTask: Task<Void, Never>? {
+        didSet { persistedDrainRecoveryMutationGeneration &+= 1 }
+    }
     // Drain-keeping P3 (HR-independent re-arm safety net): the background drain
     // re-arm rides on accepted-HR (2A37) callbacks (and Task.sleep timers that
     // only advance when iOS wakes the app — for a BLE app that wake is largely
@@ -8972,16 +9056,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// stable-live window and persisted five-minute cooldown remain the sole
     /// path to a new history owner.
     private func rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(
-        reason: String
+        reason: String,
+        callbackSource: AtriaBLECallbackEpochFence.Source
     ) {
-        let linkLive = peripheral?.state == .connected && status == .connected
+        let currentPeripheral = peripheral
+        let currentConnectedAt = connectedAt
+        let exactConnection = currentPeripheral?.identifier
+            == callbackSource.peripheralID
+            && currentPeripheral.map(ObjectIdentifier.init)
+                == callbackSource.peripheralObjectID
+            && currentConnectedAt != nil
+        let linkLive = currentPeripheral?.state == .connected
+            && status == .connected
         let freshLiveSample: Bool = {
-            guard let connectedAt, let lastAcceptedHRAt else { return false }
-            return lastAcceptedHRAt >= connectedAt
+            guard let currentConnectedAt, let lastAcceptedHRAt else {
+                return false
+            }
+            return lastAcceptedHRAt >= currentConnectedAt
         }()
         let workoutActive = AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
-        let authority = try? historicalFullDrainCoverageStore.load()
-        let authorityStatus = authority?.status.rawValue ?? "none"
+        let authorityStatus = lastPersistedDrainAuthorityStatus
         let diagnostic = "link=\(linkLive ? 1 : 0) fresh=\(freshLiveSample ? 1 : 0) workout=\(workoutActive ? 1 : 0) sync=\(offlineHistoricalSyncInProgress ? 1 : 0) materializing=\(historicalConsumerMaterializationInFlight ? 1 : 0) authority=\(authorityStatus) defer=\(deferInterruptedFullDrainForCurrentLiveConnection ? 1 : 0)"
         if diagnostic != lastPersistedDrainRearmDiagnostic {
             lastPersistedDrainRearmDiagnostic = diagnostic
@@ -8989,14 +9083,177 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                       forKey: "atria.offlineSync.persistedDrainRearmDiagnostic")
             AtriaDebugLog("ATRIADBG offline_sync persisted_drain_rearm %@", diagnostic)
         }
-        guard linkLive,
-              freshLiveSample,
-              !workoutActive,
-              !offlineHistoricalSyncInProgress,
-              !historicalConsumerMaterializationInFlight,
-              !freshHistoryOwnerBoundaryFailureLatched,
-              let connectedAt,
-              let authority else { return }
+        let eligible = linkLive
+            && freshLiveSample
+            && !workoutActive
+            && !offlineHistoricalSyncInProgress
+            && !historicalConsumerMaterializationInFlight
+            && !freshHistoryOwnerBoundaryFailureLatched
+            && exactConnection
+            && bleCallbackEpochFence.owns(source: callbackSource)
+        let now = Date()
+        guard persistedDrainAuthorityProbeGate.begin(
+            epoch: callbackSource.epoch,
+            now: now,
+            eligible: eligible
+        ) else { return }
+
+        persistedDrainAuthorityProbeGeneration &+= 1
+        let probeGeneration = persistedDrainAuthorityProbeGeneration
+        guard let probeConnectedAt = currentConnectedAt else {
+            persistedDrainAuthorityProbeGate.abandon(
+                epoch: callbackSource.epoch
+            )
+            return
+        }
+        persistedDrainAuthorityProbeTask?.cancel()
+        let coverageStore = historicalFullDrainCoverageStore
+        persistedDrainAuthorityProbeTask = Task { @MainActor [weak self] in
+            let loaded = await Task.detached(priority: .utility) {
+                do {
+                    return AtriaBLEPersistedDrainAuthorityProbeResult.loaded(
+                        try coverageStore.load()
+                    )
+                } catch {
+                    return .failed(String(describing: error))
+                }
+            }.value
+
+            guard let self,
+                  probeGeneration == self.persistedDrainAuthorityProbeGeneration else {
+                return
+            }
+            self.persistedDrainAuthorityProbeTask = nil
+            guard !Task.isCancelled,
+                  self.persistedDrainProbeContextIsCurrent(
+                      callbackSource: callbackSource,
+                      connectedAt: probeConnectedAt
+                  ),
+                  self.persistedDrainRearmIsEligibleForCurrentConnection(
+                      callbackSource: callbackSource,
+                      connectedAt: probeConnectedAt
+                  ) else {
+                self.persistedDrainAuthorityProbeGate.abandon(
+                    epoch: callbackSource.epoch
+                )
+                return
+            }
+
+            switch loaded {
+            case .loaded(let authority):
+                self.lastPersistedDrainAuthorityStatus =
+                    authority?.status.rawValue ?? "none"
+                let handled = await self.applyPersistedInterruptedFullDrainAuthority(
+                    authority,
+                    reason: reason,
+                    callbackSource: callbackSource,
+                    connectedAt: probeConnectedAt,
+                    probeGeneration: probeGeneration
+                )
+                self.persistedDrainAuthorityProbeGate.finish(
+                    epoch: callbackSource.epoch,
+                    succeeded: handled,
+                    now: Date(),
+                    retryDelay: Self.persistedDrainAuthorityProbeRetryDelay
+                )
+            case .failed(let detail):
+                self.persistedDrainAuthorityProbeGate.finish(
+                    epoch: callbackSource.epoch,
+                    succeeded: false,
+                    now: Date(),
+                    retryDelay: Self.persistedDrainAuthorityProbeRetryDelay
+                )
+                AtriaDebugLog(
+                    "ATRIADBG offline_sync status=persisted_drain_probe_failed reason=%@ error=%@ action=retry_off_main_after_cooldown",
+                    reason,
+                    detail
+                )
+            }
+        }
+    }
+
+    private func persistedDrainProbeContextIsCurrent(
+        callbackSource: AtriaBLECallbackEpochFence.Source,
+        connectedAt probeConnectedAt: Date
+    ) -> Bool {
+        guard let currentPeripheral = peripheral else { return false }
+        return bleCallbackEpochFence.owns(source: callbackSource)
+            && currentPeripheral.identifier == callbackSource.peripheralID
+            && ObjectIdentifier(currentPeripheral)
+                == callbackSource.peripheralObjectID
+            && connectedAt == probeConnectedAt
+    }
+
+    private func persistedDrainRearmIsEligibleForCurrentConnection(
+        callbackSource: AtriaBLECallbackEpochFence.Source,
+        connectedAt probeConnectedAt: Date
+    ) -> Bool {
+        guard persistedDrainProbeContextIsCurrent(
+                  callbackSource: callbackSource,
+                  connectedAt: probeConnectedAt
+              ),
+              peripheral?.state == .connected,
+              status == .connected,
+              let lastAcceptedHRAt,
+              lastAcceptedHRAt >= probeConnectedAt else { return false }
+        return !AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
+            && !offlineHistoricalSyncInProgress
+            && !historicalConsumerMaterializationInFlight
+            && !freshHistoryOwnerBoundaryFailureLatched
+    }
+
+    @discardableResult
+    private func applyPersistedInterruptedFullDrainAuthority(
+        _ authority: AtriaHistoricalFullDrainCoverageStore.Authority?,
+        reason: String,
+        callbackSource: AtriaBLECallbackEpochFence.Source,
+        connectedAt probeConnectedAt: Date,
+        probeGeneration: UInt64
+    ) async -> Bool {
+        guard probeGeneration == persistedDrainAuthorityProbeGeneration,
+              persistedDrainProbeContextIsCurrent(
+                  callbackSource: callbackSource,
+                  connectedAt: probeConnectedAt
+              ) else { return false }
+        let authorityStatus = authority?.status.rawValue ?? "none"
+        let diagnostic = "link=1 fresh=1 workout=0 sync=0 materializing=0 authority=\(authorityStatus) defer=\(deferInterruptedFullDrainForCurrentLiveConnection ? 1 : 0)"
+        if diagnostic != lastPersistedDrainRearmDiagnostic {
+            lastPersistedDrainRearmDiagnostic = diagnostic
+            UserDefaults.standard.set(
+                diagnostic,
+                forKey: "atria.offlineSync.persistedDrainRearmDiagnostic"
+            )
+            AtriaDebugLog("ATRIADBG offline_sync persisted_drain_rearm %@", diagnostic)
+        }
+        if interruptedFullDrainReacquisitionPendingAfterTransportLoss,
+           authority?.status != .draining {
+            // A terminal or absent authority can never reacquire BLE. Fold the
+            // old accepted-HR transport-loss probe into this one off-main
+            // result so the hot path has no second canonical store load.
+            interruptedFullDrainReacquisitionPendingAfterTransportLoss = false
+        }
+        guard let authority else { return true }
+
+        if interruptedFullDrainReacquisitionPendingAfterTransportLoss,
+           authority.status == .draining {
+            interruptedFullDrainReacquisitionPendingAfterTransportLoss = false
+            if persistedDrainResumeAllowed {
+                deferInterruptedFullDrainForCurrentLiveConnection = true
+                AtriaDebugLog(
+                    "ATRIADBG offline_sync status=interrupted_full_drain_live_recovery_armed reason=%@ authority=%@ action=wait_stable_live_then_reacquire_existing_gap_once",
+                    reason,
+                    authority.authorityIdentifier
+                )
+                scheduleInterruptedFullDrainReacquisitionIfNeeded(
+                    reason: "interrupted_full_drain_transport_loss"
+                )
+                return true
+            }
+            logPersistedDrainResumePaused(
+                reason: reason,
+                action: "no_live_connection_claim_range_loss_lane_free"
+            )
+        }
 
         // The coverage authority is fsynced alongside every accepted history
         // boundary and is the ownership record being resumed.  A compacted or
@@ -9013,7 +9270,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             activeExplicitWorkout: AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
             historySyncInProgress: offlineHistoricalSyncInProgress,
             consumerMaterializationInFlight: historicalConsumerMaterializationInFlight
-        ) else { return }
+        ) else { return true }
 
         // Live-first ordering: history recovery must never seize a link that
         // is still proving itself. The hold is no longer unconditional —
@@ -9025,7 +9282,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // accepted-HR batch was the freeze that kept a durable `.draining`
         // authority held forever (observed stable_s=600 with no action).
         let now = Date()
-        let stableSeconds = now.timeIntervalSince(connectedAt)
+        let stableSeconds = now.timeIntervalSince(probeConnectedAt)
         // Only claim this connection for a persisted drain if that drain can
         // actually run. While the resume lane is paused nothing will ever
         // consume the claim, and the flag would otherwise latch on every
@@ -9034,11 +9291,43 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // `scheduleRangeLossBackfillIfNeeded` and
         // `attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded`.
         guard persistedDrainResumeAllowed else {
-            do {
-                let released = try historicalFullDrainCoverageStore
-                    .releaseInterruptedDrainingAuthorityWhenResumeDisabled(
-                        authorityIdentifier: authority.authorityIdentifier
+            guard probeGeneration == persistedDrainAuthorityProbeGeneration,
+                  persistedDrainProbeContextIsCurrent(
+                      callbackSource: callbackSource,
+                      connectedAt: probeConnectedAt
+                  ) else { return false }
+            let coverageStore = historicalFullDrainCoverageStore
+            let authorityIdentifier = authority.authorityIdentifier
+            let recoveryMutationGeneration =
+                persistedDrainRecoveryMutationGeneration
+            let releaseResult = await Task.detached(priority: .utility) {
+                do {
+                    return AtriaBLEPersistedDrainAuthorityReleaseResult.released(
+                        try coverageStore
+                            .releaseInterruptedDrainingAuthorityWhenResumeDisabled(
+                                authorityIdentifier: authorityIdentifier
+                            )
                     )
+                } catch {
+                    return .failed(String(describing: error))
+                }
+            }.value
+            guard probeGeneration == persistedDrainAuthorityProbeGeneration,
+                  persistedDrainProbeContextIsCurrent(
+                      callbackSource: callbackSource,
+                      connectedAt: probeConnectedAt
+                  ),
+                  persistedDrainRearmIsEligibleForCurrentConnection(
+                      callbackSource: callbackSource,
+                      connectedAt: probeConnectedAt
+                  ),
+                  !persistedDrainResumeAllowed,
+                  persistedDrainRecoveryMutationGeneration
+                    == recoveryMutationGeneration else {
+                return false
+            }
+            switch releaseResult {
+            case .released(let released):
                 logPersistedDrainResumePaused(
                     reason: reason,
                     action: released
@@ -9078,15 +9367,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         )
                     }
                 }
-            } catch {
+            case .failed(let detail):
                 AtriaDebugLog(
                     "ATRIADBG offline_sync status=interrupted_authority_release_failed reason=%@ authority=%@ error=%@ action=retain_fail_closed",
                     reason,
-                    authority.authorityIdentifier,
-                    String(describing: error)
+                    authorityIdentifier,
+                    detail
                 )
+                return false
             }
-            return
+            return true
         }
         deferInterruptedFullDrainForCurrentLiveConnection = true
         if interruptedFullDrainReacquisitionTask == nil {
@@ -9101,50 +9391,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         scheduleInterruptedFullDrainReacquisitionIfNeeded(
             reason: "persisted_drain_stable_live_\(reason)"
         )
-    }
-
-    /// The launch path already turns a persisted `.draining` authority into a
-    /// deferred live-first handoff. A physical transport loss in the *same*
-    /// process needs the identical bridge; otherwise the exact authority is
-    /// retained safely but can wait behind generic range-loss policy forever.
-    /// This method issues no BLE command. It only arms the existing cooldown-
-    /// gated reacquirer after a fresh accepted HR proves this connection live.
-    private func resumeInterruptedFullDrainAfterTransportLossIfNeeded(
-        reason: String
-    ) {
-        guard interruptedFullDrainReacquisitionPendingAfterTransportLoss,
-              !offlineHistoricalSyncInProgress,
-              !AtriaPendingWorkoutIntent.isActiveForBLEContinuity(),
-              !historicalConsumerMaterializationInFlight,
-              peripheral?.state == .connected,
-              status == .connected,
-              let connectedAt,
-              let lastAcceptedHRAt,
-              lastAcceptedHRAt >= connectedAt else { return }
-
-        guard let authority = try? historicalFullDrainCoverageStore.load(),
-              authority.status == .draining else {
-            // A terminal authority is never permitted to reacquire BLE. The
-            // durable publication path owns it from here.
-            interruptedFullDrainReacquisitionPendingAfterTransportLoss = false
-            return
-        }
-
-        interruptedFullDrainReacquisitionPendingAfterTransportLoss = false
-        guard persistedDrainResumeAllowed else {
-            logPersistedDrainResumePaused(
-                reason: reason,
-                action: "no_live_connection_claim_range_loss_lane_free"
-            )
-            return
-        }
-        deferInterruptedFullDrainForCurrentLiveConnection = true
-        AtriaDebugLog("ATRIADBG offline_sync status=interrupted_full_drain_live_recovery_armed reason=%@ authority=%@ action=wait_stable_live_then_reacquire_existing_gap_once",
-                      reason,
-                      authority.authorityIdentifier)
-        scheduleInterruptedFullDrainReacquisitionIfNeeded(
-            reason: "interrupted_full_drain_transport_loss"
-        )
+        return true
     }
 
     /// A full-drain authority is a durable transport transaction, not merely a
@@ -24234,12 +24481,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 resumePendingForcedHistoricalSyncAfterLivePersistenceIfNeeded(
                     reason: "accepted_hr"
                 )
-                rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(
-                    reason: "accepted_hr"
-                )
-                resumeInterruptedFullDrainAfterTransportLossIfNeeded(
-                    reason: "accepted_hr"
-                )
+                if let callbackSource {
+                    rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(
+                        reason: "accepted_hr",
+                        callbackSource: callbackSource
+                    )
+                }
                 attemptQualifiedRangeLossBackfillAfterAcceptedHRIfNeeded(
                     now: sampleTime
                 )
@@ -24325,10 +24572,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 reason: "accepted_hr_batch"
             )
             rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(
-                reason: "accepted_hr_batch"
-            )
-            resumeInterruptedFullDrainAfterTransportLossIfNeeded(
-                reason: "accepted_hr_batch"
+                reason: "accepted_hr_batch",
+                callbackSource: callbackSource
             )
         }
     }

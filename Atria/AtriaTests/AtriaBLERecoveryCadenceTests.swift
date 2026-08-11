@@ -5012,7 +5012,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             of: "private func rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded"
         ))
         let end = try XCTUnwrap(source.range(
-            of: "/// The launch path already turns a persisted `.draining` authority",
+            of: "/// A full-drain authority is a durable transport transaction",
             range: start.upperBound..<source.endIndex
         ))
         let body = String(source[start.lowerBound..<end.lowerBound])
@@ -5058,6 +5058,210 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         XCTAssertTrue(batch[batchRearm.lowerBound...].contains(
             "reason: \"accepted_hr_batch\""
+        ))
+    }
+
+    func testPersistedDrainAuthorityProbeIsBlockedCoalescedAndOncePerEpoch() {
+        var gate = AtriaBLEPersistedDrainAuthorityProbeGate()
+        let now = Date(timeIntervalSince1970: 1_000)
+        var admittedLoads = 0
+
+        for _ in 0..<1_000 {
+            if gate.begin(epoch: 41, now: now, eligible: false) {
+                admittedLoads += 1
+            }
+        }
+        XCTAssertEqual(admittedLoads, 0,
+                       "a cheap volatile blocker must prevent every authority load")
+
+        for _ in 0..<1_000 {
+            if gate.begin(epoch: 41, now: now, eligible: true) {
+                admittedLoads += 1
+            }
+        }
+        XCTAssertEqual(admittedLoads, 1,
+                       "one live callback epoch owns one coalesced authority probe")
+        XCTAssertEqual(gate.inFlightEpoch, 41)
+
+        gate.finish(
+            epoch: 41,
+            succeeded: true,
+            now: now,
+            retryDelay: 60
+        )
+        XCTAssertEqual(gate.completedEpoch, 41)
+        XCTAssertFalse(gate.begin(epoch: 41, now: now, eligible: true))
+        XCTAssertTrue(gate.begin(epoch: 42, now: now, eligible: true),
+                      "a replacement callback epoch must not inherit the old completion")
+    }
+
+    func testPersistedDrainAuthorityProbeFailureUsesBoundedRetryCooldown() {
+        var gate = AtriaBLEPersistedDrainAuthorityProbeGate()
+        let now = Date(timeIntervalSince1970: 2_000)
+
+        XCTAssertTrue(gate.begin(epoch: 7, now: now, eligible: true))
+        gate.finish(
+            epoch: 7,
+            succeeded: false,
+            now: now,
+            retryDelay: 60
+        )
+        XCTAssertFalse(gate.begin(
+            epoch: 7,
+            now: now.addingTimeInterval(59.999),
+            eligible: true
+        ))
+        XCTAssertTrue(gate.begin(
+            epoch: 7,
+            now: now.addingTimeInterval(60),
+            eligible: true
+        ))
+
+        // A stale completion cannot consume the newer epoch's in-flight claim.
+        XCTAssertTrue(gate.begin(epoch: 8, now: now, eligible: true))
+        gate.finish(
+            epoch: 7,
+            succeeded: true,
+            now: now,
+            retryDelay: 60
+        )
+        XCTAssertEqual(gate.inFlightEpoch, 8)
+        XCTAssertNotEqual(gate.completedEpoch, 7)
+    }
+
+    func testPersistedDrainAuthorityLoadIsOffMainAndAfterCheapGuards() throws {
+        let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(
+            of: "private func rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded("
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func persistedDrainProbeContextIsCurrent(",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
+        let materializationGuard = try XCTUnwrap(body.range(
+            of: "!historicalConsumerMaterializationInFlight"
+        ))
+        let gate = try XCTUnwrap(body.range(
+            of: "persistedDrainAuthorityProbeGate.begin("
+        ))
+        let detached = try XCTUnwrap(body.range(of: "Task.detached(priority: .utility)"))
+        let load = try XCTUnwrap(body.range(of: "coverageStore.load()"))
+
+        XCTAssertLessThan(materializationGuard.lowerBound, gate.lowerBound)
+        XCTAssertLessThan(gate.lowerBound, detached.lowerBound)
+        XCTAssertLessThan(detached.lowerBound, load.lowerBound)
+        XCTAssertFalse(body.contains("historicalFullDrainCoverageStore.load()"),
+                       "the accepted-HR bridge must never synchronously load the full authority")
+
+        let contextStart = try XCTUnwrap(source.range(
+            of: "private func persistedDrainProbeContextIsCurrent("
+        ))
+        let contextEnd = try XCTUnwrap(source.range(
+            of: "private func persistedDrainRearmIsEligibleForCurrentConnection(",
+            range: contextStart.upperBound..<source.endIndex
+        ))
+        let context = String(source[contextStart.lowerBound..<contextEnd.lowerBound])
+        XCTAssertTrue(context.contains("currentPeripheral.identifier == callbackSource.peripheralID"))
+        XCTAssertTrue(context.contains("ObjectIdentifier(currentPeripheral)"))
+        XCTAssertTrue(context.contains("== callbackSource.peripheralObjectID"))
+        XCTAssertTrue(context.contains("connectedAt == probeConnectedAt"))
+
+        let applyStart = try XCTUnwrap(source.range(
+            of: "private func applyPersistedInterruptedFullDrainAuthority("
+        ))
+        let applyEnd = try XCTUnwrap(source.range(
+            of: "/// A full-drain authority is a durable transport transaction",
+            range: applyStart.upperBound..<source.endIndex
+        ))
+        let apply = String(source[applyStart.lowerBound..<applyEnd.lowerBound])
+        let mutationCapture = try XCTUnwrap(apply.range(
+            of: "let recoveryMutationGeneration ="
+        ))
+        let releaseDetached = try XCTUnwrap(apply.range(
+            of: "let releaseResult = await Task.detached(priority: .utility)"
+        ))
+        let release = try XCTUnwrap(apply.range(
+            of: ".releaseInterruptedDrainingAuthorityWhenResumeDisabled("
+        ))
+        let mutationRecheck = try XCTUnwrap(apply.range(
+            of: "persistedDrainRecoveryMutationGeneration\n                    == recoveryMutationGeneration"
+        ))
+        let cleanup = try XCTUnwrap(apply.range(
+            of: "rangeLossBackfillTask?.cancel()"
+        ))
+        XCTAssertLessThan(mutationCapture.lowerBound, releaseDetached.lowerBound)
+        XCTAssertLessThan(releaseDetached.lowerBound, release.lowerBound)
+        XCTAssertLessThan(release.lowerBound, mutationRecheck.lowerBound)
+        XCTAssertLessThan(mutationRecheck.lowerBound, cleanup.lowerBound)
+        XCTAssertGreaterThanOrEqual(
+            apply.components(separatedBy: "persistedDrainProbeContextIsCurrent(").count - 1,
+            3,
+            "load completion and both sides of the exact-ID release must revalidate the connection"
+        )
+        XCTAssertTrue(source.contains(
+            "private var pendingOfflineHistoricalSyncRequest:\n        PendingOfflineHistoricalSyncRequest? {\n        didSet { persistedDrainRecoveryMutationGeneration &+= 1 }"
+        ))
+        XCTAssertTrue(source.contains(
+            "private var pendingConnectedMotionBankSchedulingTicketID: String? {\n        didSet { persistedDrainRecoveryMutationGeneration &+= 1 }"
+        ))
+        XCTAssertTrue(source.contains(
+            "private var rangeLossBackfillTask: Task<Void, Never>? {\n        didSet { persistedDrainRecoveryMutationGeneration &+= 1 }"
+        ))
+    }
+
+    func testAcceptedHeartRatePathsHaveNoSynchronousFullDrainStoreProbe() throws {
+        let source = try leaseManagerSource()
+        let acceptedStart = try XCTUnwrap(source.range(
+            of: "private func acceptHeartRate("
+        ))
+        let acceptedEnd = try XCTUnwrap(source.range(
+            of: "private func beginAcceptedHeartRateBatch",
+            range: acceptedStart.upperBound..<source.endIndex
+        ))
+        let batchStart = try XCTUnwrap(source.range(
+            of: "private func endAcceptedHeartRateBatch("
+        ))
+        let batchEnd = try XCTUnwrap(source.range(
+            of: "private func publishLiveHeartDisplayIfNeeded",
+            range: batchStart.upperBound..<source.endIndex
+        ))
+        let hotPath = String(source[acceptedStart.lowerBound..<acceptedEnd.lowerBound])
+            + String(source[batchStart.lowerBound..<batchEnd.lowerBound])
+        XCTAssertFalse(hotPath.contains("historicalFullDrainCoverageStore.load()"))
+        XCTAssertFalse(hotPath.contains("resumeInterruptedFullDrainAfterTransportLossIfNeeded"))
+        XCTAssertTrue(hotPath.contains("rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded("))
+    }
+
+    func testPersistedDrainScheduleFireAndLaunchKeepAuthoritativeReloads() throws {
+        let source = try leaseManagerSource()
+        let scheduleStart = try XCTUnwrap(source.range(
+            of: "private func scheduleInterruptedFullDrainReacquisitionIfNeeded("
+        ))
+        let scheduleEnd = try XCTUnwrap(source.range(
+            of: "private func rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded(",
+            range: scheduleStart.upperBound..<source.endIndex
+        ))
+        let schedule = String(
+            source[scheduleStart.lowerBound..<scheduleEnd.lowerBound]
+        )
+        XCTAssertTrue(schedule.contains(
+            "let scheduleAuthority = try? historicalFullDrainCoverageStore.load()"
+        ))
+        XCTAssertTrue(schedule.contains(
+            "let firedAuthority = try? self.historicalFullDrainCoverageStore.load()"
+        ))
+
+        let launchStart = try XCTUnwrap(source.range(
+            of: "private func restoreInterruptedFullDrainLaunchIntentIfNeeded("
+        ))
+        let launchEnd = try XCTUnwrap(source.range(
+            of: "private func reconcileStaleDrainingFullDrainAuthority(",
+            range: launchStart.upperBound..<source.endIndex
+        ))
+        let launch = String(source[launchStart.lowerBound..<launchEnd.lowerBound])
+        XCTAssertTrue(launch.contains(
+            "let authority = try? historicalFullDrainCoverageStore.load()"
         ))
     }
 
@@ -10495,7 +10699,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             of: "private func rearmPersistedInterruptedFullDrainAfterFreshHRIfNeeded("
         ))
         let end = try XCTUnwrap(source.range(
-            of: "/// The launch path already turns a persisted `.draining` authority",
+            of: "/// A full-drain authority is a durable transport transaction",
             range: start.upperBound..<source.endIndex
         ))
         let body = String(source[start.lowerBound..<end.lowerBound])
