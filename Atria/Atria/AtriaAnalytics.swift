@@ -634,10 +634,12 @@ enum AtriaAnalytics {
     }
 
     enum Strain {
-        /// Bump whenever stored HR evidence can produce a different public
-        /// 0–21 score, whether the evidence kernel or display curve changes.
-        /// Persisted workout cards use this to re-score from their original HR
-        /// samples exactly once, without inventing data for metadata-only rows.
+        /// The single version authority for both the current display curve and
+        /// persisted strain values. Bump whenever stored HR evidence can
+        /// produce a different public 0–21 score, whether the evidence kernel
+        /// or display curve changes. Persisted workout cards use this to
+        /// re-score from their original HR samples exactly once, without
+        /// inventing data for metadata-only rows.
         static let displayCalibrationVersion = 3
 
         /// Shared evidence boundary for every cardiovascular-load integrator.
