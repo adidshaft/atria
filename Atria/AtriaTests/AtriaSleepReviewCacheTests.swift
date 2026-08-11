@@ -709,11 +709,21 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         let activityRows = AtriaActivitySelectedDaySleeps.overlapping(
             snapshot: store.sleepHistorySnapshot,
             pendingReview: review,
-            selectedDay: calendar.startOfDay(for: start),
+            selectedDay: calendar.startOfDay(for: end),
             calendar: calendar
         )
         XCTAssertEqual(activityRows.map(\.id), [saved.id],
-                       "Activity must show the durable sleep and suppress a stale copy of its settled candidate")
+                       "Activity must show the durable sleep on its final-wake day and suppress a stale copy of its settled candidate")
+        if !calendar.isDate(start, inSameDayAs: end) {
+            let bedtimeDayRows = AtriaActivitySelectedDaySleeps.overlapping(
+                snapshot: store.sleepHistorySnapshot,
+                pendingReview: review,
+                selectedDay: calendar.startOfDay(for: start),
+                calendar: calendar
+            )
+            XCTAssertFalse(bedtimeDayRows.contains { $0.id == saved.id },
+                           "confirmed main sleep must not appear on both its bedtime day and final-wake day")
+        }
     }
 
     @MainActor
