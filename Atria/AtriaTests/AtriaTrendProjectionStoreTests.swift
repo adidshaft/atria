@@ -294,21 +294,41 @@ final class AtriaTrendProjectionStoreTests: XCTestCase {
                        "gap handling must not average or synthesize values")
     }
 
-    func testSparseGrammarWithholdsAreaFillUntilFiveObservationsAndCoverageTarget() {
-        // 0-4 observations never draw an area fill: a couple of real points must
-        // not read as a filled "mountain".
-        for count in 0...4 {
-            XCTAssertFalse(AtriaTrendSparseGrammar.areaAllowed(observedCount: count,
+    func testSparseGrammarWithholdsAreaFillUntilFiveContiguousObservationsAndCoverageTarget() {
+        // A contiguous run of 0-4 observed days never draws an area fill: a couple
+        // of real points must not read as a filled "mountain".
+        for run in 0...4 {
+            XCTAssertFalse(AtriaTrendSparseGrammar.areaAllowed(longestContiguousRun: run,
                                                                confidenceTargetPoints: 4))
         }
-        // 5+ with the week coverage target (4) met -> fill allowed.
-        XCTAssertTrue(AtriaTrendSparseGrammar.areaAllowed(observedCount: 5,
+        // A contiguous run of 5+ with the week coverage target (4) met -> fill.
+        XCTAssertTrue(AtriaTrendSparseGrammar.areaAllowed(longestContiguousRun: 5,
                                                           confidenceTargetPoints: 4))
-        // 5+ but below a higher (month) coverage target stays fill-free.
-        XCTAssertFalse(AtriaTrendSparseGrammar.areaAllowed(observedCount: 6,
+        // 5+ contiguous but below a higher (month) coverage target stays fill-free.
+        XCTAssertFalse(AtriaTrendSparseGrammar.areaAllowed(longestContiguousRun: 6,
                                                            confidenceTargetPoints: 12))
-        XCTAssertTrue(AtriaTrendSparseGrammar.areaAllowed(observedCount: 12,
+        XCTAssertTrue(AtriaTrendSparseGrammar.areaAllowed(longestContiguousRun: 12,
                                                           confidenceTargetPoints: 12))
+    }
+
+    func testSparseGrammarLongestContiguousRunGatesFillOnGaps() {
+        // Five total observations but split by a gap into a lone day + a 4-day run
+        // must NOT fill: the longest contiguous run is 4. Gating on the raw total
+        // would draw a mountain across a day that was never worn.
+        let gappy = [0, 1, 1, 1, 1]
+        XCTAssertEqual(AtriaTrendSparseGrammar.longestContiguousRun(gappy), 4)
+        XCTAssertFalse(AtriaTrendSparseGrammar.areaAllowed(
+            longestContiguousRun: AtriaTrendSparseGrammar.longestContiguousRun(gappy),
+            confidenceTargetPoints: 4
+        ))
+        // A genuinely contiguous 5-day run fills.
+        let contiguous = [0, 0, 0, 0, 0]
+        XCTAssertEqual(AtriaTrendSparseGrammar.longestContiguousRun(contiguous), 5)
+        XCTAssertTrue(AtriaTrendSparseGrammar.areaAllowed(
+            longestContiguousRun: AtriaTrendSparseGrammar.longestContiguousRun(contiguous),
+            confidenceTargetPoints: 4
+        ))
+        XCTAssertEqual(AtriaTrendSparseGrammar.longestContiguousRun([]), 0)
     }
 
     func testSparseGrammarMarksEveryDayOnlyWhenSparse() {

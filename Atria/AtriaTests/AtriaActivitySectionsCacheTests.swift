@@ -96,6 +96,46 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                        .interrupted)
     }
 
+    func testHistoricalHeartRateWindowKeyIgnoresLiveHistoryRevisionSoLoadTerminalizes() throws {
+        // A completed historical civil day must fold its HR `.task` id to a
+        // constant live-history revision. Otherwise every live HR/stress tick
+        // (advanceHistoryRevision) re-keys the task, cancels the in-flight archive
+        // read, and resets heartRateLoadState to .loading — pinning "Loading
+        // recorded heart rate…" forever. Two historical keys built for the same
+        // day with different live revisions must compare EQUAL so the read runs
+        // once and reaches a terminal state.
+        XCTAssertEqual(
+            AtriaActivityHeartRateRefreshPolicy.foldedHistoryRevision(isCurrent: false, liveRevision: 7),
+            AtriaActivityHeartRateRefreshPolicy.foldedHistoryRevision(isCurrent: false, liveRevision: 8),
+            "A historical day must ignore the live history revision so its load terminalizes"
+        )
+        // The current physiological window still re-projects a formerly-sparse
+        // live feed, so its folded revision must track the live revision.
+        XCTAssertNotEqual(
+            AtriaActivityHeartRateRefreshPolicy.foldedHistoryRevision(isCurrent: true, liveRevision: 7),
+            AtriaActivityHeartRateRefreshPolicy.foldedHistoryRevision(isCurrent: true, liveRevision: 8),
+            "The current day must follow live history revisions"
+        )
+        // The pinned historical outcome is a terminal state (measured HR or a
+        // typed blocker), never a perpetual/timer spinner.
+        XCTAssertEqual(AtriaActivityHeartRateRefreshPolicy.terminalState(readSucceeded: true), .loaded)
+        XCTAssertEqual(AtriaActivityHeartRateRefreshPolicy.terminalState(readSucceeded: false), .unavailable)
+
+        // Guard the call site: the HR window key must route its revision through
+        // foldedHistoryRevision (not fold stressMonitorStore.historyRevision
+        // unconditionally) so a completed historical day is not re-keyed by live
+        // ticks and its single archive read terminalizes.
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaActivityMonitor.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(
+            source.contains("AtriaActivityHeartRateRefreshPolicy.foldedHistoryRevision("),
+            "timelineSignalWindowKey must route heartRateHistoryRevision through the pinned policy helper"
+        )
+    }
+
     func testHighFrequencyStressObservationIsConfinedToActivityLeaves() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory

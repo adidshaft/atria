@@ -139,11 +139,15 @@ struct AtriaTrendChartCard: View {
             // below the chart as supporting detail.
             if prepared.series.isEmpty {
                 emptyState
+            } else if prepared.series.count == 1 {
+                // One observed day is honest evidence but not a trend. Show it as
+                // a compact readout rather than a full chart canvas with a
+                // fabricated Y-axis and gridlines that read as a trend line. No
+                // connecting line, no inferred neighbors.
+                singletonReadout
             } else {
-                // One observed day is still a real reading: render it as a lone
-                // point on a short chart rather than hiding it behind the empty
-                // state. Two-to-four days stay compact; only a genuinely dense
-                // window earns the full-height trend canvas.
+                // Two-to-four days stay compact; only a genuinely dense window
+                // earns the full-height trend canvas.
                 chart
                     .frame(height: sparseTrendChartHeight)
                     // Clip the AreaMark gradient to the chart bounds. Without this
@@ -486,16 +490,22 @@ struct AtriaTrendChartCard: View {
         AtriaTrendSparseGrammar.singletonSegments(prepared.series.map(\.segment))
     }
 
-    /// The area fill is a density cue; it appears only once the window has both
-    /// 5+ observations AND meets this range's coverage-confidence target.
+    /// The area fill is a density cue; it appears only once a CONTIGUOUS run of
+    /// 5+ observed days also meets this range's coverage-confidence target, so a
+    /// gappy window never fills across days it did not measure.
     private var trendAreaAllowed: Bool {
-        AtriaTrendSparseGrammar.areaAllowed(observedCount: prepared.series.count,
-                                            confidenceTargetPoints: range.confidenceTargetPoints)
+        AtriaTrendSparseGrammar.areaAllowed(
+            longestContiguousRun:
+                AtriaTrendSparseGrammar.longestContiguousRun(prepared.series.map(\.segment)),
+            confidenceTargetPoints: range.confidenceTargetPoints
+        )
     }
 
-    /// Sparse windows (<= 4 observed days) mark every real day so none vanishes.
+    /// Mark every real day whenever the window is sparse/gappy (no area fill) so
+    /// none vanishes, and always for a <= 4-day window.
     private var trendMarksEveryPoint: Bool {
-        AtriaTrendSparseGrammar.marksEveryPoint(observedCount: prepared.series.count)
+        !trendAreaAllowed
+            || AtriaTrendSparseGrammar.marksEveryPoint(observedCount: prepared.series.count)
     }
 
     private func trendPointMarkVisible(_ sample: AtriaTrendPoint.Sample) -> Bool {
@@ -539,7 +549,10 @@ struct AtriaTrendChartCard: View {
                         y: .value(metric.shortLabel, sample.value),
                         series: .value("Series", "current-fill-\(sample.segment)")
                     )
-                    .interpolationMethod(.monotone)
+                    // Linear, not monotone: monotone interpolation overshoots the
+                    // real daily samples (a smooth curve peaking ABOVE the highest
+                    // measured day), implying values the evidence never recorded.
+                    .interpolationMethod(.linear)
                     .foregroundStyle(
                         LinearGradient(
                             colors: [metric.tint.opacity(0.30), metric.tint.opacity(0.02)],
@@ -556,7 +569,9 @@ struct AtriaTrendChartCard: View {
                     y: .value(metric.shortLabel, sample.value),
                     series: .value("Series", "current-line-\(sample.segment)")
                 )
-                .interpolationMethod(.monotone)
+                // Linear keeps the connecting line on the real samples instead of
+                // bowing past them (monotone overshoot).
+                .interpolationMethod(.linear)
                 .lineStyle(AtriaChartVisualGrammar.trendLine)
                 .foregroundStyle(metric.tint)
 
@@ -686,6 +701,28 @@ struct AtriaTrendChartCard: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, minHeight: 140, alignment: .leading)
+    }
+
+    /// A single observed day: honest evidence, not a trend. A tinted dot, the
+    /// formatted value, and the day — no chart canvas, no fabricated Y-axis,
+    /// no connecting line or inferred neighbors.
+    private var singletonReadout: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(metric.tint)
+                .frame(width: 10, height: 10)
+            Text(metric.format(prepared.series.first?.value ?? 0))
+                .font(.title3.weight(.semibold))
+                .monospacedDigit()
+            if let day = prepared.series.first?.date {
+                Text(day.formatted(.dateTime.day().month(.abbreviated)))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 6)
     }
 }
 
@@ -3114,11 +3151,22 @@ struct AtriaTrendPoint: Equatable, Identifiable {
 /// dramatic filled area; a lone observed day must always keep a visible point.
 /// Kept value-typed so the count/coverage rules are unit-testable without a view.
 enum AtriaTrendSparseGrammar {
-    /// Area fill is a density signal: only for 5+ observations that also meet
-    /// this range's coverage-confidence target. Below that the chart is points
-    /// (and optional thin in-segment lines) with no fill.
-    static func areaAllowed(observedCount: Int, confidenceTargetPoints: Int) -> Bool {
-        observedCount >= max(5, confidenceTargetPoints)
+    /// Area fill is a density signal: only when a CONTIGUOUS run of 5+ observed
+    /// days also meets this range's coverage-confidence target. Gating on the raw
+    /// total let a gappy window (e.g. one isolated day plus a separate 4-day run)
+    /// draw a filled "mountain" that visually implies measurements on days that
+    /// were never worn. The longest single run is the honest density.
+    static func areaAllowed(longestContiguousRun: Int, confidenceTargetPoints: Int) -> Bool {
+        longestContiguousRun >= max(5, confidenceTargetPoints)
+    }
+
+    /// Longest contiguous run of observed days — the largest single gap-split
+    /// segment. Charts fill only within such a run, never across a gap.
+    static func longestContiguousRun(_ segments: [Int]) -> Int {
+        guard !segments.isEmpty else { return 0 }
+        var counts: [Int: Int] = [:]
+        for segment in segments { counts[segment, default: 0] += 1 }
+        return counts.values.max() ?? 0
     }
 
     /// A sparse window (<= 4 observed days) marks every real day so none of the

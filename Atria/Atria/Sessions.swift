@@ -12663,8 +12663,9 @@ final class SessionStore: ObservableObject {
         let source = canonicalSessions()
         let rest = baseline.restingInt ?? 60
         let maxHR = profile.maxHR
+        let confirmedSleeps = cachedConfirmedSleeps
         let delay: TimeInterval = deferred ? 0.12 : 0
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self, source, rest, maxHR, revision, executionShouldContinue] in
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self, source, rest, maxHR, confirmedSleeps, revision, executionShouldContinue] in
             guard executionShouldContinue() else {
                 DispatchQueue.main.async { completion?(false) }
                 return
@@ -12682,6 +12683,7 @@ final class SessionStore: ObservableObject {
                     sessions: source,
                     rest: rest,
                     maxHR: maxHR,
+                    confirmedSleeps: confirmedSleeps,
                     shouldContinue: executionShouldContinue
                 )
             }
@@ -18474,12 +18476,14 @@ final class SessionStore: ObservableObject {
     nonisolated static func makeOverviewTrendPoints(sessions: [SavedSession],
                                                     rest: Int,
                                                     maxHR: Int,
+                                                    confirmedSleeps: [UserConfirmedSleep] = [],
                                                     now: Date = Date(),
                                                     calendar: Calendar = .current) -> [AtriaTrendPoint] {
         makeOverviewTrendPointsCancellable(
             sessions: sessions,
             rest: rest,
             maxHR: maxHR,
+            confirmedSleeps: confirmedSleeps,
             now: now,
             calendar: calendar,
             shouldContinue: { true }
@@ -18490,6 +18494,7 @@ final class SessionStore: ObservableObject {
         sessions: [SavedSession],
         rest: Int,
         maxHR: Int,
+        confirmedSleeps: [UserConfirmedSleep] = [],
         now: Date = Date(),
         calendar: Calendar = .current,
         shouldContinue: @escaping @Sendable () -> Bool
@@ -18585,7 +18590,23 @@ final class SessionStore: ObservableObject {
                 return $0.session.id.uuidString < $1.session.id.uuidString
                 }
             ) else { return nil }
-            let qualifiedHRVs = orderedRows.compactMap(\.localRMSSD).filter { $0 > 0 }
+            // HRV nightly trend points must be qualified same-cycle sleep RMSSD,
+            // not a whole-session `localRMSSD` that a daytime/live reading can
+            // satisfy. Gate on confirmed-main-sleep exact-window evidence so a day
+            // with only non-sleep RMSSD yields no HRV point (identical to the
+            // nightly rollup/recovery surfaces). Without confirmed sleeps this
+            // yields none rather than promoting an unqualified value.
+            var qualifiedHRVs: [Int] = []
+            for row in orderedRows {
+                guard shouldContinue() else { return nil }
+                if let evidence = confirmedMainSleepHRVEvidenceCancellable(
+                    for: row.session,
+                    confirmedSleeps: confirmedSleeps,
+                    shouldContinue: shouldContinue
+                ), evidence.value > 0 {
+                    qualifiedHRVs.append(evidence.value)
+                }
+            }
             let acceptedRestingHRs = orderedRows.compactMap(\.acceptedRestingHR).filter { $0 > 0 }
             guard let sourceID = orderedRows.first?.session.id
                     ?? dailyLoadByDay[day]?.sourceID else { continue }
@@ -33347,17 +33368,22 @@ final class SessionStore: ObservableObject {
                       sleepWindowsOverlap($0, candidate: preferredCandidate)
                   }) {
             // A settled main must suppress ordinary older fallbacks, but it
-            // may unlock exactly one distinct, same-cycle resumed-sleep
-            // review. This preserves the one-card ordering contract without
-            // allowing a confirmed newest night to reveal stale older nights.
-            // Confirmation deliberately dismisses the main detector window,
-            // so that dismissal is proof of settlement here, not a reason to
-            // hide a separate later segment. The resumed segment still passes
-            // `isUnsettled` below and therefore honors its own dismissal.
+            // may unlock exactly one distinct, same-cycle later review — for
+            // example a dense-morning HR-only sleep whose kind is
+            // "overnight_sleep", not just a "resumed_sleep_candidate". This
+            // preserves the one-card ordering contract (still one candidate via
+            // preferredSleepCandidateForReview) without allowing a confirmed
+            // newest night to reveal stale older nights. Confirmation
+            // deliberately dismisses the main detector window, so that
+            // dismissal is proof of settlement here, not a reason to hide a
+            // separate later segment. `isUnsettled` below already excludes any
+            // candidate overlapping a confirmed sleep (except a reviewable
+            // extension), so the confirmed primary's own window cannot resurface
+            // and each candidate still honors its own dismissal. Match the
+            // dismissed-main branch below exactly, dropping the kind restriction.
             aggregateCandidate = preferredSleepCandidateForReview(
                 from: candidates.filter {
-                    $0.kind == "resumed_sleep_candidate"
-                        && $0.day == preferredCandidate.day
+                    $0.day == preferredCandidate.day
                         && isUnsettled($0)
                 }
             )
