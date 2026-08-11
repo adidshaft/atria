@@ -844,7 +844,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             of: "foregroundResumeTask = Task { @MainActor in"
         ))
         let activeEnd = try XCTUnwrap(home.range(
-            of: "foregroundResumeTask = nil",
+            of: "private func flushWorkoutRouteAtBackgroundBoundary()",
             range: activeStart.upperBound..<home.endIndex
         ))
         let resume = String(home[activeStart.lowerBound..<activeEnd.lowerBound])
@@ -858,6 +858,66 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         ))
         XCTAssertLessThan(firstFrameYield.lowerBound, liveRefresh.lowerBound)
         XCTAssertLessThan(liveRefresh.lowerBound, sleepSettlement.lowerBound)
+        XCTAssertGreaterThanOrEqual(
+            resume.components(separatedBy: ".environmentIsAuthorized(").count - 1,
+            2,
+            "both deferred phases must recheck live lifecycle authority"
+        )
+        XCTAssertTrue(resume.contains("UIApplication.shared.applicationState == .active"))
+        XCTAssertTrue(resume.contains("AtriaHistoricalProjectionForegroundGate.isBackgrounded"))
+        XCTAssertTrue(resume.contains("foregroundResumeAuthority.isCurrent(ticket)"))
+        XCTAssertTrue(resume.contains("executionShouldContinue:"),
+                      "sleep settlement must retain process suspension authority")
+    }
+
+    func testForegroundSleepSettlementRetiresRevokedGenerationAndCarriesAuthorityIntoRetry() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sessions = try String(contentsOf: testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/Sessions.swift"), encoding: .utf8)
+        let retryStart = try XCTUnwrap(sessions.range(
+            of: "private func scheduleSleepSettlementRetry"
+        ))
+        let retryEnd = try XCTUnwrap(sessions.range(
+            of: "nonisolated static func sleepSettlementRetryDelay",
+            range: retryStart.upperBound..<sessions.endIndex
+        ))
+        let retry = String(sessions[retryStart.lowerBound..<retryEnd.lowerBound])
+        XCTAssertTrue(retry.contains("executionShouldContinue:"))
+        XCTAssertTrue(retry.contains("guard executionShouldContinue() else"))
+        XCTAssertTrue(retry.contains("lastForegroundSleepAutoConfirmAt = nil"),
+                      "revocation must not retain the 30-minute cadence stamp")
+        XCTAssertTrue(retry.contains("executionShouldContinue: executionShouldContinue"),
+                      "the delayed retry must not fall back to unconditional authority")
+        XCTAssertTrue(retry.contains("settlementAuthority: settlementAuthority"),
+                      "a retry must retain the exact monotonic owner identity")
+
+        let cleanupStart = try XCTUnwrap(sessions.range(
+            of: "private func retireForegroundSleepSettlementAfterAuthorityLoss"
+        ))
+        let cleanupEnd = try XCTUnwrap(sessions.range(
+            of: "nonisolated static let foregroundSleepEvaluationLookbackDays",
+            range: cleanupStart.upperBound..<sessions.endIndex
+        ))
+        let cleanup = String(sessions[cleanupStart.lowerBound..<cleanupEnd.lowerBound])
+        XCTAssertTrue(cleanup.contains("foregroundSleepSettlementWorkerIsCurrent(generation)"),
+                      "a stale cleanup may not cancel a replacement settlement")
+        XCTAssertTrue(cleanup.contains("pendingForegroundSleepSettlementWorkItem = nil"))
+        XCTAssertTrue(cleanup.contains("pendingForegroundSleepSettlementOwner = nil"))
+        XCTAssertTrue(cleanup.contains("lastForegroundSleepAutoConfirmAt = nil"))
+        XCTAssertTrue(cleanup.contains("drainForegroundSleepSettlementCompletions(succeeded: false)"))
+
+        let workerStart = try XCTUnwrap(sessions.range(
+            of: "let workItem = DispatchWorkItem { [weak self] in",
+            range: cleanupEnd.upperBound..<sessions.endIndex
+        ))
+        let workerEnd = try XCTUnwrap(sessions.range(
+            of: "pendingForegroundSleepSettlementWorkItem = workItem",
+            range: workerStart.upperBound..<sessions.endIndex
+        ))
+        let worker = String(sessions[workerStart.lowerBound..<workerEnd.lowerBound])
+        XCTAssertTrue(worker.contains("retireForegroundSleepSettlementAfterAuthorityLoss"),
+                      "every cooperative authority exit must release the exact worker sentinel")
     }
 
     func testLockScreenActionPreservesIndependentSensorFreshness() throws {

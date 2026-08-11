@@ -274,6 +274,74 @@ private final class AtriaBackgroundProjectionLeaseOwner: @unchecked Sendable {
     }
 }
 
+/// One retained request for foreground-only deferred work. Scene and UIKit
+/// activation can arrive in either order, while the process-wide historical
+/// gate may remain closed until AtriaApp has revoked/rolled back the prior
+/// generation. Callers retry the same pending request on either foreground
+/// authority edge; `isRunning` prevents those edges from starting it twice.
+struct AtriaForegroundDeferredWorkAuthority: Equatable, Sendable {
+    struct Ticket: Equatable, Sendable {
+        let generation: UInt64
+    }
+
+    private(set) var isPending = false
+    private(set) var isRunning = false
+    private(set) var generation: UInt64 = 0
+
+    mutating func request() {
+        if !isPending {
+            generation &+= 1
+        }
+        isPending = true
+    }
+
+    mutating func cancel() {
+        generation &+= 1
+        isPending = false
+        isRunning = false
+    }
+
+    mutating func beginIfAuthorized(sceneIsActive: Bool,
+                                    applicationIsActive: Bool,
+                                    historicalProjectionIsBackgrounded: Bool) -> Ticket? {
+        guard isPending,
+              !isRunning,
+              Self.environmentIsAuthorized(
+                sceneIsActive: sceneIsActive,
+                applicationIsActive: applicationIsActive,
+                historicalProjectionIsBackgrounded:
+                    historicalProjectionIsBackgrounded
+              ) else { return nil }
+        isRunning = true
+        return Ticket(generation: generation)
+    }
+
+    func isCurrent(_ ticket: Ticket) -> Bool {
+        isPending && isRunning && ticket.generation == generation
+    }
+
+    mutating func deferForLostAuthority(_ ticket: Ticket) {
+        guard isCurrent(ticket) else { return }
+        isRunning = false
+    }
+
+    mutating func complete(_ ticket: Ticket) {
+        guard isCurrent(ticket) else { return }
+        isRunning = false
+        isPending = false
+    }
+
+    static func environmentIsAuthorized(
+        sceneIsActive: Bool,
+        applicationIsActive: Bool,
+        historicalProjectionIsBackgrounded: Bool
+    ) -> Bool {
+        sceneIsActive
+            && applicationIsActive
+            && !historicalProjectionIsBackgrounded
+    }
+}
+
 @main
 struct AtriaApp: App {
     private static let appRefreshTaskIdentifier = "com.adidshaft.atria.refresh"
@@ -298,6 +366,8 @@ struct AtriaApp: App {
     @State private var didScheduleLaunchWork = false
     @State private var inactiveFlushTask: Task<Void, Never>?
     @State private var foregroundBLETransitionTask: Task<Void, Never>?
+    @State private var foregroundBLETransitionAuthority =
+        AtriaForegroundDeferredWorkAuthority()
     @State private var notificationMaintenanceTask: Task<Void, Never>?
     private let launchStartedAt = Date()
 
@@ -377,6 +447,9 @@ struct AtriaApp: App {
                     switch phase {
                     case .background, .inactive:
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = true
+                        foregroundBLETransitionTask?.cancel()
+                        foregroundBLETransitionTask = nil
+                        foregroundBLETransitionAuthority.cancel()
                         let recoveredLifecycleReason = phase == .background
                             ? "scene_background" : "scene_inactive"
                         // Revoke the advisory user-initiated review projection
@@ -404,6 +477,11 @@ struct AtriaApp: App {
                         )
                     case .active:
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = false
+                        NotificationCenter.default.post(
+                            name: AtriaHistoricalProjectionForegroundGate
+                                .didBecomeForegroundNotification,
+                            object: nil
+                        )
                         store.invalidateArchiveCompactionBGProcessingLease(
                             reason: "scene_active"
                         )
@@ -434,8 +512,6 @@ struct AtriaApp: App {
                     guard !store.restoreInitializationBlocked else { return }
                     switch phase {
                     case .background:
-                        foregroundBLETransitionTask?.cancel()
-                        foregroundBLETransitionTask = nil
                         recordScenePhase("background", reason: "scene_background")
                         AtriaStrapCalibrationArchive.shared.flush()
                         inactiveFlushTask?.cancel()
@@ -446,8 +522,6 @@ struct AtriaApp: App {
                                                             flushRealtimeState: false)
                         performSceneBackgroundMaintenance(reason: "scene_background")
                     case .inactive:
-                        foregroundBLETransitionTask?.cancel()
-                        foregroundBLETransitionTask = nil
                         recordScenePhase("inactive", reason: "scene_inactive")
                         AtriaStrapCalibrationArchive.shared.flush()
                         // Inactive is often a short transient state during gestures,
@@ -485,31 +559,11 @@ struct AtriaApp: App {
                         scheduleProductionNotificationMaintenance(reason: "scene_active")
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = nil
-                        foregroundBLETransitionTask?.cancel()
-                        foregroundBLETransitionTask = Task { @MainActor in
-                            // Give SwiftUI one interactive frame before watchdog,
-                            // defaults and service-repair orchestration. The
-                            // existing CoreBluetooth subscription remains live.
-                            await Task.yield()
-                            try? await Task.sleep(for: .milliseconds(120))
-                            guard !Task.isCancelled, scenePhase == .active else { return }
-                            ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
-                                                           maxHR: store.profile.maxHR)
-                            _ = ble
-                                .offerConnectedRawCatchUpPublicationYieldIfNeeded(
-                                    reason: "scene_active_after_interactive_frame"
-                                )
-                            store.resumeDeferredForegroundArchiveWork(
-                                reason: "scene_active_after_interactive_frame"
-                            )
-                            ble.resumeDeferredWorkoutMotionBankCoverageEvaluationIfNeeded(
-                                reason: "scene_active_after_interactive_frame"
-                            )
-                            foregroundBLETransitionTask = nil
-                        }
+                        requestForegroundBLETransitionIfNeeded()
                     @unknown default:
                         foregroundBLETransitionTask?.cancel()
                         foregroundBLETransitionTask = nil
+                        foregroundBLETransitionAuthority.cancel()
                         recordScenePhase("unknown", reason: "scene_unknown")
                         inactiveFlushTask?.cancel()
                         inactiveFlushTask = nil
@@ -547,13 +601,65 @@ struct AtriaApp: App {
                     store.resumeRecoveredDataPublicationLeaseForForeground(
                         reason: "ui_did_become_active"
                     )
+                    scheduleForegroundBLETransitionIfNeeded()
                     inactiveFlushTask?.cancel()
                     inactiveFlushTask = nil
-                    // `scenePhase == .active` is the single owner of foreground
-                    // BLE restoration. Calling it again from this notification
-                    // duplicated journal restore, watchdog setup and notification
-                    // reassertion during the same app-switch transition.
+                    // This notification only retries the retained scene request.
+                    // The authority below prevents a second BLE/archive pass if
+                    // the scene-started task is already running or complete.
                 }
+        }
+    }
+
+    private func requestForegroundBLETransitionIfNeeded() {
+        foregroundBLETransitionAuthority.request()
+        scheduleForegroundBLETransitionIfNeeded()
+    }
+
+    private func scheduleForegroundBLETransitionIfNeeded() {
+        guard foregroundBLETransitionTask == nil,
+              let ticket = foregroundBLETransitionAuthority.beginIfAuthorized(
+                sceneIsActive: scenePhase == .active,
+                applicationIsActive:
+                    UIApplication.shared.applicationState == .active,
+                historicalProjectionIsBackgrounded:
+                    AtriaHistoricalProjectionForegroundGate.isBackgrounded
+              ) else { return }
+        foregroundBLETransitionTask = Task { @MainActor in
+            // Give SwiftUI one interactive frame before watchdog, defaults and
+            // service-repair orchestration. The existing CoreBluetooth
+            // subscription remains live.
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled,
+                  foregroundBLETransitionAuthority.isCurrent(ticket) else {
+                return
+            }
+            guard AtriaForegroundDeferredWorkAuthority
+                .environmentIsAuthorized(
+                    sceneIsActive: scenePhase == .active,
+                    applicationIsActive:
+                        UIApplication.shared.applicationState == .active,
+                    historicalProjectionIsBackgrounded:
+                        AtriaHistoricalProjectionForegroundGate.isBackgrounded
+                ) else {
+                foregroundBLETransitionAuthority.deferForLostAuthority(ticket)
+                foregroundBLETransitionTask = nil
+                return
+            }
+            ble.handleInteractiveForeground(rest: store.baseline.restingInt ?? 60,
+                                           maxHR: store.profile.maxHR)
+            _ = ble.offerConnectedRawCatchUpPublicationYieldIfNeeded(
+                reason: "scene_active_after_interactive_frame"
+            )
+            store.resumeDeferredForegroundArchiveWork(
+                reason: "scene_active_after_interactive_frame"
+            )
+            ble.resumeDeferredWorkoutMotionBankCoverageEvaluationIfNeeded(
+                reason: "scene_active_after_interactive_frame"
+            )
+            foregroundBLETransitionAuthority.complete(ticket)
+            foregroundBLETransitionTask = nil
         }
     }
 

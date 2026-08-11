@@ -6,7 +6,12 @@ import XCTest
 final class AtriaTodaySleepReviewProjectionTests: XCTestCase {
     func testUnchangedStateDoesNotPublish() {
         let initial = state()
-        let projection = AtriaTodaySleepReviewProjectionStore(state: initial)
+        let projection = AtriaTodaySleepReviewProjectionStore(
+            state: initial,
+            presentationIsActive: true,
+            applicationIsActive: { true },
+            historicalProjectionIsBackgrounded: { false }
+        )
         var publications = 0
         let cancellable = projection.objectWillChange.sink { publications += 1 }
 
@@ -19,7 +24,12 @@ final class AtriaTodaySleepReviewProjectionTests: XCTestCase {
 
     func testEachRenderedInputPublishesImmediatelyAndEqualityGatesRepeats() {
         let initial = state()
-        let projection = AtriaTodaySleepReviewProjectionStore(state: initial)
+        let projection = AtriaTodaySleepReviewProjectionStore(
+            state: initial,
+            presentationIsActive: true,
+            applicationIsActive: { true },
+            historicalProjectionIsBackgrounded: { false }
+        )
         var publications = 0
         let cancellable = projection.objectWillChange.sink { publications += 1 }
 
@@ -48,6 +58,57 @@ final class AtriaTodaySleepReviewProjectionTests: XCTestCase {
         XCTAssertFalse(projection.refresh(bannerState))
         XCTAssertEqual(publications, 3)
 
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testInactiveBurstPublishesZeroAndForegroundReleasesLatestExactlyOnce() {
+        let initial = state()
+        var applicationIsActive = false
+        var historicalProjectionIsBackgrounded = true
+        let projection = AtriaTodaySleepReviewProjectionStore(
+            state: initial,
+            presentationIsActive: false,
+            applicationIsActive: { applicationIsActive },
+            historicalProjectionIsBackgrounded: {
+                historicalProjectionIsBackgrounded
+            }
+        )
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        var latest = initial
+        for index in 0..<1_000 {
+            latest = state(
+                banner: AutoSleepLoggedBanner(
+                    id: "background-\(index)",
+                    start: Date(timeIntervalSince1970: 1_000),
+                    end: Date(timeIntervalSince1970: 2_000),
+                    duration: 1_000,
+                    sleepID: "sleep-\(index)"
+                )
+            )
+            XCTAssertFalse(projection.refresh(latest))
+        }
+
+        XCTAssertEqual(publications, 0)
+        XCTAssertEqual(projection.state, initial)
+
+        projection.setPresentationActive(true)
+        XCTAssertEqual(publications, 0,
+                       "scene authority alone cannot bypass UIKit or the process gate")
+        applicationIsActive = true
+        projection.setPresentationActive(true)
+        XCTAssertEqual(publications, 0,
+                       "UIKit authority cannot bypass recovered rollback suspension")
+
+        historicalProjectionIsBackgrounded = false
+        projection.setPresentationActive(true)
+        XCTAssertEqual(projection.state, latest)
+        XCTAssertEqual(publications, 1)
+
+        projection.setPresentationActive(true)
+        XCTAssertEqual(publications, 1,
+                       "repeated activation cannot replay the collapsed catch-up")
         withExtendedLifetime(cancellable) {}
     }
 
@@ -184,7 +245,17 @@ final class AtriaTodaySleepReviewProjectionTests: XCTestCase {
 
         XCTAssertFalse(chain.contains("@ObservedObject var store: SessionStore"))
         XCTAssertTrue(chain.contains("@StateObject private var projectionStore: AtriaTodaySleepReviewProjectionStore"))
-        XCTAssertTrue(chain.contains("guard stable != state else { return false }"))
+        XCTAssertTrue(chain.contains("presentationIsActive: false"))
+        XCTAssertTrue(chain.contains("@Environment(\\.scenePhase) private var scenePhase"))
+        XCTAssertTrue(chain.contains("projectionStore.setPresentationActive(phase == .active)"))
+        XCTAssertTrue(chain.contains("UIApplication.didBecomeActiveNotification"))
+        XCTAssertTrue(chain.contains("didBecomeForegroundNotification"))
+        XCTAssertTrue(chain.contains("projectionStore.setPresentationActive(false)"))
+        XCTAssertTrue(chain.contains("private var latestState"))
+        XCTAssertTrue(chain.contains("previous: latestState"))
+        XCTAssertTrue(chain.contains("presentationIsDirty = latestState != state"))
+        XCTAssertTrue(chain.contains("&& applicationIsActive()"))
+        XCTAssertTrue(chain.contains("&& !historicalProjectionIsBackgrounded()"))
         XCTAssertTrue(chain.contains("store.$sleepHistorySnapshot"))
         XCTAssertTrue(chain.contains("store.$pendingSleepReviewNightForUI"))
         XCTAssertTrue(chain.contains("store.$autoSleepLoggedBanner"))

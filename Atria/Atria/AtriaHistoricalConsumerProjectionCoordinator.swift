@@ -9,8 +9,17 @@ import Foundation
 /// already-published receipt set is durable, so a partial pass resumes exactly
 /// like a crash on the next foreground pass.
 enum AtriaHistoricalProjectionForegroundGate {
+    struct Lease: Equatable, Sendable {
+        let generation: UInt64
+    }
+
+    static let didBecomeForegroundNotification = Notification.Name(
+        "AtriaHistoricalProjectionForegroundGate.didBecomeForeground"
+    )
+
     private static let lock = NSLock()
     private static var backgrounded = false
+    private static var generation: UInt64 = 0
 
     static var isBackgrounded: Bool {
         get {
@@ -21,8 +30,42 @@ enum AtriaHistoricalProjectionForegroundGate {
         set {
             lock.lock()
             defer { lock.unlock() }
+            if newValue, !backgrounded {
+                generation &+= 1
+            }
             backgrounded = newValue
         }
+    }
+
+    static var currentGeneration: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return generation
+    }
+
+    static func captureForegroundLease() -> Lease? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !backgrounded else { return nil }
+        return Lease(generation: generation)
+    }
+
+    static func isCurrent(_ lease: Lease) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return leaseIsCurrent(
+            leaseGeneration: lease.generation,
+            currentGeneration: generation,
+            isBackgrounded: backgrounded
+        )
+    }
+
+    nonisolated static func leaseIsCurrent(
+        leaseGeneration: UInt64,
+        currentGeneration: UInt64,
+        isBackgrounded: Bool
+    ) -> Bool {
+        !isBackgrounded && leaseGeneration == currentGeneration
     }
 }
 

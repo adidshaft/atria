@@ -3087,13 +3087,22 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             of: "foregroundBLETransitionTask = Task { @MainActor in"
         ))
         let transitionEnd = try XCTUnwrap(app.range(
-            of: "foregroundBLETransitionTask = nil",
+            of: "private static func registerBackgroundTasks",
             range: transitionStart.upperBound..<app.endIndex
         ))
         let transition = String(
-            app[transitionStart.lowerBound..<transitionEnd.upperBound]
+            app[transitionStart.lowerBound..<transitionEnd.lowerBound]
         )
         XCTAssertTrue(transition.contains("ble.handleInteractiveForeground("))
+        XCTAssertTrue(transition.contains(
+            "UIApplication.shared.applicationState == .active"
+        ))
+        XCTAssertTrue(transition.contains(
+            "AtriaHistoricalProjectionForegroundGate.isBackgrounded"
+        ))
+        XCTAssertTrue(transition.contains(
+            "foregroundBLETransitionAuthority.isCurrent(ticket)"
+        ))
         XCTAssertFalse(transition.contains(
             "resumePendingFullDrainPublicationIfNeeded("
         ))

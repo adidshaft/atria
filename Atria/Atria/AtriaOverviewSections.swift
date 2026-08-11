@@ -1,6 +1,7 @@
 import SwiftUI
 import Charts
 import Combine
+import UIKit
 
 /// Legacy debug destinations for older screenshot fixtures. The Today tab now
 /// renders one scroll; these values only map old launch arguments.
@@ -1329,6 +1330,7 @@ private struct AtriaSleepReviewCard: View {
 /// structure in this file; this wrapper only exposes them to the live path.
 /// Both render nothing when there is no real pending state (never fabricated).
 struct AtriaTodaySleepReviewSection: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var projectionStore: AtriaTodaySleepReviewProjectionStore
 
     private let store: SessionStore
@@ -1338,7 +1340,10 @@ struct AtriaTodaySleepReviewSection: View {
         self.store = store
         self.prioritizesPendingReview = prioritizesPendingReview
         _projectionStore = StateObject(
-            wrappedValue: AtriaTodaySleepReviewProjectionStore(store: store)
+            wrappedValue: AtriaTodaySleepReviewProjectionStore(
+                store: store,
+                presentationIsActive: false
+            )
         )
     }
 
@@ -1347,17 +1352,43 @@ struct AtriaTodaySleepReviewSection: View {
         // notification at a time — a pending review outranks the
         // already-logged banner (the banner's Edit is redundant while the
         // richer review card is on screen).
-        if prioritizesPendingReview {
-            if hasPendingReview {
-                AtriaSleepReviewHost(store: store, state: projectionStore.state)
+        Group {
+            if prioritizesPendingReview {
+                if hasPendingReview {
+                    AtriaSleepReviewHost(store: store, state: projectionStore.state)
+                } else {
+                    AtriaAutoSleepLoggedBanner(
+                        store: store,
+                        banner: projectionStore.state.autoSleepLoggedBanner
+                    )
+                }
             } else {
                 AtriaAutoSleepLoggedBanner(store: store,
                                            banner: projectionStore.state.autoSleepLoggedBanner)
+                AtriaSleepReviewHost(store: store, state: projectionStore.state)
             }
-        } else {
-            AtriaAutoSleepLoggedBanner(store: store,
-                                       banner: projectionStore.state.autoSleepLoggedBanner)
-            AtriaSleepReviewHost(store: store, state: projectionStore.state)
+        }
+        .onAppear {
+            projectionStore.setPresentationActive(scenePhase == .active)
+        }
+        .onChange(of: scenePhase) { _, phase in
+            projectionStore.setPresentationActive(phase == .active)
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.didBecomeActiveNotification
+        )) { _ in
+            guard scenePhase == .active else { return }
+            projectionStore.setPresentationActive(true)
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: AtriaHistoricalProjectionForegroundGate
+                .didBecomeForegroundNotification
+        )) { _ in
+            guard scenePhase == .active else { return }
+            projectionStore.setPresentationActive(true)
+        }
+        .onDisappear {
+            projectionStore.setPresentationActive(false)
         }
     }
 
@@ -1502,14 +1533,50 @@ struct AtriaTodaySleepReviewProjectionState: Equatable {
 final class AtriaTodaySleepReviewProjectionStore: ObservableObject {
     @Published private(set) var state: AtriaTodaySleepReviewProjectionState
 
+    private let applicationIsActive: @MainActor () -> Bool
+    private let historicalProjectionIsBackgrounded: @MainActor () -> Bool
     private var cancellables = Set<AnyCancellable>()
+    private var latestState: AtriaTodaySleepReviewProjectionState
+    private var presentationIsActive: Bool
+    private var presentationIsDirty = false
 
-    init(state: AtriaTodaySleepReviewProjectionState) {
+    init(
+        state: AtriaTodaySleepReviewProjectionState,
+        presentationIsActive: Bool = false,
+        applicationIsActive: @escaping @MainActor () -> Bool = {
+            UIApplication.shared.applicationState == .active
+        },
+        historicalProjectionIsBackgrounded:
+            @escaping @MainActor () -> Bool = {
+                AtriaHistoricalProjectionForegroundGate.isBackgrounded
+            }
+    ) {
         self.state = state
+        self.latestState = state
+        self.presentationIsActive = presentationIsActive
+        self.applicationIsActive = applicationIsActive
+        self.historicalProjectionIsBackgrounded =
+            historicalProjectionIsBackgrounded
     }
 
-    convenience init(store: SessionStore) {
-        self.init(state: Self.makeState(store: store))
+    convenience init(
+        store: SessionStore,
+        presentationIsActive: Bool = false,
+        applicationIsActive: @escaping @MainActor () -> Bool = {
+            UIApplication.shared.applicationState == .active
+        },
+        historicalProjectionIsBackgrounded:
+            @escaping @MainActor () -> Bool = {
+                AtriaHistoricalProjectionForegroundGate.isBackgrounded
+            }
+    ) {
+        self.init(
+            state: Self.makeState(store: store),
+            presentationIsActive: presentationIsActive,
+            applicationIsActive: applicationIsActive,
+            historicalProjectionIsBackgrounded:
+                historicalProjectionIsBackgrounded
+        )
 
         Publishers.CombineLatest3(
             store.$sleepHistorySnapshot,
@@ -1530,15 +1597,38 @@ final class AtriaTodaySleepReviewProjectionStore: ObservableObject {
         .store(in: &cancellables)
     }
 
+    func setPresentationActive(_ active: Bool) {
+        presentationIsActive = active
+        guard active else { return }
+        _ = publishLatestPresentationIfNeeded()
+    }
+
     @discardableResult
     func refresh(_ next: AtriaTodaySleepReviewProjectionState) -> Bool {
         let stable = AtriaTodaySleepReviewProjectionState.preservingRealReviewAcrossTransientLoss(
-            previous: state,
+            previous: latestState,
             incoming: next,
             dismissedCandidates: AtriaDismissedSleepCandidateStore.load()
         )
-        guard stable != state else { return false }
-        state = stable
+        latestState = stable
+        presentationIsDirty = latestState != state
+        return publishLatestPresentationIfNeeded()
+    }
+
+    private var presentationIsAuthorized: Bool {
+        presentationIsActive
+            && applicationIsActive()
+            && !historicalProjectionIsBackgrounded()
+    }
+
+    @discardableResult
+    private func publishLatestPresentationIfNeeded() -> Bool {
+        guard presentationIsAuthorized,
+              presentationIsDirty else { return false }
+        let next = latestState
+        presentationIsDirty = false
+        guard next != state else { return false }
+        state = next
         return true
     }
 
