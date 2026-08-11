@@ -731,6 +731,254 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertFalse(review.confirmed)
     }
 
+    func testDeferredRecoveredGenerationPublishesSyntheticSecondSleepAfterWakeFrontier()
+        throws {
+        typealias Coordinator = AtriaRecoveredDataRecomputeCoordinator
+        let tz = "Asia/Kolkata"
+        let firstStart = date(2032, 8, 11, 1, 1, 57,
+                              timeZoneIdentifier: tz)
+        let firstEnd = date(2032, 8, 11, 3, 17,
+                            timeZoneIdentifier: tz)
+        // Synthetic retained-authority fixture matching the independently
+        // observed 10:53:25-13:53:25 shape. This unit test proves lifecycle
+        // publication semantics only; physical proof remains exclusively in
+        // the external acceptance harness.
+        let laterStart = date(2032, 8, 11, 10, 53, 25,
+                              timeZoneIdentifier: tz)
+        let laterEnd = date(2032, 8, 11, 13, 53, 25,
+                            timeZoneIdentifier: tz)
+        let drainedThrough = date(2032, 8, 11, 15, 2, 1,
+                                  timeZoneIdentifier: tz)
+        XCTAssertGreaterThan(drainedThrough, laterEnd)
+
+        let first = denseHRRRSession(
+            start: firstStart,
+            end: firstEnd,
+            bpm: 61,
+            eventTimeZoneIdentifier: tz
+        )
+        var later = physicalResumedSleepSession(
+            start: laterStart,
+            end: laterEnd
+        )
+        // The HR spike distribution exercises the review gate; it is not a
+        // beat-to-beat RR model. Give this synthetic source independent,
+        // provenance-qualified physiological variation so local RMSSD is
+        // truthfully available while external-reference validation stays nil.
+        let rrPattern = [900, 912, 896, 918, 904]
+        later.rrPoints = later.points.enumerated().map { index, point in
+            SavedSession.RRPoint(
+                t: point.t,
+                ms: rrPattern[index % rrPattern.count],
+                source: .standardHeartRateMeasurement2A37
+            )
+        }
+        let confirmedFirst = UserConfirmedSleep(
+            id: "synthetic-aug11-first",
+            createdAt: firstEnd,
+            start: firstStart,
+            end: firstEnd,
+            source: "user_adjusted_sleep",
+            confidence: "user_adjusted_hr_only",
+            sessions: 1,
+            samples: first.points.count,
+            avgHR: 61,
+            peakHR: 61,
+            restingHR: 56,
+            hrv: nil,
+            hrvWindowCount: nil,
+            duration: firstEnd.timeIntervalSince(firstStart),
+            span: firstEnd.timeIntervalSince(firstStart),
+            reason: "synthetic first episode",
+            motionSource: "verified_historical_motion",
+            motionValidated: true,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: tz
+        )
+        XCTAssertTrue(
+            SessionStore.confirmedSleepIsPhysiologicalMainSleep(confirmedFirst)
+        )
+
+        var coordinator = Coordinator(requiredComponents: [])
+        let cutoff = Self.indiaCalendar.startOfDay(for: firstStart)
+        let startEffects = coordinator.request(
+            archiveRevision: 170,
+            reason: "frontier_beyond_second_wake",
+            scope: .automaticCurrentCycle(since: cutoff)
+        )
+        guard case let .startProjection(old) = startEffects.first else {
+            return XCTFail("expected old projection")
+        }
+        XCTAssertEqual(
+            coordinator.deferActiveUntilForeground(ticket: old),
+            [.deferredUntilForeground(old)]
+        )
+        XCTAssertTrue(
+            coordinator.projectionCompleted(ticket: old).isEmpty,
+            "a cancelled generation may publish neither the old one-sleep image nor a partial second episode"
+        )
+
+        let freshEffects = coordinator.startDeferredForegroundRetry()
+        guard case let .startProjection(fresh) = freshEffects.first else {
+            return XCTFail("safe foreground must start one fresh generation")
+        }
+        XCTAssertGreaterThan(fresh.generation, old.generation)
+        XCTAssertEqual(fresh.archiveRevision, old.archiveRevision)
+        XCTAssertEqual(fresh.scope, old.scope)
+        XCTAssertTrue(coordinator.startDeferredForegroundRetry().isEmpty)
+
+        // The independently observed Atria resting authority for this window
+        // is 62 bpm. Keep the production physiology gate unchanged and make
+        // the synthetic fixture exercise that exact qualified path.
+        let recoveredRestingHR = 62
+        let recoveredCandidates = SessionStore.aggregateSleepCandidates(
+            in: [first, later],
+            rest: recoveredRestingHR,
+            maxHR: 190,
+            calendar: Self.indiaCalendar,
+            historicalMotionPolicy: .sessionOnly
+        )
+        let laterCandidate = try XCTUnwrap(recoveredCandidates.first {
+            $0.start == laterStart && $0.end == laterEnd
+        })
+        XCTAssertTrue(laterCandidate.denseMorningHROnlyReviewQualified)
+
+        let review = try XCTUnwrap(SessionStore.makeSleepReviewNightForCache(
+            snapshot: .empty,
+            canonicalSessions: [first, later],
+            confirmedSleeps: [confirmedFirst],
+            dismissedCandidates: [
+                AtriaDismissedSleepCandidate(
+                    start: firstStart,
+                    end: firstEnd
+                ),
+            ],
+            rest: recoveredRestingHR,
+            maxHR: 190,
+            calendar: Self.indiaCalendar
+        ))
+        XCTAssertEqual(review.start, laterStart)
+        XCTAssertEqual(review.end, laterEnd)
+        XCTAssertFalse(review.confirmed)
+
+        let localResult = try XCTUnwrap(
+            SessionStore.latestLocalRMSSDSourceCancellable(
+                in: [later],
+                shouldContinue: { true }
+            )
+        )
+        let localHRV = try XCTUnwrap(localResult)
+        XCTAssertGreaterThan(localHRV.value, 0)
+        let referenceResult = try XCTUnwrap(
+            SessionStore.latestReferenceValidatedHRVSourceCancellable(
+                in: [later],
+                shouldContinue: { true }
+            )
+        )
+        XCTAssertNil(
+            referenceResult,
+            "unvalidated reference HRV must remain an explicit blocker instead of borrowing Aug 10"
+        )
+
+        // The later episode is review-only until the user confirms it. A
+        // successful fresh lifecycle generation may surface that review, but
+        // it must keep every nightly biomarker on its own qualified authority:
+        // the confirmed first episode supplies RHR, while absent/unvalidated
+        // HRV, respiration, SpO2 and skin temperature stay absent. A prior
+        // night's values remain on that prior day and are never copied forward.
+        let sleepSnapshot = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [confirmedFirst],
+            dismissedCandidates: [],
+            calendar: Self.indiaCalendar
+        )
+        let currentMetrics = SessionStore.makeSavedDailyMetrics(
+            rollups: [],
+            sleep: sleepSnapshot,
+            baseline: PersonalBaseline(),
+            sessions: [first, later],
+            skinTemperatureDeviationByDay: [:],
+            calendar: Self.indiaCalendar
+        )
+        let currentDay = Self.indiaCalendar.startOfDay(for: firstEnd)
+        let currentMetric = try XCTUnwrap(currentMetrics.first {
+            Self.indiaCalendar.isDate($0.day, inSameDayAs: currentDay)
+        })
+        XCTAssertEqual(currentMetric.restingHR, confirmedFirst.restingHR)
+        XCTAssertNil(currentMetric.hrv)
+        XCTAssertNil(currentMetric.respiratoryRate)
+        XCTAssertNil(currentMetric.skinTemperatureDeviationCelsius)
+        XCTAssertFalse(AtriaResearchProbe.validatedSpO2DecoderAvailable)
+        XCTAssertFalse(
+            AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
+        )
+
+        let priorDay = Self.indiaCalendar.date(
+            byAdding: .day,
+            value: -1,
+            to: currentDay
+        )!
+        let priorMetric = SavedDailyMetric(
+            day: priorDay,
+            recoveryPercent: 64,
+            recoveryConfidence: "fixture_prior_night",
+            hrv: 47,
+            restingHR: 58,
+            respiratoryRate: 14.4,
+            sleepDuration: 7 * 3_600,
+            sleepSpan: 7.5 * 3_600,
+            sleepStart: priorDay,
+            sleepEnd: priorDay.addingTimeInterval(7 * 3_600),
+            sleepSource: "fixture_prior_night",
+            sleepStageSegments: [],
+            sleepConsistencyPercent: nil,
+            strain: nil,
+            skinTemperatureDeviationCelsius: 0.2
+        )
+        let mergedMetrics = SessionStore.mergeDailyMetricHistory(
+            existing: [priorMetric],
+            computed: currentMetrics,
+            sessions: [first, later],
+            sleep: sleepSnapshot,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: drainedThrough,
+            skinTemperatureDeviationByDay: [:],
+            skinTemperatureSourceValidated: false,
+            authoritativeDays: [currentDay],
+            calendar: Self.indiaCalendar
+        )
+        let freshDay = try XCTUnwrap(mergedMetrics.first {
+            Self.indiaCalendar.isDate($0.day, inSameDayAs: currentDay)
+        })
+        XCTAssertEqual(freshDay.restingHR, confirmedFirst.restingHR)
+        XCTAssertNil(freshDay.hrv, "must not borrow prior-night HRV")
+        XCTAssertNil(freshDay.respiratoryRate,
+                     "must not borrow prior-night respiration")
+        XCTAssertNil(freshDay.skinTemperatureDeviationCelsius,
+                     "must not borrow prior-night skin deviation")
+        XCTAssertTrue(mergedMetrics.contains { $0 == priorMetric })
+
+        XCTAssertEqual(
+            coordinator.projectionCompleted(ticket: fresh),
+            [.startDerived(fresh, [.currentCycleAndLatestNight])]
+        )
+        XCTAssertTrue(coordinator.projectionCompleted(ticket: fresh).isEmpty)
+        XCTAssertEqual(
+            coordinator.componentCompleted(
+                ticket: fresh,
+                component: .currentCycleAndLatestNight
+            ),
+            [.publish(fresh)]
+        )
+        XCTAssertTrue(
+            coordinator.componentCompleted(
+                ticket: fresh,
+                component: .currentCycleAndLatestNight
+            ).isEmpty
+        )
+    }
+
     func testConfirmedResumedSleepAddsOnlyObservedDurationToCycle() throws {
         let mainStart = date(2032, 1, 2, 0, 45, timeZoneIdentifier: "Asia/Kolkata")
         let mainEnd = date(2032, 1, 2, 4, 23, timeZoneIdentifier: "Asia/Kolkata")

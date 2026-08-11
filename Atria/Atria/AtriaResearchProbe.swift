@@ -156,9 +156,30 @@ enum AtriaResearchProbe {
     }
 
     static func whoop4SkinTemperatureAnchorRaw(_ rawValues: [Int]) -> Double? {
-        let sorted = rawValues
-            .filter(whoop4SkinTemperatureWornRawRange.contains)
-            .sorted()
+        whoop4SkinTemperatureAnchorRawCancellable(
+            rawValues,
+            shouldContinue: { true }
+        )
+    }
+
+    static func whoop4SkinTemperatureAnchorRawCancellable(
+        _ rawValues: [Int],
+        shouldContinue: () -> Bool
+    ) -> Double? {
+        guard shouldContinue() else { return nil }
+        var sorted: [Int] = []
+        sorted.reserveCapacity(rawValues.count)
+        for (index, value) in rawValues.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return nil }
+            if whoop4SkinTemperatureWornRawRange.contains(value) {
+                sorted.append(value)
+            }
+        }
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &sorted,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: <
+        ) else { return nil }
         guard sorted.count >= whoop4SkinTemperatureMinimumAnchorSamples else { return nil }
         let middle = sorted.count / 2
         if sorted.count.isMultiple(of: 2) {

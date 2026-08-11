@@ -298,6 +298,47 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.valueText, "1234")
     }
 
+    func testPhysicalAug11VerifiedCoverageStaysSeparateFromPreliminaryLedger()
+        throws {
+        let wake = day.addingTimeInterval(7 * 3_600)
+        let capturedThrough = wake.addingTimeInterval(7 * 3_600)
+        let verified = AtriaHistoricalDailyConsumerProjection.StepDay(
+            localDay: "2033-07-02",
+            dayStart: wake,
+            dayEnd: capturedThrough,
+            state: .missing,
+            stepCount: nil,
+            knownStepDeltaSum: 176,
+            knownEpochCount: 176,
+            rejectedOrUnknownEpochCount: 0,
+            knownCoverageSeconds: 11_598,
+            missingCoverageSeconds: 43_626
+        )
+
+        let value = AtriaDailyStepPresentation.resolve(
+            day: capturedThrough,
+            now: capturedThrough,
+            liveCount: 4_257,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: capturedThrough,
+            canonicalDays: [verified],
+            physiologicalDayStart: wake,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 176)
+        XCTAssertEqual(value.source, .verifiedCanonical)
+        XCTAssertEqual(value.completeness, .partial)
+        XCTAssertEqual(
+            try XCTUnwrap(value.coverageFraction),
+            11_598.0 / 55_224.0,
+            accuracy: 0.000_001
+        )
+        XCTAssertTrue(value.detailText.hasPrefix("21%"))
+        XCTAssertNotEqual(value.count, 4_257)
+        XCTAssertNotEqual(value.count, 4_433)
+    }
+
     func testFreshValidatedLiveOutranksPartialDurableReceiptWithoutSumming() {
         let wake = day.addingTimeInterval(7 * 3_600)
         let now = wake.addingTimeInterval(5 * 3_600)

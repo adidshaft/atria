@@ -5,6 +5,55 @@ import Foundation
 /// merge path exists only so a bounded projection can observe cancellation or
 /// its absolute deadline while ordering a dense night.
 enum AtriaSleepCooperativeAlgorithms {
+    @discardableResult
+    static func stableSort<Element>(
+        _ values: inout [Element],
+        shouldContinue: () -> Bool,
+        areInIncreasingOrder: (Element, Element) -> Bool
+    ) -> Bool {
+        guard shouldContinue() else { return false }
+        guard values.count > 1 else { return true }
+        var source = values
+        // Drop the caller's reference before the first merge write so the
+        // cancellable path retains two buffers, not three archive-sized copies.
+        // Every caller discards the local stage on `false`.
+        values.removeAll(keepingCapacity: false)
+        var destination = source
+        var width = 1
+        while width < source.count {
+            guard shouldContinue() else { return false }
+            var lower = 0
+            while lower < source.count {
+                let middle = min(lower + width, source.count)
+                let upper = min(lower + width + width, source.count)
+                var left = lower
+                var right = middle
+                var output = lower
+                while output < upper {
+                    if output.isMultiple(of: 256), !shouldContinue() {
+                        return false
+                    }
+                    if left < middle,
+                       (right >= upper
+                        || !areInIncreasingOrder(source[right], source[left])) {
+                        destination[output] = source[left]
+                        left += 1
+                    } else {
+                        destination[output] = source[right]
+                        right += 1
+                    }
+                    output += 1
+                }
+                lower = upper
+            }
+            swap(&source, &destination)
+            width = width > source.count / 2 ? source.count : width * 2
+        }
+        guard shouldContinue() else { return false }
+        values = source
+        return shouldContinue()
+    }
+
     static func stableSort<Element>(
         _ values: inout [Element],
         cooperativeDeadline: AtriaSleepSettlementDeadline,
@@ -13,7 +62,8 @@ enum AtriaSleepCooperativeAlgorithms {
         try cooperativeDeadline.checkpoint()
         guard values.count > 1 else { return }
         var source = values
-        var destination = values
+        values.removeAll(keepingCapacity: false)
+        var destination = source
         var width = 1
         while width < source.count {
             try cooperativeDeadline.checkpoint()

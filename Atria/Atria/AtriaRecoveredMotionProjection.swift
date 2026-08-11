@@ -141,6 +141,22 @@ enum AtriaRecoveredMotionProjection {
         end: Date,
         epochDuration: TimeInterval = 30
     ) -> [AtriaRecoveredMotionEpoch] {
+        epochFeaturesCancellable(
+            samples: samples,
+            start: start,
+            end: end,
+            epochDuration: epochDuration,
+            shouldContinue: { true }
+        )!
+    }
+
+    static func epochFeaturesCancellable(
+        samples: [Sample],
+        start: Date,
+        end: Date,
+        epochDuration: TimeInterval = 30,
+        shouldContinue: () -> Bool
+    ) -> [AtriaRecoveredMotionEpoch]? {
         guard end > start, epochDuration > 0 else { return [] }
         var configuration = Configuration.production
         configuration.minimumValidatedRows = 4
@@ -148,16 +164,22 @@ enum AtriaRecoveredMotionProjection {
         configuration.maximumGapSeconds = min(12, epochDuration * 0.40)
         configuration.maximumWindowSeconds = max(60, epochDuration)
 
-        let ordered = samples.sorted {
+        guard shouldContinue() else { return nil }
+        var ordered = samples
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &ordered,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: {
             if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
             return $0.sequence < $1.sequence
-        }
+        }) else { return nil }
         let count = max(1, Int(ceil(end.timeIntervalSince(start) / epochDuration)))
         var lower = 0
         var upper = 0
         var epochs: [AtriaRecoveredMotionEpoch] = []
         epochs.reserveCapacity(count)
         for index in 0..<count {
+            if index.isMultiple(of: 64), !shouldContinue() { return nil }
             let epochStart = start.addingTimeInterval(Double(index) * epochDuration)
             let epochEnd = min(end, epochStart.addingTimeInterval(epochDuration))
             while lower < ordered.count && ordered[lower].timestamp < epochStart { lower += 1 }
@@ -168,11 +190,12 @@ enum AtriaRecoveredMotionProjection {
                 guard timestamp < epochEnd || (isFinalEpoch && timestamp == epochEnd) else { break }
                 upper += 1
             }
-            let evidence = project(
+            guard let evidence = projectCancellable(
                 samples: Array(ordered[lower..<upper]),
                 window: Window(id: "epoch_\(index)", start: epochStart, end: epochEnd),
-                configuration: configuration
-            )
+                configuration: configuration,
+                shouldContinue: shouldContinue
+            ) else { return nil }
             epochs.append(AtriaRecoveredMotionEpoch(
                 start: epochStart,
                 end: epochEnd,
@@ -187,7 +210,7 @@ enum AtriaRecoveredMotionProjection {
                 reason: evidence.reason
             ))
         }
-        return epochs
+        return shouldContinue() ? epochs : nil
     }
 
     /// Bounded batch adapter used by the recovered-session projection. Binary
@@ -197,26 +220,64 @@ enum AtriaRecoveredMotionProjection {
         windows: [Window],
         epochDuration: TimeInterval = 30
     ) -> [String: [AtriaRecoveredMotionEpoch]] {
-        let ordered = samples.sorted {
+        epochFeaturesCancellable(
+            samples: samples,
+            windows: windows,
+            epochDuration: epochDuration,
+            shouldContinue: { true }
+        )!
+    }
+
+    static func epochFeaturesCancellable(
+        samples: [Sample],
+        windows: [Window],
+        epochDuration: TimeInterval = 30,
+        shouldContinue: () -> Bool
+    ) -> [String: [AtriaRecoveredMotionEpoch]]? {
+        guard shouldContinue() else { return nil }
+        var ordered = samples
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &ordered,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: {
             if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
             return $0.sequence < $1.sequence
-        }
+        }) else { return nil }
         var result: [String: [AtriaRecoveredMotionEpoch]] = [:]
         result.reserveCapacity(windows.count)
-        for window in windows {
+        for (index, window) in windows.enumerated() {
+            if index.isMultiple(of: 64), !shouldContinue() { return nil }
             let lower = lowerBound(in: ordered, date: window.start)
             let upper = upperBound(in: ordered, date: window.end, lowerBound: lower)
-            result[window.id] = epochFeatures(samples: Array(ordered[lower..<upper]),
-                                              start: window.start,
-                                              end: window.end,
-                                              epochDuration: epochDuration)
+            guard let features = epochFeaturesCancellable(
+                samples: Array(ordered[lower..<upper]),
+                start: window.start,
+                end: window.end,
+                epochDuration: epochDuration,
+                shouldContinue: shouldContinue
+            ) else { return nil }
+            result[window.id] = features
         }
-        return result
+        return shouldContinue() ? result : nil
     }
 
     static func project(samples: [Sample],
                         window: Window,
                         configuration: Configuration = .production) -> Evidence {
+        projectCancellable(
+            samples: samples,
+            window: window,
+            configuration: configuration,
+            shouldContinue: { true }
+        )!
+    }
+
+    static func projectCancellable(
+        samples: [Sample],
+        window: Window,
+        configuration: Configuration = .production,
+        shouldContinue: () -> Bool
+    ) -> Evidence? {
         let duration = window.end.timeIntervalSince(window.start)
         guard duration > 0, duration.isFinite else {
             return empty(window: window, reason: "invalid_window")
@@ -225,24 +286,45 @@ enum AtriaRecoveredMotionProjection {
             return empty(window: window, reason: "window_exceeds_bound")
         }
 
-        let bounded = samples
-            .filter { sample in
+        guard shouldContinue() else { return nil }
+        var bounded: [Sample] = []
+        bounded.reserveCapacity(samples.count)
+        for (index, sample) in samples.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return nil }
                 let timestamp = sample.timestamp.timeIntervalSince1970
-                return timestamp.isFinite
+            if timestamp.isFinite
                     && sample.timestamp >= window.start
-                    && sample.timestamp <= window.end
+                    && sample.timestamp <= window.end {
+                bounded.append(sample)
             }
-            .sorted {
+        }
+        guard shouldContinue() else { return nil }
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &bounded,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: {
                 if $0.timestamp != $1.timestamp { return $0.timestamp < $1.timestamp }
                 return $0.sequence < $1.sequence
-            }
+        }) else { return nil }
         guard !bounded.isEmpty else {
             return empty(window: window, reason: "no_timestamp_overlap")
         }
 
-        let validated = bounded.filter { isTrustedGravity($0, configuration: configuration) }
+        var validated: [Sample] = []
+        validated.reserveCapacity(bounded.count)
+        for (index, sample) in bounded.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return nil }
+            if isTrustedGravity(sample, configuration: configuration) {
+                validated.append(sample)
+            }
+        }
         let rejected = bounded.count - validated.count
-        let timestamps = validated.map(\.timestamp)
+        var timestamps: [Date] = []
+        timestamps.reserveCapacity(validated.count)
+        for (index, sample) in validated.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return nil }
+            timestamps.append(sample.timestamp)
+        }
         let coverage = timestamps.count >= 2
             ? max(0, Int((timestamps.last!.timeIntervalSince(timestamps.first!)).rounded()))
             : 0
@@ -253,7 +335,9 @@ enum AtriaRecoveredMotionProjection {
 
         var deltas: [Double] = []
         deltas.reserveCapacity(max(0, validated.count - 1))
-        for (previous, current) in zip(validated, validated.dropFirst()) {
+        for (index, pair) in zip(validated, validated.dropFirst()).enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return nil }
+            let (previous, current) = pair
             let gap = current.timestamp.timeIntervalSince(previous.timestamp)
             // Never calculate a movement delta across a reconnect-sized hole.
             guard gap >= 0, gap <= configuration.maximumGapSeconds else { continue }
@@ -262,12 +346,29 @@ enum AtriaRecoveredMotionProjection {
             let dz = current.z - previous.z
             deltas.append((dx * dx + dy * dy + dz * dz).squareRoot())
         }
+        var stillTransitionCount = 0
+        var deltaTotal = 0.0
+        for (index, delta) in deltas.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return nil }
+            deltaTotal += delta
+            if delta <= configuration.stillTransitionThreshold {
+                stillTransitionCount += 1
+            }
+        }
         let stillness = deltas.isEmpty
             ? nil
-            : Double(deltas.filter { $0 <= configuration.stillTransitionThreshold }.count)
-                / Double(deltas.count)
-        let intensity = mean(deltas)
-        let p95 = percentile(deltas, fraction: 0.95)
+            : Double(stillTransitionCount) / Double(deltas.count)
+        guard shouldContinue() else { return nil }
+        let intensity = deltas.isEmpty
+            ? nil : deltaTotal / Double(deltas.count)
+        guard AtriaSleepCooperativeAlgorithms.stableSort(
+            &deltas,
+            shouldContinue: shouldContinue,
+            areInIncreasingOrder: <
+        ) else { return nil }
+        let p95: Double? = deltas.isEmpty ? nil : deltas[
+            Int((Double(deltas.count - 1) * 0.95).rounded(.down))
+        ]
         let validatedFraction = Double(validated.count) / Double(bounded.count)
 
         let reason: String
@@ -295,6 +396,7 @@ enum AtriaRecoveredMotionProjection {
         let lowMotion = measurementValidated
             && (stillness ?? 0) >= configuration.lowMotionStillnessRatio
             && (intensity ?? .infinity) <= configuration.lowMotionIntensity
+        guard shouldContinue() else { return nil }
         return Evidence(window: window,
                         rows: bounded.count,
                         validatedRows: validated.count,
@@ -350,18 +452,6 @@ enum AtriaRecoveredMotionProjection {
         })
         gaps.append(max(0, end.timeIntervalSince(last)))
         return gaps
-    }
-
-    private static func mean(_ values: [Double]) -> Double? {
-        guard !values.isEmpty else { return nil }
-        return values.reduce(0, +) / Double(values.count)
-    }
-
-    private static func percentile(_ values: [Double], fraction: Double) -> Double? {
-        guard !values.isEmpty else { return nil }
-        let ordered = values.sorted()
-        let position = Int((Double(ordered.count - 1) * min(1, max(0, fraction))).rounded(.down))
-        return ordered[position]
     }
 
     private static func empty(window: Window, reason: String) -> Evidence {

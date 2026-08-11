@@ -1,6 +1,56 @@
 import CryptoKit
 import Foundation
 
+/// Cooperative authority carried through Foundation's Codable user-info for
+/// the durable recovered bootstrap checkpoint. The checkpoint and its nested
+/// RR accumulator manually visit their potentially 200k-element containers so
+/// an exact BGProcessing generation can duty-cycle or revoke between bounded
+/// groups without changing the existing property-list wire shape.
+enum AtriaRecoveredCheckpointCodingError: Error {
+    case authorityRevoked
+    case containerLimitExceeded
+}
+
+final class AtriaRecoveredCheckpointCodingAuthority {
+    let shouldContinue: () -> Bool
+    let onProgress: ((String, Int) -> Void)?
+    let maximumRRRecords: Int
+    private let revocationLock = NSLock()
+    private var observedRevocation = false
+
+    var wasRevoked: Bool {
+        revocationLock.lock()
+        defer { revocationLock.unlock() }
+        return observedRevocation
+    }
+
+    init(
+        shouldContinue: @escaping () -> Bool,
+        onProgress: ((String, Int) -> Void)? = nil,
+        maximumRRRecords: Int = 200_000
+    ) {
+        self.shouldContinue = shouldContinue
+        self.onProgress = onProgress
+        self.maximumRRRecords = maximumRRRecords
+    }
+
+    func checkpoint(stage: String, index: Int) throws {
+        onProgress?(stage, index)
+        guard shouldContinue() else {
+            revocationLock.lock()
+            observedRevocation = true
+            revocationLock.unlock()
+            throw AtriaRecoveredCheckpointCodingError.authorityRevoked
+        }
+    }
+}
+
+extension CodingUserInfoKey {
+    static let atriaRecoveredCheckpointCodingAuthority = CodingUserInfoKey(
+        rawValue: "com.atria.recovered-checkpoint-coding-authority"
+    )!
+}
+
 /// Deterministic projection of verified WHOOP 4 archive RR/IBI records into
 /// exact beat-end samples.
 ///
@@ -124,6 +174,108 @@ enum AtriaRecoveredRRProjection {
 
         init() {}
 
+        private enum CodingKeys: String, CodingKey {
+            case acceptedByRecordID
+            case rejectionCounts
+            case replayedRecordCount
+            case inputRecordCount
+        }
+
+        init(from decoder: Decoder) throws {
+            let authority = decoder.userInfo[
+                .atriaRecoveredCheckpointCodingAuthority
+            ] as? AtriaRecoveredCheckpointCodingAuthority
+            try authority?.checkpoint(
+                stage: "checkpoint_decode_rr",
+                index: 0
+            )
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            var acceptedContainer = try container.nestedUnkeyedContainer(
+                forKey: .acceptedByRecordID
+            )
+            var accepted: [Digest32: CompactAccepted] = [:]
+            if let count = acceptedContainer.count {
+                guard authority.map({ count / 2 <= $0.maximumRRRecords })
+                        ?? true else {
+                    throw AtriaRecoveredCheckpointCodingError
+                        .containerLimitExceeded
+                }
+                accepted.reserveCapacity(count / 2)
+            }
+            var acceptedIndex = 0
+            while !acceptedContainer.isAtEnd {
+                guard authority.map({
+                    acceptedIndex < $0.maximumRRRecords
+                }) ?? true else {
+                    throw AtriaRecoveredCheckpointCodingError
+                        .containerLimitExceeded
+                }
+                if acceptedIndex.isMultiple(of: 256) {
+                    try authority?.checkpoint(
+                        stage: "checkpoint_decode_rr",
+                        index: acceptedIndex
+                    )
+                }
+                let digest = try acceptedContainer.decode(Digest32.self)
+                let value = try acceptedContainer.decode(
+                    CompactAccepted.self
+                )
+                accepted[digest] = value
+                acceptedIndex += 1
+            }
+            try authority?.checkpoint(
+                stage: "checkpoint_decode_rr",
+                index: acceptedIndex
+            )
+            acceptedByRecordID = accepted
+            rejectionCounts = try container.decode(
+                [RejectionReason: Int].self,
+                forKey: .rejectionCounts
+            )
+            replayedRecordCount = try container.decode(
+                Int.self,
+                forKey: .replayedRecordCount
+            )
+            inputRecordCount = try container.decode(
+                Int.self,
+                forKey: .inputRecordCount
+            )
+        }
+
+        func encode(to encoder: Encoder) throws {
+            let authority = encoder.userInfo[
+                .atriaRecoveredCheckpointCodingAuthority
+            ] as? AtriaRecoveredCheckpointCodingAuthority
+            try authority?.checkpoint(
+                stage: "checkpoint_encode_rr",
+                index: 0
+            )
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            var acceptedContainer = container.nestedUnkeyedContainer(
+                forKey: .acceptedByRecordID
+            )
+            for (index, entry) in acceptedByRecordID.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try authority?.checkpoint(
+                        stage: "checkpoint_encode_rr",
+                        index: index
+                    )
+                }
+                try acceptedContainer.encode(entry.key)
+                try acceptedContainer.encode(entry.value)
+            }
+            try authority?.checkpoint(
+                stage: "checkpoint_encode_rr",
+                index: acceptedByRecordID.count
+            )
+            try container.encode(rejectionCounts, forKey: .rejectionCounts)
+            try container.encode(
+                replayedRecordCount,
+                forKey: .replayedRecordCount
+            )
+            try container.encode(inputRecordCount, forKey: .inputRecordCount)
+        }
+
         var acceptedRecordCount: Int { acceptedByRecordID.count }
 
         mutating func ingest(_ record: HistoricalArchive.Record) {
@@ -158,36 +310,74 @@ enum AtriaRecoveredRRProjection {
         /// Rejection/replay statistics intentionally keep describing the whole
         /// ingest history — they are diagnostics, not retained data.
         mutating func prune(before cutoff: TimeInterval) {
-            acceptedByRecordID = acceptedByRecordID.filter { _, accepted in
-                TimeInterval(accepted.correctedUnix)
+            _ = prune(before: cutoff, shouldContinue: { true })
+        }
+
+        @discardableResult
+        mutating func prune(
+            before cutoff: TimeInterval,
+            shouldContinue: () -> Bool
+        ) -> Bool {
+            guard shouldContinue() else { return false }
+            var retained: [Digest32: CompactAccepted] = [:]
+            retained.reserveCapacity(acceptedByRecordID.count)
+            for (index, entry) in acceptedByRecordID.enumerated() {
+                if index.isMultiple(of: 256), !shouldContinue() {
+                    return false
+                }
+                let (digest, accepted) = entry
+                let timestamp = TimeInterval(accepted.correctedUnix)
                     + TimeInterval(accepted.subsecond)
                         / TimeInterval(AtriaRecoveredRRProjection.rtcTicksPerSecond)
-                    >= cutoff
+                if timestamp >= cutoff {
+                    retained[digest] = accepted
+                }
             }
+            guard shouldContinue() else { return false }
+            acceptedByRecordID = retained
+            return true
         }
 
         func finish() -> Result {
+            finish(shouldContinue: { true })!
+        }
+
+        func finish(shouldContinue: () -> Bool) -> Result? {
             // Record-ID strings exist only transiently here (2026-08-05
             // bounding design, Edit 2): reconstructing ~one 87-char string
             // per accepted record costs ~40-60MB at the snapshot stage's
             // peak on the dying recompute thread (verdict F4, accepted)
             // instead of retaining the same bytes between recomputes.
-            let beats = acceptedByRecordID
-                .flatMap { digest, accepted in
-                    AtriaRecoveredRRProjection.makeBeats(
-                        correctedUnix: accepted.correctedUnix,
-                        subsecond: accepted.subsecond,
-                        counter: accepted.counter,
-                        intervals: accepted.intervals,
-                        recordID: AtriaRecoveredRRProjection.recordID(from: digest)
-                    )
+            guard shouldContinue() else { return nil }
+            var beats: [Beat] = []
+            beats.reserveCapacity(acceptedByRecordID.count * 2)
+            for (index, entry) in acceptedByRecordID.enumerated() {
+                if index.isMultiple(of: 256), !shouldContinue() {
+                    return nil
                 }
-                .sorted { lhs, rhs in
-                    if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
-                    if lhs.recordID != rhs.recordID { return lhs.recordID < rhs.recordID }
-                    return lhs.beatIndex < rhs.beatIndex
-                }
-            let fingerprint = AtriaRecoveredRRProjection.stableFingerprint(for: beats)
+                let (digest, accepted) = entry
+                beats.append(contentsOf: AtriaRecoveredRRProjection.makeBeats(
+                    correctedUnix: accepted.correctedUnix,
+                    subsecond: accepted.subsecond,
+                    counter: accepted.counter,
+                    intervals: accepted.intervals,
+                    recordID: AtriaRecoveredRRProjection.recordID(from: digest)
+                ))
+            }
+            guard shouldContinue() else { return nil }
+            guard AtriaSleepCooperativeAlgorithms.stableSort(
+                &beats,
+                shouldContinue: shouldContinue,
+                areInIncreasingOrder: { lhs, rhs in
+                if lhs.timestamp != rhs.timestamp { return lhs.timestamp < rhs.timestamp }
+                if lhs.recordID != rhs.recordID { return lhs.recordID < rhs.recordID }
+                return lhs.beatIndex < rhs.beatIndex
+            }) else { return nil }
+            guard let fingerprint = AtriaRecoveredRRProjection
+                .stableFingerprint(
+                    for: beats,
+                    shouldContinue: shouldContinue
+                ) else { return nil }
             return Result(
                 beats: beats,
                 statistics: Statistics(
@@ -379,10 +569,26 @@ enum AtriaRecoveredRRProjection {
     }
 
     private static func stableFingerprint(for beats: [Beat]) -> String {
-        let canonical = beats.map { beat in
-            "\(beat.id)|\(beat.timestamp.timeIntervalSince1970.bitPattern)|\(beat.intervalMilliseconds)"
-        }.joined(separator: "\n")
-        return "recovered-rr-projection-v1-\(sha256(canonical))"
+        stableFingerprint(for: beats, shouldContinue: { true })!
+    }
+
+    private static func stableFingerprint(
+        for beats: [Beat],
+        shouldContinue: () -> Bool
+    ) -> String? {
+        guard shouldContinue() else { return nil }
+        var hasher = SHA256()
+        let newline = Data([0x0A])
+        for (index, beat) in beats.enumerated() {
+            if index.isMultiple(of: 256), !shouldContinue() { return nil }
+            if index > 0 { hasher.update(data: newline) }
+            let line =
+                "\(beat.id)|\(beat.timestamp.timeIntervalSince1970.bitPattern)|\(beat.intervalMilliseconds)"
+            hasher.update(data: Data(line.utf8))
+        }
+        guard shouldContinue() else { return nil }
+        let fingerprint = "recovered-rr-projection-v1-\(hexEncoded(hasher.finalize()))"
+        return shouldContinue() ? fingerprint : nil
     }
 
     private static func snappedClockDrift(_ drift: Int) -> Int {
@@ -392,10 +598,6 @@ enum AtriaRecoveredRRProjection {
             return ((drift + granularity / 2) / granularity) * granularity
         }
         return ((drift - granularity / 2) / granularity) * granularity
-    }
-
-    private static func sha256(_ value: String) -> String {
-        hexEncoded(SHA256.hash(data: Data(value.utf8)))
     }
 
     /// Lowercase hex rendering without per-byte String(format:) — the scan

@@ -207,6 +207,109 @@ final class AtriaRecoveredHeartRateProjectionTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(sessions.first).hasQualifiedStandardRRProvenance)
     }
 
+    func testProjectionAndRecoveredSessionStagesAbortAtBoundedCheckpoints() throws {
+        let start = Date(timeIntervalSince1970: 1_800_700_000)
+        let points = (0..<20_000).map {
+            point(start, TimeInterval($0), 60 + $0 % 20)
+        }
+        var projectionChecks = 0
+        let cancelledProjection = AtriaRecoveredHeartRateProjection
+            .projectCancellable(
+                historical: points,
+                configuration: configuration,
+                shouldContinue: {
+                    projectionChecks += 1
+                    return projectionChecks < 6
+                }
+            )
+        XCTAssertNil(cancelledProjection)
+        XCTAssertLessThanOrEqual(projectionChecks, 6)
+
+        let projection = AtriaRecoveredHeartRateProjection.project(
+            historical: points,
+            configuration: configuration
+        )
+        var sessionChecks = 0
+        let cancelledSessions = AtriaRecoveredHeartRateProjection
+            .recoveredSessionsCancellable(
+                from: projection,
+                maximumGap: configuration.maximumGap,
+                shouldContinue: {
+                    sessionChecks += 1
+                    return sessionChecks < 6
+                }
+            )
+        XCTAssertNil(cancelledSessions)
+        XCTAssertLessThanOrEqual(sessionChecks, 6)
+    }
+
+    func testHeartRateAndRROrderingRevokeDuringCancellableMergeSort() {
+        let start = Date(timeIntervalSince1970: 1_800_750_000)
+        let points = (0..<20_000).reversed().map {
+            point(start, TimeInterval($0), 60 + $0 % 20)
+        }
+        var projectionChecks = 0
+        XCTAssertNil(AtriaRecoveredHeartRateProjection.projectCancellable(
+            historical: points,
+            configuration: configuration,
+            shouldContinue: {
+                projectionChecks += 1
+                return projectionChecks < 90
+            }
+        ))
+        XCTAssertEqual(projectionChecks, 90)
+
+        let projected = AtriaRecoveredHeartRateProjection.project(
+            historical: points,
+            configuration: configuration
+        )
+        let rr = (0..<20_000).reversed().map { index in
+            AtriaRecoveredRRProjection.Beat(
+                id: "beat-\(index)",
+                recordID: "record-\(index)",
+                timestamp: start.addingTimeInterval(TimeInterval(index)),
+                intervalMilliseconds: 800,
+                counter: UInt32(index),
+                beatIndex: 0,
+                provenance: .verifiedWhoop4HistoricalV24
+            )
+        }
+        var sessionChecks = 0
+        XCTAssertNil(AtriaRecoveredHeartRateProjection
+            .recoveredSessionsCancellable(
+                from: projected,
+                maximumGap: configuration.maximumGap,
+                recoveredRRBeats: rr,
+                shouldContinue: {
+                    sessionChecks += 1
+                    return sessionChecks < 90
+                }
+            ))
+        XCTAssertEqual(sessionChecks, 90)
+    }
+
+    func testAutomaticHeartRateMergeRejectsRevocationWithoutPartialResult() {
+        let start = Date(timeIntervalSince1970: 1_800_800_000)
+        let previous = (0..<10_000).map {
+            point(start, TimeInterval($0 * 2), 60)
+        }
+        let incoming = (0..<10_000).map {
+            point(start, TimeInterval($0 * 2 + 1), 61)
+        }
+        var checks = 0
+        let merged = SessionStore
+            .mergedAutomaticallyRecoveredHeartRatePointsCancellable(
+                previous: previous,
+                incoming: incoming,
+                shouldContinue: {
+                    checks += 1
+                    return checks < 6
+                }
+            )
+        XCTAssertNil(merged)
+        XCTAssertLessThanOrEqual(checks, 6)
+    }
+
     private func point(_ start: Date,
                        _ offset: TimeInterval,
                        _ bpm: Int) -> HistoricalArchive.HeartRatePoint {

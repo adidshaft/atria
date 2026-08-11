@@ -48,6 +48,50 @@ final class AtriaRecoveredRRProjectionTests: XCTestCase {
         XCTAssertEqual(Set(replayed.beats.map(\.id)).count, replayed.beats.count)
     }
 
+    func testAccumulatorPruneAndFinishAbortWithoutPartialPublication() {
+        var accumulator = AtriaRecoveredRRProjection.Accumulator()
+        for offset in 0..<2_000 {
+            accumulator.ingest(makeRecord(
+                counter: UInt32(0x0131_4944 + offset),
+                timestamp: UInt32(1_781_626_522 + offset)
+            ))
+        }
+        let accepted = accumulator.acceptedRecordCount
+        var pruneChecks = 0
+        XCTAssertFalse(accumulator.prune(
+            before: 1_781_626_000,
+            shouldContinue: {
+                pruneChecks += 1
+                return pruneChecks < 5
+            }
+        ))
+        XCTAssertEqual(accumulator.acceptedRecordCount, accepted)
+        XCTAssertLessThanOrEqual(pruneChecks, 5)
+
+        var finishChecks = 0
+        XCTAssertNil(accumulator.finish(shouldContinue: {
+            finishChecks += 1
+            return finishChecks < 5
+        }))
+        XCTAssertLessThanOrEqual(finishChecks, 5)
+    }
+
+    func testAccumulatorRevokesDuringBeatMergeSort() {
+        var accumulator = AtriaRecoveredRRProjection.Accumulator()
+        for offset in 0..<2_000 {
+            accumulator.ingest(makeRecord(
+                counter: UInt32(0x0231_4944 + offset),
+                timestamp: UInt32(1_781_700_000 + (2_000 - offset))
+            ))
+        }
+        var checks = 0
+        XCTAssertNil(accumulator.finish(shouldContinue: {
+            checks += 1
+            return checks < 15
+        }))
+        XCTAssertEqual(checks, 15)
+    }
+
     func testStableIdentityNormalizesHexPresentationButIncludesRecordIdentity() throws {
         let canonical = makeRecord()
         let decoratedHex = canonical.rawPayloadHex.uppercased()
@@ -303,6 +347,113 @@ final class AtriaRecoveredRRProjectionTests: XCTestCase {
         XCTAssertEqual(projection.baselineNightCount, 0)
         XCTAssertTrue(projection.deviations.isEmpty,
                       "Confirmed windows cannot turn an unvalidated research offset into Celsius")
+    }
+
+    func testRecoveredSkinStagesAbortAtBoundedCheckpoints() {
+        let start = Date(timeIntervalSince1970: 1_800_900_000)
+        let end = start.addingTimeInterval(20_000)
+        let points = (0..<20_000).map { offset in
+            HistoricalArchive.SkinTemperatureRawPoint(
+                t: start.addingTimeInterval(TimeInterval(offset)),
+                raw: 820 + offset % 3,
+                strapIdentifier: "strap-a"
+            )
+        }
+        let sleep = UserConfirmedSleep(
+            id: "cancellable-skin-night",
+            createdAt: end,
+            start: start,
+            end: end,
+            source: "manual_sleep",
+            confidence: "user_confirmed_hr_only",
+            sessions: 1,
+            samples: 100,
+            avgHR: 60,
+            peakHR: 70,
+            restingHR: 55,
+            hrv: nil,
+            hrvWindowCount: nil,
+            duration: end.timeIntervalSince(start),
+            span: end.timeIntervalSince(start),
+            reason: "test",
+            motionSource: "user_review",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "UTC"
+        )
+        var projectionChecks = 0
+        XCTAssertNil(SessionStore
+            .recoveredSkinTemperatureProjectionCancellable(
+                points: points,
+                confirmedSleeps: [sleep],
+                shouldContinue: {
+                    projectionChecks += 1
+                    return projectionChecks < 5
+                }
+            ))
+        XCTAssertLessThanOrEqual(projectionChecks, 5)
+
+        let session = SavedSession(
+            id: UUID(),
+            start: start,
+            end: end,
+            label: "Recovered",
+            points: []
+        )
+        var attachmentChecks = 0
+        XCTAssertNil(SessionStore.attachRecoveredSkinTemperatureCancellable(
+            points,
+            to: [session],
+            shouldContinue: {
+                attachmentChecks += 1
+                return attachmentChecks < 5
+            }
+        ))
+        XCTAssertLessThanOrEqual(attachmentChecks, 5)
+    }
+
+    func testRecoveredSkinOrderingRevokesInsideMergeAndAnchorSorts() {
+        let start = Date(timeIntervalSince1970: 1_800_950_000)
+        let end = start.addingTimeInterval(20_000)
+        let points = (0..<20_000).reversed().map { offset in
+            HistoricalArchive.SkinTemperatureRawPoint(
+                t: start.addingTimeInterval(TimeInterval(offset)),
+                raw: 820 + offset % 3,
+                strapIdentifier: "strap-a"
+            )
+        }
+        let sleep = UserConfirmedSleep(
+            id: "skin-sort-night",
+            createdAt: end,
+            start: start,
+            end: end,
+            source: "manual_sleep",
+            confidence: "user_confirmed_hr_only",
+            sessions: 1,
+            samples: 100,
+            avgHR: 60,
+            peakHR: 70,
+            restingHR: 55,
+            hrv: nil,
+            hrvWindowCount: nil,
+            duration: end.timeIntervalSince(start),
+            span: end.timeIntervalSince(start),
+            reason: "test",
+            motionSource: "user_review",
+            motionValidated: false,
+            stageSegments: nil,
+            eventTimeZoneIdentifier: "UTC"
+        )
+        var checks = 0
+        XCTAssertNil(SessionStore.recoveredSkinTemperatureProjectionCancellable(
+            points: points,
+            confirmedSleeps: [sleep],
+            shouldContinue: {
+                checks += 1
+                return checks < 90
+            }
+        ))
+        XCTAssertEqual(checks, 90)
     }
 
     func testTemperatureBudgetFailsOnlyTemperatureChannel() {
