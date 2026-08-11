@@ -560,6 +560,22 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             ),
             1
         )
+        for thermalState in [
+            ProcessInfo.ThermalState.nominal,
+            .fair,
+            .serious,
+            .critical,
+        ] {
+            XCTAssertEqual(
+                AtriaBLEManager
+                    .connectedRawHistoryCatchUpTargetAcknowledgedPages(
+                        thermalState: thermalState,
+                        backgroundSlice: true
+                    ),
+                1,
+                "a locked-background raw serve gets one clean ACK boundary"
+            )
+        }
         XCTAssertFalse(
             AtriaBLEManager
                 .shouldFinishConnectedRawHistoryCatchUpAtACKBoundary(
@@ -573,6 +589,26 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                     acknowledgedPages: 16,
                     minimumAcknowledgedPages: 16
                 )
+        )
+
+        let preemptedAt = Date(timeIntervalSince1970: 10_000)
+        XCTAssertEqual(
+            AtriaBLEManager
+                .connectedRawHistoryLivePreemptionRetryNotBefore(
+                    now: preemptedAt,
+                    connectedSliceCooldown: 60,
+                    zeroProgressRetry: 120
+                ),
+            preemptedAt.addingTimeInterval(5 * 60)
+        )
+        XCTAssertEqual(
+            AtriaBLEManager
+                .connectedRawHistoryLivePreemptionRetryNotBefore(
+                    now: preemptedAt,
+                    connectedSliceCooldown: 420,
+                    zeroProgressRetry: 120
+                ),
+            preemptedAt.addingTimeInterval(420)
         )
         XCTAssertEqual(
             AtriaBLEManager.connectedRawHistoryCatchUpContinuationDisposition(
