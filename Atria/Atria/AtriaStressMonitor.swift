@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import SwiftUI
+import UIKit
 
 /// Live physiological-stress state from Atria's single versioned v3 kernel.
 /// The five-minute minute-framed fact preserves qualified HR/RR provenance,
@@ -2377,6 +2378,19 @@ final class AtriaStressMonitorStore: ObservableObject {
     private var distributionArchive: AtriaStressDistributionArchive
     @Published private(set) var distributionRevision = 0
 
+    /// Acquisition and durability keep advancing while the app is inactive,
+    /// but SwiftUI-facing mirrors must stay still. These private values are the
+    /// scorer's authority; the @Published fields above are presentation-only
+    /// copies released together by `publishLatestPresentation()` on foreground.
+    private var latestState: AtriaStressState = .noSignal
+    private var latestLiveHeartRate: LiveHeartRateReading?
+    private var latestLastMeasuredAt: Date?
+    private var latestHistoryRevision = 0
+    private var latestHistoryLoadState: AtriaStressHistoryLoadState = .disabled
+    private var latestDistributionRevision = 0
+    private var presentationPublishingIsActive: Bool
+    private let applicationIsActive: @MainActor () -> Bool
+
     struct StressHistoryPoint: Identifiable, Equatable, Sendable {
         let t: Date
         /// Continuous activation 0-1 behind the discrete level.
@@ -2509,13 +2523,22 @@ final class AtriaStressMonitorStore: ObservableObject {
 
     init(defaults: UserDefaults = .standard,
          historyPersistence: AtriaStressHistoryPersistence? = nil,
-         historyLoadNow: Date = Date()) {
+         historyLoadNow: Date = Date(),
+         presentationPublishingIsActive: Bool = true,
+         applicationIsActive: @escaping @MainActor () -> Bool = {
+             UIApplication.shared.applicationState == .active
+         }) {
         self.awakeReferenceDefaults = defaults
         self.distributionArchive = AtriaStressDistributionArchive.load(defaults: defaults)
         self.persistedAwakeReference = Self.loadPersistedAwakeReference(defaults: defaults)
         self.awakeBaselineArchive = AtriaAwakeBaselineArchive.load(defaults: defaults)
         self.historyPersistence = historyPersistence
-        self.historyLoadState = historyPersistence == nil ? .disabled : .loading
+        self.presentationPublishingIsActive = presentationPublishingIsActive
+        self.applicationIsActive = applicationIsActive
+        let initialHistoryLoadState: AtriaStressHistoryLoadState =
+            historyPersistence == nil ? .disabled : .loading
+        self.historyLoadState = initialHistoryLoadState
+        self.latestHistoryLoadState = initialHistoryLoadState
 
         if let historyPersistence {
             Task { [weak self] in
@@ -2524,6 +2547,79 @@ final class AtriaStressMonitorStore: ObservableObject {
                 self.completeHistoryHydration(result, now: historyLoadNow)
             }
         }
+    }
+
+    /// Controls only ObservableObject publication. Scoring buffers, minute
+    /// facts, history arrays, durability ledgers, and checkpoint I/O continue
+    /// unchanged while inactive. Re-enabling performs one latest-value release;
+    /// intermediate background states are never replayed through SwiftUI.
+    func setPresentationPublishingActive(_ active: Bool) {
+        presentationPublishingIsActive = active
+        guard active else { return }
+        publishLatestPresentation()
+    }
+
+    func publishLatestPresentation() {
+        guard presentationPublicationIsAuthorized else { return }
+        if state != latestState { state = latestState }
+        if liveHeartRate != latestLiveHeartRate {
+            liveHeartRate = latestLiveHeartRate
+        }
+        if lastMeasuredAt != latestLastMeasuredAt {
+            lastMeasuredAt = latestLastMeasuredAt
+        }
+        if historyRevision != latestHistoryRevision {
+            historyRevision = latestHistoryRevision
+        }
+        if historyLoadState != latestHistoryLoadState {
+            historyLoadState = latestHistoryLoadState
+        }
+        if distributionRevision != latestDistributionRevision {
+            distributionRevision = latestDistributionRevision
+        }
+    }
+
+    private func setLatestState(_ next: AtriaStressState) {
+        guard next != latestState else { return }
+        latestState = next
+        if presentationPublicationIsAuthorized { state = next }
+    }
+
+    private func setLatestLiveHeartRate(_ next: LiveHeartRateReading?) {
+        guard next != latestLiveHeartRate else { return }
+        latestLiveHeartRate = next
+        if presentationPublicationIsAuthorized { liveHeartRate = next }
+    }
+
+    private func setLatestLastMeasuredAt(_ next: Date?) {
+        latestLastMeasuredAt = next
+        if presentationPublicationIsAuthorized { lastMeasuredAt = next }
+    }
+
+    private func advanceHistoryRevision() {
+        latestHistoryRevision &+= 1
+        if presentationPublicationIsAuthorized {
+            historyRevision = latestHistoryRevision
+        }
+    }
+
+    private func setLatestHistoryLoadState(
+        _ next: AtriaStressHistoryLoadState
+    ) {
+        guard next != latestHistoryLoadState else { return }
+        latestHistoryLoadState = next
+        if presentationPublicationIsAuthorized { historyLoadState = next }
+    }
+
+    private func advanceDistributionRevision() {
+        latestDistributionRevision &+= 1
+        if presentationPublicationIsAuthorized {
+            distributionRevision = latestDistributionRevision
+        }
+    }
+
+    private var presentationPublicationIsAuthorized: Bool {
+        presentationPublishingIsActive && applicationIsActive()
     }
 
     private static let awakeReferenceDefaultsKey = "atria.stress.awakeReference.v1"
@@ -2703,7 +2799,7 @@ final class AtriaStressMonitorStore: ObservableObject {
     /// Deterministic seam for tests and consumers that must await the initial
     /// local restore before deciding whether a timeline is genuinely empty.
     func waitForHistoryHydration() async {
-        guard historyLoadState == .loading else { return }
+        guard latestHistoryLoadState == .loading else { return }
         await withCheckedContinuation { continuation in
             historyHydrationWaiters.append(continuation)
         }
@@ -2738,17 +2834,17 @@ final class AtriaStressMonitorStore: ObservableObject {
                                            now: now)
             if merged != history {
                 history = merged
-                historyRevision &+= 1
+                advanceHistoryRevision()
             }
             historyHasDurableCheckpoint = !archive.points.isEmpty
-            historyLoadState = .loaded
+            setLatestHistoryLoadState(.loaded)
 
         case .unavailable:
             // Keep any live tail recorded while the background load ran, but
             // never relabel a failed/corrupt restore as a true empty archive.
             history = Self.mergeHistory(restored: [], live: history, now: now)
             historyHasDurableCheckpoint = false
-            historyLoadState = .unavailable
+            setLatestHistoryLoadState(.unavailable)
         }
         historyDurabilityLedger.retainOnly(history.lazy.map(\.t))
 
@@ -3030,7 +3126,7 @@ final class AtriaStressMonitorStore: ObservableObject {
                                    force: Bool = false,
                                    continuingDrain: Bool = false) {
         guard let historyPersistence, !history.isEmpty else { return }
-        guard historyLoadState != .loading else {
+        guard latestHistoryLoadState != .loading else {
             if force { historyForcedFlushPending = true }
             return
         }
@@ -3142,11 +3238,11 @@ final class AtriaStressMonitorStore: ObservableObject {
                 historyCheckpointDrainRemainingSamples - clearedRevisionCount
             )
             historyCheckpointRetryPending = false
-            if historyLoadState == .unavailable {
+            if latestHistoryLoadState == .unavailable {
                 // The corrupt/unreadable archive has now been replaced by a
                 // confirmed valid checkpoint. The retained live tail is the
                 // honest available history from this point forward.
-                historyLoadState = .loaded
+                setLatestHistoryLoadState(.loaded)
             }
             if wasRetry {
                 AtriaDebugLog("ATRIADBG stress_history_checkpoint status=retry_recovered")
@@ -3178,16 +3274,16 @@ final class AtriaStressMonitorStore: ObservableObject {
     private func recordHistory(now: Date) {
         // Production history is emitted only from a versioned minute fact, so
         // live and restored timelines cannot silently mix scoring kernels.
-        guard case .scored = state.kind, let level = state.level,
-              state.minuteFact != nil else { return }
+        guard case .scored = latestState.kind, let level = latestState.level,
+              latestState.minuteFact != nil else { return }
         let priorUnsavedSamples = unsavedHistorySamples
         let livePoint = StressHistoryPoint(
             t: now,
-            activation: state.rawActivation,
+            activation: latestState.rawActivation,
             level: level,
-            confidence: state.confidence,
-            hrvAvailable: state.hrvAvailable,
-            minuteFact: state.minuteFact,
+            confidence: latestState.confidence,
+            hrvAvailable: latestState.hrvAvailable,
+            minuteFact: latestState.minuteFact,
             factSource: .live,
             scoringVersion: AtriaStressMonitor.scoringVersion
         )
@@ -3210,7 +3306,7 @@ final class AtriaStressMonitorStore: ObservableObject {
         if history.count > AtriaStressHistoryArchive.maximumPointCount {
             history.removeFirst(history.count - AtriaStressHistoryArchive.maximumPointCount)
         }
-        historyRevision &+= 1
+        advanceHistoryRevision()
         historyDurabilityLedger.retainOnly(history.lazy.map(\.t))
         let survivingPriorUnsavedSamples = unsavedHistorySamples
         let prunedUnsavedSamples = priorUnsavedSamples - survivingPriorUnsavedSamples
@@ -3230,7 +3326,7 @@ final class AtriaStressMonitorStore: ObservableObject {
         // lower confidence in minute provenance; silently dropping them would
         // turn the daily distribution into undisclosed HR+HRV-only coverage.
         if distributionArchive.record(level: level, at: now) {
-            distributionRevision &+= 1
+            advanceDistributionRevision()
             unsavedDistributionSamples += 1
             // At the one-minute history cadence this writes at most every ten
             // minutes. A process interruption can lose only the small pending
@@ -3264,7 +3360,7 @@ final class AtriaStressMonitorStore: ObservableObject {
         _ inputs: [AtriaPhysiologicalStressModel.WindowInput],
         now: Date = Date()
     ) async {
-        if historyLoadState == .loading { await waitForHistoryHydration() }
+        if latestHistoryLoadState == .loading { await waitForHistoryHydration() }
         let boundedInputs = Array(inputs.suffix(AtriaStressHistoryArchive.maximumPointCount))
         let perWindowSampleLimit = 600
         let totalSampleLimit = 500_000
@@ -3310,7 +3406,7 @@ final class AtriaStressMonitorStore: ObservableObject {
         _ replay: AtriaHistoricalStressReplay.Result,
         now: Date = Date()
     ) async {
-        if historyLoadState == .loading { await waitForHistoryHydration() }
+        if latestHistoryLoadState == .loading { await waitForHistoryHydration() }
         let factDates = Set(replay.facts.map(\.date))
         guard replay.facts.count <= AtriaStressHistoryArchive.maximumPointCount,
               replay.heartRates.count <= AtriaStressHistoryArchive.maximumPointCount,
@@ -3368,7 +3464,7 @@ final class AtriaStressMonitorStore: ObservableObject {
             now: now
         )
         guard historyChanged || heartRateChanged else { return }
-        historyRevision &+= 1
+        advanceHistoryRevision()
         guard historyChanged, let historyPersistence else { return }
         let submission = historyDurabilityLedger.submission(
             for: history.lazy.map(\.t)
@@ -3387,7 +3483,9 @@ final class AtriaStressMonitorStore: ObservableObject {
         if await historyPersistence.save(archive, now: now) {
             historyHasDurableCheckpoint = true
             historyDurabilityLedger.complete(submission, succeeded: true)
-            if historyLoadState == .unavailable { historyLoadState = .loaded }
+            if latestHistoryLoadState == .unavailable {
+                setLatestHistoryLoadState(.loaded)
+            }
         }
     }
 
@@ -3522,22 +3620,27 @@ final class AtriaStressMonitorStore: ObservableObject {
                 recentRRSamples: [AtriaBreathworkSession.RRSample],
                 isRecording: Bool,
                 zoneIndex: Int?,
-                hrvSnapshot: HRVSnapshot?,
-                baseline: PersonalBaseline,
-                restingMaxHR: (rest: Int, max: Int),
-                hasActiveSleepEvidence: Bool = false,
-                now: Date = Date()) {
+                 hrvSnapshot: HRVSnapshot?,
+                 baseline: PersonalBaseline,
+                 restingMaxHR: (rest: Int, max: Int),
+                 hasActiveSleepEvidence: Bool = false,
+                 now: Date = Date()) {
 
         if hasContact, heartRate > 0 {
-            if liveHeartRate?.bpm != heartRate {
-                liveHeartRate = LiveHeartRateReading(bpm: heartRate, at: now)
-            } else if let current = liveHeartRate, now.timeIntervalSince(current.at) > 30 {
+            if latestLiveHeartRate?.bpm != heartRate {
+                setLatestLiveHeartRate(
+                    LiveHeartRateReading(bpm: heartRate, at: now)
+                )
+            } else if let current = latestLiveHeartRate,
+                      now.timeIntervalSince(current.at) > 30 {
                 // Same bpm for a while: refresh the stamp so freshness gating
                 // doesn't hide a steadily-delivering strap.
-                liveHeartRate = LiveHeartRateReading(bpm: heartRate, at: now)
+                setLatestLiveHeartRate(
+                    LiveHeartRateReading(bpm: heartRate, at: now)
+                )
             }
         } else {
-            liveHeartRate = nil
+            setLatestLiveHeartRate(nil)
         }
 
         if hasContact {
@@ -3628,15 +3731,15 @@ final class AtriaStressMonitorStore: ObservableObject {
         guard hasContact, heartRate > 0 else {
             previousMinuteFact = nil
             lastEvaluatedMinute = nil
-            lastMeasuredAt = nil
-            if state != .noSignal { state = .noSignal }
+            setLatestLastMeasuredAt(nil)
+            setLatestState(.noSignal)
             return
         }
 
         let contactAge = contactStartedAt.map { now.timeIntervalSince($0) } ?? 0
         guard contactAge >= AtriaStressMonitor.warmUpSeconds else {
             previousMinuteFact = nil
-            lastMeasuredAt = nil
+            setLatestLastMeasuredAt(nil)
             let warming = AtriaStressState(level: nil,
                                            label: "Warming up",
                                            detail: "Building a five-minute cardiac window",
@@ -3644,7 +3747,7 @@ final class AtriaStressMonitorStore: ObservableObject {
                                            confidence: 0,
                                            rawActivation: 0,
                                            hrvAvailable: false)
-            if warming != state { state = warming }
+            setLatestState(warming)
             return
         }
 
@@ -3731,8 +3834,8 @@ final class AtriaStressMonitorStore: ObservableObject {
             previous: previousMinuteFact
         ) else {
             previousMinuteFact = nil
-            lastMeasuredAt = nil
-            if state != .noSignal { state = .noSignal }
+            setLatestLastMeasuredAt(nil)
+            setLatestState(.noSignal)
             return
         }
         previousMinuteFact = fact
@@ -3760,8 +3863,8 @@ final class AtriaStressMonitorStore: ObservableObject {
             hrvAvailable: !fact.isHROnly,
             minuteFact: fact
         )
-        if finalState != state { state = finalState }
-        lastMeasuredAt = fact.date
+        setLatestState(finalState)
+        setLatestLastMeasuredAt(fact.date)
         // The HR tab receives a real timestamped observation from inside this
         // exact minute window—not the later UI tick and not the five-minute
         // mean embedded in the stress fact.

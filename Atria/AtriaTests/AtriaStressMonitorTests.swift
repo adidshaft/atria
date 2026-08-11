@@ -1,7 +1,87 @@
 import XCTest
+import Combine
 @testable import Atria
 
 final class AtriaStressMonitorTests: XCTestCase {
+    @MainActor
+    func testInactivePresentationFreezesObservableMirrorsWhileHistoryPersists() async throws {
+        let (persistence, directory) = makeStressHistoryPersistence()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var applicationIsActive = false
+        let store = AtriaStressMonitorStore(
+            historyPersistence: persistence,
+            historyLoadNow: now,
+            presentationPublishingIsActive: false,
+            applicationIsActive: { applicationIsActive }
+        )
+        var objectWillChangeCount = 0
+        let cancellable = store.objectWillChange.sink {
+            objectWillChangeCount += 1
+        }
+        await store.waitForHistoryHydration()
+        XCTAssertEqual(store.historyLoadState, .loading,
+                       "background hydration must remain private until foreground")
+        let baseline = makeBaseline(restingMean: 60,
+                                    restingSD: 4,
+                                    hrvSampleDays: 0)
+        for offset in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] {
+            store.update(heartRate: 98,
+                         hasContact: true,
+                         recentRRSamples: [],
+                         isRecording: false,
+                         zoneIndex: 1,
+                         hrvSnapshot: nil,
+                         baseline: baseline,
+                         restingMaxHR: restingMaxHR,
+                         hasActiveSleepEvidence: false,
+                         now: now.addingTimeInterval(offset))
+        }
+        await store.waitForPendingHistoryCheckpoint()
+
+        XCTAssertEqual(objectWillChangeCount, 0)
+        XCTAssertEqual(store.state, .noSignal)
+        XCTAssertNil(store.liveHeartRate)
+        XCTAssertNil(store.lastMeasuredAt)
+        XCTAssertEqual(store.historyRevision, 0)
+        XCTAssertEqual(store.distributionRevision, 0)
+        XCTAssertEqual(store.history.count, 1,
+                       "private stress computation must keep its minute fact")
+        XCTAssertEqual(
+            try XCTUnwrap(store.distributionComparison(
+                now: now.addingTimeInterval(300)
+            )).today.sampleCount,
+            1,
+            "distribution durability must continue while presentation is frozen"
+        )
+        guard case .loaded(let persisted) = await persistence.load(
+            now: now.addingTimeInterval(300)
+        ) else {
+            return XCTFail("inactive stress history must still reach durable storage")
+        }
+        XCTAssertEqual(persisted.points.count, 1)
+
+        store.setPresentationPublishingActive(true)
+        store.publishLatestPresentation()
+        XCTAssertEqual(objectWillChangeCount, 0,
+                       "cached scene authority remains inert while UIApplication is inactive")
+        applicationIsActive = true
+        store.setPresentationPublishingActive(true)
+        XCTAssertEqual(store.state.kind, .scored)
+        XCTAssertEqual(store.liveHeartRate?.bpm, 98)
+        XCTAssertEqual(store.lastMeasuredAt,
+                       now.addingTimeInterval(300))
+        XCTAssertEqual(store.historyRevision, 1)
+        XCTAssertEqual(store.historyLoadState, .loaded)
+        XCTAssertEqual(store.distributionRevision, 1)
+        XCTAssertGreaterThan(objectWillChangeCount, 0)
+
+        let resumedPublicationCount = objectWillChangeCount
+        store.setPresentationPublishingActive(true)
+        XCTAssertEqual(objectWillChangeCount, resumedPublicationCount,
+                       "repeated active/tab delivery must not replay the catch-up")
+        withExtendedLifetime(cancellable) {}
+    }
+
     @MainActor
     func testLiveStoreCarriesOnlyExplicitQualifiedSleepContextIntoV3Fact() throws {
         let baseline = makeBaseline(restingMean: 60, restingSD: 4)
