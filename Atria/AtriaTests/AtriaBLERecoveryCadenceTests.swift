@@ -360,13 +360,54 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ), .rediscoverHeartRateService)
     }
 
-    func testHRContinuityDefersRepairWhileHistoryOwnsTheTransport() {
-        XCTAssertTrue(AtriaBLEManager.shouldDeferHRContinuityRepairForHistoryOwnership(
-            historyTransportActive: true
-        ))
-        XCTAssertFalse(AtriaBLEManager.shouldDeferHRContinuityRepairForHistoryOwnership(
-            historyTransportActive: false
-        ))
+    func testHRContinuityPreemptsOnlyAStaleExactConnectedRawOwner() {
+        XCTAssertEqual(
+            AtriaBLEManager.hrContinuityHistoryOwnershipDisposition(
+                historyTransportActive: false,
+                exactConnectedRawHistoryActive: false,
+                rawHeartRateGap: 300,
+                adaptiveTimeout: 30
+            ),
+            .repairNormally
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.hrContinuityHistoryOwnershipDisposition(
+                historyTransportActive: true,
+                exactConnectedRawHistoryActive: false,
+                rawHeartRateGap: 300,
+                adaptiveTimeout: 30
+            ),
+            .deferExclusiveHistory,
+            "ordinary and workout history keep their exclusive-page semantics"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.hrContinuityHistoryOwnershipDisposition(
+                historyTransportActive: true,
+                exactConnectedRawHistoryActive: true,
+                rawHeartRateGap: 29.999,
+                adaptiveTimeout: 30
+            ),
+            .deferExclusiveHistory
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.hrContinuityHistoryOwnershipDisposition(
+                historyTransportActive: true,
+                exactConnectedRawHistoryActive: true,
+                rawHeartRateGap: 30,
+                adaptiveTimeout: 30
+            ),
+            .preemptConnectedRawHistory
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.hrContinuityHistoryOwnershipDisposition(
+                historyTransportActive: true,
+                exactConnectedRawHistoryActive: true,
+                rawHeartRateGap: .nan,
+                adaptiveTimeout: 30
+            ),
+            .deferExclusiveHistory,
+            "invalid clocks cannot authorize a transport rebuild"
+        )
     }
 
     func testDenseFreshWithAcceptedHRStaleAlwaysProducesRepairAction() {
@@ -3832,6 +3873,192 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(source.contains(
             "backgroundHistoricalSliceLiveSilenceLimit: TimeInterval = 45"
         ))
+    }
+
+    func testExactConnectedRawLiveHRPreemptionFinishesBeforeCanonicalRebuild()
+        throws {
+        let source = try leaseManagerSource()
+        let helperStart = try XCTUnwrap(source.range(
+            of: "private func preemptConnectedRawHistoryForLiveHeartRateIfNeeded("
+        ))
+        let helperEnd = try XCTUnwrap(source.range(
+            of: "private func beginHistoricalArchiveWarmBackgroundLease(",
+            range: helperStart.upperBound..<source.endIndex
+        ))
+        let helper = String(
+            source[helperStart.lowerBound..<helperEnd.lowerBound]
+        )
+        let finish = try XCTUnwrap(helper.range(
+            of: "finishConnectedHistoryFailureWithoutDisconnectIfNeeded("
+        ))
+        let clearContinuation = try XCTUnwrap(helper.range(
+            of: "connectedRawHistoryCatchUpContinuationPending = false"
+        ))
+        let persistedCooldown = try XCTUnwrap(helper.range(
+            of: "OfflineSyncDefaults.connectedSliceCooldownUntil"
+        ))
+        let flushedCooldown = try XCTUnwrap(helper.range(
+            of: "defaults.synchronize()"
+        ))
+        let rebuild = try XCTUnwrap(helper.range(
+            of: "forceHardReconnectForPacketStall("
+        ))
+
+        XCTAssertLessThan(finish.lowerBound, clearContinuation.lowerBound)
+        XCTAssertLessThan(clearContinuation.lowerBound, persistedCooldown.lowerBound)
+        XCTAssertLessThan(persistedCooldown.lowerBound, flushedCooldown.lowerBound)
+        XCTAssertLessThan(flushedCooldown.lowerBound, rebuild.lowerBound)
+        XCTAssertTrue(helper.contains(
+            "activeConnectedRawHistoryCatchUpAuthority("
+        ))
+        XCTAssertTrue(helper.contains(
+            "authority.request.callbackSource.peripheralObjectID"
+        ))
+        XCTAssertTrue(helper.contains(
+            "bleCallbackEpochFence.accepts("
+        ))
+        XCTAssertTrue(helper.contains(
+            "immediateConnectedRebuild: true"
+        ))
+        XCTAssertFalse(helper.contains("Cmd.historicalDataResult"))
+        XCTAssertFalse(helper.contains("Cmd.abortHistoricalTransmits"))
+        XCTAssertFalse(helper.contains("pendingHistoryEndACK"))
+
+        let watchdogStart = try XCTUnwrap(source.range(
+            of: "private func performHRContinuityWatchdogAction("
+        ))
+        let watchdogEnd = try XCTUnwrap(source.range(
+            of: "private func persistHRContinuityWatchdogResult(",
+            range: watchdogStart.upperBound..<source.endIndex
+        ))
+        let watchdog = String(
+            source[watchdogStart.lowerBound..<watchdogEnd.lowerBound]
+        )
+        let ownershipDecision = try XCTUnwrap(watchdog.range(
+            of: "hrContinuityHistoryOwnershipDisposition("
+        ))
+        let exactRawAuthority = try XCTUnwrap(watchdog.range(
+            of: "let exactConnectedRawHistoryActive ="
+        ))
+        let historyOnlyGuard = try XCTUnwrap(watchdog.range(
+            of: "if historyOnlyProbeMode, !exactConnectedRawHistoryActive {"
+        ))
+        let typedPreemption = try XCTUnwrap(watchdog.range(
+            of: "case .preemptConnectedRawHistory:"
+        ))
+        let missingPeripheral = try XCTUnwrap(watchdog.range(
+            of: "guard let peripheral else {"
+        ))
+        XCTAssertLessThan(exactRawAuthority.lowerBound, historyOnlyGuard.lowerBound)
+        XCTAssertLessThan(historyOnlyGuard.lowerBound, ownershipDecision.lowerBound)
+        XCTAssertLessThan(ownershipDecision.lowerBound, typedPreemption.lowerBound)
+        XCTAssertLessThan(typedPreemption.lowerBound, missingPeripheral.lowerBound)
+        XCTAssertTrue(watchdog.contains(
+            "case .deferExclusiveHistory:"
+        ), "ordinary/workout history must retain exclusive deferral")
+        XCTAssertTrue(watchdog.contains(
+            "action: \"deferred_exact_raw_preemption_validation\""
+        ), "a stale exact authority must not fall through into generic GATT repair")
+
+        let callbackAuditStart = try XCTUnwrap(source.range(
+            of: "private func auditHeartRateFromExactRawHistoryCallbackIfNeeded("
+        ))
+        let callbackAuditEnd = try XCTUnwrap(source.range(
+            of: "private func recordProtectedR10EvidenceMetadataIfNeeded(",
+            range: callbackAuditStart.upperBound..<source.endIndex
+        ))
+        let callbackAudit = String(
+            source[callbackAuditStart.lowerBound..<callbackAuditEnd.lowerBound]
+        )
+        XCTAssertTrue(callbackAudit.contains(
+            "activeConnectedRawHistoryCatchUpAuthority("
+        ))
+        XCTAssertTrue(callbackAudit.contains(
+            "historyTransportPhaseFence.acceptsServe("
+        ))
+        XCTAssertTrue(callbackAudit.contains(
+            "shouldRunCallbackDrivenHeartRateAudit("
+        ))
+        XCTAssertTrue(callbackAudit.contains(
+            "performHRContinuityWatchdogAction("
+        ))
+        XCTAssertTrue(callbackAudit.contains(
+            "immediateConnectedRebuild: true"
+        ))
+
+        let historyFrameStart = try XCTUnwrap(source.range(
+            of: "private func handleHistoricalData("
+        ))
+        let historyFrameEnd = try XCTUnwrap(source.range(
+            of: "private func cancelHistoricalPageContinuationForAcceptedCurrentServeFrameIfNeeded(",
+            range: historyFrameStart.upperBound..<source.endIndex
+        ))
+        let historyFrame = String(
+            source[historyFrameStart.lowerBound..<historyFrameEnd.lowerBound]
+        )
+        let spoolAppend = try XCTUnwrap(historyFrame.range(
+            of: "guard enqueueHistoricalIngress(.frame("
+        ))
+        let callbackAuditCall = try XCTUnwrap(historyFrame.range(
+            of: "auditHeartRateFromExactRawHistoryCallbackIfNeeded("
+        ))
+        let drainSchedule = try XCTUnwrap(historyFrame.range(
+            of: "scheduleHistoricalTransportEventDrain()"
+        ))
+        XCTAssertLessThan(spoolAppend.lowerBound, callbackAuditCall.lowerBound)
+        XCTAssertLessThan(callbackAuditCall.lowerBound, drainSchedule.lowerBound)
+
+        let finalizerStart = try XCTUnwrap(source.range(
+            of: "if reason == \"exact_connected_raw_live_hr_preempt\""
+        ))
+        let finalizerEnd = try XCTUnwrap(source.range(
+            of: "let progress = Self.connectedRawHistoryCatchUpSliceProgress(",
+            range: finalizerStart.upperBound..<source.endIndex
+        ))
+        let finalizer = String(
+            source[finalizerStart.lowerBound..<finalizerEnd.lowerBound]
+        )
+        XCTAssertTrue(finalizer.contains(
+            "OfflineSyncDefaults.connectedSliceCooldownUntil"
+        ))
+        XCTAssertTrue(finalizer.contains(
+            "persistedRetry > now.timeIntervalSince1970"
+        ))
+        XCTAssertFalse(finalizer.contains(
+            "connectedRawHistoryLivePreemptionRetryNotBefore("
+        ), "a delayed live-restoration finalizer cannot extend the original failure cooldown")
+        XCTAssertTrue(source.contains(
+            "connectedRawHistoryCatchUpContinuationPending = false"
+        ))
+        let cooldownGateStart = try XCTUnwrap(source.range(
+            of: "let persistedSliceCooldownUntil = UserDefaults.standard.double("
+        ))
+        let cooldownGateEnd = try XCTUnwrap(source.range(
+            of: "guard !offlineHistoricalSyncInProgress,",
+            range: cooldownGateStart.upperBound..<source.endIndex
+        ))
+        let cooldownGate = String(
+            source[cooldownGateStart.lowerBound..<cooldownGateEnd.lowerBound]
+        )
+        XCTAssertTrue(cooldownGate.contains(
+            "persistedSliceCooldownUntil > now.timeIntervalSince1970"
+        ), "a process restoration must not bypass the cooldown")
+        XCTAssertFalse(cooldownGate.contains("queuedIntent == nil"),
+            "queued or pending pulls cannot override a failed-coexistence cooldown")
+        let ackTargetStart = try XCTUnwrap(source.range(
+            of: "connectedRawHistoryCatchUpTargetAcknowledgedPages("
+        ))
+        let ackTargetEnd = try XCTUnwrap(source.range(
+            of: "if let historicalIngressSpool {",
+            range: ackTargetStart.upperBound..<source.endIndex
+        ))
+        let ackTarget = String(
+            source[ackTargetStart.lowerBound..<ackTargetEnd.lowerBound]
+        )
+        XCTAssertTrue(ackTarget.contains("backgroundSlice: {"))
+        XCTAssertTrue(ackTarget.contains(
+            "UIApplication.shared.applicationState"
+        ), "a slice crossing the lock edge must adopt the one-ACK target")
     }
 
     func testDailyBankRearmUsesDurableACKSlotBeforeContinuationOwnsPipe() throws {

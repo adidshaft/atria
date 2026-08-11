@@ -12516,6 +12516,100 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// The exact connected-raw lane is admitted on the promise that it is
+    /// subordinate to standard 2A37. If the ordinary continuity watchdog sees
+    /// that promise fail, retire only that generation before rebuilding the
+    /// canonical transport. `finishOfflineHistoricalSync` retains an
+    /// unacknowledged/mid-page spool and never manufactures an ACK; the
+    /// persisted cooldown prevents the first post-rebuild sample (or a process
+    /// restoration) from immediately repeating the same serve.
+    @discardableResult
+    private func preemptConnectedRawHistoryForLiveHeartRateIfNeeded(
+        generation: UInt64,
+        peripheral target: CBPeripheral,
+        rawGap: TimeInterval,
+        timeout: TimeInterval,
+        now: Date
+    ) -> Bool {
+        guard offlineHistoricalSyncInProgress,
+              offlineHistoricalSyncGeneration == generation,
+              let authority = activeConnectedRawHistoryCatchUpAuthority(
+                generation: generation
+              ),
+              self.peripheral === target,
+              target.state == .connected,
+              authority.request.strapIdentifier
+                == target.identifier.uuidString,
+              authority.request.callbackSource.peripheralID
+                == target.identifier,
+              authority.request.callbackSource.peripheralObjectID
+                == ObjectIdentifier(target),
+              bleCallbackEpochFence.accepts(
+                source: authority.request.callbackSource,
+                peripheralConnected: true
+              ) else { return false }
+
+        let retryNotBefore = Self
+            .connectedRawHistoryLivePreemptionRetryNotBefore(
+                now: now,
+                connectedSliceCooldown:
+                    automaticConnectedHistoryAttemptCooldown,
+                zeroProgressRetry:
+                    connectedRawHistoryCatchUpZeroProgressRetryInterval
+            )
+        guard finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
+            generation: generation,
+            reason: "exact_connected_raw_live_hr_preempt"
+        ) else { return false }
+
+        // Release the process-local FIFO hint before repairing the link. The
+        // durable backlog/ticket remains authoritative and can retry only after
+        // the persisted cooldown on a later exact accepted-HR boundary.
+        connectedRawHistoryCatchUpContinuationPending = false
+        connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+        connectedRawHistoryCatchUpEvaluationNotBefore = retryNotBefore
+        connectedRawNoRadioCaptureDeferral = nil
+        // Any pull queued behind this owner was minted before the failed
+        // coexistence result. It cannot override the retry fence on the first
+        // post-rebuild HR callback; the user can request a fresh pull after the
+        // cooldown if the durable backlog still exists.
+        queuedConnectedRawHistoryCatchUpIntent = nil
+        let defaults = UserDefaults.standard
+        defaults.set(
+            "preempted_for_live_heart_rate",
+            forKey: OfflineSyncDefaults.connectedSliceStatus
+        )
+        defaults.set(
+            now.timeIntervalSince1970,
+            forKey: OfflineSyncDefaults.connectedSliceAt
+        )
+        defaults.set(
+            retryNotBefore.timeIntervalSince1970,
+            forKey: OfflineSyncDefaults.connectedSliceCooldownUntil
+        )
+        defaults.set(
+            "exact_connected_raw_live_hr_preempt",
+            forKey: OfflineSyncDefaults.lastReason
+        )
+        // The next operation retires the CoreBluetooth session. Flush the
+        // restoration-visible retry fence first so an immediate process kill
+        // cannot remint this failed exact-raw attempt on relaunch.
+        defaults.synchronize()
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=connected_raw_live_hr_preempted generation=%llu raw_gap_s=%.1f timeout_s=%.1f retry_unix=%.3f action=finish_generation_retain_spool_no_ack_then_rebuild_canonical_transport",
+            generation,
+            rawGap,
+            timeout,
+            retryNotBefore.timeIntervalSince1970
+        )
+        forceHardReconnectForPacketStall(
+            peripheral: target,
+            reason: "exact_connected_raw_live_hr_preempt",
+            immediateConnectedRebuild: true
+        )
+        return true
+    }
+
     /// Extends only the read-only derived-index warmup across a lock edge.
     /// The lease has no history generation, no ACK path, and no recovery
     /// state authority. If iOS expires it, the atomic snapshot is simply not
@@ -14755,6 +14849,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             now: now
         )
         let defaults = UserDefaults.standard
+        if reason == "exact_connected_raw_live_hr_preempt" {
+            let persistedRetry = defaults.double(
+                forKey: OfflineSyncDefaults.connectedSliceCooldownUntil
+            )
+            let retryNotBefore = Date(
+                timeIntervalSince1970: persistedRetry
+            )
+            connectedRawHistoryCatchUpContinuationPending = false
+            connectedRawHistoryCatchUpEvaluationNotBefore =
+                persistedRetry > now.timeIntervalSince1970
+                ? retryNotBefore
+                : nil
+            connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+            connectedRawNoRadioCaptureDeferral = nil
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=connected_raw_catch_up_preemption_finalized generation=%llu retry_unix=%.3f cooldown_active=%d action=release_immediate_continuation_retain_backlog_without_extending_failure_cooldown",
+                authority.generation,
+                persistedRetry,
+                persistedRetry > now.timeIntervalSince1970 ? 1 : 0
+            )
+            return
+        }
         let progress = Self.connectedRawHistoryCatchUpSliceProgress(
             durableRows: newRows,
             startedAt: authority.startedAt,
@@ -15986,6 +16102,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 > connectedRawHistoryCatchUpIntentLifetime {
             self.queuedConnectedRawHistoryCatchUpIntent = nil
             queuedIntent = nil
+        }
+        let persistedSliceCooldownUntil = UserDefaults.standard.double(
+            forKey: OfflineSyncDefaults.connectedSliceCooldownUntil
+        )
+        if persistedSliceCooldownUntil > now.timeIntervalSince1970 {
+            connectedRawHistoryCatchUpEvaluationNotBefore = Date(
+                timeIntervalSince1970: persistedSliceCooldownUntil
+            )
+            return false
         }
         guard !offlineHistoricalSyncInProgress,
               postHistoryLiveRestorationGeneration == nil,
@@ -19482,7 +19607,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           rawGap)
             return
         }
-        if historyOnlyProbeMode {
+        let exactConnectedRawHistoryActive =
+            activeConnectedRawHistoryCatchUpAuthority(
+                generation: offlineHistoricalSyncGeneration
+            ) != nil
+        if historyOnlyProbeMode, !exactConnectedRawHistoryActive {
             persistHRContinuityWatchdogResult(status: actionStatus,
                                               action: "suppressed_history_only_probe",
                                               rawGap: rawGap,
@@ -19501,9 +19630,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   label)
             return
         }
-        if Self.shouldDeferHRContinuityRepairForHistoryOwnership(
-            historyTransportActive: offlineHistoricalSyncInProgress
-        ) {
+        let historyOwnershipDisposition = Self
+            .hrContinuityHistoryOwnershipDisposition(
+                historyTransportActive: offlineHistoricalSyncInProgress,
+                exactConnectedRawHistoryActive:
+                    exactConnectedRawHistoryActive,
+                rawHeartRateGap: rawGap,
+                adaptiveTimeout: timeout
+            )
+        switch historyOwnershipDisposition {
+        case .repairNormally:
+            break
+        case .deferExclusiveHistory:
             persistHRContinuityWatchdogResult(status: actionStatus,
                                               action: "deferred_history_owner",
                                               rawGap: rawGap,
@@ -19519,6 +19657,52 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           timeout,
                           session.count,
                           label)
+            return
+        case .preemptConnectedRawHistory:
+            guard let target = peripheral,
+                  preemptConnectedRawHistoryForLiveHeartRateIfNeeded(
+                    generation: offlineHistoricalSyncGeneration,
+                    peripheral: target,
+                    rawGap: rawGap,
+                    timeout: timeout,
+                    now: now
+                  ) else {
+                // Generation existence selected the typed exact-raw lane, but
+                // the final source/object/epoch check rejected its authority.
+                // Never fall through to ordinary GATT repair while history may
+                // still own the pipe; its own authority-loss path will retire
+                // that generation without interleaving callbacks.
+                persistHRContinuityWatchdogResult(
+                    status: actionStatus,
+                    action: "deferred_exact_raw_preemption_validation",
+                    rawGap: rawGap,
+                    acceptedGap: acceptedGap,
+                    timeout: timeout,
+                    samples: session.count,
+                    label: label,
+                    notifying: heartRateCharacteristic?.isNotifying
+                )
+                return
+            }
+            persistHRContinuityWatchdogResult(
+                status: actionStatus,
+                action: "preempt_connected_raw_history_rebuild",
+                rawGap: rawGap,
+                acceptedGap: acceptedGap,
+                timeout: timeout,
+                samples: session.count,
+                label: label,
+                notifying: heartRateCharacteristic?.isNotifying
+            )
+            persistWatchdogRecovery(
+                source: "hr_continuity",
+                status: actionStatus,
+                action: "preempt_connected_raw_history_rebuild",
+                rawGap: rawGap,
+                acceptedGap: acceptedGap,
+                samples: session.count,
+                checkpoint: "journal_retained"
+            )
             return
         }
         guard let peripheral else {
@@ -27986,8 +28170,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         self.activeConnectedRawHistoryCatchUpAuthority(
                             generation: generation
                         ) {
-                    // All noncritical raw catch-up is sliced synchronously at
-                    // the fourth clean page ACK. This timer may park critical
+                    // Noncritical raw catch-up is sliced synchronously at its
+                    // intent/thermal clean-ACK target (one page whenever the
+                    // slice is backgrounded). This timer may park critical
                     // heat or reject an invalid clock, but it never cuts
                     // through a page. A true no-progress transport remains
                     // bounded by the progress-clocked history idle watchdog.
@@ -34027,6 +34212,59 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
     }
 
+    /// A connected raw-history frame is also a real background execution edge.
+    /// Once that exact serve has been durably appended to the ingress spool,
+    /// use the callback as the HR-watchdog clock: the ordinary timer and R10
+    /// lane may both be suspended/suppressed while history owns the transport.
+    /// Only the generation-matching exact raw owner can enter this path.
+    @discardableResult
+    private func auditHeartRateFromExactRawHistoryCallbackIfNeeded(
+        generation: UInt64,
+        historyPhase: AtriaBLEHistoryTransportPhaseFence.Snapshot,
+        now: Date
+    ) -> Bool {
+        guard longWearModeEnabled,
+              status == .connected,
+              let peripheral,
+              peripheral.state == .connected,
+              dutyCycleState != .sparseSentinel,
+              activeConnectedRawHistoryCatchUpAuthority(
+                generation: generation
+              ) != nil,
+              historyTransportPhaseFence.acceptsServe(
+                historyPhase,
+                generation: generation
+              ),
+              !Self.shouldSuppressWatchdogForStrapStreamState(
+                strapStreamState
+              ),
+              let rawReference = lastRawHRNotificationAt ?? connectedAt,
+              let acceptedReference = lastAcceptedHRAt ?? connectedAt else {
+            return false
+        }
+        let timeout = Self.hrContinuityWatchdogTimeout(acceptedHRTimeout: 45)
+        let rawGap = max(0, now.timeIntervalSince(rawReference))
+        guard Self.shouldRunCallbackDrivenHeartRateAudit(
+            rawHeartRateGap: rawGap,
+            timeout: timeout,
+            lastAuditAt: lastCallbackDrivenHeartRateAuditAt,
+            now: now
+        ) else {
+            return false
+        }
+        lastCallbackDrivenHeartRateAuditAt = now
+        performHRContinuityWatchdogAction(
+            status: "exact_raw_history_callback_stale",
+            rawGap: rawGap,
+            acceptedGap: max(0, now.timeIntervalSince(acceptedReference)),
+            timeout: timeout,
+            label: captureLabel.isEmpty ? "All-day wear" : captureLabel,
+            immediateConnectedRebuild: true
+        )
+        return !offlineHistoricalSyncInProgress
+            || offlineHistoricalSyncGeneration != generation
+    }
+
     private func recordProtectedR10EvidenceMetadataIfNeeded(receivedAt: Date,
                                                             sourceUUID: CBUUID) {
         guard standardHROnlyMode, sourceUUID == UUIDs.strapStream5 else { return }
@@ -35058,6 +35296,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             clock: clock.map { .init(device: $0.device, wall: $0.wall) },
             clockAuthorityEnabled: historyClockSyncEnabled
         )) else { return }
+        let callbackNow = Date()
+        if auditHeartRateFromExactRawHistoryCallbackIfNeeded(
+            generation: generation,
+            historyPhase: historyPhase,
+            now: callbackNow
+        ) {
+            return
+        }
         if historicalDrainTelemetry.generation == generation {
             historicalDrainTelemetry.observePending(
                 pendingHistoricalTransportEventCount + historyDrain.pendingPersistenceCount
@@ -35067,7 +35313,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         _ = releaseConnectedHistoricalSliceIfNeeded(
             generation: generation,
             reason: offlineHistoricalSyncReason,
-            now: Date()
+            now: callbackNow
         )
     }
 
@@ -38992,14 +39238,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // queue is empty; no disconnect, rebuild, protocol abort, or synthetic
         // ACK is issued on this path.
         if offlineHistoricalSyncInProgress,
-           activeConnectedRawHistoryCatchUpAuthority(
-                generation: ackIdentity.generation
-           ) != nil,
+           let connectedRawAuthority =
+                activeConnectedRawHistoryCatchUpAuthority(
+                    generation: ackIdentity.generation
+                ),
            Self.shouldFinishConnectedRawHistoryCatchUpAtACKBoundary(
                 acknowledgedPages: historicalDrainTelemetry.ackSucceeded,
                 minimumAcknowledgedPages: Self
                     .connectedRawHistoryCatchUpTargetAcknowledgedPages(
-                        thermalState: ProcessInfo.processInfo.thermalState
+                        thermalState: ProcessInfo.processInfo.thermalState,
+                        backgroundSlice: {
+                            if case .background =
+                                connectedRawAuthority.request.intent {
+                                return true
+                            }
+                            // A foreground slice may cross the lock edge before
+                            // its first ACK. Bound the now-background transport
+                            // at that same clean boundary instead of retaining
+                            // its larger foreground target after suspension.
+                            return UIApplication.shared.applicationState
+                                != .active
+                        }()
                     )
            ) {
             if let historicalIngressSpool {

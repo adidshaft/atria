@@ -317,14 +317,35 @@ extension AtriaBLEManager {
         return age >= max(1, minimumInterval)
     }
 
-    /// History owns the vendor transport while a durable drain is in flight.
-    /// A live-stream repair must wait for that owner to finish rather than
-    /// rediscovering services halfway through a page. The next supervisor tick
-    /// will repair 2A37 if it is still stale after the history transaction.
-    nonisolated static func shouldDeferHRContinuityRepairForHistoryOwnership(
-        historyTransportActive: Bool
-    ) -> Bool {
-        historyTransportActive
+    enum HRContinuityHistoryOwnershipDisposition: Equatable {
+        case repairNormally
+        case deferExclusiveHistory
+        case preemptConnectedRawHistory
+    }
+
+    /// Exclusive history keeps its existing no-interleaving guarantee. An
+    /// exact connected-raw generation is different: it was admitted only on
+    /// the promise that standard 2A37 remains the realtime owner. Once that
+    /// promise is observably false, continuing to defer the HR watchdog can
+    /// strand a locked-phone link until an unstructured budget task happens to
+    /// resume. Preempt only that typed owner; workout/motion-bank and ordinary
+    /// history retain the original deferral semantics.
+    nonisolated static func hrContinuityHistoryOwnershipDisposition(
+        historyTransportActive: Bool,
+        exactConnectedRawHistoryActive: Bool,
+        rawHeartRateGap: TimeInterval,
+        adaptiveTimeout: TimeInterval
+    ) -> HRContinuityHistoryOwnershipDisposition {
+        guard historyTransportActive else { return .repairNormally }
+        guard exactConnectedRawHistoryActive else {
+            return .deferExclusiveHistory
+        }
+        guard rawHeartRateGap.isFinite,
+              adaptiveTimeout.isFinite,
+              rawHeartRateGap >= max(1, adaptiveTimeout) else {
+            return .deferExclusiveHistory
+        }
+        return .preemptConnectedRawHistory
     }
 
     struct HeartRateNotificationEnableGate {

@@ -803,6 +803,24 @@ extension AtriaBLEManager {
         ) == .parkCritical
     }
 
+    /// A live-HR preemption is a failed coexistence attempt, not a productive
+    /// slice. Keep the retry process- and restoration-stable for at least five
+    /// minutes so the first fresh 2A37 callback after the rebuild cannot start
+    /// the same failure again.
+    nonisolated static func connectedRawHistoryLivePreemptionRetryNotBefore(
+        now: Date,
+        connectedSliceCooldown: TimeInterval,
+        zeroProgressRetry: TimeInterval,
+        minimumCooldown: TimeInterval = 5 * 60
+    ) -> Date {
+        now.addingTimeInterval(max(
+            1,
+            minimumCooldown,
+            connectedSliceCooldown,
+            zeroProgressRetry
+        ))
+    }
+
     /// Normal raw-slice completion is owned by the matching ACK callback, not
     /// this timer. Critical heat may stop immediately. Invalid time input fails
     /// closed, while a genuine no-progress transport is owned by the existing
@@ -842,7 +860,8 @@ extension AtriaBLEManager {
         _ = liveSilenceLimit
         if durableBoundaryReached {
             // An earlier ACK is durable progress, not slice completion. Keep
-            // serving until the fourth matching ACK callback ends the burst.
+            // serving until the intent/thermal matching ACK callback ends the
+            // burst.
             return .keepServing
         }
         if elapsed >= max(1, seriousDutyMaximum) {
@@ -855,14 +874,16 @@ extension AtriaBLEManager {
     }
 
     /// Selects a finite clean-ACK burst which amortizes the expensive history
-    /// handshake without ignoring real heat. Physical 2A37 evidence showed a
-    /// nominal/fair link remains live at roughly 1 Hz throughout sixteen-page
-    /// raw serves. Serious heat retains the proven four-page duty slice, while
-    /// critical heat is parked by the independent budget fence before this
-    /// value can authorize any continuation.
+    /// handshake without ignoring real heat. A locked-background slice gets
+    /// exactly one clean page: physical ab071 evidence showed the first page
+    /// can stop 2A37 and outlive every MainActor budget task. Foreground work
+    /// retains the prior thermal duty because the visible watchdog can recover
+    /// it and the user explicitly has the app available.
     nonisolated static func connectedRawHistoryCatchUpTargetAcknowledgedPages(
-        thermalState: ProcessInfo.ThermalState
+        thermalState: ProcessInfo.ThermalState,
+        backgroundSlice: Bool = false
     ) -> Int {
+        if backgroundSlice { return 1 }
         switch connectedRawHistoryCatchUpThermalDisposition(
             thermalState: thermalState
         ) {
