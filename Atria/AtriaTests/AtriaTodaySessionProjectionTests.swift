@@ -4,6 +4,65 @@ import XCTest
 
 @MainActor
 final class AtriaTodaySessionProjectionTests: XCTestCase {
+    func testInactiveAuthorityRejectsQueuedCompletionAndPublishesLatestOnce() async {
+        let sessionStore = SessionStore()
+        await sessionStore.waitForDeferredSessionLoadIfNeeded()
+        let originalProfile = sessionStore.profile
+        var applicationIsActive = true
+        let projection = AtriaTodaySessionProjectionStore(
+            store: sessionStore,
+            presentationIsActive: true,
+            applicationIsActive: { applicationIsActive }
+        )
+        let originalMaxHeartRate = projection.state.maxHeartRate
+        var publications = 0
+        let cancellable = projection.objectWillChange.sink { publications += 1 }
+
+        let queuedMax = originalMaxHeartRate == 201 ? 202 : 201
+        sessionStore.updateProfile {
+            $0.maxHRSource = .measured
+            $0.measuredMaxHR = queuedMax
+        }
+        projection.setPresentationActive(false)
+        await Task.yield()
+        await Task.yield()
+        for _ in 0..<1_000 {
+            _ = projection.refresh()
+        }
+
+        XCTAssertEqual(publications, 0)
+        XCTAssertEqual(projection.state.maxHeartRate, originalMaxHeartRate,
+                       "a queued foreground refresh must reject its inactive completion")
+
+        applicationIsActive = false
+        projection.setPresentationActive(true)
+        for nextMax in [203, 204, 205] {
+            sessionStore.updateProfile {
+                $0.maxHRSource = .measured
+                $0.measuredMaxHR = nextMax
+            }
+        }
+        projection.setPresentationActive(true)
+        await Task.yield()
+        XCTAssertEqual(publications, 0,
+                       "cached scene authority must still fail closed while UIApplication is inactive")
+
+        applicationIsActive = true
+        projection.setPresentationActive(true)
+        XCTAssertEqual(projection.state.maxHeartRate, 205)
+        XCTAssertEqual(publications, 1,
+                       "the active edge publishes only the latest collapsed projection")
+        await Task.yield()
+        await Task.yield()
+        projection.setPresentationActive(true)
+        XCTAssertEqual(publications, 1,
+                       "stale queued work and repeated active delivery cannot duplicate catch-up")
+
+        projection.setPresentationActive(false)
+        sessionStore.updateProfile { $0 = originalProfile }
+        withExtendedLifetime(cancellable) {}
+    }
+
     func testNoOpRefreshDoesNotPublish() {
         let sessionStore = SessionStore()
         let projection = AtriaTodaySessionProjectionStore(store: sessionStore)
@@ -172,6 +231,11 @@ final class AtriaTodaySessionProjectionTests: XCTestCase {
 
         XCTAssertTrue(projectionStore.contains("store.$dashboardRevision"))
         XCTAssertTrue(projectionStore.contains("refreshForDashboardRevision()"))
+        XCTAssertTrue(projectionStore.contains("UIApplication.shared.applicationState == .active"))
+        XCTAssertTrue(projectionStore.contains("presentationIsActive && applicationIsActive()"))
+        XCTAssertTrue(projectionStore.contains("guard self.presentationIsAuthorized,"),
+                      "queued Today completions must recheck live scene/app authority")
+        XCTAssertTrue(projectionStore.contains("presentationIsDirty = true"))
         XCTAssertTrue(projectionStore.contains("store.confirmedWorkoutsRevision != state.confirmedWorkoutsRevision"))
         XCTAssertTrue(projectionStore.contains("store.behaviorJournalRevision != state.behaviorJournalRevision"))
         XCTAssertFalse(projectionStore.contains("store.$dailyMetricHistory"),

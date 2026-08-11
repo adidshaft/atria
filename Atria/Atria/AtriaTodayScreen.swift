@@ -92,12 +92,23 @@ final class AtriaTodaySessionProjectionStore: ObservableObject {
     @Published private(set) var state: AtriaTodaySessionState
 
     private let store: SessionStore
+    private let applicationIsActive: @MainActor () -> Bool
     private var cancellables = Set<AnyCancellable>()
+    private var presentationIsActive: Bool
+    private var presentationIsDirty = false
     private var refreshScheduled = false
     private var pendingFullRefresh = false
 
-    init(store: SessionStore) {
+    init(
+        store: SessionStore,
+        presentationIsActive: Bool = true,
+        applicationIsActive: @escaping @MainActor () -> Bool = {
+            UIApplication.shared.applicationState == .active
+        }
+    ) {
         self.store = store
+        self.applicationIsActive = applicationIsActive
+        self.presentationIsActive = presentationIsActive
         state = AtriaTodaySessionState(store: store)
 
         Publishers.MergeMany([
@@ -128,8 +139,29 @@ final class AtriaTodaySessionProjectionStore: ObservableObject {
             .store(in: &cancellables)
     }
 
+    /// Freezes only Today's observable projection. SessionStore publishers and
+    /// durability continue independently; any inactive burst becomes one dirty
+    /// latest-value pass when both scene visibility and UIApplication agree.
+    func setPresentationActive(_ active: Bool) {
+        presentationIsActive = active
+        guard active else { return }
+        publishLatestPresentationIfNeeded()
+    }
+
     @discardableResult
     func refresh() -> Bool {
+        guard presentationIsAuthorized else {
+            presentationIsDirty = true
+            pendingFullRefresh = true
+            return false
+        }
+        return refreshNow()
+    }
+
+    @discardableResult
+    private func refreshNow() -> Bool {
+        presentationIsDirty = false
+        pendingFullRefresh = false
         let next = AtriaTodaySessionState(store: store)
         guard next != state else { return false }
         state = next
@@ -138,27 +170,55 @@ final class AtriaTodaySessionProjectionStore: ObservableObject {
 
     @discardableResult
     func refreshForDashboardRevision() -> Bool {
+        guard presentationIsAuthorized else {
+            presentationIsDirty = true
+            return false
+        }
+        if pendingFullRefresh { return refreshNow() }
+        return refreshForDashboardRevisionNow()
+    }
+
+    @discardableResult
+    private func refreshForDashboardRevisionNow() -> Bool {
+        presentationIsDirty = false
         guard store.confirmedWorkoutsRevision != state.confirmedWorkoutsRevision
                 || store.behaviorJournalRevision != state.behaviorJournalRevision else {
             return false
         }
-        return refresh()
+        return refreshNow()
     }
 
     private func scheduleRefresh(full: Bool) {
         pendingFullRefresh = pendingFullRefresh || full
-        guard !refreshScheduled else { return }
+        presentationIsDirty = true
+        guard presentationIsAuthorized,
+              !refreshScheduled else { return }
         refreshScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            let shouldRefreshFully = self.pendingFullRefresh
-            self.pendingFullRefresh = false
             self.refreshScheduled = false
+            guard self.presentationIsAuthorized,
+                  self.presentationIsDirty else { return }
+            let shouldRefreshFully = self.pendingFullRefresh
             if shouldRefreshFully {
-                self.refresh()
+                self.refreshNow()
             } else {
-                self.refreshForDashboardRevision()
+                self.refreshForDashboardRevisionNow()
             }
+        }
+    }
+
+    private var presentationIsAuthorized: Bool {
+        presentationIsActive && applicationIsActive()
+    }
+
+    private func publishLatestPresentationIfNeeded() {
+        guard presentationIsAuthorized,
+              presentationIsDirty else { return }
+        if pendingFullRefresh {
+            _ = refreshNow()
+        } else {
+            _ = refreshForDashboardRevisionNow()
         }
     }
 }

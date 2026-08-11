@@ -1225,6 +1225,7 @@ struct AtriaHomeView: View {
             }
         }
         .onDisappear {
+            model.setLivePresentationActive(false)
             connectionGuidePresentationTask?.cancel()
             connectionGuidePresentationTask = nil
             secondaryUnlockTask?.cancel()
@@ -4076,6 +4077,7 @@ struct AtriaHomeView: View {
     }
 
     private func handleHomeAppear() {
+        model.setScenePresentationActive(scenePhase == .active)
         // UIKit may have delivered a notification response before this view's
         // publisher subscription existed. Schedule the sticky route before
         // optional diagnostics, but apply it only after the active first frame.
@@ -4193,6 +4195,10 @@ struct AtriaHomeView: View {
     }
 
     private func handleHomeScenePhaseChange(_ phase: ScenePhase) {
+        // Revoke presentation before any inactive/background edge work. BLE,
+        // journals, stress persistence, widgets, and ActivityKit remain owned
+        // by their independent bounded lanes below.
+        model.setScenePresentationActive(phase == .active)
         updateMediaRefreshLoop()
         guard phase == .active else {
             foregroundResumeTask?.cancel()
@@ -8680,6 +8686,57 @@ struct AtriaHomeSavedAggregateRefreshGate: Equatable, Sendable {
     }
 }
 
+/// Scene-owned authority for Home's ephemeral live presentation. Bluetooth,
+/// journaling, stress persistence, widgets, and ActivityKit keep their own
+/// bounded acquisition/durability lanes; this gate controls only mutations of
+/// the observable stores that render Home. While the scene is not active, any
+/// number of source publications collapse to one dirty bit. The next inactive
+/// -> active edge consumes that bit with exactly one latest-value catch-up.
+struct AtriaHomeLivePresentationAuthority: Equatable, Sendable {
+    enum Transition: Equatable, Sendable {
+        case unchanged
+        case suspended
+        case catchUpLatest
+    }
+
+    private(set) var isActive = false
+    private(set) var hasSuppressedMutation = false
+    private(set) var catchUpIsPending = false
+
+    mutating func admitsMutation(applicationIsActive: Bool) -> Bool {
+        guard isActive, applicationIsActive else {
+            hasSuppressedMutation = true
+            catchUpIsPending = true
+            return false
+        }
+        return true
+    }
+
+    mutating func beginCatchUpIfAuthorized(
+        applicationIsActive: Bool
+    ) -> Bool {
+        guard isActive, applicationIsActive else {
+            if isActive {
+                hasSuppressedMutation = true
+                catchUpIsPending = true
+            }
+            return false
+        }
+        guard catchUpIsPending else { return false }
+        catchUpIsPending = false
+        hasSuppressedMutation = false
+        return true
+    }
+
+    mutating func transition(to active: Bool) -> Transition {
+        guard active != isActive else { return .unchanged }
+        isActive = active
+        catchUpIsPending = true
+        guard active else { return .suspended }
+        return .catchUpLatest
+    }
+}
+
 @MainActor
 final class AtriaHomeModel {
     nonisolated static let liveHeartRateFreshnessInterval: TimeInterval = 6
@@ -9460,6 +9517,9 @@ final class AtriaHomeModel {
     private var deferredDetails: DeferredDetails?
     private var savedAggregate: SavedAggregate
     private var diagnosticsRequested = false
+    private var diagnosticsPresentationIsDirty = false
+    private var diagnosticsPresentationResumeScheduled = false
+    private var applicationActivationRetryScheduled = false
     private var liveSessionDerived: LiveSessionDerived
     private var diagnosticsWorkItem: DispatchWorkItem?
     private var diagnosticsWorkInFlight = false
@@ -9485,6 +9545,10 @@ final class AtriaHomeModel {
     private var prefersActivityProjectionUpdates = false
     private var activityProjectionIsDirty = false
     private var activityProjectionRefreshScheduled = false
+    private var livePresentationAuthority = AtriaHomeLivePresentationAuthority()
+    private var scenePresentationIsActive = false
+    private var stressPresentationPublicationIsSynchronizing = false
+    private var latestHeartRateBroadcastActive = false
     private var profileMetricsKey: ProfileMetricsKey?
     private var savedRestingFallbackCache: SavedRestingFallbackCache?
     #if DEBUG
@@ -9725,7 +9789,8 @@ final class AtriaHomeModel {
         let initialPulseSparkline = Self.makePulseSparklineState(ble: ble)
         let initialCollectionLive = Self.makeCollectionLiveState(ble: ble)
         let sharedStressStore = AtriaStressMonitorStore(
-            historyPersistence: AtriaStressHistoryPersistence.production()
+            historyPersistence: AtriaStressHistoryPersistence.production(),
+            presentationPublishingIsActive: false
         )
         let initialStressNow = Date()
         sharedStressStore.update(heartRate: initialPulseLive.heartRate,
@@ -9783,7 +9848,10 @@ final class AtriaHomeModel {
         self.profileStore = ProfileStore(profile: store.profile)
         self.profileMetricsStore = ProfileMetricsStore(state: initialProfileMetrics)
         self.stressMonitorStore = sharedStressStore
-        self.todaySessionProjectionStore = AtriaTodaySessionProjectionStore(store: store)
+        self.todaySessionProjectionStore = AtriaTodaySessionProjectionStore(
+            store: store,
+            presentationIsActive: false
+        )
         self.activityStore = ActivityStore(state: Self.makeActivityState(store: store))
         historicalStressFallbackRestSubject.send(initialLiveSessionDerived.rest)
         bind()
@@ -9813,6 +9881,115 @@ final class AtriaHomeModel {
         guard active else { return }
         activityProjectionIsDirty = true
         scheduleActivityProjectionRefresh()
+    }
+
+    /// Scene authority also controls when the durable stress store releases its
+    /// private latest computation into @Published presentation mirrors. Home
+    /// visibility (`onDisappear`) deliberately does not call this method: an
+    /// active Vitals/Activity child must continue receiving stress on tab moves.
+    func setScenePresentationActive(_ active: Bool) {
+        scenePresentationIsActive = active
+        if active {
+            synchronizeStressPresentationPublication()
+            setLivePresentationActive(true)
+        } else {
+            setLivePresentationActive(false)
+            synchronizeStressPresentationPublication()
+        }
+    }
+
+    /// Home-owned observable-store authority. Suspending does not pause BLE,
+    /// journals, stress computation/history, widgets, or ActivityKit. A resume
+    /// consumes one latest-value pass; any prior diagnostics intent is requeued
+    /// only after that edge and its existing debounce, never run synchronously.
+    func setLivePresentationActive(_ active: Bool) {
+        todaySessionProjectionStore.setPresentationActive(active)
+        switch livePresentationAuthority.transition(to: active) {
+        case .unchanged:
+            if active { attemptLivePresentationCatchUpIfNeeded() }
+            return
+        case .suspended:
+            if diagnosticsWorkInFlight {
+                diagnosticsPresentationIsDirty = true
+            }
+            diagnosticsPresentationResumeScheduled = false
+            liveHeartRateFreshnessTask?.cancel()
+            liveHeartRateFreshnessTask = nil
+            stressFreshnessExpiryTask?.cancel()
+            stressFreshnessExpiryTask = nil
+            diagnosticsWorkItem?.cancel()
+            diagnosticsWorkItem = nil
+            diagnosticsRefreshToken = UUID()
+            diagnosticsWorkInFlight = false
+            if prefersActivityProjectionUpdates {
+                activityProjectionIsDirty = true
+            }
+        case .catchUpLatest:
+            attemptLivePresentationCatchUpIfNeeded()
+        }
+    }
+
+    private var applicationPresentationIsActive: Bool {
+        UIApplication.shared.applicationState == .active
+    }
+
+    private var livePresentationIsCurrentlyAuthorized: Bool {
+        livePresentationAuthority.isActive && applicationPresentationIsActive
+    }
+
+    private func synchronizeStressPresentationPublication() {
+        let active = scenePresentationIsActive && applicationPresentationIsActive
+        stressPresentationPublicationIsSynchronizing = true
+        stressMonitorStore.setPresentationPublishingActive(active)
+        stressPresentationPublicationIsSynchronizing = false
+    }
+
+    private func attemptLivePresentationCatchUpIfNeeded() {
+        guard livePresentationAuthority.beginCatchUpIfAuthorized(
+            applicationIsActive: applicationPresentationIsActive
+        ) else { return }
+        performLivePresentationCatchUp()
+    }
+
+    private func admitsLivePresentationMutation() -> Bool {
+        if livePresentationAuthority.catchUpIsPending,
+           livePresentationAuthority.beginCatchUpIfAuthorized(
+               applicationIsActive: applicationPresentationIsActive
+           ) {
+            performLivePresentationCatchUp()
+            return false
+        }
+        return livePresentationAuthority.admitsMutation(
+            applicationIsActive: applicationPresentationIsActive
+        )
+    }
+
+    private func performLivePresentationCatchUp() {
+        synchronizeStressPresentationPublication()
+        todaySessionProjectionStore.setPresentationActive(true)
+        publishStatus()
+        publishCoreLive()
+        publishProfile()
+        publishProfileMetrics()
+        publishHeroPulse()
+        publishPulseLive()
+        publishCollectionLive()
+        if prefersPulseSparklineUpdates {
+            publishPulseSparkline()
+        }
+        // Stress computation/history already continued in its private lane;
+        // foreground presentation reads the released latest state only.
+        refreshHeroSnapshot()
+        publishSnapshotIfNeeded(Self.makeSnapshot(
+            store: store,
+            hero: heroStore.state,
+            deferredDetails: deferredDetails
+        ))
+        scheduleStressFreshnessExpiry(
+            lastMeasuredAt: stressMonitorStore.lastMeasuredAt
+        )
+        scheduleActivityProjectionRefresh()
+        scheduleDirtyDiagnosticsAfterForegroundIfNeeded()
     }
 
     func forceRefresh() {
@@ -9845,10 +10022,42 @@ final class AtriaHomeModel {
             diagnosticsRequested = true
             AtriaDebugLog("ATRIADBG home_diagnostics status=requested reason=%@", reason)
         }
+        requestDeferredDiagnosticsRefresh()
+    }
+
+    private func requestDeferredDiagnosticsRefresh() {
+        diagnosticsPresentationIsDirty = true
         diagnosticsRefreshSubject.send(())
     }
 
+    /// SwiftUI can deliver `.active` just before UIKit flips applicationState.
+    /// Coalesce the UIKit edge to one next-runloop retry; the existing authority
+    /// consumes its pending bit exactly once, without requiring a data publisher.
+    private func scheduleApplicationDidBecomeActivePresentationRetry() {
+        guard scenePresentationIsActive,
+              !applicationActivationRetryScheduled else { return }
+        applicationActivationRetryScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.applicationActivationRetryScheduled = false
+            guard self.scenePresentationIsActive,
+                  self.applicationPresentationIsActive else { return }
+            self.synchronizeStressPresentationPublication()
+            guard self.livePresentationAuthority.isActive else { return }
+            self.todaySessionProjectionStore.setPresentationActive(true)
+            self.attemptLivePresentationCatchUpIfNeeded()
+        }
+    }
+
     private func bind() {
+        NotificationCenter.default.publisher(
+            for: UIApplication.didBecomeActiveNotification
+        )
+        .sink { [weak self] _ in
+            self?.scheduleApplicationDidBecomeActivePresentationRetry()
+        }
+        .store(in: &cancellables)
+
         let immediateStatusChanges = ble.$status
             .removeDuplicates()
             .map { _ in () }
@@ -10049,7 +10258,12 @@ final class AtriaHomeModel {
 
         stressChanges
             .sink { [weak self] _ in
-                self?.updateSharedStress()
+                guard let self else { return }
+                self.synchronizeStressPresentationPublication()
+                self.attemptLivePresentationCatchUpIfNeeded()
+                // Computation/history persistence remains live. The stress
+                // store itself withholds @Published mirrors while inactive.
+                self.updateSharedStress()
             }
             .store(in: &cancellables)
 
@@ -10085,14 +10299,20 @@ final class AtriaHomeModel {
         stressMonitorStore.$state
             .removeDuplicates()
             .sink { [weak self] _ in
-                self?.refreshHeroSnapshot()
+                guard let self,
+                      !self.stressPresentationPublicationIsSynchronizing else {
+                    return
+                }
+                self.refreshHeroSnapshot()
             }
             .store(in: &cancellables)
 
         stressMonitorStore.$lastMeasuredAt
             .removeDuplicates()
             .sink { [weak self] lastMeasuredAt in
-                guard let self else { return }
+                guard let self,
+                      !self.stressPresentationPublicationIsSynchronizing,
+                      self.livePresentationIsCurrentlyAuthorized else { return }
                 // `state` publishes immediately before `lastMeasuredAt` on a
                 // scored tick. Refresh only when a clock can unlock a currently
                 // hidden scored projection; ordinary timestamp renewal merely
@@ -10257,7 +10477,7 @@ final class AtriaHomeModel {
                 self.heroRefreshSubject.send(())
                 self.publishProfileMetrics()
                 if self.diagnosticsRequested {
-                    self.diagnosticsRefreshSubject.send(())
+                    self.requestDeferredDiagnosticsRefresh()
                 }
             }
             .store(in: &cancellables)
@@ -10281,7 +10501,7 @@ final class AtriaHomeModel {
                 self.coreRefreshSubject.send(())
                 self.refreshHeroSnapshot()
                 if self.diagnosticsRequested {
-                    self.diagnosticsRefreshSubject.send(())
+                    self.requestDeferredDiagnosticsRefresh()
                 }
             }
             .store(in: &cancellables)
@@ -10303,7 +10523,8 @@ final class AtriaHomeModel {
         coreRefreshSubject
             .debounce(for: .milliseconds(450), scheduler: RunLoop.main)
             .sink { [weak self] in
-                guard let self else { return }
+                guard let self,
+                      self.admitsLivePresentationMutation() else { return }
                 self.publishSnapshotIfNeeded(Self.makeSnapshot(store: self.store,
                                                                hero: self.heroStore.state,
                                                                deferredDetails: self.deferredDetails))
@@ -10313,7 +10534,8 @@ final class AtriaHomeModel {
         diagnosticsRefreshSubject
             .debounce(for: .milliseconds(2800), scheduler: RunLoop.main)
             .sink { [weak self] in
-                guard let self else { return }
+                guard let self,
+                      self.livePresentationIsCurrentlyAuthorized else { return }
                 self.scheduleDeferredDiagnosticsRefresh()
             }
             .store(in: &cancellables)
@@ -10321,6 +10543,7 @@ final class AtriaHomeModel {
     }
 
     private func publishStatus() {
+        guard admitsLivePresentationMutation() else { return }
         let next = StatusState(status: ble.status,
                                bluetoothPermissionDenied: ble.bluetoothPermissionDenied,
                                officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk,
@@ -10330,6 +10553,7 @@ final class AtriaHomeModel {
     }
 
     private func publishCoreLive() {
+        guard admitsLivePresentationMutation() else { return }
         // This is the accepted-HR hot path. Saved/archive rows are refreshed by
         // their own authority lane and physiological-cycle clock; never scan them
         // from the 400 ms sessionSampleCount publication cadence.
@@ -10348,6 +10572,7 @@ final class AtriaHomeModel {
     }
 
     private func publishHeroPulse() {
+        guard admitsLivePresentationMutation() else { return }
         // RR intervals arrive several times a second and the array is only read
         // by the breathwork pacer: refresh it at most 1 Hz, and decide that
         // before scanning the archive-backed RR window. No RR data is lost --
@@ -10366,7 +10591,7 @@ final class AtriaHomeModel {
                                            rest: zoneContext.rest,
                                            maxHR: zoneContext.maxHR,
                                            recentRRSamples: recentRRSamples)
-        next.heartRateBroadcastActive = heroPulseStore.state.heartRateBroadcastActive
+        next.heartRateBroadcastActive = latestHeartRateBroadcastActive
         if next.hasPulseSignal {
             ensureLiveHeartRateFreshnessExpiryScheduled()
         }
@@ -10375,11 +10600,14 @@ final class AtriaHomeModel {
     }
 
     func setHeartRateBroadcastActive(_ active: Bool) {
+        latestHeartRateBroadcastActive = active
+        guard admitsLivePresentationMutation() else { return }
         guard heroPulseStore.state.heartRateBroadcastActive != active else { return }
         heroPulseStore.state.heartRateBroadcastActive = active
     }
 
     private func publishPulseLive() {
+        guard admitsLivePresentationMutation() else { return }
         let now = Date()
         let recentRRSamples: [AtriaBreathworkSession.RRSample]
         if now.timeIntervalSince(lastPulseRRRefreshAt) < 1.0 {
@@ -10422,7 +10650,8 @@ final class AtriaHomeModel {
     /// window and moves to the newest deadline; after the stream stops it clears
     /// the UI once and does not re-arm.
     private func ensureLiveHeartRateFreshnessExpiryScheduled() {
-        guard liveHeartRateFreshnessTask == nil,
+        guard livePresentationIsCurrentlyAuthorized,
+              liveHeartRateFreshnessTask == nil,
               let latestSampleAt = ble.session.last?.t else { return }
         let deadline = latestSampleAt.addingTimeInterval(Self.liveHeartRateFreshnessInterval)
         let delay = min(Self.liveHeartRateFreshnessInterval,
@@ -10431,7 +10660,9 @@ final class AtriaHomeModel {
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
-            guard !Task.isCancelled, let self else { return }
+            guard !Task.isCancelled,
+                  let self,
+                  self.livePresentationIsCurrentlyAuthorized else { return }
             self.liveHeartRateFreshnessTask = nil
             self.refreshLiveHeartRateFreshness()
             if Self.hasRecentHeartRateSample(ble: self.ble) {
@@ -10448,7 +10679,8 @@ final class AtriaHomeModel {
         stressFreshnessExpiryTask = nil
 
         let now = Date()
-        guard stressMonitorStore.state.kind == .scored,
+        guard livePresentationIsCurrentlyAuthorized,
+              stressMonitorStore.state.kind == .scored,
               let lastMeasuredAt,
               AtriaStressReadingFreshness.resolve(
                   isScored: true,
@@ -10474,13 +10706,16 @@ final class AtriaHomeModel {
             if delay > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
-            guard !Task.isCancelled, let self else { return }
+            guard !Task.isCancelled,
+                  let self,
+                  self.livePresentationIsCurrentlyAuthorized else { return }
             self.stressFreshnessExpiryTask = nil
             self.refreshHeroSnapshot()
         }
     }
 
     private func publishPulseSparkline() {
+        guard admitsLivePresentationMutation() else { return }
         // Throttle FIRST (2026-07-08 perf audit): the chart buckets per second,
         // but RR/HR arrive several times a second, and makePulseSparklineState
         // (suffix + filter + stride) plus the ~120-element Equatable compare
@@ -10501,18 +10736,21 @@ final class AtriaHomeModel {
     private var lastPulseRRRefreshAt = Date.distantPast
 
     private func publishCollectionLive() {
+        guard admitsLivePresentationMutation() else { return }
         let next = Self.makeCollectionLiveState(ble: ble)
         guard next != collectionLiveStore.state else { return }
         collectionLiveStore.state = next
     }
 
     private func publishProfile() {
+        guard admitsLivePresentationMutation() else { return }
         let next = store.profile
         guard next != profileStore.profile else { return }
         profileStore.profile = next
     }
 
     private func publishProfileMetrics() {
+        guard admitsLivePresentationMutation() else { return }
         refreshLiveSessionDerivedIfNeeded()
         let key = Self.profileMetricsKey(store: store,
                                          liveSessionDerived: liveSessionDerived)
@@ -10568,6 +10806,10 @@ final class AtriaHomeModel {
     }
 
     private func publishActivity() {
+        guard livePresentationIsCurrentlyAuthorized else {
+            activityProjectionIsDirty = true
+            return
+        }
         activityProjectionIsDirty = false
         activityStore.refresh(Self.makeActivityState(store: store))
     }
@@ -10579,6 +10821,7 @@ final class AtriaHomeModel {
 
     private func scheduleActivityProjectionRefresh() {
         guard prefersActivityProjectionUpdates,
+              livePresentationIsCurrentlyAuthorized,
               activityProjectionIsDirty,
               !activityProjectionRefreshScheduled else { return }
         activityProjectionRefreshScheduled = true
@@ -10586,6 +10829,7 @@ final class AtriaHomeModel {
             guard let self else { return }
             self.activityProjectionRefreshScheduled = false
             guard self.prefersActivityProjectionUpdates,
+                  self.livePresentationIsCurrentlyAuthorized,
                   self.activityProjectionIsDirty else { return }
             self.publishActivity()
         }
@@ -10738,6 +10982,7 @@ final class AtriaHomeModel {
     }
 
     private func refreshHeroSnapshot() {
+        guard admitsLivePresentationMutation() else { return }
         #if DEBUG
         if let debugHeroFixture {
             publishHeroSnapshotIfNeeded(debugHeroFixture)
@@ -10895,26 +11140,31 @@ final class AtriaHomeModel {
     }
 
     private func publishHeroSnapshotIfNeeded(_ next: HeroSnapshot) {
+        guard admitsLivePresentationMutation() else { return }
         guard next != heroStore.state else { return }
         heroStore.state = next
         publishHomeStatsIfNeeded(Self.makeHomeStatsState(hero: next))
     }
 
     private func publishSnapshotIfNeeded(_ next: Snapshot) {
+        guard admitsLivePresentationMutation() else { return }
         guard next != snapshotStore.state else { return }
         snapshotStore.state = next
     }
 
     private func publishHomeStatsIfNeeded(_ next: HomeStatsState) {
+        guard admitsLivePresentationMutation() else { return }
         guard next != homeStatsStore.state else { return }
         homeStatsStore.state = next
     }
 
     private func scheduleDeferredDiagnosticsRefresh() {
+        guard livePresentationIsCurrentlyAuthorized else { return }
         guard !diagnosticsWorkInFlight else {
             AtriaDebugLog("ATRIADBG home_diagnostics status=skipped reason=refresh_in_flight")
             return
         }
+        diagnosticsPresentationIsDirty = false
         diagnosticsWorkItem?.cancel()
         let token = UUID()
         diagnosticsRefreshToken = token
@@ -10928,7 +11178,12 @@ final class AtriaHomeModel {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 guard self.diagnosticsRefreshToken == token else {
+                    return
+                }
+                guard self.livePresentationIsCurrentlyAuthorized else {
+                    self.diagnosticsPresentationIsDirty = true
                     self.diagnosticsWorkInFlight = false
+                    self.diagnosticsWorkItem = nil
                     return
                 }
                 self.deferredDetails = details
@@ -10962,10 +11217,30 @@ final class AtriaHomeModel {
                 self.publishSnapshotIfNeeded(Self.makeSnapshot(store: self.store,
                                                                hero: nextHero,
                                                                deferredDetails: details))
+                self.scheduleDirtyDiagnosticsAfterForegroundIfNeeded()
             }
         }
         diagnosticsWorkItem = workItem
         DispatchQueue.global(qos: .utility).async(execute: workItem)
+    }
+
+    /// A canceled/requested diagnostics pass is retained across suspension, but
+    /// its archive projection begins only after the foreground catch-up has
+    /// yielded a runloop turn and then passed the existing debounce.
+    private func scheduleDirtyDiagnosticsAfterForegroundIfNeeded() {
+        guard diagnosticsRequested,
+              diagnosticsPresentationIsDirty,
+              livePresentationIsCurrentlyAuthorized,
+              !diagnosticsPresentationResumeScheduled else { return }
+        diagnosticsPresentationResumeScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.diagnosticsPresentationResumeScheduled = false
+            guard self.diagnosticsRequested,
+                  self.diagnosticsPresentationIsDirty,
+                  self.livePresentationIsCurrentlyAuthorized else { return }
+            self.diagnosticsRefreshSubject.send(())
+        }
     }
 
     private func refreshLiveSessionDerivedIfNeeded() {

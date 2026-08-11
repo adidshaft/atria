@@ -20,6 +20,10 @@ private final class AtriaTestLockedArray<Element>: @unchecked Sendable {
     }
 }
 
+private final class AtriaHomePresentationRevisionProbe: ObservableObject {
+    @Published var revision = 0
+}
+
 final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
     private func appSource(_ relativePath: String) throws -> String {
         let testsURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
@@ -738,6 +742,291 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
         XCTAssertFalse(publish.contains("makeSavedAggregateRefreshInput"))
         XCTAssertFalse(publish.contains("homeSavedAggregate("))
         XCTAssertFalse(publish.contains("observedHeartRateUnionSeconds("))
+    }
+
+    @MainActor
+    func testHomeLivePresentationAuthoritySuppressesBackgroundBurstAndCatchesUpOnce() {
+        var authority = AtriaHomeLivePresentationAuthority()
+        let probe = AtriaHomePresentationRevisionProbe()
+        var objectWillChangeCount = 0
+        let cancellable = probe.objectWillChange.sink {
+            objectWillChangeCount += 1
+        }
+
+        for _ in 0..<1_000 {
+            if authority.admitsMutation(applicationIsActive: true) {
+                probe.revision += 1
+            }
+        }
+
+        XCTAssertFalse(authority.isActive)
+        XCTAssertTrue(authority.hasSuppressedMutation)
+        XCTAssertEqual(probe.revision, 0)
+        XCTAssertEqual(objectWillChangeCount, 0)
+
+        var catchUpCount = 0
+        XCTAssertEqual(authority.transition(to: true), .catchUpLatest)
+        XCTAssertFalse(authority.beginCatchUpIfAuthorized(
+            applicationIsActive: false
+        ), "UIApplication inactivity must remain a final publication fence")
+        XCTAssertEqual(probe.revision, 0)
+        let laterDataPublicationCount = 0
+        if authority.beginCatchUpIfAuthorized(applicationIsActive: true) {
+            catchUpCount += 1
+            probe.revision += 1
+        }
+        XCTAssertEqual(laterDataPublicationCount, 0,
+                       "didBecomeActive retry must recover without a later data publisher")
+        XCTAssertEqual(authority.transition(to: true), .unchanged,
+                       "Repeated active delivery must not duplicate the foreground catch-up")
+        XCTAssertEqual(catchUpCount, 1)
+        XCTAssertEqual(probe.revision, 1)
+        XCTAssertEqual(objectWillChangeCount, 1)
+        XCTAssertTrue(authority.isActive)
+        XCTAssertFalse(authority.hasSuppressedMutation)
+        XCTAssertFalse(authority.catchUpIsPending)
+        XCTAssertFalse(authority.beginCatchUpIfAuthorized(
+            applicationIsActive: true
+        ), "one foreground edge consumes its catch-up exactly once")
+        withExtendedLifetime(cancellable) {}
+    }
+
+    func testHomeLivePresentationGateOwnsOnlyObservableLiveFanout() throws {
+        let home = try appSource("AtriaHomeView.swift")
+        let handlerStart = try XCTUnwrap(home.range(
+            of: "private func handleHomeScenePhaseChange(_ phase: ScenePhase)"
+        ))
+        let handlerEnd = try XCTUnwrap(home.range(
+            of: "private func flushWorkoutRouteAtBackgroundBoundary()",
+            range: handlerStart.upperBound..<home.endIndex
+        ))
+        let handler = String(home[handlerStart.lowerBound..<handlerEnd.lowerBound])
+        let authorityEdge = try XCTUnwrap(handler.range(
+            of: "model.setScenePresentationActive(phase == .active)"
+        ))
+        let edgeWork = try XCTUnwrap(handler.range(of: "updateMediaRefreshLoop()"))
+        XCTAssertLessThan(authorityEdge.lowerBound, edgeWork.lowerBound,
+                          "The inactive edge must revoke presentation before background work")
+
+        let catchUpStart = try XCTUnwrap(home.range(
+            of: "private func performLivePresentationCatchUp()"
+        ))
+        let catchUpEnd = try XCTUnwrap(home.range(
+            of: "func forceRefresh()",
+            range: catchUpStart.upperBound..<home.endIndex
+        ))
+        let catchUp = String(home[catchUpStart.lowerBound..<catchUpEnd.lowerBound])
+        for required in [
+            "synchronizeStressPresentationPublication()",
+            "todaySessionProjectionStore.setPresentationActive(true)",
+            "publishStatus()",
+            "publishCoreLive()",
+            "publishProfile()",
+            "publishProfileMetrics()",
+            "publishHeroPulse()",
+            "publishPulseLive()",
+            "publishCollectionLive()",
+            "refreshHeroSnapshot()",
+            "publishSnapshotIfNeeded(",
+            "scheduleActivityProjectionRefresh()",
+            "scheduleDirtyDiagnosticsAfterForegroundIfNeeded()",
+        ] {
+            XCTAssertEqual(catchUp.components(separatedBy: required).count - 1, 1,
+                           "Foreground authority must perform one \(required) catch-up")
+        }
+        XCTAssertFalse(catchUp.contains("forceRefresh"))
+        XCTAssertFalse(catchUp.contains("requestSavedAggregateRefresh"))
+        XCTAssertFalse(catchUp.contains("loadDeferredDiagnostics"))
+        XCTAssertFalse(catchUp.contains("requestActivityProjectionRefresh"))
+        XCTAssertFalse(catchUp.contains("updateSharedStress"),
+                       "foreground presentation must not newly ingest/persist stress")
+        XCTAssertFalse(catchUp.contains("scheduleDeferredDiagnosticsRefresh"),
+                       "archive diagnostics must remain deferred beyond the active edge")
+        XCTAssertTrue(home.contains(
+            "UIApplication.shared.applicationState == .active"
+        ), "every Home mutation admission includes a final process-state fence")
+        XCTAssertTrue(home.contains(
+            "presentationPublishingIsActive: false"
+        ), "Home's shared stress mirrors must start fail-closed before scene authority")
+        XCTAssertTrue(home.contains(
+            "AtriaTodaySessionProjectionStore(\n            store: store,\n            presentationIsActive: false"
+        ), "Today's Home-owned projection must start fail-closed")
+
+        let applicationRetryStart = try XCTUnwrap(home.range(
+            of: "private func scheduleApplicationDidBecomeActivePresentationRetry()"
+        ))
+        let bindStart = try XCTUnwrap(home.range(
+            of: "private func bind()",
+            range: applicationRetryStart.upperBound..<home.endIndex
+        ))
+        let applicationRetry = String(
+            home[applicationRetryStart.lowerBound..<bindStart.lowerBound]
+        )
+        XCTAssertTrue(applicationRetry.contains("DispatchQueue.main.async"),
+                      "UIKit activation must only enqueue a bounded retry")
+        XCTAssertTrue(applicationRetry.contains("self.applicationPresentationIsActive"))
+        XCTAssertTrue(applicationRetry.contains("self.synchronizeStressPresentationPublication()"))
+        XCTAssertTrue(applicationRetry.contains("self.todaySessionProjectionStore.setPresentationActive(true)"))
+        XCTAssertTrue(applicationRetry.contains("self.attemptLivePresentationCatchUpIfNeeded()"))
+        XCTAssertFalse(applicationRetry.contains("updateSharedStress"))
+        XCTAssertFalse(applicationRetry.contains("requestSavedAggregateRefresh"))
+        XCTAssertFalse(applicationRetry.contains("scheduleDeferredDiagnosticsRefresh"))
+
+        let applicationObserverEnd = try XCTUnwrap(home.range(
+            of: "let immediateStatusChanges",
+            range: bindStart.upperBound..<home.endIndex
+        ))
+        let applicationObserver = String(
+            home[bindStart.lowerBound..<applicationObserverEnd.lowerBound]
+        )
+        XCTAssertTrue(applicationObserver.contains("UIApplication.didBecomeActiveNotification"))
+        XCTAssertTrue(applicationObserver.contains(
+            "self?.scheduleApplicationDidBecomeActivePresentationRetry()"
+        ))
+        XCTAssertTrue(applicationObserver.contains(".store(in: &cancellables)"),
+                      "activation observer lifetime must be owned by the Home model")
+
+        for signature in [
+            "private func publishStatus()",
+            "private func publishCoreLive()",
+            "private func publishHeroPulse()",
+            "private func publishPulseLive()",
+            "private func publishPulseSparkline()",
+            "private func publishCollectionLive()",
+            "private func publishProfile()",
+            "private func publishProfileMetrics()",
+            "private func refreshHeroSnapshot()",
+            "private func publishHeroSnapshotIfNeeded(_ next: HeroSnapshot)",
+            "private func publishSnapshotIfNeeded(_ next: Snapshot)",
+            "private func publishHomeStatsIfNeeded(_ next: HomeStatsState)",
+        ] {
+            let start = try XCTUnwrap(home.range(of: signature))
+            let prefixEnd = home.index(start.upperBound, offsetBy: 180,
+                                       limitedBy: home.endIndex) ?? home.endIndex
+            let prefix = String(home[start.lowerBound..<prefixEnd])
+            XCTAssertTrue(prefix.contains(
+                "guard admitsLivePresentationMutation() else { return }"
+            ), "\(signature) must reject work before reading or mutating its live store")
+        }
+
+        let diagnosticsStart = try XCTUnwrap(home.range(
+            of: "private func scheduleDeferredDiagnosticsRefresh()"
+        ))
+        let diagnosticsEnd = try XCTUnwrap(home.range(
+            of: "private func refreshLiveSessionDerivedIfNeeded()",
+            range: diagnosticsStart.upperBound..<home.endIndex
+        ))
+        let diagnostics = String(
+            home[diagnosticsStart.lowerBound..<diagnosticsEnd.lowerBound]
+        )
+        XCTAssertTrue(diagnostics.contains(
+            "guard livePresentationIsCurrentlyAuthorized else { return }"
+        ))
+        XCTAssertTrue(diagnostics.contains(
+            "guard self.livePresentationIsCurrentlyAuthorized else"
+        ), "a worker admitted in foreground must reject its stale background completion")
+        XCTAssertTrue(diagnostics.contains("diagnosticsPresentationIsDirty = true"))
+        XCTAssertTrue(diagnostics.contains(
+            "private func scheduleDirtyDiagnosticsAfterForegroundIfNeeded()"
+        ), "canceled requested diagnostics must retain one deferred foreground intent")
+
+        let stressClockStart = try XCTUnwrap(home.range(
+            of: "stressMonitorStore.$lastMeasuredAt"
+        ))
+        let stressClockEnd = try XCTUnwrap(home.range(
+            of: "let collectionLiveChanges",
+            range: stressClockStart.upperBound..<home.endIndex
+        ))
+        let stressClock = String(
+            home[stressClockStart.lowerBound..<stressClockEnd.lowerBound]
+        )
+        XCTAssertTrue(stressClock.contains(
+            "self.livePresentationIsCurrentlyAuthorized else { return }"
+        ), "inactive stress clocks must not re-arm a presentation expiry")
+        let expiryStart = try XCTUnwrap(home.range(
+            of: "private func scheduleStressFreshnessExpiry(lastMeasuredAt: Date?)"
+        ))
+        let expiryEnd = try XCTUnwrap(home.range(
+            of: "private func publishPulseSparkline()",
+            range: expiryStart.upperBound..<home.endIndex
+        ))
+        let expiry = String(home[expiryStart.lowerBound..<expiryEnd.lowerBound])
+        XCTAssertGreaterThanOrEqual(
+            expiry.components(separatedBy: "livePresentationIsCurrentlyAuthorized").count - 1,
+            2,
+            "stress expiry must fence both scheduling and delayed execution"
+        )
+
+        let activityStart = try XCTUnwrap(home.range(
+            of: "private func scheduleActivityProjectionRefresh()"
+        ))
+        let activityEnd = try XCTUnwrap(home.range(
+            of: "private func requestSavedAggregateRefresh(reason: String)",
+            range: activityStart.upperBound..<home.endIndex
+        ))
+        let activity = String(home[activityStart.lowerBound..<activityEnd.lowerBound])
+        XCTAssertGreaterThanOrEqual(
+            activity.components(separatedBy: "livePresentationIsCurrentlyAuthorized").count - 1,
+            2,
+            "activity projection must fence both admission and queued completion"
+        )
+
+        let historyStart = try XCTUnwrap(home.range(
+            of: "ble.$historicalRecoveryPresentation"
+        ))
+        let historyEnd = try XCTUnwrap(home.range(
+            of: ".store(in: &cancellables)",
+            range: historyStart.upperBound..<home.endIndex
+        ))
+        let history = String(home[historyStart.lowerBound..<historyEnd.upperBound])
+        XCTAssertTrue(history.contains(
+            "guard UIApplication.shared.applicationState == .active"
+        ), "Historical progress keeps its existing separate active-only authority")
+    }
+
+    func testHomePresentationGateDoesNotPauseDurableLiveAcquisitionLanes() throws {
+        let home = try appSource("AtriaHomeView.swift")
+        let ble = try appSource("AtriaBLEManager.swift")
+
+        XCTAssertTrue(home.contains("ble.$sessionSampleCount"),
+                      "Accepted-count publication must remain wired into Home")
+        XCTAssertTrue(home.contains("self.updateSharedStress()"),
+                      "Stress ingestion/history persistence stays live behind presentation")
+        XCTAssertTrue(home.contains("self.synchronizeStressPresentationPublication()"))
+        XCTAssertTrue(home.contains("setPresentationPublishingActive(active)"),
+                      "stress computation must release only its latest presentation on foreground")
+        XCTAssertTrue(home.contains("model.stressMonitorStore.flushHistoryCheckpoint()"))
+        XCTAssertTrue(home.contains("ble.flushActiveSessionJournal(reason: \"explicit_workout_scene_background\")"))
+        XCTAssertTrue(home.contains("scheduleLiveSensorWidgetPatch("))
+        XCTAssertTrue(home.contains("updateLiveActivity(forceActivityWrite: true)"))
+
+        let append = try XCTUnwrap(ble.range(of: "session.append(HRSample(t: sampleTime, bpm: rate))"))
+        let countPublish = try XCTUnwrap(ble.range(
+            of: "publishSessionSampleCountIfNeeded(now: sampleTime)",
+            range: append.upperBound..<ble.endIndex
+        ))
+        let journal = try XCTUnwrap(ble.range(
+            of: "persistActiveSessionJournalIfNeeded(reason: \"accepted_hr\", force: false)",
+            range: countPublish.upperBound..<ble.endIndex
+        ))
+        XCTAssertLessThan(append.lowerBound, countPublish.lowerBound)
+        XCTAssertLessThan(countPublish.lowerBound, journal.lowerBound)
+        XCTAssertFalse(ble.contains("AtriaHomeLivePresentationAuthority"),
+                       "The UI authority must stay downstream of BLE acceptance and durability")
+    }
+
+    func testHomeDisappearDoesNotSuspendSharedStressDuringActiveTabChanges() throws {
+        let home = try appSource("AtriaHomeView.swift")
+        let disappearStart = try XCTUnwrap(home.range(of: ".onDisappear {"))
+        let disappearEnd = try XCTUnwrap(home.range(
+            of: "private var homeShellWithWorkoutPersistence",
+            range: disappearStart.upperBound..<home.endIndex
+        ))
+        let disappear = String(home[disappearStart.lowerBound..<disappearEnd.lowerBound])
+        XCTAssertTrue(disappear.contains("model.setLivePresentationActive(false)"))
+        XCTAssertFalse(disappear.contains("setScenePresentationActive"))
+        XCTAssertFalse(disappear.contains("setPresentationPublishingActive"),
+                       "Home visibility is not scene authority for shared stress observers")
     }
 
     func testHomeSavedAggregateRefreshGateBoundsBurstToOneActiveAndOneTrailing() {
