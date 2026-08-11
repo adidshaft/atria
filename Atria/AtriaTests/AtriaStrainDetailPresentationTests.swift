@@ -115,7 +115,8 @@ final class AtriaStrainDetailPresentationTests: XCTestCase {
         let valueEnd = try XCTUnwrap(overview.range(of: "private var dayStrainMetricsIncomplete", range: valueStart.upperBound..<overview.endIndex))
         let valueProjection = String(overview[valueStart.lowerBound..<valueEnd.lowerBound])
 
-        XCTAssertTrue(overview.contains("if dayStrainMetricsIncomplete { return \"Partial · sparse HR\" }"))
+        XCTAssertTrue(overview.contains("currentCycleStrainLimitation?.compactState"))
+        XCTAssertTrue(overview.contains("?? \"Strain data incomplete\""))
         XCTAssertFalse(valueProjection.contains("return \"Incomplete\""),
                        "partial evidence must not replace a real strain number")
         XCTAssertTrue(valueProjection.contains("dayStrainMetricsIncomplete ? \"≥ \\(value)\" : value"),
@@ -130,13 +131,11 @@ final class AtriaStrainDetailPresentationTests: XCTestCase {
         let today = try String(contentsOf: todayURL, encoding: .utf8)
         XCTAssertTrue(today.contains("!displayHero.strainValue.hasPrefix(\"≥\")"))
         XCTAssertTrue(today.contains("displayHero.strainConfidence.localizedCaseInsensitiveContains(\"partial\")"))
-        // 2026-07-28 deterministic-presentation pass: the marker is now compact
-        // fixed vocabulary. The invariant this test is named for is unchanged --
-        // partial evidence keeps the measured number and adds a limitation --
-        // and "lower bound" states that limitation about the value the user is
-        // reading, matching the "≥" prefix asserted above. The old wording
-        // described the plumbing and was long enough to wrap a compact card.
-        XCTAssertTrue(today.contains("incomplete ? \"lower bound\""))
+        // Partial evidence keeps the measured number and names the concrete
+        // limitation instead of collapsing every cause into generic sparse-HR
+        // copy. The lower-bound marker remains on the value itself.
+        XCTAssertTrue(today.contains("currentStrainLimitation?.compactState"))
+        XCTAssertTrue(today.contains("?? \"Strain data incomplete\""))
         XCTAssertTrue(today.contains("? \"≥ \\(displayHero.strainValue)\""))
     }
 

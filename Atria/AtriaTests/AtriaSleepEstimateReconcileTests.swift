@@ -29,14 +29,17 @@ final class AtriaSleepEstimateReconcileTests: XCTestCase {
     private func night(segments: [SleepStageSegment],
                        motionValidated: Bool,
                        confidence: String,
-                       source: String = "aggregate_sleep") -> SleepHistorySnapshot.Night {
+                       source: String = "aggregate_sleep",
+                       duration: TimeInterval? = nil,
+                       observedDuration: TimeInterval? = nil) -> SleepHistorySnapshot.Night {
         let start = date(0)
         let end = date(6)
         return SleepHistorySnapshot.Night(id: "night",
                                           day: calendar.startOfDay(for: end),
                                           start: start,
                                           end: end,
-                                          duration: end.timeIntervalSince(start),
+                                          duration: duration ?? end.timeIntervalSince(start),
+                                          observedDuration: observedDuration,
                                           restingHR: 55,
                                           hrv: 40,
                                           respiratoryRate: 11,
@@ -115,6 +118,41 @@ final class AtriaSleepEstimateReconcileTests: XCTestCase {
         XCTAssertEqual(result.stageDuration(.rem), 2 * 3_600, accuracy: 0.01)
         XCTAssertEqual(AtriaSleepHypnogramCard(night: result).segments,
                        result.displayStageSegments)
+    }
+
+    func testV2TimeAlignedStageReceiptRendersEvenWhenWholeNightLowMotionIsFalse() throws {
+        let legacy = awakeHeavySegments
+        let v2 = legacy.enumerated().map { index, segment in
+            SleepStageSegment(id: "research-motion-v2-\(index)-\(segment.stage.rawValue)",
+                              start: segment.start,
+                              end: segment.end,
+                              stage: segment.stage)
+        }
+        let physiologicalTST: TimeInterval = 4 * 60 * 60
+        let observed: TimeInterval = 6 * 60 * 60
+        let motionBacked = night(segments: v2,
+                                 motionValidated: false,
+                                 confidence: "user_adjusted_hr_only",
+                                 duration: physiologicalTST,
+                                 observedDuration: observed)
+        let legacyWithoutReceipt = night(segments: legacy,
+                                         motionValidated: false,
+                                         confidence: "user_adjusted_hr_only",
+                                         duration: physiologicalTST,
+                                         observedDuration: observed)
+
+        XCTAssertTrue(motionBacked.hasValidatedMotionEvidence,
+                      "v2 IDs are emitted only after dense local HR and measured motion pass")
+        XCTAssertEqual(motionBacked.stageEvidence, .sensorResearch)
+        XCTAssertEqual(motionBacked.displayStageSegments.map(\.stage),
+                       [.light, .deep, .awake, .rem, .light])
+        XCTAssertEqual(try XCTUnwrap(motionBacked.displaySleepEfficiency), 0.9)
+
+        XCTAssertFalse(legacyWithoutReceipt.hasValidatedMotionEvidence)
+        XCTAssertEqual(legacyWithoutReceipt.stageEvidence, .hrOnlyEstimate)
+        XCTAssertTrue(legacyWithoutReceipt.displayStageSegments.isEmpty,
+                      "legacy or aggregate IDs cannot turn a scalar false into motion proof")
+        XCTAssertNil(legacyWithoutReceipt.displaySleepEfficiency)
     }
 
     func testValidatedStagesKeepTheirExistingTimelineEvenWithoutExplicitMotionFlag() {

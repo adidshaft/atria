@@ -200,6 +200,229 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         ))
     }
 
+    func testTerminalMaterializationGivesRawBacklogOneBoundedFirstSlice() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        let deadline = now.addingTimeInterval(90)
+        func decision(
+            backlog: Bool = true,
+            verified: Bool = true,
+            connected: Bool = true,
+            workout: Bool = false,
+            thermal: Bool = false,
+            yieldActive: Bool = false,
+            spent: Bool = false,
+            at evaluationDate: Date? = nil
+        ) -> Bool {
+            AtriaBLEManager
+                .shouldDeferTerminalConsumerMaterializationForRawFirstSlice(
+                    applicationIsActive: true,
+                    strapBacklogPending: backlog,
+                    verifiedRawHistoryCapability: verified,
+                    linkConnected: connected,
+                    activeExplicitWorkout: workout,
+                    rawThermalPressureActive: thermal,
+                    publicationYieldActive: yieldActive,
+                    rawFirstSliceSpent: spent,
+                    now: evaluationDate ?? now,
+                    deadline: deadline
+                )
+        }
+
+        XCTAssertTrue(decision())
+        XCTAssertFalse(decision(backlog: false))
+        XCTAssertFalse(decision(verified: false))
+        XCTAssertFalse(decision(connected: false))
+        XCTAssertFalse(decision(workout: true))
+        XCTAssertFalse(decision(thermal: true))
+        XCTAssertFalse(decision(yieldActive: true))
+        XCTAssertFalse(decision(spent: true))
+        XCTAssertFalse(decision(at: deadline))
+    }
+
+    func testRawFirstSliceOrchestrationBindsExactGenerationAndFailsOpen() {
+        let startedAt = Date(timeIntervalSince1970: 1_000)
+        let deadline = startedAt.addingTimeInterval(90)
+        let initial = AtriaBLEManager
+            .TerminalConsumerRawFirstSliceOrchestrationState(
+                authorityIdentifier: "terminal-authority",
+                deadline: deadline,
+                rawGeneration: nil,
+                spent: false
+            )
+
+        let bound = AtriaBLEManager.transitionTerminalConsumerRawFirstSlice(
+            state: initial,
+            event: .bindRawGeneration(41)
+        )
+        XCTAssertEqual(bound.state.rawGeneration, 41)
+        XCTAssertFalse(bound.state.spent)
+        XCTAssertFalse(bound.shouldResumeLocalMaterialization)
+
+        let rebound = AtriaBLEManager.transitionTerminalConsumerRawFirstSlice(
+            state: bound.state,
+            event: .bindRawGeneration(42)
+        )
+        XCTAssertEqual(rebound.state.rawGeneration, 41)
+        XCTAssertFalse(rebound.shouldResumeLocalMaterialization)
+
+        let wrongGeneration = AtriaBLEManager
+            .transitionTerminalConsumerRawFirstSlice(
+                state: bound.state,
+                event: .finishRawGeneration(42)
+            )
+        XCTAssertFalse(wrongGeneration.state.spent)
+        XCTAssertFalse(wrongGeneration.shouldResumeLocalMaterialization)
+
+        let finished = AtriaBLEManager
+            .transitionTerminalConsumerRawFirstSlice(
+                state: bound.state,
+                event: .finishRawGeneration(41)
+            )
+        XCTAssertTrue(finished.state.spent)
+        XCTAssertTrue(finished.shouldResumeLocalMaterialization)
+        XCTAssertFalse(
+            AtriaBLEManager
+                .shouldDeferTerminalConsumerMaterializationForRawFirstSlice(
+                    applicationIsActive: true,
+                    strapBacklogPending: true,
+                    verifiedRawHistoryCapability: true,
+                    linkConnected: true,
+                    activeExplicitWorkout: false,
+                    rawThermalPressureActive: false,
+                    publicationYieldActive: false,
+                    rawFirstSliceSpent: finished.state.spent,
+                    now: startedAt.addingTimeInterval(10),
+                    deadline: deadline
+                ),
+            "the exact completed slice must release local materialization"
+        )
+
+        let beforeDeadline = AtriaBLEManager
+            .transitionTerminalConsumerRawFirstSlice(
+                state: initial,
+                event: .deadlineReached(
+                    deadline.addingTimeInterval(-0.001)
+                )
+            )
+        XCTAssertFalse(beforeDeadline.state.spent)
+        XCTAssertFalse(beforeDeadline.shouldResumeLocalMaterialization)
+
+        let deadlineRelease = AtriaBLEManager
+            .transitionTerminalConsumerRawFirstSlice(
+                state: beforeDeadline.state,
+                event: .deadlineReached(deadline)
+            )
+        XCTAssertTrue(deadlineRelease.state.spent)
+        XCTAssertTrue(deadlineRelease.shouldResumeLocalMaterialization)
+        XCTAssertFalse(
+            AtriaBLEManager
+                .shouldDeferTerminalConsumerMaterializationForRawFirstSlice(
+                    applicationIsActive: true,
+                    strapBacklogPending: true,
+                    verifiedRawHistoryCapability: true,
+                    linkConnected: true,
+                    activeExplicitWorkout: false,
+                    rawThermalPressureActive: false,
+                    publicationYieldActive: true,
+                    rawFirstSliceSpent: deadlineRelease.state.spent,
+                    now: deadline,
+                    deadline: deadline
+                ),
+            "the 90-second fail-open must permit the existing yield/publication lane"
+        )
+    }
+
+    func testRawFirstSliceAndTicketHousekeepingPrecedeCompetingWork() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let manager = try String(
+            contentsOf: testsDirectory.deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaBLEManager.swift"),
+            encoding: .utf8
+        )
+        let terminalStart = try XCTUnwrap(manager.range(
+            of: "func resumePendingFullDrainPublicationIfNeeded(reason: String)"
+        ))
+        let terminalEnd = try XCTUnwrap(manager.range(
+            of: "private func scheduleTerminalConsumerMaterializationIfAuthorized(",
+            range: terminalStart.upperBound..<manager.endIndex
+        ))
+        let terminal = String(
+            manager[terminalStart.lowerBound..<terminalEnd.lowerBound]
+        )
+        let orchestrationStart = try XCTUnwrap(manager.range(
+            of: "private func resetTerminalConsumerRawFirstSliceRefusal()"
+        ))
+        let orchestration = String(
+            manager[
+                orchestrationStart.lowerBound..<terminalStart.lowerBound
+            ]
+        )
+        XCTAssertTrue(manager.contains(
+            "terminalConsumerRawFirstSliceBudget: TimeInterval = 90"
+        ))
+        XCTAssertTrue(orchestration.contains(
+            "deadline: now.addingTimeInterval(\n"
+                + "                    terminalConsumerRawFirstSliceBudget"
+        ))
+        XCTAssertTrue(orchestration.contains(
+            "event: .bindRawGeneration(generation)"
+        ))
+        XCTAssertTrue(orchestration.contains(
+            "event: .finishRawGeneration(generation)"
+        ))
+        XCTAssertTrue(orchestration.contains(
+            "event: .deadlineReached(max(Date(), deadline))"
+        ))
+        let rawFirst = try XCTUnwrap(terminal.range(
+            of: "shouldDeferTerminalConsumerMaterializationForRawFirstSlice("
+        ))
+        let admission = try XCTUnwrap(terminal.range(
+            of: "prepareHistoricalAdmissionLedgerIfNeeded("
+        ))
+        XCTAssertLessThan(rawFirst.lowerBound, admission.lowerBound)
+
+        let sliceStart = try XCTUnwrap(manager.range(
+            of: "private func scheduleConnectedRawHistoryCatchUpContinuation("
+        ))
+        let sliceEnd = try XCTUnwrap(manager.range(
+            of: "private func beginConnectedRawHistoryCatchUpPublicationYield(",
+            range: sliceStart.upperBound..<manager.endIndex
+        ))
+        let slice = String(
+            manager[sliceStart.lowerBound..<sliceEnd.lowerBound]
+        )
+        let spend = try XCTUnwrap(slice.range(
+            of: "spendTerminalConsumerRawFirstSliceIfNeeded("
+        ))
+        let housekeeping = try XCTUnwrap(slice.range(
+            of: "maintainPendingWorkoutMotionBankTickets("
+        ))
+        let disposition = try XCTUnwrap(slice.range(
+            of: "connectedRawHistoryCatchUpContinuationDisposition("
+        ))
+        XCTAssertLessThan(spend.lowerBound, housekeeping.lowerBound)
+        XCTAssertLessThan(housekeeping.lowerBound, disposition.lowerBound)
+
+        let motionStart = try XCTUnwrap(manager.range(
+            of: "private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded("
+        ))
+        let motionEnd = try XCTUnwrap(manager.range(
+            of: "/// Builds one replacement ticket",
+            range: motionStart.upperBound..<manager.endIndex
+        ))
+        let motion = String(
+            manager[motionStart.lowerBound..<motionEnd.lowerBound]
+        )
+        let maintenance = try XCTUnwrap(motion.range(
+            of: "maintainPendingWorkoutMotionBankTickets("
+        ))
+        let rawContinuation = try XCTUnwrap(motion.range(
+            of: "guard !connectedRawHistoryCatchUpContinuationPending"
+        ))
+        XCTAssertLessThan(maintenance.lowerBound, rawContinuation.lowerBound)
+    }
+
     func testTerminalJournalDoesNotStarveDurableMotionBankOffload() {
         typealias Status =
             AtriaHistoricalFullDrainCoverageStore.Authority.Status

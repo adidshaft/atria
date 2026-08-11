@@ -9608,9 +9608,33 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         throws
     {
         let source = try leaseManagerSource()
-        let resumeStart = try XCTUnwrap(source.range(
-            of: "private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded("
+        let maintenanceStart = try XCTUnwrap(source.range(
+            of: "private func maintainPendingWorkoutMotionBankTickets("
         ))
+        let resumeStart = try XCTUnwrap(source.range(
+            of: "private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(",
+            range: maintenanceStart.upperBound..<source.endIndex
+        ))
+        let maintenance = String(source[
+            maintenanceStart.lowerBound..<resumeStart.lowerBound
+        ])
+        XCTAssertTrue(maintenance.contains(
+            "workoutHistoricalMotionBankMaximumBlockingAge"
+        ))
+        XCTAssertTrue(maintenance.contains(
+            "AtriaWhoop4MotionBankCoverageLedger.exhaustOffloads("
+        ))
+        XCTAssertTrue(maintenance.contains(
+            "retain_missing_coverage_prioritize_present_capture"
+        ))
+        XCTAssertTrue(maintenance.contains(
+            "AtriaWhoop4MotionBankCoverageLedger.normalizePendingOffloads("
+        ))
+        XCTAssertTrue(maintenance.contains(
+            "Self.workoutHistoricalMotionBankActiveTicketIDKey"
+        ))
+        XCTAssertTrue(maintenance.contains("protectedIDs: protectedIDs"))
+
         let resumeEnd = try XCTUnwrap(source.range(
             of: "private func evaluatePendingWorkoutHistoricalMotionBankOffload(",
             range: resumeStart.upperBound..<source.endIndex
@@ -9618,15 +9642,17 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let resume = String(source[
             resumeStart.lowerBound..<resumeEnd.lowerBound
         ])
-        XCTAssertTrue(resume.contains(
-            "workoutHistoricalMotionBankMaximumBlockingAge"
+        let maintenanceCall = try XCTUnwrap(resume.range(
+            of: "maintainPendingWorkoutMotionBankTickets("
         ))
-        XCTAssertTrue(resume.contains(
-            "AtriaWhoop4MotionBankCoverageLedger.exhaustOffloads("
+        let rawContinuationGuard = try XCTUnwrap(resume.range(
+            of: "guard !connectedRawHistoryCatchUpContinuationPending"
         ))
-        XCTAssertTrue(resume.contains(
-            "retain_missing_coverage_prioritize_present_capture"
-        ))
+        XCTAssertLessThan(
+            maintenanceCall.lowerBound,
+            rawContinuationGuard.lowerBound,
+            "stale exhaustion and normalization must run before raw continuation defers selection"
+        )
 
         let armStart = try XCTUnwrap(source.range(
             of: "private func armWorkoutHistoricalMotionBankIfPossible("

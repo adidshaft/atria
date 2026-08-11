@@ -385,22 +385,37 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
 
     /// 2026-08-08 field report: "Sleep and strain rings are grey in 3 ring view
     /// and does not show at all in concentric rings." Both layouts must render
-    /// an awaiting-data metric as a clearly present, dashed ring — one state,
-    /// one story, and never a fabricated arc.
+    /// an awaiting-data metric as a clearly present, dashed ring. The
+    /// concentric renderer owns one unavailable branch and one dashed track;
+    /// it must not stack a second dash pattern beneath it.
     func testAwaitingDataRingIsVisiblyPresentInBothLayouts() throws {
         let concentric = try source("AtriaTriRing.swift")
-        XCTAssertTrue(concentric.contains("if metric.fill == nil {"),
-                      "the concentric hero must special-case an unavailable metric")
-        XCTAssertTrue(concentric.contains("dash: [2, lineWidth * 1.4]"),
-                      "an unavailable concentric ring reads as dashed-awaiting, not absent")
-        XCTAssertFalse(concentric.contains("metric.tint.opacity(0.20), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))\n\n            if metric.fill != nil"),
-                       "the near-invisible ghost track must not be the unavailable state")
+        let visualStart = try XCTUnwrap(concentric.range(of: "private func ringVisual("))
+        let visualEnd = try XCTUnwrap(concentric.range(
+            of: "/// A small RADIAL clock-tick",
+            range: visualStart.upperBound..<concentric.endIndex
+        ))
+        let visual = String(concentric[visualStart.lowerBound..<visualEnd.lowerBound])
+
+        XCTAssertTrue(visual.contains("if metric.fill != nil {"),
+                      "the ordinary track must exist only when a measured fill exists")
+        XCTAssertTrue(visual.contains("} else {"),
+                      "the concentric hero must route unavailable data through one explicit else branch")
+        XCTAssertEqual(visual.components(separatedBy: "dash: [4, 16]").count - 1, 1,
+                       "an unavailable concentric ring must draw exactly one quiet dashed track")
+        XCTAssertFalse(visual.contains("dash: [2, lineWidth * 1.4]"),
+                       "the removed second dash pattern must not return")
 
         let separate = try source("AtriaMetricRing.swift")
         XCTAssertTrue(separate.contains("if fraction == nil {"),
                       "the separate layout must special-case an unavailable metric")
-        XCTAssertTrue(separate.contains("dash: [2, lineWidth * 1.4]"),
-                      "both layouts share the awaiting-data treatment")
+        XCTAssertEqual(separate.components(separatedBy: "dash: [2, lineWidth * 1.4]").count - 1,
+                       1,
+                       "an unavailable separate ring must draw exactly one quiet dashed track")
+        XCTAssertTrue(separate.contains("if fraction != nil && clamped > 0 {"),
+                      "only positive measured values may draw a factual arc")
+        XCTAssertFalse(separate.contains(".trim(from: 0.06, to: 0.22)"),
+                       "the unavailable track and measured zero must not gain a legacy cap")
     }
 
     func testSettingsStartsAsFiveCompactPlainLanguageDestinations() throws {

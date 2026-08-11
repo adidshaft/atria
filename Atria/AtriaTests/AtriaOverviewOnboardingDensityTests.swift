@@ -221,14 +221,19 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
     func testOverviewDynamicRowsUseDomainIdentityInsteadOfMutableOffsets() throws {
         let source = try source("AtriaOverviewSections.swift")
 
-        // 2026-07-17: the companions ForEach pin was retired — commit 824a411e
-        // refactored companion rows into scrub-context text, so neither the
-        // domain-identity loop nor the offset anti-pattern exists for them.
-        // The remaining loops must still use domain identity, never offsets.
-        XCTAssertTrue(source.contains("id: \\.element.label) { _, band in"))
+        // The circular strain-band loop was replaced by the compact strain
+        // rail. Pin the stable domain identities now used by the remaining
+        // enumerated dynamic rows: enum raw values, model IDs, behavior tags,
+        // and the checklist string value itself. Mutable offsets must never
+        // become SwiftUI identity for these rows.
+        XCTAssertTrue(source.contains("id: \\.element.rawValue) { index, zone in"))
+        XCTAssertTrue(source.contains("id: \\.element.id) { index, row in"))
+        XCTAssertTrue(source.contains("id: \\.element.tag) { index, summary in"))
         XCTAssertTrue(source.contains("id: \\.element) { index, item in"))
         XCTAssertFalse(source.contains("ForEach(Array(companions.enumerated()), id: \\.offset)"))
         XCTAssertFalse(source.contains("ForEach(Array(bands.enumerated()), id: \\.offset)"))
+        XCTAssertFalse(source.contains("ForEach(Array(rows.enumerated()), id: \\.offset)"))
+        XCTAssertFalse(source.contains("ForEach(Array(visibleSummaries.enumerated()), id: \\.offset)"))
         XCTAssertFalse(source.contains("ForEach(Array(items.enumerated()), id: \\.offset)"))
     }
 

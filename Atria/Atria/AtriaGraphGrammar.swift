@@ -18,7 +18,7 @@ enum AtriaChartVisualGrammar {
     /// run ends, the next sample opens a new Charts `series`, and the interval
     /// is left blank — never bridged. Deliberately tight (five minutes, not a
     /// multi-hour bridge) so it smooths only brief signal hiccups, and the
-    /// strict data/coverage thresholds (`heartRateGapThreshold`,
+    /// strict data/coverage thresholds (`workoutHeartRateGapThreshold`,
     /// `maximumFactContinuityGap`) are left untouched, so telemetry-integrity
     /// and coverage accounting keep their exact meaning.
     static let traceDisplayContinuityGap: TimeInterval = 5 * 60

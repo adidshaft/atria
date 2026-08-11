@@ -17,7 +17,7 @@ struct AtriaMetricProvenanceCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
-            Text("How this number was measured")
+            Text("Data quality")
                 .font(.subheadline.weight(.semibold))
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -54,10 +54,10 @@ struct AtriaMetricProvenanceCard: View {
             }
 
             if let reason = provenance.reducedConfidenceReason {
-                note(title: "Why confidence is reduced", body: reason)
+                note(title: "Limitation", body: reason)
             }
             if let hint = provenance.improvementHint {
-                note(title: "What would improve it", body: hint)
+                note(title: "Next step", body: hint)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

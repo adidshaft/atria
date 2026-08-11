@@ -1103,6 +1103,82 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         )
     }
 
+    func testPendingNormalizationKeepsProtectedAndNewestWorkWithoutResolving()
+        throws
+    {
+        let firstStart = Date(timeIntervalSince1970: 20_000)
+        var created: [AtriaWhoop4MotionBankCoverageLedger.OffloadTicket] = []
+        for index in 0..<140 {
+            let start = firstStart.addingTimeInterval(Double(index * 120))
+            let end = start.addingTimeInterval(60)
+            AtriaWhoop4MotionBankCoverageLedger.open(
+                at: start,
+                strapIdentifier: strap,
+                defaults: defaults
+            )
+            created.append(try XCTUnwrap(
+                AtriaWhoop4MotionBankCoverageLedger.close(
+                    at: end,
+                    strapIdentifier: strap,
+                    defaults: defaults
+                )
+            ))
+        }
+        let protected = try XCTUnwrap(created.first)
+        _ = AtriaWhoop4MotionBankCoverageLedger.markOffloadAttempt(
+            id: protected.id,
+            at: protected.end.addingTimeInterval(1),
+            defaults: defaults
+        )
+        let falselyResolved = expectation(
+            forNotification: AtriaWhoop4MotionBankCoverageLedger
+                .didResolveOffloadNotification,
+            object: nil
+        )
+        falselyResolved.isInverted = true
+        let finalized = expectation(
+            forNotification: AtriaWhoop4MotionBankCoverageLedger
+                .didFinalizeOffloadNotification,
+            object: nil
+        )
+
+        let result = AtriaWhoop4MotionBankCoverageLedger
+            .normalizePendingOffloads(
+                strapIdentifier: strap,
+                protectedIDs: [protected.id],
+                defaults: defaults
+            )
+
+        wait(for: [finalized, falselyResolved], timeout: 0.2)
+        let retained = AtriaWhoop4MotionBankCoverageLedger.pendingOffloads(
+            strapIdentifier: strap,
+            defaults: defaults
+        )
+        XCTAssertEqual(
+            retained.count,
+            AtriaWhoop4MotionBankCoverageLedger.maximumPendingOffloads
+        )
+        XCTAssertEqual(result.retainedCount, retained.count)
+        XCTAssertEqual(result.removedIDs.count, 12)
+        XCTAssertTrue(retained.contains { $0.id == protected.id })
+        XCTAssertTrue(retained.contains { $0.id == created.last?.id })
+        XCTAssertFalse(retained.contains { $0.id == created[1].id })
+        XCTAssertEqual(
+            AtriaWhoop4MotionBankCoverageLedger.intervals(
+                intersecting: .init(
+                    start: firstStart.addingTimeInterval(-1),
+                    end: try XCTUnwrap(created.last).end
+                        .addingTimeInterval(1)
+                ),
+                strapIdentifier: strap,
+                now: try XCTUnwrap(created.last).end,
+                defaults: defaults
+            ).count,
+            created.count,
+            "normalization must retain every closed missing-evidence interval"
+        )
+    }
+
     func testNewWorkoutGetsFirstAttemptBeforeOlderRetry() throws {
         let firstStart = Date(timeIntervalSince1970: 5_500)
         let firstEnd = firstStart.addingTimeInterval(90)

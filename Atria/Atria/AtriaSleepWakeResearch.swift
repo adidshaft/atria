@@ -12,13 +12,31 @@ enum AtriaSleepWakeResearch {
         let bpm: Int
     }
 
-    /// Test-visible accounting for the sparse-data fallback. `sampleVisits`
-    /// counts values consumed by the fallback's statistics, making its
-    /// range-bounded work shape verifiable without timing-sensitive tests.
+    /// Test-visible accounting for the bounded stage path. `sampleVisits`
+    /// counts actual timestamped HR/motion inspections in the inner algorithm,
+    /// not merely the number of inputs handed to it. This makes an accidental
+    /// epoch-times-night rescan fail deterministically without wall-clock tests.
     struct FallbackStageDiagnostics: Equatable {
         let segments: [SleepStageSegment]
         let sampleVisits: Int
     }
+
+    private final class StageWorkCounter {
+        private(set) var sampleVisits = 0
+
+        func visit(_ count: Int = 1) {
+            sampleVisits += max(0, count)
+        }
+    }
+
+    /// Research stage output is presentation-eligible only when both streams
+    /// stay locally supported. These match the recovered-motion receipt's
+    /// maximum tolerated hole and are intentionally stricter than the old
+    /// whole-window HR fallback.
+    private static let maximumEvidenceGap: TimeInterval = 90
+    private static let minimumTimelineCoverageFraction = 0.85
+    private static let maximumHeartRateGap: TimeInterval = 15
+    private static let minimumHeartRateSamplesPerMinute = 6.0
 
     private struct EpochFeature: Equatable {
         let start: Date
@@ -88,16 +106,51 @@ enum AtriaSleepWakeResearch {
                               end: Date,
                               restingHR: Int,
                               isNap: Bool,
-                              motionValidated: Bool,
+                              motionValidated _: Bool,
                               motionEpochs: [AtriaRecoveredMotionEpoch] = []) -> [SleepStageSegment] {
+        stageSegmentsCore(samples: samples,
+                          start: start,
+                          end: end,
+                          restingHR: restingHR,
+                          isNap: isNap,
+                          motionEpochs: motionEpochs,
+                          workCounter: nil)
+    }
+
+    private static func stageSegmentsCore(
+        samples: [HeartSample],
+        start: Date,
+        end: Date,
+        restingHR: Int,
+        isNap: Bool,
+        motionEpochs: [AtriaRecoveredMotionEpoch],
+        workCounter: StageWorkCounter?
+    ) -> [SleepStageSegment] {
         let duration = end.timeIntervalSince(start)
         guard duration >= 20 * 60,
               restingHR > 0 else { return [] }
 
+        // A record-level Boolean is not time-aligned evidence. Stages require
+        // actual recovered epochs covering this exact window; otherwise fail
+        // closed even when a legacy record says `motionValidated == true`.
+        workCounter?.visit(motionEpochs.count)
+        let motionProvenance = AtriaRecoveredMotionAnalytics.sleepProvenance(
+            epochs: motionEpochs,
+            start: start,
+            end: end
+        )
+        guard motionProvenance.measurementSufficient else { return [] }
+
+        workCounter?.visit(samples.count)
         let sorted = samples
             .filter { $0.t >= start && $0.t <= end && $0.bpm > 0 }
             .sorted { $0.t < $1.t }
-        guard sorted.count >= 12 else { return [] }
+        guard heartRateEvidenceIsDense(sorted,
+                                       start: start,
+                                       end: end,
+                                       workCounter: workCounter) else {
+            return []
+        }
 
         let epoch: TimeInterval = 30
         let epochCount = max(1, Int(duration / epoch))
@@ -105,8 +158,8 @@ enum AtriaSleepWakeResearch {
                                      start: start,
                                      end: end,
                                      epochCount: epochCount,
-                                     motionValidated: motionValidated,
-                                     motionEpochs: motionEpochs)
+                                     motionEpochs: motionEpochs,
+                                     workCounter: workCounter)
         var staged: [(start: Date, end: Date, stage: SleepStageKind)] = []
 
         for feature in features {
@@ -116,73 +169,105 @@ enum AtriaSleepWakeResearch {
             staged.append((feature.start, feature.end, stage))
         }
 
-        guard staged.count >= max(8, epochCount / 3) else {
-            return fallbackStageSegments(samples: sorted,
-                                         start: start,
-                                         end: end,
-                                         restingHR: restingHR,
-                                         isNap: isNap,
-                                         motionValidated: motionValidated,
-                                         motionEpochs: motionEpochs)
-        }
+        guard staged.count >= max(8, epochCount / 3) else { return [] }
         let merged = merge(staged)
-        let covered = merged.reduce(0) { $0 + max(0, $1.duration) }
-        let nonAwake = merged.reduce(0) { $0 + ($1.stage == .awake ? 0 : max(0, $1.duration)) }
-        if covered < duration * 0.85 || (!motionValidated && nonAwake <= 0) {
-            let fallback = fallbackStageSegments(samples: sorted,
-                                                 start: start,
-                                                 end: end,
-                                                 restingHR: restingHR,
-                                                 isNap: isNap,
-                                                 motionValidated: motionValidated,
-                                                 motionEpochs: motionEpochs)
-            if fallback.reduce(0, { $0 + max(0, $1.duration) }) > covered || nonAwake <= 0 {
-                return fallback
-            }
-        }
-        return merged
+        return timelineHasDenseLocalEvidence(merged, start: start, end: end)
+            ? merged
+            : []
     }
 
     private static func epochFeatures(samples: [HeartSample],
                                       start: Date,
                                       end: Date,
                                       epochCount: Int,
-                                      motionValidated: Bool,
-                                      motionEpochs: [AtriaRecoveredMotionEpoch]) -> [EpochFeature] {
+                                      motionEpochs: [AtriaRecoveredMotionEpoch],
+                                      workCounter: StageWorkCounter?) -> [EpochFeature] {
         let epoch: TimeInterval = 30
         let duration = max(1, end.timeIntervalSince(start))
-        return (0..<epochCount).compactMap { index in
+        let orderedMotionEpochs = motionEpochs.sorted {
+            if $0.start != $1.start { return $0.start < $1.start }
+            return $0.end < $1.end
+        }
+        var nextMotionIndex = 0
+        var activeMotionEpochs: [AtriaRecoveredMotionEpoch] = []
+        var features: [EpochFeature] = []
+        features.reserveCapacity(epochCount)
+
+        for index in 0..<epochCount {
             let epochStart = start.addingTimeInterval(Double(index) * epoch)
             let epochEnd = index == epochCount - 1 ? end : min(end, epochStart.addingTimeInterval(epoch))
             let center = epochStart.addingTimeInterval(epochEnd.timeIntervalSince(epochStart) / 2)
-            let epochRange = sampleRange(in: samples, from: epochStart, through: epochEnd)
+
+            // Stage epochs advance monotonically. Retain only motion intervals
+            // that can overlap this epoch, then admit newly starting intervals
+            // once. The former filter-per-epoch implementation rescanned the
+            // complete night of motion for every 30-second output epoch.
+            var retainedMotionEpochs: [AtriaRecoveredMotionEpoch] = []
+            retainedMotionEpochs.reserveCapacity(activeMotionEpochs.count)
+            for motionEpoch in activeMotionEpochs {
+                workCounter?.visit()
+                if motionEpoch.end > epochStart {
+                    retainedMotionEpochs.append(motionEpoch)
+                }
+            }
+            activeMotionEpochs = retainedMotionEpochs
+            while nextMotionIndex < orderedMotionEpochs.count {
+                let motionEpoch = orderedMotionEpochs[nextMotionIndex]
+                workCounter?.visit()
+                guard motionEpoch.start < epochEnd else { break }
+                if motionEpoch.end > epochStart {
+                    activeMotionEpochs.append(motionEpoch)
+                }
+                nextMotionIndex += 1
+            }
+
+            let epochRange = sampleRange(in: samples,
+                                         from: epochStart,
+                                         through: epochEnd,
+                                         workCounter: workCounter)
+            // Never borrow a distant HR sample to paint an unsupported epoch.
+            // Wider windows remain useful only for smoothing/variability after
+            // a real sample anchors this exact 30-second epoch.
+            guard !epochRange.isEmpty else { continue }
             let nearbyRange = sampleRange(in: samples,
                                           from: center.addingTimeInterval(-5 * 60),
-                                          through: center.addingTimeInterval(5 * 60))
-            let sourceRange = epochRange.isEmpty ? nearbyRange : epochRange
-            guard !sourceRange.isEmpty else { return nil }
-            let averageHR = averageHeartRate(in: samples, range: sourceRange) ?? 0
-            let shortSmoothHR = gaussianSmoothedHR(samples: samples, center: center, sigma: 120) ?? averageHR
-            let longSmoothHR = gaussianSmoothedHR(samples: samples, center: center, sigma: 600) ?? shortSmoothHR
-            let variability = heartRateStandardDeviation(in: samples, range: nearbyRange)
+                                          through: center.addingTimeInterval(5 * 60),
+                                          workCounter: workCounter)
+            let averageHR = averageHeartRate(in: samples,
+                                             range: epochRange,
+                                             workCounter: workCounter) ?? 0
+            let shortSmoothHR = gaussianSmoothedHR(samples: samples,
+                                                   center: center,
+                                                   sigma: 120,
+                                                   workCounter: workCounter) ?? averageHR
+            let longSmoothHR = gaussianSmoothedHR(samples: samples,
+                                                  center: center,
+                                                  sigma: 600,
+                                                  workCounter: workCounter) ?? shortSmoothHR
+            let variability = heartRateStandardDeviation(in: samples,
+                                                         range: nearbyRange,
+                                                         workCounter: workCounter)
             let progress = epochStart.timeIntervalSince(start) / duration
-            let motion = motionContext(epochs: motionEpochs,
+            let motion = motionContext(epochs: activeMotionEpochs,
                                        start: epochStart,
-                                       end: epochEnd)
-            let legacyMotionValidated = motionEpochs.isEmpty && motionValidated
-            let motionStillnessPrior = motion?.stillness ?? (legacyMotionValidated ? 1.0 : 0.55)
-            return EpochFeature(start: epochStart,
-                                end: epochEnd,
-                                averageHR: averageHR,
-                                shortSmoothHR: shortSmoothHR,
-                                longSmoothHR: longSmoothHR,
-                                differenceOfGaussians: shortSmoothHR - longSmoothHR,
-                                localVariability: variability,
-                                progress: progress,
-                                motionStillnessPrior: motionStillnessPrior,
-                                motionMovementIntensity: motion?.intensity ?? 0,
-                                motionMeasurementValidated: motion != nil || legacyMotionValidated)
+                                       end: epochEnd,
+                                       workCounter: workCounter)
+            // An epoch without sufficiently covered, validated, time-aligned
+            // motion remains blank; a whole-record Boolean cannot fill it.
+            guard let motion else { continue }
+            features.append(EpochFeature(start: epochStart,
+                                         end: epochEnd,
+                                         averageHR: averageHR,
+                                         shortSmoothHR: shortSmoothHR,
+                                         longSmoothHR: longSmoothHR,
+                                         differenceOfGaussians: shortSmoothHR - longSmoothHR,
+                                         localVariability: variability,
+                                         progress: progress,
+                                         motionStillnessPrior: motion.stillness,
+                                         motionMovementIntensity: motion.intensity,
+                                         motionMeasurementValidated: true))
         }
+        return features
     }
 
     private static func stage(feature: EpochFeature,
@@ -212,70 +297,9 @@ enum AtriaSleepWakeResearch {
         return .light
     }
 
-    private static func coarseStageSegments(samples: [HeartSample],
-                                            start: Date,
-                                            end: Date,
-                                            restingHR: Int,
-                                            isNap: Bool,
-                                            motionValidated: Bool,
-                                            motionEpochs: [AtriaRecoveredMotionEpoch],
-                                            sampleVisits: inout Int) -> [SleepStageSegment] {
-        let duration = end.timeIntervalSince(start)
-        guard duration >= 20 * 60, !samples.isEmpty else { return [] }
-        let epoch: TimeInterval = isNap ? 5 * 60 : 10 * 60
-        let epochCount = max(1, Int(ceil(duration / epoch)))
-        let staged: [(start: Date, end: Date, stage: SleepStageKind)] = (0..<epochCount).compactMap { index in
-            let epochStart = start.addingTimeInterval(Double(index) * epoch)
-            let epochEnd = index == epochCount - 1 ? end : min(end, epochStart.addingTimeInterval(epoch))
-            let center = epochStart.addingTimeInterval(epochEnd.timeIntervalSince(epochStart) / 2)
-            let window: TimeInterval = isNap ? 12 * 60 : 20 * 60
-            let nearbyRange = sampleRange(in: samples,
-                                          from: center.addingTimeInterval(-window),
-                                          through: center.addingTimeInterval(window))
-            guard !nearbyRange.isEmpty else { return nil }
-            sampleVisits += nearbyRange.count * 3
-            let averageHR = averageHeartRate(in: samples, range: nearbyRange) ?? 0
-            let variability = heartRateStandardDeviation(in: samples, range: nearbyRange)
-            let progress = epochStart.timeIntervalSince(start) / max(1, duration)
-            let motion = motionContext(epochs: motionEpochs,
-                                       start: epochStart,
-                                       end: epochEnd)
-            let legacyMotionValidated = motionEpochs.isEmpty && motionValidated
-            let feature = EpochFeature(start: epochStart,
-                                       end: epochEnd,
-                                       averageHR: averageHR,
-                                       shortSmoothHR: averageHR,
-                                       longSmoothHR: averageHR,
-                                       differenceOfGaussians: 0,
-                                       localVariability: variability,
-                                       progress: progress,
-                                       motionStillnessPrior: motion?.stillness ?? (legacyMotionValidated ? 1.0 : 0.55),
-                                       motionMovementIntensity: motion?.intensity ?? 0,
-                                       motionMeasurementValidated: motion != nil || legacyMotionValidated)
-            return (epochStart, epochEnd, stage(feature: feature,
-                                                restingHR: restingHR,
-                                                isNap: isNap))
-        }
-        guard !staged.isEmpty else { return [] }
-        return merge(staged)
-    }
-
-    private static func fallbackStageSegments(samples: [HeartSample],
-                                              start: Date,
-                                              end: Date,
-                                              restingHR: Int,
-                                              isNap: Bool,
-                                              motionValidated: Bool,
-                                              motionEpochs: [AtriaRecoveredMotionEpoch]) -> [SleepStageSegment] {
-        fallbackStageDiagnostics(samples: samples,
-                                 start: start,
-                                 end: end,
-                                 restingHR: restingHR,
-                                 isNap: isNap,
-                                 motionValidated: motionValidated,
-                                 motionEpochs: motionEpochs).segments
-    }
-
+    /// Kept as a test-visible compatibility surface for the former fallback.
+    /// It now runs the same fail-closed engine and never expands global HR
+    /// statistics across epochs that lack local HR or motion evidence.
     static func fallbackStageDiagnostics(samples: [HeartSample],
                                          start: Date,
                                          end: Date,
@@ -283,167 +307,164 @@ enum AtriaSleepWakeResearch {
                                          isNap: Bool,
                                          motionValidated: Bool,
                                          motionEpochs: [AtriaRecoveredMotionEpoch] = []) -> FallbackStageDiagnostics {
-        var sampleVisits = 0
-        let coarse = coarseStageSegments(samples: samples,
-                                         start: start,
-                                         end: end,
-                                         restingHR: restingHR,
-                                         isNap: isNap,
-                                         motionValidated: motionValidated,
-                                         motionEpochs: motionEpochs,
-                                         sampleVisits: &sampleVisits)
-        let duration = end.timeIntervalSince(start)
-        let covered = coarse.reduce(0) { $0 + max(0, $1.duration) }
-        let nonAwake = coarse.reduce(0) { $0 + ($1.stage == .awake ? 0 : max(0, $1.duration)) }
-        guard covered < duration * 0.85 || (!motionValidated && nonAwake <= 0) else {
-            return FallbackStageDiagnostics(segments: coarse, sampleVisits: sampleVisits)
-        }
-        let full = fullCoverageHRStageSegments(samples: samples,
-                                               start: start,
-                                               end: end,
-                                               restingHR: restingHR,
-                                               isNap: isNap,
-                                               motionValidated: motionValidated,
-                                               motionEpochs: motionEpochs,
-                                               sampleVisits: &sampleVisits)
-        return FallbackStageDiagnostics(segments: full.isEmpty ? coarse : full,
-                                        sampleVisits: sampleVisits)
+        _ = motionValidated
+        let workCounter = StageWorkCounter()
+        return FallbackStageDiagnostics(
+            segments: stageSegmentsCore(samples: samples,
+                                        start: start,
+                                        end: end,
+                                        restingHR: restingHR,
+                                        isNap: isNap,
+                                        motionEpochs: motionEpochs,
+                                        workCounter: workCounter),
+            sampleVisits: workCounter.sampleVisits
+        )
     }
 
-    private static func fullCoverageHRStageSegments(samples: [HeartSample],
-                                                    start: Date,
-                                                    end: Date,
-                                                    restingHR: Int,
-                                                    isNap: Bool,
-                                                    motionValidated: Bool,
-                                                    motionEpochs: [AtriaRecoveredMotionEpoch],
-                                                    sampleVisits: inout Int) -> [SleepStageSegment] {
+    private static func timelineHasDenseLocalEvidence(
+        _ segments: [SleepStageSegment],
+        start: Date,
+        end: Date
+    ) -> Bool {
         let duration = end.timeIntervalSince(start)
-        guard duration >= 20 * 60, !samples.isEmpty else { return [] }
-        let epoch: TimeInterval = isNap ? 5 * 60 : 10 * 60
-        let epochCount = max(1, Int(ceil(duration / epoch)))
-        let allRange = samples.indices
-        sampleVisits += allRange.count * 3
-        let globalAverage = averageHeartRate(in: samples, range: allRange) ?? Double(restingHR)
-        let globalVariability = heartRateStandardDeviation(in: samples, range: allRange)
-        let staged: [(start: Date, end: Date, stage: SleepStageKind)] = (0..<epochCount).map { index in
-            let epochStart = start.addingTimeInterval(Double(index) * epoch)
-            let epochEnd = index == epochCount - 1 ? end : min(end, epochStart.addingTimeInterval(epoch))
-            let center = epochStart.addingTimeInterval(epochEnd.timeIntervalSince(epochStart) / 2)
-            let directRange = sampleRange(in: samples, from: epochStart, through: epochEnd)
-            let nearbyRange = directRange.isEmpty
-                ? sampleRange(in: samples,
-                              from: center.addingTimeInterval(-(isNap ? 20 * 60 : 45 * 60)),
-                              through: center.addingTimeInterval(isNap ? 20 * 60 : 45 * 60))
-                : directRange
-            let sourceRange = nearbyRange.isEmpty ? allRange : nearbyRange
-            sampleVisits += sourceRange.count
-            let averageHR = averageHeartRate(in: samples, range: sourceRange) ?? globalAverage
-            let variability: Double
-            if nearbyRange.isEmpty {
-                variability = globalVariability
-            } else {
-                sampleVisits += sourceRange.count * 2
-                variability = heartRateStandardDeviation(in: samples, range: sourceRange)
+        guard duration > 0, !segments.isEmpty else { return false }
+        var covered: TimeInterval = 0
+        var previousEnd = start
+        var maximumGap: TimeInterval = 0
+        for segment in segments {
+            guard segment.end > segment.start,
+                  segment.start >= previousEnd,
+                  segment.start >= start,
+                  segment.end <= end else { return false }
+            maximumGap = max(maximumGap, segment.start.timeIntervalSince(previousEnd))
+            covered += segment.duration
+            previousEnd = segment.end
+        }
+        maximumGap = max(maximumGap, end.timeIntervalSince(previousEnd))
+        return covered / duration >= minimumTimelineCoverageFraction
+            && maximumGap <= maximumEvidenceGap
+    }
+
+    private static func heartRateEvidenceIsDense(
+        _ samples: [HeartSample],
+        start: Date,
+        end: Date,
+        workCounter: StageWorkCounter?
+    ) -> Bool {
+        let duration = end.timeIntervalSince(start)
+        guard duration > 0,
+              let first = samples.first,
+              let last = samples.last else { return false }
+        let requiredSamples = Int(ceil(
+            duration / 60 * minimumHeartRateSamplesPerMinute
+        ))
+        guard samples.count >= requiredSamples,
+              first.t.timeIntervalSince(start) <= maximumHeartRateGap,
+              end.timeIntervalSince(last.t) <= maximumHeartRateGap else {
+            return false
+        }
+        for index in 1..<samples.count {
+            workCounter?.visit(2)
+            if samples[index].t.timeIntervalSince(samples[index - 1].t) > maximumHeartRateGap {
+                return false
             }
-            let progress = epochStart.timeIntervalSince(start) / max(1, duration)
-            let motion = motionContext(epochs: motionEpochs,
-                                       start: epochStart,
-                                       end: epochEnd)
-            let legacyMotionValidated = motionEpochs.isEmpty && motionValidated
-            let stage = hrOnlyStage(averageHR: averageHR,
-                                    variability: variability,
-                                    progress: progress,
-                                    restingHR: restingHR,
-                                    isNap: isNap,
-                                    motionStillnessPrior: motion?.stillness ?? (legacyMotionValidated ? 1.0 : 0.55),
-                                    motionMovementIntensity: motion?.intensity ?? 0,
-                                    motionMeasurementValidated: motion != nil || legacyMotionValidated)
-            return (epochStart, epochEnd, stage)
         }
-        return merge(staged)
-    }
-
-    private static func hrOnlyStage(averageHR: Double,
-                                    variability: Double,
-                                    progress: Double,
-                                    restingHR: Int,
-                                    isNap: Bool,
-                                    motionStillnessPrior: Double,
-                                    motionMovementIntensity: Double,
-                                    motionMeasurementValidated: Bool) -> SleepStageKind {
-        if motionMeasurementValidated {
-            let feature = EpochFeature(start: Date(timeIntervalSince1970: 0),
-                                       end: Date(timeIntervalSince1970: 1),
-                                       averageHR: averageHR,
-                                       shortSmoothHR: averageHR,
-                                       longSmoothHR: averageHR,
-                                       differenceOfGaussians: 0,
-                                       localVariability: variability,
-                                       progress: progress,
-                                       motionStillnessPrior: motionStillnessPrior,
-                                       motionMovementIntensity: motionMovementIntensity,
-                                       motionMeasurementValidated: true)
-            return stage(feature: feature,
-                         restingHR: restingHR,
-                         isNap: isNap)
-        }
-        let delta = averageHR - Double(restingHR)
-        if delta >= 18 || ((progress < 0.06 || progress > 0.94) && delta >= 14) { return .awake }
-        if isNap {
-            if progress >= 0.25 && delta <= 11 && variability >= 3.0 { return .rem }
-            if delta <= 3 && variability <= 3.5 { return .deep }
-            if delta <= 7 { return .sws }
-            return .light
-        }
-        if progress >= 0.18 && progress <= 0.88 && delta >= 2 && delta <= 14 && variability >= 3.0 {
-            return .rem
-        }
-        if delta <= 3 && variability <= 3.5 { return .deep }
-        if delta <= 8 { return .sws }
-        return .light
+        return true
     }
 
     private static func motionContext(
         epochs: [AtriaRecoveredMotionEpoch],
         start: Date,
-        end: Date
+        end: Date,
+        workCounter: StageWorkCounter?
     ) -> (stillness: Double, intensity: Double)? {
+        struct MotionSupport {
+            var start: Date
+            var end: Date
+            let stillness: Double
+            let intensity: Double
+        }
+
         let duration = end.timeIntervalSince(start)
         guard duration > 0 else { return nil }
-        let overlapping = epochs.filter {
-            $0.measurementValidated && $0.end > start && $0.start < end
-        }
-        var covered: TimeInterval = 0
-        var weightedStillness = 0.0
-        var weightedIntensity = 0.0
-        for epoch in overlapping {
-            let overlap = min(end, epoch.end).timeIntervalSince(max(start, epoch.start))
-            guard overlap > 0,
+        let support = epochs.compactMap { epoch -> MotionSupport? in
+            workCounter?.visit()
+            guard epoch.measurementValidated,
+                  epoch.end > start,
+                  epoch.start < end,
                   let stillness = epoch.stillnessRatio,
                   let intensity = epoch.movementIntensity,
                   stillness.isFinite,
-                  intensity.isFinite else { continue }
-            covered += overlap
-            weightedStillness += stillness * overlap
-            weightedIntensity += intensity * overlap
+                  intensity.isFinite else { return nil }
+            let lower = max(start, epoch.start)
+            let upper = min(end, epoch.end)
+            guard upper > lower else { return nil }
+            return MotionSupport(start: lower,
+                                 end: upper,
+                                 stillness: stillness,
+                                 intensity: intensity)
+        }.sorted {
+            if $0.start != $1.start { return $0.start < $1.start }
+            return $0.end < $1.end
         }
-        guard covered / duration >= 0.60 else { return nil }
+
+        // Compact latest-night preparation can attach the same recovered epoch
+        // to both saved sessions at a reconnect boundary. Count identical
+        // support once. If overlapping projections disagree, that wall-clock
+        // interval has no single measurement authority, so withhold the entire
+        // 30-second stage epoch instead of averaging a conflict into precision.
+        var uniqueSupport: [MotionSupport] = []
+        uniqueSupport.reserveCapacity(support.count)
+        for candidate in support {
+            workCounter?.visit()
+            guard var previous = uniqueSupport.last else {
+                uniqueSupport.append(candidate)
+                continue
+            }
+            let overlaps = candidate.start < previous.end
+            let sameMeasurement = candidate.stillness == previous.stillness
+                && candidate.intensity == previous.intensity
+            if overlaps {
+                guard sameMeasurement else { return nil }
+                previous.end = max(previous.end, candidate.end)
+                uniqueSupport[uniqueSupport.count - 1] = previous
+            } else if candidate.start == previous.end, sameMeasurement {
+                previous.end = candidate.end
+                uniqueSupport[uniqueSupport.count - 1] = previous
+            } else {
+                uniqueSupport.append(candidate)
+            }
+        }
+
+        var covered: TimeInterval = 0
+        var weightedStillness = 0.0
+        var weightedIntensity = 0.0
+        for interval in uniqueSupport {
+            workCounter?.visit()
+            let intervalDuration = interval.end.timeIntervalSince(interval.start)
+            covered += intervalDuration
+            weightedStillness += interval.stillness * intervalDuration
+            weightedIntensity += interval.intensity * intervalDuration
+        }
+        guard covered / duration >= 0.80 else { return nil }
         return (weightedStillness / covered, weightedIntensity / covered)
     }
 
     private static func gaussianSmoothedHR(samples: [HeartSample],
                                            center: Date,
-                                           sigma: TimeInterval) -> Double? {
+                                           sigma: TimeInterval,
+                                           workCounter: StageWorkCounter?) -> Double? {
         guard sigma > 0 else { return nil }
         let radius = sigma * 3
         let range = sampleRange(in: samples,
                                 from: center.addingTimeInterval(-radius),
-                                through: center.addingTimeInterval(radius))
+                                through: center.addingTimeInterval(radius),
+                                workCounter: workCounter)
         guard !range.isEmpty else { return nil }
         var weighted = 0.0
         var weights = 0.0
         for index in range {
+            workCounter?.visit()
             let sample = samples[index]
             let distance = sample.t.timeIntervalSince(center)
             let weight = exp(-0.5 * pow(distance / sigma, 2))
@@ -456,11 +477,13 @@ enum AtriaSleepWakeResearch {
 
     private static func sampleRange(in samples: [HeartSample],
                                     from start: Date,
-                                    through end: Date) -> Range<Int> {
+                                    through end: Date,
+                                    workCounter: StageWorkCounter?) -> Range<Int> {
         var lowerLow = 0
         var lowerHigh = samples.count
         while lowerLow < lowerHigh {
             let middle = (lowerLow + lowerHigh) / 2
+            workCounter?.visit()
             if samples[middle].t < start {
                 lowerLow = middle + 1
             } else {
@@ -472,6 +495,7 @@ enum AtriaSleepWakeResearch {
         var upperHigh = samples.count
         while upperLow < upperHigh {
             let middle = (upperLow + upperHigh) / 2
+            workCounter?.visit()
             if samples[middle].t <= end {
                 upperLow = middle + 1
             } else {
@@ -482,21 +506,27 @@ enum AtriaSleepWakeResearch {
     }
 
     private static func averageHeartRate(in samples: [HeartSample],
-                                         range: Range<Int>) -> Double? {
+                                         range: Range<Int>,
+                                         workCounter: StageWorkCounter?) -> Double? {
         guard !range.isEmpty else { return nil }
         var total = 0.0
         for index in range {
+            workCounter?.visit()
             total += Double(samples[index].bpm)
         }
         return total / Double(range.count)
     }
 
     private static func heartRateStandardDeviation(in samples: [HeartSample],
-                                                   range: Range<Int>) -> Double {
+                                                   range: Range<Int>,
+                                                   workCounter: StageWorkCounter?) -> Double {
         guard range.count >= 2,
-              let mean = averageHeartRate(in: samples, range: range) else { return 0 }
+              let mean = averageHeartRate(in: samples,
+                                          range: range,
+                                          workCounter: workCounter) else { return 0 }
         var squaredDeltaTotal = 0.0
         for index in range {
+            workCounter?.visit()
             let delta = Double(samples[index].bpm) - mean
             squaredDeltaTotal += delta * delta
         }
@@ -529,7 +559,7 @@ enum AtriaSleepWakeResearch {
             }
         }
         return merged.enumerated().map { index, item in
-            SleepStageSegment(id: "research-\(Int(item.start.timeIntervalSince1970))-\(index)-\(item.stage.rawValue)",
+            SleepStageSegment(id: "research-motion-v2-\(Int(item.start.timeIntervalSince1970))-\(index)-\(item.stage.rawValue)",
                               start: item.start,
                               end: item.end,
                               stage: item.stage)

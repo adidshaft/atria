@@ -145,6 +145,10 @@ struct AtriaMetricProvenance: Equatable {
     /// When the underlying data was last updated, and where it came from.
     let sourceLabel: String
     let observedAt: Date?
+    /// Concrete partial-strain cause when known. This takes precedence over the
+    /// generic lower-bound fallback so complete day wear plus one sparse
+    /// workout is never mislabeled as part-day strap wear.
+    var strainLimitation: AtriaWorkoutMetricPresentation.StrainLimitation? = nil
     /// The metric's own graded status -- the green/amber/red zone its value
     /// falls in. Nil where the value has NO real grade, which keeps the
     /// documented honesty guard: painting a colour around an ungraded number
@@ -160,6 +164,7 @@ struct AtriaMetricProvenance: Equatable {
     /// Why confidence is reduced, stated concretely rather than as an adjective.
     /// Nil when confidence is high and there is nothing to explain.
     var reducedConfidenceReason: String? {
+        if let strainLimitation { return strainLimitation.explanation }
         if isLowerBound {
             return "Strap wear covered only part of the day, so accumulated load is a floor, not a total."
         }
@@ -176,6 +181,7 @@ struct AtriaMetricProvenance: Equatable {
 
     /// What would actually raise confidence. Nil when nothing is needed.
     var improvementHint: String? {
+        if let strainLimitation { return strainLimitation.improvementHint }
         if isLowerBound { return "Wear the strap for more of the day." }
         if usesHRV == false { return "Record a night of sleep with the strap on so HRV can contribute." }
         switch level {

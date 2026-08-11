@@ -98,7 +98,15 @@ enum AtriaRecoveredMotionAnalytics {
         end: Date
     ) -> AtriaRecoveredMotionProjection.SavedSessionFields {
         let bounded = overlappingEpochs(epochs, start: start, end: end)
-        let validated = bounded.filter(\.measurementValidated)
+        // Stage-capable motion evidence needs measured, finite stillness and
+        // intensity for the exact epoch. A validation bit without those values
+        // is provenance metadata, not a usable time-series measurement.
+        let validated = bounded.filter {
+            guard $0.measurementValidated,
+                  let stillness = $0.stillnessRatio,
+                  let intensity = $0.movementIntensity else { return false }
+            return stillness.isFinite && intensity.isFinite
+        }
         let duration = max(0, end.timeIntervalSince(start))
         let coverage = duration > 0
             ? coveredDuration(validated, start: start, end: end) / duration
@@ -157,7 +165,12 @@ enum AtriaRecoveredMotionAnalytics {
         }
 
         let duration = end.timeIntervalSince(start)
-        let validated = bounded.filter(\.measurementValidated)
+        let validated = bounded.filter {
+            guard $0.measurementValidated,
+                  let stillness = $0.stillnessRatio,
+                  let intensity = $0.movementIntensity else { return false }
+            return stillness.isFinite && intensity.isFinite
+        }
         let validatedCoverage = coveredDuration(validated, start: start, end: end)
         let lowMotionCoverage = coveredDuration(validated.filter(\.lowMotionQualified),
                                                 start: start,
@@ -168,6 +181,7 @@ enum AtriaRecoveredMotionAnalytics {
             : 0
         let maximumGap = maximumUncoveredGap(validated, start: start, end: end)
         let intensities = validated.compactMap(\.movementIntensity)
+        let stillnesses = validated.compactMap(\.stillnessRatio)
         let meanIntensity = intensities.isEmpty
             ? nil
             : intensities.reduce(0, +) / Double(intensities.count)
@@ -175,6 +189,7 @@ enum AtriaRecoveredMotionAnalytics {
             && validatedFraction >= 0.80
             && maximumGap <= 90
             && !intensities.isEmpty
+            && !stillnesses.isEmpty
         let lowMotion = sufficient
             && lowMotionFraction >= 0.72
             && (meanIntensity ?? .infinity) <= 0.18

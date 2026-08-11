@@ -16,6 +16,88 @@ enum AtriaWorkoutMetricPresentation {
         case complete
     }
 
+    /// The concrete evidence gap that turns accumulated strain into a lower
+    /// bound. Keep this structured so Today, Vitals, the detail sheet, and
+    /// accessibility all describe the same cause instead of inferring it from
+    /// a generic confidence string.
+    enum StrainLimitation: Equatable {
+        case workoutHeartRate(label: String, coveragePercent: Int)
+        case dayWear(coveragePercent: Int)
+        case incompleteEvidence
+
+        var compactState: String {
+            switch self {
+            case .workoutHeartRate: return "Workout HR incomplete"
+            case .dayWear: return "Day HR incomplete"
+            case .incompleteEvidence: return "Strain data incomplete"
+            }
+        }
+
+        var explanation: String {
+            switch self {
+            case .workoutHeartRate(let label, let coveragePercent):
+                return "\(label) captured \(coveragePercent)% of workout heart rate. Today's strain is a lower bound."
+            case .dayWear(let coveragePercent):
+                return "Heart-rate coverage is \(coveragePercent)% for this physiological day. Today's strain is a lower bound."
+            case .incompleteEvidence:
+                return "Some heart-rate evidence is incomplete. Today's strain is a lower bound."
+            }
+        }
+
+        var improvementHint: String {
+            switch self {
+            case .workoutHeartRate:
+                return "Keep the strap connected through the full workout."
+            case .dayWear:
+                return "Keep the strap connected for more of the day."
+            case .incompleteEvidence:
+                return "Keep the strap connected while Atria records heart rate."
+            }
+        }
+
+        var accessibilityText: String {
+            switch self {
+            case .workoutHeartRate(let label, let coveragePercent):
+                return "\(label) workout heart rate \(coveragePercent) percent."
+            case .dayWear(let coveragePercent):
+                return "Physiological day heart-rate coverage \(coveragePercent) percent."
+            case .incompleteEvidence:
+                return "Heart-rate evidence is incomplete."
+            }
+        }
+    }
+
+    /// One shared, pure UI contract for every partial-Strain surface. Partial
+    /// evidence does not prove that a sync is queued or still running, so none
+    /// of this copy promises that finishing sync will change the score.
+    struct StrainLimitationPresentation: Equatable {
+        let compactState: String
+        let explanation: String
+        let improvementHint: String
+
+        var detailText: String {
+            "\(explanation) \(improvementHint)"
+        }
+
+        var targetContext: String {
+            "lower-bound strain"
+        }
+
+        var accessibilityText: String {
+            "\(compactState). \(detailText)"
+        }
+    }
+
+    static func strainLimitationPresentation(
+        _ limitation: StrainLimitation
+    ) -> StrainLimitationPresentation {
+        StrainLimitationPresentation(
+            compactState: limitation.compactState,
+            explanation: limitation.explanation,
+            improvementHint: limitation.improvementHint
+        )
+    }
+
     struct ShareMetrics: Equatable {
         let strain: String
         let peakHeartRate: String
@@ -110,13 +192,66 @@ enum AtriaWorkoutMetricPresentation {
                                         end: Date,
                                         strain: Double,
                                         workouts: [UserConfirmedWorkout]) -> Bool {
-        guard end > start else { return false }
         _ = strain
-        return workouts.contains { workout in
-            workout.end > start
-                && workout.start < end
-                && metricsAreIncomplete(workout)
+        return cycleStrainLimitation(start: start,
+                                     end: end,
+                                     workouts: workouts) != nil
+    }
+
+    /// Prefer a workout-specific cause over generic day wear because it is the
+    /// actionable source of the lower bound even when all-day HR coverage is
+    /// otherwise complete. The lowest-coverage overlapping workout is selected
+    /// deterministically when more than one workout is incomplete.
+    static func cycleStrainLimitation(
+        start: Date,
+        end: Date,
+        workouts: [UserConfirmedWorkout]
+    ) -> StrainLimitation? {
+        guard end > start else { return nil }
+        let incomplete = workouts
+            .filter { workout in
+                workout.end > start
+                    && workout.start < end
+                    && metricsAreIncomplete(workout)
+            }
+            .sorted { lhs, rhs in
+                if lhs.streamCoveragePercent != rhs.streamCoveragePercent {
+                    return lhs.streamCoveragePercent < rhs.streamCoveragePercent
+                }
+                if lhs.start != rhs.start { return lhs.start < rhs.start }
+                return lhs.id < rhs.id
+            }
+        guard let workout = incomplete.first else { return nil }
+        return .workoutHeartRate(
+            label: workout.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Workout"
+                : workout.label,
+            coveragePercent: min(max(workout.streamCoveragePercent, 0), 100)
+        )
+    }
+
+    /// Resolves the one explanation shown for a partial current-cycle score.
+    /// Workout gaps win over day wear so 100% day coverage never produces the
+    /// false claim that the strap was worn for only part of the day.
+    static func strainLimitation(
+        start: Date,
+        end: Date,
+        workouts: [UserConfirmedWorkout],
+        dayWearCoverageFraction: Double?
+    ) -> StrainLimitation? {
+        if let workout = cycleStrainLimitation(start: start,
+                                               end: end,
+                                               workouts: workouts) {
+            return workout
         }
+        guard let dayWearCoverageFraction,
+              dayWearCoverageFraction.isFinite,
+              dayWearCoverageFraction < 0.95 else {
+            return nil
+        }
+        return .dayWear(
+            coveragePercent: min(max(Int((dayWearCoverageFraction * 100).rounded()), 0), 100)
+        )
     }
 
     static func strainText(_ workout: UserConfirmedWorkout) -> String {

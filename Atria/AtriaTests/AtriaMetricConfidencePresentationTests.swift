@@ -439,17 +439,22 @@ final class AtriaMetricConfidencePresentationTests: XCTestCase {
                        "a render time must never be presented as observation time")
     }
 
-    func testBothProvenanceMetricsStillRenderTheCard() throws {
+    func testRecoveryAndCurrentCycleStrainEachRenderOneDataQualityCard() throws {
         let overview = try source("Atria/AtriaOverviewSections.swift")
-        // Call form changed when the card was extracted from three private
-        // methods on the sheet into its own view. The pin caught that drift, as
-        // intended -- it just happened to be my own drift.
-        let occurrences = overview
+        let recoveryOccurrences = overview
             .components(separatedBy: "AtriaMetricProvenanceCard(provenance: provenance)")
             .count - 1
+        let strainOccurrences = overview
+            .components(separatedBy: "AtriaMetricProvenanceCard(provenance: currentCycleStrainProvenance)")
+            .count - 1
+        let card = try source("Atria/AtriaMetricProvenanceCard.swift")
 
-        XCTAssertEqual(occurrences, 2,
-                       "recovery and strain must each still render the provenance card")
+        XCTAssertEqual(recoveryOccurrences, 1,
+                       "Recovery must retain its caller-supplied provenance card")
+        XCTAssertEqual(strainOccurrences, 1,
+                       "current-cycle Strain must render one truth-aware card, not duplicate generic provenance")
+        XCTAssertTrue(card.contains("Text(\"Data quality\")"),
+                      "the compact section title must remain straightforward")
         XCTAssertTrue(overview.contains("provenance: AtriaMetricProvenance? = nil"),
                       "the sheet must still accept provenance")
     }
