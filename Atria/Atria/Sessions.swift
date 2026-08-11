@@ -8411,6 +8411,87 @@ final class SessionStore: ObservableObject {
         let maxHR: Int
     }
 
+    /// Exact authority carried by one sleep-settlement worker. Process
+    /// foreground generations advance on every inactive/background edge, while
+    /// recovered generations are bound to the coordinator ticket and archive
+    /// revision. Neither identity can become valid again after revocation.
+    struct ForegroundSleepSettlementAuthority: Equatable, Sendable {
+        enum Domain: Equatable, Sendable {
+            case processForeground
+            case recoveredForeground
+            case recoveredExplicitBackground
+        }
+
+        let domain: Domain
+        let generation: UInt64
+        let archiveRevision: UInt64
+
+        static func processForeground(generation: UInt64)
+            -> ForegroundSleepSettlementAuthority {
+            .init(
+                domain: .processForeground,
+                generation: generation,
+                archiveRevision: 0
+            )
+        }
+    }
+
+    /// Requests may share a worker only when every algorithm/cap input and its
+    /// captured store fingerprint are identical. In particular, the bounded
+    /// ordinary Home pass can never satisfy a force/recovered request.
+    struct ForegroundSleepSettlementConfiguration: Equatable, Sendable {
+        let fingerprint: ForegroundSleepSettlementFingerprint
+        let force: Bool
+        let deferDerivedPublication: Bool
+        let evaluationLookbackDays: Int
+        let maximumEvaluationSessions: Int
+        let autoConfirmLimit: Int
+        let compactRetryRemainingAttempts: Int
+        let staleRetryRemainingAttempts: Int
+    }
+
+    struct ForegroundSleepSettlementPendingOwner: Equatable, Sendable {
+        let workerGeneration: Int
+        let authority: ForegroundSleepSettlementAuthority
+        let configuration: ForegroundSleepSettlementConfiguration
+        var hasCompletionFence: Bool
+    }
+
+    enum ForegroundSleepSettlementAdmission: Equatable, Sendable {
+        case start
+        case join(workerGeneration: Int)
+        case supersede(workerGeneration: Int)
+        case blockedByIncompatibleFencedOwner(workerGeneration: Int)
+    }
+
+    nonisolated static func foregroundSleepSettlementAdmission(
+        pending: ForegroundSleepSettlementPendingOwner?,
+        requestAuthority: ForegroundSleepSettlementAuthority,
+        requestConfiguration: ForegroundSleepSettlementConfiguration,
+        requestHasCompletionFence: Bool
+    ) -> ForegroundSleepSettlementAdmission {
+        guard let pending else { return .start }
+        let isCompatible = pending.authority == requestAuthority
+            && pending.configuration == requestConfiguration
+        if isCompatible,
+           pending.hasCompletionFence || requestHasCompletionFence {
+            return .join(workerGeneration: pending.workerGeneration)
+        }
+        if pending.hasCompletionFence {
+            return .blockedByIncompatibleFencedOwner(
+                workerGeneration: pending.workerGeneration
+            )
+        }
+        return .supersede(workerGeneration: pending.workerGeneration)
+    }
+
+    nonisolated static func foregroundSleepSettlementCompletionIsCurrent(
+        completedGeneration: Int,
+        pending: ForegroundSleepSettlementPendingOwner?
+    ) -> Bool {
+        pending?.workerGeneration == completedGeneration
+    }
+
     /// Immutable output of the utility-queue foreground settlement build.
     /// `SavedSession` and `AggregateSleepCandidate` are legacy value types made
     /// solely from immutable arrays/scalars here; the unchecked annotation is
@@ -10091,6 +10172,8 @@ final class SessionStore: ObservableObject {
     /// build from committing after newer store state has won.
     private var foregroundSleepSettlementGeneration = 0
     private var pendingForegroundSleepSettlementWorkItem: DispatchWorkItem?
+    private var pendingForegroundSleepSettlementOwner:
+        ForegroundSleepSettlementPendingOwner?
     private var pendingForegroundSleepSettlementCompletions: [(Bool) -> Void] = []
     private var sleepReviewCacheGeneration = 0
     private var sleepReviewCacheKey: SleepReviewCacheKey?
@@ -15536,6 +15619,8 @@ final class SessionStore: ObservableObject {
         confirmedWorkoutRehydrationGeneration &+= 1
         workoutStepEvidenceGeneration &+= 1
         foregroundSleepSettlementGeneration &+= 1
+        pendingForegroundSleepSettlementOwner = nil
+        drainForegroundSleepSettlementCompletions(succeeded: false)
         behaviorInsightsGeneration &+= 1
         biologicalAgeRefreshGeneration &+= 1
         sessionBackupStatusGeneration &+= 1
@@ -17019,6 +17104,13 @@ final class SessionStore: ObservableObject {
             evaluationLookbackDays: 2,
             maximumEvaluationSessions: 192,
             autoConfirmLimit: 1,
+            settlementAuthority: .init(
+                domain: ticket.executionDomain == .foreground
+                    ? .recoveredForeground
+                    : .recoveredExplicitBackground,
+                generation: ticket.generation,
+                archiveRevision: ticket.archiveRevision
+            ),
             executionShouldContinue: {
                 authority.cooperativeShouldContinue()
             }
@@ -17318,6 +17410,13 @@ final class SessionStore: ObservableObject {
             evaluationLookbackDays: 14,
             maximumEvaluationSessions: 4_096,
             autoConfirmLimit: 14,
+            settlementAuthority: .init(
+                domain: ticket.executionDomain == .foreground
+                    ? .recoveredForeground
+                    : .recoveredExplicitBackground,
+                generation: ticket.generation,
+                archiveRevision: ticket.archiveRevision
+            ),
             executionShouldContinue: {
                 authority.cooperativeShouldContinue()
             }
@@ -34210,19 +34309,32 @@ final class SessionStore: ObservableObject {
 
     private func scheduleSleepSettlementRetry(for candidates: [AggregateSleepCandidate],
                                               reason: String,
-                                              now: Date = Date()) {
+                                              now: Date = Date(),
+                                              settlementAuthority:
+                                                ForegroundSleepSettlementAuthority,
+                                              executionShouldContinue:
+                                                @escaping @Sendable () -> Bool) {
         let candidateEnds = candidates.map(\.end)
         guard let delay = Self.sleepSettlementRetryDelay(candidateEnds: candidateEnds, now: now) else { return }
         pendingSleepSettlementRetry?.cancel()
         pendingSleepSettlementRetry = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self else { return }
+            guard executionShouldContinue() else {
+                self.pendingSleepSettlementRetry = nil
+                self.lastForegroundSleepAutoConfirmAt = nil
+                return
+            }
             self.pendingSleepSettlementRetry = nil
             // This retry can inherit the same growing all-day journal as a
             // normal foreground edge. Route it through the off-main proposal
             // builder instead of performing aggregation on the MainActor.
             self.lastForegroundSleepAutoConfirmAt = nil
-            self.autoConfirmSleepOnForegroundIfUseful(reason: "settled_\(reason)")
+            self.autoConfirmSleepOnForegroundIfUseful(
+                reason: "settled_\(reason)",
+                settlementAuthority: settlementAuthority,
+                executionShouldContinue: executionShouldContinue
+            )
         }
         AtriaDebugLog("ATRIADBG sleep_auto_confirm_retry schedule reason=%@ kind=settlement delay_s=%.0f candidates=%d",
                       reason,
@@ -34244,6 +34356,70 @@ final class SessionStore: ObservableObject {
     }
 
     private var lastForegroundSleepAutoConfirmAt: Date?
+
+    private func foregroundSleepSettlementWorkerIsCurrent(
+        _ generation: Int
+    ) -> Bool {
+        generation == foregroundSleepSettlementGeneration
+            && Self.foregroundSleepSettlementCompletionIsCurrent(
+                completedGeneration: generation,
+                pending: pendingForegroundSleepSettlementOwner
+            )
+    }
+
+    /// A revoked foreground/recovered authority may stop the utility worker at
+    /// any cooperative checkpoint. Retire only that exact generation and clear
+    /// its cadence stamp so the next authorized edge can retry immediately.
+    /// A newer ordinary or recovered settlement is never canceled by a stale
+    /// cleanup callback.
+    private func retireForegroundSleepSettlementAfterAuthorityLoss(
+        generation: Int
+    ) {
+        guard foregroundSleepSettlementWorkerIsCurrent(generation) else {
+            return
+        }
+        foregroundSleepSettlementGeneration &+= 1
+        pendingForegroundSleepSettlementWorkItem?.cancel()
+        pendingForegroundSleepSettlementWorkItem = nil
+        pendingForegroundSleepSettlementOwner = nil
+        lastForegroundSleepAutoConfirmAt = nil
+        drainForegroundSleepSettlementCompletions(succeeded: false)
+    }
+
+    /// Mismatch replacement is permitted only for an unfenced owner. Advance
+    /// the worker generation before releasing its sentinel so no queued G1
+    /// callback can observe or drain a later G2 completion array.
+    private func supersedeForegroundSleepSettlement(
+        workerGeneration: Int
+    ) {
+        guard let owner = pendingForegroundSleepSettlementOwner,
+              owner.workerGeneration == workerGeneration,
+              !owner.hasCompletionFence else { return }
+        foregroundSleepSettlementGeneration &+= 1
+        pendingForegroundSleepSettlementWorkItem?.cancel()
+        pendingForegroundSleepSettlementWorkItem = nil
+        pendingForegroundSleepSettlementOwner = nil
+        lastForegroundSleepAutoConfirmAt = nil
+        if !pendingForegroundSleepSettlementCompletions.isEmpty {
+            drainForegroundSleepSettlementCompletions(succeeded: false)
+        }
+    }
+
+    /// An exact worker may retry its own stale source while retaining an
+    /// already-attached completion fence. Retire the old generation first, but
+    /// leave its completion array for the replacement owner to adopt.
+    private func prepareForegroundSleepSettlementReplacement(
+        workerGeneration: Int
+    ) -> Bool {
+        guard foregroundSleepSettlementWorkerIsCurrent(workerGeneration) else {
+            return false
+        }
+        foregroundSleepSettlementGeneration &+= 1
+        pendingForegroundSleepSettlementWorkItem?.cancel()
+        pendingForegroundSleepSettlementWorkItem = nil
+        pendingForegroundSleepSettlementOwner = nil
+        return true
+    }
 
     /// Foreground settlement is latency-sensitive: it runs shortly after the
     /// return animation on the main actor. Sleep that can still be newly saved
@@ -34726,12 +34902,9 @@ final class SessionStore: ObservableObject {
     /// extend it. Past this, the night is treated as settled (2026-07-08).
     private static let sleepReExtendMorningWindow: TimeInterval = 5 * 60 * 60
 
-    /// A completion-fenced caller (the recovered-data publication cascade) can
-    /// safely join an already-running settlement. Once attached, that fence
-    /// also owns the in-flight generation: later fire-and-forget callers join
-    /// instead of cancelling it. Starting a second full journal aggregation
-    /// only delays the same answer, and on a large launch journal it can exhaust
-    /// the derived timeout while utility workers compete for resources.
+    /// Legacy shape predicate retained for pure policy callers. Production
+    /// admission additionally requires exact authority and configuration
+    /// compatibility through `foregroundSleepSettlementAdmission` below.
     nonisolated static func shouldJoinPendingForegroundSleepSettlement(
         hasPendingWork: Bool,
         hasPendingCompletionFence: Bool,
@@ -34755,6 +34928,7 @@ final class SessionStore: ObservableObject {
         autoConfirmLimit: Int = 2,
         compactRetryRemainingAttempts: Int = 1,
         staleRetryRemainingAttempts: Int = 1,
+        settlementAuthority: ForegroundSleepSettlementAuthority? = nil,
         executionShouldContinue:
             @escaping @Sendable () -> Bool = { true },
         completion: ((Bool) -> Void)? = nil
@@ -34767,13 +34941,50 @@ final class SessionStore: ObservableObject {
             completion?(false)
             return
         }
-        if Self.shouldJoinPendingForegroundSleepSettlement(
-            hasPendingWork: pendingForegroundSleepSettlementWorkItem != nil,
-            hasPendingCompletionFence: !pendingForegroundSleepSettlementCompletions.isEmpty,
+        let rest = baseline.restingInt ?? 60
+        let baselineRestingIsTrusted = baseline.restingInt != nil
+            && baseline.hasTrustedRestingBaseline(now: now)
+        let baselineRestingIsNearTrusted = baseline.restingInt != nil
+            && baseline.hasNearTrustedRestingBaselineForFragmentedSleep(now: now)
+        let maxHR = profile.maxHR
+        let fingerprint = foregroundSleepSettlementFingerprint(
+            rest: rest,
+            baselineRestingIsTrusted: baselineRestingIsTrusted,
+            baselineRestingIsNearTrusted: baselineRestingIsNearTrusted,
+            maxHR: maxHR
+        )
+        let requestAuthority = settlementAuthority ?? .processForeground(
+            generation: AtriaHistoricalProjectionForegroundGate
+                .currentGeneration
+        )
+        let requestConfiguration = ForegroundSleepSettlementConfiguration(
+            fingerprint: fingerprint,
+            force: force,
+            deferDerivedPublication: deferDerivedPublication,
+            evaluationLookbackDays: evaluationLookbackDays,
+            maximumEvaluationSessions: maximumEvaluationSessions,
+            autoConfirmLimit: autoConfirmLimit,
+            compactRetryRemainingAttempts: compactRetryRemainingAttempts,
+            staleRetryRemainingAttempts: staleRetryRemainingAttempts
+        )
+        switch Self.foregroundSleepSettlementAdmission(
+            pending: pendingForegroundSleepSettlementOwner,
+            requestAuthority: requestAuthority,
+            requestConfiguration: requestConfiguration,
             requestHasCompletionFence: completion != nil
         ) {
+        case .start:
+            break
+        case .join(let workerGeneration):
+            guard pendingForegroundSleepSettlementOwner?.workerGeneration
+                    == workerGeneration else {
+                completion?(false)
+                return
+            }
             if let completion {
                 pendingForegroundSleepSettlementCompletions.append(completion)
+                pendingForegroundSleepSettlementOwner?
+                    .hasCompletionFence = true
             }
             AtriaDebugLog("ATRIADBG sleep_foreground_settlement status=joined_inflight reason=%@ force=%d request_completion_fence=%d owner_completion_fence=%d",
                           reason,
@@ -34781,17 +34992,23 @@ final class SessionStore: ObservableObject {
                           completion == nil ? 0 : 1,
                           pendingForegroundSleepSettlementCompletions.isEmpty ? 0 : 1)
             return
+        case .supersede(let workerGeneration):
+            supersedeForegroundSleepSettlement(
+                workerGeneration: workerGeneration
+            )
+        case .blockedByIncompatibleFencedOwner(let workerGeneration):
+            AtriaDebugLog(
+                "ATRIADBG sleep_foreground_settlement status=blocked_incompatible_fenced_owner reason=%@ owner_generation=%d",
+                reason,
+                workerGeneration
+            )
+            completion?(false)
+            return
         }
         if !force,
            let last = lastForegroundSleepAutoConfirmAt,
            now.timeIntervalSince(last) < 30 * 60 {
-            if let completion {
-                if pendingForegroundSleepSettlementWorkItem != nil {
-                    pendingForegroundSleepSettlementCompletions.append(completion)
-                } else {
-                    completion(true)
-                }
-            }
+            completion?(true)
             return
         }
         let latestOvernightEnd = cachedConfirmedSleeps
@@ -34821,18 +35038,12 @@ final class SessionStore: ObservableObject {
         foregroundSleepSettlementGeneration &+= 1
         let generation = foregroundSleepSettlementGeneration
         pendingForegroundSleepSettlementWorkItem?.cancel()
-
-        let rest = baseline.restingInt ?? 60
-        let baselineRestingIsTrusted = baseline.restingInt != nil
-            && baseline.hasTrustedRestingBaseline(now: now)
-        let baselineRestingIsNearTrusted = baseline.restingInt != nil
-            && baseline.hasNearTrustedRestingBaselineForFragmentedSleep(now: now)
-        let maxHR = profile.maxHR
-        let fingerprint = foregroundSleepSettlementFingerprint(
-            rest: rest,
-            baselineRestingIsTrusted: baselineRestingIsTrusted,
-            baselineRestingIsNearTrusted: baselineRestingIsNearTrusted,
-            maxHR: maxHR
+        pendingForegroundSleepSettlementOwner = .init(
+            workerGeneration: generation,
+            authority: requestAuthority,
+            configuration: requestConfiguration,
+            hasCompletionFence:
+                !pendingForegroundSleepSettlementCompletions.isEmpty
         )
         let canonicalSessions = cachedCanonicalSessions
         let learnedWindow = Self.learnedDutyCycleSleepWindow(defaults: .standard)
@@ -34843,7 +35054,14 @@ final class SessionStore: ObservableObject {
             .first
         let preparationThermalState = ProcessInfo.processInfo.thermalState
         let workItem = DispatchWorkItem { [weak self] in
-            guard executionShouldContinue() else { return }
+            guard executionShouldContinue() else {
+                Task { @MainActor [weak self] in
+                    self?.retireForegroundSleepSettlementAfterAuthorityLoss(
+                        generation: generation
+                    )
+                }
+                return
+            }
             guard !Thread.isMainThread else {
                 assertionFailure("Foreground sleep settlement must not build on the main thread")
                 return
@@ -34860,7 +35078,14 @@ final class SessionStore: ObservableObject {
                 thermalState: preparationThermalState,
                 autoConfirmLimit: autoConfirmLimit
             )
-            guard executionShouldContinue() else { return }
+            guard executionShouldContinue() else {
+                Task { @MainActor [weak self] in
+                    self?.retireForegroundSleepSettlementAfterAuthorityLoss(
+                        generation: generation
+                    )
+                }
+                return
+            }
             guard case .ready(let prepared) = preparation else {
                 let failure: CompactLatestNightSettlementFailure
                 if case .withheld(let reason) = preparation {
@@ -34870,9 +35095,15 @@ final class SessionStore: ObservableObject {
                 }
                 Task { @MainActor [weak self] in
                     guard let self,
-                          executionShouldContinue(),
-                          generation
-                            == self.foregroundSleepSettlementGeneration else {
+                          self.foregroundSleepSettlementWorkerIsCurrent(
+                            generation
+                          ) else {
+                        return
+                    }
+                    guard executionShouldContinue() else {
+                        self.retireForegroundSleepSettlementAfterAuthorityLoss(
+                            generation: generation
+                        )
                         return
                     }
                     self.pendingForegroundSleepSettlementWorkItem = nil
@@ -34891,10 +35122,12 @@ final class SessionStore: ObservableObject {
                         maximumEvaluationSessions:
                             maximumEvaluationSessions,
                         autoConfirmLimit: autoConfirmLimit,
+                        settlementAuthority: requestAuthority,
                         executionShouldContinue:
                             executionShouldContinue
                     )
                     self.finishForegroundSleepSettlementCompletions(
+                        generation: generation,
                         succeeded: false
                     )
                 }
@@ -34902,7 +35135,16 @@ final class SessionStore: ObservableObject {
             }
             let proposal = prepared.settlement
             Task { @MainActor [weak self] in
-                guard executionShouldContinue(), let self else { return }
+                guard let self else { return }
+                guard executionShouldContinue() else {
+                    self.retireForegroundSleepSettlementAfterAuthorityLoss(
+                        generation: generation
+                    )
+                    return
+                }
+                guard self.foregroundSleepSettlementWorkerIsCurrent(
+                    generation
+                ) else { return }
                 // The saved link owns replacement. A preparation from the
                 // former strap must never survive a re-pair even when no
                 // compact row mutation occurred between mint and commit.
@@ -34951,6 +35193,7 @@ final class SessionStore: ObservableObject {
                                 reason
                             )
                             self.finishForegroundSleepSettlementCompletions(
+                                generation: generation,
                                 succeeded: false
                             )
                             return
@@ -34961,30 +35204,36 @@ final class SessionStore: ObservableObject {
                         // stale-result rejection into a missed morning settle.
                         if staleRetryRemainingAttempts > 0 {
                             self.lastForegroundSleepAutoConfirmAt = nil
-                            self.autoConfirmSleepOnForegroundIfUseful(
-                                reason: "stale_\(reason)",
-                                now: Date(),
-                                force: force,
-                                deferDerivedPublication:
-                                    deferDerivedPublication,
-                                evaluationLookbackDays:
-                                    evaluationLookbackDays,
-                                maximumEvaluationSessions:
-                                    maximumEvaluationSessions,
-                                autoConfirmLimit: autoConfirmLimit,
-                                compactRetryRemainingAttempts:
-                                    compactRetryRemainingAttempts,
-                                staleRetryRemainingAttempts:
-                                    staleRetryRemainingAttempts - 1,
-                                executionShouldContinue:
-                                    executionShouldContinue
-                            )
+                            if self.prepareForegroundSleepSettlementReplacement(
+                                workerGeneration: generation
+                            ) {
+                                self.autoConfirmSleepOnForegroundIfUseful(
+                                    reason: "stale_\(reason)",
+                                    now: Date(),
+                                    force: force,
+                                    deferDerivedPublication:
+                                        deferDerivedPublication,
+                                    evaluationLookbackDays:
+                                        evaluationLookbackDays,
+                                    maximumEvaluationSessions:
+                                        maximumEvaluationSessions,
+                                    autoConfirmLimit: autoConfirmLimit,
+                                    compactRetryRemainingAttempts:
+                                        compactRetryRemainingAttempts,
+                                    staleRetryRemainingAttempts:
+                                        staleRetryRemainingAttempts - 1,
+                                    settlementAuthority: requestAuthority,
+                                    executionShouldContinue:
+                                        executionShouldContinue
+                                )
+                            }
                         } else {
                             // One immediate CAS retry is enough to absorb a
                             // normal append race. Continued churn waits for a
                             // later source/scene edge instead of hot-looping.
                             self.lastForegroundSleepAutoConfirmAt = nil
                             self.finishForegroundSleepSettlementCompletions(
+                                generation: generation,
                                 succeeded: false
                             )
                         }
@@ -35009,7 +35258,12 @@ final class SessionStore: ObservableObject {
                 )
                 self.pendingForegroundSleepSettlementWorkItem = nil
                 var persistenceSucceeded = true
-                guard executionShouldContinue() else { return }
+                guard executionShouldContinue() else {
+                    self.retireForegroundSleepSettlementAfterAuthorityLoss(
+                        generation: generation
+                    )
+                    return
+                }
                 var saved = await self.autoConfirmStrongSleepCandidates(
                     reason: reason,
                     limit: autoConfirmLimit,
@@ -35021,14 +35275,20 @@ final class SessionStore: ObservableObject {
                     deferDerivedPublication: deferDerivedPublication,
                     archiveFreeLatestNightSettlement: true,
                     persistenceFailure: { persistenceSucceeded = false },
+                    settlementAuthority: requestAuthority,
                     executionShouldContinue: executionShouldContinue
                 )
                 guard executionShouldContinue(),
-                      generation
-                        == self.foregroundSleepSettlementGeneration else {
-                    self.finishForegroundSleepSettlementCompletions(
-                        succeeded: false
-                    )
+                      self.foregroundSleepSettlementWorkerIsCurrent(
+                        generation
+                      ) else {
+                    if self.foregroundSleepSettlementWorkerIsCurrent(
+                        generation
+                    ) {
+                        self.retireForegroundSleepSettlementAfterAuthorityLoss(
+                            generation: generation
+                        )
+                    }
                     return
                 }
                 if !saved && persistenceSucceeded {
@@ -35043,11 +35303,16 @@ final class SessionStore: ObservableObject {
                     )
                 }
                 guard executionShouldContinue(),
-                      generation
-                        == self.foregroundSleepSettlementGeneration else {
-                    self.finishForegroundSleepSettlementCompletions(
-                        succeeded: false
-                    )
+                      self.foregroundSleepSettlementWorkerIsCurrent(
+                        generation
+                      ) else {
+                    if self.foregroundSleepSettlementWorkerIsCurrent(
+                        generation
+                    ) {
+                        self.retireForegroundSleepSettlementAfterAuthorityLoss(
+                            generation: generation
+                        )
+                    }
                     return
                 }
                 if !saved && persistenceSucceeded && !inExtendReCheckWindow {
@@ -35062,18 +35327,34 @@ final class SessionStore: ObservableObject {
                         maximumEvaluationSessions:
                             maximumEvaluationSessions,
                         autoConfirmLimit: autoConfirmLimit,
+                        settlementAuthority: requestAuthority,
                         executionShouldContinue:
                             executionShouldContinue
                     )
                 }
-                self.finishForegroundSleepSettlementCompletions(succeeded: persistenceSucceeded)
+                self.finishForegroundSleepSettlementCompletions(
+                    generation: generation,
+                    succeeded: persistenceSucceeded
+                )
             }
         }
         pendingForegroundSleepSettlementWorkItem = workItem
         DispatchQueue.global(qos: .utility).async(execute: workItem)
     }
 
-    private func finishForegroundSleepSettlementCompletions(succeeded: Bool) {
+    private func finishForegroundSleepSettlementCompletions(
+        generation: Int,
+        succeeded: Bool
+    ) {
+        guard foregroundSleepSettlementWorkerIsCurrent(generation) else {
+            return
+        }
+        pendingForegroundSleepSettlementWorkItem = nil
+        pendingForegroundSleepSettlementOwner = nil
+        drainForegroundSleepSettlementCompletions(succeeded: succeeded)
+    }
+
+    private func drainForegroundSleepSettlementCompletions(succeeded: Bool) {
         let completions = pendingForegroundSleepSettlementCompletions
         pendingForegroundSleepSettlementCompletions.removeAll(keepingCapacity: true)
         completions.forEach { $0(succeeded) }
@@ -35116,6 +35397,7 @@ final class SessionStore: ObservableObject {
         evaluationLookbackDays: Int,
         maximumEvaluationSessions: Int,
         autoConfirmLimit: Int,
+        settlementAuthority: ForegroundSleepSettlementAuthority,
         executionShouldContinue:
             @escaping @Sendable () -> Bool
     ) {
@@ -35164,6 +35446,7 @@ final class SessionStore: ObservableObject {
                         autoConfirmLimit: autoConfirmLimit,
                         compactRetryRemainingAttempts:
                             nextRemainingAttempts,
+                        settlementAuthority: settlementAuthority,
                         executionShouldContinue:
                             executionShouldContinue
                     )
@@ -35188,6 +35471,7 @@ final class SessionStore: ObservableObject {
                         autoConfirmLimit: autoConfirmLimit,
                         compactRetryRemainingAttempts:
                             nextRemainingAttempts,
+                        settlementAuthority: settlementAuthority,
                         executionShouldContinue:
                             executionShouldContinue
                     )
@@ -35466,6 +35750,8 @@ final class SessionStore: ObservableObject {
                                                    deferDerivedPublication: Bool = false,
                                                    archiveFreeLatestNightSettlement: Bool = false,
                                                    persistenceFailure: (() -> Void)? = nil,
+                                                   settlementAuthority:
+                                                    ForegroundSleepSettlementAuthority? = nil,
                                                    executionShouldContinue:
                                                     @escaping @Sendable () -> Bool = { true }) async -> Bool {
         let rest = baseline.restingInt ?? 60
@@ -35495,7 +35781,17 @@ final class SessionStore: ObservableObject {
             !Self.sleepCandidateIsSettledForClosedAutoConfirmation(candidateEnd: $0.end, now: now)
         }
         if !unsettledCandidates.isEmpty {
-            scheduleSleepSettlementRetry(for: unsettledCandidates, reason: reason, now: now)
+            let retryAuthority = settlementAuthority ?? .processForeground(
+                generation: AtriaHistoricalProjectionForegroundGate
+                    .currentGeneration
+            )
+            scheduleSleepSettlementRetry(
+                for: unsettledCandidates,
+                reason: reason,
+                now: now,
+                settlementAuthority: retryAuthority,
+                executionShouldContinue: executionShouldContinue
+            )
         }
         guard !candidates.isEmpty else {
             let skipReason = strongCandidates.isEmpty ? "no_strong_candidate" : "candidate_not_settled"
@@ -47362,7 +47658,8 @@ final class SessionStore: ObservableObject {
         pendingSleepSettlementRetry = nil
         pendingForegroundSleepSettlementWorkItem?.cancel()
         pendingForegroundSleepSettlementWorkItem = nil
-        finishForegroundSleepSettlementCompletions(succeeded: false)
+        pendingForegroundSleepSettlementOwner = nil
+        drainForegroundSleepSettlementCompletions(succeeded: false)
         // This worker is non-interruptible once submitted. Preserve its active
         // sentinel, mark the result stale, and let completion drain any queued
         // request through the blocked scheduler without starting new work.

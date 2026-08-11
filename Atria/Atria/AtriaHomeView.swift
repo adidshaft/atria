@@ -938,6 +938,8 @@ struct AtriaHomeView: View {
     @State private var queuedWorkoutShareSnapshot: AtriaWorkoutShareSnapshot?
     @State private var completedWorkoutShareReceipt: AtriaWorkoutShareReceipt?
     @State private var foregroundResumeTask: Task<Void, Never>?
+    @State private var foregroundResumeAuthority =
+        AtriaForegroundDeferredWorkAuthority()
     @State private var pendingWorkoutRecoveryTask: Task<Void, Never>?
     @State private var liveWorkoutFreshnessTask: Task<Void, Never>?
     // Lifetime owner only. Route publishes are observed by the presented live
@@ -1067,6 +1069,17 @@ struct AtriaHomeView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             handleHomeScenePhaseChange(phase)
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.didBecomeActiveNotification
+        )) { _ in
+            scheduleForegroundResumeIfNeeded()
+        }
+        .onReceive(NotificationCenter.default.publisher(
+            for: AtriaHistoricalProjectionForegroundGate
+                .didBecomeForegroundNotification
+        )) { _ in
+            scheduleForegroundResumeIfNeeded()
         }
         .onChange(of: hapticSettings) { _, settings in
             settings.save()
@@ -1226,6 +1239,9 @@ struct AtriaHomeView: View {
         }
         .onDisappear {
             model.setLivePresentationActive(false)
+            foregroundResumeTask?.cancel()
+            foregroundResumeTask = nil
+            foregroundResumeAuthority.cancel()
             connectionGuidePresentationTask?.cancel()
             connectionGuidePresentationTask = nil
             secondaryUnlockTask?.cancel()
@@ -1234,8 +1250,6 @@ struct AtriaHomeView: View {
             overviewDiagnosticsKickoffTask = nil
             automaticConnectionSetupTask?.cancel()
             automaticConnectionSetupTask = nil
-            foregroundResumeTask?.cancel()
-            foregroundResumeTask = nil
             pendingWorkoutRecoveryTask?.cancel()
             pendingWorkoutRecoveryTask = nil
             connectionDiagnosisPromotionTask?.cancel()
@@ -4203,6 +4217,7 @@ struct AtriaHomeView: View {
         guard phase == .active else {
             foregroundResumeTask?.cancel()
             foregroundResumeTask = nil
+            foregroundResumeAuthority.cancel()
             connectionDiagnosisPromotionTask?.cancel()
             connectionDiagnosisPromotionTask = nil
             if phase == .background {
@@ -4247,14 +4262,43 @@ struct AtriaHomeView: View {
             return
         }
         schedulePendingNotificationDeepLinkDrain()
-        foregroundResumeTask?.cancel()
+        requestForegroundResumeIfNeeded()
+    }
+
+    private func requestForegroundResumeIfNeeded() {
+        foregroundResumeAuthority.request()
+        scheduleForegroundResumeIfNeeded()
+    }
+
+    private func scheduleForegroundResumeIfNeeded() {
+        guard foregroundResumeTask == nil,
+              let ticket = foregroundResumeAuthority.beginIfAuthorized(
+                sceneIsActive: scenePhase == .active,
+                applicationIsActive:
+                    UIApplication.shared.applicationState == .active,
+                historicalProjectionIsBackgrounded:
+                    AtriaHistoricalProjectionForegroundGate.isBackgrounded
+              ) else { return }
         foregroundResumeTask = Task { @MainActor in
             // Let the returning scene draw first. Widget encoding, Keychain reads,
             // sleep settlement and notification scheduling are useful but not
             // prerequisites for the first interactive frame.
             await Task.yield()
             try? await Task.sleep(for: .milliseconds(180))
-            guard !Task.isCancelled, scenePhase == .active else { return }
+            guard !Task.isCancelled,
+                  foregroundResumeAuthority.isCurrent(ticket) else { return }
+            guard AtriaForegroundDeferredWorkAuthority
+                .environmentIsAuthorized(
+                    sceneIsActive: scenePhase == .active,
+                    applicationIsActive:
+                        UIApplication.shared.applicationState == .active,
+                    historicalProjectionIsBackgrounded:
+                        AtriaHistoricalProjectionForegroundGate.isBackgrounded
+                ) else {
+                foregroundResumeAuthority.deferForLostAuthority(ticket)
+                foregroundResumeTask = nil
+                return
+            }
             // Historical progress is intentionally silent while inactive. Pull
             // only that missed presentation into CoreLive after the returning
             // scene has drawn, without the archive/diagnostic work of forceRefresh.
@@ -4285,14 +4329,40 @@ struct AtriaHomeView: View {
             updateHapticCoordinator()
 
             try? await Task.sleep(for: .milliseconds(520))
-            guard !Task.isCancelled, scenePhase == .active else { return }
+            guard !Task.isCancelled,
+                  foregroundResumeAuthority.isCurrent(ticket) else { return }
+            guard AtriaForegroundDeferredWorkAuthority
+                .environmentIsAuthorized(
+                    sceneIsActive: scenePhase == .active,
+                    applicationIsActive:
+                        UIApplication.shared.applicationState == .active,
+                    historicalProjectionIsBackgrounded:
+                        AtriaHistoricalProjectionForegroundGate.isBackgrounded
+                ) else {
+                foregroundResumeAuthority.deferForLostAuthority(ticket)
+                foregroundResumeTask = nil
+                return
+            }
             // Morning settlement can scan saved evidence. Keep it outside the
             // app-switch animation; the store still applies its own cadence gate.
             // Never scan the sleep archive while the user is returning to an
             // active workout; workout controls and BLE continuity own this
             // foreground window. The next non-workout foreground can settle it.
             if workoutSession == nil {
-                store.autoConfirmSleepOnForegroundIfUseful(reason: "scene_foreground_deferred")
+                if let settlementLease = AtriaHistoricalProjectionForegroundGate
+                    .captureForegroundLease() {
+                    store.autoConfirmSleepOnForegroundIfUseful(
+                        reason: "scene_foreground_deferred",
+                        settlementAuthority: .processForeground(
+                            generation: settlementLease.generation
+                        ),
+                        executionShouldContinue: {
+                            AtriaHistoricalProjectionForegroundGate.isCurrent(
+                                settlementLease
+                            )
+                        }
+                    )
+                }
                 _ = store.sleepReviewResolutionForUI(
                     rest: store.baseline.restingInt ?? 60,
                     source: "scene_foreground_deferred"
@@ -4316,6 +4386,7 @@ struct AtriaHomeView: View {
                 LocalNotificationScheduler.scheduleEveningJournalCheckIn(lastJournalActivity: lastJournalActivity)
                 LocalNotificationScheduler.scheduleMorningJournalCheckIn(lastJournalActivity: lastJournalActivity)
             }
+            foregroundResumeAuthority.complete(ticket)
             foregroundResumeTask = nil
         }
     }
@@ -9790,7 +9861,11 @@ final class AtriaHomeModel {
         let initialCollectionLive = Self.makeCollectionLiveState(ble: ble)
         let sharedStressStore = AtriaStressMonitorStore(
             historyPersistence: AtriaStressHistoryPersistence.production(),
-            presentationPublishingIsActive: false
+            presentationPublishingIsActive: false,
+            applicationIsActive: {
+                UIApplication.shared.applicationState == .active
+                    && !AtriaHistoricalProjectionForegroundGate.isBackgrounded
+            }
         )
         let initialStressNow = Date()
         sharedStressStore.update(heartRate: initialPulseLive.heartRate,
@@ -9850,7 +9925,11 @@ final class AtriaHomeModel {
         self.stressMonitorStore = sharedStressStore
         self.todaySessionProjectionStore = AtriaTodaySessionProjectionStore(
             store: store,
-            presentationIsActive: false
+            presentationIsActive: false,
+            applicationIsActive: {
+                UIApplication.shared.applicationState == .active
+                    && !AtriaHistoricalProjectionForegroundGate.isBackgrounded
+            }
         )
         self.activityStore = ActivityStore(state: Self.makeActivityState(store: store))
         historicalStressFallbackRestSubject.send(initialLiveSessionDerived.rest)
@@ -9892,6 +9971,7 @@ final class AtriaHomeModel {
         if active {
             synchronizeStressPresentationPublication()
             setLivePresentationActive(true)
+            scheduleApplicationDidBecomeActivePresentationRetry()
         } else {
             setLivePresentationActive(false)
             synchronizeStressPresentationPublication()
@@ -9931,6 +10011,7 @@ final class AtriaHomeModel {
 
     private var applicationPresentationIsActive: Bool {
         UIApplication.shared.applicationState == .active
+            && !AtriaHistoricalProjectionForegroundGate.isBackgrounded
     }
 
     private var livePresentationIsCurrentlyAuthorized: Bool {
@@ -10030,9 +10111,10 @@ final class AtriaHomeModel {
         diagnosticsRefreshSubject.send(())
     }
 
-    /// SwiftUI can deliver `.active` just before UIKit flips applicationState.
-    /// Coalesce the UIKit edge to one next-runloop retry; the existing authority
-    /// consumes its pending bit exactly once, without requiring a data publisher.
+    /// SwiftUI can deliver `.active` before either UIKit or AtriaApp opens the
+    /// process foreground gate. Coalesce both edges to one next-runloop retry;
+    /// the existing authority consumes its pending bit exactly once, without
+    /// requiring a data publisher.
     private func scheduleApplicationDidBecomeActivePresentationRetry() {
         guard scenePresentationIsActive,
               !applicationActivationRetryScheduled else { return }
@@ -10050,8 +10132,14 @@ final class AtriaHomeModel {
     }
 
     private func bind() {
-        NotificationCenter.default.publisher(
-            for: UIApplication.didBecomeActiveNotification
+        Publishers.Merge(
+            NotificationCenter.default.publisher(
+                for: UIApplication.didBecomeActiveNotification
+            ).map { _ in () },
+            NotificationCenter.default.publisher(
+                for: AtriaHistoricalProjectionForegroundGate
+                    .didBecomeForegroundNotification
+            ).map { _ in () }
         )
         .sink { [weak self] _ in
             self?.scheduleApplicationDidBecomeActivePresentationRetry()

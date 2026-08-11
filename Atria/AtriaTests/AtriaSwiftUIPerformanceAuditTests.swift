@@ -846,6 +846,9 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
             "UIApplication.shared.applicationState == .active"
         ), "every Home mutation admission includes a final process-state fence")
         XCTAssertTrue(home.contains(
+            "&& !AtriaHistoricalProjectionForegroundGate.isBackgrounded"
+        ), "Home, Stress, and Today must share AtriaApp's pre-rollback gate")
+        XCTAssertTrue(home.contains(
             "presentationPublishingIsActive: false"
         ), "Home's shared stress mirrors must start fail-closed before scene authority")
         XCTAssertTrue(home.contains(
@@ -880,6 +883,7 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
             home[bindStart.lowerBound..<applicationObserverEnd.lowerBound]
         )
         XCTAssertTrue(applicationObserver.contains("UIApplication.didBecomeActiveNotification"))
+        XCTAssertTrue(applicationObserver.contains("didBecomeForegroundNotification"))
         XCTAssertTrue(applicationObserver.contains(
             "self?.scheduleApplicationDidBecomeActivePresentationRetry()"
         ))

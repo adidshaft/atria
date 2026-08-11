@@ -703,6 +703,184 @@ final class AtriaRecoveredDataMutationTransactionTests: XCTestCase {
         ), "an exact BGProcessing lease remains independent of scene activity")
     }
 
+    func testForegroundDeferredWorkAuthorityRetainsSkewedRequestAndRunsOnce() throws {
+        var authority = AtriaForegroundDeferredWorkAuthority()
+        authority.request()
+
+        XCTAssertNil(authority.beginIfAuthorized(
+            sceneIsActive: true,
+            applicationIsActive: false,
+            historicalProjectionIsBackgrounded: false
+        ))
+        XCTAssertTrue(authority.isPending)
+        XCTAssertNil(authority.beginIfAuthorized(
+            sceneIsActive: true,
+            applicationIsActive: true,
+            historicalProjectionIsBackgrounded: true
+        ))
+
+        let ticket = try XCTUnwrap(authority.beginIfAuthorized(
+            sceneIsActive: true,
+            applicationIsActive: true,
+            historicalProjectionIsBackgrounded: false
+        ))
+        XCTAssertTrue(authority.isCurrent(ticket))
+        XCTAssertNil(authority.beginIfAuthorized(
+            sceneIsActive: true,
+            applicationIsActive: true,
+            historicalProjectionIsBackgrounded: false
+        ), "didBecomeActive and scene-active retries must coalesce while running")
+
+        authority.deferForLostAuthority(ticket)
+        let retry = try XCTUnwrap(authority.beginIfAuthorized(
+            sceneIsActive: true,
+            applicationIsActive: true,
+            historicalProjectionIsBackgrounded: false
+        ))
+        XCTAssertEqual(retry, ticket,
+                       "a skew rejection retries the retained request without a source event")
+        authority.complete(retry)
+        XCTAssertFalse(authority.isPending)
+        XCTAssertNil(authority.beginIfAuthorized(
+            sceneIsActive: true,
+            applicationIsActive: true,
+            historicalProjectionIsBackgrounded: false
+        ), "one completed foreground request cannot replay")
+
+        authority.request()
+        let replacement = try XCTUnwrap(authority.beginIfAuthorized(
+            sceneIsActive: true,
+            applicationIsActive: true,
+            historicalProjectionIsBackgrounded: false
+        ))
+        XCTAssertNotEqual(replacement, ticket)
+        XCTAssertFalse(authority.isCurrent(ticket),
+                       "a stale canceled task cannot clear replacement ownership")
+    }
+
+    func testRevokedOrdinarySleepSettlementCannotAbsorbRecoveredFence() {
+        let fingerprint = SessionStore.ForegroundSleepSettlementFingerprint(
+            canonicalSessionsRevision: 10,
+            confirmedSleepsRevision: 4,
+            restingHR: 55,
+            baselineRestingIsTrusted: true,
+            baselineRestingIsNearTrusted: true,
+            maxHR: 190
+        )
+        let ordinaryConfiguration = SessionStore
+            .ForegroundSleepSettlementConfiguration(
+                fingerprint: fingerprint,
+                force: false,
+                deferDerivedPublication: false,
+                evaluationLookbackDays: 7,
+                maximumEvaluationSessions: 512,
+                autoConfirmLimit: 2,
+                compactRetryRemainingAttempts: 1,
+                staleRetryRemainingAttempts: 1
+            )
+        let recoveredConfiguration = SessionStore
+            .ForegroundSleepSettlementConfiguration(
+                fingerprint: fingerprint,
+                force: true,
+                deferDerivedPublication: true,
+                evaluationLookbackDays: 14,
+                maximumEvaluationSessions: 4_096,
+                autoConfirmLimit: 14,
+                compactRetryRemainingAttempts: 1,
+                staleRetryRemainingAttempts: 1
+            )
+        let ordinaryAuthority = SessionStore
+            .ForegroundSleepSettlementAuthority.processForeground(
+                generation: 31
+            )
+        let g1 = SessionStore.ForegroundSleepSettlementPendingOwner(
+            workerGeneration: 1,
+            authority: ordinaryAuthority,
+            configuration: ordinaryConfiguration,
+            hasCompletionFence: false
+        )
+
+        XCTAssertFalse(
+            AtriaHistoricalProjectionForegroundGate.leaseIsCurrent(
+                leaseGeneration: 31,
+                currentGeneration: 32,
+                isBackgrounded: false
+            ),
+            "quick reactivation must not make the revoked G1 lease valid again"
+        )
+
+        let recoveredAuthority = SessionStore
+            .ForegroundSleepSettlementAuthority(
+                domain: .recoveredForeground,
+                generation: 90,
+                archiveRevision: 44
+            )
+        XCTAssertEqual(
+            SessionStore.foregroundSleepSettlementAdmission(
+                pending: g1,
+                requestAuthority: recoveredAuthority,
+                requestConfiguration: recoveredConfiguration,
+                requestHasCompletionFence: true
+            ),
+            .supersede(workerGeneration: 1),
+            "a fresh recovered fence must start its own compatible worker"
+        )
+
+        var pending: SessionStore.ForegroundSleepSettlementPendingOwner? =
+            .init(
+                workerGeneration: 2,
+                authority: recoveredAuthority,
+                configuration: recoveredConfiguration,
+                hasCompletionFence: true
+            )
+        XCTAssertEqual(
+            SessionStore.foregroundSleepSettlementAdmission(
+                pending: pending,
+                requestAuthority: recoveredAuthority,
+                requestConfiguration: recoveredConfiguration,
+                requestHasCompletionFence: true
+            ),
+            .join(workerGeneration: 2),
+            "only the exact recovered authority and configuration may join G2"
+        )
+        XCTAssertEqual(
+            SessionStore.foregroundSleepSettlementAdmission(
+                pending: pending,
+                requestAuthority: ordinaryAuthority,
+                requestConfiguration: ordinaryConfiguration,
+                requestHasCompletionFence: false
+            ),
+            .blockedByIncompatibleFencedOwner(workerGeneration: 2),
+            "ordinary fire-and-forget work must retain a live fenced owner"
+        )
+
+        var publications = 0
+        if SessionStore.foregroundSleepSettlementCompletionIsCurrent(
+            completedGeneration: 1,
+            pending: pending
+        ) {
+            publications += 1
+            pending = nil
+        }
+        XCTAssertEqual(publications, 0,
+                       "stale G1 completion may not consume G2 ownership")
+        if SessionStore.foregroundSleepSettlementCompletionIsCurrent(
+            completedGeneration: 2,
+            pending: pending
+        ) {
+            publications += 1
+            pending = nil
+        }
+        if SessionStore.foregroundSleepSettlementCompletionIsCurrent(
+            completedGeneration: 2,
+            pending: pending
+        ) {
+            publications += 1
+        }
+        XCTAssertEqual(publications, 1,
+                       "G2 publishes exactly once and rejects duplicate completion")
+    }
+
     func testRecoveredHistoryAdmissionAndUIKitResumeHaveProductionEdges()
         throws {
         let testsDirectory = URL(fileURLWithPath: #filePath)
@@ -745,6 +923,35 @@ final class AtriaRecoveredDataMutationTransactionTests: XCTestCase {
         XCTAssertTrue(activeTail.contains(
             "resumeRecoveredDataPublicationLeaseForForeground("
         ), "UIKit active must replay a SwiftUI-active admission race")
+        XCTAssertTrue(activeTail.contains(
+            "scheduleForegroundBLETransitionIfNeeded()"
+        ), "UIKit active must also retry deferred BLE/archive work without a source event")
+
+        let lifecycleStart = try XCTUnwrap(app.range(
+            of: ".onChange(of: scenePhase)"
+        ))
+        let lifecycle = String(app[lifecycleStart.lowerBound..<activeNotification.lowerBound])
+        let closeProcessGate = try XCTUnwrap(lifecycle.range(
+            of: "AtriaHistoricalProjectionForegroundGate.isBackgrounded = true"
+        ))
+        let suspendRecovered = try XCTUnwrap(lifecycle.range(
+            of: "store.suspendRecoveredDataPublicationLeaseForBackground("
+        ))
+        XCTAssertLessThan(closeProcessGate.lowerBound, suspendRecovered.lowerBound,
+                          "Home authority must close before rollback publishers run")
+
+        let schedulerStart = try XCTUnwrap(app.range(
+            of: "private func scheduleForegroundBLETransitionIfNeeded()"
+        ))
+        let schedulerEnd = try XCTUnwrap(app.range(
+            of: "private static func registerBackgroundTasks",
+            range: schedulerStart.upperBound..<app.endIndex
+        ))
+        let scheduler = String(app[schedulerStart.lowerBound..<schedulerEnd.lowerBound])
+        XCTAssertTrue(scheduler.contains("UIApplication.shared.applicationState == .active"))
+        XCTAssertTrue(scheduler.contains("AtriaHistoricalProjectionForegroundGate.isBackgrounded"))
+        XCTAssertTrue(scheduler.contains("foregroundBLETransitionAuthority.isCurrent(ticket)"))
+        XCTAssertTrue(scheduler.contains("store.resumeDeferredForegroundArchiveWork("))
 
         let publishStart = try XCTUnwrap(sessions.range(of: "case .publish(let ticket):"))
         let publishEnd = try XCTUnwrap(sessions.range(
