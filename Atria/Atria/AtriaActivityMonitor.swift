@@ -175,6 +175,17 @@ enum AtriaActivityHeartRateRefreshPolicy {
     static func cancellationState(hasVisiblePoints: Bool) -> AtriaActivityHeartRateLoadState {
         hasVisiblePoints ? .loaded : .interrupted
     }
+
+    /// Live history revisions must not re-key a *completed* historical day's HR
+    /// load. A live append cannot change a finished civil day, but folding the
+    /// ever-advancing live revision into that day's `.task` id restarted the
+    /// archive read on every tick, pinning it at `.loading` forever. Mirror the
+    /// stress key: the current physiological window follows live revisions; a
+    /// historical window is pinned (0) and re-reads only on a completeness /
+    /// publication revision, so its single read reaches a terminal state.
+    static func foldedHistoryRevision(isCurrent: Bool, liveRevision: Int) -> Int {
+        isCurrent ? liveRevision : 0
+    }
 }
 
 /// Keeps sensor suggestions visible without duplicating an already-saved
@@ -1887,7 +1898,10 @@ struct AtriaActivityMonitorTab: View {
                                        historicalEnd: window.isCurrentPhysiologicalDay ? nil : window.interval.end,
                                        isCurrent: window.isCurrentPhysiologicalDay,
                                        completenessRevision: timelineCompletenessRevision,
-                                       heartRateHistoryRevision: stressMonitorStore.historyRevision)
+                                       heartRateHistoryRevision:
+                                        AtriaActivityHeartRateRefreshPolicy.foldedHistoryRevision(
+                                            isCurrent: window.isCurrentPhysiologicalDay,
+                                            liveRevision: stressMonitorStore.historyRevision))
     }
 
     private var timelineStressRequestKey: TimelineStressRequestKey {

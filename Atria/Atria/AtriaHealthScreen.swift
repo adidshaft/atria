@@ -906,6 +906,16 @@ struct AtriaHealthScreen: View {
                 from: vitalsStore.state.sleepHistorySnapshot
             )
             : nil
+        // Name the current wake-to-wake cycle explicitly. Without a date the bare
+        // "No sleep recorded in this cycle" reads as contradicting the dated prior
+        // sleep ("Last saved sleep · Aug 11") that Activity still shows Confirmed —
+        // even though this is a legitimate current-vs-prior cycle boundary.
+        let currentCycleStart: Date? = currentSleep == nil
+            ? AtriaPhysiologicalDay.current(
+                now: Date(),
+                sleepHistory: vitalsStore.state.sleepHistorySnapshot
+            ).start
+            : nil
         return VStack(alignment: .leading, spacing: 12) {
             Text("Sleep detail")
                 .font(.title2.weight(.bold))
@@ -956,7 +966,10 @@ struct AtriaHealthScreen: View {
                     Image(systemName: "moon.zzz")
                         .foregroundStyle(Metrics.electricSleep)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("No sleep recorded in this cycle")
+                        Text(currentCycleStart.map { start in
+                            "No sleep recorded this cycle · "
+                                + start.formatted(.dateTime.day().month(.abbreviated))
+                        } ?? "No sleep recorded in this cycle")
                             .font(.caption.weight(.bold))
                         if let previousSleep {
                             Text(

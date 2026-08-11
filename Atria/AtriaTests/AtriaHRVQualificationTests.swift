@@ -278,6 +278,70 @@ final class AtriaHRVQualificationTests: XCTestCase {
         XCTAssertEqual(baseline.freshHRVSampleCount(now: overnight.end), 0)
     }
 
+    /// A trend-eligible session: >= 8 HR points (so it is not filtered as
+    /// insignificant) plus 16 min of qualified 2A37 RR (so its whole-session
+    /// `localRMSSD` qualifies at 42 — the value the OLD trend would have shown).
+    private func trendEligibleQualifiedSession(hour: Int) -> SavedSession {
+        let day = Date(timeIntervalSince1970: 1_800_000_000)
+        let start = calendar.date(bySettingHour: hour, minute: 0, second: 0, of: day)!
+        let rrPoints = stride(from: 1.0, through: 16 * 60.0, by: 1.0).map { offset in
+            SavedSession.RRPoint(t: offset,
+                                 ms: Int(offset).isMultiple(of: 2) ? 980 : 1_020,
+                                 source: .standardHeartRateMeasurement2A37)
+        }
+        let hrPoints = stride(from: 0.0, through: 6 * 60 * 60, by: 20 * 60).map {
+            SavedSession.Point(t: $0, bpm: 55)
+        }
+        return SavedSession(id: UUID(),
+                            start: start,
+                            end: start.addingTimeInterval(6 * 60 * 60),
+                            label: "trend HRV fixture",
+                            points: hrPoints,
+                            hrv: 42,
+                            rrPoints: rrPoints)
+    }
+
+    func testOverviewTrendHRVExcludesDaytimeLocalRMSSDWithoutConfirmedSleep() {
+        // Screenshot-3 defect: the HRV nightly trend borrowed a daytime/live
+        // whole-session localRMSSD (e.g. a 50 ms Aug-11 point) when the confirmed
+        // nightly authority had no qualified same-cycle HRV. The trend must gate
+        // on confirmed-main-sleep exact-window evidence, identical to the rollup.
+        let daytime = trendEligibleQualifiedSession(hour: 13)
+        XCTAssertEqual(daytime.localRMSSD, 42,
+                       "the whole-session scalar still qualifies — that is exactly why the trend must not use it")
+
+        let withoutConfirmedSleep = SessionStore.makeOverviewTrendPoints(
+            sessions: [daytime],
+            rest: 60,
+            maxHR: 190,
+            confirmedSleeps: [],
+            now: daytime.end.addingTimeInterval(3_600),
+            calendar: calendar
+        )
+        XCTAssertEqual(withoutConfirmedSleep.count, 1,
+                       "the day still produces a trend point (load/RHR), just without HRV")
+        XCTAssertNil(withoutConfirmedSleep.first?.hrv,
+                     "a daytime localRMSSD without a confirmed main sleep must not appear as nightly HRV")
+
+        // With a confirmed main sleep covering the session, the qualified
+        // same-cycle RMSSD is the trend point — surfaces stay in agreement.
+        let sleep = confirmedMainSleep(for: daytime, id: "trend-confirmed-main")
+        let withConfirmedSleep = SessionStore.makeOverviewTrendPoints(
+            sessions: [daytime],
+            rest: 60,
+            maxHR: 190,
+            confirmedSleeps: [sleep],
+            now: daytime.end.addingTimeInterval(3_600),
+            calendar: calendar
+        )
+        // 40 (not the whole-session 42): the value now comes from the
+        // confirmed-main-sleep windowed RMSSD — the exact-window evidence — which
+        // is the point of the gate. The alternating 980/1020 ms RR yields a
+        // consecutive-difference RMSSD of 40.
+        XCTAssertEqual(withConfirmedSleep.first?.hrv, 40,
+                       "a confirmed-main-sleep RMSSD must appear as the nightly HRV trend point")
+    }
+
     func testConfirmedMainSleepSeedsRestingBaselineAfterRawSessionRetirement() {
         let retired = session(dayOffset: 0,
                               source: .standardHeartRateMeasurement2A37)

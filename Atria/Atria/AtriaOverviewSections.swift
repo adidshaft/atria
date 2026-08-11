@@ -7542,6 +7542,18 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
                 .lineLimit(1)
                 .minimumScaleFactor(0.62)
                 .frame(height: 18, alignment: .center)
+        } else if let latest, latest.confirmed, !latest.hasValidatedMotionEvidence {
+            // Motion honesty (HR-only strap): a confirmed night with no validated
+            // motion evidence will never grow a stage timeline, so "calibrating"
+            // plus decorative capsules promise a hypnogram that cannot arrive.
+            // State the terminal blocker instead — duration and qualified nightly
+            // metrics still show elsewhere on the card.
+            Text("Stages unavailable — needs motion")
+                .font(.system(size: 8, weight: .bold, design: .rounded))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
+                .frame(height: 18, alignment: .center)
         } else {
             HStack(spacing: 6) {
                 Text("Stages calibrating")
