@@ -207,6 +207,137 @@ enum AtriaRecoveredMotionAnalytics {
         )
     }
 
+    /// Deadline-aware equivalent for bounded foreground projections. The
+    /// unchecked overload above intentionally retains its existing stdlib
+    /// filter/sort/reduce implementation; this path mirrors its ordering and
+    /// arithmetic while exposing cancellation checkpoints through every scan.
+    static func sleepProvenance(
+        epochs: [AtriaRecoveredMotionEpoch],
+        start: Date,
+        end: Date,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> SleepProvenance {
+        try cooperativeDeadline.checkpoint()
+        var bounded: [AtriaRecoveredMotionEpoch] = []
+        bounded.reserveCapacity(epochs.count)
+        for (index, epoch) in epochs.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            if epoch.end > start, epoch.start < end {
+                bounded.append(epoch)
+            }
+        }
+        try AtriaSleepCooperativeAlgorithms.stableSort(
+            &bounded,
+            cooperativeDeadline: cooperativeDeadline,
+            areInIncreasingOrder: { $0.start < $1.start }
+        )
+        guard end > start, !bounded.isEmpty else {
+            return SleepProvenance(hasRecoveredEpochs: false,
+                                   measurementSufficient: false,
+                                   lowMotionValidated: false,
+                                   validatedCoverageFraction: 0,
+                                   lowMotionCoverageFraction: 0,
+                                   meanMovementIntensity: nil,
+                                   maximumGapSeconds: max(0, end.timeIntervalSince(start)),
+                                   source: "\(AtriaRecoveredMotionEpoch.source)_missing")
+        }
+
+        let duration = end.timeIntervalSince(start)
+        var validated: [AtriaRecoveredMotionEpoch] = []
+        validated.reserveCapacity(bounded.count)
+        for (index, epoch) in bounded.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            guard epoch.measurementValidated,
+                  let stillness = epoch.stillnessRatio,
+                  let intensity = epoch.movementIntensity,
+                  stillness.isFinite,
+                  intensity.isFinite else { continue }
+            validated.append(epoch)
+        }
+        let validatedCoverage = try checkedCoveredDuration(
+            validated,
+            start: start,
+            end: end,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        var lowMotion: [AtriaRecoveredMotionEpoch] = []
+        lowMotion.reserveCapacity(validated.count)
+        for (index, epoch) in validated.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            if epoch.lowMotionQualified {
+                lowMotion.append(epoch)
+            }
+        }
+        let lowMotionCoverage = try checkedCoveredDuration(
+            lowMotion,
+            start: start,
+            end: end,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        let validatedFraction = min(1, validatedCoverage / duration)
+        let lowMotionFraction = validatedCoverage > 0
+            ? min(1, lowMotionCoverage / validatedCoverage)
+            : 0
+        let maximumGap = try checkedMaximumUncoveredGap(
+            validated,
+            start: start,
+            end: end,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        var intensities: [Double] = []
+        var stillnesses: [Double] = []
+        intensities.reserveCapacity(validated.count)
+        stillnesses.reserveCapacity(validated.count)
+        for (index, epoch) in validated.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            if let intensity = epoch.movementIntensity {
+                intensities.append(intensity)
+            }
+            if let stillness = epoch.stillnessRatio {
+                stillnesses.append(stillness)
+            }
+        }
+        var intensityTotal = 0.0
+        for (index, intensity) in intensities.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            intensityTotal += intensity
+        }
+        let meanIntensity = intensities.isEmpty
+            ? nil
+            : intensityTotal / Double(intensities.count)
+        let sufficient = duration >= 20 * 60
+            && validatedFraction >= 0.80
+            && maximumGap <= 90
+            && !intensities.isEmpty
+            && !stillnesses.isEmpty
+        let lowMotionValidated = sufficient
+            && lowMotionFraction >= 0.72
+            && (meanIntensity ?? .infinity) <= 0.18
+        try cooperativeDeadline.checkpoint()
+        return SleepProvenance(
+            hasRecoveredEpochs: true,
+            measurementSufficient: sufficient,
+            lowMotionValidated: lowMotionValidated,
+            validatedCoverageFraction: validatedFraction,
+            lowMotionCoverageFraction: lowMotionFraction,
+            meanMovementIntensity: meanIntensity,
+            maximumGapSeconds: maximumGap,
+            source: sufficient
+                ? AtriaRecoveredMotionEpoch.source
+                : "\(AtriaRecoveredMotionEpoch.source)_insufficient"
+        )
+    }
+
     /// Produces a review-only historical activity assessment. Gravity plus HR
     /// can support that a cardiovascular movement window occurred; it cannot
     /// identify the activity without validated cadence/gyro/route context, so
@@ -315,6 +446,42 @@ enum AtriaRecoveredMotionAnalytics {
         return total + current.1.timeIntervalSince(current.0)
     }
 
+    private static func checkedCoveredDuration(
+        _ epochs: [AtriaRecoveredMotionEpoch],
+        start: Date,
+        end: Date,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> TimeInterval {
+        try cooperativeDeadline.checkpoint()
+        var intervals: [(Date, Date)] = []
+        intervals.reserveCapacity(epochs.count)
+        for (index, epoch) in epochs.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            let lower = max(start, epoch.start)
+            let upper = min(end, epoch.end)
+            if upper > lower {
+                intervals.append((lower, upper))
+            }
+        }
+        guard var current = intervals.first else { return 0 }
+        var total: TimeInterval = 0
+        for (index, interval) in intervals.dropFirst().enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            if interval.0 <= current.1 {
+                current.1 = max(current.1, interval.1)
+            } else {
+                total += current.1.timeIntervalSince(current.0)
+                current = interval
+            }
+        }
+        try cooperativeDeadline.checkpoint()
+        return total + current.1.timeIntervalSince(current.0)
+    }
+
     private static func maximumUncoveredGap(
         _ epochs: [AtriaRecoveredMotionEpoch],
         start: Date,
@@ -330,6 +497,32 @@ enum AtriaRecoveredMotionAnalytics {
             maximum = max(maximum, lower.timeIntervalSince(cursor))
             cursor = max(cursor, upper)
         }
+        return max(maximum, end.timeIntervalSince(cursor))
+    }
+
+    private static func checkedMaximumUncoveredGap(
+        _ epochs: [AtriaRecoveredMotionEpoch],
+        start: Date,
+        end: Date,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> TimeInterval {
+        try cooperativeDeadline.checkpoint()
+        guard !epochs.isEmpty else {
+            return max(0, end.timeIntervalSince(start))
+        }
+        var cursor = start
+        var maximum: TimeInterval = 0
+        for (index, epoch) in epochs.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            let lower = max(start, epoch.start)
+            let upper = min(end, epoch.end)
+            guard upper > lower else { continue }
+            maximum = max(maximum, lower.timeIntervalSince(cursor))
+            cursor = max(cursor, upper)
+        }
+        try cooperativeDeadline.checkpoint()
         return max(maximum, end.timeIntervalSince(cursor))
     }
 

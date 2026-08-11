@@ -2,6 +2,18 @@ import XCTest
 @testable import Atria
 
 final class AtriaRecoveredMotionAnalyticsTests: XCTestCase {
+    private final class StepClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: UInt64 = 0
+
+        func next() -> UInt64 {
+            lock.lock()
+            defer { lock.unlock() }
+            value += 1
+            return value
+        }
+    }
+
     private let start = Date(timeIntervalSince1970: 1_800_000_000)
 
     func testOneStillFragmentCannotValidateWholeSleep() {
@@ -129,7 +141,7 @@ final class AtriaRecoveredMotionAnalyticsTests: XCTestCase {
                           "equal whole-window averages must not preserve stale per-epoch stages")
     }
 
-    func testDuplicatedTwelveSecondTailCannotManufactureLocalStageCoverage() {
+    func testDuplicatedTwelveSecondTailCannotManufactureLocalStageCoverage() throws {
         let end = start.addingTimeInterval(30 * 60)
         let heartRate = stride(from: 0, through: 30 * 60, by: 5).map {
             AtriaSleepWakeResearch.HeartSample(
@@ -174,13 +186,27 @@ final class AtriaRecoveredMotionAnalyticsTests: XCTestCase {
             motionValidated: false,
             motionEpochs: motion
         )
+        let checkedStages = try AtriaSleepWakeResearch.stageSegments(
+            samples: heartRate,
+            start: start,
+            end: end,
+            restingHR: 60,
+            isNap: false,
+            motionValidated: false,
+            motionEpochs: motion,
+            cooperativeDeadline: .init(
+                uptimeNanoseconds: .max,
+                monotonicNow: { 0 }
+            )
+        )
 
+        XCTAssertEqual(checkedStages, stages)
         XCTAssertFalse(stages.isEmpty)
         XCTAssertNil(stage(at: unsupportedStart.addingTimeInterval(20), in: stages),
                      "two copies of the same 12 seconds remain 40% unique support, not 80%")
     }
 
-    func testExactDuplicateFullEpochCountsOnceWithoutWithholdingValidStage() {
+    func testExactDuplicateFullEpochCountsOnceWithoutWithholdingValidStage() throws {
         let end = start.addingTimeInterval(30 * 60)
         let heartRate = stride(from: 0, through: 30 * 60, by: 5).map {
             AtriaSleepWakeResearch.HeartSample(
@@ -202,12 +228,26 @@ final class AtriaRecoveredMotionAnalyticsTests: XCTestCase {
             motionValidated: false,
             motionEpochs: motion
         )
+        let checkedStages = try AtriaSleepWakeResearch.stageSegments(
+            samples: heartRate,
+            start: start,
+            end: end,
+            restingHR: 60,
+            isNap: false,
+            motionValidated: false,
+            motionEpochs: motion,
+            cooperativeDeadline: .init(
+                uptimeNanoseconds: .max,
+                monotonicNow: { 0 }
+            )
+        )
 
+        XCTAssertEqual(checkedStages, stages)
         XCTAssertNotNil(stage(at: duplicatedStart.addingTimeInterval(15), in: stages),
                         "an identical replay is one full measured epoch, not a conflict")
     }
 
-    func testConflictingOverlappingMotionMeasurementsFailEpochClosed() {
+    func testConflictingOverlappingMotionMeasurementsFailEpochClosed() throws {
         let end = start.addingTimeInterval(30 * 60)
         let heartRate = stride(from: 0, through: 30 * 60, by: 5).map {
             AtriaSleepWakeResearch.HeartSample(
@@ -241,10 +281,84 @@ final class AtriaRecoveredMotionAnalyticsTests: XCTestCase {
             motionValidated: false,
             motionEpochs: motion
         )
+        let checkedStages = try AtriaSleepWakeResearch.stageSegments(
+            samples: heartRate,
+            start: start,
+            end: end,
+            restingHR: 60,
+            isNap: false,
+            motionValidated: false,
+            motionEpochs: motion,
+            cooperativeDeadline: .init(
+                uptimeNanoseconds: .max,
+                monotonicNow: { 0 }
+            )
+        )
 
+        XCTAssertEqual(checkedStages, stages)
         XCTAssertFalse(stages.isEmpty)
         XCTAssertNil(stage(at: conflictStart.addingTimeInterval(15), in: stages),
                      "overlapping measurements that disagree cannot be averaged into a stage")
+    }
+
+    func testCheckedSleepProvenanceExactlyMatchesLegacyAcrossDuplicateConflictAndGap()
+        throws
+    {
+        let end = start.addingTimeInterval(30 * 60)
+        let base = (0..<60).map {
+            epoch(index: $0,
+                  stillness: $0.isMultiple(of: 11) ? 0.70 : 0.95,
+                  intensity: $0.isMultiple(of: 11) ? 0.20 : 0.02)
+        }
+        var duplicatedAndConflicting = base
+        duplicatedAndConflicting.append(base[17])
+        duplicatedAndConflicting.append(
+            epoch(index: 17, stillness: 0.30, intensity: 0.50)
+        )
+        duplicatedAndConflicting.reverse()
+        let gapped = base.filter { epoch in
+            epoch.start < start.addingTimeInterval(10 * 60)
+                || epoch.start >= start.addingTimeInterval(12 * 60)
+        }
+
+        for epochs in [base, duplicatedAndConflicting, gapped, []] {
+            let legacy = AtriaRecoveredMotionAnalytics.sleepProvenance(
+                epochs: epochs,
+                start: start,
+                end: end
+            )
+            let checked = try AtriaRecoveredMotionAnalytics.sleepProvenance(
+                epochs: epochs,
+                start: start,
+                end: end,
+                cooperativeDeadline: .init(
+                    uptimeNanoseconds: .max,
+                    monotonicNow: { 0 }
+                )
+            )
+            XCTAssertEqual(checked, legacy)
+        }
+    }
+
+    func testCheckedSleepProvenanceAbortsDuringDenseInputScan() {
+        let epochs = (0..<5_000).map {
+            epoch(index: $0, stillness: 0.95, intensity: 0.02)
+        }.reversed()
+        let clock = StepClock()
+        XCTAssertThrowsError(try AtriaRecoveredMotionAnalytics.sleepProvenance(
+            epochs: Array(epochs),
+            start: start,
+            end: start.addingTimeInterval(5_000 * 30),
+            cooperativeDeadline: .init(
+                uptimeNanoseconds: 8,
+                monotonicNow: { clock.next() }
+            )
+        )) {
+            XCTAssertEqual(
+                $0 as? AtriaSleepSettlementAbort,
+                .deadlineExceeded
+            )
+        }
     }
 
     private func epoch(index: Int,

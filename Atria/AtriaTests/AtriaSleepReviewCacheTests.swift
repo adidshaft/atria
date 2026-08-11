@@ -1170,6 +1170,36 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         }
     }
 
+    func testBoundedProjectionPropagatesCooperativeCancellation() {
+        let cancellation = AtriaSleepReviewProjectionCancellation()
+        let clock = StepClock()
+        let deadline = AtriaSleepSettlementDeadline(
+            uptimeNanoseconds: 100,
+            monotonicNow: {
+                let step = clock.next()
+                if step == 6 {
+                    cancellation.cancel()
+                }
+                return cancellation.isCancelled ? .max : 0
+            }
+        )
+        XCTAssertThrowsError(try SessionStore
+            .makeBoundedSleepReviewCacheProjection(
+                snapshot: .empty,
+                canonicalSessions: [sleepSession(day: 8)],
+                confirmedSleeps: [],
+                rest: 60,
+                maxHR: 190,
+                calendar: calendar,
+                cooperativeDeadline: deadline
+            )) {
+            XCTAssertEqual(
+                $0 as? AtriaSleepSettlementAbort,
+                .deadlineExceeded
+            )
+        }
+    }
+
     func testBusyResidentJournalLookupDefersInsteadOfPublishingEmpty() throws {
         let deadline = AtriaSleepSettlementDeadline(
             uptimeNanoseconds: .max,
@@ -1291,17 +1321,34 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         XCTAssertEqual(bounded.naps.map(\.id), legacyNaps.map(\.id))
     }
 
-    func testTwelveHourDenseReviewFailsClosedStagesWithinSharedDeadline()
+    func testEightHourDenseReviewPublishesParityStagesWithinSharedDeadline()
         throws
     {
+        try assertDenseReviewStages(hours: 8)
+    }
+
+    func testTwelveHourDenseReviewPublishesParityStagesWithinSharedDeadline()
+        throws
+    {
+        try assertDenseReviewStages(hours: 12)
+    }
+
+    private func assertDenseReviewStages(
+        hours: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
         let start = date(day: 8, hour: 20)
-        let duration: TimeInterval = 12 * 60 * 60
+        let duration = TimeInterval(hours * 60 * 60)
         var session = SavedSession(
             id: UUID(),
             start: start,
             end: start.addingTimeInterval(duration),
-            label: "Dense twelve-hour sleep review",
+            label: "Dense \(hours)-hour sleep review",
             points: (0...Int(duration)).map {
+                // Deliberately enter the physiological HR-only branch while
+                // motion also produces an aggregate candidate. Selection must
+                // finish before the single winning recipe invokes staging.
                 .init(t: Double($0), bpm: 58 + (($0 / 300) % 3))
             }
         )
@@ -1328,25 +1375,106 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
                 reason: "dense_review_stage_fixture"
             )
         }
-        let deadline = DispatchTime.now().uptimeNanoseconds
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        let deadline = startedAt
             + UInt64(SessionStore.sleepReviewProjectionDeadlineSeconds
                 * 1_000_000_000)
+        let cancellation = AtriaSleepReviewProjectionCancellation()
+        let sharedDeadline = AtriaSleepSettlementDeadline(
+            uptimeNanoseconds: deadline,
+            monotonicNow: {
+                cancellation.isCancelled
+                    ? .max
+                    : DispatchTime.now().uptimeNanoseconds
+            }
+        )
+        let reviewSlice = try SessionStore.compactLatestNightSessionSlice(
+            from: [session],
+            now: session.end,
+            deadlineUptimeNanoseconds: deadline,
+            cooperativeDeadline: sharedDeadline,
+            preserveAttachedMotion: true
+        ).get()
+        let stageInvocations = AtriaSleepReviewStageInvocationCounter()
         let result = try SessionStore.makeBoundedSleepReviewCacheProjection(
             snapshot: .empty,
-            canonicalSessions: [session],
+            canonicalSessions: reviewSlice.sessions,
             confirmedSleeps: [],
             rest: 60,
             maxHR: 190,
             calendar: calendar,
-            cooperativeDeadline: .init(
-                uptimeNanoseconds: deadline
-            )
+            cooperativeDeadline: sharedDeadline,
+            mainStageInvocationCounter: stageInvocations
         )
+        let elapsed = Double(
+            DispatchTime.now().uptimeNanoseconds - startedAt
+        ) / 1_000_000_000
+        print("ATRIA_DENSE_REVIEW_SECONDS hours=\(hours) elapsed=\(elapsed)")
         let main = try XCTUnwrap(result.main)
-        XCTAssertTrue(main.stageSegments.isEmpty)
+        let mainStart = try XCTUnwrap(main.start)
+        let mainEnd = try XCTUnwrap(main.end)
+        let restingHR = try XCTUnwrap(main.restingHR)
+        XCTAssertEqual(
+            stageInvocations.physiologicalDraftCount,
+            1,
+            "the low-HR review must exercise the physiological draft",
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(
+            stageInvocations.value,
+            1,
+            "physiological/aggregate overlap must stage only the selected draft",
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(
+            main.source,
+            "sleep_window",
+            "validated motion must also produce and select the aggregate draft",
+            file: file,
+            line: line
+        )
+        let legacy = AtriaSleepWakeResearch.stageSegments(
+            samples: session.points.map {
+                .init(
+                    t: session.start.addingTimeInterval(max(0, $0.t)),
+                    bpm: $0.bpm
+                )
+            },
+            start: mainStart,
+            end: mainEnd,
+            restingHR: restingHR,
+            isNap: false,
+            motionValidated: true,
+            motionEpochs: session.recoveredMotionEpochs ?? []
+        )
+        XCTAssertFalse(main.stageSegments.isEmpty, file: file, line: line)
+        XCTAssertEqual(main.stageSegments, legacy, file: file, line: line)
+        XCTAssertTrue(AtriaSleepStageIntegrity.validates(
+            main.stageSegments,
+            start: mainStart,
+            end: mainEnd,
+            duration: main.duration,
+            span: mainEnd.timeIntervalSince(mainStart)
+        ), file: file, line: line)
         XCTAssertGreaterThan(
             session.points.count,
-            SessionStore.sleepReviewMaximumStagingRows
+            SessionStore.compactLatestNightMaximumStagingRows,
+            file: file,
+            line: line
+        )
+        XCTAssertLessThanOrEqual(
+            session.points.count,
+            SessionStore.sleepReviewMaximumStagingRows,
+            file: file,
+            line: line
+        )
+        XCTAssertLessThan(
+            elapsed,
+            SessionStore.sleepReviewProjectionDeadlineSeconds,
+            file: file,
+            line: line
         )
     }
 

@@ -1025,6 +1025,56 @@ struct AtriaSleepSettlementDeadline: Sendable {
     }
 }
 
+/// A fresh review is selected using the same unstaged metadata as before, then
+/// only the winning draft runs the optional research-stage engine. Keeping the
+/// exact recipe beside its draft prevents a physiological window from being
+/// staged with an aggregate candidate's resting-HR or motion provenance.
+private struct AtriaSleepReviewStageRecipe {
+    let start: Date
+    let end: Date
+    let restingHR: Int
+    let isNap: Bool
+    let motionValidated: Bool
+}
+
+private struct AtriaSleepReviewDraft {
+    let night: SleepHistorySnapshot.Night
+    let stageRecipe: AtriaSleepReviewStageRecipe
+}
+
+/// Test-visible evidence that one main-review projection invokes the stage
+/// engine once after selection. It is deliberately not a cache and is never
+/// installed by production callers.
+final class AtriaSleepReviewStageInvocationCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stageInvocationStorage = 0
+    private var physiologicalDraftStorage = 0
+
+    func recordInvocation() {
+        lock.lock()
+        stageInvocationStorage += 1
+        lock.unlock()
+    }
+
+    func recordPhysiologicalDraft() {
+        lock.lock()
+        physiologicalDraftStorage += 1
+        lock.unlock()
+    }
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return stageInvocationStorage
+    }
+
+    var physiologicalDraftCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return physiologicalDraftStorage
+    }
+}
+
 /// Cooperative revocation shared by one sleep-review projection and every
 /// checked stage of its work. `DispatchWorkItem.cancel()` is advisory once a
 /// block has started; this token makes a scene-background transition visible
@@ -9202,10 +9252,11 @@ final class SessionStore: ObservableObject {
     nonisolated static let sleepReviewProjectionDeadlineSeconds: TimeInterval = 2
     nonisolated static let sleepReviewRespiratoryBudgetNanoseconds:
         UInt64 = 250_000_000
-    /// Stages are optional presentation evidence. The research engine's inner
-    /// feature pass is synchronous, so the checked review lane uses the same
-    /// small fail-closed ceiling as compact settlement.
-    nonisolated static let sleepReviewMaximumStagingRows = 4_096
+    /// Review-only stages use the checked research engine. Fifty thousand rows
+    /// admits a complete 12-hour 1 Hz night (43,201 inclusive endpoints) while
+    /// retaining an explicit source bound under the projection's shared two-
+    /// second deadline. Compact settlement keeps its independent 4,096 ceiling.
+    nonisolated static let sleepReviewMaximumStagingRows = 50_000
     nonisolated static let sleepReviewMaximumRelevantAuthorityRows = 512
     nonisolated static let sleepReviewMaximumNotificationAuthorityScanRows =
         4_096
@@ -27471,7 +27522,9 @@ final class SessionStore: ObservableObject {
         rest: Int,
         maxHR: Int,
         calendar: Calendar = .current,
-        cooperativeDeadline: AtriaSleepSettlementDeadline
+        cooperativeDeadline: AtriaSleepSettlementDeadline,
+        mainStageInvocationCounter:
+            AtriaSleepReviewStageInvocationCounter? = nil
     ) throws -> (
         main: SleepHistorySnapshot.Night?,
         naps: [SleepHistorySnapshot.Night]
@@ -27509,7 +27562,8 @@ final class SessionStore: ObservableObject {
             maxHR: maxHR,
             calendar: calendar,
             precomputedCandidates: candidates,
-            cooperativeDeadline: cooperativeDeadline
+            cooperativeDeadline: cooperativeDeadline,
+            stageInvocationCounter: mainStageInvocationCounter
         )
         let naps = try makeNapReviewNightsForCacheCore(
             canonicalSessions: canonicalSessions,
@@ -27627,7 +27681,8 @@ final class SessionStore: ObservableObject {
             maxHR: maxHR,
             calendar: calendar,
             precomputedCandidates: nil,
-            cooperativeDeadline: nil
+            cooperativeDeadline: nil,
+            stageInvocationCounter: nil
         )
     }
 
@@ -27640,10 +27695,11 @@ final class SessionStore: ObservableObject {
         maxHR: Int,
         calendar: Calendar,
         precomputedCandidates: [AggregateSleepCandidate]?,
-        cooperativeDeadline: AtriaSleepSettlementDeadline?
+        cooperativeDeadline: AtriaSleepSettlementDeadline?,
+        stageInvocationCounter: AtriaSleepReviewStageInvocationCounter?
     ) throws -> SleepHistorySnapshot.Night? {
         try cooperativeDeadline?.checkpoint()
-        let physiologicalReview = try physiologicalSleepReviewNightCore(
+        let physiologicalDraft = try physiologicalSleepReviewNightDraftCore(
             in: canonicalSessions,
             confirmedSleeps: confirmedSleeps,
             dismissedCandidates: dismissedCandidates,
@@ -27651,6 +27707,9 @@ final class SessionStore: ObservableObject {
             calendar: calendar,
             cooperativeDeadline: cooperativeDeadline
         )
+        if physiologicalDraft != nil {
+            stageInvocationCounter?.recordPhysiologicalDraft()
+        }
         let candidates: [AggregateSleepCandidate]
         if let precomputedCandidates {
             candidates = precomputedCandidates
@@ -27733,7 +27792,7 @@ final class SessionStore: ObservableObject {
         } else {
             aggregateCandidate = nil
         }
-        let aggregateReview: SleepHistorySnapshot.Night?
+        let aggregateDraft: AtriaSleepReviewDraft?
         if let candidate = aggregateCandidate {
             try cooperativeDeadline?.checkpoint()
             let source = sleepReviewCandidateSource(for: candidate)
@@ -27757,7 +27816,6 @@ final class SessionStore: ObservableObject {
                 )
             }
             let respiratoryRate: Double?
-            let stageSegments: [SleepStageSegment]
             if let cooperativeDeadline {
                 let respiratoryDeadline = cooperativeDeadline.capped(
                     afterNanoseconds:
@@ -27770,53 +27828,75 @@ final class SessionStore: ObservableObject {
                     cooperativeDeadline: respiratoryDeadline
                 )
                 try cooperativeDeadline.checkpoint()
-                stageSegments = try sleepStageResearchSegments(
-                    from: canonicalSessions,
-                    start: candidate.start,
-                    end: candidate.end,
-                    restingHR: candidate.restingHR,
-                    isNap: candidate.kind == "nap_candidate",
-                    motionValidated: candidate.motionEvidenceValidated,
-                    maximumRows: sleepReviewMaximumStagingRows,
-                    cooperativeDeadline: cooperativeDeadline
-                )
             } else {
                 respiratoryRate = confirmedSleepRespiratoryRate(
                     from: canonicalSessions,
                     start: candidate.start,
                     end: candidate.end
                 )
-                stageSegments = sleepStageResearchSegments(
-                    from: canonicalSessions,
+            }
+            let sleepEfficiency = candidate.span > 0
+                ? min(max(candidate.duration / candidate.span, 0), 1)
+                : nil
+            aggregateDraft = AtriaSleepReviewDraft(
+                night: SleepHistorySnapshot.Night(
+                    id: "sleep-review-\(Int(candidate.start.timeIntervalSince1970))-\(Int(candidate.end.timeIntervalSince1970))-\(source)",
+                    day: candidate.day,
+                    start: candidate.start,
+                    end: candidate.end,
+                    duration: candidate.duration,
+                    restingHR: candidate.restingHR > 0
+                        ? candidate.restingHR
+                        : nil,
+                    hrv: metrics.hrv,
+                    hrvWindowCount: metrics.hrvWindowCount,
+                    respiratoryRate: respiratoryRate,
+                    sleepEfficiency: sleepEfficiency,
+                    confidence: candidate.motionEvidenceValidated
+                        ? candidate.confidence.rawValue
+                        : "review_needed",
+                    source: source,
+                    confirmed: false,
+                    stageSegments: [],
+                    motionValidated: candidate.motionEvidenceValidated
+                ),
+                stageRecipe: AtriaSleepReviewStageRecipe(
                     start: candidate.start,
                     end: candidate.end,
                     restingHR: candidate.restingHR,
                     isNap: candidate.kind == "nap_candidate",
                     motionValidated: candidate.motionEvidenceValidated
                 )
-            }
-            let sleepEfficiency = candidate.span > 0
-                ? min(max(candidate.duration / candidate.span, 0), 1)
-                : nil
-            aggregateReview = SleepHistorySnapshot.Night(
-                id: "sleep-review-\(Int(candidate.start.timeIntervalSince1970))-\(Int(candidate.end.timeIntervalSince1970))-\(source)",
-                day: candidate.day,
-                start: candidate.start,
-                end: candidate.end,
-                duration: candidate.duration,
-                restingHR: candidate.restingHR > 0 ? candidate.restingHR : nil,
-                hrv: metrics.hrv,
-                hrvWindowCount: metrics.hrvWindowCount,
-                respiratoryRate: respiratoryRate,
-                sleepEfficiency: sleepEfficiency,
-                confidence: candidate.motionEvidenceValidated ? candidate.confidence.rawValue : "review_needed",
-                source: source,
-                confirmed: false,
-                stageSegments: stageSegments,
-                motionValidated: candidate.motionEvidenceValidated
             )
         } else {
-            aggregateReview = nil
+            aggregateDraft = nil
+        }
+        let aggregateReview = aggregateDraft?.night
+        let physiologicalReview = physiologicalDraft?.night
+
+        func materializeFreshReview(
+            _ draft: AtriaSleepReviewDraft
+        ) throws -> SleepHistorySnapshot.Night {
+            try materializeSleepReviewDraft(
+                draft,
+                from: canonicalSessions,
+                maximumRows: cooperativeDeadline == nil
+                    ? nil
+                    : sleepReviewMaximumStagingRows,
+                cooperativeDeadline: cooperativeDeadline,
+                invocationCounter: stageInvocationCounter
+            )
+        }
+
+        func materializePreferredFreshReview() throws
+            -> SleepHistorySnapshot.Night? {
+            if let aggregateDraft {
+                return try materializeFreshReview(aggregateDraft)
+            }
+            if let physiologicalDraft {
+                return try materializeFreshReview(physiologicalDraft)
+            }
+            return nil
         }
         if let latest = snapshot.latest,
            latest.confirmed == false,
@@ -27838,6 +27918,14 @@ final class SessionStore: ObservableObject {
                 with: [aggregateReview, physiologicalReview].compactMap { $0 },
                 calendar: calendar
             ) {
+                if let aggregateDraft,
+                   replacement.id == aggregateDraft.night.id {
+                    return try materializeFreshReview(aggregateDraft)
+                }
+                if let physiologicalDraft,
+                   replacement.id == physiologicalDraft.night.id {
+                    return try materializeFreshReview(physiologicalDraft)
+                }
                 return replacement
             }
             // A cached main-sleep review remains useful until newer evidence
@@ -27856,13 +27944,13 @@ final class SessionStore: ObservableObject {
                         && candidate.end > start
                 }
                 guard freshValidatedNapOverlaps else {
-                    return aggregateReview ?? physiologicalReview
+                    return try materializePreferredFreshReview()
                 }
             }
             return latest
         }
         try cooperativeDeadline?.checkpoint()
-        return aggregateReview ?? physiologicalReview
+        return try materializePreferredFreshReview()
     }
 
     /// Every review-worthy daytime nap candidate, as unconfirmed nap `Night`s
@@ -28072,24 +28160,35 @@ final class SessionStore: ObservableObject {
         rest: Int,
         calendar: Calendar = .current
     ) -> SleepHistorySnapshot.Night? {
-        try? physiologicalSleepReviewNightCore(
-            in: sessions,
-            confirmedSleeps: confirmedSleeps,
-            dismissedCandidates: dismissedCandidates,
-            rest: rest,
-            calendar: calendar,
-            cooperativeDeadline: nil
-        )
+        do {
+            guard let draft = try physiologicalSleepReviewNightDraftCore(
+                in: sessions,
+                confirmedSleeps: confirmedSleeps,
+                dismissedCandidates: dismissedCandidates,
+                rest: rest,
+                calendar: calendar,
+                cooperativeDeadline: nil
+            ) else { return nil }
+            return try materializeSleepReviewDraft(
+                draft,
+                from: sessions,
+                maximumRows: nil,
+                cooperativeDeadline: nil,
+                invocationCounter: nil
+            )
+        } catch {
+            return nil
+        }
     }
 
-    private nonisolated static func physiologicalSleepReviewNightCore(
+    private nonisolated static func physiologicalSleepReviewNightDraftCore(
         in sessions: [SavedSession],
         confirmedSleeps: [UserConfirmedSleep],
         dismissedCandidates: [AtriaDismissedSleepCandidate],
         rest: Int,
         calendar: Calendar,
         cooperativeDeadline: AtriaSleepSettlementDeadline?
-    ) throws -> SleepHistorySnapshot.Night? {
+    ) throws -> AtriaSleepReviewDraft? {
         struct Bin {
             let start: Date
             let median: Int
@@ -28164,7 +28263,7 @@ final class SessionStore: ObservableObject {
         }
         if !current.isEmpty { episodes.append(current) }
 
-        var reviewNights: [SleepHistorySnapshot.Night] = []
+        var reviewDrafts: [AtriaSleepReviewDraft] = []
         for episode in episodes {
             try cooperativeDeadline?.checkpoint()
             guard let first = episode.first, let last = episode.last else {
@@ -28220,7 +28319,6 @@ final class SessionStore: ObservableObject {
                           peakHR: Int, restingHR: Int, hrv: Int?,
                           hrvWindowCount: Int)
             let respiratoryRate: Double?
-            let stageSegments: [SleepStageSegment]
             if let cooperativeDeadline {
                 metrics = try confirmedSleepWindowMetrics(
                     from: sessions,
@@ -28240,16 +28338,6 @@ final class SessionStore: ObservableObject {
                     cooperativeDeadline: respiratoryDeadline
                 )
                 try cooperativeDeadline.checkpoint()
-                stageSegments = try sleepStageResearchSegments(
-                    from: sessions,
-                    start: start,
-                    end: end,
-                    restingHR: weightedMedian,
-                    isNap: nap,
-                    motionValidated: false,
-                    maximumRows: sleepReviewMaximumStagingRows,
-                    cooperativeDeadline: cooperativeDeadline
-                )
             } else {
                 metrics = confirmedSleepWindowMetrics(
                     from: sessions,
@@ -28262,37 +28350,105 @@ final class SessionStore: ObservableObject {
                     start: start,
                     end: end
                 )
-                stageSegments = sleepStageResearchSegments(
-                    from: sessions,
+            }
+            reviewDrafts.append(AtriaSleepReviewDraft(
+                night: SleepHistorySnapshot.Night(
+                    id: "sleep-physiology-review-\(Int(start.timeIntervalSince1970))-\(Int(end.timeIntervalSince1970))-\(source)",
+                    day: day,
+                    start: start,
+                    end: end,
+                    duration: min(captured, span),
+                    restingHR: weightedMedian,
+                    hrv: metrics.hrv,
+                    hrvWindowCount: metrics.hrvWindowCount,
+                    respiratoryRate: respiratoryRate,
+                    sleepEfficiency: span > 0
+                        ? min(1, captured / span)
+                        : nil,
+                    confidence: "review_needed",
+                    source: source,
+                    confirmed: false,
+                    stageSegments: [],
+                    motionValidated: false
+                ),
+                stageRecipe: AtriaSleepReviewStageRecipe(
                     start: start,
                     end: end,
                     restingHR: weightedMedian,
                     isNap: nap,
                     motionValidated: false
                 )
-            }
-            reviewNights.append(SleepHistorySnapshot.Night(
-                id: "sleep-physiology-review-\(Int(start.timeIntervalSince1970))-\(Int(end.timeIntervalSince1970))-\(source)",
-                day: day,
-                start: start,
-                end: end,
-                duration: min(captured, span),
-                restingHR: weightedMedian,
-                hrv: metrics.hrv,
-                hrvWindowCount: metrics.hrvWindowCount,
-                respiratoryRate: respiratoryRate,
-                sleepEfficiency: span > 0 ? min(1, captured / span) : nil,
-                confidence: "review_needed",
-                source: source,
-                confirmed: false,
-                stageSegments: stageSegments,
-                motionValidated: false
             ))
         }
         try cooperativeDeadline?.checkpoint()
-        return reviewNights.max { lhs, rhs in
-            (lhs.end ?? .distantPast) < (rhs.end ?? .distantPast)
+        return reviewDrafts.max { lhs, rhs in
+            (lhs.night.end ?? .distantPast)
+                < (rhs.night.end ?? .distantPast)
         }
+    }
+
+    /// Runs optional staging only after the existing review-selection policy
+    /// has chosen a fresh draft. A cached snapshot bypasses this helper and is
+    /// returned byte-for-byte unchanged.
+    private nonisolated static func materializeSleepReviewDraft(
+        _ draft: AtriaSleepReviewDraft,
+        from sessions: [SavedSession],
+        maximumRows: Int?,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?,
+        invocationCounter: AtriaSleepReviewStageInvocationCounter?
+    ) throws -> SleepHistorySnapshot.Night {
+        try cooperativeDeadline?.checkpoint()
+        let recipe = draft.stageRecipe
+        let stageSegments: [SleepStageSegment]
+        if let cooperativeDeadline {
+            guard let maximumRows else {
+                throw AtriaSleepSettlementAbort.deadlineExceeded
+            }
+            invocationCounter?.recordInvocation()
+            stageSegments = try sleepStageResearchSegments(
+                from: sessions,
+                start: recipe.start,
+                end: recipe.end,
+                restingHR: recipe.restingHR,
+                isNap: recipe.isNap,
+                motionValidated: recipe.motionValidated,
+                maximumRows: maximumRows,
+                cooperativeDeadline: cooperativeDeadline
+            )
+        } else {
+            invocationCounter?.recordInvocation()
+            stageSegments = sleepStageResearchSegments(
+                from: sessions,
+                start: recipe.start,
+                end: recipe.end,
+                restingHR: recipe.restingHR,
+                isNap: recipe.isNap,
+                motionValidated: recipe.motionValidated
+            )
+        }
+        let night = draft.night
+        return SleepHistorySnapshot.Night(
+            id: night.id,
+            day: night.day,
+            savedAt: night.savedAt,
+            start: night.start,
+            end: night.end,
+            duration: night.duration,
+            observedDuration: night.observedDuration,
+            restingHR: night.restingHR,
+            hrv: night.hrv,
+            hrvWindowCount: night.hrvWindowCount,
+            respiratoryRate: night.respiratoryRate,
+            sleepEfficiency: night.sleepEfficiency,
+            confidence: night.confidence,
+            source: night.source,
+            confirmed: night.confirmed,
+            stageSegments: stageSegments,
+            eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
+            motionValidated: night.motionValidated,
+            sleepNeedSeconds: night.sleepNeedSeconds,
+            frozenSleepNeed: night.frozenSleepNeed
+        )
     }
 
     nonisolated static func shouldPublishSleepReviewCache(completedGeneration: Int,
@@ -28616,9 +28772,9 @@ final class SessionStore: ObservableObject {
     nonisolated static let compactLatestNightMaximumRecoveredMotionEpochs =
         4_096
     /// The research stage engine is optional presentation evidence, not a
-    /// sleep-save gate. It has no checked API in this target, so compact
-    /// settlement calls it only for a demonstrably small input and otherwise
-    /// publishes the qualified sleep/HRV/respiration without fabricated stages.
+    /// sleep-save gate. Compact settlement deliberately retains its original
+    /// small ceiling even though a checked engine exists; its physiology and
+    /// receipt-bound commit have a stricter physical-work budget than review UI.
     nonisolated static let compactLatestNightMaximumStagingRows = 4_096
     nonisolated static let compactLatestNightMaximumRespirationWindowRows = 4_096
     nonisolated static let compactLatestNightDeadlineSeconds: TimeInterval = 2
@@ -32272,13 +32428,27 @@ final class SessionStore: ObservableObject {
             }
         }
         try cooperativeDeadline?.checkpoint()
-        return AtriaSleepWakeResearch.stageSegments(samples: samples,
-                                                    start: start,
-                                                    end: end,
-                                                    restingHR: restingHR,
-                                                    isNap: isNap,
-                                                    motionValidated: motionValidated,
-                                                    motionEpochs: recoveredMotionEpochs)
+        if let cooperativeDeadline {
+            return try AtriaSleepWakeResearch.stageSegments(
+                samples: samples,
+                start: start,
+                end: end,
+                restingHR: restingHR,
+                isNap: isNap,
+                motionValidated: motionValidated,
+                motionEpochs: recoveredMotionEpochs,
+                cooperativeDeadline: cooperativeDeadline
+            )
+        }
+        return AtriaSleepWakeResearch.stageSegments(
+            samples: samples,
+            start: start,
+            end: end,
+            restingHR: restingHR,
+            isNap: isNap,
+            motionValidated: motionValidated,
+            motionEpochs: recoveredMotionEpochs
+        )
     }
 
     private nonisolated static func sleepStageResearchSampleCount(from sessions: [SavedSession],
