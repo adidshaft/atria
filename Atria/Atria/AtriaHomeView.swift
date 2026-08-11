@@ -4249,6 +4249,10 @@ struct AtriaHomeView: View {
             await Task.yield()
             try? await Task.sleep(for: .milliseconds(180))
             guard !Task.isCancelled, scenePhase == .active else { return }
+            // Historical progress is intentionally silent while inactive. Pull
+            // only that missed presentation into CoreLive after the returning
+            // scene has drawn, without the archive/diagnostic work of forceRefresh.
+            model.refreshHistoricalRecoveryPresentationForForeground()
             motionActivityMonitor.start()
             // A diagnosis that began before suspension needs one fresh
             // derivation on return. Its persistence gate is then owned by a
@@ -9824,6 +9828,14 @@ final class AtriaHomeModel {
         loadDeferredDiagnosticsIfNeeded(reason: "force_refresh")
     }
 
+    /// Catch up the one CoreLive field whose transport progress is deliberately
+    /// unpublished while inactive. This avoids using the broad force-refresh
+    /// path at the app-switch edge.
+    func refreshHistoricalRecoveryPresentationForForeground() {
+        ble.catchUpHistoricalRecoveryProgressForForeground()
+        publishCoreLive()
+    }
+
     func refreshDailyGuidanceClock() {
         refreshHeroSnapshot()
     }
@@ -9906,14 +9918,35 @@ final class AtriaHomeModel {
             ble.$lastScanMatchAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$pendingKnownReconnectStartedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$pendingKnownReconnectReason.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            ble.$rangeLossBackfillPending.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
-            ble.$historicalRecoveryPresentation.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
+            ble.$rangeLossBackfillPending.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
         ])
         .throttle(for: .milliseconds(400), scheduler: RunLoop.main, latest: true)
 
         throttledCoreLiveChanges
             .sink { [weak self] _ in
                 self?.publishCoreLive()
+            }
+            .store(in: &cancellables)
+
+        // Transport row counts are silent while inactive and bounded at their
+        // source while active. Keep this presentation off the broad 400 ms
+        // CoreLive merge so history cannot fan out through unrelated BLE churn;
+        // terminal changes still render immediately in the foreground.
+        ble.$historicalRecoveryPresentation
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in
+                guard UIApplication.shared.applicationState == .active else {
+                    return
+                }
+                // @Published emits from willSet. Defer the narrow read until the
+                // manager property contains the value delivered by this event.
+                Task { @MainActor [weak self] in
+                    guard UIApplication.shared.applicationState == .active else {
+                        return
+                    }
+                    self?.publishCoreLive()
+                }
             }
             .store(in: &cancellables)
 

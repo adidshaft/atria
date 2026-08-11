@@ -1297,6 +1297,17 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             range: ackStart.upperBound..<source.endIndex
         ))
         let ack = String(source[ackStart.lowerBound..<ackEnd.lowerBound])
+        let motionStop = try XCTUnwrap(ack.range(
+            of: "shouldFinishConnectedMotionBankHistoryAtACKBoundary("
+        ))
+        let motionCleanACKBoundaryCapture = try XCTUnwrap(ack.range(
+            of: "captureDurablyAcknowledgedPrefixBoundary()",
+            range: motionStop.upperBound..<ack.endIndex
+        ))
+        let motionLocalACKFinish = try XCTUnwrap(ack.range(
+            of: "finishConnectedHistoryFailureWithoutDisconnectIfNeeded(",
+            range: motionCleanACKBoundaryCapture.upperBound..<ack.endIndex
+        ))
         let burstStop = try XCTUnwrap(ack.range(
             of: "shouldFinishConnectedRawHistoryCatchUpAtACKBoundary("
         ))
@@ -1311,12 +1322,25 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         let nextPage = try XCTUnwrap(ack.range(
             of: "armHistoricalPageContinuationAfterACK("
         ))
+        XCTAssertLessThan(motionStop.lowerBound, motionCleanACKBoundaryCapture.lowerBound)
+        XCTAssertLessThan(motionCleanACKBoundaryCapture.lowerBound, motionLocalACKFinish.lowerBound)
+        XCTAssertLessThan(motionLocalACKFinish.lowerBound, nextPage.lowerBound)
+        let motionBoundary = String(
+            ack[motionStop.lowerBound..<burstStop.lowerBound]
+        )
+        XCTAssertFalse(motionBoundary.contains("sendCommand("))
+        XCTAssertFalse(motionBoundary.contains("cancelPeripheralConnection("))
+        XCTAssertFalse(motionBoundary.contains("rebuildCentralForWedgedSessionOnce("))
+        XCTAssertFalse(motionBoundary.contains("Cmd.abortHistoricalTransmits"))
         XCTAssertLessThan(burstStop.lowerBound, cleanACKBoundaryCapture.lowerBound)
         XCTAssertLessThan(cleanACKBoundaryCapture.lowerBound, localACKFinish.lowerBound)
         XCTAssertLessThan(localACKFinish.lowerBound, nextPage.lowerBound)
         XCTAssertLessThan(burstStop.lowerBound, nextPage.lowerBound)
         XCTAssertTrue(ack.contains(
             "reason: \"exact_connected_raw_ack_burst_boundary\""
+        ))
+        XCTAssertTrue(ack.contains(
+            "reason: \"exact_connected_motion_bank_background_ack_boundary\""
         ))
         XCTAssertFalse(ack.contains("cancelPeripheralConnection("))
         XCTAssertFalse(ack.contains("rebuildCentralForWedgedSessionOnce("))
@@ -1333,9 +1357,21 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             "connectedRawCleanACKFinishAuthority"
         ))
         XCTAssertTrue(finish.contains(
+            "connectedMotionBankCleanACKFinishAuthority"
+        ))
+        XCTAssertGreaterThanOrEqual(
+            finish.components(
+                separatedBy:
+                    "historicalIngressSpool.matches(\n                        authority.ingressBoundary"
+            ).count - 1,
+            2,
+            "raw and motion clean-ACK authorities must both fail closed when their spool cursor becomes stale"
+        )
+        XCTAssertTrue(finish.contains(
             ".coversEntireJournal == true"
         ))
         XCTAssertTrue(finish.contains("connectedRawIngressFullyAcknowledged"))
+        XCTAssertTrue(finish.contains("connectedMotionBankIngressFullyAcknowledged"))
         XCTAssertTrue(finish.contains("historicalIngressSpool?.remove()"))
         XCTAssertTrue(finish.contains("pendingHistoricalTransportEventCount == 0"))
         XCTAssertTrue(finish.contains("historyDrain.pendingPersistenceCount == 0"))
@@ -1352,7 +1388,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertTrue(finish.contains("!historyACKGate.requiresHistoryCallbackDeferral"))
         XCTAssertTrue(finish.contains("retireConsumedPrefix("))
         XCTAssertTrue(finish.contains(
-            "through: connectedRawCleanACKFinishAuthority"
+            "through: connectedCleanACKFinishAuthority"
         ))
         XCTAssertTrue(finish.contains(
             "!boundedConnectedRawCatchUp"
@@ -1591,6 +1627,424 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             ),
             .finishForPowerPressure
         )
+    }
+
+    func testConnectedMotionBankBackgroundACKBoundaryStopsOnlyExactInactiveSlice() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldFinishConnectedMotionBankHistoryAtACKBoundary(
+                applicationIsActive: false,
+                exactMotionBankAuthorityActive: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishConnectedMotionBankHistoryAtACKBoundary(
+                applicationIsActive: true,
+                exactMotionBankAuthorityActive: true
+            ),
+            "a foreground page may continue under the existing transport budget"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishConnectedMotionBankHistoryAtACKBoundary(
+                applicationIsActive: false,
+                exactMotionBankAuthorityActive: false
+            ),
+            "background state alone cannot finish a generic history generation"
+        )
+    }
+
+    func testHistoricalRecoveryProgressIsSilentInactiveAndBoundedForeground() throws {
+        let start = Date(timeIntervalSince1970: 1_000)
+        XCTAssertFalse(
+            AtriaBLEManager.shouldPublishHistoricalRecoveryProgress(
+                applicationIsActive: false,
+                savedRecords: 1_000,
+                lastPublishedRecords: nil,
+                lastPublishedAt: nil,
+                now: start
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldPublishHistoricalRecoveryProgress(
+                applicationIsActive: true,
+                compactMotionBankOnly: true,
+                savedRecords: 1_000,
+                lastPublishedRecords: nil,
+                lastPublishedAt: nil,
+                now: start
+            ),
+            "compact motion transport has no recovery terminal state and must never publish Syncing"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldPublishHistoricalRecoveryProgress(
+                applicationIsActive: true,
+                savedRecords: 1_000,
+                lastPublishedRecords: nil,
+                lastPublishedAt: nil,
+                now: start
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldPublishHistoricalRecoveryProgress(
+                applicationIsActive: true,
+                savedRecords: 1_000,
+                lastPublishedRecords: 1_000,
+                lastPublishedAt: start,
+                now: start
+            ),
+            "the foreground catch-up emits the suppressed exact count once"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldPublishHistoricalRecoveryProgress(
+                applicationIsActive: true,
+                savedRecords: 100,
+                lastPublishedRecords: 1,
+                lastPublishedAt: start,
+                now: start.addingTimeInterval(14),
+                minimumInterval: 15,
+                minimumRecordDelta: 250
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldPublishHistoricalRecoveryProgress(
+                applicationIsActive: true,
+                savedRecords: 251,
+                lastPublishedRecords: 1,
+                lastPublishedAt: start,
+                now: start.addingTimeInterval(1),
+                minimumInterval: 15,
+                minimumRecordDelta: 250
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldPublishHistoricalRecoveryProgress(
+                applicationIsActive: true,
+                savedRecords: 2,
+                lastPublishedRecords: 1,
+                lastPublishedAt: start,
+                now: start.addingTimeInterval(15),
+                minimumInterval: 15,
+                minimumRecordDelta: 250
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldPublishHistoricalRecoveryProgress(
+                applicationIsActive: true,
+                savedRecords: 1,
+                lastPublishedRecords: 1,
+                lastPublishedAt: start,
+                now: start.addingTimeInterval(30)
+            ),
+            "an unchanged row count never emits objectWillChange"
+        )
+
+        let source = try managerSource()
+        let catchUpStart = try XCTUnwrap(source.range(
+            of: "func catchUpHistoricalRecoveryProgressForForeground("
+        ))
+        let catchUpEnd = try XCTUnwrap(source.range(
+            of: "/// Duty-cycle attribution",
+            range: catchUpStart.upperBound..<source.endIndex
+        ))
+        let catchUp = String(
+            source[catchUpStart.lowerBound..<catchUpEnd.lowerBound]
+        )
+        XCTAssertTrue(catchUp.contains("guard offlineHistoricalSyncInProgress"))
+        XCTAssertTrue(catchUp.contains(
+            "publishHistoricalRecoveryProgressIfNeeded(now: now)"
+        ))
+    }
+
+    func testMotionBankCleanACKCooldownReusesPersistedRetryCadenceAcrossRelaunch() throws {
+        let pageACK = Date(timeIntervalSince1970: 10_000)
+        XCTAssertFalse(
+            AtriaBLEManager.historicalMotionBankOffloadCadenceEligible(
+                attempts: 1,
+                now: pageACK.addingTimeInterval(14 * 60),
+                lastStartedAt: pageACK
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankOffloadCadenceEligible(
+                attempts: 1,
+                now: pageACK.addingTimeInterval(15 * 60),
+                lastStartedAt: pageACK
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.historicalMotionBankOffloadCadenceEligible(
+                attempts: 0,
+                now: pageACK,
+                lastStartedAt: pageACK
+            ),
+            "a genuinely new attempt-zero ticket remains an immediate factual interval"
+        )
+
+        let source = try managerSource()
+        let cooldownStart = try XCTUnwrap(source.range(
+            of: "private func recordConnectedMotionBankBackgroundPageCooldown("
+        ))
+        let cooldownEnd = try XCTUnwrap(source.range(
+            of: "nonisolated static func terminalMaterializationReleaseDisposition(",
+            range: cooldownStart.upperBound..<source.endIndex
+        ))
+        let cooldown = String(
+            source[cooldownStart.lowerBound..<cooldownEnd.lowerBound]
+        )
+        XCTAssertTrue(cooldown.contains(
+            "workoutHistoricalMotionBankMinimumOffloadInterval"
+        ))
+        XCTAssertTrue(cooldown.contains(
+            "connectedMotionBankHistoryAdmissionRetryNotBefore"
+        ))
+        XCTAssertTrue(cooldown.contains(
+            "workoutHistoricalMotionBankLastOffloadStartedAtKey"
+        ), "the ACK fence must survive process relaunch without a redundant key")
+
+        let selectorStart = try XCTUnwrap(source.range(
+            of: "private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded("
+        ))
+        let selectorEnd = try XCTUnwrap(source.range(
+            of: "/// Builds one replacement ticket",
+            range: selectorStart.upperBound..<source.endIndex
+        ))
+        let selector = String(
+            source[selectorStart.lowerBound..<selectorEnd.lowerBound]
+        )
+        let processGate = try XCTUnwrap(selector.range(
+            of: "connectedMotionBankHistoryAdmissionRetryNotBefore"
+        ))
+        let durableMaintenance = try XCTUnwrap(selector.range(
+            of: "maintainPendingWorkoutMotionBankTickets("
+        ))
+        XCTAssertLessThan(processGate.lowerBound, durableMaintenance.lowerBound,
+                          "cooldown must suppress per-HR preferences/ledger maintenance")
+    }
+
+    func testExhaustedMotionBankBypassesArmedAndCooldownHotReturns() throws {
+        XCTAssertTrue(
+            AtriaBLEManager
+                .shouldEvaluateExhaustedMotionBankBeforeHotPathReturn(
+                    bankArmed: true,
+                    retryCooldownActive: false,
+                    boundTicketAttempts: 4,
+                    historyOwnerActive: false
+                )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager
+                .shouldEvaluateExhaustedMotionBankBeforeHotPathReturn(
+                    bankArmed: false,
+                    retryCooldownActive: true,
+                    boundTicketAttempts: 4,
+                    historyOwnerActive: false
+                )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .shouldEvaluateExhaustedMotionBankBeforeHotPathReturn(
+                    bankArmed: true,
+                    retryCooldownActive: true,
+                    boundTicketAttempts: 3,
+                    historyOwnerActive: false
+                )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager
+                .shouldEvaluateExhaustedMotionBankBeforeHotPathReturn(
+                    bankArmed: true,
+                    retryCooldownActive: true,
+                    boundTicketAttempts: 4,
+                    historyOwnerActive: true
+                ),
+            "an active history generation retains its exact ticket until transport exits"
+        )
+
+        let source = try managerSource()
+        let selectorStart = try XCTUnwrap(source.range(
+            of: "private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded("
+        ))
+        let selectorEnd = try XCTUnwrap(source.range(
+            of: "/// Builds one replacement ticket",
+            range: selectorStart.upperBound..<source.endIndex
+        ))
+        let selector = String(
+            source[selectorStart.lowerBound..<selectorEnd.lowerBound]
+        )
+        let hotGate = try XCTUnwrap(selector.range(
+            of: "if workoutHistoricalMotionBankArmed || retryCooldownActive"
+        ))
+        let exhaustedEvaluation = try XCTUnwrap(selector.range(
+            of: "evaluateExhaustedMotionBankBeforeHotPathReturnIfNeeded(",
+            range: hotGate.upperBound..<selector.endIndex
+        ))
+        let hotReturn = try XCTUnwrap(selector.range(
+            of: "return false",
+            range: exhaustedEvaluation.upperBound..<selector.endIndex
+        ))
+        let maintenance = try XCTUnwrap(selector.range(
+            of: "maintainPendingWorkoutMotionBankTickets("
+        ))
+        XCTAssertLessThan(hotGate.lowerBound, exhaustedEvaluation.lowerBound)
+        XCTAssertLessThan(exhaustedEvaluation.lowerBound, hotReturn.lowerBound)
+        XCTAssertLessThan(hotReturn.lowerBound, maintenance.lowerBound,
+                          "exhaustion evaluates once without restoring queue maintenance churn")
+
+        let helperStart = try XCTUnwrap(source.range(
+            of: "private func evaluateExhaustedMotionBankBeforeHotPathReturnIfNeeded("
+        ))
+        let helperEnd = try XCTUnwrap(source.range(
+            of: "nonisolated static func shouldRunWorkoutMotionBankCoverageEvaluation(",
+            range: helperStart.upperBound..<source.endIndex
+        ))
+        let helper = String(source[helperStart.lowerBound..<helperEnd.lowerBound])
+        let exactPredicate = try XCTUnwrap(helper.range(
+            of: "shouldEvaluateExhaustedMotionBankBeforeHotPathReturn("
+        ))
+        let terminalEvaluation = try XCTUnwrap(helper.range(
+            of: "evaluatePendingWorkoutHistoricalMotionBankOffload(",
+            range: exactPredicate.upperBound..<helper.endIndex
+        ))
+        XCTAssertLessThan(exactPredicate.lowerBound, terminalEvaluation.lowerBound)
+        XCTAssertTrue(helper.contains(
+            "forKey: Self.workoutHistoricalMotionBankActiveTicketIDKey"
+        ))
+        XCTAssertTrue(helper.contains("allowRetry: false"))
+    }
+
+    func testHistoryContinuityPersistsRareChangedFrameBeforePersistenceAndACK() throws {
+        let source = try managerSource()
+        let frameStart = try XCTUnwrap(source.range(
+            of: "private func processAdmittedHistoricalFrame("
+        ))
+        let boundaryHelper = try XCTUnwrap(source.range(
+            of: "private func persistHistorySequenceContinuityAtBoundary()",
+            range: frameStart.upperBound..<source.endIndex
+        ))
+        let framePath = String(
+            source[frameStart.lowerBound..<boundaryHelper.lowerBound]
+        )
+        let priorSnapshot = try XCTUnwrap(framePath.range(
+            of: "let priorContinuity = historyDrain.continuitySnapshot"
+        ))
+        let receiveFrame = try XCTUnwrap(framePath.range(
+            of: "let effects = historyDrain.receiveFrame("
+        ))
+        let changedSave = try XCTUnwrap(framePath.range(
+            of: "persistHistorySequenceContinuityIfChanged(from: priorContinuity)"
+        ))
+        let persistenceDispatch = try XCTUnwrap(framePath.range(
+            of: "guard effects.contains(where:"
+        ))
+        XCTAssertLessThan(priorSnapshot.lowerBound, receiveFrame.lowerBound)
+        XCTAssertLessThan(receiveFrame.lowerBound, changedSave.lowerBound)
+        XCTAssertLessThan(changedSave.lowerBound, persistenceDispatch.lowerBound,
+                          "a permitted pending jump must be durable before row persistence/ACK can progress")
+        XCTAssertTrue(framePath.contains(
+            "guard historyDrain.continuitySnapshot != prior else { return }"
+        ), "contiguous frames perform only an equality check and no store I/O")
+
+        let ackStart = try XCTUnwrap(source.range(
+            of: "private func completeHistoricalACKAcceptance("
+        ))
+        let ackEnd = try XCTUnwrap(source.range(
+            of: "private func reackDurableHistoricalReplay(",
+            range: ackStart.upperBound..<source.endIndex
+        ))
+        let ack = String(source[ackStart.lowerBound..<ackEnd.lowerBound])
+        let reducerACK = try XCTUnwrap(ack.range(
+            of: "let postACKEffects = historyDrain.ackCompleted("
+        ))
+        let continuitySave = try XCTUnwrap(ack.range(
+            of: "persistHistorySequenceContinuityAtBoundary()",
+            range: reducerACK.upperBound..<ack.endIndex
+        ))
+        let effectProcessing = try XCTUnwrap(ack.range(
+            of: "processHistoricalDrainEffects(postACKEffects)",
+            range: continuitySave.upperBound..<ack.endIndex
+        ))
+        let nextPage = try XCTUnwrap(ack.range(
+            of: "armHistoricalPageContinuationAfterACK("
+        ))
+        XCTAssertLessThan(reducerACK.lowerBound, continuitySave.lowerBound)
+        XCTAssertLessThan(continuitySave.lowerBound, effectProcessing.lowerBound)
+        XCTAssertLessThan(effectProcessing.lowerBound, nextPage.lowerBound)
+
+        let effectsStart = try XCTUnwrap(source.range(
+            of: "private func processHistoricalDrainEffects("
+        ))
+        let effectsEnd = try XCTUnwrap(source.range(
+            of: "private func scheduleHistorySequenceConfirmationRetry(",
+            range: effectsStart.upperBound..<source.endIndex
+        ))
+        let effects = String(
+            source[effectsStart.lowerBound..<effectsEnd.lowerBound]
+        )
+        let finished = try XCTUnwrap(effects.range(of: "case .finished(let generation):"))
+        let failed = try XCTUnwrap(effects.range(
+            of: "case .failed(let generation, let failure):",
+            range: finished.upperBound..<effects.endIndex
+        ))
+        let finishedBody = String(effects[finished.lowerBound..<failed.lowerBound])
+        let failedBody = String(effects[failed.lowerBound...])
+        XCTAssertTrue(finishedBody.contains(
+            "persistHistorySequenceContinuityAtBoundary()"
+        ), "a terminal tail without an ACK still checkpoints continuity")
+        let failureSave = try XCTUnwrap(failedBody.range(
+            of: "persistHistorySequenceContinuityAtBoundary()"
+        ))
+        let failureFinish = try XCTUnwrap(failedBody.range(
+            of: "finishHistoricalAdmissionAttempt(succeeded: false"
+        ))
+        XCTAssertLessThan(failureSave.lowerBound, failureFinish.lowerBound,
+                          "unconfirmed discontinuity proof must survive the failure exit")
+    }
+
+    func testPermittedFullDrainPendingDiscontinuityRestoresAcrossPreACKRelaunch() {
+        let first: [UInt8] = [0x2f, 0, 0, 0x10, 0x00]
+        let jump: [UInt8] = [0x2f, 0, 0, 0x12, 0x00]
+        var original = AtriaWhoop4HistoryDrainState()
+        _ = original.begin(generation: 41)
+        _ = original.receiveFrame(
+            generation: 41,
+            frameKey: "first",
+            payload: first
+        )
+        let beforeJump = original.continuitySnapshot
+        XCTAssertEqual(
+            original.receiveFrame(
+                generation: 41,
+                frameKey: "jump",
+                payload: jump,
+                permitsUnconfirmedForwardDiscontinuity: true
+            ),
+            [.persistFrame(
+                generation: 41,
+                frameKey: "jump",
+                payload: jump
+            )]
+        )
+        let preACKSnapshot = original.continuitySnapshot
+        XCTAssertNotEqual(preACKSnapshot, beforeJump)
+        XCTAssertNotNil(preACKSnapshot.pending,
+                        "the permitted lane continues but still creates durable replay proof")
+
+        var relaunched = AtriaWhoop4HistoryDrainState()
+        XCTAssertTrue(relaunched.restoreContinuitySnapshot(preACKSnapshot))
+        _ = relaunched.begin(generation: 42)
+        XCTAssertEqual(
+            relaunched.receiveFrame(
+                generation: 42,
+                frameKey: "jump",
+                payload: jump
+            ),
+            [.persistFrame(
+                generation: 42,
+                frameKey: "jump",
+                payload: jump
+            )]
+        )
+        XCTAssertNil(relaunched.continuitySnapshot.pending)
+        XCTAssertEqual(relaunched.continuitySnapshot.confirmed.count, 1)
     }
 
     func testConnectedMotionBankPowerPressureParksAtBoundedCadence() {

@@ -1838,6 +1838,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         ConnectedRawHistoryCatchUpGenerationAuthority?
     private var connectedRawHistoryCleanACKFinishAuthority:
         ConnectedRawHistoryCleanACKFinishAuthority?
+    /// Same exact boundary shape as connected raw, but only minted from an
+    /// inactive motion-bank generation after its matching GATT ACK completes.
+    private var connectedMotionBankHistoryCleanACKFinishAuthority:
+        ConnectedRawHistoryCleanACKFinishAuthority?
     private var queuedConnectedRawHistoryCatchUpIntent:
         QueuedConnectedRawHistoryCatchUpIntent?
     private var connectedRawHistoryCatchUpEvaluationNotBefore: Date?
@@ -2171,12 +2175,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var historicalArchiveRows = 0
     private var historicalArchiveRowsSinceAck = 0
     private var historicalArchiveWriteFailures = 0
+    /// UI progress is deliberately not transport state. Keep exact row counts
+    /// private while the app is inactive and publish only a coarse foreground
+    /// projection; terminal recovery states retain their ordinary publication.
+    private var lastHistoricalRecoveryProgressPublishAt: Date?
+    private var lastHistoricalRecoveryProgressPublishedRecords: Int?
     private var lastHistoricalArchivePath = ""
     private var historyDrain = AtriaWhoop4HistoryDrainState()
     private var historicalDrainTelemetry = HistoricalDrainTelemetry()
     private var historicalDrainTelemetryTask: Task<Void, Never>?
     private let historySequenceContinuityStore = AtriaWhoop4HistorySequenceContinuityStore()
     private var historySequenceContinuityStrapIdentifier: String?
+    private var lastPersistedHistorySequenceContinuitySnapshot:
+        AtriaWhoop4HistoryDrainState.ContinuitySnapshot?
     private var pendingHistoryEndACK: (key: String, payload: [UInt8])?
     private var pendingHistoryACKAttempts = 0
     private var historyACKGate = AtriaWhoop4HistoryACKGate()
@@ -9618,6 +9629,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
     }
 
+    nonisolated static func shouldFinishConnectedMotionBankHistoryAtACKBoundary(
+        applicationIsActive: Bool,
+        exactMotionBankAuthorityActive: Bool
+    ) -> Bool {
+        !applicationIsActive && exactMotionBankAuthorityActive
+    }
+
     /// The same-link motion-bank lane is opportunistic. It never gets the
     /// generic 30-minute productive-history allowance: continuous standard HR
     /// is the primary payload and the bounded bank ticket can retry later.
@@ -9640,6 +9658,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return .finishForLiveHeartRateSilence
         }
         return .keepServing
+    }
+
+    private func recordConnectedMotionBankBackgroundPageCooldown(now: Date) {
+        let retryNotBefore = now.addingTimeInterval(
+            Self.workoutHistoricalMotionBankMinimumOffloadInterval
+        )
+        connectedMotionBankHistoryAdmissionRetryNotBefore = max(
+            connectedMotionBankHistoryAdmissionRetryNotBefore ?? .distantPast,
+            retryNotBefore
+        )
+        // Reuse the existing durable per-ticket cadence fence. The generation
+        // already spent its ledger attempt before transport began, and the
+        // active-ticket binding remains intact, so relaunch admission applies
+        // `historicalMotionBankOffloadCadenceEligible` to this exact retry.
+        UserDefaults.standard.set(
+            now.timeIntervalSince1970,
+            forKey: Self.workoutHistoricalMotionBankLastOffloadStartedAtKey
+        )
     }
 
     nonisolated static func terminalMaterializationReleaseDisposition(
@@ -13091,6 +13127,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             offlineHistoricalSyncGeneration &+= 1
             syncGeneration = offlineHistoricalSyncGeneration
             connectedRawHistoryCleanACKFinishAuthority = nil
+            connectedMotionBankHistoryCleanACKFinishAuthority = nil
             if let connectedMotionBankRequestAuthority {
                 activeConnectedMotionBankHistoryGenerationAuthority = .init(
                     request: connectedMotionBankRequestAuthority,
@@ -13239,13 +13276,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             at: attemptAt,
             generation: syncGeneration
         )
-        historicalRecoveryPresentation = .syncing(
-            savedRecords: Self.historicalRecoveryEpisodeSavedRecords(
-                totalRows: historicalArchiveRows,
-                episodeStartRows:
-                    offlineHistoricalRecoveryEpisodeStartRows
-            )
-        )
+        lastHistoricalRecoveryProgressPublishAt = nil
+        lastHistoricalRecoveryProgressPublishedRecords = nil
+        publishHistoricalRecoveryProgressIfNeeded(now: attemptAt)
         suspendWorkoutMotionLeaseForHistoricalSync()
         historyRealtimeStopRequestedGeneration = nil
         historyRealtimeStopCompletedGeneration = nil
@@ -14483,6 +14516,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 }
                 return authority
             }
+        let connectedMotionBankCleanACKFinishAuthority =
+            connectedMotionBankHistoryCleanACKFinishAuthority.flatMap {
+                authority -> ConnectedRawHistoryCleanACKFinishAuthority? in
+                guard compactMotionBankOnly,
+                      authority.generation == generation,
+                      let historicalIngressSpool,
+                      historicalIngressSpool.matches(
+                        authority.ingressBoundary
+                      ) else {
+                    return nil
+                }
+                return authority
+            }
+        let connectedCleanACKFinishAuthority =
+            connectedRawCleanACKFinishAuthority
+                ?? connectedMotionBankCleanACKFinishAuthority
         let connectedRawCatchUpDurableBoundary =
             boundedConnectedRawCatchUp
                 && !historicalAdmissionFailed
@@ -14503,12 +14552,33 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 && !historyDurableFlushInFlight
                 && pendingHistoryEndACK == nil
                 && !historyACKGate.requiresHistoryCallbackDeferral
+        let connectedMotionBankCleanACKDurableBoundary =
+            connectedMotionBankCleanACKFinishAuthority != nil
+                && !historicalAdmissionFailed
+                && historicalArchiveWriteFailures == 0
+                && historicalDrainTelemetry.persistErrors == 0
+                && historicalDrainTelemetry.flushErrors == 0
+                && historicalDrainTelemetry.ackSucceeded > 0
+        let connectedMotionBankIngressFullyAcknowledged =
+            connectedMotionBankCleanACKFinishAuthority?.ingressBoundary
+                .coversEntireJournal == true
+                && connectedMotionBankCleanACKDurableBoundary
+                && pendingHistoricalTransportEventCount == 0
+                && historyDrain.pendingPersistenceCount == 0
+                && !historicalAdmissionBatchInFlight
+                && !historicalAdmissionBatchScheduled
+                && !historyDurableFlushInFlight
+                && pendingHistoryEndACK == nil
+                && !historyACKGate.requiresHistoryCallbackDeferral
+        let connectedCleanACKDurableBoundary =
+            connectedRawCatchUpDurableBoundary
+                || connectedMotionBankCleanACKDurableBoundary
         let connectedRawConsumedPrefixRetirementSafe =
             Self.shouldRetireConnectedRawConsumedPrefix(
                 exactCleanACKFinishAuthority:
-                    connectedRawCleanACKFinishAuthority != nil,
+                    connectedCleanACKFinishAuthority != nil,
                 durableBoundaryReached:
-                    connectedRawCatchUpDurableBoundary,
+                    connectedCleanACKDurableBoundary,
                 acknowledgedPages:
                     historicalDrainTelemetry.ackSucceeded,
                 pendingPersistenceCount:
@@ -14534,6 +14604,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         activeConnectedMotionBankHistoryGenerationAuthority = nil
         activeConnectedRawHistoryCatchUpGenerationAuthority = nil
         connectedRawHistoryCleanACKFinishAuthority = nil
+        connectedMotionBankHistoryCleanACKFinishAuthority = nil
         offlineHistoricalSyncPreservesConnectedRealtimeOwner = false
         offlineHistoricalSyncExplicitPostWorkoutBankRequest = false
         clearGate4DailyBankRearmIntent(
@@ -14596,7 +14667,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let mayDiscardIngress = ingressQueuesAreDrained
             && ((!boundedConnectedRawCatchUp
                     && offlineHistoricalSyncReachedTerminal)
-                || connectedRawIngressFullyAcknowledged)
+                || connectedRawIngressFullyAcknowledged
+                || connectedMotionBankIngressFullyAcknowledged)
         if mayDiscardIngress {
             // A full terminal or an exact connected-raw ACK both prove that
             // the complete popped prefix crossed canonical durability. The
@@ -14605,10 +14677,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // seal/replay. Failed or mid-page exits still retain the journal.
             historicalIngressSpool?.remove()
         } else if connectedRawConsumedPrefixRetirementSafe,
-                  let connectedRawCleanACKFinishAuthority,
+                  let connectedCleanACKFinishAuthority,
                   let historicalIngressSpool,
                   historicalIngressSpool.matches(
-                    connectedRawCleanACKFinishAuthority.ingressBoundary
+                    connectedCleanACKFinishAuthority.ingressBoundary
                   ) {
             // Only the exact dequeue offset captured inside this generation's
             // synchronous target-ACK branch is retirement authority. A queued
@@ -14619,7 +14691,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             do {
                 let retiredBytes = try historicalIngressSpool
                     .retireConsumedPrefix(
-                        through: connectedRawCleanACKFinishAuthority
+                        through: connectedCleanACKFinishAuthority
                             .ingressBoundary
                     )
                 AtriaDebugLog(
@@ -27094,6 +27166,68 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         max(0, totalRows - episodeStartRows)
     }
 
+    nonisolated static let historicalRecoveryProgressMinimumInterval:
+        TimeInterval = 15
+    nonisolated static let historicalRecoveryProgressMinimumRecordDelta = 250
+
+    /// Historical row counts are presentation-only. A suspended app publishes
+    /// no progress object changes; an active app receives an initial value and
+    /// then a bounded time/record cadence. Terminal states use their separate
+    /// exact completion assignments.
+    nonisolated static func shouldPublishHistoricalRecoveryProgress(
+        applicationIsActive: Bool,
+        compactMotionBankOnly: Bool = false,
+        savedRecords: Int,
+        lastPublishedRecords: Int?,
+        lastPublishedAt: Date?,
+        now: Date,
+        minimumInterval: TimeInterval = historicalRecoveryProgressMinimumInterval,
+        minimumRecordDelta: Int = historicalRecoveryProgressMinimumRecordDelta
+    ) -> Bool {
+        guard applicationIsActive,
+              !compactMotionBankOnly,
+              savedRecords >= 0,
+              savedRecords != lastPublishedRecords else { return false }
+        guard let lastPublishedAt,
+              let lastPublishedRecords else { return true }
+        let elapsed = now.timeIntervalSince(lastPublishedAt)
+        return elapsed < 0
+            || elapsed >= max(0.1, minimumInterval)
+            || abs(savedRecords - lastPublishedRecords)
+                >= max(1, minimumRecordDelta)
+    }
+
+    private func publishHistoricalRecoveryProgressIfNeeded(now: Date = Date()) {
+        let savedRecords = Self.historicalRecoveryEpisodeSavedRecords(
+            totalRows: historicalArchiveRows,
+            episodeStartRows: offlineHistoricalRecoveryEpisodeStartRows
+        )
+        guard Self.shouldPublishHistoricalRecoveryProgress(
+            applicationIsActive:
+                UIApplication.shared.applicationState == .active,
+            compactMotionBankOnly:
+                activeConnectedMotionBankHistoryAuthority(
+                    generation: offlineHistoricalSyncGeneration
+                ) != nil,
+            savedRecords: savedRecords,
+            lastPublishedRecords:
+                lastHistoricalRecoveryProgressPublishedRecords,
+            lastPublishedAt: lastHistoricalRecoveryProgressPublishAt,
+            now: now
+        ) else { return }
+        lastHistoricalRecoveryProgressPublishAt = now
+        lastHistoricalRecoveryProgressPublishedRecords = savedRecords
+        historicalRecoveryPresentation = .syncing(savedRecords: savedRecords)
+    }
+
+    /// The inactive transport keeps exact progress private. After the returning
+    /// scene has rendered, publish the current count once even when no further
+    /// history row arrives to drive the normal foreground cadence.
+    func catchUpHistoricalRecoveryProgressForForeground(now: Date = Date()) {
+        guard offlineHistoricalSyncInProgress else { return }
+        publishHistoricalRecoveryProgressIfNeeded(now: now)
+    }
+
     /// Duty-cycle attribution must not misfile time the bank is genuinely
     /// armed: gate declines fire before the already-armed short-circuit, so
     /// an armed bank riding out a history sync would otherwise bill hours
@@ -28047,6 +28181,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             && attempts >= workoutHistoricalMotionBankMaximumOffloadAttempts
     }
 
+    nonisolated static func shouldEvaluateExhaustedMotionBankBeforeHotPathReturn(
+        bankArmed: Bool,
+        retryCooldownActive: Bool,
+        boundTicketAttempts: Int?,
+        historyOwnerActive: Bool
+    ) -> Bool {
+        guard bankArmed || retryCooldownActive,
+              let boundTicketAttempts else { return false }
+        return shouldGracefullyExhaustHistoricalMotionBankOffload(
+            attempts: boundTicketAttempts,
+            historyOwnerActive: historyOwnerActive
+        )
+    }
+
     /// Selects the ticket that a new history generation will own.
     ///
     /// A durable binding is the exact FIFO target until it is resolved.
@@ -28919,6 +29067,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         expectedLocalDependencyTicketID: String? = nil
     ) -> Bool {
         let now = Date()
+        let retryCooldownActive =
+            connectedMotionBankHistoryAdmissionRetryNotBefore.map {
+                now < $0
+            } == true
+        if workoutHistoricalMotionBankArmed || retryCooldownActive {
+            evaluateExhaustedMotionBankBeforeHotPathReturnIfNeeded(
+                reason: reason,
+                bankArmed: workoutHistoricalMotionBankArmed,
+                retryCooldownActive: retryCooldownActive
+            )
+            return false
+        }
         maintainPendingWorkoutMotionBankTickets(
             reason: reason,
             now: now,
@@ -29015,13 +29175,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 reason: "local_dependency_hold_ineligible"
             )
             return true
-        }
-        // An armed present-capture bank cannot be offloaded by definition. This
-        // hot-path short circuit also keeps every accepted 2A37 sample from
-        // reopening the durable ticket/ledger machinery while capture is
-        // already healthy.
-        if workoutHistoricalMotionBankArmed {
-            return false
         }
         let defaults = UserDefaults.standard
         let powerPressureActive = Self
@@ -29264,11 +29417,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 reason: "bounded_exhaustion_\(reason)",
                 allowRetry: false
             )
-            return false
-        }
-        if let retryNotBefore =
-            connectedMotionBankHistoryAdmissionRetryNotBefore,
-           now < retryNotBefore {
             return false
         }
         let lastOffloadStartedAtValue = defaults.double(
@@ -29952,6 +30100,45 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 }
             }
         }
+    }
+
+    /// A healthy present bank or a just-finished background page must not turn
+    /// every accepted HR into durable ticket maintenance. The exact bound-ticket
+    /// lookup uses the ledger's process cache, while an attempts=4 ticket still
+    /// reaches its one terminal compact-store evaluation before the hot return.
+    private func evaluateExhaustedMotionBankBeforeHotPathReturnIfNeeded(
+        reason: String,
+        bankArmed: Bool,
+        retryCooldownActive: Bool
+    ) {
+        guard !workoutHistoricalMotionBankOffloadEvaluationInFlight,
+              let strapIdentifier = peripheral?.identifier.uuidString else {
+            return
+        }
+        let defaults = UserDefaults.standard
+        let boundAttempts = defaults.string(
+            forKey: Self.workoutHistoricalMotionBankActiveTicketIDKey
+        ).flatMap { boundID in
+            AtriaWhoop4MotionBankCoverageLedger.pendingOffload(
+                id: boundID,
+                strapIdentifier: strapIdentifier
+            )
+        }.flatMap { ticket in
+            ticket.effectiveRecoveryMode == .directOffload
+                ? ticket.attempts
+                : nil
+        }
+        guard Self.shouldEvaluateExhaustedMotionBankBeforeHotPathReturn(
+            bankArmed: bankArmed,
+            retryCooldownActive: retryCooldownActive,
+            boundTicketAttempts: boundAttempts,
+            historyOwnerActive:
+                offlineHistoricalSyncInProgress || historyOnlyProbeMode
+        ) else { return }
+        evaluatePendingWorkoutHistoricalMotionBankOffload(
+            reason: "bounded_exhaustion_hot_gate_\(reason)",
+            allowRetry: false
+        )
     }
 
     nonisolated static func shouldRunWorkoutMotionBankCoverageEvaluation(
@@ -35944,20 +36131,35 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
+    /// Persist the small cross-generation discontinuity proof only when the
+    /// reducer snapshot actually changes. Contiguous frames pay one value
+    /// comparison and perform no store I/O. The rare permitted full-drain jump
+    /// must save before its page ACK, while failure/ACK/terminal edges below
+    /// provide explicit barriers and retry a previously failed save.
     private func persistHistorySequenceContinuityIfChanged(
         from prior: AtriaWhoop4HistoryDrainState.ContinuitySnapshot
     ) {
+        guard historyDrain.continuitySnapshot != prior else { return }
+        persistHistorySequenceContinuityAtBoundary()
+    }
+
+    private func persistHistorySequenceContinuityAtBoundary() {
         let current = historyDrain.continuitySnapshot
-        guard current != prior else { return }
+        guard current != lastPersistedHistorySequenceContinuitySnapshot else {
+            return
+        }
         do {
             if current.pending == nil, current.confirmed.isEmpty {
                 try historySequenceContinuityStore.clear()
-            } else if let strapIdentifier = historySequenceContinuityStrapIdentifier {
+            } else {
+                guard let strapIdentifier =
+                        historySequenceContinuityStrapIdentifier else { return }
                 try historySequenceContinuityStore.save(
                     current,
                     strapIdentifier: strapIdentifier
                 )
             }
+            lastPersistedHistorySequenceContinuitySnapshot = current
         } catch {
             // Durable replay evidence is an optimization only. Failure to save
             // never relaxes the live reducer's fail-closed sequence policy.
@@ -35971,11 +36173,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
               UUID(uuidString: strapIdentifier)?.uuidString == strapIdentifier else {
             historyDrain = AtriaWhoop4HistoryDrainState()
             historySequenceContinuityStrapIdentifier = nil
+            lastPersistedHistorySequenceContinuitySnapshot = nil
             return
         }
         guard strapIdentifier != historySequenceContinuityStrapIdentifier else { return }
         historyDrain = AtriaWhoop4HistoryDrainState()
         historySequenceContinuityStrapIdentifier = strapIdentifier
+        lastPersistedHistorySequenceContinuitySnapshot = nil
         guard let continuity = historySequenceContinuityStore.load(
             strapIdentifier: strapIdentifier
         ) else { return }
@@ -35983,6 +36187,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             try? historySequenceContinuityStore.clear()
             AtriaDebugLog("ATRIADBG historyDrain status=continuity_restore_rejected strap=%@ action=clear_fail_closed",
                           strapIdentifier)
+        } else {
+            lastPersistedHistorySequenceContinuitySnapshot = continuity
         }
     }
 
@@ -36041,14 +36247,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             if result.inserted {
                 historicalArchiveRows += 1
                 historicalArchiveRowsSinceAck += 1
-                historicalRecoveryPresentation = .syncing(
-                    savedRecords:
-                        Self.historicalRecoveryEpisodeSavedRecords(
-                            totalRows: historicalArchiveRows,
-                            episodeStartRows:
-                                offlineHistoricalRecoveryEpisodeStartRows
-                        )
-                )
+                publishHistoricalRecoveryProgressIfNeeded()
             }
             // Appending a row is not durability. Hold metric evidence behind
             // the reducer's fsync boundary so a crash or disconnect cannot
@@ -36511,6 +36710,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             case .finished(let generation):
                 guard offlineHistoricalSyncInProgress,
                       historyDrain.generation == generation else { continue }
+                // A terminal tail without HISTORY_END has no ACK callback. Its
+                // successful durable flush is the equivalent reducer boundary.
+                persistHistorySequenceContinuityAtBoundary()
                 offlineHistoricalSyncReachedTerminal = historyDrain.terminalWasReceived
                 let fullDrainTerminalReady = finalizeFullDrainTerminalAuthority(
                     generation: generation
@@ -36549,6 +36751,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             case .failed(let generation, let failure):
                 guard offlineHistoricalSyncInProgress,
                       historyDrain.generation == generation else { continue }
+                // Preserve a newly observed forward-discontinuity candidate
+                // immediately. Without this rare failure-edge write, repeated
+                // process termination could make every replay look like its
+                // first observation and fail forever.
+                persistHistorySequenceContinuityAtBoundary()
                 let needsSequenceConfirmationRetry: Bool = {
                     guard case .protocolViolation(let detail) = failure else {
                         return false
@@ -39468,13 +39675,45 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         fullDrainACKPermits.removeValue(forKey: pendingHistoryEndACK.key)
         fullDrainHistoryEndPayloads.removeValue(forKey: pendingHistoryEndACK.key)
         self.pendingHistoryEndACK = nil
-        processHistoricalDrainEffects(
-            historyDrain.ackCompleted(
-                generation: ackIdentity.generation,
-                boundaryID: ackIdentity.boundaryID,
-                succeeded: true
-            )
+        let postACKEffects = historyDrain.ackCompleted(
+            generation: ackIdentity.generation,
+            boundaryID: ackIdentity.boundaryID,
+            succeeded: true
         )
+        // The matching canonical flush and GATT ACK are now both complete.
+        // Persist the reducer's post-ACK discontinuity snapshot once before any
+        // local finish or 0x16 continuation can advance to another page.
+        persistHistorySequenceContinuityAtBoundary()
+        processHistoricalDrainEffects(postACKEffects)
+        // A connected motion-bank serve is optional maintenance. On an inactive
+        // app, one canonical page is the complete local slice: capture the exact
+        // consumed prefix and finish before the next-page command is armed.
+        if offlineHistoricalSyncInProgress,
+           activeConnectedMotionBankHistoryAuthority(
+                generation: ackIdentity.generation
+           ) != nil,
+           Self.shouldFinishConnectedMotionBankHistoryAtACKBoundary(
+                applicationIsActive:
+                    UIApplication.shared.applicationState == .active,
+                exactMotionBankAuthorityActive: true
+           ) {
+            recordConnectedMotionBankBackgroundPageCooldown(now: Date())
+            if let historicalIngressSpool {
+                connectedMotionBankHistoryCleanACKFinishAuthority = .init(
+                    generation: ackIdentity.generation,
+                    boundaryID: ackIdentity.boundaryID,
+                    ingressBoundary: historicalIngressSpool
+                        .captureDurablyAcknowledgedPrefixBoundary()
+                )
+            }
+            if finishConnectedHistoryFailureWithoutDisconnectIfNeeded(
+                generation: ackIdentity.generation,
+                reason: "exact_connected_motion_bank_background_ack_boundary"
+            ) {
+                return
+            }
+            connectedMotionBankHistoryCleanACKFinishAuthority = nil
+        }
         // End an exact raw slice only in this synchronous clean-boundary
         // window, before 0x16 can request another page. The thermal-qualified
         // ACK target amortizes discovery/range setup while keeping the burst
