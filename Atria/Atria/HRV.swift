@@ -205,16 +205,18 @@ struct HRVSnapshot: Codable, Equatable, Sendable {
 /// that window-selection physiology; it keeps its own recovery weights and its
 /// own readiness/quality gates and reproduces none of WHOOP's undisclosed math.
 ///
-/// Motion-validated staging is often absent (HR-only nights are common), so
-/// this deliberately FALLS BACK to Atria's existing best-quality rule whenever
-/// no deep segment precedes the waking event (or none of the deep window is
-/// covered by a window that clears the readiness gates).
+/// Motion- and integrity-validated staging is often absent (HR-only nights are
+/// common), so callers must provide that authority explicitly. This
+/// deliberately FALLS BACK to Atria's existing best-quality rule whenever the
+/// authority is unavailable, no deep segment precedes the waking event, or no
+/// fully-contained deep window clears the saved-window readiness gates.
 enum AtriaRecoveryHRVWindowSelection {
     /// One candidate ~300s RR window plus the readiness evidence already
     /// computed for it. `snapshot.isReady` carries the window ≥300s / RR gap
-    /// ≤3s / confidence ≥0.75 (and beat/successive-difference) gates unchanged,
-    /// so this selector never relaxes qualification — it only chooses which
-    /// qualified window is preferred.
+    /// ≤3s / confidence ≥0.75 (and successive-difference) gates. Saved RR
+    /// reference windows additionally require at least 240 kept beats, so this
+    /// selector preserves that gate rather than treating the snapshot's lower
+    /// cadence-scaled beat minimum as saved-window authority.
     struct Candidate: Equatable {
         let start: Date
         let end: Date
@@ -226,7 +228,7 @@ enum AtriaRecoveryHRVWindowSelection {
             self.snapshot = snapshot
         }
 
-        var isReady: Bool { snapshot.isReady }
+        var isReady: Bool { snapshot.isReady && snapshot.kept >= 240 }
     }
 
     /// True when `lhs` is the better window under Atria's existing quality rule
@@ -253,39 +255,40 @@ enum AtriaRecoveryHRVWindowSelection {
             .max { $0.end < $1.end }
     }
 
-    /// Seconds of overlap between a candidate window and a stage segment.
-    static func overlapSeconds(_ candidate: Candidate,
-                               _ segment: SleepStageSegment) -> TimeInterval {
-        let lower = max(candidate.start, segment.start)
-        let upper = min(candidate.end, segment.end)
-        return max(0, upper.timeIntervalSince(lower))
+    /// A deep-stage preference is authoritative only when the complete
+    /// candidate window lies inside the validated stage segment. A one-second
+    /// or other partial intersection is insufficient evidence and fails closed
+    /// to the existing quality rule.
+    static func isFullyContained(_ candidate: Candidate,
+                                 in segment: SleepStageSegment) -> Bool {
+        candidate.end > candidate.start
+            && segment.end > segment.start
+            && candidate.start >= segment.start
+            && candidate.end <= segment.end
     }
 
     /// Selects the recovery HRV window.
     ///
-    /// When a deep segment precedes the waking event AND at least one READY
-    /// candidate overlaps it, the ready candidate with the greatest overlap
-    /// (quality as tiebreak) is chosen — HRV from the last SWS window before
-    /// waking. Otherwise selection falls back to the best candidate under
-    /// `isHigherQuality`, which is exactly the current rule. Readiness/quality
-    /// gates are never relaxed; the deep preference only reorders qualified
-    /// windows.
+    /// When motion/integrity validation authorizes the supplied stages, a deep
+    /// segment precedes the waking event, AND at least one READY candidate is
+    /// fully contained by it, the highest-quality contained candidate is chosen
+    /// — HRV from the last SWS window before waking. Otherwise selection falls
+    /// back to the best candidate under `isHigherQuality`, which is exactly the
+    /// current rule. Readiness/quality gates are never relaxed; the deep
+    /// preference only reorders qualified windows.
     static func selectRecoveryWindow(candidates: [Candidate],
                                      stageSegments: [SleepStageSegment],
+                                     stageAuthorityIsMotionAndIntegrityValidated: Bool,
                                      wakeEvent: Date) -> Candidate? {
         guard let fallback = best(among: candidates) else { return nil }
-        guard let deep = lastDeepSegmentBeforeWaking(stageSegments: stageSegments,
-                                                     wakeEvent: wakeEvent) else {
+        guard stageAuthorityIsMotionAndIntegrityValidated,
+              let deep = lastDeepSegmentBeforeWaking(stageSegments: stageSegments,
+                                                      wakeEvent: wakeEvent) else {
             return fallback
         }
-        let overlapping = candidates.filter { $0.isReady && overlapSeconds($0, deep) > 0 }
-        guard !overlapping.isEmpty else { return fallback }
-        return overlapping.reduce(overlapping[0]) { current, candidate in
-            let candidateOverlap = overlapSeconds(candidate, deep)
-            let currentOverlap = overlapSeconds(current, deep)
-            if candidateOverlap != currentOverlap {
-                return candidateOverlap > currentOverlap ? candidate : current
-            }
+        let contained = candidates.filter { $0.isReady && isFullyContained($0, in: deep) }
+        guard !contained.isEmpty else { return fallback }
+        return contained.reduce(contained[0]) { current, candidate in
             return isHigherQuality(candidate, than: current) ? candidate : current
         }
     }

@@ -170,6 +170,21 @@ final class AtriaStrainLoadModelTests: XCTestCase {
         XCTAssertEqual(Model.displayScore(fromLoad: 65.6037), 7.44, accuracy: 0.02)
     }
 
+    func testDisplayCalibrationUsesPersistedVersionAuthorityWithoutMovingScores() {
+        let representativeLoad = 65.6037
+        let previousInlineScore = 21.0 * (1 - exp(-representativeLoad / 150.0))
+
+        XCTAssertEqual(AtriaAnalytics.Strain.displayCalibrationVersion, 3,
+                       "the shipped persisted calibration remains version 3")
+        XCTAssertEqual(Model.displayCalibration.version,
+                       AtriaAnalytics.Strain.displayCalibrationVersion)
+        XCTAssertEqual(Model.displayCalibration.maximumScore, 21.0)
+        XCTAssertEqual(Model.displayCalibration.loadScale, 150.0)
+        XCTAssertEqual(Model.displayScore(fromLoad: representativeLoad),
+                       previousInlineScore,
+                       accuracy: 1e-12)
+    }
+
     func testCleanWorkoutRetainsExistingBanisterLoadAndDisplayCalibration() {
         let duration = 10.0
         let bpm = 150.0

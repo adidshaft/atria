@@ -116,8 +116,9 @@ enum AtriaStrainLoadModel {
     /// WHOOP's 0...21 Strain equation — that formula and its coefficients are
     /// undisclosed/trade-secret. The two constants below are the SINGLE re-fit
     /// knob for this curve: when Atria has a corpus of real sessions to
-    /// calibrate against, only these values (and `version`) change, and no
-    /// historical score moves until they are deliberately re-fit.
+    /// calibrate against, only these values change and the persisted
+    /// `AtriaAnalytics.Strain.displayCalibrationVersion` authority is bumped.
+    /// No historical score moves until that deliberate re-fit and migration.
     ///
     /// VALIDATION-GATED: the numeric values are engineering calibration, not a
     /// clinically validated intensity scale.
@@ -128,9 +129,10 @@ enum AtriaStrainLoadModel {
         /// Load constant of the saturating exponential. Larger values approach
         /// the ceiling more slowly, spreading typical sessions across the scale.
         let loadScale: Double
-        /// Monotonic version tag so any later re-fit of the curve is explicit
-        /// and auditable rather than a silent constant change.
-        let version: Int
+        /// The persisted-score migration authority is the one version source
+        /// for this curve. Keeping this computed avoids a second literal that
+        /// can drift from saved workout records.
+        var version: Int { AtriaAnalytics.Strain.displayCalibrationVersion }
 
         /// The single display-mapping authority. Kept identical in form to the
         /// prior inline formula so a version bump is the only thing that can
@@ -147,8 +149,7 @@ enum AtriaStrainLoadModel {
     /// byte-identical to the previous inline formula and every pinned strain
     /// score is unchanged.
     static let displayCalibration = DisplayCalibration(maximumScore: 21.0,
-                                                       loadScale: 150.0,
-                                                       version: 1)
+                                                       loadScale: 150.0)
 
     /// O(1)-memory streaming integration. Batch calculation below is defined
     /// in terms of this same accumulator, so replay and live ingestion cannot
