@@ -264,7 +264,7 @@ struct AtriaPhysiologicalCycle: Equatable {
     /// Sleep history still retains the record; this filter governs day
     /// ownership only. A sleep whose wake reaches or follows the boundary is
     /// accepted because it starts a later, non-overlapping physiological day.
-    private static func boundaryEligibleMainSleeps(
+    static func boundaryEligibleMainSleeps(
         now: Date,
         confirmedSleeps: [UserConfirmedSleep],
         calendar: Calendar
@@ -437,6 +437,361 @@ struct AtriaPhysiologicalCycle: Equatable {
             ? (intervals[middle - 1] + intervals[middle]) / 2
             : intervals[middle]
         return min(max(median, minimumLearnedInterval), maximumLearnedInterval)
+    }
+}
+
+/// Resolves a completed Activity date to the physiological interval that owns
+/// it. Historical Activity used to fall back to a midnight-to-midnight window
+/// unconditionally, which put the sleep beginning late on one date beside the
+/// sleep that ended that morning. A historical physiological day instead starts
+/// at a confirmed main-sleep wake and ends at the next wake. When no following
+/// sleep arrives, it uses the same deterministic no-sleep rollover as the live
+/// cycle. A civil interval remains an explicit, inspectable fallback when there
+/// is no trustworthy boundary for the requested date.
+struct AtriaHistoricalPhysiologicalCycle: Equatable {
+    enum StartBoundary: Equatable {
+        case mainSleep(id: String)
+        case noSleepFallback(anchorSleepID: String)
+        case civilDayFallback
+    }
+
+    enum EndBoundary: Equatable {
+        case mainSleep(id: String)
+        case noSleepFallback(anchorSleepID: String)
+        case civilDayFallback
+    }
+
+    let interval: DateInterval
+    let displayDay: Date
+    let startBoundary: StartBoundary
+    let endBoundary: EndBoundary
+
+    var usesCivilFallback: Bool {
+        startBoundary == .civilDayFallback
+    }
+
+    var followingRecoverySleepID: String? {
+        guard case .mainSleep(let id) = endBoundary else { return nil }
+        return id
+    }
+
+    static func resolve(
+        displayDay: Date,
+        sleepHistory: SleepHistorySnapshot,
+        calendar: Calendar = .current
+    ) -> Self {
+        resolve(
+            displayDay: displayDay,
+            confirmedSleeps: compactBoundarySleeps(from: sleepHistory),
+            calendar: calendar
+        )
+    }
+
+    static func resolve(
+        displayDay: Date,
+        confirmedSleeps: [UserConfirmedSleep],
+        calendar: Calendar = .current
+    ) -> Self {
+        let dayStart = calendar.startOfDay(for: displayDay)
+        guard let civilEnd = calendar.date(byAdding: .day, value: 1, to: dayStart),
+              civilEnd > dayStart else {
+            return Self(interval: DateInterval(start: dayStart, end: dayStart),
+                        displayDay: dayStart,
+                        startBoundary: .civilDayFallback,
+                        endBoundary: .civilDayFallback)
+        }
+
+        // A physiological rollover is always due by the next event-local day.
+        // Looking three output-calendar days ahead covers the next main sleep
+        // through the full legal time-zone offset range without treating later
+        // records as known at the historical boundary.
+        let horizon = calendar.date(byAdding: .day, value: 3, to: civilEnd) ?? civilEnd
+        let eligible = AtriaPhysiologicalCycle.boundaryEligibleMainSleeps(
+            now: horizon,
+            confirmedSleeps: confirmedSleeps,
+            calendar: calendar
+        )
+
+        if let anchor = eligible.last(where: {
+            calendar.isDate(wakeDisplayDay(for: $0, calendar: calendar),
+                            inSameDayAs: dayStart)
+        }) {
+            return cycle(startingAt: anchor.end,
+                         displayDay: dayStart,
+                         startBoundary: .mainSleep(id: anchor.id),
+                         anchor: anchor,
+                         eligibleSleeps: eligible,
+                         calendar: calendar)
+        }
+
+        if let fallback = noSleepFallback(
+            for: dayStart,
+            eligibleSleeps: eligible,
+            calendar: calendar
+        ) {
+            return cycle(startingAt: fallback.start,
+                         displayDay: dayStart,
+                         startBoundary: .noSleepFallback(anchorSleepID: fallback.anchor.id),
+                         anchor: fallback.anchor,
+                         eligibleSleeps: eligible,
+                         calendar: calendar)
+        }
+
+        return Self(interval: DateInterval(start: dayStart, end: civilEnd),
+                    displayDay: dayStart,
+                    startBoundary: .civilDayFallback,
+                    endBoundary: .civilDayFallback)
+    }
+
+    /// The confirmed sleep that truthfully closes the physiological cycle
+    /// containing this workout. If a deterministic no-sleep rollover happens
+    /// first, or the workout overlaps the purported recovery sleep, no recovery
+    /// score is attributed to the workout.
+    static func followingRecoverySleep(
+        for workout: UserConfirmedWorkout,
+        confirmedSleeps: [UserConfirmedSleep],
+        calendar: Calendar = .current
+    ) -> UserConfirmedSleep? {
+        guard workout.end > workout.start else { return nil }
+        let horizon = calendar.date(byAdding: .day, value: 3, to: workout.end)
+            ?? workout.end.addingTimeInterval(3 * 24 * 60 * 60)
+        let eligible = AtriaPhysiologicalCycle.boundaryEligibleMainSleeps(
+            now: horizon,
+            confirmedSleeps: confirmedSleeps,
+            calendar: calendar
+        )
+        let cycle = AtriaPhysiologicalCycle.current(
+            now: workout.start,
+            confirmedSleeps: eligible,
+            calendar: calendar
+        )
+        guard cycle.boundaryKind != .initialFallback,
+              let anchorID = cycle.anchorSleepID,
+              let anchor = eligible.first(where: { $0.id == anchorID }),
+              let fallback = nextFallback(
+                after: cycle.start,
+                boundaryKind: cycle.boundaryKind,
+                anchor: anchor,
+                calendar: calendar
+              ) else { return nil }
+        return eligible.first {
+            $0.end > workout.end
+                && $0.start >= workout.end
+                && $0.end <= fallback
+        }
+    }
+
+    static func followingRecoverySleep(
+        for workout: UserConfirmedWorkout,
+        sleepHistory: SleepHistorySnapshot,
+        calendar: Calendar = .current
+    ) -> UserConfirmedSleep? {
+        followingRecoverySleep(
+            for: workout,
+            confirmedSleeps: compactBoundarySleeps(from: sleepHistory),
+            calendar: calendar
+        )
+    }
+
+    static func recoveryAttributionIsPending(
+        for workout: UserConfirmedWorkout,
+        confirmedSleeps: [UserConfirmedSleep],
+        now: Date,
+        calendar: Calendar = .current
+    ) -> Bool {
+        guard now >= workout.end else { return false }
+        let workoutCycle = AtriaPhysiologicalCycle.current(
+            now: workout.start,
+            confirmedSleeps: confirmedSleeps,
+            calendar: calendar
+        )
+        guard workoutCycle.boundaryKind != .initialFallback else { return false }
+        let currentCycle = AtriaPhysiologicalCycle.current(
+            now: now,
+            confirmedSleeps: confirmedSleeps,
+            calendar: calendar
+        )
+        return currentCycle.start == workoutCycle.start
+            && currentCycle.boundaryKind == workoutCycle.boundaryKind
+    }
+
+    static func recoveryAttributionIsPending(
+        for workout: UserConfirmedWorkout,
+        sleepHistory: SleepHistorySnapshot,
+        now: Date,
+        calendar: Calendar = .current
+    ) -> Bool {
+        recoveryAttributionIsPending(
+            for: workout,
+            confirmedSleeps: compactBoundarySleeps(from: sleepHistory),
+            now: now,
+            calendar: calendar
+        )
+    }
+
+    private static func cycle(
+        startingAt start: Date,
+        displayDay: Date,
+        startBoundary: StartBoundary,
+        anchor: UserConfirmedSleep,
+        eligibleSleeps: [UserConfirmedSleep],
+        calendar: Calendar
+    ) -> Self {
+        let boundaryKind: AtriaPhysiologicalCycle.BoundaryKind = switch startBoundary {
+        case .mainSleep: .mainSleep
+        case .noSleepFallback: .noSleepFallback
+        case .civilDayFallback: .initialFallback
+        }
+        let fallback = nextFallback(after: start,
+                                    boundaryKind: boundaryKind,
+                                    anchor: anchor,
+                                    calendar: calendar)
+        let nextSleep = eligibleSleeps.first { $0.end > start }
+
+        let end: Date
+        let endBoundary: EndBoundary
+        switch (nextSleep, fallback) {
+        case let (sleep?, fallback?) where sleep.end <= fallback:
+            end = sleep.end
+            endBoundary = .mainSleep(id: sleep.id)
+        case let (_, fallback?):
+            end = fallback
+            endBoundary = .noSleepFallback(anchorSleepID: anchor.id)
+        case let (sleep?, nil):
+            end = sleep.end
+            endBoundary = .mainSleep(id: sleep.id)
+        case (nil, nil):
+            let civilEnd = calendar.date(byAdding: .day, value: 1, to: displayDay)
+                ?? displayDay
+            end = max(start, civilEnd)
+            endBoundary = .civilDayFallback
+        }
+        return Self(interval: DateInterval(start: start, end: max(start, end)),
+                    displayDay: displayDay,
+                    startBoundary: startBoundary,
+                    endBoundary: endBoundary)
+    }
+
+    private static func noSleepFallback(
+        for displayDay: Date,
+        eligibleSleeps: [UserConfirmedSleep],
+        calendar: Calendar
+    ) -> (start: Date, anchor: UserConfirmedSleep)? {
+        var selected: (start: Date, anchor: UserConfirmedSleep)?
+        for (index, anchor) in eligibleSleeps.enumerated() {
+            guard let first = AtriaPhysiologicalCycle.firstNoSleepFallback(
+                after: anchor.end,
+                eventTimeZoneIdentifier: anchor.eventTimeZoneIdentifier,
+                calendar: calendar
+            ) else { continue }
+            let firstDay = EventCivilTime.day(
+                containing: first,
+                eventTimeZoneIdentifier: anchor.eventTimeZoneIdentifier,
+                outputCalendar: calendar
+            )
+            let delta = calendar.dateComponents([.day],
+                                                from: firstDay,
+                                                to: displayDay).day ?? 0
+            guard delta >= 0 else { continue }
+            let eventCalendar = EventCivilTime.eventCalendar(
+                timeZoneIdentifier: anchor.eventTimeZoneIdentifier,
+                fallback: calendar
+            )
+            guard let candidate = eventCalendar.date(byAdding: .day,
+                                                      value: delta,
+                                                      to: first),
+                  calendar.isDate(
+                    EventCivilTime.day(
+                        containing: candidate,
+                        eventTimeZoneIdentifier: anchor.eventTimeZoneIdentifier,
+                        outputCalendar: calendar
+                    ),
+                    inSameDayAs: displayDay
+                  ) else { continue }
+            let nextMainWake = eligibleSleeps.indices.contains(index + 1)
+                ? eligibleSleeps[index + 1].end
+                : nil
+            if let nextMainWake, candidate >= nextMainWake { continue }
+            if let selected, candidate <= selected.start { continue }
+            selected = (candidate, anchor)
+        }
+        return selected
+    }
+
+    private static func nextFallback(
+        after start: Date,
+        boundaryKind: AtriaPhysiologicalCycle.BoundaryKind,
+        anchor: UserConfirmedSleep,
+        calendar: Calendar
+    ) -> Date? {
+        switch boundaryKind {
+        case .mainSleep:
+            return AtriaPhysiologicalCycle.firstNoSleepFallback(
+                after: start,
+                eventTimeZoneIdentifier: anchor.eventTimeZoneIdentifier,
+                calendar: calendar
+            )
+        case .noSleepFallback:
+            let eventCalendar = EventCivilTime.eventCalendar(
+                timeZoneIdentifier: anchor.eventTimeZoneIdentifier,
+                fallback: calendar
+            )
+            return eventCalendar.date(byAdding: .day, value: 1, to: start)
+        case .initialFallback:
+            return nil
+        }
+    }
+
+    private static func wakeDisplayDay(
+        for sleep: UserConfirmedSleep,
+        calendar: Calendar
+    ) -> Date {
+        EventCivilTime.day(containing: sleep.end,
+                           eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                           outputCalendar: calendar)
+    }
+
+    private static func compactBoundarySleeps(
+        from sleepHistory: SleepHistorySnapshot
+    ) -> [UserConfirmedSleep] {
+        // `nights` contains the canonical main per wake day and has already
+        // combined resumed segments. Additional records are still needed here:
+        // an explicit user adjustment must retain the exact same boundary
+        // authority as the live cycle. `canonicalMainSleeps` filters resumed
+        // rows and the ID map removes the nap duplication in compact fixtures.
+        let nightsByID = (sleepHistory.nights
+            + sleepHistory.additionalMainNights
+            + sleepHistory.napNights).reduce(into: [String: SleepHistorySnapshot.Night]()) {
+                $0[$1.id] = $1
+            }
+        return nightsByID.values.compactMap { night in
+            guard night.confirmed,
+                  let start = night.start,
+                  let end = night.end,
+                  end > start else { return nil }
+            return UserConfirmedSleep(id: night.id,
+                                      createdAt: night.savedAt ?? end,
+                                      start: start,
+                                      end: end,
+                                      source: night.source,
+                                      confidence: night.confidence,
+                                      sessions: 0,
+                                      samples: 0,
+                                      avgHR: night.restingHR ?? 0,
+                                      peakHR: night.restingHR ?? 0,
+                                      restingHR: night.restingHR ?? 0,
+                                      hrv: night.hrv,
+                                      hrvWindowCount: night.hrvWindowCount,
+                                      respiratoryRate: night.respiratoryRate,
+                                      duration: night.observedDuration,
+                                      span: end.timeIntervalSince(start),
+                                      reason: "compact historical physiological boundary",
+                                      motionSource: "sleep_history_snapshot",
+                                      motionValidated: false,
+                                      stageSegments: night.stageSegments,
+                                      eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
+                                      sleepNeedSeconds: night.sleepNeedSeconds)
+        }
     }
 }
 

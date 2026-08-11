@@ -960,9 +960,10 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
 
         XCTAssertEqual(canonical.map(\.id), [saved.id],
                        "A detector replay must not draw a second icon for a saved sleep")
-        XCTAssertEqual(firstDayRows.map(\.id), [saved.id])
+        XCTAssertTrue(firstDayRows.isEmpty,
+                      "A confirmed main sleep belongs to its wake day, not its bedtime day")
         XCTAssertEqual(secondDayRows.map(\.id), [saved.id],
-                       "A cross-midnight timeline marker must have an editable row on both days")
+                       "The confirmed sleep remains editable on its wake day")
     }
 
     func testSleepProjectionKeepsDistinctPendingNapAndLegacyDayOnlyRecord() throws {
@@ -1677,8 +1678,11 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
     func testRecoveryEffectComparesNextMorningWithPrecedingPersonalBaseline() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let workoutDay = Date(timeIntervalSince1970: 1_800_000_000)
-        let recoveryDay = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: workoutDay))
+        let wakeDay = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026,
+                                                                       month: 8,
+                                                                       day: 2)))
+        let workoutDay = wakeDay.addingTimeInterval(18 * 3_600)
+        let recoveryDay = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: wakeDay))
         let workout = UserConfirmedWorkout(id: "walk",
                                            createdAt: workoutDay,
                                            start: workoutDay,
@@ -1697,6 +1701,19 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                                            observedDuration: 1_800,
                                            reason: "test",
                                            zoneSeconds: [:])
+        let priorWake = activitySleep(id: "prior-wake",
+                                      day: wakeDay,
+                                      start: wakeDay.addingTimeInterval(-1 * 3_600),
+                                      end: wakeDay.addingTimeInterval(7 * 3_600),
+                                      confirmed: true)
+        let followingSleep = activitySleep(id: "following-sleep",
+                                           day: recoveryDay,
+                                           start: recoveryDay.addingTimeInterval(2.5 * 3_600),
+                                           end: recoveryDay.addingTimeInterval(7 * 3_600),
+                                           confirmed: true)
+        let sleepHistory = SleepHistorySnapshot(nights: [priorWake, followingSleep],
+                                                confirmedCount: 2,
+                                                candidateCount: 0)
         let prior = [60, 70, 80].enumerated().map { index, recovery in
             DailyRollupStoreEntry(day: calendar.date(byAdding: .day,
                                                      value: -(index + 1),
@@ -1708,6 +1725,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
 
         let effect = AtriaActivityRecoveryEffect.make(workout: workout,
                                                       rollups: [observed] + prior,
+                                                      sleepHistory: sleepHistory,
                                                       calendar: calendar)
 
         XCTAssertEqual(effect.status, .observed(delta: 10, recovery: 80, baseline: 70, samples: 3))
