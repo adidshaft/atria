@@ -671,10 +671,59 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
             range: cadenceStart.upperBound..<source.endIndex
         ))
         let cadence = String(source[cadenceStart.lowerBound..<cadenceEnd.lowerBound])
+        let mergedInputsEnd = try XCTUnwrap(source.range(
+            of: "])\n        .throttle(for: .milliseconds(400)",
+            range: cadenceStart.upperBound..<cadenceEnd.lowerBound
+        ))
+        let mergedInputs = String(
+            source[cadenceStart.lowerBound..<mergedInputsEnd.lowerBound]
+        )
         XCTAssertTrue(cadence.contains("ble.$sessionSampleCount"))
         XCTAssertTrue(cadence.contains("self?.publishCoreLive()"))
+        XCTAssertFalse(mergedInputs.contains("ble.$historicalRecoveryPresentation"),
+                       "history progress must not join unrelated BLE CoreLive churn")
+        XCTAssertTrue(cadence.contains(
+            "ble.$historicalRecoveryPresentation\n            .removeDuplicates()\n            .dropFirst()"
+        ))
+        XCTAssertTrue(cadence.contains(
+            "guard UIApplication.shared.applicationState == .active"
+        ), "inactive terminal/progress state waits for one foreground catch-up")
+        XCTAssertTrue(cadence.contains("Task { @MainActor [weak self] in"),
+                      "the CoreLive read must occur after @Published willSet completes")
         XCTAssertFalse(cadence.contains("requestSavedAggregateRefresh"))
         XCTAssertFalse(cadence.contains("refreshSavedAggregate"))
+
+        let foregroundStart = try XCTUnwrap(source.range(
+            of: "private func handleHomeScenePhaseChange(_ phase: ScenePhase)"
+        ))
+        let foregroundEnd = try XCTUnwrap(source.range(
+            of: "private func flushWorkoutRouteAtBackgroundBoundary()",
+            range: foregroundStart.upperBound..<source.endIndex
+        ))
+        let foreground = String(
+            source[foregroundStart.lowerBound..<foregroundEnd.lowerBound]
+        )
+        XCTAssertTrue(foreground.contains(
+            "model.refreshHistoricalRecoveryPresentationForForeground()"
+        ))
+        XCTAssertFalse(foreground.contains("model.forceRefresh()"),
+                       "the app-switch edge must not request archive/diagnostic work")
+
+        let catchUpStart = try XCTUnwrap(source.range(
+            of: "func refreshHistoricalRecoveryPresentationForForeground()"
+        ))
+        let catchUpEnd = try XCTUnwrap(source.range(
+            of: "func refreshDailyGuidanceClock()",
+            range: catchUpStart.upperBound..<source.endIndex
+        ))
+        let catchUp = String(source[catchUpStart.lowerBound..<catchUpEnd.lowerBound])
+        let managerCatchUp = try XCTUnwrap(catchUp.range(
+            of: "ble.catchUpHistoricalRecoveryProgressForForeground()"
+        ))
+        let corePublish = try XCTUnwrap(catchUp.range(of: "publishCoreLive()"))
+        XCTAssertLessThan(managerCatchUp.lowerBound, corePublish.lowerBound,
+                          "private background rows must publish before CoreLive reads them")
+        XCTAssertFalse(catchUp.contains("requestSavedAggregateRefresh"))
 
         let publishStart = try XCTUnwrap(source.range(
             of: "private func publishCoreLive()"
