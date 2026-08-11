@@ -44,6 +44,12 @@ struct AtriaActivityDisplayWindow: Equatable {
     let interval: DateInterval
     let labelDay: Date
     let isCurrentPhysiologicalDay: Bool
+    /// Historical windows expose whether they came from measured wake
+    /// boundaries, a deterministic no-sleep rollover, or the civil fallback.
+    /// Current windows delegate directly to `AtriaPhysiologicalDay` and leave
+    /// this nil.
+    let historicalStartBoundary: AtriaHistoricalPhysiologicalCycle.StartBoundary?
+    let historicalEndBoundary: AtriaHistoricalPhysiologicalCycle.EndBoundary?
 
     static func current(now: Date,
                         sleepHistory: SleepHistorySnapshot,
@@ -58,20 +64,36 @@ struct AtriaActivityDisplayWindow: Equatable {
         let stableEnd = max(day.start, minuteNow)
         return Self(interval: DateInterval(start: day.start, end: stableEnd),
                     labelDay: day.displayDay,
-                    isCurrentPhysiologicalDay: true)
+                    isCurrentPhysiologicalDay: true,
+                    historicalStartBoundary: nil,
+                    historicalEndBoundary: nil)
     }
 
+    static func historical(day: Date,
+                           sleepHistory: SleepHistorySnapshot,
+                           calendar: Calendar = .current) -> Self {
+        let cycle = AtriaHistoricalPhysiologicalCycle.resolve(
+            displayDay: day,
+            sleepHistory: sleepHistory,
+            calendar: calendar
+        )
+        return Self(interval: cycle.interval,
+                    labelDay: cycle.displayDay,
+                    isCurrentPhysiologicalDay: false,
+                    historicalStartBoundary: cycle.startBoundary,
+                    historicalEndBoundary: cycle.endBoundary)
+    }
+
+    /// Explicit no-evidence overload retained for previews and narrow callers.
+    /// Its provenance is deliberately civil rather than silently implying a
+    /// wake boundary.
     static func historical(day: Date, calendar: Calendar = .current) -> Self {
-        let start = calendar.startOfDay(for: day)
-        let end = calendar.date(byAdding: .day, value: 1, to: start) ?? start
-        return Self(interval: DateInterval(start: start, end: end),
-                    labelDay: start,
-                    isCurrentPhysiologicalDay: false)
+        historical(day: day, sleepHistory: .empty, calendar: calendar)
     }
 }
 
-/// Pure day-navigation policy for Activity's mixed window model: historical
-/// selections are civil days, while Today is the current physiological day.
+/// Pure day-navigation policy for Activity's physiological window model. Date
+/// labels remain civil and stable, while their content resolves wake-to-wake.
 /// Comparing against the selected historical window itself makes every next-day
 /// tap look like the Today boundary, so the real current display day must be an
 /// independent input.
@@ -443,8 +465,8 @@ enum AtriaActivitySelectedDayWorkouts {
 
 /// One canonical sleep/nap projection for the Activity row list and timeline.
 /// A pending detector window that substantially overlaps an already-saved
-/// night is not a second activity, and a cross-midnight sleep must remain
-/// selectable on every day where its timeline marker is visible.
+/// night is not a second activity. Confirmed main sleep belongs to its final-
+/// wake day; naps and pending windows remain overlap-based evidence.
 enum AtriaActivitySelectedDaySleeps {
     static func canonical(snapshot: SleepHistorySnapshot,
                           pendingReview: SleepHistorySnapshot.Night?,
@@ -480,16 +502,12 @@ enum AtriaActivitySelectedDaySleeps {
                             calendar: Calendar) -> [SleepHistorySnapshot.Night] {
         let dayStart = calendar.startOfDay(for: selectedDay)
         guard let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart) else { return [] }
-        return canonical(snapshot: snapshot,
-                         pendingReview: pendingReview,
-                         napReviewCandidates: napReviewCandidates).filter { night in
-            if let start = night.start, let end = night.end, end > start {
-                return end > dayStart && start < dayEnd
-            }
-            // Legacy summaries may not carry exact bounds. Their attributed
-            // civil day remains the only truthful placement available.
-            return calendar.isDate(night.day, inSameDayAs: dayStart)
-        }
+        return overlapping(snapshot: snapshot,
+                           pendingReview: pendingReview,
+                           napReviewCandidates: napReviewCandidates,
+                           interval: DateInterval(start: dayStart, end: dayEnd),
+                           calendar: calendar,
+                           mainSleepOwnershipDay: dayStart)
     }
 
     static func overlapping(snapshot: SleepHistorySnapshot,
@@ -497,10 +515,20 @@ enum AtriaActivitySelectedDaySleeps {
                             napReviewCandidates: [SleepHistorySnapshot.Night] = [],
                             interval: DateInterval,
                             calendar: Calendar,
-                            includeStartBoundarySleep: Bool = false) -> [SleepHistorySnapshot.Night] {
+                            includeStartBoundarySleep: Bool = false,
+                            mainSleepOwnershipDay: Date? = nil) -> [SleepHistorySnapshot.Night] {
         canonical(snapshot: snapshot,
                   pendingReview: pendingReview,
                   napReviewCandidates: napReviewCandidates).filter { night in
+            // A confirmed non-nap is a wake-boundary record. It belongs to the
+            // date on which its final wake was recorded, never to every civil
+            // date overlapped by its bedtime-to-wake interval. Naps and pending
+            // detections remain interval-overlap records as before.
+            if let mainSleepOwnershipDay,
+               night.confirmed,
+               !night.isNapEvidence {
+                return calendar.isDate(night.day, inSameDayAs: mainSleepOwnershipDay)
+            }
             if let start = night.start, let end = night.end, end > start {
                 // The CURRENT physiological day begins at the anchoring main
                 // sleep's WAKE, so that sleep ends exactly at `interval.start`.
@@ -515,7 +543,8 @@ enum AtriaActivitySelectedDaySleeps {
                     : end > interval.start
                 return overlapsStart && start < interval.end
             }
-            return calendar.isDate(night.day, inSameDayAs: interval.start)
+            return calendar.isDate(night.day,
+                                   inSameDayAs: mainSleepOwnershipDay ?? interval.start)
         }
     }
 
@@ -1340,7 +1369,11 @@ struct AtriaActivityMonitorTab: View {
             ? AtriaActivityDisplayWindow.current(now: Date(),
                                                  sleepHistory: activity.sleepHistorySnapshot,
                                                  calendar: calendar)
-            : AtriaActivityDisplayWindow.historical(day: timelineDay, calendar: calendar)
+            : AtriaActivityDisplayWindow.historical(
+                day: timelineDay,
+                sleepHistory: activity.sleepHistorySnapshot,
+                calendar: calendar
+              )
         let requestKey = AtriaActivitySectionsRequestKey(
             sleepRevision: activity.sleepHistorySnapshotRevision,
             workoutsRevision: activity.confirmedWorkoutsRevision,
@@ -1665,7 +1698,10 @@ struct AtriaActivityMonitorTab: View {
             napReviewCandidates: source.napReviewCandidates,
             interval: source.interval,
             calendar: source.calendar,
-            includeStartBoundarySleep: source.isCurrentPhysiologicalDay
+            includeStartBoundarySleep: source.isCurrentPhysiologicalDay,
+            mainSleepOwnershipDay: source.isCurrentPhysiologicalDay
+                ? nil
+                : source.selectedDayStart
         )
             .map(Entry.sleep)
         let selectedWorkouts = AtriaActivitySelectedDayWorkouts.overlapping(
@@ -1687,22 +1723,14 @@ struct AtriaActivityMonitorTab: View {
         let entries = (sleeps + workouts + [workoutReview].compactMap { $0 } + detections)
             .sorted { $0.date > $1.date }
         guard !entries.isEmpty else { return DaySectionsResult(sections: []) }
-        // Every workout on a given day has the same next-morning comparison.
-        // Derive it once per day off-main, then make row lookup O(1).
-        var recoveryEffectsByDay: [Date: AtriaActivityRecoveryEffect] = [:]
         var recoveryEffects: [String: AtriaActivityRecoveryEffect] = [:]
         for workout in selectedWorkouts {
-            let day = source.calendar.startOfDay(for: workout.start)
-            let effect: AtriaActivityRecoveryEffect
-            if let cached = recoveryEffectsByDay[day] {
-                effect = cached
-            } else {
-                effect = AtriaActivityRecoveryEffect.make(workout: workout,
-                                                          rollups: source.rollups,
-                                                          calendar: source.calendar)
-                recoveryEffectsByDay[day] = effect
-            }
-            recoveryEffects[workout.id] = effect
+            recoveryEffects[workout.id] = AtriaActivityRecoveryEffect.make(
+                workout: workout,
+                rollups: source.rollups,
+                sleepHistory: source.sleepSnapshot,
+                calendar: source.calendar
+            )
         }
         return DaySectionsResult(sections: [
             DaySection(id: String(source.selectedDayStart.timeIntervalSinceReferenceDate),
@@ -1738,7 +1766,11 @@ struct AtriaActivityMonitorTab: View {
             ? AtriaActivityDisplayWindow.current(now: Date(),
                                                  sleepHistory: activityStore.state.sleepHistorySnapshot,
                                                  calendar: calendar)
-            : AtriaActivityDisplayWindow.historical(day: timelineDay, calendar: calendar)
+            : AtriaActivityDisplayWindow.historical(
+                day: timelineDay,
+                sleepHistory: activityStore.state.sleepHistorySnapshot,
+                calendar: calendar
+              )
     }
 
     /// Owns every high-frequency stress/heart-rate dependency used by the
@@ -1827,7 +1859,11 @@ struct AtriaActivityMonitorTab: View {
                 ? AtriaActivityDisplayWindow.current(now: Date(),
                                                      sleepHistory: activity.sleepHistorySnapshot,
                                                      calendar: calendar)
-                : AtriaActivityDisplayWindow.historical(day: timelineDay, calendar: calendar)
+                : AtriaActivityDisplayWindow.historical(
+                    day: timelineDay,
+                    sleepHistory: activity.sleepHistorySnapshot,
+                    calendar: calendar
+                  )
         }
 
         private var timelineSignalWindowKey: TimelineSignalWindowKey {
@@ -2845,7 +2881,10 @@ struct AtriaActivityMonitorTab: View {
                 pendingReview: pendingSleepReview,
                 napReviewCandidates: napReviewCandidates,
                 interval: displayWindow.interval,
-                calendar: calendar
+                calendar: calendar,
+                mainSleepOwnershipDay: displayWindow.isCurrentPhysiologicalDay
+                    ? nil
+                    : displayWindow.labelDay
             ).compactMap { night -> (SleepHistorySnapshot.Night, Date, Date)? in
                 guard let start = night.start, let end = night.end,
                       end > dayStart, start < dayEnd else { return nil }
@@ -3099,9 +3138,12 @@ private struct AtriaActivityWorkoutDetailSheet: View {
         self.workout = workout
         self.stressReadings = stressReadings
         self.stressHistoryLoadState = stressHistoryLoadState
-        recoveryEffect = AtriaActivityRecoveryEffect.make(workout: workout,
-                                                          rollups: store.dailyRollupHistory,
-                                                          calendar: .current)
+        recoveryEffect = AtriaActivityRecoveryEffect.make(
+            workout: workout,
+            rollups: store.dailyRollupHistory,
+            confirmedSleeps: store.confirmedSleeps,
+            calendar: .current
+        )
         _label = State(initialValue: workout.label)
         _activityType = State(initialValue: workout.activityType ?? "")
         let initialType = AtriaWorkoutActivityType(rawValue: workout.activityType ?? "")
@@ -4135,22 +4177,73 @@ struct AtriaActivityRecoveryEffect: Equatable {
         case observed(delta: Int, recovery: Int, baseline: Int, samples: Int)
         case pending
         case learning
+        case unavailable
     }
 
     let status: Status
 
     static func make(workout: UserConfirmedWorkout,
                      rollups: [DailyRollupStoreEntry],
-                     calendar: Calendar) -> Self {
-        let workoutDay = calendar.startOfDay(for: workout.start)
-        guard let recoveryDay = calendar.date(byAdding: .day, value: 1, to: workoutDay) else {
-            return Self(status: .learning)
+                     confirmedSleeps: [UserConfirmedSleep],
+                     calendar: Calendar,
+                     now: Date = Date()) -> Self {
+        guard let recoverySleep = AtriaHistoricalPhysiologicalCycle.followingRecoverySleep(
+            for: workout,
+            confirmedSleeps: confirmedSleeps,
+            calendar: calendar
+        ) else {
+            let isPending = AtriaHistoricalPhysiologicalCycle.recoveryAttributionIsPending(
+                for: workout,
+                confirmedSleeps: confirmedSleeps,
+                now: now,
+                calendar: calendar
+            )
+            return Self(status: isPending ? .pending : .unavailable)
         }
+        return make(rollups: rollups,
+                    recoverySleep: recoverySleep,
+                    calendar: calendar,
+                    now: now)
+    }
+
+    static func make(workout: UserConfirmedWorkout,
+                     rollups: [DailyRollupStoreEntry],
+                     sleepHistory: SleepHistorySnapshot,
+                     calendar: Calendar,
+                     now: Date = Date()) -> Self {
+        guard let recoverySleep = AtriaHistoricalPhysiologicalCycle.followingRecoverySleep(
+            for: workout,
+            sleepHistory: sleepHistory,
+            calendar: calendar
+        ) else {
+            let isPending = AtriaHistoricalPhysiologicalCycle.recoveryAttributionIsPending(
+                for: workout,
+                sleepHistory: sleepHistory,
+                now: now,
+                calendar: calendar
+            )
+            return Self(status: isPending ? .pending : .unavailable)
+        }
+        return make(rollups: rollups,
+                    recoverySleep: recoverySleep,
+                    calendar: calendar,
+                    now: now)
+    }
+
+    private static func make(rollups: [DailyRollupStoreEntry],
+                             recoverySleep: UserConfirmedSleep,
+                             calendar: Calendar,
+                             now: Date) -> Self {
+        let recoveryDay = EventCivilTime.day(
+            containing: recoverySleep.end,
+            eventTimeZoneIdentifier: recoverySleep.eventTimeZoneIdentifier,
+            outputCalendar: calendar
+        )
         let observed = rollups.first {
             calendar.isDate($0.day, inSameDayAs: recoveryDay) && $0.recovery != nil
         }?.recovery
         guard let observed else {
-            return Self(status: recoveryDay >= calendar.startOfDay(for: Date()) ? .pending : .learning)
+            return Self(status: recoveryDay >= calendar.startOfDay(for: now) ? .pending : .learning)
         }
         let baselineScores = rollups
             .filter { $0.day < recoveryDay && $0.day >= (calendar.date(byAdding: .day, value: -14, to: recoveryDay) ?? .distantPast) }
@@ -4169,8 +4262,9 @@ struct AtriaActivityRecoveryEffect: Equatable {
         switch status {
         case let .observed(delta, recovery, _, _):
             return "\(recovery)% · \(String(format: "%+d", delta)) pts"
-        case .pending: return "Available next morning"
+        case .pending: return "After your next sleep"
         case .learning: return "Learning your response"
+        case .unavailable: return "Not available"
         }
     }
 
@@ -4179,9 +4273,11 @@ struct AtriaActivityRecoveryEffect: Equatable {
         case let .observed(_, _, baseline, samples):
             return "Next-morning recovery versus your preceding \(samples)-day average of \(baseline)%. This is a personal association, not proof the activity caused the change."
         case .pending:
-            return "Atria freezes morning recovery once daily, then attaches it to the prior day's activity."
+            return "A confirmed main sleep must close this physiological day before Atria can attach recovery."
         case .learning:
             return "At least three prior recovery days are needed for a useful personal comparison."
+        case .unavailable:
+            return "No confirmed main sleep closed this physiological day before its no-sleep rollover, so no recovery score is attached."
         }
     }
 
@@ -4189,7 +4285,7 @@ struct AtriaActivityRecoveryEffect: Equatable {
         switch status {
         case let .observed(delta, _, _, _): return delta >= 0 ? .green : .orange
         case .pending: return .blue
-        case .learning: return .secondary
+        case .learning, .unavailable: return .secondary
         }
     }
 }
