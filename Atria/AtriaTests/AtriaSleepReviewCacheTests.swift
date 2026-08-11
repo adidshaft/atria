@@ -891,7 +891,7 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
                                                                 isNap: !review.isNapEvidence))
     }
 
-    func testAggregateSelectionUsesNewestReviewDayAndBuildsStagesOffMainInput() {
+    func testAggregateSelectionUsesNewestReviewDayAndFailsClosedOnHROnlyStages() {
         let older = sleepSession(day: 8)
         let newer = sleepSession(day: 10)
 
@@ -905,7 +905,9 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         XCTAssertEqual(result?.start, newer.start)
         XCTAssertEqual(result?.end, newer.end)
         XCTAssertEqual(result?.source, "sleep_window")
-        XCTAssertFalse(result?.stageSegments.isEmpty ?? true)
+        XCTAssertNotNil(result, "the newest qualified review window must still be selected")
+        XCTAssertTrue(result?.stageSegments.isEmpty == true,
+                      "HR-only evidence must not publish REM/light/deep stages without validated motion")
     }
 
     func testOverlappingConfirmationSuppressesNewestCandidateWithoutOlderFallback() {

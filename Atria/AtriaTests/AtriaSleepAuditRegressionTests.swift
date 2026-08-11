@@ -799,6 +799,12 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
             "04:23–08:33 must remain awake and receive zero sleep credit"
         )
         XCTAssertEqual(
+            combined.observedDuration,
+            main.duration + resumed.duration,
+            accuracy: 1,
+            "resumed projection must preserve measured coverage separately from staged TST"
+        )
+        XCTAssertEqual(
             combined.sleepEfficiency ?? 0,
             (main.duration + resumed.duration) / resumedEnd.timeIntervalSince(mainStart),
             accuracy: 0.001
@@ -809,6 +815,138 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertLessThan(try XCTUnwrap(combined.restingHR), main.restingHR)
         XCTAssertLessThan(try XCTUnwrap(combined.respiratoryRate),
                           main.respiratoryRate ?? .infinity)
+    }
+
+    func testResumedNightCombinationPreservesObservedCoverageSeparateFromTST() throws {
+        let mainStart = date(2032, 1, 2, 0, 0, timeZoneIdentifier: "Asia/Kolkata")
+        let mainEnd = mainStart.addingTimeInterval(3 * 60 * 60)
+        let resumedStart = mainEnd.addingTimeInterval(2 * 60 * 60)
+        let resumedEnd = resumedStart.addingTimeInterval(90 * 60)
+        func night(id: String,
+                   start: Date,
+                   end: Date,
+                   source: String,
+                   tst: TimeInterval,
+                   observed: TimeInterval) -> SleepHistorySnapshot.Night {
+            SleepHistorySnapshot.Night(
+                id: id,
+                day: Self.indiaCalendar.startOfDay(for: end),
+                savedAt: end,
+                start: start,
+                end: end,
+                duration: tst,
+                observedDuration: observed,
+                restingHR: 55,
+                hrv: 45,
+                hrvWindowCount: 3,
+                respiratoryRate: 15,
+                sleepEfficiency: tst / end.timeIntervalSince(start),
+                confidence: "user_confirmed_hr_only",
+                source: source,
+                confirmed: true,
+                stageSegments: [],
+                eventTimeZoneIdentifier: "Asia/Kolkata",
+                motionValidated: false
+            )
+        }
+        let main = night(id: "main-observed",
+                         start: mainStart,
+                         end: mainEnd,
+                         source: "user_adjusted_sleep",
+                         tst: 2 * 60 * 60,
+                         observed: 3 * 60 * 60)
+        let resumed = night(id: "resumed-observed",
+                            start: resumedStart,
+                            end: resumedEnd,
+                            source: "resumed_sleep",
+                            tst: 60 * 60,
+                            observed: 90 * 60)
+
+        let combined = try XCTUnwrap(SleepHistorySnapshot.combiningResumedSleepSegments(
+            main: main,
+            resumed: [resumed]
+        ))
+
+        XCTAssertEqual(combined.duration, 3 * 60 * 60)
+        XCTAssertEqual(combined.observedDuration, 4.5 * 60 * 60)
+        XCTAssertEqual(combined.end, resumedEnd)
+    }
+
+    func testResumedSleepCannotPromoteSubPolicyMainIntoRecoveryOnlyNight() throws {
+        let start = date(2032, 1, 2, 0, timeZoneIdentifier: "Asia/Kolkata")
+        func confirmed(id: String,
+                       start: Date,
+                       end: Date,
+                       source: String) -> UserConfirmedSleep {
+            UserConfirmedSleep(
+                id: id,
+                createdAt: end,
+                start: start,
+                end: end,
+                source: source,
+                confidence: "user_confirmed_hr_only",
+                sessions: 1,
+                samples: 1_000,
+                avgHR: 60,
+                peakHR: 75,
+                restingHR: 55,
+                hrv: 45,
+                hrvWindowCount: 3,
+                respiratoryRate: 15,
+                duration: end.timeIntervalSince(start),
+                span: end.timeIntervalSince(start),
+                reason: "resumed parity regression",
+                motionSource: "test",
+                motionValidated: false,
+                stageSegments: nil,
+                eventTimeZoneIdentifier: "Asia/Kolkata"
+            )
+        }
+        let shortMain = confirmed(id: "short-manual-main",
+                                  start: start,
+                                  end: start.addingTimeInterval(2 * 60 * 60),
+                                  source: "manual_sleep")
+        let resumed = confirmed(id: "short-main-resumed",
+                                start: start.addingTimeInterval(3 * 60 * 60),
+                                end: start.addingTimeInterval(5 * 60 * 60),
+                                source: "resumed_sleep")
+        let now = start.addingTimeInterval(6 * 60 * 60)
+        let snapshot = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: [shortMain, resumed],
+            calendar: Self.indiaCalendar
+        )
+        let projectedMain = try XCTUnwrap(snapshot.nights.first { $0.id == shortMain.id })
+        let projectedResumed = try XCTUnwrap(
+            snapshot.additionalMainNights.first { $0.id == resumed.id }
+        )
+
+        XCTAssertFalse(SessionStore.confirmedSleepIsPhysiologicalMainSleep(shortMain))
+        XCTAssertNil(SleepHistorySnapshot.combiningResumedSleepSegments(
+            main: projectedMain,
+            resumed: [projectedResumed]
+        ))
+        XCTAssertEqual(snapshot.latestMainSleep?.end, shortMain.end,
+                       "resumed sleep cannot rescue an ineligible main into a recovery night")
+        XCTAssertTrue(SessionStore.makeSavedDailyMetrics(
+            rollups: [],
+            sleep: snapshot,
+            baseline: PersonalBaseline(),
+            calendar: Self.indiaCalendar
+        ).isEmpty)
+
+        let direct = AtriaPhysiologicalDay.current(
+            now: now,
+            confirmedSleeps: [shortMain, resumed],
+            calendar: Self.indiaCalendar
+        )
+        let projected = AtriaPhysiologicalDay.current(
+            now: now,
+            sleepHistory: snapshot,
+            calendar: Self.indiaCalendar
+        )
+        XCTAssertEqual(projected, direct,
+                       "Recovery projection and Today ownership must share main-sleep eligibility")
     }
 
     func testResumedSleepLinksAcrossCivilMidnightByInterval() throws {

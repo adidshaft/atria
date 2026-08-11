@@ -3463,9 +3463,13 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                      detail: strainEvidenceDetailText,
                                      systemImage: AtriaTodayMetric.strain.systemImage,
                                      tint: qualifiedStrainZone?.tint ?? Metrics.electricStrain,
-                                     progress: strainIsPartial
+                                     progress: metricIsPending(hero.strainValue)
                                         ? nil
-                                        : hero.guidance.target.map { min(max(hero.strain / max($0, 0.1), 0), 1) }),
+                                        : (strainIsPartial
+                                            ? strainMeasuredFraction
+                                            : hero.guidance.target.map {
+                                                min(max(hero.strain / max($0, 0.1), 0), 1)
+                                            })),
             AtriaDailyFocusRail.Item(title: sleepGlanceTitleText,
                                      value: sleepGlanceValueText,
                                      detail: sleepGlanceDetailText,
@@ -3511,11 +3515,20 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                            fill: hero.recoveryEstimate.percent.map { Double($0) / 100.0 })
     }
 
+    /// A lower-bound score is still measured load on the canonical 0...21
+    /// scale. Only a genuinely pending/non-numeric value withholds its fill;
+    /// partial evidence withholds target and zone authority, not magnitude.
+    private var strainMeasuredFraction: Double? {
+        AtriaRingMetricProjection.strainFill(
+            strain: hero.strain,
+            isPending: metricIsPending(hero.strainValue)
+        )
+    }
+
     private var triRingStrainMetric: AtriaTriRingMetric {
         let pending = metricIsPending(hero.strainValue)
         let unqualified = pending || strainIsPartial
-        let fill = AtriaRingMetricProjection.strainFill(strain: hero.strain,
-                                                        isPending: unqualified)
+        let fill = strainMeasuredFraction
         let targetProgress = AtriaRingMetricProjection.strainTargetProgress(
             strain: hero.strain,
             target: hero.guidance.target
@@ -3574,9 +3587,16 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var triRingAccessibilitySummary: String {
-        let strain = hero.guidance.target.map {
-            "Strain \(hero.strainValue) of \(String(format: "%.1f", $0))."
-        } ?? "Strain \(hero.strainValue), target building."
+        let strain: String
+        if strainIsPartial {
+            let limitation = overviewStrainLimitation?.compactState
+                ?? "Incomplete evidence"
+            strain = "Strain \(hero.strainValue). \(limitation)."
+        } else {
+            strain = hero.guidance.target.map {
+                "Strain \(hero.strainValue) of \(String(format: "%.1f", $0))."
+            } ?? "Strain \(hero.strainValue), target building."
+        }
         return "Sleep \(sleepGlanceValueText), \(sleepTriRingDetailText). Recovery \(triRingRecoveryMetric.value), \(recoveryTriRingDetailText). \(strain)"
     }
 
@@ -3941,9 +3961,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                       detail: strainEvidenceDetailText,
                                       systemImage: metric.systemImage,
                                       tint: qualifiedStrainZone?.tint ?? Metrics.electricStrain,
-                                      ringFraction: metricIsPending(hero.strainValue) || strainIsPartial
-                                        ? nil
-                                        : min(max(hero.strain / 21, 0), 1),
+                                      ringFraction: strainMeasuredFraction,
                                       sparklineValues: dailyMetricSparklines.strain,
                                       zone: qualifiedStrainZone)
             }
@@ -4321,7 +4339,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var strainEvidenceDetailText: String {
         if metricIsPending(hero.strainValue) { return "Learning" }
         if strainIsPartial {
-            return "Partial · limited wear"
+            return overviewStrainLimitation?.compactState
+                ?? "Incomplete evidence"
         }
         // WHOOP's published band vocabulary gives the number a name
         // (2026-08-05 parity): "Moderate · of 13.9" reads the effort level
@@ -4458,6 +4477,24 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var strainIsPartial: Bool {
         hero.strainConfidence.localizedCaseInsensitiveContains("partial")
             || hero.strainValue.hasPrefix("≥")
+    }
+
+    private var overviewStrainLimitation:
+        AtriaWorkoutMetricPresentation.StrainLimitation? {
+        guard strainIsPartial else { return nil }
+        let authority = AtriaHealthMetricAuthority.currentCycleProjection(
+            hero: hero,
+            sleepHistory: sleepHistory
+        )
+        guard let start = authority.cycleStart else {
+            return .incompleteEvidence
+        }
+        return AtriaWorkoutMetricPresentation.strainLimitation(
+            start: start,
+            end: Date(),
+            workouts: confirmedWorkouts,
+            dayWearCoverageFraction: authority.wearCoverageFraction
+        ) ?? .incompleteEvidence
     }
 
     private var qualifiedStrainZone: AtriaMetricZone? {
@@ -4741,8 +4778,8 @@ private struct AtriaDailyFocusRail: View, Equatable {
 
             HStack(alignment: .bottom, spacing: 5) {
                 ForEach(items) { item in
-                    // `progress == nil` means unmeasured (learning/partial/no
-                    // samples); render the 7pt base only — a fabricated 18%
+                    // `progress == nil` means unmeasured (learning/no samples);
+                    // render the 7pt base only — a fabricated 18%
                     // fill under a "Learning" value implied real progress.
                     Capsule(style: .continuous)
                         .fill(item.tint.opacity(item.progress == nil ? 0.32 : 0.78))
@@ -9374,11 +9411,9 @@ struct AtriaMetricDetailSheet: View {
                                       tint: Metrics.electricStrain,
                                       heroStyle: .strain(score: strainHeroRawValue,
                                                          target: showsCurrentPhysiologicalCycleContext
+                                                            && !dayStrainMetricsIncomplete
                                                             ? guidance.target
                                                             : nil)) {
-                if let provenance {
-                    AtriaMetricProvenanceCard(provenance: provenance)
-                }
                 strainRecoveryComboCard
                 if showsCurrentPhysiologicalCycleContext {
                     strainWorkoutSection
@@ -9391,20 +9426,31 @@ struct AtriaMetricDetailSheet: View {
                                                tint: Metrics.electricStrain)
                 }
             } chart: {
-                chartSlot {
-                    metricChart(title: "Strain",
-                                unit: "",
-                                tint: Metrics.electricStrain,
-                                points: strainDisplayPointsForSelectedPeriod,
-                                summary: strainSummaryForSelectedPeriod,
-                                comparison: strainComparisonForSelectedPeriod,
-                                baselineBand: nil,
-                                accessibilitySummary: "Strain over \(range.label).",
-                                priorPoints: preparedHistory.strainPrior[range] ?? [],
-                                companions: [("That day's recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod),
-                                             ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])],
-                                onOpenDay: { day in openHistoryDay(for: day) },
-                                onExpand: { showExpandedChart = true })
+                if range == .day, showsCurrentPhysiologicalCycleContext {
+                    if let currentCycleStrainProvenance {
+                        AtriaMetricProvenanceCard(provenance: currentCycleStrainProvenance)
+                    } else {
+                        honestPartialCard(
+                            tint: Metrics.electricStrain,
+                            bodyText: "Strain needs heart-rate evidence from this physiological day."
+                        )
+                    }
+                } else {
+                    chartSlot {
+                        metricChart(title: "Strain",
+                                    unit: "",
+                                    tint: Metrics.electricStrain,
+                                    points: strainDisplayPointsForSelectedPeriod,
+                                    summary: strainSummaryForSelectedPeriod,
+                                    comparison: strainComparisonForSelectedPeriod,
+                                    baselineBand: nil,
+                                    accessibilitySummary: "Strain over \(range.label).",
+                                    priorPoints: preparedHistory.strainPrior[range] ?? [],
+                                    companions: [("That day's recovery", "%", Metrics.electricGreen, recoveryDisplayPointsForSelectedPeriod),
+                                                 ("Sleep", "h", Metrics.electricSleep, preparedHistory.sleep[range] ?? [])],
+                                    onOpenDay: { day in openHistoryDay(for: day) },
+                                    onExpand: { showExpandedChart = true })
+                    }
                 }
             } about: {
                 aboutDisclosure
@@ -10100,7 +10146,10 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private var strainHeroState: String {
-        if dayStrainMetricsIncomplete { return "Partial · sparse HR" }
+        if dayStrainMetricsIncomplete {
+            return currentCycleStrainLimitation?.compactState
+                ?? "Strain data incomplete"
+        }
         guard let latest = strainHeroRawValue else {
             return "Learning"   // canonical not-ready word (was "Building"), consistent with HRV/RHR/respiration hero states
         }
@@ -10147,6 +10196,50 @@ struct AtriaMetricDetailSheet: View {
         return AtriaWorkoutMetricPresentation.dayStrainIsIncomplete(day: day,
                                                                     strain: strain,
                                                                     workouts: confirmedWorkouts)
+    }
+
+    private var currentCycleStrainLimitation:
+        AtriaWorkoutMetricPresentation.StrainLimitation? {
+        guard showsCurrentPhysiologicalCycleContext,
+              let currentCycleAuthority,
+              let start = currentCycleAuthority.cycleStart else {
+            return nil
+        }
+        return AtriaWorkoutMetricPresentation.strainLimitation(
+            start: start,
+            end: Date(),
+            workouts: confirmedWorkouts,
+            dayWearCoverageFraction: currentCycleAuthority.wearCoverageFraction
+        ) ?? (currentCycleAuthority.strainIsPartial ? .incompleteEvidence : nil)
+    }
+
+    private var currentCycleStrainProvenance: AtriaMetricProvenance? {
+        guard showsCurrentPhysiologicalCycleContext,
+              let currentCycleAuthority,
+              let strain = currentCycleAuthority.strain else {
+            return nil
+        }
+        if var provenance {
+            provenance.strainLimitation = currentCycleStrainLimitation
+            return provenance
+        }
+        let presentation = AtriaCompactMetricPresentation.strain(
+            strain: strain,
+            confidence: currentCycleAuthority.strainDetail
+        )
+        return AtriaMetricProvenance(
+            displayValue: presentation.displayValue,
+            level: presentation.level,
+            isLowerBound: presentation.isLowerBound,
+            usesHRV: nil,
+            hrCoverageFraction: currentCycleAuthority.wearCoverageFraction,
+            sourceLabel: "Strap heart rate",
+            observedAt: nil,
+            strainLimitation: currentCycleStrainLimitation,
+            // The detail sheet does not own the user's configured green/yellow
+            // bands. Neutral is more honest than recreating a grade here.
+            valueStatusTint: nil
+        )
     }
 
     /// Strain of the day before the latest night's credited day -- the same
@@ -11683,6 +11776,7 @@ private struct AtriaRecoveryScoreHero: View {
 }
 
 private struct AtriaStrainScoreHero: View {
+    let displayValue: String
     let score: Double?
     let target: Double?
     let state: String
@@ -11692,11 +11786,13 @@ private struct AtriaStrainScoreHero: View {
     var body: some View {
         VStack(spacing: 12) {
             VStack(spacing: 1) {
-                Text(score.map { String(format: "%.1f", $0) } ?? "--")
+                Text(displayValue)
                     .font(.system(size: 48, weight: .bold, design: .rounded))
                     .monospacedDigit().foregroundStyle(score == nil ? Color.secondary : tint)
                     .contentTransition(reduceMotion ? .identity : .numericText())
-                Text(targetSubtitle).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(state)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
             }
             GeometryReader { proxy in
                 let width = max(proxy.size.width, 1)
@@ -11717,18 +11813,26 @@ private struct AtriaStrainScoreHero: View {
             }
             .frame(height: 14)
             HStack {
-                Text("0"); Spacer(minLength: 0); Text(target.map { "Target \(String(format: "%.1f", $0))" } ?? "Target")
-                Spacer(minLength: 0); Text("21")
+                Text("0")
+                Spacer(minLength: 0)
+                if let target {
+                    Text("Target \(String(format: "%.1f", target))")
+                    Spacer(minLength: 0)
+                }
+                Text("21")
             }
             .font(.caption2.weight(.semibold).monospacedDigit()).foregroundStyle(.secondary)
         }
-        .padding(16).atriaInsetCard(tint: tint).accessibilityElement(children: .combine)
+        .padding(16)
+        .atriaInsetCard(tint: tint)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Strain \(accessibilityValue). \(state).")
     }
 
-    private var targetSubtitle: String {
-        guard let target else { return "of 21 \u{00b7} target learning" }
-        let range = AtriaStrainTargetPresentation.targetRange(for: target)
-        return "of 21 \u{00b7} target \(String(format: "%.0f", range.lowerBound))-\(String(format: "%.0f", range.upperBound))"
+    private var accessibilityValue: String {
+        let trimmed = displayValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("≥") else { return trimmed }
+        return "at least " + trimmed.dropFirst().trimmingCharacters(in: .whitespaces)
     }
 }
 
@@ -11889,7 +11993,8 @@ private struct AtriaMetricDetailTemplate<BetweenHero: View, Contributors: View, 
                                    tint: tint,
                                    baselineComparison: baselineComparison)
         case .strain(let score, let target):
-            AtriaStrainScoreHero(score: score,
+            AtriaStrainScoreHero(displayValue: heroValue,
+                                 score: score,
                                  target: target,
                                  state: heroState,
                                  tint: tint)
@@ -13999,91 +14104,84 @@ private struct AtriaSleepNeedUnavailableCard: View {
     }
 }
 
-struct AtriaStrainBandGauge: View {
+struct AtriaStrainScaleRail: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    let displayValue: String
     let strain: Double
     let target: Double?
-    let size: CGFloat
-
-    private let bands: [(range: ClosedRange<Double>, label: String)] = [
-        (0...9, "Light"),
-        (10...13, "Moderate"),
-        (14...17, "High"),
-        (18...21, "All-Out")
-    ]
+    let limitation: String?
 
     var body: some View {
-        VStack(spacing: 10) {
-            ZStack {
-                Circle()
-                    .stroke(.primary.opacity(0.06), lineWidth: 16)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Strain")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 8)
+                Text(displayValue)
+                    .font(.title2.weight(.bold).monospacedDigit())
+                    .foregroundStyle(Metrics.electricStrain)
+                    .contentTransition(reduceMotion ? .identity : .numericText())
+                    .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: displayValue)
+            }
 
-                // Four effort bands (Light/Moderate/High/All-Out) as clean solid
-                // segments. Was a dashed stroke (dash [2,12] @ 16pt round caps)
-                // that rendered as fat scattered dots — read as broken, esp. at
-                // low strain where the fill arc is nearly invisible. The natural
-                // gaps between the band ranges now delineate the zones.
-                ForEach(Array(bands.enumerated()), id: \.element.label) { _, band in
-                    Circle()
-                        .trim(from: band.range.lowerBound / 21, to: band.range.upperBound / 21)
-                        .stroke(.primary.opacity(0.12), style: StrokeStyle(lineWidth: 16, lineCap: .butt))
-                        .rotationEffect(.degrees(-90))
-                }
-
-                if let target {
-                    Circle()
-                        .trim(from: max(0, (target - 1) / 21), to: min(1, (target + 1) / 21))
-                        .stroke(Metrics.electricStrain.opacity(0.22), style: StrokeStyle(lineWidth: 20, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-
-                    Circle()
-                        .fill(Metrics.electricStrain)
-                        .frame(width: 10, height: 10)
-                        .overlay {
-                            Circle()
-                                .stroke(Color(.systemBackground).opacity(0.9), lineWidth: 2)
-                        }
-                        .offset(notchOffset(for: target))
-                }
-
-                Circle()
-                    .trim(from: 0, to: min(max(strain / 21, 0), 1))
-                    .stroke(Metrics.electricStrain, style: StrokeStyle(lineWidth: 18, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-
-                VStack(spacing: 4) {
-                    Text(String(format: "%.1f", strain))
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .contentTransition(reduceMotion ? .identity : .numericText())
-                        .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic), value: strain)
-                    Text(activeBandLabel)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+            GeometryReader { proxy in
+                let width = max(proxy.size.width, 1)
+                ZStack(alignment: .leading) {
+                    Capsule(style: .continuous)
+                        .fill(.primary.opacity(0.09))
+                    if let target {
+                        let range = AtriaStrainTargetPresentation.targetRange(for: target)
+                        Capsule(style: .continuous)
+                            .fill(Metrics.electricStrain.opacity(0.16))
+                            .frame(width: width * (range.upperBound - range.lowerBound)
+                                / AtriaStrainTargetPresentation.maximum)
+                            .offset(x: width * range.lowerBound
+                                / AtriaStrainTargetPresentation.maximum)
+                    }
+                    if strain > 0 {
+                        Capsule(style: .continuous)
+                            .fill(Metrics.electricStrain)
+                            .frame(width: max(6, width * AtriaStrainTargetPresentation.progress(for: strain)))
+                    }
+                    if let target {
+                        Capsule(style: .continuous)
+                            .fill(Metrics.electricStrain)
+                            .frame(width: 2, height: 16)
+                            .offset(x: width * AtriaStrainTargetPresentation.progress(for: target) - 1)
+                    }
                 }
             }
-            .frame(width: size, height: size)
+            .frame(height: 12)
 
-            if let target {
-                Text(String(format: "Target %.1f", target))
+            HStack {
+                Text("0")
+                Spacer(minLength: 0)
+                if let target {
+                    Text("Target \(String(format: "%.1f", target))")
+                    Spacer(minLength: 0)
+                }
+                Text("21")
+            }
+            .font(.caption2.weight(.semibold).monospacedDigit())
+            .foregroundStyle(.secondary)
+
+            if let limitation {
+                Text(limitation)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Strain \(accessibilityValue). \(limitation ?? "Measured locally.")")
     }
 
-    private var activeBandLabel: String {
-        bands.first(where: { $0.range.contains(strain) })?.label ?? "Light"
-    }
-
-    private func notchOffset(for target: Double) -> CGSize {
-        let progress = min(max(target / 21, 0), 1)
-        let angle = (progress * .pi * 2) - (.pi / 2)
-        let radius = (size - 18) / 2
-        return CGSize(width: cos(angle) * radius,
-                      height: sin(angle) * radius)
+    private var accessibilityValue: String {
+        let trimmed = displayValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("≥") else { return trimmed }
+        return "at least " + trimmed.dropFirst().trimmingCharacters(in: .whitespaces)
     }
 }
 

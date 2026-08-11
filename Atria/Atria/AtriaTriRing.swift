@@ -589,19 +589,7 @@ struct AtriaTriRing: View, Equatable {
         // is carried only by `stateTint`, applied to the small legend dot
         // and the radial target marker, never to the fill hue itself.
         return ZStack {
-            // Awaiting-data honesty (2026-08-08): a metric with no fill used to
-            // paint ONLY this 20%-opacity track, which on the dark hero reads as
-            // "the ring isn't there" — the same state the separate layout shows
-            // as a clearly present grey ring with its label. A dashed, brighter
-            // track says "this ring exists and is waiting for data" instead of
-            // looking broken, without ever implying a value.
-            if metric.fill == nil {
-                Circle()
-                    .stroke(metric.tint.opacity(0.34),
-                            style: StrokeStyle(lineWidth: lineWidth,
-                                               lineCap: .round,
-                                               dash: [2, lineWidth * 1.4]))
-            } else {
+            if metric.fill != nil {
                 Circle()
                     .stroke(metric.tint.opacity(0.20),
                             style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
@@ -638,7 +626,9 @@ struct AtriaTriRing: View, Equatable {
                         .shadow(color: metric.tint.opacity(0.55), radius: 7, x: 0, y: 0)
                 }
             } else {
-                // Learning: a DASHED full track (design handoff's learning ring).
+                // Learning: one dashed full track. A second dash pattern used to
+                // be painted under this one, producing an irregular grey ring
+                // that looked like broken progress instead of unavailable data.
                 // This supersedes the previous short solid cap at 12 o'clock.
                 // That cap honored the "all rings start at the same place" rule,
                 // but with two or three metrics still calibrating the caps

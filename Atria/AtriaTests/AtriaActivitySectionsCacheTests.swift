@@ -1406,7 +1406,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(Set(assignments.values), [0, 1])
     }
 
-    func testActivityHeartRateProjectionPreservesRealExtremaAndCaptureGaps() {
+    func testActivityHeartRateProjectionUsesMeasuredRepresentativesAndPreservesCaptureGaps() {
         let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
         var samples = (0..<300).map { index in
             HistoricalArchive.HeartRatePoint(t: start.addingTimeInterval(Double(index) * 30),
@@ -1427,14 +1427,59 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         )
 
         XCTAssertEqual(projection.measuredSampleCount, samples.count)
-        XCTAssertTrue(projection.points.contains { $0.bpm == 42 },
-                      "A short real trough must survive bounded display reduction")
-        XCTAssertTrue(projection.points.contains { $0.bpm == 211 },
-                      "A short real peak must survive bounded display reduction")
+        XCTAssertEqual(projection.measuredMinimumBPM, 42)
+        XCTAssertEqual(projection.measuredMaximumBPM, 211)
+        XCTAssertFalse(projection.points.contains { $0.bpm == 42 },
+                       "The compact line must not zigzag through each bucket's isolated trough")
+        XCTAssertFalse(projection.points.contains { $0.bpm == 211 },
+                       "The compact line must not zigzag through each bucket's isolated peak")
+        XCTAssertLessThan(projection.points.count, projection.measuredSampleCount)
         XCTAssertEqual(Set(projection.points.map(\.segment)), [0, 1])
         XCTAssertTrue(projection.points.allSatisfy { point in
             samples.contains { $0.t == point.t && $0.bpm == point.bpm }
         }, "Every plotted heart-rate point must be an actual archived sample")
+        XCTAssertFalse(projection.points.map(\.bpm).contains(projection.measuredMinimumBPM ?? -1))
+        XCTAssertFalse(projection.points.map(\.bpm).contains(projection.measuredMaximumBPM ?? -1))
+    }
+
+    func testActivityAmbientHeartRateJoinsOnlyHiccupsUpToFiveMinutes() {
+        let start = Date(timeIntervalSinceReferenceDate: 800_000_000)
+        func segmentCount(gap: TimeInterval) -> Int {
+            let samples = [
+                HistoricalArchive.HeartRatePoint(t: start, bpm: 70),
+                .init(t: start.addingTimeInterval(30), bpm: 71),
+                .init(t: start.addingTimeInterval(30 + gap), bpm: 72),
+                .init(t: start.addingTimeInterval(60 + gap), bpm: 73)
+            ]
+            let projection = AtriaActivityTimelineSignalProjection.heartRate(
+                samples: samples,
+                interval: DateInterval(start: start,
+                                       end: start.addingTimeInterval(61 + gap))
+            )
+            return Set(projection.points.map(\.segment)).count
+        }
+
+        XCTAssertEqual(segmentCount(gap: 5 * 60), 1)
+        XCTAssertEqual(segmentCount(gap: 5 * 60 + 1), 2)
+    }
+
+    func testActivityHeartRateChartUsesCalmShapePreservingLine() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaActivityMonitor.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let chartStart = try XCTUnwrap(source.range(of: "private func heartRateTimelineChart("))
+        let chartEnd = try XCTUnwrap(source.range(
+            of: "private func stressTimelineChart(",
+            range: chartStart.upperBound..<source.endIndex
+        ))
+        let chart = String(source[chartStart.lowerBound..<chartEnd.lowerBound])
+
+        XCTAssertTrue(chart.contains(".interpolationMethod(.monotone)"))
+        XCTAssertTrue(chart.contains(".lineStyle(AtriaChartVisualGrammar.traceLine)"))
+        XCTAssertTrue(chart.contains("series: .value(\"Observed run\""),
+                      "Material gaps must remain separate chart series")
     }
 
     func testActivityStressProjectionKeepsRestoredGapsAndNeverSynthesizesReadings() {

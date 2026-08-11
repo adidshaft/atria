@@ -364,6 +364,61 @@ final class AtriaWhoop4MotionTickCompactStoreTests: XCTestCase {
             .satisfiesNinetyPercentExactWindow)
     }
 
+    func testIndexedTransportCoveragesMatchLegacyOracleForLargeTicketSet() {
+        let base = 10_000.0
+        var points: [AtriaWhoop4MotionTickCompactStore.Point] = []
+        for second in 0..<5_000 where second % 7 != 0 {
+            let timestamp = base + Double(second)
+                + (second.isMultiple(of: 2) ? 0.125 : 0.875)
+            points.append(dayEvidencePoint(
+                timestamp: timestamp,
+                tick: second,
+                identity: "point-\(second)"
+            ))
+            if second.isMultiple(of: 113) {
+                points.append(dayEvidencePoint(
+                    timestamp: timestamp,
+                    tick: second,
+                    identity: "duplicate-\(second)"
+                ))
+            }
+        }
+        let tickets = (0..<166).map { index in
+            let start = Date(timeIntervalSince1970:
+                base + Double(index * 23) + 0.55)
+            return AtriaWhoop4MotionBankCoverageLedger.OffloadTicket(
+                id: "ticket-\(index)",
+                strapIdentifier: strapIdentifier,
+                start: start,
+                end: start.addingTimeInterval(
+                    Double(45 + (index % 19) * 17)
+                ),
+                armedConnectionStartedAt: nil,
+                attempts: index % 3,
+                lastAttemptAt: nil
+            )
+        }
+        let indexed = AtriaWhoop4MotionTickCompactStore
+            .transportCoveragesForTesting(
+                points: Array(points.reversed()),
+                tickets: tickets,
+                strapIdentifier: strapIdentifier
+            )
+
+        XCTAssertEqual(indexed.count, tickets.count)
+        for ticket in tickets {
+            XCTAssertEqual(
+                indexed[ticket.id],
+                referenceTransportCoverage(
+                    points: points,
+                    start: ticket.start,
+                    end: ticket.end
+                ),
+                ticket.id
+            )
+        }
+    }
+
     func testConcurrentOverlappingPrefixReadsShareOneDecoderAndDoNotHoldStoreLock()
         async throws
     {
@@ -2354,6 +2409,54 @@ final class AtriaWhoop4MotionTickCompactStoreTests: XCTestCase {
                 rawPayload: payloadIdentity(unix: unix, tick: second),
                 strapIdentifier: strapIdentifier
             )
+        )
+    }
+
+    private func referenceTransportCoverage(
+        points: [AtriaWhoop4MotionTickCompactStore.Point],
+        start: Date,
+        end: Date
+    ) -> HistoricalArchive.MotionBankTransportCoverage {
+        let firstBucket = Int(floor(start.timeIntervalSince1970))
+        let lastBucket = Int(floor(end.timeIntervalSince1970))
+        let expected = max(1, lastBucket - firstBucket + 1)
+        let matching = points.compactMap { point -> TimeInterval? in
+            let bucket = Int(floor(point.timestamp))
+            return (firstBucket...lastBucket).contains(bucket)
+                ? point.timestamp
+                : nil
+        }.sorted()
+        let observed = Set(matching.map { Int(floor($0)) })
+        var maximumMissingRun = 0
+        var currentMissingRun = 0
+        for bucket in firstBucket...lastBucket {
+            if observed.contains(bucket) {
+                currentMissingRun = 0
+            } else {
+                currentMissingRun += 1
+                maximumMissingRun = max(
+                    maximumMissingRun,
+                    currentMissingRun
+                )
+            }
+        }
+        return .init(
+            observedSeconds: observed.count,
+            expectedSeconds: expected,
+            densityPercent: min(
+                100,
+                Int(
+                    (Double(observed.count) / Double(expected) * 100)
+                        .rounded()
+                )
+            ),
+            maximumMissingRunSeconds: maximumMissingRun,
+            firstCapturedAt: matching.first.map {
+                Date(timeIntervalSince1970: $0)
+            },
+            capturedThrough: matching.last.map {
+                Date(timeIntervalSince1970: $0)
+            }
         )
     }
 

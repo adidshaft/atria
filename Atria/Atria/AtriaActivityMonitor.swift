@@ -789,8 +789,16 @@ struct AtriaActivityTimelineStressPoint: Identifiable, Equatable, Sendable {
 struct AtriaActivityTimelineHeartRateProjection: Equatable, Sendable {
     let points: [AtriaActivityTimelineHeartRatePoint]
     let measuredSampleCount: Int
+    /// Full factual range before visual reduction. The plotted representatives
+    /// intentionally suppress isolated spikes, but accessibility must not pair
+    /// the full sample count with a range computed from only that reduced set.
+    let measuredMinimumBPM: Int?
+    let measuredMaximumBPM: Int?
 
-    static let empty = Self(points: [], measuredSampleCount: 0)
+    static let empty = Self(points: [],
+                            measuredSampleCount: 0,
+                            measuredMinimumBPM: nil,
+                            measuredMaximumBPM: nil)
 }
 
 struct AtriaActivityTimelineStressProjection: Equatable, Sendable {
@@ -833,7 +841,13 @@ enum AtriaExactWindowHeartRate {
 }
 
 enum AtriaActivityTimelineSignalProjection {
-    static let heartRateGapThreshold: TimeInterval = 2 * 60
+    /// Ambient/all-day traces may visually join a brief telemetry hiccup. This
+    /// is presentation-only: the archive and measured-sample count remain
+    /// unchanged, and a larger gap is still a separate Charts series.
+    static let ambientHeartRateGapThreshold = AtriaChartVisualGrammar.traceDisplayContinuityGap
+    /// Workout traces keep the stricter boundary because a short hole can hide
+    /// an interval that materially changes workout load and zone interpretation.
+    static let workoutHeartRateGapThreshold: TimeInterval = 2 * 60
     // Display-continuity policy (matches the HR trace and the ambient/live
     // stress card): brief signal hiccups inside a five-minute window read as one
     // continuous run, while a genuine >5-min dropout still ends the run and
@@ -854,15 +868,16 @@ enum AtriaActivityTimelineSignalProjection {
                 if $0.t != $1.t { return $0.t < $1.t }
                 return $0.bpm < $1.bpm
             }
-        let runs = segmented(measured, date: \.t, gapThreshold: heartRateGapThreshold)
+        let runs = segmented(measured, date: \.t, gapThreshold: ambientHeartRateGapThreshold)
         var points: [AtriaActivityTimelineHeartRatePoint] = []
         points.reserveCapacity(min(measured.count, max(targetPointCount, runs.count * 2)))
         var id = 0
         for (segment, run) in runs.enumerated() {
-            let selected = selectRealSamples(run,
-                                             totalSampleCount: measured.count,
-                                             targetPointCount: targetPointCount,
-                                             value: { Double($0.bpm) })
+            let selected = selectRepresentativeHeartRateSamples(
+                run,
+                totalSampleCount: measured.count,
+                targetPointCount: targetPointCount
+            )
             let singleton = selected.count == 1
             for sample in selected {
                 points.append(.init(id: id,
@@ -873,7 +888,10 @@ enum AtriaActivityTimelineSignalProjection {
                 id += 1
             }
         }
-        return .init(points: points, measuredSampleCount: measured.count)
+        return .init(points: points,
+                     measuredSampleCount: measured.count,
+                     measuredMinimumBPM: measured.map(\.bpm).min(),
+                     measuredMaximumBPM: measured.map(\.bpm).max())
     }
 
     static func stress(
@@ -951,6 +969,51 @@ enum AtriaActivityTimelineSignalProjection {
         }
         if !current.isEmpty { runs.append(current) }
         return runs
+    }
+
+    /// A compact all-day HR line should show the measured local tendency, not
+    /// alternate between every bucket's minimum and maximum. Each interior
+    /// bucket therefore contributes the *real observation* nearest its local
+    /// mean. No BPM or timestamp is synthesized; source extrema remain in the
+    /// underlying data and measured-sample accounting, while the inline trace
+    /// becomes readable. First and last observations remain exact anchors.
+    private static func selectRepresentativeHeartRateSamples(
+        _ samples: [HistoricalArchive.HeartRatePoint],
+        totalSampleCount: Int,
+        targetPointCount: Int
+    ) -> [HistoricalArchive.HeartRatePoint] {
+        guard samples.count > 1 else { return samples }
+        guard targetPointCount > 1, totalSampleCount > targetPointCount else { return samples }
+        let proportional = Int((Double(samples.count) / Double(totalSampleCount)
+                                * Double(targetPointCount)).rounded())
+        let budget = min(samples.count, max(2, proportional))
+        guard samples.count > budget else { return samples }
+        guard budget > 2 else { return [samples[0], samples[samples.count - 1]] }
+
+        let interiorCount = samples.count - 2
+        let bucketCount = budget - 2
+        var selectedIndices = [0]
+        selectedIndices.reserveCapacity(budget)
+        for bucket in 0..<bucketCount {
+            let lower = 1 + bucket * interiorCount / bucketCount
+            let upper = 1 + (bucket + 1) * interiorCount / bucketCount
+            guard lower < upper else { continue }
+            let mean = Double(samples[lower..<upper].reduce(0) { $0 + $1.bpm })
+                / Double(upper - lower)
+            let midpoint = Double(lower + upper - 1) / 2
+            let representative = (lower..<upper).min { lhs, rhs in
+                let lhsDistance = abs(Double(samples[lhs].bpm) - mean)
+                let rhsDistance = abs(Double(samples[rhs].bpm) - mean)
+                if lhsDistance != rhsDistance { return lhsDistance < rhsDistance }
+                let lhsTimeDistance = abs(Double(lhs) - midpoint)
+                let rhsTimeDistance = abs(Double(rhs) - midpoint)
+                if lhsTimeDistance != rhsTimeDistance { return lhsTimeDistance < rhsTimeDistance }
+                return lhs < rhs
+            }
+            if let representative { selectedIndices.append(representative) }
+        }
+        selectedIndices.append(samples.count - 1)
+        return selectedIndices.map { samples[$0] }
     }
 
     /// Keeps the first/last observation plus real min/max observations from
@@ -1984,7 +2047,7 @@ struct AtriaActivityMonitorTab: View {
         for point in retained {
             let startsNewSegment = previous.map {
                 point.t.timeIntervalSince($0.t)
-                    > AtriaActivityTimelineSignalProjection.heartRateGapThreshold
+                    > AtriaActivityTimelineSignalProjection.ambientHeartRateGapThreshold
             } ?? true
             let segment = startsNewSegment ? (previous?.segment ?? -1) + 1 : (previous?.segment ?? 0)
             if let lastIndex = rebuilt.indices.last,
@@ -2069,7 +2132,7 @@ struct AtriaActivityMonitorTab: View {
         }
         var tail = liveHeartRateTail
         let segment = existingLast.map {
-            reading.at.timeIntervalSince($0.t) > AtriaActivityTimelineSignalProjection.heartRateGapThreshold
+            reading.at.timeIntervalSince($0.t) > AtriaActivityTimelineSignalProjection.ambientHeartRateGapThreshold
                 ? $0.segment + 1 : $0.segment
         } ?? 0
         if let last = tail.last, last.segment == segment, last.isOnlyPointInSegment {
@@ -2155,7 +2218,8 @@ struct AtriaActivityMonitorTab: View {
                 LineMark(x: .value("Time", point.t),
                          y: .value("Heart rate", point.bpm),
                          series: .value("Observed run", "hr-\(point.segment)"))
-                    .lineStyle(StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+                    .interpolationMethod(.monotone)
+                    .lineStyle(AtriaChartVisualGrammar.traceLine)
                     .foregroundStyle(.red)
                 if point.isOnlyPointInSegment {
                     PointMark(x: .value("Time", point.t),
@@ -2369,8 +2433,12 @@ struct AtriaActivityMonitorTab: View {
 
     private func heartRateAccessibilityValue(spans: [TimelineSpan]) -> String {
         let signal: String
-        if let low = timelineHeartRatePoints.map(\.bpm).min(),
-           let high = timelineHeartRatePoints.map(\.bpm).max() {
+        let factualRange = [
+            heartRateProjection.measuredMinimumBPM,
+            heartRateProjection.measuredMaximumBPM
+        ].compactMap { $0 } + liveHeartRateTail.map(\.bpm)
+        if let low = factualRange.min(),
+           let high = factualRange.max() {
             signal = "\(heartRateProjection.measuredSampleCount + liveHeartRateTail.count) measured samples, \(low) to \(high) beats per minute."
         } else {
             signal = heartRateEmptyMessage ?? "No measured heart rate."

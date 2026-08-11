@@ -101,6 +101,79 @@ enum AtriaWhoop4ProductionHistoryBootstrapPolicy {
 /// their fail-closed behavior independently reviewable while preserving the
 /// existing `AtriaBLEManager` API used by runtime call sites and tests.
 extension AtriaBLEManager {
+    struct TerminalConsumerRawFirstSliceOrchestrationState:
+        Equatable, Sendable
+    {
+        let authorityIdentifier: String
+        let deadline: Date
+        var rawGeneration: UInt64?
+        var spent: Bool
+    }
+
+    enum TerminalConsumerRawFirstSliceOrchestrationEvent:
+        Equatable, Sendable
+    {
+        case bindRawGeneration(UInt64)
+        case finishRawGeneration(UInt64)
+        case deadlineReached(Date)
+    }
+
+    struct TerminalConsumerRawFirstSliceOrchestrationTransition:
+        Equatable, Sendable
+    {
+        let state: TerminalConsumerRawFirstSliceOrchestrationState
+        let shouldResumeLocalMaterialization: Bool
+    }
+
+    /// Pure state transition for the one-shot raw-first scheduling lease.
+    /// Binding never spends the lease, only the exact bound generation may
+    /// spend it at a slice boundary, and the absolute deadline always fails
+    /// open so a stalled raw lane cannot retain local publication forever.
+    nonisolated static func transitionTerminalConsumerRawFirstSlice(
+        state: TerminalConsumerRawFirstSliceOrchestrationState,
+        event: TerminalConsumerRawFirstSliceOrchestrationEvent
+    ) -> TerminalConsumerRawFirstSliceOrchestrationTransition {
+        var next = state
+        switch event {
+        case .bindRawGeneration(let generation):
+            guard !next.spent, next.rawGeneration == nil else {
+                return .init(
+                    state: next,
+                    shouldResumeLocalMaterialization: false
+                )
+            }
+            next.rawGeneration = generation
+        case .finishRawGeneration(let generation):
+            guard !next.spent, next.rawGeneration == generation else {
+                return .init(
+                    state: next,
+                    shouldResumeLocalMaterialization: false
+                )
+            }
+            next.spent = true
+            return .init(
+                state: next,
+                shouldResumeLocalMaterialization: true
+            )
+        case .deadlineReached(let now):
+            guard !next.spent, now >= next.deadline else {
+                return .init(
+                    state: next,
+                    shouldResumeLocalMaterialization: false
+                )
+            }
+            next.spent = true
+            return .init(
+                state: next,
+                shouldResumeLocalMaterialization: true
+            )
+        }
+        return .init(
+            state: next,
+            shouldResumeLocalMaterialization: false
+        )
+    }
+
     /// A deliberate force request may move history onto one fresh connection,
     /// but ordinary/aged recovery must never manufacture a live-link cutover.
     /// The caller still has to durably close the live journal boundary before
@@ -598,6 +671,33 @@ extension AtriaBLEManager {
               acceptedAge >= 0,
               acceptedAge <= acceptedFreshnessWindow else { return false }
         return true
+    }
+
+    /// Gives a verified same-link raw backlog one finite first turn before a
+    /// terminal whole-archive projection occupies the serial archive lane.
+    /// This is scheduling only: the accepted 2A37 callback must still mint the
+    /// exact object/epoch authority, and expiry always releases publication.
+    nonisolated static func shouldDeferTerminalConsumerMaterializationForRawFirstSlice(
+        applicationIsActive: Bool,
+        strapBacklogPending: Bool,
+        verifiedRawHistoryCapability: Bool,
+        linkConnected: Bool,
+        activeExplicitWorkout: Bool,
+        rawThermalPressureActive: Bool,
+        publicationYieldActive: Bool,
+        rawFirstSliceSpent: Bool,
+        now: Date,
+        deadline: Date
+    ) -> Bool {
+        applicationIsActive
+            && strapBacklogPending
+            && verifiedRawHistoryCapability
+            && linkConnected
+            && !activeExplicitWorkout
+            && !rawThermalPressureActive
+            && !publicationYieldActive
+            && !rawFirstSliceSpent
+            && now < deadline
     }
 
     /// The persisted workout intent can reach its terminal value just before

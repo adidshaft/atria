@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// A premium progress ring for a single metric. Gradient stroke + subtle glow
-/// when there is a value; a quiet partial cap while the metric is still learning.
+/// when there is a value; one quiet dashed track while the metric is learning.
 /// Center text is always scale-safe (never clipped).
 struct AtriaMetricRing: View, Equatable {
     let label: String
@@ -17,7 +17,7 @@ struct AtriaMetricRing: View, Equatable {
     /// validated one (67%) — and the number visibly "jumped" as better
     /// evidence landed, which reads as a random product rather than an
     /// upgrading estimate. The concentric hero already says this; both
-    /// layouts must. Nil renders exactly as before.
+    /// layouts must. Nil remains visually distinct without claiming a fill.
     var confidenceMarker: String? = nil
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -54,7 +54,11 @@ struct AtriaMetricRing: View, Equatable {
                         .stroke(Color.primary.opacity(0.08), lineWidth: lineWidth)
                 }
 
-                if fraction != nil && clamped >= 0.01 {
+                // A measured zero owns the ordinary base track but no arc. Any
+                // positive measurement draws its factual magnitude, including
+                // sub-one-percent values; nil already drew the one unavailable
+                // track above and must not acquire a second legacy cap here.
+                if fraction != nil && clamped > 0 {
                     Circle()
                         .trim(from: 0, to: animatedFraction)
                         .stroke(
@@ -85,14 +89,6 @@ struct AtriaMetricRing: View, Equatable {
                                 }
                             }
                         }
-                } else {
-                    // Learning: a short cap gives the card life without implying
-                    // the metric has a real scored value yet.
-                    Circle()
-                        .trim(from: 0.06, to: 0.22)
-                        .stroke(tint.opacity(0.48),
-                                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
                 }
 
                 Text(value)

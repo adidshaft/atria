@@ -673,7 +673,9 @@ struct AtriaTodayScreen: View {
                     AtriaTodayPlanCard(title: planTitle,
                                        detail: planDetail,
                                        target: planTargetText,
-                                       tint: displayHero.guidance.color,
+                                       tint: dayStrainIsIncomplete
+                                        ? .secondary
+                                        : displayHero.guidance.color,
                                        checkIn: journalCheckInProgress,
                                        notificationFallback: morningCheckInNeedsFallback,
                                        onOpenJournal: onOpenJournal)
@@ -1735,6 +1737,7 @@ struct AtriaTodayScreen: View {
                 // the data was observed -- a render time dressed as provenance.
                 // Absent means not measured, which is the honest claim.
                 observedAt: nil,
+                strainLimitation: currentStrainLimitation,
                 // Strain's graded zone needs a real frozen target to grade
                 // against, and an incomplete or pending day has no standing to
                 // grade at all -- same condition the ring already uses to
@@ -1774,7 +1777,7 @@ struct AtriaTodayScreen: View {
         let pending = isPendingHeroValue(displayHero.strainValue)
         let fill = AtriaRingMetricProjection.strainFill(
             strain: displayHero.strain,
-            isPending: incomplete || pending
+            isPending: pending
         )
         let targetProgress = AtriaRingMetricProjection.strainTargetProgress(
             strain: displayHero.strain,
@@ -1793,7 +1796,11 @@ struct AtriaTodayScreen: View {
                                   // and matches the "≥" prefix already on it.
                                   detail: pending
                                     ? "HR pending"
-                                    : (incomplete ? "lower bound" : (target.map { String(format: "of %.1f", $0) } ?? "Strain")),
+                                    : (incomplete
+                                        ? (currentStrainLimitation?.compactState
+                                            ?? "Strain data incomplete")
+                                        : (target.map { String(format: "of %.1f", $0) }
+                                            ?? "Strain")),
                                   systemImage: "flame.fill",
                                   // Without a Recovery-derived target, measured
                                   // strain keeps its identity blue instead of
@@ -1812,6 +1819,31 @@ struct AtriaTodayScreen: View {
     /// filtered the complete workout archive and repeated civil-time conversion.
     /// Below 1.0 strain the result depends only on the workout revision and local
     /// day and its confirmed-workout revision.
+    private var currentStrainLimitation:
+        AtriaWorkoutMetricPresentation.StrainLimitation? {
+        let calendar = Calendar.current
+        let now = Date()
+        let cycle = AtriaPhysiologicalDay.current(
+            now: now,
+            sleepHistory: sessionProjectionStore.state.sleepHistorySnapshot,
+            calendar: calendar
+        )
+        return AtriaWorkoutMetricPresentation.strainLimitation(
+            start: cycle.start,
+            end: now,
+            workouts: sessionProjectionStore.state.confirmedWorkouts,
+            dayWearCoverageFraction: displayHero.dayWearCoverageFraction
+        ) ?? (dayStrainIsIncomplete ? .incompleteEvidence : nil)
+    }
+
+    private var currentStrainLimitationPresentation:
+        AtriaWorkoutMetricPresentation.StrainLimitationPresentation? {
+        guard dayStrainIsIncomplete else { return nil }
+        return AtriaWorkoutMetricPresentation.strainLimitationPresentation(
+            currentStrainLimitation ?? .incompleteEvidence
+        )
+    }
+
     private var dayStrainIsIncomplete: Bool {
         if displayHero.strainConfidence.localizedCaseInsensitiveContains("partial")
             || displayHero.strainValue.hasPrefix("≥") {
@@ -1996,6 +2028,7 @@ struct AtriaTodayScreen: View {
                   let previous = previousSleepPerformancePercent else { return nil }
             return Self.deltaText(current - previous, unit: "%")
         case .strain:
+            guard !dayStrainIsIncomplete else { return nil }
             guard let previous = previousRollup?.strain else { return nil }
             let delta = displayHero.strain - previous
             guard abs(delta) >= 0.05 else { return "Flat vs yesterday" }
@@ -2036,11 +2069,17 @@ struct AtriaTodayScreen: View {
     }
 
     private var planTitle: String {
-        displayHero.guidance.headline
+        if let limitation = currentStrainLimitationPresentation {
+            return limitation.compactState
+        }
+        return displayHero.guidance.headline
     }
 
     private var planDetail: String {
-        displayHero.guidance.detail
+        if let limitation = currentStrainLimitationPresentation {
+            return limitation.detailText
+        }
+        return displayHero.guidance.detail
     }
 
     private var planTargetText: String {
@@ -2051,6 +2090,9 @@ struct AtriaTodayScreen: View {
         // it (2026-08-04 WHOOP-alignment review, rank 1).
         if isPendingHeroValue(displayHero.strainValue) {
             return String(format: "Target %.1f \u{00b7} strain pending", target)
+        }
+        if let limitation = currentStrainLimitationPresentation {
+            return String(format: "Target %.1f \u{00b7} %@", target, limitation.targetContext)
         }
         let remaining = target - displayHero.strain
         if remaining > 0.05 {

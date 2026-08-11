@@ -24,6 +24,14 @@ final class AtriaSleepStageIntegrityTests: XCTestCase {
             existingDuration: 12_000,
             candidateCoverage: 12_001
         ))
+        XCTAssertTrue(SessionStore.shouldRefreshUserAdjustedSleepEvidence(
+            source: "user_adjusted_sleep",
+            existingSamples: 1_000,
+            candidateSamples: 1_000,
+            existingDuration: 12_000,
+            candidateCoverage: 12_001,
+            hasTimeAlignedMotionEpochs: true
+        ), "motion arrival must refresh stages even when HR and coverage do not grow")
         XCTAssertFalse(SessionStore.shouldRefreshUserAdjustedSleepEvidence(
             source: "auto_confirmed_sleep",
             existingSamples: 1_000,
@@ -77,7 +85,7 @@ final class AtriaSleepStageIntegrityTests: XCTestCase {
         XCTAssertTrue(SessionStore.fragmentedAggregateHRStagesAreUnsupported(fragmented))
     }
 
-    func testNoGrowthAdjustedSleepBypassesGenericStageBackfill() throws {
+    func testNoGrowthAdjustedSleepRecomputesOrClearsStaleStages() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory
             .deletingLastPathComponent()
@@ -86,11 +94,12 @@ final class AtriaSleepStageIntegrityTests: XCTestCase {
         let start = try XCTUnwrap(source.range(of: "private func backfillConfirmedSleepStagesFromSessions"))
         let end = try XCTUnwrap(source.range(of: "private static func confirmedSleepStagesCoverSleep", range: start.upperBound..<source.endIndex))
         let backfill = String(source[start.lowerBound..<end.lowerBound])
+        let refresh = try XCTUnwrap(backfill.range(of: "refreshedUserAdjustedSleepEvidenceIfNeeded"))
         let adjustedGuard = try XCTUnwrap(backfill.range(of: "if sleep.source.hasPrefix(\"user_adjusted_\")"))
-        let genericPreserve = try XCTUnwrap(backfill.range(of: "Self.shouldPreserveConfirmedSleepStageSegments(sleep)"))
 
-        XCTAssertLessThan(adjustedGuard.lowerBound, genericPreserve.lowerBound)
-        XCTAssertTrue(backfill.contains("if !hasRecoveredEpochOverlap"))
+        XCTAssertLessThan(refresh.lowerBound, adjustedGuard.lowerBound)
+        XCTAssertTrue(backfill.contains("hasRecoveredEpochOverlap"))
+        XCTAssertTrue(backfill.contains("reason=missing_time_aligned_motion"))
         XCTAssertTrue(backfill.contains("fragmentedAggregateHRStagesAreUnsupported"))
         XCTAssertTrue(backfill.contains("reason=fragmented_aggregate_fallback"))
     }
@@ -110,8 +119,9 @@ final class AtriaSleepStageIntegrityTests: XCTestCase {
             "end: sleep.end",
             "source: sleep.source",
             "confidence: sleep.confidence",
-            "motionSource: sleep.motionSource",
-            "motionValidated: sleep.motionValidated",
+            "motionProvenance.hasRecoveredEpochs",
+            "motionSource: motionSource",
+            "motionValidated: motionValidated",
             "eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier",
         ] {
             XCTAssertTrue(refreshPath.contains(token), "Missing ownership token: \(token)")
@@ -195,6 +205,19 @@ final class AtriaSleepStageIntegrityTests: XCTestCase {
         let record = sleep(duration: 6_300, span: 7_200, segments: segments)
 
         XCTAssertTrue(AtriaSleepStageIntegrity.validates(segments, for: record))
+        XCTAssertEqual(record.effectiveSleepDuration, 6_300, accuracy: 0.001,
+                       "all valid staged sleeps use non-awake time as total sleep time")
+    }
+
+    func testNinetySecondPlusUnsupportedGapFailsEvenWithNearFullCoverage() {
+        let segments = [
+            segment(0, 3_600, .light, id: "before-gap"),
+            segment(3_720, 3_480, .rem, id: "after-gap"),
+        ]
+        let record = sleep(duration: 7_080, span: 7_200, segments: segments)
+
+        XCTAssertGreaterThan(segments.reduce(0) { $0 + $1.duration } / record.span, 0.95)
+        XCTAssertFalse(AtriaSleepStageIntegrity.validates(segments, for: record))
     }
 
     func testDuplicateOrOverlappingStageSegmentsFailClosed() {

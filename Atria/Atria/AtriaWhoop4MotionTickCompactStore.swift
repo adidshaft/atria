@@ -1474,6 +1474,28 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
             strapIdentifier: strapIdentifier
         )
     }
+
+    static func transportCoveragesForTesting(
+        points: [Point],
+        tickets: [AtriaWhoop4MotionBankCoverageLedger.OffloadTicket],
+        strapIdentifier: String
+    ) -> [String: HistoricalArchive.MotionBankTransportCoverage] {
+        let index = MotionBankTransportCoverageIndex(points: points)
+        return Dictionary(uniqueKeysWithValues: tickets.compactMap { ticket in
+            guard ticket.strapIdentifier.caseInsensitiveCompare(
+                strapIdentifier
+            ) == .orderedSame,
+                  ticket.end > ticket.start else { return nil }
+            return (
+                ticket.id,
+                transportCoverage(
+                    index: index,
+                    start: ticket.start,
+                    end: ticket.end
+                )
+            )
+        })
+    }
 #endif
 
     /// Bounds waiting behind historical migration chunks. Callers own the
@@ -1542,11 +1564,12 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
             end: last.addingTimeInterval(1),
             strapIdentifier: strapIdentifier
         )
+        let index = MotionBankTransportCoverageIndex(points: points)
         return Dictionary(uniqueKeysWithValues: eligible.map { ticket in
             (
                 ticket.id,
                 Self.transportCoverage(
-                    points: points,
+                    index: index,
                     start: ticket.start,
                     end: ticket.end
                 )
@@ -1556,6 +1579,123 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
 
     private static func transportCoverage(
         points: [Point],
+        start: Date,
+        end: Date
+    ) -> HistoricalArchive.MotionBankTransportCoverage {
+        transportCoverage(
+            index: MotionBankTransportCoverageIndex(points: points),
+            start: start,
+            end: end
+        )
+    }
+
+    /// One immutable index serves every exact bank ticket in a compact shard
+    /// evaluation. The prior implementation sorted and scanned every point for
+    /// every ticket, making 160+ accumulated tickets quadratic on the serial
+    /// archive lane. Timestamp and unique-second bounds plus a max-gap segment
+    /// tree preserve the exact inclusive-bucket result in O(log n) per ticket.
+    private struct MotionBankTransportCoverageIndex {
+        let timestamps: [TimeInterval]
+        let timestampBuckets: [Int]
+        let uniqueBuckets: [Int]
+        let maximumGapTreeBase: Int
+        let maximumGapTree: [Int]
+
+        init(points: [Point]) {
+            timestamps = points.map(\.timestamp).sorted()
+            timestampBuckets = timestamps.map { Int(floor($0)) }
+            var unique: [Int] = []
+            unique.reserveCapacity(timestampBuckets.count)
+            for bucket in timestampBuckets where unique.last != bucket {
+                unique.append(bucket)
+            }
+            uniqueBuckets = unique
+
+            var base = 1
+            let gapCount = max(0, unique.count - 1)
+            while base < gapCount { base *= 2 }
+            maximumGapTreeBase = base
+            var tree = Array(repeating: 0, count: base * 2)
+            if gapCount > 0 {
+                for index in 0..<gapCount {
+                    tree[base + index] = max(
+                        0,
+                        unique[index + 1] - unique[index] - 1
+                    )
+                }
+                if base > 1 {
+                    for index in stride(
+                        from: base - 1,
+                        through: 1,
+                        by: -1
+                    ) {
+                        tree[index] = max(
+                            tree[index * 2],
+                            tree[index * 2 + 1]
+                        )
+                    }
+                }
+            }
+            maximumGapTree = tree
+        }
+
+        func maximumGap(from lower: Int, to upper: Int) -> Int {
+            guard lower < upper else { return 0 }
+            var left = lower + maximumGapTreeBase
+            var right = upper + maximumGapTreeBase
+            var result = 0
+            while left < right {
+                if left.isMultiple(of: 2) == false {
+                    result = max(result, maximumGapTree[left])
+                    left += 1
+                }
+                if right.isMultiple(of: 2) == false {
+                    right -= 1
+                    result = max(result, maximumGapTree[right])
+                }
+                left /= 2
+                right /= 2
+            }
+            return result
+        }
+    }
+
+    private static func lowerBound(
+        _ values: [Int],
+        _ target: Int
+    ) -> Int {
+        var lower = 0
+        var upper = values.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if values[middle] < target {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        return lower
+    }
+
+    private static func upperBound(
+        _ values: [Int],
+        _ target: Int
+    ) -> Int {
+        var lower = 0
+        var upper = values.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if values[middle] <= target {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        return lower
+    }
+
+    private static func transportCoverage(
+        index: MotionBankTransportCoverageIndex,
         start: Date,
         end: Date
     ) -> HistoricalArchive.MotionBankTransportCoverage {
@@ -1572,45 +1712,52 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
         let firstBucket = Int(floor(start.timeIntervalSince1970))
         let lastBucket = Int(floor(end.timeIntervalSince1970))
         let expected = max(1, lastBucket - firstBucket + 1)
-        let matchingTimestamps = points.compactMap { point -> TimeInterval? in
-            let bucket = Int(floor(point.timestamp))
-            return (firstBucket...lastBucket).contains(bucket)
-                ? point.timestamp
-                : nil
-        }.sorted()
-        let seconds = Set(matchingTimestamps.map {
-            Int(floor($0))
-        })
-        var maximumMissingRun = 0
-        var currentMissingRun = 0
-        for bucket in firstBucket...lastBucket {
-            if seconds.contains(bucket) {
-                currentMissingRun = 0
-            } else {
-                currentMissingRun += 1
-                maximumMissingRun = max(
-                    maximumMissingRun,
-                    currentMissingRun
+        let timestampLower = lowerBound(
+            index.timestampBuckets,
+            firstBucket
+        )
+        let timestampUpper = upperBound(
+            index.timestampBuckets,
+            lastBucket
+        )
+        let secondLower = lowerBound(index.uniqueBuckets, firstBucket)
+        let secondUpper = upperBound(index.uniqueBuckets, lastBucket)
+        let observed = max(0, secondUpper - secondLower)
+        let maximumMissingRun: Int
+        if observed == 0 {
+            maximumMissingRun = expected
+        } else {
+            let firstObserved = index.uniqueBuckets[secondLower]
+            let lastObserved = index.uniqueBuckets[secondUpper - 1]
+            maximumMissingRun = max(
+                max(
+                    firstObserved - firstBucket,
+                    lastBucket - lastObserved
+                ),
+                index.maximumGap(
+                    from: secondLower,
+                    to: secondUpper - 1
                 )
-            }
+            )
         }
         return .init(
-            observedSeconds: seconds.count,
+            observedSeconds: observed,
             expectedSeconds: expected,
             densityPercent: min(
                 100,
                 Int(
-                    (Double(seconds.count) / Double(expected) * 100)
+                    (Double(observed) / Double(expected) * 100)
                         .rounded()
                 )
             ),
             maximumMissingRunSeconds: maximumMissingRun,
-            firstCapturedAt: matchingTimestamps.first.map {
-                Date(timeIntervalSince1970: $0)
-            },
-            capturedThrough: matchingTimestamps.last.map {
-                Date(timeIntervalSince1970: $0)
-            }
+            firstCapturedAt: timestampLower < timestampUpper
+                ? Date(timeIntervalSince1970: index.timestamps[timestampLower])
+                : nil,
+            capturedThrough: timestampLower < timestampUpper
+                ? Date(timeIntervalSince1970:
+                    index.timestamps[timestampUpper - 1])
+                : nil
         )
     }
 

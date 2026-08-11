@@ -2139,11 +2139,30 @@ private struct AtriaVitalsRecoveryStrainCardHost: View {
 
     var body: some View {
         let vitals = vitalsStore.state
+        let hero = heroStore.state
         let baseline = vitals.baseline
         let fixtureSleepHistory = debugFixtureSleepHistory
         let sleepHistory = fixtureSleepHistory ?? vitals.sleepHistorySnapshot
         let sleepHistoryRevision = fixtureSleepHistory == nil ? vitals.sleepHistorySnapshotRevision : -1
-        AtriaRecoveryStrainCard(hero: heroStore.state,
+        let strainIsPartial = hero.strainValue.hasPrefix("≥")
+            || hero.strainConfidence.localizedCaseInsensitiveContains("partial")
+        let strainLimitation: AtriaWorkoutMetricPresentation.StrainLimitation? = {
+            guard strainIsPartial else { return nil }
+            let now = Date()
+            let cycle = AtriaPhysiologicalDay.current(
+                now: now,
+                sleepHistory: sleepHistory,
+                calendar: .current
+            )
+            return AtriaWorkoutMetricPresentation.strainLimitation(
+                start: cycle.start,
+                end: now,
+                workouts: vitals.confirmedWorkouts,
+                dayWearCoverageFraction: hero.dayWearCoverageFraction
+            ) ?? .incompleteEvidence
+        }()
+        AtriaRecoveryStrainCard(hero: hero,
+                                strainLimitation: strainLimitation,
                                 sleepHistory: sleepHistory,
                                 sleepHistoryRevision: sleepHistoryRevision,
                                 dailyRollupHistory: vitals.dailyRollupHistory,
@@ -4577,7 +4596,7 @@ enum AtriaHeartRateDisplayContinuity: Equatable {
         case .ambient:
             return AtriaChartVisualGrammar.traceDisplayContinuityGap
         case .workout:
-            return AtriaActivityTimelineSignalProjection.heartRateGapThreshold
+            return AtriaActivityTimelineSignalProjection.workoutHeartRateGapThreshold
         }
     }
 }
@@ -5799,6 +5818,7 @@ private struct AtriaHRVCard: View, Equatable {
 
 private struct AtriaRecoveryStrainCard: View, Equatable {
     let hero: AtriaHomeModel.HeroSnapshot
+    let strainLimitation: AtriaWorkoutMetricPresentation.StrainLimitation?
     let sleepHistory: SleepHistorySnapshot
     let sleepHistoryRevision: Int
     let dailyRollupHistory: [DailyRollupStoreEntry]
@@ -5828,6 +5848,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
 
     static func == (lhs: AtriaRecoveryStrainCard, rhs: AtriaRecoveryStrainCard) -> Bool {
         lhs.hero == rhs.hero
+            && lhs.strainLimitation == rhs.strainLimitation
             && lhs.sleepHistoryRevision == rhs.sleepHistoryRevision
             && lhs.dailyRollupHistoryRevision == rhs.dailyRollupHistoryRevision
             && lhs.recoveryTarget == rhs.recoveryTarget
@@ -5904,7 +5925,8 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     }
 
     private var recoveryStrainVisuals: some View {
-        HStack(spacing: 14) {
+        let limitation = strainLimitationPresentation
+        return HStack(spacing: 14) {
             AtriaMetricRing(label: "Recovery",
                             // A recovery number is deliberately available on the
                             // first measured sleep even before HRV/baselines are
@@ -5915,18 +5937,17 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                             fraction: recoveryFraction,
                             tint: recoveryZone?.tint ?? hero.recoveryEstimate.percent.map(Metrics.recoveryColor) ?? .orange,
                             size: 112)
-            // Legacy token kept in source for the handoff guard:
-            // AtriaMetricRing(label: "Strain",
-            // fraction: strainFraction
-            AtriaStrainBandGauge(strain: hero.strain,
-                                 target: hero.guidance.target,
-                                 size: 112)
-
             VStack(alignment: .leading, spacing: 8) {
-                Text(hero.guidance.headline)
+                AtriaStrainScaleRail(
+                    displayValue: hero.strainValue,
+                    strain: hero.strain,
+                    target: strainIsPartial ? nil : hero.guidance.target,
+                    limitation: limitation?.compactState
+                )
+                Text(limitation?.improvementHint ?? hero.guidance.headline)
                     .font(.subheadline.weight(.semibold))
                     .fixedSize(horizontal: false, vertical: true)
-                Text(hero.loadSignalSummaryText)
+                Text(limitation?.explanation ?? hero.loadSignalSummaryText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -5936,7 +5957,7 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
         .padding(12)
         .atriaInsetCard(tint: recoveryZone?.tint ?? .green)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Recovery \(hero.recoveryEstimate.percent.map { "\($0) percent" } ?? "learning"), strain \(String(format: "%.1f", hero.strain)). \(hero.loadSignalSummaryText)")
+        .accessibilityLabel("Recovery \(hero.recoveryEstimate.percent.map { "\($0) percent" } ?? "learning"), strain \(strainAccessibilityValue). \(limitation?.accessibilityText ?? hero.loadSignalSummaryText)")
     }
 
     @ViewBuilder
@@ -5950,9 +5971,10 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
                         zone: recoveryZone,
                         targetMetric: .recovery)
         AtriaMetricTile(label: "Strain",
-                        value: String(format: "%.1f", hero.strain),
-                        state: .local,
-                        tint: strainZone?.tint ?? Metrics.strainColor(hero.strain),
+                        value: hero.strainValue,
+                        state: strainIsPartial ? nil : .local,
+                        tint: Metrics.electricStrain,
+                        footnote: strainLimitationPresentation?.compactState,
                         zone: strainZone,
                         targetMetric: .strain)
         AtriaTrainingLoadTile(ratio: hero.loadRatioText,
@@ -5976,18 +5998,34 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     }
 
     private var strainZone: AtriaMetricZone? {
-        Metrics.strainZone(strain: hero.strain,
-                           target: hero.guidance.target,
-                           greenBand: strainGreenBand,
-                           yellowBand: strainYellowBand)
+        guard !strainIsPartial else { return nil }
+        return Metrics.strainZone(strain: hero.strain,
+                                  target: hero.guidance.target,
+                                  greenBand: strainGreenBand,
+                                  yellowBand: strainYellowBand)
     }
 
     private var recoveryFraction: Double? {
         hero.recoveryEstimate.percent.map { min(max(Double($0) / 100, 0), 1) }
     }
 
-    private var strainFraction: Double? {
-        min(max(hero.strain / 21, 0), 1)
+    private var strainIsPartial: Bool {
+        hero.strainValue.hasPrefix("≥")
+            || hero.strainConfidence.localizedCaseInsensitiveContains("partial")
+    }
+
+    private var strainLimitationPresentation:
+        AtriaWorkoutMetricPresentation.StrainLimitationPresentation? {
+        guard strainIsPartial else { return nil }
+        return AtriaWorkoutMetricPresentation.strainLimitationPresentation(
+            strainLimitation ?? .incompleteEvidence
+        )
+    }
+
+    private var strainAccessibilityValue: String {
+        let trimmed = hero.strainValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("≥") else { return trimmed }
+        return "at least " + trimmed.dropFirst().trimmingCharacters(in: .whitespaces)
     }
 }
 

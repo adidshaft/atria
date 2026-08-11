@@ -2053,6 +2053,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var postHistoryLiveRestorationGeneration: UInt64?
     private let postHistoryLiveRestorationTimeout: TimeInterval = 15
     private var resumeFullDrainPublicationAfterFreshHR = false
+    private var terminalConsumerRawFirstSliceRefusal:
+        TerminalConsumerRawFirstSliceOrchestrationState?
+    private var terminalConsumerRawFirstSliceTimeoutTask: Task<Void, Never>?
+    private let terminalConsumerRawFirstSliceBudget: TimeInterval = 90
     /// Non-nil only for a history-first reconnect that archives an unvalidated
     /// raw gap. It is persisted after rows land so the same finite strap backlog
     /// is not requested again on every later connection edge.
@@ -14743,6 +14747,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         durableBoundary: Bool,
         now: Date
     ) {
+        spendTerminalConsumerRawFirstSliceIfNeeded(
+            generation: authority.generation
+        )
+        maintainPendingWorkoutMotionBankTickets(
+            reason: "connected_raw_slice_boundary_\(reason)",
+            now: now
+        )
         let defaults = UserDefaults.standard
         let progress = Self.connectedRawHistoryCatchUpSliceProgress(
             durableRows: newRows,
@@ -16165,6 +16176,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // only after atomic admission actually installed a generation; failed
         // authority/claim/local gates must leave present capture eligible.
         connectedRawHistoryCatchUpContinuationPending = true
+        bindTerminalConsumerRawFirstSliceIfNeeded(
+            generation: offlineHistoricalSyncGeneration
+        )
         AtriaDebugLog(
             "ATRIADBG offline_sync status=connected_raw_catch_up_started authority=%@ trigger=%@ generation=%llu backlog=%@ action=sustained_same_link_keep_2a37_no_cancel_no_rebuild",
             authority.authorityID.uuidString,
@@ -28381,6 +28395,91 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
+    /// Queue maintenance is deliberately permitted between exact raw slices.
+    /// It issues no BLE command and preserves every closed missing-coverage
+    /// interval, but prevents a sustained HR FIFO continuation from bypassing
+    /// pruning/normalization forever on each accepted-HR callback.
+    private func maintainPendingWorkoutMotionBankTickets(
+        reason: String,
+        now: Date,
+        additionallyProtectedIDs: Set<String> = []
+    ) {
+        guard !offlineHistoricalSyncInProgress,
+              !historyOnlyProbeMode,
+              let connectedPeripheral = peripheral,
+              connectedPeripheral.state == .connected else { return }
+        let strapIdentifier = connectedPeripheral.identifier.uuidString
+        let defaults = UserDefaults.standard
+        let protectedKeys = [
+            Self.workoutHistoricalMotionBankActiveTicketIDKey,
+            Self.workoutHistoricalMotionBankTransportDeferredTicketIDKey,
+            Self.workoutHistoricalMotionBankMaintenanceTicketIDKey,
+        ]
+        var protectedIDs = additionallyProtectedIDs
+        for key in protectedKeys {
+            if let identifier = defaults.string(forKey: key) {
+                protectedIDs.insert(identifier)
+            }
+        }
+
+        let prunedShortTickets =
+            AtriaWhoop4MotionBankCoverageLedger
+                .pruneUnrecoverableShortOffloads()
+        let exhaustedIDs =
+            AtriaWhoop4MotionBankCoverageLedger.exhaustOffloads(
+                endingAtOrBefore: now.addingTimeInterval(
+                    -Self.workoutHistoricalMotionBankMaximumBlockingAge
+                ),
+                strapIdentifier: strapIdentifier,
+                protectedIDs: protectedIDs
+            )
+        let normalization =
+            AtriaWhoop4MotionBankCoverageLedger.normalizePendingOffloads(
+                strapIdentifier: strapIdentifier,
+                protectedIDs: protectedIDs
+            )
+        let retiredIDs = Set(exhaustedIDs + normalization.removedIDs)
+        for key in protectedKeys {
+            guard let identifier = defaults.string(forKey: key) else {
+                continue
+            }
+            let stillPending = AtriaWhoop4MotionBankCoverageLedger
+                .pendingOffload(
+                    id: identifier,
+                    strapIdentifier: strapIdentifier
+                ) != nil
+            if retiredIDs.contains(identifier) || !stillPending {
+                defaults.removeObject(forKey: key)
+            }
+        }
+        if prunedShortTickets > 0 {
+            AtriaDebugLog(
+                "ATRIADBG workout_motion_bank_offload status=short_tickets_pruned count=%d minimum_s=%.1f reason=%@ action=retain_as_missing_coverage_without_impossible_ble_jobs",
+                prunedShortTickets,
+                AtriaWhoop4MotionBankCoverageLedger
+                    .minimumRecoverableOffloadDuration,
+                reason
+            )
+        }
+        if !exhaustedIDs.isEmpty {
+            AtriaDebugLog(
+                "ATRIADBG workout_motion_bank_offload status=stale_jobs_exhausted count=%d maximum_age_s=%d reason=%@ action=retain_missing_coverage_prioritize_present_capture",
+                exhaustedIDs.count,
+                Int(Self.workoutHistoricalMotionBankMaximumBlockingAge),
+                reason
+            )
+        }
+        if !normalization.removedIDs.isEmpty {
+            AtriaDebugLog(
+                "ATRIADBG workout_motion_bank_offload status=pending_jobs_normalized removed=%d retained=%d protected=%d reason=%@ action=retain_closed_missing_evidence_prioritize_new_unattempted",
+                normalization.removedIDs.count,
+                normalization.retainedCount,
+                protectedIDs.count,
+                reason
+            )
+        }
+    }
+
     @discardableResult
     private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         reason: String,
@@ -28389,6 +28488,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         expectedAdmissionLedgerTicketID: String? = nil,
         expectedLocalDependencyTicketID: String? = nil
     ) -> Bool {
+        let now = Date()
+        maintainPendingWorkoutMotionBankTickets(
+            reason: reason,
+            now: now,
+            additionallyProtectedIDs: Set([
+                expectedArchiveWarmTicketID,
+                expectedAdmissionLedgerTicketID,
+                expectedLocalDependencyTicketID,
+            ].compactMap { $0 })
+        )
         guard !connectedRawHistoryCatchUpContinuationPending else {
             AtriaDebugLog(
                 "ATRIADBG workout_motion_bank_offload status=deferred reason=%@ detail=connected_raw_fifo_continuation action=no_selector_no_attempt_no_cadence_mutation",
@@ -28414,7 +28523,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             )
             return false
         }
-        let now = Date()
         if expectedArchiveWarmTicketID == nil,
            connectedMotionBankArchiveWarmRetryGate.isHolding {
             if connectedMotionBankArchiveWarmRetryGate.shouldSuppressHotPath(
@@ -28499,18 +28607,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return false
         }
         repairTransportOnlyClearedWorkoutMotionTicketIfNeeded()
-        let prunedShortTickets =
-            AtriaWhoop4MotionBankCoverageLedger
-                .pruneUnrecoverableShortOffloads()
-        if prunedShortTickets > 0 {
-            AtriaDebugLog(
-                "ATRIADBG workout_motion_bank_offload status=short_tickets_pruned count=%d minimum_s=%.1f reason=%@ action=retain_as_missing_coverage_without_impossible_ble_jobs",
-                prunedShortTickets,
-                AtriaWhoop4MotionBankCoverageLedger
-                    .minimumRecoverableOffloadDuration,
-                reason
-            )
-        }
         let manualWorkoutActive =
             AtriaPendingWorkoutIntent.isActiveForBLEContinuity()
         let calibrationHoldActive =
@@ -28525,47 +28621,6 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // path. Keep the exact ticket durable and let present capture
             // resume; the next intentional bank close can retry once.
             return false
-        }
-        if !historyOwnerActive, let connectedPeripheral {
-            let defaults = UserDefaults.standard
-            let exhaustedIDs =
-                AtriaWhoop4MotionBankCoverageLedger.exhaustOffloads(
-                    endingAtOrBefore: Date().addingTimeInterval(
-                        -Self
-                            .workoutHistoricalMotionBankMaximumBlockingAge
-                    ),
-                    strapIdentifier:
-                        connectedPeripheral.identifier.uuidString
-                )
-            if !exhaustedIDs.isEmpty {
-                if let boundID = defaults.string(
-                    forKey:
-                        Self.workoutHistoricalMotionBankActiveTicketIDKey
-                ),
-                   exhaustedIDs.contains(boundID) {
-                    defaults.removeObject(
-                        forKey:
-                            Self
-                                .workoutHistoricalMotionBankActiveTicketIDKey
-                    )
-                }
-                if let deferredID = defaults.string(
-                    forKey: Self
-                        .workoutHistoricalMotionBankTransportDeferredTicketIDKey
-                ), exhaustedIDs.contains(deferredID) {
-                    defaults.removeObject(
-                        forKey: Self
-                            .workoutHistoricalMotionBankTransportDeferredTicketIDKey
-                    )
-                }
-                AtriaDebugLog(
-                    "ATRIADBG workout_motion_bank_offload status=stale_jobs_exhausted count=%d maximum_age_s=%d reason=%@ action=retain_missing_coverage_prioritize_present_capture",
-                    exhaustedIDs.count,
-                    Int(Self
-                        .workoutHistoricalMotionBankMaximumBlockingAge),
-                    reason
-                )
-            }
         }
         let acceptedCurrentConnectionHR =
             connectedAt.flatMap { connectionStart in
@@ -37835,6 +37890,148 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return receipt
     }
 
+    private func resetTerminalConsumerRawFirstSliceRefusal() {
+        terminalConsumerRawFirstSliceTimeoutTask?.cancel()
+        terminalConsumerRawFirstSliceTimeoutTask = nil
+        terminalConsumerRawFirstSliceRefusal = nil
+    }
+
+    private func shouldDeferTerminalConsumerMaterializationForRawFirstSlice(
+        authority: AtriaHistoricalFullDrainCoverageStore.Authority,
+        reason: String,
+        now: Date = Date()
+    ) -> Bool {
+        if terminalConsumerRawFirstSliceRefusal?.authorityIdentifier
+            != authority.authorityIdentifier {
+            resetTerminalConsumerRawFirstSliceRefusal()
+            terminalConsumerRawFirstSliceRefusal = .init(
+                authorityIdentifier: authority.authorityIdentifier,
+                deadline: now.addingTimeInterval(
+                    terminalConsumerRawFirstSliceBudget
+                ),
+                rawGeneration: nil,
+                spent: false
+            )
+        }
+        guard var refusal = terminalConsumerRawFirstSliceRefusal else {
+            return false
+        }
+        let activeExplicitWorkout = Self
+            .explicitMotionOwnershipBlocksHistory(
+                pendingWorkoutIntentActive:
+                    AtriaPendingWorkoutIntent
+                        .isActiveForBLEContinuity(now: now),
+                inMemoryLeaseHeld: workoutMotionOwnerStartedAt != nil,
+                calibrationHoldActive:
+                    workoutMotionCalibrationHoldUntil.map { now < $0 }
+                        == true
+            )
+        let shouldDefer = Self
+            .shouldDeferTerminalConsumerMaterializationForRawFirstSlice(
+                applicationIsActive:
+                    UIApplication.shared.applicationState == .active,
+                strapBacklogPending:
+                    strapBacklogPendingForCatchUp(now: now),
+                verifiedRawHistoryCapability:
+                    currentVerifiedRawHistoryCapability(),
+                linkConnected:
+                    peripheral?.state == .connected
+                        && status == .connected,
+                activeExplicitWorkout: activeExplicitWorkout,
+                rawThermalPressureActive: Self
+                    .shouldParkConnectedRawHistoryCatchUpForPowerPressure(
+                        thermalState: ProcessInfo.processInfo.thermalState
+                    ),
+                publicationYieldActive:
+                    connectedRawHistoryCatchUpPublicationYield != nil,
+                rawFirstSliceSpent: refusal.spent,
+                now: now,
+                deadline: refusal.deadline
+            )
+        guard shouldDefer else {
+            refusal.spent = true
+            terminalConsumerRawFirstSliceRefusal = refusal
+            terminalConsumerRawFirstSliceTimeoutTask?.cancel()
+            terminalConsumerRawFirstSliceTimeoutTask = nil
+            return false
+        }
+
+        resumeFullDrainPublicationAfterFreshHR = true
+        if terminalConsumerRawFirstSliceTimeoutTask == nil {
+            let authorityIdentifier = refusal.authorityIdentifier
+            let deadline = refusal.deadline
+            let delay = max(0.1, deadline.timeIntervalSince(now))
+            terminalConsumerRawFirstSliceTimeoutTask = Task {
+                @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(delay))
+                guard !Task.isCancelled,
+                      let self,
+                      let current = self
+                        .terminalConsumerRawFirstSliceRefusal,
+                      current.authorityIdentifier == authorityIdentifier,
+                      !current.spent else { return }
+                let transition = Self
+                    .transitionTerminalConsumerRawFirstSlice(
+                        state: current,
+                        event: .deadlineReached(max(Date(), deadline))
+                    )
+                guard transition.shouldResumeLocalMaterialization else {
+                    return
+                }
+                self.terminalConsumerRawFirstSliceRefusal = transition.state
+                self.terminalConsumerRawFirstSliceTimeoutTask = nil
+                self.resumePendingFullDrainPublicationIfNeeded(
+                    reason: "raw_first_slice_deadline"
+                )
+            }
+        }
+        UserDefaults.standard.set(
+            "terminal_consumer_materialization_deferred_raw_first_slice",
+            forKey: OfflineSyncDefaults.lastStatus
+        )
+        UserDefaults.standard.set(reason, forKey: OfflineSyncDefaults.lastReason)
+        AtriaDebugLog(
+            "ATRIADBG historical_full_drain_publish status=deferred generation=%llu reason=raw_first_slice deadline_unix=%.3f action=await_one_exact_raw_generation_then_existing_publication_yield",
+            authority.attempt.transportGeneration,
+            refusal.deadline.timeIntervalSince1970
+        )
+        return true
+    }
+
+    private func bindTerminalConsumerRawFirstSliceIfNeeded(
+        generation: UInt64
+    ) {
+        guard let refusal = terminalConsumerRawFirstSliceRefusal else {
+            return
+        }
+        let transition = Self.transitionTerminalConsumerRawFirstSlice(
+            state: refusal,
+            event: .bindRawGeneration(generation)
+        )
+        terminalConsumerRawFirstSliceRefusal = transition.state
+    }
+
+    private func spendTerminalConsumerRawFirstSliceIfNeeded(
+        generation: UInt64
+    ) {
+        guard let refusal = terminalConsumerRawFirstSliceRefusal else {
+            return
+        }
+        let transition = Self.transitionTerminalConsumerRawFirstSlice(
+            state: refusal,
+            event: .finishRawGeneration(generation)
+        )
+        guard transition.shouldResumeLocalMaterialization else { return }
+        terminalConsumerRawFirstSliceRefusal = transition.state
+        terminalConsumerRawFirstSliceTimeoutTask?.cancel()
+        terminalConsumerRawFirstSliceTimeoutTask = nil
+        resumeFullDrainPublicationAfterFreshHR = true
+        AtriaDebugLog(
+            "ATRIADBG historical_full_drain_publish status=raw_first_slice_spent generation=%llu action=resume_terminal_materialization_through_existing_publication_yield",
+            generation
+        )
+    }
+
     /// Called after SessionStore installs the recovered-data publication fence.
     /// It never starts BLE; it only resumes an already-fsynced terminal journal.
     func resumePendingFullDrainPublicationIfNeeded(reason: String) {
@@ -37852,7 +38049,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                   authority.status == .historyComplete
                     || authority.status == .coverageProven
                     || authority.status == .gapResolvedConsumersPending
-                    || authority.status == .consumersCommitted else { return }
+                    || authority.status == .consumersCommitted else {
+                resetTerminalConsumerRawFirstSliceRefusal()
+                return
+            }
             // A CoreBluetooth restoration launch is CPU-budgeted background
             // time. Terminal consumer settlement can scan the full retained
             // archive and must never consume that lease: doing so has produced
@@ -37878,6 +38078,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 )
                 return
             }
+            guard !shouldDeferTerminalConsumerMaterializationForRawFirstSlice(
+                authority: authority,
+                reason: reason
+            ) else { return }
             guard prepareHistoricalAdmissionLedgerIfNeeded(
                 reason: "terminal_publication_\(reason)"
             ) else {

@@ -158,7 +158,9 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                           end: end,
                                                           restingHR: 60,
                                                           isNap: false,
-                                                          motionValidated: true)
+                                                          motionValidated: true,
+                                                          motionEpochs: stageMotionEpochs(start: start,
+                                                                                         end: end))
         let stageKinds = Set(stages.map(\.stage))
 
         XCTAssertFalse(stages.isEmpty)
@@ -171,10 +173,10 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(stages.last?.end ?? start, end.addingTimeInterval(-30))
     }
 
-    func testSleepStageResearchProducesLabeledHROnlyBreakdown() {
+    func testSleepStageResearchWithholdsHROnlyBreakdown() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let end = start.addingTimeInterval(4 * 60 * 60)
-        let samples = stride(from: 0, through: 4 * 60 * 60, by: 30).map { second in
+        let samples = stride(from: 0, through: 4 * 60 * 60, by: 5).map { second in
             AtriaSleepWakeResearch.HeartSample(t: start.addingTimeInterval(TimeInterval(second)),
                                                bpm: 61 + ((second / 30).isMultiple(of: 10) ? 1 : 0))
         }
@@ -185,11 +187,8 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                           restingHR: 60,
                                                           isNap: false,
                                                           motionValidated: false)
-        let stageKinds = Set(stages.map(\.stage))
-
-        XCTAssertFalse(stages.isEmpty)
-        XCTAssertTrue(stageKinds.contains { $0 != .awake },
-                      "expected HR-only sleep to produce labeled sleep-stage estimates")
+        XCTAssertTrue(stages.isEmpty,
+                      "a record-level motion Boolean cannot replace time-aligned epochs")
     }
 
     func testSleepStageResearchHandlesFullNightOneHertzStream() {
@@ -208,12 +207,34 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                           end: end,
                                                           restingHR: 58,
                                                           isNap: false,
-                                                          motionValidated: true)
+                                                          motionValidated: true,
+                                                          motionEpochs: stageMotionEpochs(start: start,
+                                                                                         end: end))
 
         XCTAssertFalse(stages.isEmpty)
         XCTAssertEqual(stages.first?.start, start)
         XCTAssertEqual(stages.last?.end, end)
         XCTAssertEqual(stages.reduce(0) { $0 + $1.duration }, TimeInterval(duration), accuracy: 0.001)
+    }
+
+    private func stageMotionEpochs(start: Date, end: Date) -> [AtriaRecoveredMotionEpoch] {
+        let count = Int(ceil(end.timeIntervalSince(start) / 30))
+        return (0..<count).map { index in
+            let epochStart = start.addingTimeInterval(Double(index) * 30)
+            return AtriaRecoveredMotionEpoch(
+                start: epochStart,
+                end: min(end, epochStart.addingTimeInterval(30)),
+                rows: 15,
+                validatedRows: 15,
+                stillnessRatio: 1,
+                movementIntensity: 0,
+                p95VectorDelta: 0,
+                maximumGapSeconds: 2,
+                measurementValidated: true,
+                lowMotionQualified: true,
+                reason: "stage-test"
+            )
+        }
     }
 
     func testDisplayStagesFoldSWSIntoDeep() {
@@ -4287,7 +4308,7 @@ final class AtriaAnalyticsTests: XCTestCase {
     }
 
     private func syntheticSleepSamples(start: Date) -> [AtriaSleepWakeResearch.HeartSample] {
-        stride(from: 0, through: 4 * 60 * 60, by: 30).map { second in
+        stride(from: 0, through: 4 * 60 * 60, by: 5).map { second in
             let minute = Double(second) / 60.0
             let bpm: Int
             switch minute {

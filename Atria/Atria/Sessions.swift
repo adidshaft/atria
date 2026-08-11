@@ -104,9 +104,11 @@ struct AtriaPhysiologicalCycle: Equatable {
     /// race that settlement and briefly open a synthetic cycle underneath a
     /// normal overnight sleep.
     static let noSleepSettlementGrace: TimeInterval = 30 * 60
-    /// A short rest explicitly labelled "sleep" must not reset recovery or
-    /// suppress an all-nighter rollover. Three hours is the same conservative
-    /// lower bound used by the detector for a reviewable main-sleep episode.
+    /// Automatic detections and blank manual entries need this conservative
+    /// floor before they can reset recovery or suppress an all-nighter
+    /// rollover. A sensor-backed `user_adjusted_sleep` uses the shared
+    /// physiological-main-sleep gate below, which accepts the editor's honest
+    /// measured-coverage floor without weakening this detector/manual guard.
     static let minimumMainSleepDuration = AggregateSleepCandidate.strictMinimumDuration
 
     let start: Date
@@ -488,7 +490,11 @@ struct AtriaPhysiologicalDay: Equatable {
                                           hrv: night.hrv,
                                           hrvWindowCount: night.hrvWindowCount,
                                           respiratoryRate: night.respiratoryRate,
-                                          duration: night.duration,
+                                          // `Night.duration` is physiological
+                                          // total sleep time once stages exist;
+                                          // boundary eligibility still owns the
+                                          // independently measured coverage.
+                                          duration: night.observedDuration,
                                           span: end.timeIntervalSince(start),
                                           reason: "compact physiological-day boundary",
                                           motionSource: "sleep_history_snapshot",
@@ -2413,10 +2419,11 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
     /// ledger can explain the settled value without reverse-engineering it.
     var frozenSleepNeed: AtriaSleepBudget.FrozenNeed? = nil
 
-    /// A resumed-sleep review starts from a broad low-HR capture window.
-    /// Observed `duration` is sensor coverage, not necessarily time asleep.
-    /// When an integrity-valid stage timeline exists, only classified
-    /// non-awake epochs receive physiological sleep credit.
+    /// Persisted `duration` may represent observed sensor coverage for legacy
+    /// and user-adjusted records, not necessarily time asleep. Whenever an
+    /// integrity-valid stage timeline exists, every source uses classified
+    /// non-awake epochs as physiological total sleep time; `span` remains the
+    /// in-bed wall-clock window.
     var effectiveSleepDuration: TimeInterval {
         Self.effectiveSleepDuration(source: source,
                                     observedDuration: duration,
@@ -2426,14 +2433,13 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
                                     stageSegments: stageSegments)
     }
 
-    static func effectiveSleepDuration(source: String,
+    static func effectiveSleepDuration(source _: String,
                                        observedDuration: TimeInterval,
                                        start: Date,
                                        end: Date,
                                        span: TimeInterval,
                                        stageSegments: [SleepStageSegment]?) -> TimeInterval {
-        guard source == "resumed_sleep",
-              let stageSegments,
+        guard let stageSegments,
               !stageSegments.isEmpty,
               AtriaSleepStageIntegrity.validates(stageSegments,
                                                  start: start,
@@ -2720,10 +2726,23 @@ enum AtriaSleepStageIntegrity {
             previousEnd = segment.end
         }
 
-        let observedSpan = max(duration, span, end.timeIntervalSince(start))
-        guard covered >= max(60, duration * 0.85),
+        let boundedSpan = end.timeIntervalSince(start)
+        let observedSpan = max(duration, span, boundedSpan)
+        var maximumUnsupportedGap = max(0, segments[0].start.timeIntervalSince(start))
+        for index in 1..<segments.count {
+            maximumUnsupportedGap = max(
+                maximumUnsupportedGap,
+                segments[index].start.timeIntervalSince(segments[index - 1].end)
+            )
+        }
+        maximumUnsupportedGap = max(
+            maximumUnsupportedGap,
+            end.timeIntervalSince(segments[segments.count - 1].end)
+        )
+        guard covered >= max(60, boundedSpan * 0.85),
               covered <= observedSpan + tolerance,
-              nonAwake <= duration + tolerance else { return false }
+              nonAwake <= duration + tolerance,
+              maximumUnsupportedGap <= 90 else { return false }
         return true
     }
 
@@ -16044,12 +16063,12 @@ final class SessionStore: ObservableObject {
                                                           activeSessionID: UUID? = nil,
                                                           skinTemperatureDeviationByDay: [Date: Double]? = nil,
                                                           calendar: Calendar = .current) -> [SavedDailyMetric] {
-        // Overnight recovery must never be sourced from a nap or a confirmed
-        // short rest. Use the same >=3h/source/bounds gate as the physiological
-        // cycle, then key the night by its canonical final wake in the event
-        // time zone. A linked resumed segment may move that final wake across
-        // civil midnight while `Night.day` intentionally retains the original
-        // main record's Activity identity.
+        // Overnight recovery must never be sourced from a nap or an
+        // unqualified short rest. Use the exact shared source/bounds/coverage
+        // gate as the physiological cycle, then key the night by its canonical
+        // final wake in the event time zone. A linked resumed segment may move
+        // that final wake across civil midnight while `Night.day` intentionally
+        // retains the original main record's Activity identity.
         var sleepByDay: [Date: SleepHistorySnapshot.Night] = [:]
         for night in sleep.nights {
             guard confirmedSleepIsPhysiologicalMainSleep(night) else { continue }
@@ -26897,7 +26916,9 @@ final class SessionStore: ObservableObject {
         }
 
         let windowSpan = max(0, end.timeIntervalSince(start))
-        let observedDuration = night.duration > 0 ? night.duration : windowSpan
+        let observedDuration = night.observedDuration > 0
+            ? night.observedDuration
+            : windowSpan
         let span = max(observedDuration, windowSpan)
         let isNap = night.isNapEvidence
         let isResumedSleep = night.source == "resumed_sleep_candidate"
@@ -30843,12 +30864,16 @@ final class SessionStore: ObservableObject {
         guard let stageSegments = sleep.stageSegments, !stageSegments.isEmpty else { return false }
         if sleep.source == "manual_sleep" || sleep.source == "manual_nap" { return false }
         guard AtriaSleepStageIntegrity.validates(stageSegments, for: sleep) else { return false }
+        if sleep.source == "validated_sleep_stages" { return true }
+        // This versioned ID is a bounded migration receipt: only the fail-
+        // closed engine that requires dense, local HR plus actual recovered
+        // motion epochs emits it. Legacy `research-*` segments have no such
+        // provenance and are stripped until source sessions reconstruct them.
+        guard stageSegments.allSatisfy({ $0.id.hasPrefix("research-motion-v2-") }) else {
+            return false
+        }
         let hasSleepStageEstimate = stageSegments.contains { $0.stage != .awake }
-        if sleep.motionValidated || sleep.source == "validated_sleep_stages" { return true }
-        return sleep.confidence.localizedCaseInsensitiveContains("hr_only")
-            && (SleepHistorySnapshot.Night.explicitSleepSources.contains(sleep.source)
-                || SleepHistorySnapshot.Night.explicitNapSources.contains(sleep.source))
-            && hasSleepStageEstimate
+        return hasSleepStageEstimate
     }
 
     nonisolated static func aggregateHRStageFallbackHasDenseCoverage(
@@ -30868,8 +30893,12 @@ final class SessionStore: ObservableObject {
                                                          span: sleep.span)
     }
 
-    private static func copyConfirmedSleep(_ sleep: UserConfirmedSleep,
-                                           stageSegments: [SleepStageSegment]?) -> UserConfirmedSleep {
+    private static func copyConfirmedSleep(
+        _ sleep: UserConfirmedSleep,
+        stageSegments: [SleepStageSegment]?,
+        motionSource: String? = nil,
+        motionValidated: Bool? = nil
+    ) -> UserConfirmedSleep {
         return UserConfirmedSleep(id: sleep.id,
                                   createdAt: sleep.createdAt,
                                   start: sleep.start,
@@ -30887,8 +30916,8 @@ final class SessionStore: ObservableObject {
                                   duration: sleep.duration,
                                   span: sleep.span,
                                   reason: sleep.reason,
-                                  motionSource: sleep.motionSource,
-                                  motionValidated: sleep.motionValidated,
+                                  motionSource: motionSource ?? sleep.motionSource,
+                                  motionValidated: motionValidated ?? sleep.motionValidated,
                                   stageSegments: stageSegments,
                                   eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
                                   sleepNeedSeconds: sleep.sleepNeedSeconds,
@@ -30917,10 +30946,52 @@ final class SessionStore: ObservableObject {
         return duration <= AggregateSleepCandidate.napMaximumSpan
     }
 
+    /// `user_adjusted_sleep` is produced only by `confirmSleepWindow`, which
+    /// re-derives metrics from stored sensor sessions and stores `duration` as
+    /// measured coverage inside the chosen bounds. Once the user explicitly
+    /// says that evidence is Sleep, requiring the automatic detector's three-
+    /// hour floor contradicts the saved record and leaves Recovery on the prior
+    /// cycle. The exception still requires a bounded, densely observed chosen
+    /// span: an arbitrary all-day edit containing only twenty minutes of strap
+    /// data cannot move the physiological boundary. Automatic detections, blank
+    /// `manual_sleep` records, and every nap source retain the normal main-sleep
+    /// policy.
+    nonisolated private static func confirmedSleepMeetsPhysiologicalMainSleepPolicy(
+        source: String,
+        start: Date,
+        end: Date,
+        measuredDuration: TimeInterval
+    ) -> Bool {
+        guard start.timeIntervalSinceReferenceDate.isFinite,
+              end.timeIntervalSinceReferenceDate.isFinite,
+              measuredDuration.isFinite,
+              end > start,
+              !confirmedSleepSourceIsNap(
+                source: source,
+                duration: measuredDuration
+              ) else { return false }
+        let isUserAdjustedSleep = source == "user_adjusted_sleep"
+        if isUserAdjustedSleep {
+            let span = end.timeIntervalSince(start)
+            guard span <= AggregateSleepCandidate.maximumAutoConfirmMainSleepSpan,
+                  measuredDuration / span
+                    >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction else {
+                return false
+            }
+        }
+        let minimumDuration = isUserAdjustedSleep
+            ? AggregateSleepCandidate.napMinimumDuration
+            : AtriaPhysiologicalCycle.minimumMainSleepDuration
+        return measuredDuration >= minimumDuration
+    }
+
     nonisolated static func confirmedSleepIsPhysiologicalMainSleep(_ sleep: UserConfirmedSleep) -> Bool {
-        sleep.end > sleep.start
-            && sleep.duration >= AtriaPhysiologicalCycle.minimumMainSleepDuration
-            && !confirmedSleepSourceIsNap(source: sleep.source, duration: sleep.duration)
+        confirmedSleepMeetsPhysiologicalMainSleepPolicy(
+            source: sleep.source,
+            start: sleep.start,
+            end: sleep.end,
+            measuredDuration: sleep.duration
+        )
     }
 
     /// SleepHistorySnapshot is the common publication source for both the
@@ -30933,12 +31004,12 @@ final class SessionStore: ObservableObject {
         guard night.confirmed,
               let start = night.start,
               let end = night.end else { return false }
-        return end > start
-            && night.duration >= AtriaPhysiologicalCycle.minimumMainSleepDuration
-            && !confirmedSleepSourceIsNap(
-                source: night.source,
-                duration: night.duration
-            )
+        return confirmedSleepMeetsPhysiologicalMainSleepPolicy(
+            source: night.source,
+            start: start,
+            end: end,
+            measuredDuration: night.observedDuration
+        )
     }
 
     nonisolated private static func physiologicalMainSleepNight(
@@ -31421,10 +31492,13 @@ final class SessionStore: ObservableObject {
         existingSamples: Int,
         candidateSamples: Int,
         existingDuration: TimeInterval,
-        candidateCoverage: TimeInterval
+        candidateCoverage: TimeInterval,
+        hasTimeAlignedMotionEpochs: Bool = false
     ) -> Bool {
         guard source.hasPrefix("user_adjusted_") else { return false }
-        return candidateSamples > existingSamples || candidateCoverage > existingDuration + 1
+        return hasTimeAlignedMotionEpochs
+            || candidateSamples > existingSamples
+            || candidateCoverage > existingDuration + 1
     }
 
     private func refreshedUserAdjustedSleepEvidenceIfNeeded(
@@ -31438,11 +31512,17 @@ final class SessionStore: ObservableObject {
         let candidateSamples = Self.sleepStageResearchSampleCount(from: sourceSessions,
                                                                   start: sleep.start,
                                                                   end: sleep.end)
+        let motionProvenance = Self.recoveredMotionProvenance(
+            for: sleep,
+            sessions: sourceSessions
+        )
         guard Self.shouldRefreshUserAdjustedSleepEvidence(source: sleep.source,
                                                           existingSamples: sleep.samples,
                                                           candidateSamples: candidateSamples,
                                                           existingDuration: sleep.duration,
-                                                          candidateCoverage: sensorCovered) else {
+                                                          candidateCoverage: sensorCovered,
+                                                          hasTimeAlignedMotionEpochs:
+                                                            motionProvenance.hasRecoveredEpochs) else {
             return nil
         }
 
@@ -31452,7 +31532,15 @@ final class SessionStore: ObservableObject {
                                                        rest: sleep.restingHR)
         let duration = min(sleep.span, sensorCovered)
         guard duration >= AggregateSleepCandidate.napMinimumDuration,
-              metrics.samples >= 12 else { return nil }
+              metrics.samples >= 12 else {
+            guard sleep.stageSegments?.isEmpty == false else { return nil }
+            return Self.copyConfirmedSleep(
+                sleep,
+                stageSegments: nil,
+                motionSource: motionProvenance.source,
+                motionValidated: motionProvenance.lowMotionValidated
+            )
+        }
         let isNap = Self.confirmedSleepSourceIsNap(source: sleep.source,
                                                    duration: duration)
         let stages = Self.sleepStageResearchSegments(from: sourceSessions,
@@ -31460,7 +31548,14 @@ final class SessionStore: ObservableObject {
                                                      end: sleep.end,
                                                      restingHR: metrics.restingHR,
                                                      isNap: isNap,
-                                                     motionValidated: sleep.motionValidated)
+                                                     motionValidated:
+                                                        motionProvenance.lowMotionValidated)
+        let motionSource = motionProvenance.hasRecoveredEpochs
+            ? motionProvenance.source
+            : sleep.motionSource
+        let motionValidated = motionProvenance.hasRecoveredEpochs
+            ? motionProvenance.lowMotionValidated
+            : sleep.motionValidated
         let refreshed = UserConfirmedSleep(id: sleep.id,
                                            createdAt: sleep.createdAt,
                                            start: sleep.start,
@@ -31482,8 +31577,8 @@ final class SessionStore: ObservableObject {
                                            duration: duration,
                                            span: sleep.span,
                                            reason: sleep.reason,
-                                           motionSource: sleep.motionSource,
-                                           motionValidated: sleep.motionValidated,
+                                           motionSource: motionSource,
+                                           motionValidated: motionValidated,
                                            stageSegments: stages.isEmpty ? nil : stages,
                                            eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
                                            sleepNeedSeconds: sleep.sleepNeedSeconds,
@@ -31494,6 +31589,7 @@ final class SessionStore: ObservableObject {
         let final = !stages.isEmpty && AtriaSleepStageIntegrity.validates(stages, for: refreshed)
             ? refreshed
             : Self.copyConfirmedSleep(refreshed, stageSegments: nil)
+        guard final != sleep else { return nil }
         AtriaDebugLog("ATRIADBG sleep_adjust_evidence_refresh status=updated source=%@ sleep_source=%@ old_samples=%d new_samples=%d old_duration_s=%.0f new_duration_s=%.0f stages=%d bounds_preserved=1",
                       reason,
                       sleep.source,
@@ -31522,6 +31618,11 @@ final class SessionStore: ObservableObject {
             if let affectedSince, sleep.end <= affectedSince {
                 return sleep
             }
+            let hasRecoveredEpochOverlap = sourceSessions.contains { session in
+                (session.recoveredMotionEpochs ?? []).contains {
+                    $0.end > sleep.start && $0.start < sleep.end
+                }
+            }
             if let refreshed = refreshedUserAdjustedSleepEvidenceIfNeeded(sleep,
                                                                           sourceSessions: sourceSessions,
                                                                           reason: reason) {
@@ -31535,10 +31636,19 @@ final class SessionStore: ObservableObject {
                               sleep.source)
                 return Self.copyConfirmedSleep(sleep, stageSegments: nil)
             }
-            // A user-adjusted window owns its existing evidence. Without new
-            // positive-HR samples, generic backfill must not replace or erase it.
+            // User-adjusted bounds remain user-owned, but their stage evidence
+            // does not. Any overlapping epoch set was recomputed above even
+            // when HR count/duration did not grow. With no timestamped motion,
+            // clear legacy HR-only stages instead of preserving a record-level
+            // Boolean as if it were an epoch stream.
             if sleep.source.hasPrefix("user_adjusted_") {
-                return sleep
+                guard !hasRecoveredEpochOverlap else { return sleep }
+                guard sleep.stageSegments?.isEmpty == false else { return sleep }
+                repaired += 1
+                AtriaDebugLog("ATRIADBG sleep_stage_backfill_record status=suppressed source=%@ sleep_source=%@ reason=missing_time_aligned_motion",
+                              reason,
+                              sleep.source)
+                return Self.copyConfirmedSleep(sleep, stageSegments: nil)
             }
             // Manual windows never earn stage segments (2026-08-05): the
             // migration path strips stages from manual_* sources on the next
@@ -31546,11 +31656,6 @@ final class SessionStore: ObservableObject {
             // and vanish after relaunch. Storage policy wins — skip backfill.
             if sleep.source.hasPrefix("manual_") {
                 return sleep
-            }
-            let hasRecoveredEpochOverlap = sourceSessions.contains { session in
-                (session.recoveredMotionEpochs ?? []).contains {
-                    $0.end > sleep.start && $0.start < sleep.end
-                }
             }
             if !hasRecoveredEpochOverlap,
                Self.shouldPreserveConfirmedSleepStageSegments(sleep) {
@@ -31561,12 +31666,17 @@ final class SessionStore: ObservableObject {
             let sampleCount = Self.sleepStageResearchSampleCount(from: sourceSessions,
                                                                  start: sleep.start,
                                                                  end: sleep.end)
+            let motionProvenance = Self.recoveredMotionProvenance(
+                for: sleep,
+                sessions: sourceSessions
+            )
             let stages = Self.sleepStageResearchSegments(from: sourceSessions,
                                                          start: sleep.start,
                                                          end: sleep.end,
                                                          restingHR: sleep.restingHR,
                                                          isNap: isNap,
-                                                         motionValidated: sleep.motionValidated)
+                                                         motionValidated:
+                                                            motionProvenance.lowMotionValidated)
             guard Self.confirmedSleepStagesCoverSleep(stages, sleep: sleep) else {
                 guard sleep.stageSegments?.isEmpty == false else { return sleep }
                 repaired += 1
@@ -31575,7 +31685,12 @@ final class SessionStore: ObservableObject {
                               sleep.source)
                 return Self.copyConfirmedSleep(sleep, stageSegments: nil)
             }
-            let regenerated = Self.copyConfirmedSleep(sleep, stageSegments: stages)
+            let regenerated = Self.copyConfirmedSleep(
+                sleep,
+                stageSegments: stages,
+                motionSource: motionProvenance.source,
+                motionValidated: motionProvenance.lowMotionValidated
+            )
             guard regenerated.stageSegments != sleep.stageSegments else { return sleep }
             repaired += 1
             let covered = stages.reduce(0) { $0 + max(0, $1.duration) }
@@ -31641,7 +31756,8 @@ final class SessionStore: ObservableObject {
             let motionSource = provenance.source
             let motionValidated = provenance.lowMotionValidated
             guard sleep.motionSource != motionSource
-                    || sleep.motionValidated != motionValidated else { return sleep }
+                    || sleep.motionValidated != motionValidated
+                    || sleep.stageSegments?.isEmpty == false else { return sleep }
             changed += 1
             return UserConfirmedSleep(id: sleep.id,
                                       createdAt: sleep.createdAt,
@@ -31662,7 +31778,12 @@ final class SessionStore: ObservableObject {
                                       reason: sleep.reason,
                                       motionSource: motionSource,
                                       motionValidated: motionValidated,
-                                      stageSegments: sleep.stageSegments,
+                                      // The epoch set is a staging input. Clear
+                                      // the old output in the same durable write
+                                      // that changes provenance; the following
+                                      // backfill regenerates from these exact
+                                      // epochs or leaves stages unavailable.
+                                      stageSegments: nil,
                                       eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
                                       sleepNeedSeconds: sleep.sleepNeedSeconds,
                                       frozenSleepNeed: sleep.frozenSleepNeed)
@@ -42276,6 +42397,11 @@ struct SleepHistorySnapshot: Equatable {
         let savedAt: Date?
         let start: Date?
         let end: Date?
+        /// Sensor-observed coverage retained independently from physiological
+        /// total sleep time. `duration` becomes non-awake staged time when a
+        /// valid hypnogram exists, but boundary/recovery eligibility must keep
+        /// using this original measurement authority.
+        let observedDuration: TimeInterval
         let duration: TimeInterval
         let restingHR: Int?
         let hrv: Int?
@@ -42299,6 +42425,12 @@ struct SleepHistorySnapshot: Equatable {
         /// legacy path; presentation then falls back to the same
         /// confidence/stage derivation `resumedSleepCandidate` already uses.
         let motionValidated: Bool?
+        /// `motionValidated` means the whole window met the low-motion sleep
+        /// policy; it is not the same thing as proof that time-aligned motion
+        /// measurements backed every displayed stage. A v2 research timeline
+        /// can contain honest awake/moving epochs and therefore carry this
+        /// separate, fail-closed receipt.
+        private let hasTimeAlignedResearchStageReceipt: Bool
         private let stageDurationsByStage: [SleepStageKind: TimeInterval]
 
         init(id: String,
@@ -42307,6 +42439,7 @@ struct SleepHistorySnapshot: Equatable {
              start: Date? = nil,
              end: Date? = nil,
              duration: TimeInterval,
+             observedDuration: TimeInterval? = nil,
              restingHR: Int?,
              hrv: Int?,
              hrvWindowCount: Int = 0,
@@ -42326,6 +42459,7 @@ struct SleepHistorySnapshot: Equatable {
             self.start = start
             self.end = end
             self.duration = duration
+            self.observedDuration = observedDuration ?? duration
             self.restingHR = restingHR
             self.hrv = hrv
             self.hrvWindowCount = hrvWindowCount
@@ -42358,6 +42492,11 @@ struct SleepHistorySnapshot: Equatable {
                     stageSegments,
                     effectiveSleepDuration: duration
                 )
+            let timeAlignedResearchStageReceipt = stagesReconcileWithEpisode
+                && stageSegments.allSatisfy {
+                    $0.id.hasPrefix("research-motion-v2-")
+                }
+            self.hasTimeAlignedResearchStageReceipt = timeAlignedResearchStageReceipt
             var evidence = Self.stageEvidence(source: source,
                                               confirmed: confirmed,
                                               hasSegments: stagesReconcileWithEpisode)
@@ -42371,6 +42510,7 @@ struct SleepHistorySnapshot: Equatable {
             // motion gate entirely, and rendered a confident hypnogram from
             // HR alone — the exact failure mode this gate exists to stop.
             if evidence == .sensorResearch || evidence == .manualEstimate,
+               !timeAlignedResearchStageReceipt,
                !Self.hasValidatedMotionEvidence(motionValidated: motionValidated,
                                                 confidence: confidence,
                                                 stageEvidence: evidence) {
@@ -42412,9 +42552,10 @@ struct SleepHistorySnapshot: Equatable {
         }
 
         var hasValidatedMotionEvidence: Bool {
-            Self.hasValidatedMotionEvidence(motionValidated: motionValidated,
-                                            confidence: confidence,
-                                            stageEvidence: stageEvidence)
+            hasTimeAlignedResearchStageReceipt
+                || Self.hasValidatedMotionEvidence(motionValidated: motionValidated,
+                                                   confidence: confidence,
+                                                   stageEvidence: stageEvidence)
         }
 
         /// Folded segments independent of the HR-only DISPLAY gate. Daily-
@@ -42753,6 +42894,7 @@ struct SleepHistorySnapshot: Equatable {
                               start: sleep.start,
                               end: sleep.end,
                               duration: effectiveDuration,
+                              observedDuration: sleep.duration,
                               restingHR: sleep.restingHR > 0 ? sleep.restingHR : nil,
                               hrv: sleep.hrv,
                               hrvWindowCount: sleep.hrvWindowCount ?? 0,
@@ -42901,6 +43043,7 @@ struct SleepHistorySnapshot: Equatable {
     ) -> Night? {
         guard main.confirmed,
               !main.isNapEvidence,
+              SessionStore.confirmedSleepIsPhysiologicalMainSleep(main),
               let mainStart = main.start,
               let mainEnd = main.end else { return nil }
         let ordered = resumed
@@ -42930,6 +43073,11 @@ struct SleepHistorySnapshot: Equatable {
         let creditedDuration = min(
             lastEnd.timeIntervalSince(mainStart),
             main.duration + accepted.reduce(0) { $0 + $1.duration }
+        )
+        let observedDuration = min(
+            lastEnd.timeIntervalSince(mainStart),
+            main.observedDuration
+                + accepted.reduce(0) { $0 + $1.observedDuration }
         )
         let stageSegments = (main.stageSegments + accepted.flatMap(\.stageSegments))
             .sorted { $0.start < $1.start }
@@ -42975,6 +43123,7 @@ struct SleepHistorySnapshot: Equatable {
             start: mainStart,
             end: lastEnd,
             duration: creditedDuration,
+            observedDuration: observedDuration,
             restingHR: durationWeightedInt(\.restingHR),
             hrv: combinedHRV,
             hrvWindowCount: physiology.reduce(0) { $0 + max($1.hrvWindowCount, 0) },
@@ -43002,6 +43151,7 @@ struct SleepHistorySnapshot: Equatable {
               start: night.start,
               end: night.end,
               duration: night.duration,
+              observedDuration: night.observedDuration,
               restingHR: night.restingHR ?? rollup.restingHR,
               hrv: night.hrv ?? rollup.avgHRV,
               hrvWindowCount: max(night.hrvWindowCount,

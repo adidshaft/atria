@@ -96,6 +96,7 @@ enum AtriaWhoop4MotionBankCoverageLedger {
     private static let schema = 2
     private static let stateKey = "atria.workoutHistoricalMotionBank.coverage.v2"
     private static let maximumClosedIntervals = 512
+    static let maximumPendingOffloads = 128
     /// Two v24 endpoints are required to classify any motion. Windows shorter
     /// than this cannot produce a reliable step delta at the observed ~1 Hz
     /// history cadence and previously flooded the durable queue during link
@@ -478,6 +479,75 @@ enum AtriaWhoop4MotionBankCoverageLedger {
         }
     }
 
+    struct PendingOffloadNormalizationResult: Equatable, Sendable {
+        let removedIDs: [String]
+        let retainedCount: Int
+    }
+
+    /// Bounds transport scheduling metadata without erasing the closed bank
+    /// intervals which remain the honest missing-coverage authority. Exact IDs
+    /// held by an active/deferred manager lane are never evicted. Remaining
+    /// capacity favors unattempted and newest tickets so today's bank is not
+    /// stranded behind months of failed retry metadata.
+    @discardableResult
+    static func normalizePendingOffloads(
+        strapIdentifier: String,
+        protectedIDs: Set<String> = [],
+        maximumCount: Int = maximumPendingOffloads,
+        defaults: UserDefaults = .standard
+    ) -> PendingOffloadNormalizationResult {
+        var state = load(defaults: defaults)
+        guard state.strapIdentifier.caseInsensitiveCompare(strapIdentifier)
+                == .orderedSame else {
+            return .init(removedIDs: [], retainedCount: 0)
+        }
+        let tickets = state.pendingOffloads ?? []
+        let limit = max(0, maximumCount)
+        guard tickets.count > limit else {
+            return .init(removedIDs: [], retainedCount: tickets.count)
+        }
+
+        let protected = tickets.filter { protectedIDs.contains($0.id) }
+        let available = max(0, limit - protected.count)
+        let selected = tickets.filter { !protectedIDs.contains($0.id) }
+            .sorted {
+                let lhsUnattempted = $0.attempts == 0
+                let rhsUnattempted = $1.attempts == 0
+                if lhsUnattempted != rhsUnattempted {
+                    return lhsUnattempted
+                }
+                if $0.end != $1.end { return $0.end > $1.end }
+                if $0.start != $1.start { return $0.start > $1.start }
+                return $0.id < $1.id
+            }
+            .prefix(available)
+        let retainedIDs = Set(protected.map(\.id) + selected.map(\.id))
+        let removed = tickets.filter { !retainedIDs.contains($0.id) }
+        guard !removed.isEmpty else {
+            return .init(
+                removedIDs: [],
+                retainedCount: tickets.count
+            )
+        }
+        state.pendingOffloads = tickets.filter {
+            retainedIDs.contains($0.id)
+        }
+        save(state, defaults: defaults)
+        let removedIDs = removed.map(\.id)
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: didFinalizeOffloadNotification,
+                object: removedIDs.count == 1
+                    ? removedIDs[0]
+                    : removedIDs
+            )
+        }
+        return .init(
+            removedIDs: removedIDs,
+            retainedCount: retainedIDs.count
+        )
+    }
+
     @discardableResult
     static func markOffloadAttempt(
         id: String,
@@ -585,6 +655,7 @@ enum AtriaWhoop4MotionBankCoverageLedger {
     static func exhaustOffloads(
         endingAtOrBefore cutoff: Date,
         strapIdentifier: String,
+        protectedIDs: Set<String> = [],
         defaults: UserDefaults = .standard
     ) -> [String] {
         var state = load(defaults: defaults)
@@ -593,6 +664,7 @@ enum AtriaWhoop4MotionBankCoverageLedger {
                 == .orderedSame
                 && $0.end <= cutoff
                 && $0.effectiveRecoveryMode == .directOffload
+                && !protectedIDs.contains($0.id)
         }
         guard !exhausted.isEmpty else { return [] }
         let exhaustedIDs = Set(exhausted.map(\.id))
