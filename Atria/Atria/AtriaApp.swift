@@ -312,6 +312,9 @@ struct AtriaApp: App {
                 }
             }
                 .onAppear {
+                    store.resumeDeferredSleepReviewProjectionIfNeeded(
+                        reason: "content_on_appear"
+                    )
                     guard !didScheduleLaunchWork else { return }
                     didScheduleLaunchWork = true
                     guard !store.restoreInitializationBlocked else {
@@ -349,6 +352,12 @@ struct AtriaApp: App {
                     switch phase {
                     case .background:
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = true
+                        // Revoke the advisory user-initiated review projection
+                        // before any background maintenance can begin. The
+                        // latest invalidation is coalesced for scene-active.
+                        store.suspendSleepReviewProjectionForBackground(
+                            reason: "scene_background"
+                        )
                     case .active:
                         AtriaHistoricalProjectionForegroundGate.isBackgrounded = false
                         store.invalidateArchiveCompactionBGProcessingLease(
@@ -425,6 +434,9 @@ struct AtriaApp: App {
                         }
                     case .active:
                         recordScenePhase("active", reason: "scene_active")
+                        store.resumeDeferredSleepReviewProjectionIfNeeded(
+                            reason: "scene_active"
+                        )
                         store.resumeRecoveredDataPublicationLeaseForForeground(
                             reason: "scene_active"
                         )
@@ -472,6 +484,9 @@ struct AtriaApp: App {
                 }
                 .onChange(of: store.restoreInitializationBlocked) { _, blocked in
                     guard blocked else { return }
+                    store.suspendSleepReviewProjectionForBackground(
+                        reason: "restore_initialization_blocked"
+                    )
                     dependencies.workoutRuntime.suspendForCanonicalRestoreFailure()
                     ble.suspendForCanonicalRestoreFailure()
                 }
@@ -488,6 +503,12 @@ struct AtriaApp: App {
                 }
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
                     recordScenePhase("active", reason: "ui_did_become_active")
+                    // SwiftUI may publish `.active` one turn before UIKit's
+                    // application state becomes active. Replay the coalesced
+                    // admission here so that race cannot strand the cache.
+                    store.resumeDeferredSleepReviewProjectionIfNeeded(
+                        reason: "ui_did_become_active"
+                    )
                     inactiveFlushTask?.cancel()
                     inactiveFlushTask = nil
                     // `scenePhase == .active` is the single owner of foreground

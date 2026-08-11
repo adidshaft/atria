@@ -222,6 +222,121 @@ final class AtriaCompactLatestNightSettlementTests: XCTestCase {
         )
     }
 
+    func testReviewSlicePreservesAttachedMotionAndStagesWhileCompactDefaultClearsIt()
+        throws
+    {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let start = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2027,
+            month: 1,
+            day: 12,
+            hour: 14
+        )))
+        let duration: TimeInterval = 60 * 60
+        let now = start.addingTimeInterval(4 * 60 * 60)
+        var source = SavedSession(
+            id: UUID(),
+            start: start,
+            end: start.addingTimeInterval(duration),
+            label: "Motion-backed nap",
+            points: stride(from: 0.0, through: duration, by: 1.0).map {
+                .init(t: $0, bpm: 62 + (Int($0) % 3))
+            }
+        )
+        source.recoveredMotionEpochs = stride(
+            from: 0.0,
+            to: duration,
+            by: 30.0
+        ).map { offset in
+            AtriaRecoveredMotionEpoch(
+                start: start.addingTimeInterval(offset),
+                end: start.addingTimeInterval(min(duration, offset + 30)),
+                rows: 6,
+                validatedRows: 6,
+                stillnessRatio: 0.92,
+                movementIntensity: 0.02,
+                p95VectorDelta: 0.03,
+                maximumGapSeconds: 5,
+                measurementValidated: true,
+                lowMotionQualified: true,
+                reason: "test_attached_motion"
+            )
+        }
+        let deadline = AtriaSleepSettlementDeadline(
+            uptimeNanoseconds: .max,
+            monotonicNow: { 0 }
+        )
+        let compactDefault = try SessionStore.compactLatestNightSessionSlice(
+            from: [source],
+            now: now,
+            deadlineUptimeNanoseconds: .max
+        ).get()
+        XCTAssertNil(compactDefault.sessions.first?.recoveredMotionEpochs)
+
+        let reviewSlice = try SessionStore.compactLatestNightSessionSlice(
+            from: [source],
+            now: now,
+            deadlineUptimeNanoseconds: .max,
+            cooperativeDeadline: deadline,
+            preserveAttachedMotion: true
+        ).get()
+        XCTAssertEqual(
+            reviewSlice.sessions.first?.recoveredMotionEpochs,
+            source.recoveredMotionEpochs
+        )
+
+        let direct = try SessionStore.makeBoundedSleepReviewCacheProjection(
+            snapshot: .empty,
+            canonicalSessions: [source],
+            confirmedSleeps: [],
+            rest: 62,
+            maxHR: 190,
+            calendar: calendar,
+            cooperativeDeadline: deadline
+        )
+        let clipped = try SessionStore.makeBoundedSleepReviewCacheProjection(
+            snapshot: .empty,
+            canonicalSessions: reviewSlice.sessions,
+            confirmedSleeps: [],
+            rest: 62,
+            maxHR: 190,
+            calendar: calendar,
+            cooperativeDeadline: deadline
+        )
+        let directNap = try XCTUnwrap(direct.naps.first)
+        let clippedNap = try XCTUnwrap(clipped.naps.first)
+        XCTAssertEqual(clippedNap.id, directNap.id)
+        XCTAssertEqual(clippedNap.stageSegments, directNap.stageSegments)
+        XCTAssertFalse(clippedNap.stageSegments.isEmpty)
+    }
+
+    func testReviewSliceCancellationStopsMidTraversal() {
+        let now = Date(timeIntervalSince1970: 1_900_000_000)
+        let start = now.addingTimeInterval(-6 * 60 * 60)
+        let source = SavedSession(
+            id: UUID(),
+            start: start,
+            end: start.addingTimeInterval(5 * 60 * 60),
+            label: "Large cancellable review slice",
+            points: (0..<20_000).map {
+                .init(t: Double($0), bpm: 60 + ($0 % 3))
+            }
+        )
+        let clock = StepClock()
+        let result = SessionStore.compactLatestNightSessionSlice(
+            from: [source],
+            now: now,
+            deadlineUptimeNanoseconds: .max,
+            cooperativeDeadline: .init(
+                uptimeNanoseconds: 4,
+                monotonicNow: { clock.next() }
+            ),
+            preserveAttachedMotion: true
+        )
+        assertFailure(result, equals: .deadlineExceeded)
+    }
+
     func testLatestNightSessionSliceAcceptsValidRowsAboveRemovedTwelveThousandCap()
         throws
     {

@@ -2,6 +2,18 @@ import XCTest
 @testable import Atria
 
 final class AtriaSleepReviewCacheTests: XCTestCase {
+    private final class StepClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: UInt64 = 0
+
+        func next() -> UInt64 {
+            lock.lock()
+            defer { lock.unlock() }
+            value += 1
+            return value
+        }
+    }
+
     private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -944,6 +956,472 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
                                                                   currentGeneration: 13))
     }
 
+    func testProjectionPublicationRequiresCurrentForegroundAuthority() {
+        func admits(
+            cancelled: Bool = false,
+            completed: Int = 12,
+            current: Int = 12,
+            pendingMatches: Bool = true,
+            authority: Bool = true,
+            active: Bool = true,
+            restoreBlocked: Bool = false
+        ) -> Bool {
+            SessionStore.shouldPublishSleepReviewProjection(
+                isCancelled: cancelled,
+                completedGeneration: completed,
+                currentGeneration: current,
+                pendingGenerationMatches: pendingMatches,
+                hasForegroundAuthority: authority,
+                applicationIsActive: active,
+                restoreInitializationBlocked: restoreBlocked
+            )
+        }
+
+        XCTAssertTrue(admits())
+        XCTAssertFalse(admits(cancelled: true))
+        XCTAssertFalse(admits(completed: 11))
+        XCTAssertFalse(admits(pendingMatches: false))
+        XCTAssertFalse(admits(authority: false))
+        XCTAssertFalse(admits(active: false))
+        XCTAssertFalse(admits(restoreBlocked: true))
+    }
+
+    func testProjectionAdmissionRequiresActiveAndCoalescesMatchingInput() {
+        XCTAssertTrue(SessionStore.shouldEnqueueSleepReviewProjection(
+            hasForegroundAuthority: true,
+            applicationIsActive: true,
+            restoreInitializationBlocked: false,
+            cacheMatchesInput: false,
+            pendingMatchesInput: false
+        ))
+        XCTAssertFalse(SessionStore.shouldEnqueueSleepReviewProjection(
+            hasForegroundAuthority: true,
+            applicationIsActive: false,
+            restoreInitializationBlocked: false,
+            cacheMatchesInput: false,
+            pendingMatchesInput: false
+        ))
+        XCTAssertFalse(SessionStore.shouldEnqueueSleepReviewProjection(
+            hasForegroundAuthority: true,
+            applicationIsActive: true,
+            restoreInitializationBlocked: false,
+            cacheMatchesInput: true,
+            pendingMatchesInput: false
+        ))
+        XCTAssertFalse(SessionStore.shouldEnqueueSleepReviewProjection(
+            hasForegroundAuthority: true,
+            applicationIsActive: true,
+            restoreInitializationBlocked: false,
+            cacheMatchesInput: false,
+            pendingMatchesInput: true
+        ))
+        XCTAssertFalse(SessionStore.shouldEnqueueSleepReviewProjection(
+            hasForegroundAuthority: false,
+            applicationIsActive: true,
+            restoreInitializationBlocked: false,
+            cacheMatchesInput: false,
+            pendingMatchesInput: false
+        ))
+        XCTAssertFalse(SessionStore.shouldEnqueueSleepReviewProjection(
+            hasForegroundAuthority: true,
+            applicationIsActive: true,
+            restoreInitializationBlocked: true,
+            cacheMatchesInput: false,
+            pendingMatchesInput: false
+        ))
+    }
+
+    @MainActor
+    func testRetainedRestoreBlockSynchronouslySupersedesReviewPublication() {
+        let store = SessionStore()
+        let before = store.sleepReviewProjectionStateForTesting
+
+        store.enterRetainedRestoreMarkerBlockForTesting()
+
+        let after = store.sleepReviewProjectionStateForTesting
+        XCTAssertTrue(store.restoreInitializationBlocked)
+        XCTAssertEqual(after.generation, before.generation &+ 1)
+        XCTAssertFalse(after.hasForegroundAuthority)
+        XCTAssertTrue(after.isDeferred)
+        XCTAssertFalse(after.hasPendingProjection)
+        XCTAssertFalse(SessionStore.shouldPublishSleepReviewCache(
+            completedGeneration: before.generation,
+            currentGeneration: after.generation
+        ))
+        XCTAssertFalse(SessionStore.shouldEnqueueSleepReviewProjection(
+            hasForegroundAuthority: true,
+            applicationIsActive: true,
+            restoreInitializationBlocked: store.restoreInitializationBlocked,
+            cacheMatchesInput: false,
+            pendingMatchesInput: false
+        ))
+        XCTAssertFalse(LocalNotificationScheduler
+            .sleepReviewNotificationAdmission(
+                restoreInitializationBlocked:
+                    store.restoreInitializationBlocked
+            ))
+        XCTAssertNil(store.persistedPendingSleepReviewForNotification())
+    }
+
+    @MainActor
+    func testJournalCacheWarmSupersedesColdGenerationAndRetriesOnce() {
+        let store = SessionStore()
+        let before = store.sleepReviewProjectionStateForTesting
+        var scheduled = 0
+        let event = ActiveSessionJournal.SleepReviewCacheWarmEvent(
+            generation: UInt64.max - 1,
+            containsRecord: true
+        )
+
+        store.handleActiveJournalSleepReviewCacheWarmForTesting(
+            event,
+            applicationIsActive: true,
+            scheduleRefresh: { scheduled += 1 }
+        )
+        let afterWarm = store.sleepReviewProjectionStateForTesting
+        store.handleActiveJournalSleepReviewCacheWarmForTesting(
+            event,
+            applicationIsActive: true,
+            scheduleRefresh: { scheduled += 1 }
+        )
+        let afterDuplicate = store.sleepReviewProjectionStateForTesting
+
+        XCTAssertEqual(scheduled, 1)
+        XCTAssertEqual(afterWarm.generation, before.generation &+ 1)
+        XCTAssertEqual(afterDuplicate.generation, afterWarm.generation)
+        XCTAssertFalse(SessionStore.shouldPublishSleepReviewCache(
+            completedGeneration: before.generation,
+            currentGeneration: afterWarm.generation
+        ))
+    }
+
+    @MainActor
+    func testJournalCacheWarmDefersWithoutBackgroundEnqueue() {
+        let store = SessionStore()
+        store.suspendSleepReviewProjectionForBackground(
+            reason: "warm-event-background-test"
+        )
+        let before = store.sleepReviewProjectionStateForTesting
+        var scheduled = 0
+
+        store.handleActiveJournalSleepReviewCacheWarmForTesting(
+            .init(generation: UInt64.max - 1, containsRecord: false),
+            applicationIsActive: false,
+            scheduleRefresh: { scheduled += 1 }
+        )
+
+        let after = store.sleepReviewProjectionStateForTesting
+        XCTAssertEqual(scheduled, 0)
+        XCTAssertEqual(after.generation, before.generation &+ 1)
+        XCTAssertFalse(after.hasForegroundAuthority)
+        XCTAssertTrue(after.isDeferred)
+        XCTAssertFalse(after.hasPendingProjection)
+    }
+
+    func testNotificationUnavailableReasonUsesPreparedStateOnly() {
+        XCTAssertEqual(
+            LocalNotificationScheduler.sleepReviewUnavailableReason(
+                snapshotCandidateCount: 0,
+                preparedIsLoading: true
+            ),
+            "sleep_review_projection_deferred"
+        )
+        XCTAssertEqual(
+            LocalNotificationScheduler.sleepReviewUnavailableReason(
+                snapshotCandidateCount: 2,
+                preparedIsLoading: true
+            ),
+            "sleep_candidate_not_reviewable"
+        )
+        XCTAssertEqual(
+            LocalNotificationScheduler.sleepReviewUnavailableReason(
+                snapshotCandidateCount: 0,
+                preparedIsLoading: false
+            ),
+            "no_unconfirmed_sleep_candidate"
+        )
+        let snapshotCandidate = reviewNight(id: "withheld-snapshot")
+        XCTAssertNil(LocalNotificationScheduler.sleepReviewSnapshotFallback(
+            preparedIsLoading: false,
+            snapshotNight: snapshotCandidate
+        ))
+        XCTAssertEqual(
+            LocalNotificationScheduler.sleepReviewSnapshotFallback(
+                preparedIsLoading: true,
+                snapshotNight: snapshotCandidate
+            ),
+            snapshotCandidate
+        )
+    }
+
+    func testProjectionCancellationTripsSharedDeadline() throws {
+        let cancellation = AtriaSleepReviewProjectionCancellation()
+        let deadline = AtriaSleepSettlementDeadline(
+            uptimeNanoseconds: 100,
+            monotonicNow: { cancellation.isCancelled ? .max : 0 }
+        )
+        XCTAssertNoThrow(try deadline.checkpoint())
+        cancellation.cancel()
+        XCTAssertThrowsError(try deadline.checkpoint()) {
+            XCTAssertEqual(
+                $0 as? AtriaSleepSettlementAbort,
+                .deadlineExceeded
+            )
+        }
+    }
+
+    func testBusyResidentJournalLookupDefersInsteadOfPublishingEmpty() throws {
+        let deadline = AtriaSleepSettlementDeadline(
+            uptimeNanoseconds: .max,
+            monotonicNow: { 0 }
+        )
+        XCTAssertThrowsError(try SessionStore
+            .loadCachedResidentJournalSessionForSleepReview(
+                now: Date(timeIntervalSince1970: 1_900_000_000),
+                cooperativeDeadline: deadline,
+                cachedRecord: { .busy }
+            )) {
+            XCTAssertEqual(
+                $0 as? AtriaSleepSettlementAbort,
+                .deadlineExceeded
+            )
+        }
+        XCTAssertThrowsError(try SessionStore
+            .loadCachedResidentJournalSessionForSleepReview(
+                now: Date(timeIntervalSince1970: 1_900_000_000),
+                cooperativeDeadline: deadline,
+                cachedRecord: { .cold }
+            )) {
+            XCTAssertEqual(
+                $0 as? AtriaSleepSettlementAbort,
+                .deadlineExceeded
+            )
+        }
+        XCTAssertNil(try SessionStore
+            .loadCachedResidentJournalSessionForSleepReview(
+                now: Date(timeIntervalSince1970: 1_900_000_000),
+                cooperativeDeadline: deadline,
+                cachedRecord: { .knownAbsent }
+            ))
+    }
+
+    func testBoundedProjectionAbortsHugeRRFixtureDeterministically() {
+        var session = sleepSession(day: 8)
+        session.rrPoints = (0..<20_000).map {
+            SavedSession.RRPoint(
+                t: Double($0) * 0.8,
+                ms: 800 + ($0 % 7),
+                source: .standardHeartRateMeasurement2A37
+            )
+        }
+        let clock = StepClock()
+        let deadline = AtriaSleepSettlementDeadline(
+            uptimeNanoseconds: 24,
+            monotonicNow: { clock.next() }
+        )
+        XCTAssertThrowsError(try SessionStore
+            .makeBoundedSleepReviewCacheProjection(
+                snapshot: .empty,
+                canonicalSessions: [session],
+                confirmedSleeps: [],
+                rest: 60,
+                maxHR: 190,
+                calendar: calendar,
+                cooperativeDeadline: deadline
+            )) {
+            XCTAssertEqual(
+                $0 as? AtriaSleepSettlementAbort,
+                .deadlineExceeded
+            )
+        }
+    }
+
+    func testBoundedProjectionMatchesNormalMainAndNapFixtures() throws {
+        let mainSession = sleepSession(day: 8)
+        let napSession = daytimeLowHRSession(
+            start: date(day: 10, hour: 14),
+            validatedMotion: true
+        )
+        let sessions = [mainSession, napSession]
+        let legacyMain = SessionStore.makeSleepReviewNightForCache(
+            snapshot: .empty,
+            canonicalSessions: sessions,
+            confirmedSleeps: [],
+            rest: 60,
+            maxHR: 190,
+            calendar: calendar
+        )
+        let legacyNaps = SessionStore.makeNapReviewNightsForCache(
+            canonicalSessions: sessions,
+            confirmedSleeps: [],
+            rest: 60,
+            maxHR: 190,
+            calendar: calendar
+        )
+        let bounded = try SessionStore.makeBoundedSleepReviewCacheProjection(
+            snapshot: .empty,
+            canonicalSessions: sessions,
+            confirmedSleeps: [],
+            rest: 60,
+            maxHR: 190,
+            calendar: calendar,
+            cooperativeDeadline: .init(
+                uptimeNanoseconds: .max,
+                monotonicNow: { 0 }
+            )
+        )
+
+        XCTAssertEqual(bounded.main?.id, legacyMain?.id)
+        XCTAssertEqual(bounded.main?.start, legacyMain?.start)
+        XCTAssertEqual(bounded.main?.end, legacyMain?.end)
+        XCTAssertEqual(bounded.main?.source, legacyMain?.source)
+        XCTAssertEqual(bounded.main?.hrv, legacyMain?.hrv)
+        XCTAssertEqual(
+            bounded.main?.hrvWindowCount,
+            legacyMain?.hrvWindowCount
+        )
+        XCTAssertEqual(
+            bounded.main?.respiratoryRate,
+            legacyMain?.respiratoryRate
+        )
+        XCTAssertEqual(
+            bounded.main?.stageSegments,
+            legacyMain?.stageSegments
+        )
+        XCTAssertEqual(bounded.naps.map(\.id), legacyNaps.map(\.id))
+    }
+
+    func testTwelveHourDenseReviewFailsClosedStagesWithinSharedDeadline()
+        throws
+    {
+        let start = date(day: 8, hour: 20)
+        let duration: TimeInterval = 12 * 60 * 60
+        var session = SavedSession(
+            id: UUID(),
+            start: start,
+            end: start.addingTimeInterval(duration),
+            label: "Dense twelve-hour sleep review",
+            points: (0...Int(duration)).map {
+                .init(t: Double($0), bpm: 58 + (($0 / 300) % 3))
+            }
+        )
+        session.recoveredMotionEpochs = stride(
+            from: 0.0,
+            to: duration,
+            by: 30.0
+        ).map { offset in
+            let epochStart = start.addingTimeInterval(offset)
+            return AtriaRecoveredMotionEpoch(
+                start: epochStart,
+                end: min(
+                    session.end,
+                    epochStart.addingTimeInterval(30)
+                ),
+                rows: 6,
+                validatedRows: 6,
+                stillnessRatio: 0.94,
+                movementIntensity: 0.02,
+                p95VectorDelta: 0.03,
+                maximumGapSeconds: 5,
+                measurementValidated: true,
+                lowMotionQualified: true,
+                reason: "dense_review_stage_fixture"
+            )
+        }
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + UInt64(SessionStore.sleepReviewProjectionDeadlineSeconds
+                * 1_000_000_000)
+        let result = try SessionStore.makeBoundedSleepReviewCacheProjection(
+            snapshot: .empty,
+            canonicalSessions: [session],
+            confirmedSleeps: [],
+            rest: 60,
+            maxHR: 190,
+            calendar: calendar,
+            cooperativeDeadline: .init(
+                uptimeNanoseconds: deadline
+            )
+        )
+        let main = try XCTUnwrap(result.main)
+        XCTAssertTrue(main.stageSegments.isEmpty)
+        XCTAssertGreaterThan(
+            session.points.count,
+            SessionStore.sleepReviewMaximumStagingRows
+        )
+    }
+
+    func testRelevantAuthorityOverflowFailsClosedBeforeRepeatedScans() {
+        let session = sleepSession(day: 8)
+        let confirmed = (0...SessionStore
+            .sleepReviewMaximumRelevantAuthorityRows).map { index in
+            UserConfirmedSleep(
+                id: "overlap-\(index)",
+                createdAt: session.end,
+                start: session.start,
+                end: session.end,
+                source: "auto_confirmed_sleep",
+                confidence: "high",
+                sessions: 1,
+                samples: session.points.count,
+                avgHR: session.avg,
+                peakHR: session.peak,
+                restingHR: session.restingStable,
+                hrv: nil,
+                hrvWindowCount: 0,
+                respiratoryRate: nil,
+                duration: session.duration,
+                span: session.duration,
+                reason: "test",
+                motionSource: "strap",
+                motionValidated: true,
+                stageSegments: nil
+            )
+        }
+        XCTAssertThrowsError(try SessionStore
+            .makeBoundedSleepReviewCacheProjection(
+                snapshot: .empty,
+                canonicalSessions: [session],
+                confirmedSleeps: confirmed,
+                rest: 60,
+                maxHR: 190,
+                calendar: calendar,
+                cooperativeDeadline: .init(
+                    uptimeNanoseconds: .max,
+                    monotonicNow: { 0 }
+                )
+            )) {
+            XCTAssertEqual(
+                $0 as? AtriaSleepSettlementAbort,
+                .deadlineExceeded
+            )
+        }
+    }
+
+    @MainActor
+    func testColdCacheNotificationReadsDurablePendingReceiptWithoutProjection()
+        throws
+    {
+        let suiteName = "AtriaSleepReviewCacheTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.removePersistentDomain(forName: suiteName)
+        let night = reviewNight(id: "cold-notification-receipt")
+        let now = try XCTUnwrap(night.end).addingTimeInterval(60)
+        AtriaPendingSleepReviewStore.save(
+            night,
+            now: now,
+            defaults: defaults
+        )
+
+        let store = SessionStore()
+        let restored = store.persistedPendingSleepReviewForNotification(
+            now: now,
+            defaults: defaults
+        )
+
+        XCTAssertEqual(restored, night)
+    }
+
     func testInputRevisionKeyMakesEverySleepEvidenceMutationStale() {
         let current = SessionStore.SleepReviewCacheInputKey(
             canonicalSessionsRevision: 4,
@@ -1182,7 +1660,7 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         let implementation = String(source[start.lowerBound..<end.lowerBound])
         let worker = try XCTUnwrap(implementation.range(of: "let workItem = DispatchWorkItem"))
         let journalLoad = try XCTUnwrap(implementation.range(of:
-            "SessionStore.loadResidentJournalSessionForSleepEvaluation"))
+            "loadCachedResidentJournalSessionForSleepReview"))
         let mainPublication = try XCTUnwrap(implementation.range(of: "DispatchQueue.main.async"))
 
         XCTAssertLessThan(worker.lowerBound, journalLoad.lowerBound)
@@ -1191,9 +1669,132 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         XCTAssertFalse(implementation[..<worker.lowerBound].contains("activeJournalSessionIfFresh"))
         XCTAssertFalse(implementation[mainPublication.lowerBound...].contains("ActiveSessionJournal.load"))
         XCTAssertFalse(implementation[mainPublication.lowerBound...].contains("activeJournalSessionIfFresh"))
+        XCTAssertTrue(implementation.contains("shouldEnqueueSleepReviewProjection"))
+        XCTAssertTrue(implementation.contains("cooperativeDeadline"))
+        XCTAssertTrue(implementation.contains("compactLatestNightSessionSlice"))
+        XCTAssertFalse(implementation.contains("stale_\\(reason)"))
         XCTAssertTrue(implementation.contains("sleepReviewProjectionQueue.async(execute: workItem)"),
                       "Sleep review must not be starved behind unrelated global utility work")
         XCTAssertFalse(source.contains("private static let sleepReviewProjectionQueue"),
                        "An inactive store must not head-of-line block the active store's sleep review")
+    }
+
+    func testBackgroundAndNotificationEntryPointsAreReadOnlyOrDeferred() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+        let sourceRoot = testsDirectory.deletingLastPathComponent()
+        let sessions = try String(contentsOf: sourceRoot
+            .appendingPathComponent("Atria/Sessions.swift"), encoding: .utf8)
+        let app = try String(contentsOf: sourceRoot
+            .appendingPathComponent("Atria/AtriaApp.swift"), encoding: .utf8)
+        let notifications = try String(contentsOf: sourceRoot
+            .appendingPathComponent("Atria/LocalNotificationScheduler.swift"),
+            encoding: .utf8)
+        let journal = try String(contentsOf: sourceRoot
+            .appendingPathComponent("Atria/ActiveSessionJournal.swift"),
+            encoding: .utf8)
+
+        XCTAssertTrue(sessions.contains(
+            "sleepReviewRefreshDeferredUntilForeground = true"
+        ))
+        XCTAssertTrue(sessions.contains(
+            "pendingSleepReviewProjectionCancellation?.cancel()"
+        ))
+        let revokeStart = try XCTUnwrap(sessions.range(of:
+            "private func revokeSleepReviewProjection"))
+        let revokeEnd = try XCTUnwrap(sessions.range(of:
+            "func suspendSleepReviewProjectionForBackground",
+            range: revokeStart.upperBound..<sessions.endIndex))
+        let revoke = sessions[revokeStart.lowerBound..<revokeEnd.lowerBound]
+        let authorityRevocation = try XCTUnwrap(revoke.range(of:
+            "sleepReviewProjectionForegroundAuthority = false"))
+        let pendingGuard = try XCTUnwrap(revoke.range(of:
+            "guard hadPendingProjection || forceGenerationSupersession else"))
+        XCTAssertLessThan(authorityRevocation.lowerBound, pendingGuard.lowerBound)
+        XCTAssertTrue(sessions.contains(
+            "hasForegroundAuthority:\n                sleepReviewProjectionForegroundAuthority"
+        ))
+        XCTAssertTrue(sessions.contains(
+            "sleepReviewRefreshDeferredUntilForeground = true"
+        ))
+        XCTAssertTrue(app.contains(
+            "suspendSleepReviewProjectionForBackground("
+        ))
+        XCTAssertTrue(app.contains(
+            "resumeDeferredSleepReviewProjectionIfNeeded("
+        ))
+        XCTAssertTrue(notifications.contains(
+            "store.preparedSleepReviewResolution("
+        ))
+        XCTAssertTrue(notifications.contains(
+            ".persistedPendingSleepReviewForNotification("
+        ))
+        XCTAssertFalse(notifications.contains(
+            "store.sleepReviewResolutionForUI(rest: rest"
+        ))
+        XCTAssertFalse(notifications.contains("for attempt in 0..<250"))
+        XCTAssertTrue(notifications.contains("guard !Task.isCancelled"))
+        let notificationDecisionStart = try XCTUnwrap(notifications.range(of:
+            "private static func makeSleepReviewDecision"))
+        let notificationDecisionEnd = try XCTUnwrap(notifications.range(of:
+            "private static func makeWorkoutReviewDecision",
+            range: notificationDecisionStart.upperBound..<notifications.endIndex))
+        let notificationDecision = notifications[
+            notificationDecisionStart.lowerBound..<notificationDecisionEnd.lowerBound
+        ]
+        XCTAssertFalse(notificationDecision.contains("sleepEvidenceStatusFast"))
+        XCTAssertFalse(notificationDecision.contains("aggregateSleepCandidates"))
+        XCTAssertFalse(notificationDecision.contains("HistoricalArchive"))
+        let boundedStart = try XCTUnwrap(sessions.range(of:
+            "nonisolated static func makeBoundedSleepReviewCacheProjection"))
+        let boundedEnd = try XCTUnwrap(sessions.range(of:
+            "nonisolated static func makeSleepReviewNightForCache",
+            range: boundedStart.upperBound..<sessions.endIndex))
+        let bounded = sessions[boundedStart.lowerBound..<boundedEnd.lowerBound]
+        XCTAssertTrue(bounded.contains(
+            "historicalMotionPolicy: .attachedCompactOnly"
+        ))
+        XCTAssertFalse(bounded.contains(
+            "historicalMotionPolicy: .sessionOnly"
+        ))
+        let cacheStart = try XCTUnwrap(journal.range(of:
+            "static func cachedRecordForSleepReview()"))
+        let cacheEnd = try XCTUnwrap(journal.range(of:
+            "private static func loadLocked()",
+            range: cacheStart.upperBound..<journal.endIndex))
+        let cacheRead = journal[cacheStart.lowerBound..<cacheEnd.lowerBound]
+        XCTAssertTrue(cacheRead.contains("guard ioLock.try() else"))
+        XCTAssertFalse(cacheRead.contains("ioLock.lock()"))
+        XCTAssertTrue(cacheRead.contains("return .busy"))
+        XCTAssertTrue(cacheRead.contains("? .knownAbsent : .cold"))
+        let journalLoadStart = try XCTUnwrap(journal.range(of:
+            "static func load() -> ActiveSessionJournalRecord?"))
+        let journalLoadEnd = try XCTUnwrap(journal.range(of:
+            "enum CachedSleepReviewRecord",
+            range: journalLoadStart.upperBound..<journal.endIndex))
+        let journalLoad = journal[journalLoadStart.lowerBound..<journalLoadEnd.lowerBound]
+        let journalUnlock = try XCTUnwrap(journalLoad.range(of: "ioLock.unlock()"))
+        let warmPost = try XCTUnwrap(journalLoad.range(of:
+            "didWarmSleepReviewCacheNotification"))
+        XCTAssertLessThan(journalUnlock.lowerBound, warmPost.lowerBound)
+        let restoreBlockStart = try XCTUnwrap(sessions.range(of:
+            "private func enterRetainedRestoreMarkerBlock()"))
+        let restoreBlockEnd = try XCTUnwrap(sessions.range(of:
+            "private func restoreSessionBackup",
+            range: restoreBlockStart.upperBound..<sessions.endIndex))
+        let restoreBlock = sessions[
+            restoreBlockStart.lowerBound..<restoreBlockEnd.lowerBound
+        ]
+        let restoreRevoke = try XCTUnwrap(restoreBlock.range(of:
+            "revokeSleepReviewProjection("))
+        let setBlocked = try XCTUnwrap(restoreBlock.range(of:
+            "restoreInitializationBlocked = true"))
+        XCTAssertLessThan(restoreRevoke.lowerBound, setBlocked.lowerBound)
+        XCTAssertGreaterThanOrEqual(
+            journal.components(separatedBy:
+                "sleepReviewCacheKnownAbsent = false").count - 1,
+            3,
+            "initial cold state and both durable write paths must revoke a prior known-absent result"
+        )
     }
 }
