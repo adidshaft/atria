@@ -1459,29 +1459,74 @@ enum LocalNotificationScheduler {
     }
 
     private static func makeSleepReviewDecision(store: SessionStore) async -> NotificationDecision {
+        guard sleepReviewNotificationAdmission(
+            restoreInitializationBlocked: store.restoreInitializationBlocked
+        ) else {
+            return NotificationDecision(
+                kind: "sleep_review",
+                identifier: Identifier.sleepReview,
+                title: "",
+                body: "",
+                reason: "restore_initialization_blocked",
+                shouldSchedule: false,
+                delay: 0
+            )
+        }
         let snapshot = store.sleepHistorySnapshot
         let defaults = UserDefaults.standard
         let rest = store.baseline.restingInt ?? 60
         var latestReviewNight: SleepHistorySnapshot.Night?
-        for attempt in 0..<250 {
-            switch store.sleepReviewResolutionForUI(rest: rest,
-                                                    source: "notification_sleep_review") {
-            case .ready(let night):
-                latestReviewNight = night
-                break
-            case .loading:
-                if attempt < 249 {
-                    try? await Task.sleep(for: .milliseconds(20))
-                }
-                continue
-            }
-            break
+        guard !Task.isCancelled else {
+            return NotificationDecision(
+                kind: "sleep_review",
+                identifier: Identifier.sleepReview,
+                title: "",
+                body: "",
+                reason: "task_cancelled",
+                shouldSchedule: false,
+                delay: 0
+            )
+        }
+        // Notification/BGTask maintenance is one read-only consumer of
+        // prepared review truth. It never polls or starts the foreground
+        // projection lane when the input is stale.
+        let preparedResolution = store.preparedSleepReviewResolution(rest: rest)
+        let preparedIsLoading = preparedResolution == .loading
+        if case .ready(let night) = preparedResolution {
+            latestReviewNight = night
+        }
+        guard !Task.isCancelled else {
+            return NotificationDecision(
+                kind: "sleep_review",
+                identifier: Identifier.sleepReview,
+                title: "",
+                body: "",
+                reason: "task_cancelled",
+                shouldSchedule: false,
+                delay: 0
+            )
+        }
+        // A cold BGTask/relaunch has no prepared in-memory cache by design.
+        // Reuse only the already-qualified durable receipt; discovery remains
+        // deferred until foreground and this path performs no archive read.
+        if preparedIsLoading, latestReviewNight == nil {
+            latestReviewNight = store
+                .persistedPendingSleepReviewForNotification(
+                    now: Date(),
+                    defaults: defaults
+                )
         }
 
-        let reviewableSnapshotNight = snapshot.latestReviewable?.confirmed == false ? snapshot.latestReviewable : nil
+        let reviewableSnapshotNight = sleepReviewSnapshotFallback(
+            preparedIsLoading: preparedIsLoading,
+            snapshotNight: snapshot.latestReviewable
+        )
         guard let latest = latestReviewNight ?? reviewableSnapshotNight,
               latest.confirmed == false else {
-            let reason = sleepReviewUnavailableReason(snapshot: snapshot, store: store)
+            let reason = sleepReviewUnavailableReason(
+                snapshotCandidateCount: snapshot.candidateCount,
+                preparedIsLoading: preparedIsLoading
+            )
             defaults.removeObject(forKey: sleepReviewLastCandidateIDKey)
             return NotificationDecision(
                 kind: "sleep_review",
@@ -1499,6 +1544,17 @@ enum LocalNotificationScheduler {
         // Persist the exact candidate before scheduling/deduplication so a
         // relaunch, projection refresh, or reminder cooldown cannot erase the
         // review the user was just told about.
+        guard !Task.isCancelled else {
+            return NotificationDecision(
+                kind: "sleep_review",
+                identifier: Identifier.sleepReview,
+                title: "",
+                body: "",
+                reason: "task_cancelled",
+                shouldSchedule: false,
+                delay: 0
+            )
+        }
         AtriaPendingSleepReviewStore.save(latest)
 
         guard latest.id != defaults.string(forKey: sleepReviewDismissedIDKey) else {
@@ -1730,23 +1786,32 @@ enum LocalNotificationScheduler {
             && ble.sessionSampleCount > 0
     }
 
-    private static func sleepReviewUnavailableReason(snapshot: SleepHistorySnapshot,
-                                                     store: SessionStore) -> String {
-        let rest = store.baseline.restingInt ?? 60
-        let evidence = store.sleepEvidenceStatusFast(rest: rest)
-        if evidence.candidates > 0 {
-            if evidence.readyCandidates > 0 {
-                return "sleep_candidate_waiting_history_snapshot"
-            }
-            return "sleep_candidate_pending_validation_\(evidence.blocker)"
-        }
-        if evidence.fallbackAvailable {
-            return "sleep_candidate_pending_validation_\(evidence.blocker)"
-        }
-        if snapshot.candidateCount > 0 {
+    nonisolated static func sleepReviewUnavailableReason(
+        snapshotCandidateCount: Int,
+        preparedIsLoading: Bool
+    ) -> String {
+        if snapshotCandidateCount > 0 {
             return "sleep_candidate_not_reviewable"
         }
+        if preparedIsLoading {
+            return "sleep_review_projection_deferred"
+        }
         return "no_unconfirmed_sleep_candidate"
+    }
+
+    nonisolated static func sleepReviewNotificationAdmission(
+        restoreInitializationBlocked: Bool
+    ) -> Bool {
+        !restoreInitializationBlocked
+    }
+
+    nonisolated static func sleepReviewSnapshotFallback(
+        preparedIsLoading: Bool,
+        snapshotNight: SleepHistorySnapshot.Night?
+    ) -> SleepHistorySnapshot.Night? {
+        guard preparedIsLoading,
+              snapshotNight?.confirmed == false else { return nil }
+        return snapshotNight
     }
 
     private static func actionableConnectionDiagnosisDecision(title: String,

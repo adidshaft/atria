@@ -168,6 +168,15 @@ enum ActiveSessionJournal {
         "AtriaActiveSessionJournalDidPersistSleepReviewEvidence"
     )
 
+    struct SleepReviewCacheWarmEvent: Equatable, Sendable {
+        let generation: UInt64
+        let containsRecord: Bool
+    }
+
+    static let didWarmSleepReviewCacheNotification = Notification.Name(
+        "AtriaActiveSessionJournalDidWarmSleepReviewCache"
+    )
+
     /// Called only after an atomic journal checkpoint succeeds. SessionStore
     /// observes this publication on MainActor; no journal file is decoded on a
     /// render or notification-routing path merely to discover freshness.
@@ -275,6 +284,11 @@ enum ActiveSessionJournal {
         let state: MirroredStrengthState
     }
     private static var segmentedLoadCache: SegmentedLoadCache?
+    /// `nil` caches are ambiguous until one locked load has proved the journal
+    /// absent. Sleep review must defer on cold state instead of publishing a
+    /// matching empty five-minute result while launch restore is still warming.
+    private static var sleepReviewCacheKnownAbsent = false
+    private static var sleepReviewCacheWarmGeneration: UInt64 = 0
     private static var mirroredStrengthCache: MirroredStrengthCache?
     private static var pendingMirroredStrengthState: MirroredStrengthState?
     private static var strengthMirrorGeneration: UInt64 = 0
@@ -308,14 +322,63 @@ enum ActiveSessionJournal {
 
     static func load() -> ActiveSessionJournalRecord? {
         ioLock.lock()
+        let wasCold = segmentedLoadCache?.record == nil
+            && loadCache?.record == nil
+            && !sleepReviewCacheKnownAbsent
+        let record = loadLocked()
+        let becameKnown = record != nil || sleepReviewCacheKnownAbsent
+        let warmEvent: SleepReviewCacheWarmEvent?
+        if wasCold, becameKnown {
+            sleepReviewCacheWarmGeneration &+= 1
+            warmEvent = SleepReviewCacheWarmEvent(
+                generation: sleepReviewCacheWarmGeneration,
+                containsRecord: record != nil
+            )
+        } else {
+            warmEvent = nil
+        }
+        ioLock.unlock()
+        // Never deliver observers while holding the journal I/O lock. A
+        // foreground retry may immediately request the cache-only snapshot.
+        if let warmEvent {
+            NotificationCenter.default.post(
+                name: didWarmSleepReviewCacheNotification,
+                object: warmEvent
+            )
+        }
+        return record
+    }
+
+    enum CachedSleepReviewRecord {
+        case busy
+        case cold
+        case knownAbsent
+        case record(ActiveSessionJournalRecord)
+    }
+
+    /// Returns only the same-process reconstructed value already maintained by
+    /// the incremental writer. It performs no directory scan, file read, or
+    /// JSON decode. Lock contention is distinct from a genuinely cold cache:
+    /// the review lane must defer rather than publish a five-minute empty
+    /// result while a save/fsync owns the cache.
+    static func cachedRecordForSleepReview() -> CachedSleepReviewRecord {
+        guard ioLock.try() else { return .busy }
         defer { ioLock.unlock() }
-        return loadLocked()
+        guard let record = segmentedLoadCache?.record ?? loadCache?.record else {
+            return sleepReviewCacheKnownAbsent ? .knownAbsent : .cold
+        }
+        return .record(record)
     }
 
     private static func loadLocked() -> ActiveSessionJournalRecord? {
         if let record = loadSegmentedRecordLocked() {
+            sleepReviewCacheKnownAbsent = false
             return record
         }
+        // A failed segmented replay is uncertainty, not absence. This metadata
+        // read is already inside the explicit file-backed restore path; the
+        // cache-only review accessor never reaches it.
+        let segmentedSourceExists = currentLatestSegmentSequenceLocked() != nil
         let target: URL?
         if let url, FileManager.default.fileExists(atPath: url.path) {
             target = url
@@ -326,19 +389,23 @@ enum ActiveSessionJournal {
         }
         guard let target else {
             loadCache = nil
+            sleepReviewCacheKnownAbsent = !segmentedSourceExists
             return nil
         }
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: target.path),
               let modifiedAt = attributes[.modificationDate] as? Date else {
             loadCache = nil
+            sleepReviewCacheKnownAbsent = false
             return decodeRecord(at: target)
         }
         if let cached = loadCache,
            cached.targetPath == target.path,
            cached.modifiedAt == modifiedAt {
+            sleepReviewCacheKnownAbsent = false
             return cached.record
         }
         let record = decodeRecord(at: target)
+        sleepReviewCacheKnownAbsent = false
         loadCache = LoadCache(targetPath: target.path,
                               modifiedAt: modifiedAt,
                               record: record)
@@ -483,6 +550,7 @@ enum ActiveSessionJournal {
         )
         try writeDurable(JSONEncoder().encode(segment),
                          to: segmentURL(sequence: nextSequence))
+        sleepReviewCacheKnownAbsent = false
         clearLegacySnapshotFileIfPresent()
         loadCache = nil
         var updated = applying(segment, to: existing)
@@ -713,6 +781,7 @@ enum ActiveSessionJournal {
         )
         let data = try JSONEncoder().encode(segment)
         try writeDurable(data, to: segmentURL(sequence: nextSequence))
+        sleepReviewCacheKnownAbsent = false
         clearLegacySnapshotFileIfPresent()
         loadCache = nil
         let updatedRecord: ActiveSessionJournalRecord?
@@ -791,6 +860,7 @@ enum ActiveSessionJournal {
                 AtriaDebugLog("ATRIADBG active_session_journal status=clear_failed error=%@", error.localizedDescription)
             }
         }
+        sleepReviewCacheKnownAbsent = true
     }
 
     private static func loadSegmentedRecordLocked() -> ActiveSessionJournalRecord? {
@@ -1317,6 +1387,7 @@ enum ActiveSessionJournal {
         defer { ioLock.unlock() }
         loadCache = nil
         segmentedLoadCache = nil
+        sleepReviewCacheKnownAbsent = false
         mirroredStrengthCache = nil
         pendingMirroredStrengthState = nil
         strengthMirrorGeneration = 0

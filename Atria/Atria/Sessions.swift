@@ -1014,6 +1014,36 @@ struct AtriaSleepSettlementDeadline: Sendable {
             throw AtriaSleepSettlementAbort.deadlineExceeded
         }
     }
+
+    func capped(afterNanoseconds interval: UInt64) -> Self {
+        let now = monotonicNow()
+        let local = now.addingReportingOverflow(interval).partialValue
+        return .init(
+            uptimeNanoseconds: min(uptimeNanoseconds, local),
+            monotonicNow: monotonicNow
+        )
+    }
+}
+
+/// Cooperative revocation shared by one sleep-review projection and every
+/// checked stage of its work. `DispatchWorkItem.cancel()` is advisory once a
+/// block has started; this token makes a scene-background transition visible
+/// at the same bounded checkpoints as the monotonic deadline.
+final class AtriaSleepReviewProjectionCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
 }
 
 /// Per-settlement spectral kernels for the bounded compact respiratory lane.
@@ -7754,6 +7784,7 @@ final class SessionStore: ObservableObject {
         case sessionCapExceeded
         case heartRateCapExceeded
         case rrCapExceeded
+        case recoveredMotionEpochCapExceeded
         case sessionIntegrityFailure
         case deadlineExceeded
         case compactMotion(
@@ -7768,6 +7799,34 @@ final class SessionStore: ObservableObject {
         let sessions: [SavedSession]
         let heartRateRows: Int
         let rrRows: Int
+    }
+
+    private struct CompactLatestNightMotionEpochKey: Hashable {
+        let start: Date
+        let end: Date
+        let rows: Int
+        let validatedRows: Int
+        let stillnessRatio: Double?
+        let movementIntensity: Double?
+        let p95VectorDelta: Double?
+        let maximumGapSeconds: Int
+        let measurementValidated: Bool
+        let lowMotionQualified: Bool
+        let reason: String
+
+        init(_ epoch: AtriaRecoveredMotionEpoch) {
+            start = epoch.start
+            end = epoch.end
+            rows = epoch.rows
+            validatedRows = epoch.validatedRows
+            stillnessRatio = epoch.stillnessRatio
+            movementIntensity = epoch.movementIntensity
+            p95VectorDelta = epoch.p95VectorDelta
+            maximumGapSeconds = epoch.maximumGapSeconds
+            measurementValidated = epoch.measurementValidated
+            lowMotionQualified = epoch.lowMotionQualified
+            reason = epoch.reason
+        }
     }
 
     struct CompactLatestNightSettlementProposal: @unchecked Sendable {
@@ -9034,6 +9093,7 @@ final class SessionStore: ObservableObject {
     private var motionCompactStoreObserver: NSObjectProtocol?
     private var systemTimeZoneObserver: NSObjectProtocol?
     private var activeJournalSleepReviewObserver: NSObjectProtocol?
+    private var activeJournalSleepReviewCacheWarmObserver: NSObjectProtocol?
     /// Coalesces archive writes into one off-main scan. Rehydration is deliberately
     /// separate from BLE scheduling: it consumes only already-persisted,
     /// metric-validated historical rows and never asks the strap for more data.
@@ -9115,18 +9175,40 @@ final class SessionStore: ObservableObject {
     private var pendingSleepReviewCacheInputKey: SleepReviewCacheInputKey?
     private var pendingSleepReviewCacheGeneration: Int?
     private var pendingSleepReviewCacheWorkItem: DispatchWorkItem?
+    private var pendingSleepReviewProjectionCancellation:
+        AtriaSleepReviewProjectionCancellation?
+    private var sleepReviewRefreshDeferredUntilForeground = false
+    /// Store-owned lifecycle authority closes the SwiftUI scene/UIKit state
+    /// race. UIKit state remains an independent second gate.
+    private var sleepReviewProjectionForegroundAuthority =
+        UIApplication.shared.applicationState == .active
     private var activeJournalSleepReviewIdentity = ActiveSessionJournal.SleepReviewCacheIdentity.empty
+    private var activeJournalSleepReviewCacheWarmGeneration: UInt64 = 0
     /// Sleep review is user-facing after both a notification deep link and a
     /// manual save. Each store owns a dedicated serial queue so a discarded
     /// preview, restored scene, or test store cannot strand the active store's
     /// cold-cache build behind its projections. The per-store generation guard
     /// still prevents an older build from publishing over newer state. This
-    /// projection directly resolves visible sleep UI, so it must not inherit
-    /// starvation from bulk utility/archive work.
+    /// projection directly resolves visible sleep UI, but remains advisory and
+    /// bounded; a dedicated utility queue avoids inheriting bulk archive
+    /// head-of-line blocking without requesting a performance core.
     private let sleepReviewProjectionQueue = DispatchQueue(
         label: "com.adidshaft.atria.sleep-review-projection",
-        qos: .userInitiated
+        qos: .utility
     )
+    /// A review projection is advisory UI preparation, not a settlement. It
+    /// gets the same two-second ceiling as compact latest-night settlement so
+    /// it cannot consume an iOS background CPU budget after a lifecycle race.
+    nonisolated static let sleepReviewProjectionDeadlineSeconds: TimeInterval = 2
+    nonisolated static let sleepReviewRespiratoryBudgetNanoseconds:
+        UInt64 = 250_000_000
+    /// Stages are optional presentation evidence. The research engine's inner
+    /// feature pass is synchronous, so the checked review lane uses the same
+    /// small fail-closed ceiling as compact settlement.
+    nonisolated static let sleepReviewMaximumStagingRows = 4_096
+    nonisolated static let sleepReviewMaximumRelevantAuthorityRows = 512
+    nonisolated static let sleepReviewMaximumNotificationAuthorityScanRows =
+        4_096
     private var restingTrendInputsByID: [UUID: RestingTrendInput] = [:]
     private var pendingRestingTrendCheckpointHint: RestingTrendCheckpointHint?
     private var lastCheckpointRestingTrendRefreshAt: Date?
@@ -17560,6 +17642,21 @@ final class SessionStore: ObservableObject {
                 self?.handleActiveJournalSleepReviewIdentity(identity)
             }
         }
+        self.activeJournalSleepReviewCacheWarmObserver =
+            NotificationCenter.default.addObserver(
+                forName: ActiveSessionJournal
+                    .didWarmSleepReviewCacheNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let event = notification.object
+                    as? ActiveSessionJournal.SleepReviewCacheWarmEvent else {
+                    return
+                }
+                Task { @MainActor in
+                    self?.handleActiveJournalSleepReviewCacheWarm(event)
+                }
+            }
         let documentsDirectory = url.deletingLastPathComponent()
         Task.detached(priority: .utility) {
             AtriaGeneratedArtifactRetention.prune(
@@ -17636,7 +17733,10 @@ final class SessionStore: ObservableObject {
     ) {
         guard identity != activeJournalSleepReviewIdentity else { return }
         activeJournalSleepReviewIdentity = identity
-        invalidateSleepReviewCache(reason: "active_journal_five_minute_bucket")
+        invalidateSleepReviewCache(
+            reason: "active_journal_five_minute_bucket",
+            scheduleRefresh: true
+        )
         // The same fsynced HR evidence is also authoritative for automatic
         // activity review. In thermal pressure the BLE owner deliberately
         // keeps journaling while skipping the heavier canonical checkpoint;
@@ -17645,6 +17745,71 @@ final class SessionStore: ObservableObject {
         invalidateWorkoutReviewCache()
         dashboardRevision &+= 1
     }
+
+    private func handleActiveJournalSleepReviewCacheWarm(
+        _ event: ActiveSessionJournal.SleepReviewCacheWarmEvent
+    ) {
+        handleActiveJournalSleepReviewCacheWarm(
+            event,
+            applicationIsActive:
+                UIApplication.shared.applicationState == .active
+        ) { [weak self] in
+            guard let self else { return }
+            self.scheduleSleepReviewCacheRefresh(
+                rest: self.baseline.restingInt ?? 60,
+                calendar: .current,
+                reason: "active_journal_cache_warmed"
+            )
+        }
+    }
+
+    private func handleActiveJournalSleepReviewCacheWarm(
+        _ event: ActiveSessionJournal.SleepReviewCacheWarmEvent,
+        applicationIsActive: Bool,
+        scheduleRefresh: () -> Void
+    ) {
+        guard event.generation
+                > activeJournalSleepReviewCacheWarmGeneration else {
+            return
+        }
+        activeJournalSleepReviewCacheWarmGeneration = event.generation
+        // Supersede a cold-failing generation even when this event lands
+        // between its cache read and its MainActor catch. The old completion
+        // can no longer publish or clear the replacement request.
+        invalidateSleepReviewCache(
+            reason: "active_journal_cache_warmed",
+            scheduleRefresh: false
+        )
+        guard sleepReviewProjectionForegroundAuthority,
+              applicationIsActive,
+              !restoreInitializationBlocked else {
+            sleepReviewRefreshDeferredUntilForeground = true
+            AtriaDebugLog(
+                "ATRIADBG sleep_review_projection reason=active_journal_cache_warmed app_state=%@ generation=%d outcome=deferred duration_ms=0 published=0",
+                Self.sleepReviewApplicationStateLabel(
+                    UIApplication.shared.applicationState
+                ),
+                sleepReviewCacheGeneration
+            )
+            return
+        }
+        sleepReviewRefreshDeferredUntilForeground = false
+        scheduleRefresh()
+    }
+
+    #if DEBUG
+    func handleActiveJournalSleepReviewCacheWarmForTesting(
+        _ event: ActiveSessionJournal.SleepReviewCacheWarmEvent,
+        applicationIsActive: Bool,
+        scheduleRefresh: () -> Void
+    ) {
+        handleActiveJournalSleepReviewCacheWarm(
+            event,
+            applicationIsActive: applicationIsActive,
+            scheduleRefresh: scheduleRefresh
+        )
+    }
+    #endif
 
     #if DEBUG
     func debugResetForEmptyAssistantAnswers() {
@@ -17686,6 +17851,12 @@ final class SessionStore: ObservableObject {
         if let activeJournalSleepReviewObserver {
             NotificationCenter.default.removeObserver(activeJournalSleepReviewObserver)
         }
+        if let activeJournalSleepReviewCacheWarmObserver {
+            NotificationCenter.default.removeObserver(
+                activeJournalSleepReviewCacheWarmObserver
+            )
+        }
+        pendingSleepReviewProjectionCancellation?.cancel()
         pendingSleepReviewCacheWorkItem?.cancel()
         pendingWorkoutReviewCacheWorkItem?.cancel()
         automaticRecoveredArchiveIdleTask?.cancel()
@@ -20764,6 +20935,111 @@ final class SessionStore: ObservableObject {
         return makeActiveJournalSession(from: record)
     }
 
+    /// Cache-only, row-capped resident-journal projection for the advisory
+    /// review lane. A cold cache or oversized latest-night window fails closed;
+    /// this function never reconstructs the segmented journal from disk.
+    nonisolated static func loadCachedResidentJournalSessionForSleepReview(
+        now: Date,
+        cooperativeDeadline: AtriaSleepSettlementDeadline,
+        cachedRecord: () -> ActiveSessionJournal.CachedSleepReviewRecord = {
+            ActiveSessionJournal.cachedRecordForSleepReview()
+        }
+    ) throws -> SavedSession? {
+        try cooperativeDeadline.checkpoint()
+        let lookup = cachedRecord()
+        let cached: ActiveSessionJournalRecord
+        switch lookup {
+        case .busy, .cold:
+            // Lock contention means the active writer is advancing truth. Do
+            // not publish a matching five-minute empty result; one later
+            // foreground edge gets the coalesced retry.
+            throw AtriaSleepSettlementAbort.deadlineExceeded
+        case .knownAbsent:
+            return nil
+        case .record(let record):
+            cached = record
+        }
+        guard cached.schema == ActiveSessionJournal.schema,
+              let window = compactLatestNightWindow(now: now) else {
+            return nil
+        }
+        var record = cached
+        var latestEvidenceAt: Date?
+        var boundedSamples: [ActiveSessionJournalRecord.Sample] = []
+        boundedSamples.reserveCapacity(min(
+            record.samples.count,
+            compactLatestNightMaximumHeartRateRows
+        ))
+        for (index, sample) in record.samples.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            if latestEvidenceAt == nil || sample.t > latestEvidenceAt! {
+                latestEvidenceAt = sample.t
+            }
+            guard sample.t >= window.start, sample.t <= now else { continue }
+            guard boundedSamples.count
+                    < compactLatestNightMaximumHeartRateRows else {
+                throw AtriaSleepSettlementAbort.deadlineExceeded
+            }
+            boundedSamples.append(sample)
+        }
+        guard let latestEvidenceAt,
+              now.timeIntervalSince(latestEvidenceAt)
+                >= -(5 * 60),
+              now.timeIntervalSince(latestEvidenceAt)
+                <= residentSleepEvaluationJournalMaximumAge,
+              boundedSamples.count > 1 else {
+            return nil
+        }
+        var boundedRR: [ActiveSessionJournalRecord.RRSample] = []
+        boundedRR.reserveCapacity(min(
+            record.rrSamples?.count ?? 0,
+            compactLatestNightMaximumRRRows
+        ))
+        for (index, point) in (record.rrSamples ?? []).enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline.checkpoint()
+            }
+            guard point.t >= window.start, point.t <= now else { continue }
+            guard boundedRR.count < compactLatestNightMaximumRRRows else {
+                throw AtriaSleepSettlementAbort.deadlineExceeded
+            }
+            boundedRR.append(point)
+        }
+        record.samples = boundedSamples
+        record.rrSamples = boundedRR
+        try cooperativeDeadline.checkpoint()
+        return try makeActiveJournalSessionCore(
+            from: record,
+            cooperativeDeadline: cooperativeDeadline
+        )
+    }
+
+    private nonisolated static func sleepReviewSourceSessions(
+        canonicalSessions: [SavedSession],
+        activeJournalSession: SavedSession?,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> [SavedSession] {
+        var result: [SavedSession] = []
+        result.reserveCapacity(
+            canonicalSessions.count + (activeJournalSession == nil ? 0 : 1)
+        )
+        for (index, session) in canonicalSessions.enumerated() {
+            if index.isMultiple(of: 64) {
+                try cooperativeDeadline.checkpoint()
+            }
+            if session.id != activeJournalSession?.id {
+                result.append(session)
+            }
+        }
+        if let activeJournalSession {
+            result.append(activeJournalSession)
+        }
+        try cooperativeDeadline.checkpoint()
+        return result
+    }
+
     /// File-backed live-session projection. Callers on latency-sensitive paths
     /// must invoke this from a background executor: even when journal decoding
     /// hits its cache, ordering and mapping the growing sample arrays is O(n).
@@ -20779,13 +21055,63 @@ final class SessionStore: ObservableObject {
     private nonisolated static func makeActiveJournalSession(
         from record: ActiveSessionJournalRecord
     ) -> SavedSession? {
-        let samples = record.samples.sorted { $0.t < $1.t }
+        try? makeActiveJournalSessionCore(
+            from: record,
+            cooperativeDeadline: nil
+        )
+    }
+
+    private nonisolated static func makeActiveJournalSessionCore(
+        from record: ActiveSessionJournalRecord,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> SavedSession? {
+        var samples = record.samples
+        try cooperativeStableSort(
+            &samples,
+            cooperativeDeadline: cooperativeDeadline,
+            areInIncreasingOrder: { $0.t < $1.t }
+        )
         guard let first = samples.first, let last = samples.last, samples.count > 1 else {
             return nil
         }
-        let rr = (record.rrSamples ?? [])
-            .filter { $0.t >= first.t && $0.t <= last.t.addingTimeInterval(1) }
-            .sorted { $0.t < $1.t }
+        var rr: [ActiveSessionJournalRecord.RRSample] = []
+        for (index, point) in (record.rrSamples ?? []).enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            if point.t >= first.t,
+               point.t <= last.t.addingTimeInterval(1) {
+                rr.append(point)
+            }
+        }
+        try cooperativeStableSort(
+            &rr,
+            cooperativeDeadline: cooperativeDeadline,
+            areInIncreasingOrder: { $0.t < $1.t }
+        )
+        var points: [SavedSession.Point] = []
+        points.reserveCapacity(samples.count)
+        for (index, sample) in samples.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            points.append(.init(
+                t: sample.t.timeIntervalSince(first.t),
+                bpm: sample.bpm
+            ))
+        }
+        var rrPoints: [SavedSession.RRPoint] = []
+        rrPoints.reserveCapacity(rr.count)
+        for (index, point) in rr.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            rrPoints.append(.init(
+                t: point.t.timeIntervalSince(first.t),
+                ms: point.ms,
+                source: point.source
+            ))
+        }
         let researchAggregates = AtriaBLEManager.validatedResearchAggregates(from: record)
         let label = record.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "All-day wear active"
@@ -20794,13 +21120,9 @@ final class SessionStore: ObservableObject {
                             start: first.t,
                             end: last.t,
                             label: label,
-                            points: samples.map { SavedSession.Point(t: $0.t.timeIntervalSince(first.t), bpm: $0.bpm) },
+                            points: points,
                             hrv: nil,
-                            rrPoints: rr.isEmpty ? nil : rr.map {
-                                SavedSession.RRPoint(t: $0.t.timeIntervalSince(first.t),
-                                                     ms: $0.ms,
-                                                     source: $0.source)
-                            },
+                            rrPoints: rrPoints.isEmpty ? nil : rrPoints,
                             hrvReferenceValidated: false,
                             motionHintCount: nil,
                             motionHintKinds: nil,
@@ -21409,8 +21731,9 @@ final class SessionStore: ObservableObject {
 
     private var lastResidentSleepReviewRefreshAt: Date?
 
-    /// Keeps the pending sleep-review cache current in the background so a
-    /// settled nap surfaces on its own, without waiting for the next app open.
+    /// Records one coarse sleep-review refresh intent while resident. In an
+    /// attended scene the request may start immediately; in background it is
+    /// coalesced and consumed exactly once after the app becomes active.
     ///
     /// The two existing settlement triggers both miss a daytime nap: the
     /// main-sleep auto-confirm only handles `isAutoConfirmableMainSleepCandidate`
@@ -21423,12 +21746,9 @@ final class SessionStore: ObservableObject {
     /// all while the app stayed backgrounded — the app depended on a manual
     /// foreground to do its own work.
     ///
-    /// This reuses that exact pipeline on a throttled cadence. It changes only
-    /// *when* the evaluation runs, never *what* qualifies, so it cannot surface
-    /// a candidate a foreground refresh would not — the false-nap specificity is
-    /// unchanged. `scheduleSleepReviewCacheRefresh` is itself input-key-deduped
-    /// and bounded to the recent-session evaluation set, so a throttled call is
-    /// cheap when nothing has changed.
+    /// This reuses the exact input-key-deduped pipeline on a throttled cadence,
+    /// but central foreground admission prevents an ordinary checkpoint from
+    /// spending an unattended CPU budget. Qualification remains unchanged.
     private func runResidentSleepReviewRefreshIfUseful(now: Date) {
         guard hasCompletedDeferredSessionLoad else { return }
         guard Self.shouldAttemptResidentSleepReviewRefresh(
@@ -26702,10 +27022,12 @@ final class SessionStore: ObservableObject {
         SleepReviewCacheKey(canonicalSessionsRevision: input.canonicalSessionsRevision,
                             confirmedSleepsRevision: input.confirmedSleepsRevision,
                             sleepHistorySnapshotRevision: input.sleepHistorySnapshotRevision,
-                            activeJournalID: activeJournalSession?.id,
+                            activeJournalID:
+                                activeJournalSession?.id
+                                    ?? input.activeJournalID,
                             activeJournalEndFiveMinuteBucket: activeJournalSession.map {
                                 Int($0.end.timeIntervalSince1970 / (5 * 60))
-                            },
+                            } ?? input.activeJournalEndFiveMinuteBucket,
                             restingHR: input.restingHR,
                             maxHR: input.maxHR,
                             calendarIdentifier: input.calendarIdentifier,
@@ -26722,6 +27044,8 @@ final class SessionStore: ObservableObject {
         sleepReviewCacheInputKey = nil
         pendingSleepReviewCacheInputKey = nil
         pendingSleepReviewCacheGeneration = nil
+        pendingSleepReviewProjectionCancellation?.cancel()
+        pendingSleepReviewProjectionCancellation = nil
         pendingSleepReviewCacheWorkItem?.cancel()
         pendingSleepReviewCacheWorkItem = nil
         // Review actions must fail closed while the replacement is prepared.
@@ -26738,94 +27062,367 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Pure admission rule used by both production scheduling and exact tests.
+    /// A matching published or pending input coalesces duplicate UI requests;
+    /// an inactive process never starts this user-initiated projection.
+    nonisolated static func shouldEnqueueSleepReviewProjection(
+        hasForegroundAuthority: Bool,
+        applicationIsActive: Bool,
+        restoreInitializationBlocked: Bool,
+        cacheMatchesInput: Bool,
+        pendingMatchesInput: Bool
+    ) -> Bool {
+        hasForegroundAuthority
+            && applicationIsActive
+            && !restoreInitializationBlocked
+            && !cacheMatchesInput
+            && !pendingMatchesInput
+    }
+
+    private static func sleepReviewApplicationStateLabel(
+        _ state: UIApplication.State
+    ) -> String {
+        switch state {
+        case .active: return "active"
+        case .inactive: return "inactive"
+        case .background: return "background"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private func revokeSleepReviewProjection(
+        reason: String,
+        forceGenerationSupersession: Bool
+    ) {
+        // Revoke before inspecting pending state. A same-turn invalidation must
+        // not start new work even if there was nothing to cancel.
+        sleepReviewProjectionForegroundAuthority = false
+        let hadPendingProjection = pendingSleepReviewCacheGeneration != nil
+            || pendingSleepReviewCacheWorkItem != nil
+            || pendingSleepReviewProjectionCancellation != nil
+        guard hadPendingProjection || forceGenerationSupersession else {
+            return
+        }
+        sleepReviewCacheGeneration &+= 1
+        pendingSleepReviewProjectionCancellation?.cancel()
+        pendingSleepReviewProjectionCancellation = nil
+        pendingSleepReviewCacheWorkItem?.cancel()
+        pendingSleepReviewCacheWorkItem = nil
+        pendingSleepReviewCacheInputKey = nil
+        pendingSleepReviewCacheGeneration = nil
+        sleepReviewRefreshDeferredUntilForeground = true
+        AtriaDebugLog(
+            "ATRIADBG sleep_review_projection reason=%@ app_state=%@ generation=%d outcome=cancelled duration_ms=0 published=0",
+            reason,
+            Self.sleepReviewApplicationStateLabel(
+                UIApplication.shared.applicationState
+            ),
+            sleepReviewCacheGeneration
+        )
+    }
+
+    /// Revokes a projection before background maintenance starts. Generation
+    /// supersession prevents a block already past its last cooperative check
+    /// from publishing, while the cancellation token stops checked work at its
+    /// next bounded checkpoint.
+    func suspendSleepReviewProjectionForBackground(reason: String) {
+        revokeSleepReviewProjection(
+            reason: reason,
+            forceGenerationSupersession: false
+        )
+    }
+
+    /// Consumes one coalesced background invalidation. The scheduler's input
+    /// key dedupe is the final authority, so an active UI request racing this
+    /// lifecycle callback still produces exactly one latest-generation build.
+    func resumeDeferredSleepReviewProjectionIfNeeded(reason: String) {
+        guard !restoreInitializationBlocked,
+              UIApplication.shared.applicationState == .active else { return }
+        sleepReviewProjectionForegroundAuthority = true
+        guard sleepReviewRefreshDeferredUntilForeground else { return }
+        // A deadline records this exact input as fail-closed ready(nil) to stop
+        // 20 ms/UI retry storms. A new active lifecycle is the authority to
+        // clear that dedupe once and attempt the latest generation again.
+        sleepReviewCacheKey = nil
+        sleepReviewCacheInputKey = nil
+        sleepReviewRefreshDeferredUntilForeground = false
+        scheduleSleepReviewCacheRefresh(
+            rest: baseline.restingInt ?? 60,
+            calendar: .current,
+            reason: reason
+        )
+    }
+
+    /// Read-only notification lookup. In particular, a BGTask or a foreground
+    /// notification task that outlives its scene may consume prepared truth but
+    /// cannot start the UI projection lane.
+    func preparedSleepReviewResolution(
+        rest: Int,
+        calendar: Calendar = .current
+    ) -> SleepReviewResolution {
+        let requestedInputKey = makeSleepReviewCacheInputKey(
+            rest: rest,
+            calendar: calendar
+        )
+        guard sleepReviewCacheInputKey == requestedInputKey else {
+            return .loading
+        }
+        return .ready(pendingSleepReviewNightForUI)
+    }
+
+    /// Cold-launch/BG notification fallback for one already-qualified durable
+    /// receipt. It never schedules projection work. A corrupt/implausibly huge
+    /// authority archive fails closed before `load` can scan it unbounded.
+    func persistedPendingSleepReviewForNotification(
+        now: Date = Date(),
+        defaults: UserDefaults = .standard
+    ) -> SleepHistorySnapshot.Night? {
+        guard !restoreInitializationBlocked,
+              !Task.isCancelled,
+              cachedConfirmedSleeps.count
+                <= Self.sleepReviewMaximumNotificationAuthorityScanRows,
+              dismissedSleepCandidates.count
+                <= Self.sleepReviewMaximumNotificationAuthorityScanRows else {
+            return nil
+        }
+        return AtriaPendingSleepReviewStore.load(
+            now: now,
+            confirmedSleeps: cachedConfirmedSleeps,
+            dismissedCandidates: dismissedSleepCandidates,
+            defaults: defaults
+        )
+    }
+
     private func scheduleSleepReviewCacheRefresh(rest: Int,
                                                  calendar: Calendar,
                                                  reason: String) {
         let requestedInputKey = makeSleepReviewCacheInputKey(rest: rest,
                                                              calendar: calendar)
-        if sleepReviewCacheInputKey == requestedInputKey { return }
-        if pendingSleepReviewCacheInputKey == requestedInputKey { return }
+        let applicationState = UIApplication.shared.applicationState
+        let applicationIsActive = applicationState == .active
+        let applicationStateLabel = Self.sleepReviewApplicationStateLabel(
+            applicationState
+        )
+        guard Self.shouldEnqueueSleepReviewProjection(
+            hasForegroundAuthority:
+                sleepReviewProjectionForegroundAuthority,
+            applicationIsActive: applicationIsActive,
+            restoreInitializationBlocked: restoreInitializationBlocked,
+            cacheMatchesInput: sleepReviewCacheInputKey == requestedInputKey,
+            pendingMatchesInput:
+                pendingSleepReviewCacheInputKey == requestedInputKey
+        ) else {
+            if (!sleepReviewProjectionForegroundAuthority
+                || !applicationIsActive
+                || restoreInitializationBlocked),
+               sleepReviewCacheInputKey != requestedInputKey {
+                sleepReviewRefreshDeferredUntilForeground = true
+                AtriaDebugLog(
+                    "ATRIADBG sleep_review_projection reason=%@ app_state=%@ generation=%d outcome=deferred duration_ms=0 published=0",
+                    reason,
+                    applicationStateLabel,
+                    sleepReviewCacheGeneration
+                )
+            }
+            return
+        }
 
         sleepReviewCacheGeneration &+= 1
+        sleepReviewRefreshDeferredUntilForeground = false
         let generation = sleepReviewCacheGeneration
+        pendingSleepReviewProjectionCancellation?.cancel()
         pendingSleepReviewCacheWorkItem?.cancel()
+        let cancellation = AtriaSleepReviewProjectionCancellation()
         let canonicalSessions = cachedCanonicalSessions
         let confirmedSleeps = cachedConfirmedSleeps
         let dismissedCandidates = dismissedSleepCandidates
         let snapshot = sleepHistorySnapshot
         let maxHR = profile.maxHR
         let preparedAt = Date()
-        let workItem = DispatchWorkItem { [weak self] in
-            // ActiveSessionJournal.load plus the sample sort/map stay entirely
-            // on this utility worker. The main actor contributes only immutable
-            // revision-keyed snapshots and later publishes a completed value.
-            let activeJournalSession = SessionStore.loadResidentJournalSessionForSleepEvaluation(
-                now: preparedAt
-            )
-            let requestedKey = SessionStore.makeSleepReviewCacheKey(
-                input: requestedInputKey,
-                activeJournalSession: activeJournalSession
-            )
-            let sourceSessions = SessionStore.foregroundSleepEvaluationSessions(
-                from: canonicalSessions,
-                activeJournalSession: activeJournalSession,
-                now: preparedAt
-            )
-            let freshlyQualified =
-                SessionStore.makeSleepReviewNightForCache(
-                    snapshot: snapshot,
-                    canonicalSessions: sourceSessions,
-                    confirmedSleeps: confirmedSleeps,
-                    dismissedCandidates: dismissedCandidates,
-                    rest: rest,
-                    maxHR: maxHR,
-                    calendar: calendar
-                )
-            if let freshlyQualified {
-                AtriaPendingSleepReviewStore.save(
-                    freshlyQualified,
-                    now: preparedAt
-                )
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        let budgetNanoseconds = UInt64(
+            Self.sleepReviewProjectionDeadlineSeconds * 1_000_000_000
+        )
+        let deadlineUptime = startedAt.addingReportingOverflow(
+            budgetNanoseconds
+        ).partialValue
+        let cooperativeDeadline = AtriaSleepSettlementDeadline(
+            uptimeNanoseconds: deadlineUptime,
+            monotonicNow: {
+                cancellation.isCancelled
+                    ? UInt64.max
+                    : DispatchTime.now().uptimeNanoseconds
             }
-            let result = freshlyQualified
-                ?? AtriaPendingSleepReviewStore.load(
-                    now: preparedAt,
-                    confirmedSleeps: confirmedSleeps,
-                    dismissedCandidates: dismissedCandidates
+        )
+        let workItem = DispatchWorkItem { [weak self] in
+            let requestedKey: SleepReviewCacheKey
+            let freshlyQualified: SleepHistorySnapshot.Night?
+            let result: SleepHistorySnapshot.Night?
+            let napReviewNights: [SleepHistorySnapshot.Night]
+            do {
+                try cooperativeDeadline.checkpoint()
+                // Never reconstruct the resident journal from its potentially
+                // 24 MiB segment chain here. The incremental writer maintains
+                // an exact same-process COW cache; consume that value through
+                // the checked latest-night row caps, or fail closed if cold.
+                let activeJournalSession = try SessionStore
+                    .loadCachedResidentJournalSessionForSleepReview(
+                        now: preparedAt,
+                        cooperativeDeadline: cooperativeDeadline
+                    )
+                requestedKey = SessionStore.makeSleepReviewCacheKey(
+                    input: requestedInputKey,
+                    activeJournalSession: activeJournalSession
                 )
-            // A nap keeps its own reviewable detection row even when a same-day
-            // main sleep is already confirmed, so it is built separately from
-            // the single main-sleep-biased `result` card above.
-            let napReviewNights = SessionStore.makeNapReviewNightsForCache(
-                canonicalSessions: sourceSessions,
-                confirmedSleeps: confirmedSleeps,
-                dismissedCandidates: dismissedCandidates,
-                rest: rest,
-                maxHR: maxHR,
-                calendar: calendar
+                let residentSources = try SessionStore
+                    .sleepReviewSourceSessions(
+                        canonicalSessions: canonicalSessions,
+                        activeJournalSession: activeJournalSession,
+                        cooperativeDeadline: cooperativeDeadline
+                    )
+                let sourceSessions: [SavedSession]
+                switch SessionStore.compactLatestNightSessionSlice(
+                    from: residentSources,
+                    now: preparedAt,
+                    deadlineUptimeNanoseconds: deadlineUptime,
+                    cooperativeDeadline: cooperativeDeadline,
+                    preserveAttachedMotion: true
+                ) {
+                case .success(let slice):
+                    sourceSessions = slice.sessions
+                case .failure(.noRecentSessions):
+                    sourceSessions = []
+                case .failure:
+                    throw AtriaSleepSettlementAbort.deadlineExceeded
+                }
+                try cooperativeDeadline.checkpoint()
+                let projection = try SessionStore
+                    .makeBoundedSleepReviewCacheProjection(
+                        snapshot: snapshot,
+                        canonicalSessions: sourceSessions,
+                        confirmedSleeps: confirmedSleeps,
+                        dismissedCandidates: dismissedCandidates,
+                        rest: rest,
+                        maxHR: maxHR,
+                        calendar: calendar,
+                        cooperativeDeadline: cooperativeDeadline
+                )
+                freshlyQualified = projection.main
+                try cooperativeDeadline.checkpoint()
+                let durablePending: SleepHistorySnapshot.Night?
+                if projection.main == nil,
+                   confirmedSleeps.count
+                        <= SessionStore
+                            .sleepReviewMaximumNotificationAuthorityScanRows,
+                   dismissedCandidates.count
+                        <= SessionStore
+                            .sleepReviewMaximumNotificationAuthorityScanRows {
+                    durablePending = AtriaPendingSleepReviewStore.load(
+                        now: preparedAt,
+                        confirmedSleeps: confirmedSleeps,
+                        dismissedCandidates: dismissedCandidates
+                    )
+                } else {
+                    durablePending = nil
+                }
+                result = projection.main ?? durablePending
+                napReviewNights = projection.naps
+                try cooperativeDeadline.checkpoint()
+            } catch {
+                let wasCancelled = cancellation.isCancelled
+                let durationMilliseconds = Int(
+                    (DispatchTime.now().uptimeNanoseconds - startedAt)
+                        / 1_000_000
+                )
+                DispatchQueue.main.async { [weak self] in
+                    let outcome = wasCancelled ? "cancelled" : "deadline"
+                    AtriaDebugLog(
+                        "ATRIADBG sleep_review_projection reason=%@ app_state=%@ generation=%d outcome=%@ duration_ms=%d published=0",
+                        reason,
+                        Self.sleepReviewApplicationStateLabel(
+                            UIApplication.shared.applicationState
+                        ),
+                        generation,
+                        outcome,
+                        durationMilliseconds
+                    )
+                    guard let self,
+                          self.pendingSleepReviewCacheGeneration == generation,
+                          self.sleepReviewCacheGeneration == generation else {
+                        return
+                    }
+                    self.pendingSleepReviewCacheInputKey = nil
+                    self.pendingSleepReviewCacheGeneration = nil
+                    self.pendingSleepReviewCacheWorkItem = nil
+                    self.pendingSleepReviewProjectionCancellation = nil
+                    guard !wasCancelled else { return }
+                    // A deadline is uncertainty, never permission to surface or
+                    // notify. Resolve this exact input as fail-closed until new
+                    // evidence or an explicit invalidation advances the key.
+                    self.sleepReviewCacheKey = nil
+                    self.sleepReviewCacheInputKey = requestedInputKey
+                    self.pendingSleepReviewNightForUI = nil
+                    self.napReviewCandidateNightsForUI = []
+                    // No immediate retry loop: one future active lifecycle edge
+                    // (or an explicit invalidation that advances truth) may try
+                    // this latest input again.
+                    self.sleepReviewRefreshDeferredUntilForeground = true
+                    AtriaDebugLog(
+                        "ATRIADBG sleep_review_cache status=withheld reason=deadline generation=%d",
+                        generation
+                    )
+                }
+                return
+            }
+            let durationMilliseconds = Int(
+                (DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                guard SessionStore.shouldPublishSleepReviewCache(
+                let applicationIsActive =
+                    UIApplication.shared.applicationState == .active
+                guard SessionStore.shouldPublishSleepReviewProjection(
+                    isCancelled: cancellation.isCancelled,
                     completedGeneration: generation,
-                    currentGeneration: self.sleepReviewCacheGeneration
+                    currentGeneration: self.sleepReviewCacheGeneration,
+                    pendingGenerationMatches:
+                        self.pendingSleepReviewCacheGeneration == generation,
+                    hasForegroundAuthority:
+                        self.sleepReviewProjectionForegroundAuthority,
+                    applicationIsActive: applicationIsActive,
+                    restoreInitializationBlocked:
+                        self.restoreInitializationBlocked
                 ) else {
-                    // A newer invalidation normally owns the pending slot. If
-                    // cancellation raced after this worker began and no newer
-                    // build was installed, immediately enqueue the latest
-                    // revision so continuous live checkpoints cannot strand the
-                    // review cache in a permanently empty state.
+                    // Never self-reschedule a stale/cancelled completion. A
+                    // newer foreground request or the deferred lifecycle edge
+                    // is the sole authority for another build.
                     if self.pendingSleepReviewCacheGeneration == generation {
                         self.pendingSleepReviewCacheInputKey = nil
                         self.pendingSleepReviewCacheGeneration = nil
                         self.pendingSleepReviewCacheWorkItem = nil
-                        self.scheduleSleepReviewCacheRefresh(
-                            rest: self.baseline.restingInt ?? 60,
-                            calendar: .current,
-                            reason: "stale_\(reason)"
-                        )
+                        self.pendingSleepReviewProjectionCancellation = nil
                     }
+                    if !self.sleepReviewProjectionForegroundAuthority
+                        || !applicationIsActive
+                        || self.restoreInitializationBlocked {
+                        self.sleepReviewRefreshDeferredUntilForeground = true
+                    }
+                    AtriaDebugLog(
+                        "ATRIADBG sleep_review_projection reason=%@ app_state=%@ generation=%d outcome=cancelled duration_ms=%d published=0",
+                        reason,
+                        Self.sleepReviewApplicationStateLabel(
+                            UIApplication.shared.applicationState
+                        ),
+                        generation,
+                        durationMilliseconds
+                    )
                     return
+                }
+                if let freshlyQualified {
+                    AtriaPendingSleepReviewStore.save(
+                        freshlyQualified,
+                        now: preparedAt
+                    )
                 }
                 self.sleepReviewCacheKey = requestedKey
                 self.sleepReviewCacheInputKey = requestedInputKey
@@ -26834,16 +27431,184 @@ final class SessionStore: ObservableObject {
                 self.pendingSleepReviewCacheInputKey = nil
                 self.pendingSleepReviewCacheGeneration = nil
                 self.pendingSleepReviewCacheWorkItem = nil
+                self.pendingSleepReviewProjectionCancellation = nil
                 AtriaDebugLog("ATRIADBG sleep_review_cache status=published reason=%@ generation=%d has_candidate=%d",
                               reason,
                               generation,
                               result == nil ? 0 : 1)
+                AtriaDebugLog(
+                    "ATRIADBG sleep_review_projection reason=%@ app_state=%@ generation=%d outcome=completed duration_ms=%d published=1",
+                    reason,
+                    Self.sleepReviewApplicationStateLabel(
+                        UIApplication.shared.applicationState
+                    ),
+                    generation,
+                    durationMilliseconds
+                )
             }
         }
         pendingSleepReviewCacheInputKey = requestedInputKey
         pendingSleepReviewCacheGeneration = generation
         pendingSleepReviewCacheWorkItem = workItem
+        pendingSleepReviewProjectionCancellation = cancellation
+        AtriaDebugLog(
+            "ATRIADBG sleep_review_projection reason=%@ app_state=%@ generation=%d outcome=started duration_ms=0 published=0",
+            reason,
+            applicationStateLabel,
+            generation
+        )
         sleepReviewProjectionQueue.async(execute: workItem)
+    }
+
+    /// One checked candidate aggregation feeds both the main review card and
+    /// nap rows. The entire projection shares the caller's absolute deadline;
+    /// no second aggregate replay can restart the budget.
+    nonisolated static func makeBoundedSleepReviewCacheProjection(
+        snapshot: SleepHistorySnapshot,
+        canonicalSessions: [SavedSession],
+        confirmedSleeps: [UserConfirmedSleep],
+        dismissedCandidates: [AtriaDismissedSleepCandidate] = [],
+        rest: Int,
+        maxHR: Int,
+        calendar: Calendar = .current,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> (
+        main: SleepHistorySnapshot.Night?,
+        naps: [SleepHistorySnapshot.Night]
+    ) {
+        try cooperativeDeadline.checkpoint()
+        let candidates = try aggregateSleepCandidates(
+            in: canonicalSessions,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar,
+            // `.boundedRecent` may synchronously decode an 8 MiB JSONL motion
+            // shard outside the cooperative deadline. The bounded review lane
+            // uses only motion already attached to/session-summarized in its
+            // immutable input; full archive settlement remains separately
+            // leased and receipt-bound.
+            historicalMotionPolicy: .attachedCompactOnly,
+            cooperativeDeadline: cooperativeDeadline,
+            includeResumedReviewCandidates: true
+        )
+        try cooperativeDeadline.checkpoint()
+        let authorities = try boundedSleepReviewAuthorities(
+            snapshot: snapshot,
+            canonicalSessions: canonicalSessions,
+            candidates: candidates,
+            confirmedSleeps: confirmedSleeps,
+            dismissedCandidates: dismissedCandidates,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        let main = try makeSleepReviewNightForCacheCore(
+            snapshot: snapshot,
+            canonicalSessions: canonicalSessions,
+            confirmedSleeps: authorities.confirmedSleeps,
+            dismissedCandidates: authorities.dismissedCandidates,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar,
+            precomputedCandidates: candidates,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        let naps = try makeNapReviewNightsForCacheCore(
+            canonicalSessions: canonicalSessions,
+            confirmedSleeps: authorities.confirmedSleeps,
+            dismissedCandidates: authorities.dismissedCandidates,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar,
+            precomputedCandidates: candidates,
+            cooperativeDeadline: cooperativeDeadline
+        )
+        try cooperativeDeadline.checkpoint()
+        return (main, naps)
+    }
+
+    /// Confirmations and dismissals are durable authority, so an overlap may
+    /// never be silently truncated. Filter them to the already-bounded review
+    /// horizon with cooperative checks; an implausibly dense authority set
+    /// fails closed rather than entering repeated unbounded `contains` scans.
+    nonisolated static func boundedSleepReviewAuthorities(
+        snapshot: SleepHistorySnapshot,
+        canonicalSessions: [SavedSession],
+        candidates: [AggregateSleepCandidate],
+        confirmedSleeps: [UserConfirmedSleep],
+        dismissedCandidates: [AtriaDismissedSleepCandidate],
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) throws -> (
+        confirmedSleeps: [UserConfirmedSleep],
+        dismissedCandidates: [AtriaDismissedSleepCandidate]
+    ) {
+        var reviewStart: Date?
+        var reviewEnd: Date?
+        func include(start: Date, end: Date) {
+            guard end > start else { return }
+            reviewStart = min(reviewStart ?? start, start)
+            reviewEnd = max(reviewEnd ?? end, end)
+        }
+        for (index, session) in canonicalSessions.enumerated() {
+            if index.isMultiple(of: 64) {
+                try cooperativeDeadline.checkpoint()
+            }
+            include(start: session.start, end: session.end)
+        }
+        for (index, candidate) in candidates.enumerated() {
+            if index.isMultiple(of: 64) {
+                try cooperativeDeadline.checkpoint()
+            }
+            include(start: candidate.start, end: candidate.end)
+        }
+        for (index, night) in snapshot.nights.enumerated() {
+            if index.isMultiple(of: 16) {
+                try cooperativeDeadline.checkpoint()
+            }
+            if !night.confirmed, let start = night.start, let end = night.end {
+                include(start: start, end: end)
+            }
+        }
+        guard let reviewStart, let reviewEnd else {
+            return ([], [])
+        }
+
+        var boundedConfirmed: [UserConfirmedSleep] = []
+        boundedConfirmed.reserveCapacity(min(
+            confirmedSleeps.count,
+            sleepReviewMaximumRelevantAuthorityRows
+        ))
+        for (index, sleep) in confirmedSleeps.enumerated() {
+            if index.isMultiple(of: 64) {
+                try cooperativeDeadline.checkpoint()
+            }
+            guard sleep.end > reviewStart, sleep.start < reviewEnd else {
+                continue
+            }
+            guard boundedConfirmed.count
+                    < sleepReviewMaximumRelevantAuthorityRows else {
+                throw AtriaSleepSettlementAbort.deadlineExceeded
+            }
+            boundedConfirmed.append(sleep)
+        }
+
+        var boundedDismissed: [AtriaDismissedSleepCandidate] = []
+        boundedDismissed.reserveCapacity(min(
+            dismissedCandidates.count,
+            sleepReviewMaximumRelevantAuthorityRows
+        ))
+        for (index, dismissal) in dismissedCandidates.enumerated() {
+            if index.isMultiple(of: 64) {
+                try cooperativeDeadline.checkpoint()
+            }
+            guard dismissal.end > reviewStart,
+                  dismissal.start < reviewEnd else { continue }
+            guard boundedDismissed.count
+                    < sleepReviewMaximumRelevantAuthorityRows else {
+                throw AtriaSleepSettlementAbort.deadlineExceeded
+            }
+            boundedDismissed.append(dismissal)
+        }
+        try cooperativeDeadline.checkpoint()
+        return (boundedConfirmed, boundedDismissed)
     }
 
     nonisolated static func makeSleepReviewNightForCache(snapshot: SleepHistorySnapshot,
@@ -26853,18 +27618,62 @@ final class SessionStore: ObservableObject {
                                                          rest: Int,
                                                          maxHR: Int,
                                                          calendar: Calendar = .current) -> SleepHistorySnapshot.Night? {
-        let physiologicalReview = physiologicalSleepReviewNight(
+        try? makeSleepReviewNightForCacheCore(
+            snapshot: snapshot,
+            canonicalSessions: canonicalSessions,
+            confirmedSleeps: confirmedSleeps,
+            dismissedCandidates: dismissedCandidates,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar,
+            precomputedCandidates: nil,
+            cooperativeDeadline: nil
+        )
+    }
+
+    private nonisolated static func makeSleepReviewNightForCacheCore(
+        snapshot: SleepHistorySnapshot,
+        canonicalSessions: [SavedSession],
+        confirmedSleeps: [UserConfirmedSleep],
+        dismissedCandidates: [AtriaDismissedSleepCandidate],
+        rest: Int,
+        maxHR: Int,
+        calendar: Calendar,
+        precomputedCandidates: [AggregateSleepCandidate]?,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> SleepHistorySnapshot.Night? {
+        try cooperativeDeadline?.checkpoint()
+        let physiologicalReview = try physiologicalSleepReviewNightCore(
             in: canonicalSessions,
             confirmedSleeps: confirmedSleeps,
             dismissedCandidates: dismissedCandidates,
             rest: rest,
-            calendar: calendar
+            calendar: calendar,
+            cooperativeDeadline: cooperativeDeadline
         )
-        let candidates = aggregateSleepCandidates(in: canonicalSessions,
-                                                   rest: rest,
-                                                   maxHR: maxHR,
-                                                   calendar: calendar,
-                                                   historicalMotionPolicy: .boundedRecent)
+        let candidates: [AggregateSleepCandidate]
+        if let precomputedCandidates {
+            candidates = precomputedCandidates
+        } else if let cooperativeDeadline {
+            candidates = try aggregateSleepCandidates(
+                in: canonicalSessions,
+                rest: rest,
+                maxHR: maxHR,
+                calendar: calendar,
+                historicalMotionPolicy: .boundedRecent,
+                cooperativeDeadline: cooperativeDeadline,
+                includeResumedReviewCandidates: true
+            )
+        } else {
+            candidates = aggregateSleepCandidates(
+                in: canonicalSessions,
+                rest: rest,
+                maxHR: maxHR,
+                calendar: calendar,
+                historicalMotionPolicy: .boundedRecent
+            )
+        }
+        try cooperativeDeadline?.checkpoint()
         func isUnsettled(_ candidate: AggregateSleepCandidate) -> Bool {
             let overlapsConfirmed = confirmedSleeps.contains {
                 sleepWindowsOverlap($0, candidate: candidate)
@@ -26924,16 +27733,72 @@ final class SessionStore: ObservableObject {
         } else {
             aggregateCandidate = nil
         }
-        let aggregateReview = aggregateCandidate.map { candidate in
+        let aggregateReview: SleepHistorySnapshot.Night?
+        if let candidate = aggregateCandidate {
+            try cooperativeDeadline?.checkpoint()
             let source = sleepReviewCandidateSource(for: candidate)
-            let metrics = confirmedSleepWindowMetrics(from: canonicalSessions,
-                                                       start: candidate.start,
-                                                       end: candidate.end,
-                                                       rest: candidate.restingHR)
+            let metrics: (sessions: Int, samples: Int, avgHR: Int,
+                          peakHR: Int, restingHR: Int, hrv: Int?,
+                          hrvWindowCount: Int)
+            if let cooperativeDeadline {
+                metrics = try confirmedSleepWindowMetrics(
+                    from: canonicalSessions,
+                    start: candidate.start,
+                    end: candidate.end,
+                    rest: candidate.restingHR,
+                    cooperativeDeadline: cooperativeDeadline
+                )
+            } else {
+                metrics = confirmedSleepWindowMetrics(
+                    from: canonicalSessions,
+                    start: candidate.start,
+                    end: candidate.end,
+                    rest: candidate.restingHR
+                )
+            }
+            let respiratoryRate: Double?
+            let stageSegments: [SleepStageSegment]
+            if let cooperativeDeadline {
+                let respiratoryDeadline = cooperativeDeadline.capped(
+                    afterNanoseconds:
+                        sleepReviewRespiratoryBudgetNanoseconds
+                )
+                respiratoryRate = try? confirmedSleepRespiratoryRate(
+                    from: canonicalSessions,
+                    start: candidate.start,
+                    end: candidate.end,
+                    cooperativeDeadline: respiratoryDeadline
+                )
+                try cooperativeDeadline.checkpoint()
+                stageSegments = try sleepStageResearchSegments(
+                    from: canonicalSessions,
+                    start: candidate.start,
+                    end: candidate.end,
+                    restingHR: candidate.restingHR,
+                    isNap: candidate.kind == "nap_candidate",
+                    motionValidated: candidate.motionEvidenceValidated,
+                    maximumRows: sleepReviewMaximumStagingRows,
+                    cooperativeDeadline: cooperativeDeadline
+                )
+            } else {
+                respiratoryRate = confirmedSleepRespiratoryRate(
+                    from: canonicalSessions,
+                    start: candidate.start,
+                    end: candidate.end
+                )
+                stageSegments = sleepStageResearchSegments(
+                    from: canonicalSessions,
+                    start: candidate.start,
+                    end: candidate.end,
+                    restingHR: candidate.restingHR,
+                    isNap: candidate.kind == "nap_candidate",
+                    motionValidated: candidate.motionEvidenceValidated
+                )
+            }
             let sleepEfficiency = candidate.span > 0
                 ? min(max(candidate.duration / candidate.span, 0), 1)
                 : nil
-            return SleepHistorySnapshot.Night(
+            aggregateReview = SleepHistorySnapshot.Night(
                 id: "sleep-review-\(Int(candidate.start.timeIntervalSince1970))-\(Int(candidate.end.timeIntervalSince1970))-\(source)",
                 day: candidate.day,
                 start: candidate.start,
@@ -26942,21 +27807,16 @@ final class SessionStore: ObservableObject {
                 restingHR: candidate.restingHR > 0 ? candidate.restingHR : nil,
                 hrv: metrics.hrv,
                 hrvWindowCount: metrics.hrvWindowCount,
-                respiratoryRate: confirmedSleepRespiratoryRate(from: canonicalSessions,
-                                                                start: candidate.start,
-                                                                end: candidate.end),
+                respiratoryRate: respiratoryRate,
                 sleepEfficiency: sleepEfficiency,
                 confidence: candidate.motionEvidenceValidated ? candidate.confidence.rawValue : "review_needed",
                 source: source,
                 confirmed: false,
-                stageSegments: sleepStageResearchSegments(from: canonicalSessions,
-                                                          start: candidate.start,
-                                                          end: candidate.end,
-                                                          restingHR: candidate.restingHR,
-                                                          isNap: candidate.kind == "nap_candidate",
-                                                          motionValidated: candidate.motionEvidenceValidated),
+                stageSegments: stageSegments,
                 motionValidated: candidate.motionEvidenceValidated
             )
+        } else {
+            aggregateReview = nil
         }
         if let latest = snapshot.latest,
            latest.confirmed == false,
@@ -27001,6 +27861,7 @@ final class SessionStore: ObservableObject {
             }
             return latest
         }
+        try cooperativeDeadline?.checkpoint()
         return aggregateReview ?? physiologicalReview
     }
 
@@ -27021,30 +27882,124 @@ final class SessionStore: ObservableObject {
         maxHR: Int,
         calendar: Calendar = .current
     ) -> [SleepHistorySnapshot.Night] {
-        let candidates = aggregateSleepCandidates(in: canonicalSessions,
-                                                  rest: rest,
-                                                  maxHR: maxHR,
-                                                  calendar: calendar,
-                                                  historicalMotionPolicy: .boundedRecent)
-        return candidates.filter { candidate in
+        (try? makeNapReviewNightsForCacheCore(
+            canonicalSessions: canonicalSessions,
+            confirmedSleeps: confirmedSleeps,
+            dismissedCandidates: dismissedCandidates,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar,
+            precomputedCandidates: nil,
+            cooperativeDeadline: nil
+        )) ?? []
+    }
+
+    private nonisolated static func makeNapReviewNightsForCacheCore(
+        canonicalSessions: [SavedSession],
+        confirmedSleeps: [UserConfirmedSleep],
+        dismissedCandidates: [AtriaDismissedSleepCandidate],
+        rest: Int,
+        maxHR: Int,
+        calendar: Calendar,
+        precomputedCandidates: [AggregateSleepCandidate]?,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> [SleepHistorySnapshot.Night] {
+        let candidates: [AggregateSleepCandidate]
+        if let precomputedCandidates {
+            candidates = precomputedCandidates
+        } else if let cooperativeDeadline {
+            candidates = try aggregateSleepCandidates(
+                in: canonicalSessions,
+                rest: rest,
+                maxHR: maxHR,
+                calendar: calendar,
+                historicalMotionPolicy: .boundedRecent,
+                cooperativeDeadline: cooperativeDeadline,
+                includeResumedReviewCandidates: true
+            )
+        } else {
+            candidates = aggregateSleepCandidates(
+                in: canonicalSessions,
+                rest: rest,
+                maxHR: maxHR,
+                calendar: calendar,
+                historicalMotionPolicy: .boundedRecent
+            )
+        }
+        var nights: [SleepHistorySnapshot.Night] = []
+        for candidate in candidates {
+            try cooperativeDeadline?.checkpoint()
             guard candidate.kind == "nap_candidate",
-                  isReviewWorthySleepCandidate(candidate) else { return false }
+                  isReviewWorthySleepCandidate(candidate) else { continue }
             let overlapsConfirmed = confirmedSleeps.contains {
                 sleepWindowsOverlap($0, candidate: candidate)
             }
             let dismissed = dismissedCandidates.contains {
                 $0.suppresses(start: candidate.start, end: candidate.end)
             }
-            return !overlapsConfirmed && !dismissed
-        }.map { candidate -> SleepHistorySnapshot.Night in
-            let metrics = confirmedSleepWindowMetrics(from: canonicalSessions,
-                                                      start: candidate.start,
-                                                      end: candidate.end,
-                                                      rest: candidate.restingHR)
+            guard !overlapsConfirmed, !dismissed else { continue }
+            let metrics: (sessions: Int, samples: Int, avgHR: Int,
+                          peakHR: Int, restingHR: Int, hrv: Int?,
+                          hrvWindowCount: Int)
+            if let cooperativeDeadline {
+                metrics = try confirmedSleepWindowMetrics(
+                    from: canonicalSessions,
+                    start: candidate.start,
+                    end: candidate.end,
+                    rest: candidate.restingHR,
+                    cooperativeDeadline: cooperativeDeadline
+                )
+            } else {
+                metrics = confirmedSleepWindowMetrics(
+                    from: canonicalSessions,
+                    start: candidate.start,
+                    end: candidate.end,
+                    rest: candidate.restingHR
+                )
+            }
+            let respiratoryRate: Double?
+            let stageSegments: [SleepStageSegment]
+            if let cooperativeDeadline {
+                let respiratoryDeadline = cooperativeDeadline.capped(
+                    afterNanoseconds:
+                        sleepReviewRespiratoryBudgetNanoseconds
+                )
+                respiratoryRate = try? confirmedSleepRespiratoryRate(
+                    from: canonicalSessions,
+                    start: candidate.start,
+                    end: candidate.end,
+                    cooperativeDeadline: respiratoryDeadline
+                )
+                try cooperativeDeadline.checkpoint()
+                stageSegments = try sleepStageResearchSegments(
+                    from: canonicalSessions,
+                    start: candidate.start,
+                    end: candidate.end,
+                    restingHR: candidate.restingHR,
+                    isNap: true,
+                    motionValidated: candidate.motionEvidenceValidated,
+                    maximumRows: sleepReviewMaximumStagingRows,
+                    cooperativeDeadline: cooperativeDeadline
+                )
+            } else {
+                respiratoryRate = confirmedSleepRespiratoryRate(
+                    from: canonicalSessions,
+                    start: candidate.start,
+                    end: candidate.end
+                )
+                stageSegments = sleepStageResearchSegments(
+                    from: canonicalSessions,
+                    start: candidate.start,
+                    end: candidate.end,
+                    restingHR: candidate.restingHR,
+                    isNap: true,
+                    motionValidated: candidate.motionEvidenceValidated
+                )
+            }
             let sleepEfficiency = candidate.span > 0
                 ? min(max(candidate.duration / candidate.span, 0), 1)
                 : nil
-            return SleepHistorySnapshot.Night(
+            nights.append(SleepHistorySnapshot.Night(
                 id: "nap-review-\(Int(candidate.start.timeIntervalSince1970))-\(Int(candidate.end.timeIntervalSince1970))",
                 day: candidate.day,
                 start: candidate.start,
@@ -27053,22 +28008,17 @@ final class SessionStore: ObservableObject {
                 restingHR: candidate.restingHR > 0 ? candidate.restingHR : nil,
                 hrv: metrics.hrv,
                 hrvWindowCount: metrics.hrvWindowCount,
-                respiratoryRate: confirmedSleepRespiratoryRate(from: canonicalSessions,
-                                                               start: candidate.start,
-                                                               end: candidate.end),
+                respiratoryRate: respiratoryRate,
                 sleepEfficiency: sleepEfficiency,
                 confidence: candidate.motionEvidenceValidated ? candidate.confidence.rawValue : "review_needed",
                 source: "nap_candidate",
                 confirmed: false,
-                stageSegments: sleepStageResearchSegments(from: canonicalSessions,
-                                                          start: candidate.start,
-                                                          end: candidate.end,
-                                                          restingHR: candidate.restingHR,
-                                                          isNap: true,
-                                                          motionValidated: candidate.motionEvidenceValidated),
+                stageSegments: stageSegments,
                 motionValidated: candidate.motionEvidenceValidated
-            )
-        }.sorted { ($0.start ?? $0.day) > ($1.start ?? $1.day) }
+            ))
+        }
+        try cooperativeDeadline?.checkpoint()
+        return nights.sorted { ($0.start ?? $0.day) > ($1.start ?? $1.day) }
     }
 
     /// A provisional daily-rollup candidate is a snapshot, not an immutable
@@ -27122,44 +28072,89 @@ final class SessionStore: ObservableObject {
         rest: Int,
         calendar: Calendar = .current
     ) -> SleepHistorySnapshot.Night? {
+        try? physiologicalSleepReviewNightCore(
+            in: sessions,
+            confirmedSleeps: confirmedSleeps,
+            dismissedCandidates: dismissedCandidates,
+            rest: rest,
+            calendar: calendar,
+            cooperativeDeadline: nil
+        )
+    }
+
+    private nonisolated static func physiologicalSleepReviewNightCore(
+        in sessions: [SavedSession],
+        confirmedSleeps: [UserConfirmedSleep],
+        dismissedCandidates: [AtriaDismissedSleepCandidate],
+        rest: Int,
+        calendar: Calendar,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> SleepHistorySnapshot.Night? {
         struct Bin {
             let start: Date
             let median: Int
             let sampleCount: Int
         }
+        try cooperativeDeadline?.checkpoint()
         let newestEnd = sessions.map(\.end).max()
         guard let newestEnd else { return nil }
         let cutoff = newestEnd.addingTimeInterval(-36 * 60 * 60)
         let binSeconds: TimeInterval = 5 * 60
         var valuesByBucket: [Int: [Int]] = [:]
-        for session in sessions where session.end >= cutoff {
-            for point in session.points {
+        for (sessionIndex, session) in sessions.enumerated()
+        where session.end >= cutoff {
+            if sessionIndex.isMultiple(of: 8) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            for (pointIndex, point) in session.points.enumerated() {
+                if pointIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
                 let date = session.start.addingTimeInterval(point.t)
                 guard date >= cutoff else { continue }
                 let bucket = Int(floor(date.timeIntervalSince1970 / binSeconds))
                 valuesByBucket[bucket, default: []].append(point.bpm)
             }
         }
-        let bins: [Bin] = valuesByBucket.compactMap { bucket, values in
+        var bins: [Bin] = []
+        bins.reserveCapacity(valuesByBucket.count)
+        for (bucket, values) in valuesByBucket {
+            try cooperativeDeadline?.checkpoint()
             // Three samples is enough for sparse/offline-restored streams;
             // production live bins normally contain hundreds.
-            guard values.count >= 3 else { return nil }
-            let ordered = values.sorted()
+            guard values.count >= 3 else { continue }
+            var ordered = values
+            try cooperativeStableSort(
+                &ordered,
+                cooperativeDeadline: cooperativeDeadline,
+                areInIncreasingOrder: <
+            )
             let middle = ordered.count / 2
             let median = ordered.count.isMultiple(of: 2)
                 ? (ordered[middle - 1] + ordered[middle]) / 2
                 : ordered[middle]
-            return Bin(start: Date(timeIntervalSince1970: Double(bucket) * binSeconds),
-                       median: median,
-                       sampleCount: values.count)
+            if median <= rest + 4 {
+                bins.append(Bin(
+                    start: Date(
+                        timeIntervalSince1970:
+                            Double(bucket) * binSeconds
+                    ),
+                    median: median,
+                    sampleCount: values.count
+                ))
+            }
         }
-        .filter { $0.median <= rest + 4 }
-        .sorted { $0.start < $1.start }
+        try cooperativeStableSort(
+            &bins,
+            cooperativeDeadline: cooperativeDeadline,
+            areInIncreasingOrder: { $0.start < $1.start }
+        )
         guard !bins.isEmpty else { return nil }
 
         var episodes: [[Bin]] = []
         var current: [Bin] = []
         for bin in bins {
+            try cooperativeDeadline?.checkpoint()
             if let previous = current.last,
                bin.start.timeIntervalSince(previous.start) > 2 * 60 * 60 {
                 episodes.append(current)
@@ -27169,8 +28164,12 @@ final class SessionStore: ObservableObject {
         }
         if !current.isEmpty { episodes.append(current) }
 
-        let reviewNights = episodes.compactMap { episode -> SleepHistorySnapshot.Night? in
-            guard let first = episode.first, let last = episode.last else { return nil }
+        var reviewNights: [SleepHistorySnapshot.Night] = []
+        for episode in episodes {
+            try cooperativeDeadline?.checkpoint()
+            guard let first = episode.first, let last = episode.last else {
+                continue
+            }
             let start = first.start
             let end = min(newestEnd, last.start.addingTimeInterval(binSeconds))
             let span = end.timeIntervalSince(start)
@@ -27208,18 +28207,71 @@ final class SessionStore: ObservableObject {
                                                                isNap: nap) != nil
             guard mainSleep || nap,
                   !overlapsConfirmed || extendsConfirmed,
-                  !dismissedCandidates.contains(where: { $0.suppresses(start: start, end: end) }) else { return nil }
+                  !dismissedCandidates.contains(where: {
+                      $0.suppresses(start: start, end: end)
+                  }) else { continue }
             let source = mainSleep ? "sleep_episode_review" : "nap_candidate"
             let day = endHour <= 11 ? calendar.startOfDay(for: end) : calendar.startOfDay(for: start)
             let weightedCount = episode.reduce(0) { $0 + $1.sampleCount }
             let weightedMedian = weightedCount > 0
                 ? episode.reduce(0) { $0 + ($1.median * $1.sampleCount) } / weightedCount
                 : rest
-            let metrics = confirmedSleepWindowMetrics(from: sessions,
-                                                      start: start,
-                                                      end: end,
-                                                      rest: weightedMedian)
-            return SleepHistorySnapshot.Night(
+            let metrics: (sessions: Int, samples: Int, avgHR: Int,
+                          peakHR: Int, restingHR: Int, hrv: Int?,
+                          hrvWindowCount: Int)
+            let respiratoryRate: Double?
+            let stageSegments: [SleepStageSegment]
+            if let cooperativeDeadline {
+                metrics = try confirmedSleepWindowMetrics(
+                    from: sessions,
+                    start: start,
+                    end: end,
+                    rest: weightedMedian,
+                    cooperativeDeadline: cooperativeDeadline
+                )
+                let respiratoryDeadline = cooperativeDeadline.capped(
+                    afterNanoseconds:
+                        sleepReviewRespiratoryBudgetNanoseconds
+                )
+                respiratoryRate = try? confirmedSleepRespiratoryRate(
+                    from: sessions,
+                    start: start,
+                    end: end,
+                    cooperativeDeadline: respiratoryDeadline
+                )
+                try cooperativeDeadline.checkpoint()
+                stageSegments = try sleepStageResearchSegments(
+                    from: sessions,
+                    start: start,
+                    end: end,
+                    restingHR: weightedMedian,
+                    isNap: nap,
+                    motionValidated: false,
+                    maximumRows: sleepReviewMaximumStagingRows,
+                    cooperativeDeadline: cooperativeDeadline
+                )
+            } else {
+                metrics = confirmedSleepWindowMetrics(
+                    from: sessions,
+                    start: start,
+                    end: end,
+                    rest: weightedMedian
+                )
+                respiratoryRate = confirmedSleepRespiratoryRate(
+                    from: sessions,
+                    start: start,
+                    end: end
+                )
+                stageSegments = sleepStageResearchSegments(
+                    from: sessions,
+                    start: start,
+                    end: end,
+                    restingHR: weightedMedian,
+                    isNap: nap,
+                    motionValidated: false
+                )
+            }
+            reviewNights.append(SleepHistorySnapshot.Night(
                 id: "sleep-physiology-review-\(Int(start.timeIntervalSince1970))-\(Int(end.timeIntervalSince1970))-\(source)",
                 day: day,
                 start: start,
@@ -27228,22 +28280,16 @@ final class SessionStore: ObservableObject {
                 restingHR: weightedMedian,
                 hrv: metrics.hrv,
                 hrvWindowCount: metrics.hrvWindowCount,
-                respiratoryRate: confirmedSleepRespiratoryRate(from: sessions,
-                                                                start: start,
-                                                                end: end),
+                respiratoryRate: respiratoryRate,
                 sleepEfficiency: span > 0 ? min(1, captured / span) : nil,
                 confidence: "review_needed",
                 source: source,
                 confirmed: false,
-                stageSegments: sleepStageResearchSegments(from: sessions,
-                                                          start: start,
-                                                          end: end,
-                                                          restingHR: weightedMedian,
-                                                          isNap: nap,
-                                                          motionValidated: false),
+                stageSegments: stageSegments,
                 motionValidated: false
-            )
+            ))
         }
+        try cooperativeDeadline?.checkpoint()
         return reviewNights.max { lhs, rhs in
             (lhs.end ?? .distantPast) < (rhs.end ?? .distantPast)
         }
@@ -27252,6 +28298,23 @@ final class SessionStore: ObservableObject {
     nonisolated static func shouldPublishSleepReviewCache(completedGeneration: Int,
                                                           currentGeneration: Int) -> Bool {
         completedGeneration == currentGeneration
+    }
+
+    nonisolated static func shouldPublishSleepReviewProjection(
+        isCancelled: Bool,
+        completedGeneration: Int,
+        currentGeneration: Int,
+        pendingGenerationMatches: Bool,
+        hasForegroundAuthority: Bool,
+        applicationIsActive: Bool,
+        restoreInitializationBlocked: Bool
+    ) -> Bool {
+        !isCancelled
+            && completedGeneration == currentGeneration
+            && pendingGenerationMatches
+            && hasForegroundAuthority
+            && applicationIsActive
+            && !restoreInitializationBlocked
     }
 
     private nonisolated static func sleepReviewCandidateSource(for candidate: AggregateSleepCandidate) -> String {
@@ -27550,6 +28613,8 @@ final class SessionStore: ObservableObject {
     nonisolated static let compactLatestNightMaximumSessions = 64
     nonisolated static let compactLatestNightMaximumHeartRateRows = 80_000
     nonisolated static let compactLatestNightMaximumRRRows = 80_000
+    nonisolated static let compactLatestNightMaximumRecoveredMotionEpochs =
+        4_096
     /// The research stage engine is optional presentation evidence, not a
     /// sleep-save gate. It has no checked API in this target, so compact
     /// settlement calls it only for a demonstrably small input and otherwise
@@ -27575,7 +28640,9 @@ final class SessionStore: ObservableObject {
     nonisolated static func compactLatestNightSessionSlice(
         from canonicalSessions: [SavedSession],
         now: Date,
-        deadlineUptimeNanoseconds: UInt64
+        deadlineUptimeNanoseconds: UInt64,
+        cooperativeDeadline: AtriaSleepSettlementDeadline? = nil,
+        preserveAttachedMotion: Bool = false
     ) -> Result<
         CompactLatestNightSessionSlice,
         CompactLatestNightSettlementFailure
@@ -27590,8 +28657,18 @@ final class SessionStore: ObservableObject {
         ))
         var heartRateRows = 0
         var rrRows = 0
+        var recoveredMotionEpochRows = 0
+        var seenRecoveredMotionEpochs =
+            Set<CompactLatestNightMotionEpochKey>()
         func deadlineExceeded() -> Bool {
-            DispatchTime.now().uptimeNanoseconds
+            if let cooperativeDeadline {
+                do {
+                    try cooperativeDeadline.checkpoint()
+                } catch {
+                    return true
+                }
+            }
+            return DispatchTime.now().uptimeNanoseconds
                 >= deadlineUptimeNanoseconds
         }
         for (index, source) in canonicalSessions.enumerated() {
@@ -27689,26 +28766,58 @@ final class SessionStore: ObservableObject {
                 }
             }
             // A session with no in-window HR cannot source a latest-night
-            // sleep candidate. Ignoring it avoids spending the 64-session
-            // authority on a connection whose evidence lies wholly outside
-            // the compact motion window.
+            // sleep candidate. Ignore it before reserving attached-motion
+            // identity so a duplicate epoch on a valid session remains usable.
             guard !points.isEmpty else { continue }
+            var boundedMotionEpochs: [AtriaRecoveredMotionEpoch]? = nil
+            if preserveAttachedMotion,
+               let sourceEpochs = source.recoveredMotionEpochs {
+                var retained: [AtriaRecoveredMotionEpoch] = []
+                retained.reserveCapacity(min(
+                    sourceEpochs.count,
+                    compactLatestNightMaximumRecoveredMotionEpochs
+                        - recoveredMotionEpochRows
+                ))
+                for (epochIndex, epoch) in sourceEpochs.enumerated() {
+                    if epochIndex.isMultiple(of: 256), deadlineExceeded() {
+                        return .failure(.deadlineExceeded)
+                    }
+                    guard epoch.start.timeIntervalSince1970.isFinite,
+                          epoch.end.timeIntervalSince1970.isFinite,
+                          epoch.end > epoch.start else {
+                        return .failure(.sessionIntegrityFailure)
+                    }
+                    guard epoch.end > clippedStart,
+                          epoch.start < clippedEnd else { continue }
+                    let key = CompactLatestNightMotionEpochKey(epoch)
+                    guard seenRecoveredMotionEpochs.insert(key).inserted else {
+                        continue
+                    }
+                    guard recoveredMotionEpochRows + retained.count
+                            < compactLatestNightMaximumRecoveredMotionEpochs else {
+                        return .failure(.recoveredMotionEpochCapExceeded)
+                    }
+                    retained.append(epoch)
+                }
+                boundedMotionEpochs = retained.isEmpty ? nil : retained
+            }
             let session = compactLatestNightClippedSession(
                 source,
                 start: clippedStart,
                 end: clippedEnd,
                 points: points,
-                rrPoints: boundedRR.isEmpty ? nil : boundedRR
+                rrPoints: boundedRR.isEmpty ? nil : boundedRR,
+                recoveredMotionEpochs: boundedMotionEpochs
             )
             sessions.append(session)
             heartRateRows += points.count
             rrRows += boundedRR.count
+            recoveredMotionEpochRows += boundedMotionEpochs?.count ?? 0
         }
         guard !sessions.isEmpty else {
             return .failure(.noRecentSessions)
         }
-        guard DispatchTime.now().uptimeNanoseconds
-                < deadlineUptimeNanoseconds else {
+        guard !deadlineExceeded() else {
             return .failure(.deadlineExceeded)
         }
         return .success(.init(
@@ -27729,7 +28838,8 @@ final class SessionStore: ObservableObject {
         start: Date,
         end: Date,
         points: [SavedSession.Point],
-        rrPoints: [SavedSession.RRPoint]?
+        rrPoints: [SavedSession.RRPoint]?,
+        recoveredMotionEpochs: [AtriaRecoveredMotionEpoch]?
     ) -> SavedSession {
         var clipped = SavedSession(
             id: source.id,
@@ -27761,9 +28871,10 @@ final class SessionStore: ObservableObject {
         clipped.imuMovementIntensity = source.imuMovementIntensity
         clipped.imuActivityBursts = source.imuActivityBursts
         clipped.imuValidationState = source.imuValidationState
-        // Recovered compact epochs are attached from the exact same clipped
-        // motion receipt after this slice succeeds.
-        clipped.recoveredMotionEpochs = nil
+        // Compact settlement passes nil and attaches epochs from its receipt
+        // after this slice succeeds. The review lane may instead preserve its
+        // already-attached, checked in-window evidence without any disk read.
+        clipped.recoveredMotionEpochs = recoveredMotionEpochs
         clipped.strapStepResearchCount = source.strapStepResearchCount
         clipped.strapStepResearchAgreement = source.strapStepResearchAgreement
         clipped.strapStepResearchState = source.strapStepResearchState
@@ -35300,14 +36411,29 @@ final class SessionStore: ObservableObject {
                 candidates.append(candidate)
             }
         }
-        let resumed = includeResumedReviewCandidates
-            ? resumedSleepReviewCandidates(
-                in: sourceSessions,
-                after: candidates,
-                rest: rest,
-                maxHR: maxHR,
-                calendar: calendar
-            ) : []
+        let resumed: [AggregateSleepCandidate]
+        if includeResumedReviewCandidates {
+            if let cooperativeDeadline {
+                resumed = try resumedSleepReviewCandidatesCore(
+                    in: sourceSessions,
+                    after: candidates,
+                    rest: rest,
+                    maxHR: maxHR,
+                    calendar: calendar,
+                    cooperativeDeadline: cooperativeDeadline
+                )
+            } else {
+                resumed = resumedSleepReviewCandidates(
+                    in: sourceSessions,
+                    after: candidates,
+                    rest: rest,
+                    maxHR: maxHR,
+                    calendar: calendar
+                )
+            }
+        } else {
+            resumed = []
+        }
         try cooperativeDeadline?.checkpoint()
         var result = candidates + resumed
         let ordering: (AggregateSleepCandidate, AggregateSleepCandidate)
@@ -35535,29 +36661,59 @@ final class SessionStore: ObservableObject {
         maxHR: Int,
         calendar: Calendar = .current
     ) -> [AggregateSleepCandidate] {
-        let mainCandidates = ordinaryCandidates.filter {
-            $0.kind != "nap_candidate"
-                && $0.kind != "resumed_sleep_candidate"
-                && $0.duration >= AggregateSleepCandidate.strictMinimumDuration
-                && isReviewWorthySleepCandidate($0)
+        (try? resumedSleepReviewCandidatesCore(
+            in: sourceSessions,
+            after: ordinaryCandidates,
+            rest: rest,
+            maxHR: maxHR,
+            calendar: calendar,
+            cooperativeDeadline: nil
+        )) ?? []
+    }
+
+    private nonisolated static func resumedSleepReviewCandidatesCore(
+        in sourceSessions: [SavedSession],
+        after ordinaryCandidates: [AggregateSleepCandidate],
+        rest: Int,
+        maxHR: Int,
+        calendar: Calendar,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> [AggregateSleepCandidate] {
+        _ = maxHR
+        try cooperativeDeadline?.checkpoint()
+        var mainCandidates: [AggregateSleepCandidate] = []
+        for candidate in ordinaryCandidates {
+            try cooperativeDeadline?.checkpoint()
+            if candidate.kind != "nap_candidate",
+               candidate.kind != "resumed_sleep_candidate",
+               candidate.duration
+                    >= AggregateSleepCandidate.strictMinimumDuration,
+               isReviewWorthySleepCandidate(candidate) {
+                mainCandidates.append(candidate)
+            }
         }
         guard !mainCandidates.isEmpty else { return [] }
 
-        let orderedSessions = sourceSessions
-            .filter { !$0.points.isEmpty }
-            .sorted { $0.start < $1.start }
+        var orderedSessions = sourceSessions.filter { !$0.points.isEmpty }
+        try cooperativeStableSort(
+            &orderedSessions,
+            cooperativeDeadline: cooperativeDeadline,
+            areInIncreasingOrder: { $0.start < $1.start }
+        )
         var result: [AggregateSleepCandidate] = []
         var consumedSessionIDs = Set<UUID>()
 
         for (sessionIndex, session) in orderedSessions.enumerated() {
+            try cooperativeDeadline?.checkpoint()
             guard !consumedSessionIDs.contains(session.id),
                   session.duration >= AggregateSleepCandidate.resumedSleepMinimumDuration else {
                 continue
             }
 
-            let matchingMain = mainCandidates
-                .filter { main in
-                    main.day == aggregateSleepDay(
+            var matchingMain: AggregateSleepCandidate?
+            for main in mainCandidates {
+                try cooperativeDeadline?.checkpoint()
+                let matches = main.day == aggregateSleepDay(
                         for: [session],
                         eventTimeZoneIdentifier: session.eventTimeZoneIdentifier,
                         calendar: calendar
@@ -35566,8 +36722,11 @@ final class SessionStore: ObservableObject {
                             >= AggregateSleepCandidate.resumedSleepMinimumSeparation
                         && session.start.timeIntervalSince(main.end)
                             <= AggregateSleepCandidate.resumedSleepMaximumSeparationFromMain
+                if matches,
+                   matchingMain == nil || main.end > matchingMain!.end {
+                    matchingMain = main
                 }
-                .max { $0.end < $1.end }
+            }
             guard let matchingMain else { continue }
 
             // Tiny/ambiguous journals between the main wake and this tail stay
@@ -35583,10 +36742,15 @@ final class SessionStore: ObservableObject {
             // Continuous-wear resumed detection therefore requires validated
             // low-motion evidence for onset and remains deliberately absent
             // until that evidence exists.
-            let nearestPriorEnd = orderedSessions
-                .filter { $0.id != session.id && $0.end <= session.start }
-                .map(\.end)
-                .max() ?? matchingMain.end
+            var nearestPriorEnd = matchingMain.end
+            for prior in orderedSessions {
+                try cooperativeDeadline?.checkpoint()
+                if prior.id != session.id,
+                   prior.end <= session.start,
+                   prior.end > nearestPriorEnd {
+                    nearestPriorEnd = prior.end
+                }
+            }
             guard session.start.timeIntervalSince(nearestPriorEnd)
                     >= AggregateSleepCandidate.resumedSleepMinimumSeparation else {
                 continue
@@ -35600,6 +36764,7 @@ final class SessionStore: ObservableObject {
             var cluster = [session]
             var clusterEnd = session.end
             for next in orderedSessions.dropFirst(sessionIndex + 1) {
+                try cooperativeDeadline?.checkpoint()
                 let separation = max(0, next.start.timeIntervalSince(clusterEnd))
                 guard separation <= AggregateSleepCandidate.briefSleepGapCreditMax,
                       next.end.timeIntervalSince(session.start)
@@ -35623,7 +36788,11 @@ final class SessionStore: ObservableObject {
             let wakeBinSeconds: TimeInterval = 5 * 60
             var valuesByWakeBucket: [Int: [Int]] = [:]
             for member in cluster {
-                for point in member.points {
+                try cooperativeDeadline?.checkpoint()
+                for (pointIndex, point) in member.points.enumerated() {
+                    if pointIndex.isMultiple(of: 256) {
+                        try cooperativeDeadline?.checkpoint()
+                    }
                     let sampleDate = member.start.addingTimeInterval(
                         min(max(0, point.t), member.duration)
                     )
@@ -35631,23 +36800,43 @@ final class SessionStore: ObservableObject {
                     valuesByWakeBucket[bucket, default: []].append(point.bpm)
                 }
             }
-            let wakeBins = valuesByWakeBucket.compactMap { bucket, values -> WakeBin? in
-                guard values.count >= 3 else { return nil }
-                let elevated = Double(values.filter { $0 >= rest + 35 }.count)
-                    / Double(values.count)
-                return WakeBin(
-                    start: Date(timeIntervalSince1970: Double(bucket) * wakeBinSeconds),
-                    median: percentileHR(0.50, values: values),
-                    elevatedFraction: elevated
+            var wakeBins: [WakeBin] = []
+            wakeBins.reserveCapacity(valuesByWakeBucket.count)
+            for (bucket, values) in valuesByWakeBucket {
+                try cooperativeDeadline?.checkpoint()
+                guard values.count >= 3 else { continue }
+                var elevatedCount = 0
+                for (index, value) in values.enumerated() {
+                    if index.isMultiple(of: 256) {
+                        try cooperativeDeadline?.checkpoint()
+                    }
+                    if value >= rest + 35 { elevatedCount += 1 }
+                }
+                var orderedValues = values
+                try cooperativeStableSort(
+                    &orderedValues,
+                    cooperativeDeadline: cooperativeDeadline,
+                    areInIncreasingOrder: <
                 )
+                wakeBins.append(WakeBin(
+                    start: Date(timeIntervalSince1970: Double(bucket) * wakeBinSeconds),
+                    median: percentileHR(0.50, presorted: orderedValues),
+                    elevatedFraction: Double(elevatedCount)
+                        / Double(values.count)
+                ))
             }
-            .sorted { $0.start < $1.start }
+            try cooperativeStableSort(
+                &wakeBins,
+                cooperativeDeadline: cooperativeDeadline,
+                areInIncreasingOrder: { $0.start < $1.start }
+            )
             var sustainedWakeRun: [WakeBin] = []
             var sustainedWakeStart: Date?
             for bin in wakeBins
             where bin.start >= session.start.addingTimeInterval(
                 AggregateSleepCandidate.resumedSleepMinimumDuration
             ) {
+                try cooperativeDeadline?.checkpoint()
                 let wakeLike = bin.median >= rest + 20 || bin.elevatedFraction >= 0.15
                 guard wakeLike else {
                     sustainedWakeRun.removeAll(keepingCapacity: true)
@@ -35667,11 +36856,14 @@ final class SessionStore: ObservableObject {
 
             let candidateStart = session.start
             let candidateEnd = min(clusterEnd, sustainedWakeStart ?? clusterEnd)
-            let includedSessions = cluster.filter {
-                $0.start < candidateEnd && $0.end > candidateStart
-            }
-            let capturedDuration = includedSessions.reduce(0.0) { partial, member in
-                partial + max(
+            var includedSessions: [SavedSession] = []
+            var capturedDuration = 0.0
+            for member in cluster {
+                try cooperativeDeadline?.checkpoint()
+                guard member.start < candidateEnd,
+                      member.end > candidateStart else { continue }
+                includedSessions.append(member)
+                capturedDuration += max(
                     0,
                     min(member.end, candidateEnd)
                         .timeIntervalSince(max(member.start, candidateStart))
@@ -35684,22 +36876,52 @@ final class SessionStore: ObservableObject {
                 continue
             }
 
-            let sampleDatesAndValues = includedSessions.flatMap { member in
-                member.points.compactMap { point -> (Date, Int)? in
+            var sampleDatesAndValues: [(Date, Int)] = []
+            for member in includedSessions {
+                try cooperativeDeadline?.checkpoint()
+                for (pointIndex, point) in member.points.enumerated() {
+                    if pointIndex.isMultiple(of: 256) {
+                        try cooperativeDeadline?.checkpoint()
+                    }
                     let date = member.start.addingTimeInterval(
                         min(max(0, point.t), member.duration)
                     )
-                    guard date >= candidateStart, date <= candidateEnd else { return nil }
-                    return (date, point.bpm)
+                    if date >= candidateStart, date <= candidateEnd {
+                        sampleDatesAndValues.append((date, point.bpm))
+                    }
                 }
             }
-            .sorted { $0.0 < $1.0 }
-            let values = sampleDatesAndValues.map(\.1)
+            try cooperativeStableSort(
+                &sampleDatesAndValues,
+                cooperativeDeadline: cooperativeDeadline,
+                areInIncreasingOrder: { $0.0 < $1.0 }
+            )
+            var values: [Int] = []
+            var sampleDates: [Date] = []
+            var valueSum = 0
+            var elevatedCount = 0
+            values.reserveCapacity(sampleDatesAndValues.count)
+            sampleDates.reserveCapacity(sampleDatesAndValues.count)
+            for (index, pair) in sampleDatesAndValues.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                sampleDates.append(pair.0)
+                values.append(pair.1)
+                valueSum += pair.1
+                if pair.1 >= rest + 35 { elevatedCount += 1 }
+            }
             guard !values.isEmpty else { continue }
-            let medianHR = percentileHR(0.50, values: values)
-            let hrP90 = percentileHR(0.90, values: values)
-            let avgHR = values.reduce(0, +) / values.count
-            let elevatedFraction = Double(values.filter { $0 >= rest + 35 }.count)
+            var orderedValues = values
+            try cooperativeStableSort(
+                &orderedValues,
+                cooperativeDeadline: cooperativeDeadline,
+                areInIncreasingOrder: <
+            )
+            let medianHR = percentileHR(0.50, presorted: orderedValues)
+            let hrP90 = percentileHR(0.90, presorted: orderedValues)
+            let avgHR = valueSum / values.count
+            let elevatedFraction = Double(elevatedCount)
                 / Double(values.count)
             guard avgHR <= rest + 12,
                   medianHR <= rest + 8,
@@ -35711,32 +36933,61 @@ final class SessionStore: ObservableObject {
 
             let binSeconds: TimeInterval = 5 * 60
             let expectedBins = max(1, Int(ceil(span / binSeconds)))
-            func observedBinFraction(_ dates: [Date]) -> Double {
-                let bins = Set(dates.map {
-                    min(expectedBins - 1,
-                        max(0, Int($0.timeIntervalSince(candidateStart) / binSeconds)))
-                })
+            func observedBinFraction(_ dates: [Date]) throws -> Double {
+                var bins = Set<Int>()
+                for (index, date) in dates.enumerated() {
+                    if index.isMultiple(of: 256) {
+                        try cooperativeDeadline?.checkpoint()
+                    }
+                    bins.insert(min(
+                        expectedBins - 1,
+                        max(
+                            0,
+                            Int(date.timeIntervalSince(candidateStart)
+                                / binSeconds)
+                        )
+                    ))
+                }
                 return Double(bins.count) / Double(expectedBins)
             }
-            let sampleDates = sampleDatesAndValues.map(\.0)
             let hrCoverage = min(1, Double(values.count) / max(1, capturedDuration))
-            let maximumAcceptedHRGap = includedSessions
-                .map(\.hrMaxAcceptedGapValue)
-                .max() ?? 0
+            var maximumAcceptedHRGap = 0.0
+            for member in includedSessions {
+                try cooperativeDeadline?.checkpoint()
+                maximumAcceptedHRGap = max(
+                    maximumAcceptedHRGap,
+                    member.hrMaxAcceptedGapValue
+                )
+            }
             guard hrCoverage >= 0.60,
-                  observedBinFraction(sampleDates)
+                  try observedBinFraction(sampleDates)
                     >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction,
                   maximumAcceptedHRGap
                     <= AggregateSleepCandidate.resumedSleepMaximumAcceptedHRGap else {
                 continue
             }
-            let qualifiedRRDates = includedSessions.flatMap { member -> [Date] in
-                guard member.hasQualifiedRRProvenance else { return [] }
-                return (member.rrPoints ?? []).compactMap { point in
+            var qualifiedRRDates: [Date] = []
+            for member in includedSessions {
+                try cooperativeDeadline?.checkpoint()
+                let qualified: Bool
+                if let cooperativeDeadline {
+                    qualified = try member.hasQualifiedRRProvenance(
+                        cooperativeDeadline: cooperativeDeadline
+                    )
+                } else {
+                    qualified = member.hasQualifiedRRProvenance
+                }
+                guard qualified else { continue }
+                for (rrIndex, point) in (member.rrPoints ?? []).enumerated() {
+                    if rrIndex.isMultiple(of: 256) {
+                        try cooperativeDeadline?.checkpoint()
+                    }
                     let date = member.start.addingTimeInterval(
                         min(max(0, point.t), member.duration)
                     )
-                    return date >= candidateStart && date <= candidateEnd ? date : nil
+                    if date >= candidateStart, date <= candidateEnd {
+                        qualifiedRRDates.append(date)
+                    }
                 }
             }
             if !qualifiedRRDates.isEmpty {
@@ -35745,30 +36996,80 @@ final class SessionStore: ObservableObject {
                     Double(qualifiedRRDates.count) / max(1, capturedDuration)
                 )
                 guard rrCoverage >= 0.60,
-                      observedBinFraction(qualifiedRRDates)
+                      try observedBinFraction(qualifiedRRDates)
                         >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction else {
                     continue
                 }
             }
 
             let boundaries = [candidateStart] + sampleDates + [candidateEnd]
-            let maximumHRSampleGap = zip(boundaries, boundaries.dropFirst())
-                .map { max(0, $1.timeIntervalSince($0)) }
-                .max() ?? span
+            var maximumHRSampleGap = 0.0
+            if boundaries.count > 1 {
+                for index in 1..<boundaries.count {
+                    if index.isMultiple(of: 256) {
+                        try cooperativeDeadline?.checkpoint()
+                    }
+                    maximumHRSampleGap = max(
+                        maximumHRSampleGap,
+                        max(
+                            0,
+                            boundaries[index].timeIntervalSince(
+                                boundaries[index - 1]
+                            )
+                        )
+                    )
+                }
+            } else {
+                maximumHRSampleGap = span
+            }
             guard maximumHRSampleGap
                     <= AggregateSleepCandidate.briefSleepGapCreditMax else {
                 continue
             }
-            let includedGaps = zip(includedSessions, includedSessions.dropFirst())
-                .map { max(0, $1.start.timeIntervalSince($0.end)) }
-            let maxGap = includedGaps.max() ?? 0
+            var maxGap = 0.0
+            if includedSessions.count > 1 {
+                for index in 1..<includedSessions.count {
+                    try cooperativeDeadline?.checkpoint()
+                    maxGap = max(
+                        maxGap,
+                        max(
+                            0,
+                            includedSessions[index].start.timeIntervalSince(
+                                includedSessions[index - 1].end
+                            )
+                        )
+                    )
+                }
+            }
             let eventTimeZoneIdentifier = aggregateSleepTimeZoneIdentifier(
                 for: includedSessions
             )
             // Only suppress the clustered members after the cluster has
             // actually qualified. A rejected leading fragment must not make a
             // later independently valid resumed-sleep source invisible.
-            consumedSessionIDs.formUnion(includedSessions.map(\.id))
+            for member in includedSessions {
+                consumedSessionIDs.insert(member.id)
+            }
+
+            var doubleValues: [Double] = []
+            doubleValues.reserveCapacity(values.count)
+            for (index, value) in values.enumerated() {
+                if index.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                doubleValues.append(Double(value))
+            }
+            let hrStandardDeviation: Double
+            if cooperativeDeadline != nil {
+                hrStandardDeviation = try cooperativeStandardDeviation(
+                    values,
+                    cooperativeDeadline: cooperativeDeadline
+                )
+            } else {
+                hrStandardDeviation = standardDeviation(doubleValues)
+            }
+            let observedHRBinFraction = try observedBinFraction(sampleDates)
+            try cooperativeDeadline?.checkpoint()
 
             result.append(AggregateSleepCandidate(
                 kind: "resumed_sleep_candidate",
@@ -35781,16 +37082,16 @@ final class SessionStore: ObservableObject {
                 span: span,
                 maxGap: maxGap,
                 samples: values.count,
-                hrObservedCoverageFraction: observedBinFraction(sampleDates),
+                hrObservedCoverageFraction: observedHRBinFraction,
                 maximumHRSampleGap: maximumHRSampleGap,
                 avgHR: avgHR,
-                peakHR: values.max() ?? 0,
-                hrStandardDeviation: standardDeviation(values.map(Double.init)),
+                peakHR: orderedValues.last ?? 0,
+                hrStandardDeviation: hrStandardDeviation,
                 medianHR: medianHR,
                 hrP90: hrP90,
                 elevatedSampleFraction: elevatedFraction,
                 baselineRestingHR: rest,
-                restingHR: percentileHR(0.05, values: values),
+                restingHR: percentileHR(0.05, presorted: orderedValues),
                 confidence: .low,
                 reason: qualifiedRRDates.isEmpty
                     ? "Dense HR-only post-wake segment after a separate main sleep; review required; awake and reconnect gaps excluded"
@@ -35828,6 +37129,7 @@ final class SessionStore: ObservableObject {
                 denseLongHROnlyReviewQualified: false
             ))
         }
+        try cooperativeDeadline?.checkpoint()
         return result
     }
 
@@ -39278,6 +40580,14 @@ final class SessionStore: ObservableObject {
     }
 
     private func enterRetainedRestoreMarkerBlock() {
+        // The store transition is the authority edge. SwiftUI observes the
+        // published block on a later turn, so revoke the worker/token and
+        // supersede its generation here before any queued completion can
+        // publish against canonical state that is no longer trusted.
+        revokeSleepReviewProjection(
+            reason: "restore_marker_retained",
+            forceGenerationSupersession: true
+        )
         restoreInitializationBlocked = true
         foregroundSleepSettlementGeneration &+= 1
         pendingSleepReadinessRetry?.cancel()
@@ -39287,8 +40597,6 @@ final class SessionStore: ObservableObject {
         pendingForegroundSleepSettlementWorkItem?.cancel()
         pendingForegroundSleepSettlementWorkItem = nil
         finishForegroundSleepSettlementCompletions(succeeded: false)
-        pendingSleepReviewCacheWorkItem?.cancel()
-        pendingSleepReviewCacheWorkItem = nil
         // This worker is non-interruptible once submitted. Preserve its active
         // sentinel, mark the result stale, and let completion drain any queued
         // request through the blocked scheduler without starting new work.
@@ -39304,6 +40612,28 @@ final class SessionStore: ObservableObject {
         recoveredDataPublicationFence.failAll()
         AtriaDebugLog("ATRIADBG session_store status=blocked reason=restore_marker_retained")
     }
+
+    #if DEBUG
+    var sleepReviewProjectionStateForTesting: (
+        generation: Int,
+        hasForegroundAuthority: Bool,
+        isDeferred: Bool,
+        hasPendingProjection: Bool
+    ) {
+        (
+            sleepReviewCacheGeneration,
+            sleepReviewProjectionForegroundAuthority,
+            sleepReviewRefreshDeferredUntilForeground,
+            pendingSleepReviewCacheGeneration != nil
+                || pendingSleepReviewCacheWorkItem != nil
+                || pendingSleepReviewProjectionCancellation != nil
+        )
+    }
+
+    func enterRetainedRestoreMarkerBlockForTesting() {
+        enterRetainedRestoreMarkerBlock()
+    }
+    #endif
 
     private func restoreSessionBackup(request: SessionBackupIORequest) async -> Bool {
         guard !restoreInitializationBlocked else {
