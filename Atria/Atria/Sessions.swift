@@ -21024,6 +21024,22 @@ final class SessionStore: ObservableObject {
                 sleepByDay[day] = night
             }
         }
+        // A day can hold more than one distinct main sleep — a user who slept
+        // twice (a short overnight plus a long, fragmented daytime sleep) has a
+        // second confirmed main that lost the single-canonical-per-day race and
+        // now lives in `additionalMainNights`. Its effective hours must still be
+        // credited to the day's TOTAL sleep, even though recovery/HRV/stages stay
+        // sourced from the one canonical night. Resumed segments are already
+        // folded into the canonical night's duration, so exclude them here to
+        // avoid double-counting; apply the same physiological-main gate the
+        // canonical loop uses so only durable mains contribute.
+        var additionalMainSecondsByDay: [Date: TimeInterval] = [:]
+        for extra in sleep.additionalMainNights {
+            guard extra.source != "resumed_sleep",
+                  confirmedSleepIsPhysiologicalMainSleep(extra) else { continue }
+            let day = morningMetricDay(for: extra, calendar: calendar)
+            additionalMainSecondsByDay[day, default: 0] += extra.duration
+        }
         let resolvedSkinTemperatureDeviationByDay = skinTemperatureDeviationByDay
             ?? finalizedSkinTemperatureDeviationByMorningDay(sessions: sessions,
                                                              activeSessionID: activeSessionID,
@@ -21061,7 +21077,15 @@ final class SessionStore: ObservableObject {
                 let hrv = night?.hrv.flatMap { $0 > 0 ? $0 : nil }
                 let restingHR = night?.restingHR.flatMap { $0 > 0 ? $0 : nil }
                 let respiratoryRate = night?.respiratoryRate.flatMap { $0 > 0 ? $0 : nil }
-                let sleepDuration = night.map(\.duration)
+                // Recovery is a single-main physiological score — keep its sleep
+                // duration on the canonical night. The persisted/displayed total
+                // additionally credits every other same-day main's effective hours.
+                let canonicalSleepDuration = night.map(\.duration)
+                let additionalMainSeconds = additionalMainSecondsByDay[day] ?? 0
+                let totalSleepDuration: TimeInterval? = {
+                    let combined = (canonicalSleepDuration ?? 0) + additionalMainSeconds
+                    return combined > 0 ? combined : nil
+                }()
                 let sleepSpan = night.flatMap { night -> TimeInterval? in
                     guard let start = night.start, let end = night.end, end > start else { return nil }
                     return end.timeIntervalSince(start)
@@ -21077,7 +21101,7 @@ final class SessionStore: ObservableObject {
                                                   // must control Recovery; otherwise an honest "--"
                                                   // tile can still silently boost the score as 100%.
                                                   sleepEfficiency: recoverySleepEfficiency(from: night),
-                                                  sleepDurationHours: sleepDuration.map { $0 / 3_600 },
+                                                  sleepDurationHours: canonicalSleepDuration.map { $0 / 3_600 },
                                                   respiratoryRate: respiratoryRate,
                                                   respiratoryBaseline: sleep.respiratoryBaselineStats)
                 return SavedDailyMetric(day: day,
@@ -21086,7 +21110,7 @@ final class SessionStore: ObservableObject {
                                         hrv: hrv,
                                         restingHR: restingHR,
                                         respiratoryRate: respiratoryRate,
-                                        sleepDuration: sleepDuration,
+                                        sleepDuration: totalSleepDuration,
                                         sleepSpan: sleepSpan,
                                         sleepStart: night?.start,
                                         sleepEnd: night?.end,
@@ -52225,6 +52249,29 @@ struct SleepHistorySnapshot: Equatable {
     /// drives recovery, sleep need, or overnight vitals.
     var latestMainSleep: Night? {
         nights.first { $0.confirmed && !$0.isNapEvidence }
+    }
+
+    /// Total effective sleep across every distinct main sleep that shares the
+    /// latest main sleep's wake civil day — the honest "total sleep hours" for a
+    /// day the user slept more than once (a short overnight plus a long daytime
+    /// sleep). Display-only: recovery, sleep need, debt, and baseline learning
+    /// keep reading the single canonical `latestMainSleep`. Resumed segments are
+    /// already folded into the canonical night, so they are excluded here.
+    var latestMainSleepDayEffectiveDuration: TimeInterval? {
+        guard let latest = latestMainSleep else { return nil }
+        guard let end = latest.end else { return latest.duration }
+        let day = EventCivilTime.day(containing: end,
+                                     eventTimeZoneIdentifier: latest.eventTimeZoneIdentifier,
+                                     outputCalendar: .current)
+        var total = latest.duration
+        for extra in additionalMainNights where extra.source != "resumed_sleep" {
+            guard extra.id != latest.id, let extraEnd = extra.end else { continue }
+            let extraDay = EventCivilTime.day(containing: extraEnd,
+                                              eventTimeZoneIdentifier: extra.eventTimeZoneIdentifier,
+                                              outputCalendar: .current)
+            if extraDay == day { total += extra.duration }
+        }
+        return total
     }
 
     /// Newest sleep evidence a presentation may show numerically. This is not

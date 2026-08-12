@@ -178,6 +178,67 @@ final class AtriaSleepActivityConsistencyTests: XCTestCase {
         XCTAssertEqual(day.sleepSeconds, main.duration + resumed.duration)
     }
 
+    // A user who slept twice on one wake day (a short overnight plus a long
+    // daytime sleep) must have BOTH mains' effective hours in the persisted
+    // daily total. Regression guard for the makeSavedDailyMetrics path, which the
+    // History-model test above does not exercise.
+    func testDailyMetricSumsTwoSameWakeDayMainSleeps() throws {
+        let overnight = sleep(id: "overnight",
+                              start: date(10, 23),
+                              end: date(11, 3)) // 4h
+        let daytime = sleep(id: "daytime",
+                            start: date(11, 6),
+                            end: date(11, 14), // 8h — same wake day (11)
+                            source: "manual_sleep")
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [overnight, daytime],
+                                            calendar: Self.utcCalendar)
+        // One is canonical, the other lands in additionalMainNights.
+        XCTAssertEqual(snapshot.nights.count, 1)
+        XCTAssertEqual(snapshot.additionalMainNights.count, 1)
+
+        let metrics = SessionStore.makeSavedDailyMetrics(
+            rollups: [],
+            sleep: snapshot,
+            baseline: PersonalBaseline(),
+            calendar: Self.utcCalendar)
+        let wakeDay = Self.utcCalendar.startOfDay(for: daytime.end)
+        let metric = try XCTUnwrap(metrics.first { $0.day == wakeDay })
+        XCTAssertEqual(try XCTUnwrap(metric.sleepDuration),
+                       overnight.duration + daytime.duration,
+                       accuracy: 0.5,
+                       "the day's total sleep must credit both same-wake-day mains")
+    }
+
+    // The display accessor sums same-wake-day mains but excludes resumed segments
+    // (already folded into the canonical night) so they are never double-counted.
+    func testLatestMainSleepDayEffectiveDurationSumsMainsExcludingResumed() throws {
+        let overnight = sleep(id: "overnight",
+                              start: date(10, 23),
+                              end: date(11, 3)) // 4h main
+        let daytime = sleep(id: "daytime",
+                            start: date(11, 6),
+                            end: date(11, 14), // 8h main — longer, so canonical
+                            source: "manual_sleep")
+        let resumed = sleep(id: "resumed",
+                            start: date(11, 3, 30),
+                            end: date(11, 4, 30), // 1h resumed continuation
+                            source: "resumed_sleep")
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [overnight, daytime, resumed],
+                                            calendar: Self.utcCalendar)
+        // The longer main is canonical; the shorter main lands in additionalMainNights.
+        let latest = try XCTUnwrap(snapshot.latestMainSleep)
+        XCTAssertEqual(latest.duration, daytime.duration, accuracy: 0.5,
+                       "the longer daytime sleep is the canonical main")
+        // Total credits BOTH genuine mains and excludes the resumed continuation,
+        // which must never be summed a second time.
+        let total = try XCTUnwrap(snapshot.latestMainSleepDayEffectiveDuration)
+        XCTAssertEqual(total, overnight.duration + daytime.duration, accuracy: 0.5)
+        XCTAssertLessThan(total, overnight.duration + daytime.duration + resumed.duration,
+                          "the resumed segment must not add to the day total")
+    }
+
     func testActivityCenterShowsGenuineCandidateOnlyDayAsReview() throws {
         let candidateStart = date(12, 18)
         let candidateDay = AtriaHistoryReviewCandidateDay(
