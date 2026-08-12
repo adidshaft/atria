@@ -185,23 +185,24 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             }
             return "Verified complete day"
         case (.verifiedCanonical, .partial):
-            // This percent is the share of the elapsed day carrying resolved
-            // step-motion, NOT a sync-completeness grade. A user whose strap is
-            // fully synced but sedentary legitimately reads low here (few steps
-            // over a mostly-still day). Never call it "synced" — that made a
-            // caught-up user think their data had barely uploaded (2026-08-12
-            // user report). Frame it as movement share and keep the durable
-            // frontier so the subtotal's age stays visible.
+            // This percent is how much of the elapsed day the strap actually
+            // RECORDED step-motion for — a motion-data coverage figure, NOT a
+            // transport-sync grade and NOT an activity level. On the HR-only
+            // radio mode the strap only banks motion in short windows, so a
+            // fully-synced day legitimately reads low (2026-08-12 device
+            // evidence: ~1h of motion data over a 14h day). Never say "synced"
+            // (reads as "barely uploaded") and never say "moving" (reads as
+            // "you were only active N%"). Say "tracked" and keep the frontier.
             if let coverageFraction {
                 let coverage = Int((coverageFraction * 100).rounded())
                 if let capturedAt {
-                    return "Moving \(coverage)% · through "
+                    return "\(coverage)% tracked · through "
                         + capturedAt.formatted(
                             date: .omitted,
                             time: .shortened
                         )
                 }
-                return "Moving \(coverage)% of day"
+                return "\(coverage)% of day tracked"
             }
             return capturedAt.map {
                 "Through " + $0.formatted(date: .omitted, time: .shortened)
@@ -259,7 +260,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             return "\(count) steps. Verified complete day."
         case (.verifiedCanonical, .partial):
             let coverage = coverageFraction.map {
-                "moving \(Int(($0 * 100).rounded())) percent of your day"
+                "motion tracked for \(Int(($0 * 100).rounded())) percent of your day"
             } ?? "partially tracked"
             let frontier = capturedAt.map {
                 ", through \($0.formatted(date: .omitted, time: .shortened))"

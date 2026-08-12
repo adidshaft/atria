@@ -94,12 +94,14 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
 
         XCTAssertEqual(value.valueText, "3210")
         XCTAssertEqual(value.completeness, .partial)
-        // The coverage percent is a movement share, not a sync grade — the copy
-        // must never imply the strap has only "synced" that fraction.
-        XCTAssertTrue(value.detailText.hasPrefix("Moving 50% · through "))
+        // The coverage percent is motion-data coverage, not a transport-sync
+        // grade and not an activity level — the copy must say neither "synced"
+        // (reads as "barely uploaded") nor "moving" (reads as "only N% active").
+        XCTAssertTrue(value.detailText.hasPrefix("50% tracked · through "))
         XCTAssertFalse(value.detailText.contains("Today so far"))
         XCTAssertFalse(value.detailText.lowercased().contains("synced"))
-        XCTAssertTrue(value.accessibilityText.contains("moving 50 percent of your day"))
+        XCTAssertFalse(value.detailText.lowercased().contains("moving"))
+        XCTAssertTrue(value.accessibilityText.contains("motion tracked for 50 percent of your day"))
         XCTAssertFalse(value.accessibilityText.lowercased().contains("synced"))
         XCTAssertTrue(value.accessibilityText.contains("through "))
     }
