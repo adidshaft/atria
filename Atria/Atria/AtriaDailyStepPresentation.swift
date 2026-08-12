@@ -1,5 +1,82 @@
 import Foundation
 
+/// Typed, pure motion-availability authority. Distinguishes a terminal pure-HR
+/// fallback (motion genuinely unavailable in the current transport) from
+/// protected-R10 modes that still carry, or can still qualify, motion — so no
+/// surface labels motion "unavailable" merely because the HR-minimal radio flag
+/// is set. Resolved from a plain input snapshot so it is unit-testable with no
+/// BLE state. `unavailableInCurrentTransport` requires the exact terminal
+/// conjunction; anything short of that fails closed to `stale`/`unknown`.
+enum AtriaStrapMotionAvailability: Equatable, Sendable {
+    /// Fresh validated R10/IMU/live-motion evidence exists.
+    case live
+    /// A legitimate motion-bank/compact offload is active or pending.
+    case catchingUp
+    /// Protected owner is launch-pending/proving; qualification not yet failed.
+    case qualifying
+    /// Prior verified motion exists but is no longer current; no proof yet that
+    /// the transport is terminally motionless.
+    case stale
+    /// Exact evidence proves a pure-HR fallback cannot deliver motion now.
+    case unavailableInCurrentTransport
+    /// Evidence insufficient — fail closed rather than invent a motion blocker.
+    case unknown
+
+    /// Motion is "fresh" within this window (seconds). Aligns with the
+    /// protected-R10 missing-frame timeout that already governs the transport.
+    static let motionFreshnessWindow: TimeInterval = 20
+
+    struct Input: Equatable, Sendable {
+        var cleanOwner: AtriaBLEManager.ProtectedR10CleanOwner
+        var cleanOwnerState: AtriaBLEManager.ProtectedR10CleanOwnerState
+        var streamSuppressed: Bool
+        /// Age (s) of the freshest validated R10/IMU/live-motion frame; nil = none.
+        var freshMotionAge: TimeInterval?
+        /// A legitimate app-owned motion-bank offload is active or pending.
+        var hasActiveMotionBankOffload: Bool
+        /// Any prior verified motion/step evidence exists (coverage or steps > 0).
+        var hasPriorVerifiedMotion: Bool
+        var freshnessWindow: TimeInterval = AtriaStrapMotionAvailability.motionFreshnessWindow
+    }
+
+    static func resolve(_ input: Input) -> AtriaStrapMotionAvailability {
+        // 1. Fresh validated motion wins regardless of an older fallback marker.
+        if let age = input.freshMotionAge, age >= 0, age <= input.freshnessWindow {
+            return .live
+        }
+        // 2. A legitimate motion-bank offload catching up is not "unavailable".
+        if input.hasActiveMotionBankOffload {
+            return .catchingUp
+        }
+        // 3. Protected owner still launch-pending/proving: bounded qualification
+        //    has not terminally failed, so motion may still arrive.
+        switch input.cleanOwnerState {
+        case .protectedLaunchPending, .proving:
+            return .qualifying
+        default:
+            break
+        }
+        // 4. Terminal pure-HR fallback — the ONLY unavailable state: a pure-HR
+        //    owner in a terminal fallback state with the R10 stream suppressed,
+        //    no fresh motion, no active qualification, and no catching-up offload
+        //    (2 and 3 above already excluded those). protectedV9 + qualified can
+        //    never reach here.
+        let isPureHROwner = input.cleanOwner == .pureHRV8 || input.cleanOwner == .pureHRV10
+        let isTerminalFallback = input.cleanOwnerState == .fallbackActive
+            || input.cleanOwnerState == .fallbackPending
+        if isPureHROwner, isTerminalFallback, input.streamSuppressed {
+            return .unavailableInCurrentTransport
+        }
+        // 5. Prior verified motion but no proof the transport is terminally
+        //    motionless: stale, not terminal.
+        if input.hasPriorVerifiedMotion {
+            return .stale
+        }
+        // 6. Insufficient evidence: fail closed.
+        return .unknown
+    }
+}
+
 /// One honest value for step surfaces. A verified closed archive day is exact;
 /// a live count or a gapped archive subtotal is explicitly partial.
 struct AtriaDailyStepPresentation: Equatable, Sendable {
@@ -64,6 +141,26 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     var openCycleReceiptIsCurrent: Bool = false
     /// Set only with `unavailabilityReason == .priorCycleReceiptOnly`.
     var priorCycleReceipt: PriorCycleReceipt? = nil
+    /// Typed strap-motion authority for the forward-looking step copy. `nil`
+    /// (default) preserves the existing progress wording for every caller that
+    /// does not classify motion; the call site sets it from the BLE snapshot.
+    var motionAvailability: AtriaStrapMotionAvailability? = nil
+
+    /// Overrides the forward-looking "fills in as your strap syncs" line when the
+    /// exact motion authority proves it will not. The verified count/coverage are
+    /// untouched — only the progress promise changes. Returns nil to keep the
+    /// existing copy for live/catchingUp/qualifying/stale and unclassified.
+    var motionAvailabilityFootnote: String? {
+        switch motionAvailability {
+        case .unavailableInCurrentTransport:
+            return "Strap motion is unavailable in the current connection mode. "
+                + "Live heart rate is still connected."
+        case .unknown:
+            return "Counted so far — updates when strap motion syncs."
+        case .live, .catchingUp, .qualifying, .stale, .none:
+            return nil
+        }
+    }
 
     var valueText: String {
         // Strap steps are ~2% accurate, so the card shows a clean number rather

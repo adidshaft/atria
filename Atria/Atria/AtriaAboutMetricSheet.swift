@@ -19,6 +19,11 @@ enum AtriaSpO2Copy {
     static let decoderNotVerified = "Decoder not verified"
     /// Short hardware state used only when the identified strap lacks SpO2.
     static let notAvailableOnStrap = "Sensor unavailable on this strap"
+    /// Headline state shown on the SpO2 card for every strap while no validated
+    /// reading exists: blood oxygen is not available on this strap. Honest whether
+    /// the strap lacks the sensor entirely or carries it but broadcasts no
+    /// decodable percentage — the detail/why-blank copy explains which.
+    static let notAvailableOnThisStrap = "Not available on this strap"
     /// Long form for compact education/detail surfaces.
     static let longUnavailable = "Atria can't yet produce a validated SpO2 reading from this strap's sensor. Rather than estimate, it leaves this blank — and tells you why."
     /// Full "why it's blank" explanation shown when the user taps SpO2 to open the

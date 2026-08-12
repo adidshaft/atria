@@ -6392,9 +6392,14 @@ struct AtriaStrapStepsDetailSheet: View {
                                 .tint(status.tint)
 
                             if presentation.completeness != .complete {
-                                Text(presentation.source == .live
-                                     ? "Counting so far — grows as you move."
-                                     : "Counted so far — fills in as your strap syncs.")
+                                // The typed motion authority overrides the
+                                // forward-looking promise when the transport is a
+                                // terminal pure-HR fallback (motion won't sync in
+                                // this mode); the verified count above is unchanged.
+                                Text(presentation.motionAvailabilityFootnote
+                                     ?? (presentation.source == .live
+                                         ? "Counting so far — grows as you move."
+                                         : "Counted so far — fills in as your strap syncs."))
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }

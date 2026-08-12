@@ -5759,7 +5759,11 @@ enum AtriaHomeRecoverySyncPresentation {
                                         locale: locale)
 
         var titleParts = ["Syncing strap history"]
-        var compactParts = ["Syncing"]
+        // Keep the channel word in the compact fallback (shown when the full
+        // title does not fit, e.g. narrow widths): "Syncing history · …" so the
+        // banner never reads as if all data — including current live HR — is
+        // behind. Still shorter than the full "Syncing strap history · …".
+        var compactParts = ["Syncing history"]
         if savedRecords > 0 {
             titleParts.append("\(savedRecords) saved")
             compactParts.append("\(savedRecords) saved")
@@ -11605,7 +11609,7 @@ final class AtriaHomeModel {
                 before: savedAggregate.cycleStart,
                 strapIdentifiers: strapIdentifiers
             )
-        let dailyStepPresentation = AtriaDailyStepPresentation.resolve(
+        var dailyStepPresentation = AtriaDailyStepPresentation.resolve(
             day: Date(),
             now: Date(),
             liveCount: strapStepsToday,
@@ -11620,6 +11624,11 @@ final class AtriaHomeModel {
                 .init(steps: $0.steps, endedAt: $0.capturedThrough)
             }
         )
+        // Classify strap-motion availability so the step copy stops promising an
+        // endless sync when the transport is a terminal pure-HR fallback (while
+        // keeping the verified count/coverage). Computed once per Core-Live
+        // rebuild, not per HR sample.
+        dailyStepPresentation.motionAvailability = ble.strapMotionAvailability
         let activeCaloriesToday = SessionStore.mergedTodayActiveCalories(
             savedToday: savedAggregate.savedTodayActiveCalories,
             savedActiveSession: savedAggregate.savedActiveSessionActiveCalories,

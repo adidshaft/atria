@@ -267,9 +267,12 @@ final class AtriaHomeRecoverySyncPresentationTests: XCTestCase {
             locale: locale
         )
 
+        // The compact fallback keeps the "history" channel word so it never
+        // reads as if all data is behind — only "strap" is dropped for width.
         XCTAssertEqual(copy.compactTitle,
                        copy.title.replacingOccurrences(of: "Syncing strap history",
-                                                       with: "Syncing"))
+                                                       with: "Syncing history"))
+        XCTAssertTrue(copy.compactTitle.hasPrefix("Syncing history"))
         XCTAssertTrue(copy.compactTitle.contains("271 saved"))
         XCTAssertTrue(copy.compactTitle.contains("through"))
         XCTAssertLessThan(copy.compactTitle.count, copy.title.count)
