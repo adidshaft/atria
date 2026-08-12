@@ -895,6 +895,7 @@ struct AtriaHomeView: View {
     // notification deep link, independent of the inline Overview review card's
     // gating (so the tap always lands somewhere actionable).
     @State private var sleepReviewSheetRoute: AtriaSleepReviewSheetRoute?
+    @State private var sameDayMainSleepRoute: AtriaSameDayMainSleepChoice?
     // Plain read, not @AppStorage: this key has dots, which is the exact
     // KVO-storm hazard documented above for persistentHeartRateBroadcastEnabled
     // and homeLayoutConfigStorage (~790 evals/sec self-invalidation, 0x8BADF00D
@@ -1192,7 +1193,15 @@ struct AtriaHomeView: View {
         .onReceive(store.$pendingSleepReviewNightForUI) { night in
             resolvePendingSleepReviewDeepLinkIfNeeded(publishedNight: night)
         }
+        .onReceive(store.$pendingSameDayMainSleepChoiceForUI) { choice in
+            sameDayMainSleepRoute = choice
+        }
         .onOpenURL(perform: handleDeepLink)
+        .sheet(item: $sameDayMainSleepRoute) { choice in
+            AtriaSameDayMainSleepSheet(choice: choice) { primaryID in
+                store.resolveSameDayMainSleepChoice(choice, primaryID: primaryID)
+            }
+        }
         .sheet(item: $sleepReviewSheetRoute) { route in
             AtriaManualSleepSheet(initialStart: route.night?.start,
                                   initialEnd: route.night?.end,

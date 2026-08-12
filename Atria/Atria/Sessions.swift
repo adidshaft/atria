@@ -269,8 +269,18 @@ struct AtriaPhysiologicalCycle: Equatable {
         confirmedSleeps: [UserConfirmedSleep],
         calendar: Calendar
     ) -> [UserConfirmedSleep] {
+        // A day the user slept more than once has one main they designated as
+        // primary; the same-day main they kept as a second sleep is marked
+        // `dayPrimaryChoice == false` and must NOT anchor its own physiological
+        // cycle. Excluding it here lets the chosen primary own the day so the
+        // second sleep falls inside that day's window (and shows as its own
+        // Activity row) instead of spawning an unreachable parallel cycle. With
+        // no choice recorded this set is empty and behaviour is unchanged.
+        let nonPrimaryMainIDs = Set(
+            confirmedSleeps.filter { $0.dayPrimaryChoice == false }.map(\.id)
+        )
         let candidates = canonicalMainSleeps(from: confirmedSleeps)
-            .filter { $0.end <= now }
+            .filter { $0.end <= now && !nonPrimaryMainIDs.contains($0.id) }
             .sorted { $0.end < $1.end }
         guard let first = candidates.first else { return [] }
 
@@ -3268,6 +3278,13 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
     /// The inputs that made the frozen target, retained so the Sleep Need
     /// ledger can explain the settled value without reverse-engineering it.
     var frozenSleepNeed: AtriaSleepBudget.FrozenNeed? = nil
+    /// The user's explicit answer to "which is your main sleep?" on a day they
+    /// slept more than once. `true` = the chosen primary that drives Recovery and
+    /// the physiological-cycle boundary; `false` = a same-day main the user kept
+    /// as a real second sleep (still counts, still shown, but never the boundary);
+    /// `nil` = no choice made (the automatic longest-wins heuristic applies).
+    /// Additive and optional so older records decode unchanged.
+    var dayPrimaryChoice: Bool? = nil
 
     /// Persisted `duration` may represent observed sensor coverage for legacy
     /// and user-adjusted records, not necessarily time asleep. Whenever an
@@ -3355,7 +3372,8 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
          stageSegments: [SleepStageSegment]?,
          eventTimeZoneIdentifier: String? = nil,
          sleepNeedSeconds: TimeInterval? = nil,
-         frozenSleepNeed: AtriaSleepBudget.FrozenNeed? = nil) {
+         frozenSleepNeed: AtriaSleepBudget.FrozenNeed? = nil,
+         dayPrimaryChoice: Bool? = nil) {
         self.id = id
         self.createdAt = createdAt
         self.start = start
@@ -3380,6 +3398,7 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
         self.frozenSleepNeed = frozenSleepNeed
         self.sleepNeedSeconds = frozenSleepNeed?.seconds
             ?? sleepNeedSeconds.flatMap { $0 > 0 ? $0 : nil }
+        self.dayPrimaryChoice = dayPrimaryChoice
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -3387,6 +3406,7 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
         case avgHR, peakHR, restingHR, hrv, hrvWindowCount, respiratoryRate
         case duration, span, reason, motionSource, motionValidated, stageSegments
         case eventTimeZoneIdentifier, sleepNeedSeconds, frozenSleepNeed
+        case dayPrimaryChoice
     }
 
     init(from decoder: Decoder) throws {
@@ -3419,6 +3439,7 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
                                                          forKey: .frozenSleepNeed)
         let legacyNeed = try container.decodeIfPresent(TimeInterval.self, forKey: .sleepNeedSeconds)
         sleepNeedSeconds = frozenSleepNeed?.seconds ?? legacyNeed
+        dayPrimaryChoice = try container.decodeIfPresent(Bool.self, forKey: .dayPrimaryChoice)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -3446,6 +3467,7 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
         try container.encodeIfPresent(eventTimeZoneIdentifier, forKey: .eventTimeZoneIdentifier)
         try container.encodeIfPresent(sleepNeedSeconds, forKey: .sleepNeedSeconds)
         try container.encodeIfPresent(frozenSleepNeed, forKey: .frozenSleepNeed)
+        try container.encodeIfPresent(dayPrimaryChoice, forKey: .dayPrimaryChoice)
     }
 
     func replacingSleepNeedSeconds(_ value: TimeInterval?) -> UserConfirmedSleep {
@@ -3471,7 +3493,8 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
                            stageSegments: stageSegments,
                            eventTimeZoneIdentifier: eventTimeZoneIdentifier,
                            sleepNeedSeconds: value,
-                           frozenSleepNeed: frozenSleepNeed)
+                           frozenSleepNeed: frozenSleepNeed,
+                           dayPrimaryChoice: dayPrimaryChoice)
     }
 
     func replacingFrozenSleepNeed(_ value: AtriaSleepBudget.FrozenNeed) -> UserConfirmedSleep {
@@ -3480,6 +3503,31 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
         copy.sleepNeedSeconds = value.seconds
         return copy
     }
+
+    /// Returns a copy carrying an explicit "which is your main sleep?" answer.
+    func replacingDayPrimaryChoice(_ value: Bool?) -> UserConfirmedSleep {
+        var copy = self
+        copy.dayPrimaryChoice = value
+        return copy
+    }
+}
+
+/// A day the user slept more than once, still awaiting the "which is your main
+/// sleep?" answer. Presented as a one-time prompt; once answered, every option
+/// carries a `dayPrimaryChoice` so the day never prompts again.
+struct AtriaSameDayMainSleepChoice: Identifiable, Equatable {
+    /// Wake civil day the competing mains share.
+    let morningDay: Date
+    /// The competing main sleeps, longest effective sleep first (the default
+    /// recommendation), all sharing `morningDay` as their wake day.
+    let options: [UserConfirmedSleep]
+
+    /// Stable across recomputation for the same unresolved day so SwiftUI does
+    /// not thrash the sheet; changes only when the underlying records change.
+    var id: String { options.map(\.id).sorted().joined(separator: "|") }
+
+    /// The longest sleep — the automatic primary if the user does not override.
+    var recommendedPrimaryID: String { options.first?.id ?? "" }
 }
 
 /// A durable dismissal for a sensor-derived sleep/nap window. A single UI-only
@@ -9437,6 +9485,10 @@ final class SessionStore: ObservableObject {
     /// auto-confirmed) and honor the same dismissal store; built off-main in the
     /// sleep-review worker alongside the main review candidate.
     @Published private(set) var napReviewCandidateNightsForUI: [SleepHistorySnapshot.Night] = []
+    /// A day the user slept more than once that still needs a "which is your main
+    /// sleep?" answer. Set from the confirmed-sleep set whenever it changes;
+    /// cleared once the day is answered. Drives the one-time choice prompt.
+    @Published private(set) var pendingSameDayMainSleepChoiceForUI: AtriaSameDayMainSleepChoice?
     /// Persisted one-value-per-day readiness history used by chart detail sheets.
     /// Derived off the render path and saved locally so the UI never rebuilds it.
     @Published private(set) var dailyMetricHistory: [SavedDailyMetric] = [] {
@@ -22766,6 +22818,12 @@ final class SessionStore: ObservableObject {
         self.cachedRecoveredSkinTemperatureCandidateFrameCount = 0
         self.lastLiveHRVCheckpointRefreshAt = Self.readLiveHRVCheckpointRefreshDate()
         self.pendingSleepReviewNightForUI = nil
+        // Detect an already-saved "slept twice" day on launch so the choice
+        // prompt appears without waiting for a new save. Empty when recovery is
+        // blocked (cachedConfirmedSleeps is []).
+        self.pendingSameDayMainSleepChoiceForUI = Self.pendingSameDayMainSleepChoice(
+            confirmedSleeps: cachedConfirmedSleeps,
+            calendar: .current)
         self.dailyRollupHistory = recoveryBlocked ? [] : dailyRollupStore.rollups(last: 400)
         self.cachedBiologicalAge = recoveryBlocked ? nil : Self.readBiologicalAgeCache(from: biologicalAgeCacheURL)
         guard !recoveryBlocked else {
@@ -32601,6 +32659,43 @@ final class SessionStore: ObservableObject {
     /// re-derived. Thus a no-longer-loaded sensor window cannot make an already
     /// saved sleep fail or silently acquire different metrics/provenance.
     @discardableResult
+    /// Recompute the pending "which is your main sleep?" prompt from the current
+    /// confirmed-sleep set. Cheap and idempotent; call after any confirmed-sleep
+    /// change and once on load so an already-saved double-sleep day still asks.
+    func refreshPendingSameDayMainSleepChoice() {
+        let next = Self.pendingSameDayMainSleepChoice(
+            confirmedSleeps: cachedConfirmedSleeps,
+            calendar: .current)
+        if pendingSameDayMainSleepChoiceForUI != next {
+            pendingSameDayMainSleepChoiceForUI = next
+        }
+    }
+
+    /// Record the user's answer: `primaryID` becomes the day's primary main
+    /// (drives Recovery and the physiological-cycle boundary), every other
+    /// same-day main is marked a real second sleep, and the day never prompts
+    /// again. Passing the recommended (longest) id applies the automatic default
+    /// explicitly. The second sleep keeps counting and now shares one cycle so it
+    /// also shows as its own Activity row.
+    func resolveSameDayMainSleepChoice(_ choice: AtriaSameDayMainSleepChoice,
+                                       primaryID: String) {
+        let dayIDs = Set(choice.options.map(\.id))
+        guard dayIDs.contains(primaryID) else { return }
+        let updated = cachedConfirmedSleeps.map { sleep -> UserConfirmedSleep in
+            guard dayIDs.contains(sleep.id) else { return sleep }
+            return sleep.replacingDayPrimaryChoice(sleep.id == primaryID)
+        }
+        // Clear the prompt up front so the sheet dismisses immediately; the save
+        // re-derives the physiological cycle/recovery/Activity projections, then
+        // the refresh recomputes the (now resolved) pending state — surfacing the
+        // next unresolved double-sleep day, if any.
+        pendingSameDayMainSleepChoiceForUI = nil
+        Task { @MainActor in
+            await saveConfirmedSleeps(updated)
+            refreshPendingSameDayMainSleepChoice()
+        }
+    }
+
     func saveSleepReviewNightForUI(_ night: SleepHistorySnapshot.Night,
                                    start: Date,
                                    end: Date,
@@ -33112,6 +33207,7 @@ final class SessionStore: ObservableObject {
                 self.sleepReviewCacheKey = requestedKey
                 self.sleepReviewCacheInputKey = requestedInputKey
                 self.pendingSleepReviewNightForUI = result
+                self.refreshPendingSameDayMainSleepChoice()
                 self.napReviewCandidateNightsForUI = napReviewNights
                 self.pendingSleepReviewCacheInputKey = nil
                 self.pendingSleepReviewCacheGeneration = nil
@@ -38595,7 +38691,8 @@ final class SessionStore: ObservableObject {
                                   stageSegments: stageSegments,
                                   eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
                                   sleepNeedSeconds: sleep.sleepNeedSeconds,
-                                  frozenSleepNeed: sleep.frozenSleepNeed)
+                                  frozenSleepNeed: sleep.frozenSleepNeed,
+                                  dayPrimaryChoice: sleep.dayPrimaryChoice)
     }
 
     private static func legacyConfirmedSleepStageCompatibility(start: Date,
@@ -38684,6 +38781,41 @@ final class SessionStore: ObservableObject {
             end: end,
             measuredDuration: night.observedDuration
         )
+    }
+
+    /// The most recent wake civil day carrying two or more confirmed
+    /// physiological main sleeps with NO "which is your main sleep?" answer yet.
+    /// Pure and testable. Resumed continuations and naps are excluded; a day is
+    /// considered answered the moment any of its mains carries a non-nil
+    /// `dayPrimaryChoice`, so a resolved day never prompts again.
+    nonisolated static func pendingSameDayMainSleepChoice(
+        confirmedSleeps: [UserConfirmedSleep],
+        calendar: Calendar
+    ) -> AtriaSameDayMainSleepChoice? {
+        var mainsByDay: [Date: [UserConfirmedSleep]] = [:]
+        for sleep in confirmedSleeps
+        where sleep.source != "resumed_sleep"
+            && confirmedSleepIsPhysiologicalMainSleep(sleep) {
+            let day = EventCivilTime.day(
+                containing: sleep.end,
+                eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                outputCalendar: calendar)
+            mainsByDay[day, default: []].append(sleep)
+        }
+        let unresolved = mainsByDay
+            .filter { entry in
+                entry.value.count >= 2
+                    && entry.value.allSatisfy { $0.dayPrimaryChoice == nil }
+            }
+            .sorted { $0.key > $1.key }
+        guard let (day, mains) = unresolved.first else { return nil }
+        let ordered = mains.sorted { lhs, rhs in
+            if lhs.effectiveSleepDuration != rhs.effectiveSleepDuration {
+                return lhs.effectiveSleepDuration > rhs.effectiveSleepDuration
+            }
+            return lhs.end > rhs.end
+        }
+        return AtriaSameDayMainSleepChoice(morningDay: day, options: ordered)
     }
 
     nonisolated private static func physiologicalMainSleepNight(
@@ -51834,6 +51966,15 @@ struct SleepHistorySnapshot: Equatable {
         var additionalMainNightsList: [Night] = []
         var napNightsList: [Night] = []
         var resumedSleepSegments: [Night] = []
+        // Ids the user explicitly designated as the primary main on a day they
+        // slept more than once. Those records win the one-canonical-per-day race
+        // regardless of duration so the chosen sleep drives Recovery/display and
+        // the other same-day main becomes the second (additional) sleep. Empty
+        // when no choice was ever made, so the duration heuristic below is
+        // untouched for every ordinary day.
+        let chosenPrimaryMainIDs = Set(
+            confirmedSleeps.filter { $0.dayPrimaryChoice == true }.map(\.id)
+        )
         for (sleepIndex, sleep) in confirmedSleeps.enumerated() {
             if sleepIndex.isMultiple(of: 32), !shouldContinue() {
                 self = .empty
@@ -51893,8 +52034,16 @@ struct SleepHistorySnapshot: Equatable {
                     // for Activity editing rather than silently overwriting it.
                     let nightEnd = night.end ?? night.day
                     let existingEnd = existing.end ?? existing.day
-                    let nightIsCanonical = night.duration > existing.duration
-                        || (night.duration == existing.duration && nightEnd > existingEnd)
+                    let nightChosen = chosenPrimaryMainIDs.contains(night.id)
+                    let existingChosen = chosenPrimaryMainIDs.contains(existing.id)
+                    let nightIsCanonical: Bool
+                    if nightChosen != existingChosen {
+                        // An explicit user choice overrides the duration heuristic.
+                        nightIsCanonical = nightChosen
+                    } else {
+                        nightIsCanonical = night.duration > existing.duration
+                            || (night.duration == existing.duration && nightEnd > existingEnd)
+                    }
                     if nightIsCanonical {
                         additionalMainNightsList.append(existing)
                         nightsByDay[day] = night
