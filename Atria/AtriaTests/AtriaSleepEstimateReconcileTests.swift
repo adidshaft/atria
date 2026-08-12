@@ -1,9 +1,14 @@
 import XCTest
 @testable import Atria
 
-/// Regression coverage for the HR-only presentation boundary. Raw stage-engine
-/// output may remain available to storage/research, but without validated motion
-/// it must never be rewritten into or rendered as Awake/REM/Light/Deep precision.
+/// Regression coverage for the HR-only presentation boundary (updated
+/// 2026-08-12, c7c15e1d labeled-estimate product). A confirmed HR-only night
+/// with an integrity-valid timeline renders a display-only RECONCILED
+/// hypnogram — but only under the mandatory `AtriaSleepStageEstimateLabel`,
+/// with stored segments untouched and the displayed non-awake total never
+/// exceeding the credited effective sleep. Motion-validated rendering stays
+/// byte-identical; integrity failures, naps, unconfirmed candidates, and
+/// manual windows stay hidden.
 final class AtriaSleepEstimateReconcileTests: XCTestCase {
     private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
@@ -61,7 +66,9 @@ final class AtriaSleepEstimateReconcileTests: XCTestCase {
         ]
     }
 
-    func testAwakeHeavyHROnlyOutputIsKeptRawButNeverExposedAsStagePrecision() {
+    // (a) An hrOnlyEstimate night with valid segments renders reconciled
+    // display segments — and the estimate LABEL is mandatory with them.
+    func testAwakeHeavyHROnlyNightRendersReconciledEstimateWithMandatoryLabel() {
         let raw = awakeHeavySegments
         let result = night(segments: raw,
                            motionValidated: false,
@@ -69,36 +76,127 @@ final class AtriaSleepEstimateReconcileTests: XCTestCase {
 
         XCTAssertEqual(result.stageEvidence, .hrOnlyEstimate)
         XCTAssertEqual(result.stageSegments, raw,
-                       "captured stage-engine output must not be rewritten to fabricate sleep")
-        XCTAssertTrue(result.displayStageSegments.isEmpty,
-                      "HR-only output must not feed any stage-rendering surface")
-        for stage in SleepStageKind.allCases {
-            XCTAssertEqual(result.stageDuration(stage), 0,
-                           "HR-only stage durations must remain withheld")
-        }
+                       "captured stage-engine output must never be rewritten by presentation")
+        XCTAssertFalse(result.displayStageSegments.isEmpty,
+                       "a confirmed integrity-valid HR-only night now renders a labeled estimate")
+        XCTAssertTrue(result.isEstimatedStageDisplay)
+        XCTAssertEqual(result.stageDisplayLabel, AtriaSleepStageEstimateLabel.title)
+        XCTAssertEqual(result.stageDisplayLabel, "Estimated stages · HR-only")
+        XCTAssertEqual(AtriaSleepStageEstimateLabel.caption,
+                       "Motion not available — stage boundaries are estimates from heart rate and breathing.")
+
+        // The engine's 2h interior awake over-call is reconciled for display:
+        // non-awake matches the credited 6h effective sleep exactly.
+        let displayedNonAwake = result.displayStageSegments
+            .filter { $0.stage != .awake }
+            .reduce(0) { $0 + $1.duration }
+        XCTAssertEqual(displayedNonAwake, result.duration, accuracy: 1)
+        XCTAssertEqual(result.stageDuration(.awake), 0, accuracy: 1,
+                       "the over-called interior awake folds into its neighbor for display")
 
         let card = AtriaSleepHypnogramCard(night: result)
-        XCTAssertTrue(card.segments.isEmpty)
-        XCTAssertTrue(AtriaSleepHypnogramPresentation.legend(for: card.segments).isEmpty,
-                      "with no card segments, no stage percentage can be derived")
+        XCTAssertEqual(card.segments, result.displayStageSegments,
+                       "the card feeds only reconciled display segments, never raw output")
         XCTAssertEqual(AtriaSleepHypnogramCard.displayState(segments: card.segments,
                                                             stageEvidence: result.stageEvidence,
                                                             start: result.start,
                                                             end: result.end),
-                       .estimate)
+                       .estimatedTimeline)
         XCTAssertEqual(AtriaSleepHypnogramCard.measuredHeartRateText(card.measuredHeartRate),
                        "Measured resting HR · 55 bpm")
     }
 
-    func testHROnlyStorageFeedRemainsAvailableWithoutBecomingADisplayFeed() {
+    func testHROnlyStorageFeedStaysRawWhileDisplayIsReconciled() {
         let result = night(segments: awakeHeavySegments,
                            motionValidated: false,
                            confidence: "settled")
 
         XCTAssertFalse(result.stageSegmentsForStorage.isEmpty,
-                       "the truthfulness fix must not discard captured engine data")
-        XCTAssertTrue(result.displayStageSegments.isEmpty)
-        XCTAssertTrue(AtriaSleepHypnogramCard(night: result).segments.isEmpty)
+                       "the presentation product must not discard captured engine data")
+        // Storage keeps the engine's 2h awake verbatim; only display reconciles.
+        let storedAwake = result.stageSegmentsForStorage
+            .filter { $0.stage == .awake }
+            .reduce(0) { $0 + $1.duration }
+        XCTAssertEqual(storedAwake, 2 * 3_600, accuracy: 1)
+        XCTAssertFalse(result.displayStageSegments.isEmpty)
+        XCTAssertNotEqual(result.displayStageSegments, result.stageSegmentsForStorage,
+                          "display reconciliation must never leak back into the storage feed")
+    }
+
+    // (c) Integrity-failing timelines (impossible overlap) stay hidden — no
+    // estimate presentation can be reconciled out of a broken timeline.
+    func testIntegrityFailingHROnlySegmentsStayHidden() {
+        let overlapping = [
+            segment("light", .light, date(0), date(3)),
+            segment("deep", .deep, date(2, 30), date(6))
+        ]
+        let result = night(segments: overlapping,
+                           motionValidated: false,
+                           confidence: "settled")
+
+        XCTAssertTrue(result.displayStageSegments.isEmpty,
+                      "an impossible timeline must never render, even as an estimate")
+        XCTAssertFalse(result.isEstimatedStageDisplay)
+        XCTAssertEqual(result.stageSegments, overlapping,
+                       "hiding is presentation-only; stored segments stay untouched")
+    }
+
+    // (d) The reconciled display never exceeds the credited effective sleep:
+    // a within-tolerance surplus is trimmed from the end of the timeline.
+    func testReconciledDisplayNeverExceedsEffectiveSleepDuration() {
+        let allDeep = [segment("deep", .deep, date(0), date(6))]      // 21,600s
+        let credited: TimeInterval = 21_000                            // 5h50m
+        let result = night(segments: allDeep,
+                           motionValidated: false,
+                           confidence: "user_confirmed_hr_only",
+                           duration: credited)
+
+        XCTAssertEqual(result.stageEvidence, .hrOnlyEstimate)
+        XCTAssertTrue(result.isEstimatedStageDisplay)
+        let displayedNonAwake = result.displayStageSegments
+            .filter { $0.stage != .awake }
+            .reduce(0) { $0 + $1.duration }
+        XCTAssertEqual(displayedNonAwake, credited, accuracy: 1)
+        XCTAssertLessThanOrEqual(displayedNonAwake, credited + 1,
+                                 "estimated display must never claim more sleep than is credited")
+        // Storage still carries the full engine segment.
+        XCTAssertEqual(result.stageSegmentsForStorage.reduce(0) { $0 + $1.duration },
+                       21_600,
+                       accuracy: 1)
+    }
+
+    // Naps and unconfirmed candidates keep the all-hidden presentation.
+    func testConfirmedNapAndUnconfirmedCandidateStayHidden() {
+        let sleepShaped = [
+            segment("light", .light, date(0), date(2)),
+            segment("deep", .deep, date(2), date(4)),
+            segment("rem", .rem, date(4), date(6))
+        ]
+        let nap = night(segments: sleepShaped,
+                        motionValidated: false,
+                        confidence: "settled",
+                        source: "auto_nap")
+        XCTAssertTrue(nap.displayStageSegments.isEmpty,
+                      "naps must not gain an estimated hypnogram")
+
+        let start = date(0)
+        let end = date(6)
+        let candidate = SleepHistorySnapshot.Night(id: "candidate",
+                                                   day: calendar.startOfDay(for: end),
+                                                   start: start,
+                                                   end: end,
+                                                   duration: end.timeIntervalSince(start),
+                                                   restingHR: 55,
+                                                   hrv: nil,
+                                                   respiratoryRate: nil,
+                                                   sleepEfficiency: nil,
+                                                   confidence: "settled",
+                                                   source: "sleep_candidate",
+                                                   confirmed: false,
+                                                   stageSegments: sleepShaped,
+                                                   motionValidated: false)
+        XCTAssertTrue(candidate.displayStageSegments.isEmpty,
+                      "unconfirmed candidates must not gain an estimated hypnogram")
     }
 
     func testMotionBackedResearchStagesKeepTheirExistingTimelineAndDurations() {
@@ -118,6 +216,15 @@ final class AtriaSleepEstimateReconcileTests: XCTestCase {
         XCTAssertEqual(result.stageDuration(.rem), 2 * 3_600, accuracy: 0.01)
         XCTAssertEqual(AtriaSleepHypnogramCard(night: result).segments,
                        result.displayStageSegments)
+        // (b) Motion-backed rendering keeps its authority: never relabeled
+        // as an HR-only estimate, and the display state stays `.timeline`.
+        XCTAssertFalse(result.isEstimatedStageDisplay)
+        XCTAssertEqual(result.stageDisplayLabel, "Estimated stages")
+        XCTAssertEqual(AtriaSleepHypnogramCard.displayState(segments: result.displayStageSegments,
+                                                            stageEvidence: result.stageEvidence,
+                                                            start: result.start,
+                                                            end: result.end),
+                       .timeline)
     }
 
     func testV2TimeAlignedStageReceiptRendersEvenWhenWholeNightLowMotionIsFalse() throws {
@@ -149,9 +256,15 @@ final class AtriaSleepEstimateReconcileTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(motionBacked.displaySleepEfficiency), 0.9)
 
         XCTAssertFalse(legacyWithoutReceipt.hasValidatedMotionEvidence)
-        XCTAssertEqual(legacyWithoutReceipt.stageEvidence, .hrOnlyEstimate)
-        XCTAssertTrue(legacyWithoutReceipt.displayStageSegments.isEmpty,
-                      "legacy or aggregate IDs cannot turn a scalar false into motion proof")
+        XCTAssertEqual(legacyWithoutReceipt.stageEvidence, .hrOnlyEstimate,
+                       "legacy or aggregate IDs cannot turn a scalar false into motion proof")
+        // The legacy night still renders — but strictly as the labeled
+        // estimate, never with the receipt-backed `.sensorResearch` authority.
+        XCTAssertTrue(legacyWithoutReceipt.isEstimatedStageDisplay)
+        XCTAssertEqual(legacyWithoutReceipt.stageDisplayLabel, AtriaSleepStageEstimateLabel.title)
+        XCTAssertEqual(legacyWithoutReceipt.displayStageSegments.map(\.stage),
+                       [.light, .deep, .awake, .rem, .light],
+                       "already-reconciled HR-only timelines display verbatim (folded)")
         XCTAssertNil(legacyWithoutReceipt.displaySleepEfficiency)
     }
 

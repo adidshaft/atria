@@ -6447,7 +6447,9 @@ struct AtriaSleepStageSummary: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(night.stageEvidence.label)
+                // Per-night label: "Estimated stages · HR-only" whenever the
+                // bars below are the labeled HR-only estimate.
+                Text(night.stageDisplayLabel)
                     .font(.caption.weight(.semibold))
                 Spacer(minLength: 0)
                 Text(night.evidenceLabel)
@@ -6465,6 +6467,15 @@ struct AtriaSleepStageSummary: View, Equatable {
                 // hypnogram escapes this card's 10pt inset; header, legend
                 // tiles, and the restorative strip keep it.
                 .padding(.horizontal, -10)
+
+            if night.isEstimatedStageDisplay {
+                // Mandatory estimate caption, rendered WITH the bars: HR-only
+                // estimates must never carry validated visual authority.
+                Text(AtriaSleepStageEstimateLabel.caption)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], spacing: 8) {
                 ForEach(SleepStageKind.allCases) { stage in
@@ -6544,7 +6555,7 @@ struct AtriaSleepStageSummary: View, Equatable {
         .padding(10)
         .atriaInsetCard(tint: .cyan)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(night.evidenceLabel) \(night.stageEvidence.label). Awake \(night.stageText(.awake)), Light \(night.stageText(.light)), REM \(night.stageText(.rem)), SWS \(night.stageText(.sws)), Deep \(night.stageText(.deep)).")
+        .accessibilityLabel("\(night.evidenceLabel) \(night.stageDisplayLabel). \(night.isEstimatedStageDisplay ? AtriaSleepStageEstimateLabel.caption + " " : "")Awake \(night.stageText(.awake)), Light \(night.stageText(.light)), REM \(night.stageText(.rem)), SWS \(night.stageText(.sws)), Deep \(night.stageText(.deep)).")
     }
 
     /// Restorative stages (deep→SWS→REM) lead, then light and awake, so the
@@ -6771,7 +6782,9 @@ private struct AtriaSleepNightRow: View, Equatable {
                     .lineLimit(2)
                     .minimumScaleFactor(0.8)
                 if !night.displayStageSegments.isEmpty {
-                    Text("\(night.stageEvidence.label) · Awake \(night.stageText(.awake)) · Light \(night.stageText(.light)) · REM \(night.stageText(.rem)) · SWS \(night.stageText(.sws)) · Deep \(night.stageText(.deep))")
+                    // stageDisplayLabel keeps the mandatory estimate title on
+                    // HR-only estimated rows ("Estimated stages · HR-only").
+                    Text("\(night.stageDisplayLabel) · Awake \(night.stageText(.awake)) · Light \(night.stageText(.light)) · REM \(night.stageText(.rem)) · SWS \(night.stageText(.sws)) · Deep \(night.stageText(.deep))")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.cyan)
                         .lineLimit(2)

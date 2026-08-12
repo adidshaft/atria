@@ -7534,8 +7534,21 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
     @ViewBuilder
     private var stageStrip: some View {
         if let latest, !latest.displayStageSegments.isEmpty {
-            AtriaSleepMiniHypnogram(segments: latest.displayStageSegments,
-                                    duration: latest.duration)
+            HStack(spacing: 6) {
+                if latest.isEstimatedStageDisplay {
+                    // Mandatory estimate marker, compacted for the glance
+                    // card but always rendered WITH the bars (the full
+                    // AtriaSleepStageEstimateLabel appears on detail views).
+                    Text("Estimated · HR-only")
+                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.72)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                AtriaSleepMiniHypnogram(segments: latest.displayStageSegments,
+                                        duration: latest.duration)
+            }
             .frame(height: 18, alignment: .center)
         } else if latest?.isManualEntry == true {
             // Manual honesty (2026-08-05): a hand-typed window never grows
@@ -7605,7 +7618,10 @@ private struct AtriaSleepHistoryGlanceCard: View, Equatable {
                 : "Sleep stages unavailable: Atria has not qualified a stage timeline for this night."
             return "Sleep history \(valueText). \(latest.evidenceLabel). Morning status \(morningStatus.accessibilityText). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). \(stageNote)"
         }
-        return "Sleep history \(valueText). \(latest.evidenceLabel). Morning status \(morningStatus.accessibilityText). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)). Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), REM \(latest.stageText(.rem)), Deep (SWS) \(latest.stageText(.deep))."
+        let estimateNote = latest.isEstimatedStageDisplay
+            ? " \(AtriaSleepStageEstimateLabel.title): \(AtriaSleepStageEstimateLabel.caption)"
+            : ""
+        return "Sleep history \(valueText). \(latest.evidenceLabel). Morning status \(morningStatus.accessibilityText). Consistency \(snapshot.sleepConsistencyText). Sleep debt \(snapshot.sleepDebtText(goalHours: sleepGoalHours)).\(estimateNote) Awake \(latest.stageText(.awake)), Light \(latest.stageText(.light)), REM \(latest.stageText(.rem)), Deep (SWS) \(latest.stageText(.deep))."
     }
 }
 
