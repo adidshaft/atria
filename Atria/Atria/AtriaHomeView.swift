@@ -2890,6 +2890,12 @@ struct AtriaHomeView: View {
         if debugLaunchFixtureValue(arguments: arguments) == "detected-activities" {
             return .vitals
         }
+        // Same screenshot-loop rationale as above: neither simctl nor iPhone
+        // Mirroring can tap the tab bar, so device marker verification routes
+        // the root tab at launch. DEBUG-only; carries no fixture data.
+        if debugLaunchFixtureValue(arguments: arguments) == "activity-tab" {
+            return .plan
+        }
         #endif
         return .overview
     }

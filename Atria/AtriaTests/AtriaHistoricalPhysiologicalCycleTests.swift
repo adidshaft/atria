@@ -556,6 +556,57 @@ final class AtriaHistoricalPhysiologicalCycleTests: XCTestCase {
                        "the block chains through the short sleep and its overlapping nap, not the distant afternoon nap")
     }
 
+    // A confirmed nap is a point-in-day record: it belongs to the civil date
+    // the user placed it on, even when that 1–3 AM slot falls inside a
+    // wake-to-wake window labelled with the PREVIOUS day (the physically
+    // reproduced "moved the nap to Aug 11 and it vanished" failure). The
+    // display window extends to cover it so its marker/chart region exists.
+    func testCivilOwnedNapShowsOnItsCalendarDay() {
+        let calendar = utc
+        let priorMain = sleep(id: "prior-main",
+                              start: date(2026, 8, 10, 3, 30, calendar: calendar),
+                              end: date(2026, 8, 10, 11, 55, calendar: calendar))
+        let nap = sleep(id: "nap",
+                        start: date(2026, 8, 11, 1, 1, calendar: calendar),
+                        end: date(2026, 8, 11, 3, 17, calendar: calendar),
+                        source: "user_adjusted_nap")
+        let longMain = sleep(id: "long-main",
+                             start: date(2026, 8, 12, 6, 15, calendar: calendar),
+                             end: date(2026, 8, 12, 15, 27, calendar: calendar))
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [priorMain, nap, longMain],
+                                            calendar: calendar)
+
+        var napAppearances: [Date] = []
+        for dayOffset in 0...1 {
+            let labelDay = calendar.date(byAdding: .day,
+                                         value: dayOffset,
+                                         to: calendar.startOfDay(for: priorMain.end))!
+            let window = AtriaActivityDisplayWindow.historical(
+                day: labelDay,
+                sleepHistory: snapshot,
+                calendar: calendar
+            )
+            let rows = AtriaActivitySelectedDaySleeps.overlapping(
+                snapshot: snapshot,
+                pendingReview: nil,
+                interval: window.interval,
+                calendar: calendar,
+                mainSleepOwnershipDay: window.labelDay
+            )
+            if rows.contains(where: { $0.id == nap.id }) {
+                napAppearances.append(labelDay)
+                // The chart/marker region must cover the civil nap even when
+                // the physiological span begins later that day.
+                XCTAssertLessThanOrEqual(window.displayInterval.start, nap.start,
+                                         "the display window reaches the civil nap")
+            }
+        }
+        XCTAssertEqual(napAppearances,
+                       [date(2026, 8, 11, 0, calendar: calendar)],
+                       "the nap appears exactly once — on the calendar day the user placed it")
+    }
+
     private func calendar(timeZoneIdentifier: String) -> Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.locale = Locale(identifier: "en_US_POSIX")
