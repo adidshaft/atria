@@ -12234,4 +12234,163 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "no prior attempt is not a reason to starve")
     }
 
+    // MARK: - Strap discovery owner resolver (handoff-7 CP1)
+
+    func testDiscoveryOwnerPrecedenceMatrix() {
+        // 2026-08-13 physical stall: workout-bank flags suppressed the
+        // protected-v9 profile at characteristic discovery, which is exactly
+        // when the motion requalifier runs. v9 pending/proving must outrank
+        // the bank; history and diagnostics outrank everything.
+        XCTAssertEqual(AtriaBLEManager.resolveStrapDiscoveryOwner(
+            historyRecoveryActive: true,
+            diagnosticActive: true,
+            standardHROnlyMode: true,
+            protectedV9Owner: true,
+            launchOrProofActive: true,
+            workoutBankTransportRequested: true
+        ), .history, "exact active history always wins")
+        XCTAssertEqual(AtriaBLEManager.resolveStrapDiscoveryOwner(
+            historyRecoveryActive: false,
+            diagnosticActive: true,
+            standardHROnlyMode: true,
+            protectedV9Owner: true,
+            launchOrProofActive: true,
+            workoutBankTransportRequested: true
+        ), .diagnostic, "explicit diagnostic wins over production owners")
+        XCTAssertEqual(AtriaBLEManager.resolveStrapDiscoveryOwner(
+            historyRecoveryActive: false,
+            diagnosticActive: false,
+            standardHROnlyMode: true,
+            protectedV9Owner: true,
+            launchOrProofActive: true,
+            workoutBankTransportRequested: true
+        ), .protectedV9BringUp,
+        "a pending/proving v9 bring-up outranks the workout bank")
+        XCTAssertEqual(AtriaBLEManager.resolveStrapDiscoveryOwner(
+            historyRecoveryActive: false,
+            diagnosticActive: false,
+            standardHROnlyMode: true,
+            protectedV9Owner: false,
+            launchOrProofActive: false,
+            workoutBankTransportRequested: true
+        ), .workoutBank,
+        "without a v9 owner the bank keeps its transport")
+        XCTAssertEqual(AtriaBLEManager.resolveStrapDiscoveryOwner(
+            historyRecoveryActive: false,
+            diagnosticActive: false,
+            standardHROnlyMode: true,
+            protectedV9Owner: true,
+            launchOrProofActive: false,
+            workoutBankTransportRequested: true
+        ), .workoutBank,
+        "a qualified/fallen-back v9 owner does not hold discovery")
+        XCTAssertEqual(AtriaBLEManager.resolveStrapDiscoveryOwner(
+            historyRecoveryActive: false,
+            diagnosticActive: false,
+            standardHROnlyMode: true,
+            protectedV9Owner: false,
+            launchOrProofActive: false,
+            workoutBankTransportRequested: false
+        ), .standardHR)
+        XCTAssertEqual(AtriaBLEManager.resolveStrapDiscoveryOwner(
+            historyRecoveryActive: false,
+            diagnosticActive: false,
+            standardHROnlyMode: false,
+            protectedV9Owner: true,
+            launchOrProofActive: true,
+            workoutBankTransportRequested: true
+        ), .standardHR,
+        "outside standard-HR mode neither v9 nor bank owns discovery")
+    }
+
+    func testDiscoveryCallbacksRouteThroughTheResolver() throws {
+        let manager = try managerSource()
+
+        // Both delegate stages resolve ownership through the one resolver.
+        XCTAssertEqual(
+            manager.components(separatedBy: "Self.resolveStrapDiscoveryOwner(").count - 1,
+            2,
+            "exactly the two discovery stages use the resolver"
+        )
+        // The characteristic-stage v9 gate must not carry the bank veto that
+        // caused the 2026-08-13 zero-IMU stall.
+        XCTAssertFalse(
+            manager.contains("), !workoutBankTransportRequested {"),
+            "the workout bank must never veto the protected-v9 profile handler"
+        )
+        // Service ladder: the v9 rung precedes the bank rung.
+        let v9Rung = try XCTUnwrap(manager.range(
+            of: "} else if strapDiscoveryOwner == .protectedV9BringUp {"
+        ))
+        let bankRung = try XCTUnwrap(manager.range(
+            of: "} else if strapDiscoveryOwner == .workoutBank,"
+        ))
+        XCTAssertLessThan(v9Rung.lowerBound, bankRung.lowerBound)
+        // Both stages read the same durable bank flags through one helper.
+        XCTAssertEqual(
+            manager.components(
+                separatedBy: "Self.workoutBankTransportCurrentlyRequested(fastLaneDefaults)"
+            ).count - 1,
+            2
+        )
+    }
+
+    func testProtectedV9BringUpLeavesReceiptsAtEverySeam() throws {
+        let manager = try managerSource()
+        for edge in [
+            "service_owner_resolved_",
+            "characteristic_owner_resolved_",
+            "protected_profile_rejected_diagnostic_active",
+            "protected_profile_rejected_standard_hr_off",
+            "protected_profile_rejected_history_probe",
+            "protected_profile_rejected_owner_",
+            "protected_profile_rejected_state_",
+            "protected_profile_rejected_peripheral_mismatch",
+            "protected_profile_rejected_not_connected",
+            "protected_profile_begin_accepted",
+            "notify_requested_",
+            "notify_confirmed_",
+            "sequence_preflight_blocked_read_only_history",
+            "sequence_preflight_blocked_proof_inactive",
+            "sequence_preflight_blocked_command_in_flight",
+            "sequence_preflight_blocked_already_sent_local",
+            "sequence_preflight_blocked_notify_incomplete",
+            "sequence_preflight_blocked_tx_unavailable",
+            "sequence_preflight_blocked_disconnected",
+            "sequence_preflight_blocked_low_battery",
+            "sequence_preflight_blocked_already_sent_durable",
+            "sequence_started",
+            "first_crc_valid_motion_frame",
+            "qualified",
+            "fallback_",
+        ] {
+            XCTAssertTrue(manager.contains(edge),
+                          "missing bring-up receipt seam: \(edge)")
+        }
+        // Bounded ring, never per-frame: the only frame-path write is the
+        // 0→1 transition.
+        XCTAssertTrue(manager.contains("protectedV9BringUpTraceLimit = 48"))
+        XCTAssertEqual(
+            manager.components(separatedBy: "first_crc_valid_motion_frame").count - 1,
+            1
+        )
+        // Both v9 terminals resume the bank owner exactly once each.
+        XCTAssertTrue(manager.contains(
+            "evaluateAllDayMotionGovernor(reason: \"protected_v9_fallback_terminal\")"
+        ))
+        XCTAssertTrue(manager.contains(
+            "evaluateAllDayMotionGovernor(reason: \"protected_v9_qualified_terminal\")"
+        ))
+    }
+
+    private func managerSource() throws -> String {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        return try String(
+            contentsOf: testsDirectory
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaBLEManager.swift"),
+            encoding: .utf8
+        )
+    }
+
 }
