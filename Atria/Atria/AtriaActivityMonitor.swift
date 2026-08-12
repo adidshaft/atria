@@ -2254,6 +2254,13 @@ struct AtriaActivityMonitorTab: View {
                     .lineLimit(1)
             }
 
+            // Activity spans (Sleep / Strength / …) sit in a dedicated band ABOVE
+            // the plot rather than floating inside it, with a leading inset that
+            // matches the chart's Y-axis so each pill aligns to its time window.
+            if !spans.isEmpty {
+                timelineActivitySpanStrip(spans: spans, range: plotRange)
+            }
+
             if selectedSignal == .heartRate {
                 heartRateTimelineChart(range: plotRange,
                                        axisTicks: axisTicks,
@@ -2269,6 +2276,52 @@ struct AtriaActivityMonitorTab: View {
         .atriaInspectableGraph(timelineSignalInspector)
     }
 
+    /// A time-aligned activity band rendered ABOVE the plot. Each span is
+    /// positioned by its fraction of the visible time range; the leading inset
+    /// approximates the chart's leading Y-axis width so pills line up with the
+    /// data below them. Icons live here, outside the plot surface.
+    private func timelineActivitySpanStrip(
+        spans: [TimelineSpan],
+        range: ClosedRange<Date>
+    ) -> some View {
+        let total = max(1, range.upperBound.timeIntervalSince(range.lowerBound))
+        return GeometryReader { geometry in
+            let width = geometry.size.width
+            ForEach(spans) { span in
+                let startFraction = min(max(0,
+                    span.start.timeIntervalSince(range.lowerBound) / total), 1)
+                let endFraction = min(max(0,
+                    span.end.timeIntervalSince(range.lowerBound) / total), 1)
+                let x0 = CGFloat(startFraction) * width
+                let x1 = CGFloat(endFraction) * width
+                let pillWidth = max(16, x1 - x0)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(span.tint.opacity(0.28))
+                    .overlay {
+                        if pillWidth >= 54 {
+                            Label(span.label, systemImage: span.icon)
+                                .font(.system(size: 8, weight: .bold, design: .rounded))
+                                .lineLimit(1)
+                                .padding(.horizontal, 4)
+                        } else {
+                            Image(systemName: span.icon)
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .stroke(span.tint.opacity(0.42), lineWidth: 0.75)
+                    }
+                    .frame(width: pillWidth, height: 18)
+                    .position(x: x0 + pillWidth / 2, y: 10)
+            }
+        }
+        .frame(height: 20)
+        .padding(.leading, 22)
+        .padding(.trailing, 2)
+        .accessibilityHidden(true)
+    }
+
     private func heartRateTimelineChart(
         range: ClosedRange<Date>,
         axisTicks: [AtriaActivityTimelineAxisTick],
@@ -2280,12 +2333,25 @@ struct AtriaActivityMonitorTab: View {
         })
         return Chart {
             ForEach(points) { point in
+                // Translucent fill descending to the x-axis, matching the Vitals
+                // Live-monitor HR chart. Same per-segment series as the line so it
+                // never fills across a real gap.
+                AreaMark(x: .value("Time", point.t),
+                         y: .value("Heart rate", point.bpm),
+                         series: .value("Observed run", "hr-\(point.segment)"))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(.linearGradient(colors: [.red.opacity(0.18),
+                                                              .red.opacity(0.02)],
+                                                     startPoint: .bottom,
+                                                     endPoint: .top))
                 LineMark(x: .value("Time", point.t),
                          y: .value("Heart rate", point.bpm),
                          series: .value("Observed run", "hr-\(point.segment)"))
                     .interpolationMethod(.monotone)
                     .lineStyle(AtriaChartVisualGrammar.traceLine)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(.linearGradient(colors: [.red, .orange],
+                                                     startPoint: .bottom,
+                                                     endPoint: .top))
                 if point.isOnlyPointInSegment {
                     PointMark(x: .value("Time", point.t),
                               y: .value("Heart rate", point.bpm))
@@ -2325,6 +2391,17 @@ struct AtriaActivityMonitorTab: View {
         let points = stressProjection.points
         return Chart {
             ForEach(points) { point in
+                // Translucent fill descending to the x-axis, matching the Vitals
+                // monitor. Same per-segment series as the line so a real >5-min
+                // dropout is never filled across.
+                AreaMark(x: .value("Time", point.t),
+                         y: .value("Stress", point.score),
+                         series: .value("Observed run", "stress-\(point.segment)"))
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(.linearGradient(colors: [Metrics.electricGreen.opacity(0.16),
+                                                              Metrics.electricRed.opacity(0.03)],
+                                                     startPoint: .bottom,
+                                                     endPoint: .top))
                 LineMark(x: .value("Time", point.t),
                          y: .value("Stress", point.score),
                          series: .value("Observed run", "stress-\(point.segment)"))
@@ -2402,6 +2479,9 @@ struct AtriaActivityMonitorTab: View {
     ) -> some View {
         if let plotFrame = proxy.plotFrame {
             let frame = geometry[plotFrame]
+            // Activity spans now render in the band ABOVE the plot
+            // (`timelineActivitySpanStrip`); the plot overlay only carries the
+            // terminal empty/blocker message so the trace surface stays clean.
             ZStack(alignment: .topLeading) {
                 if let emptyMessage {
                     Text(emptyMessage)
@@ -2410,35 +2490,6 @@ struct AtriaActivityMonitorTab: View {
                         .multilineTextAlignment(.center)
                         .frame(width: max(0, frame.width - 24))
                         .position(x: frame.midX, y: frame.midY + 8)
-                }
-                ForEach(spans) { span in
-                    if let rawStart = proxy.position(forX: span.start),
-                       let rawEnd = proxy.position(forX: span.end) {
-                        let start = min(max(rawStart, 0), frame.width)
-                        let end = min(max(rawEnd, 0), frame.width)
-                        let width = max(1, end - start)
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(span.tint.opacity(0.28))
-                            .overlay {
-                                if width >= 54 {
-                                    Label(span.label, systemImage: span.icon)
-                                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                                        .lineLimit(1)
-                                        .padding(.horizontal, 4)
-                                } else if width >= 16 {
-                                    Image(systemName: span.icon)
-                                        .font(.system(size: 8, weight: .bold))
-                                }
-                            }
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .stroke(span.tint.opacity(0.42), lineWidth: 0.75)
-                            }
-                            .frame(width: width, height: 19)
-                            .position(x: frame.minX + start + width / 2,
-                                      y: frame.minY + 11)
-                            .accessibilityHidden(true)
-                    }
                 }
             }
             .allowsHitTesting(false)

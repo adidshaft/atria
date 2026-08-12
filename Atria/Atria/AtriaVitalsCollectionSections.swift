@@ -2662,26 +2662,24 @@ enum AtriaExperimentalSensorCopy {
             : "--"
     }
 
-    // Strap 3 is a hardware limitation. Supported/unknown newer straps instead
-    // name Atria's actual app limitation until the decoder is verified. Neither
-    // branch promotes candidate bytes into a blood-oxygen percentage.
+    // Blood oxygen is not available on this strap while no validated reading
+    // exists — the headline is the same for every strap the user asked about,
+    // whether the strap lacks the sensor (strap 3) or carries it but broadcasts
+    // no decodable percentage (newer straps). The footnote/detail explain which.
+    // Neither branch promotes candidate bytes into a blood-oxygen percentage.
     static func bloodOxygenStatus(strapModel: AtriaBLEManager.AtriaStrapModel,
                                   decoderAvailable: Bool) -> String {
-        if strapModel == .strap3 {
-            return AtriaSpO2Copy.notAvailableOnStrap
-        }
-        return decoderAvailable
-            ? "No SpO2 reading yet"
-            : AtriaSpO2Copy.decoderNotVerified
+        guard decoderAvailable else { return AtriaSpO2Copy.notAvailableOnThisStrap }
+        return "No SpO2 reading yet"
     }
 
     static func bloodOxygenFootnote(strapModel: AtriaBLEManager.AtriaStrapModel,
                                     decoderAvailable: Bool) -> String {
-        if strapModel == .strap3 {
-            return "\(AtriaSpO2Copy.notAvailableOnStrap) \(AtriaSpO2Copy.wontFakeAPercentage)"
-        }
-        if !decoderAvailable {
-            return "\(AtriaSpO2Copy.decoderNotVerified). Atria does not estimate a percentage."
+        guard decoderAvailable else {
+            let why = strapModel == .strap3
+                ? "This strap's sensor can't produce it."
+                : "Atria hasn't verified a decoder for this strap's sensor."
+            return "\(AtriaSpO2Copy.notAvailableOnThisStrap). \(why) \(AtriaSpO2Copy.wontFakeAPercentage)"
         }
         return "No SpO2 reading yet."
     }
@@ -2689,12 +2687,7 @@ enum AtriaExperimentalSensorCopy {
     static func bloodOxygenDetail(strapModel: AtriaBLEManager.AtriaStrapModel,
                                   decoderAvailable: Bool,
                                   candidateFrames: Int) -> String {
-        if strapModel == .strap3 {
-            return AtriaSpO2Copy.longUnavailable
-        }
-        if !decoderAvailable {
-            return "\(AtriaSpO2Copy.decoderNotVerified). Atria does not show raw sensor data as blood oxygen."
-        }
+        guard decoderAvailable else { return AtriaSpO2Copy.longUnavailable }
         return candidateFrames > 0
             ? "\(candidateFrames) candidate frames found. Atria does not show an SpO2 percentage until quality checks pass."
             : "No SpO2 reading yet. Atria does not estimate or display a percentage."

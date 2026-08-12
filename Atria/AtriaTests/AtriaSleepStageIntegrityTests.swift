@@ -99,9 +99,12 @@ final class AtriaSleepStageIntegrityTests: XCTestCase {
 
         XCTAssertLessThan(refresh.lowerBound, adjustedGuard.lowerBound)
         XCTAssertTrue(backfill.contains("hasRecoveredEpochOverlap"))
-        XCTAssertTrue(backfill.contains("reason=missing_time_aligned_motion"))
+        // The user-adjusted missing-motion clear branch (the reason= breadcrumb
+        // log was removed in f8d9acc9; the guard + clear action are the invariant).
+        XCTAssertTrue(backfill.contains("if !hasRecoveredEpochOverlap,"))
         XCTAssertTrue(backfill.contains("fragmentedAggregateHRStagesAreUnsupported"))
-        XCTAssertTrue(backfill.contains("reason=fragmented_aggregate_fallback"))
+        // Stale stages are cleared, not fabricated: the clear action writes nil.
+        XCTAssertTrue(backfill.contains("stageSegments: nil"))
     }
 
     func testAdjustedEvidenceRefreshPreservesUserWindowAndOwnership() throws {
@@ -110,7 +113,7 @@ final class AtriaSleepStageIntegrityTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("Atria/Sessions.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        let start = try XCTUnwrap(source.range(of: "private func refreshedUserAdjustedSleepEvidenceIfNeeded("))
+        let start = try XCTUnwrap(source.range(of: "private nonisolated static func refreshedUserAdjustedSleepEvidenceIfNeeded("))
         let end = try XCTUnwrap(source.range(of: "private func backfillConfirmedSleepStagesFromSessions", range: start.upperBound..<source.endIndex))
         let refreshPath = String(source[start.lowerBound..<end.lowerBound])
 

@@ -2,19 +2,23 @@ import XCTest
 @testable import Atria
 
 final class AtriaExperimentalSensorCopyTests: XCTestCase {
-    func testBloodOxygenStatusDistinguishesSupportedAndUnsupportedHardware() {
-        // Strap 4 carries the SpO2 sensor; the blocker is Atria's decoder, not
-        // elapsed time or an absent sensor.
+    func testBloodOxygenStatusIsNotAvailableOnStrapWithDistinguishingFootnote() {
+        // Headline is unified for every strap while no validated reading exists:
+        // "Not available on this strap" (2026-08-12 user request). The footnote —
+        // not the status — still distinguishes an absent sensor (strap 3) from an
+        // unverified decoder on a strap that carries the sensor (strap 4).
         XCTAssertEqual(AtriaExperimentalSensorCopy.bloodOxygenStatus(
-            strapModel: .strap4,
-            decoderAvailable: false),
-            AtriaSpO2Copy.decoderNotVerified)
-        // strap-3 has no SpO2 sensor at all: a true hardware limitation, so it
-        // routes through the canonical AtriaSpO2Copy copy (2026-08-01).
+            strapModel: .strap4, decoderAvailable: false),
+            AtriaSpO2Copy.notAvailableOnThisStrap)
         XCTAssertEqual(AtriaExperimentalSensorCopy.bloodOxygenStatus(
-            strapModel: .strap3,
-            decoderAvailable: false),
-            AtriaSpO2Copy.notAvailableOnStrap)
+            strapModel: .strap3, decoderAvailable: false),
+            AtriaSpO2Copy.notAvailableOnThisStrap)
+        XCTAssertTrue(AtriaExperimentalSensorCopy.bloodOxygenFootnote(
+            strapModel: .strap4, decoderAvailable: false)
+            .contains("decoder"))
+        XCTAssertTrue(AtriaExperimentalSensorCopy.bloodOxygenFootnote(
+            strapModel: .strap3, decoderAvailable: false)
+            .localizedCaseInsensitiveContains("sensor"))
     }
 
     func testBloodOxygenHardwareBranchUsesCanonicalCopyAndNeverAPercentage() {
@@ -23,10 +27,13 @@ final class AtriaExperimentalSensorCopyTests: XCTestCase {
         // SpO2 tells one honest hardware story -- and never a fabricated percent.
         XCTAssertEqual(AtriaExperimentalSensorCopy.bloodOxygenStatus(
             strapModel: .strap3, decoderAvailable: false),
-            AtriaSpO2Copy.notAvailableOnStrap)
-        XCTAssertEqual(AtriaExperimentalSensorCopy.bloodOxygenFootnote(
-            strapModel: .strap3, decoderAvailable: false),
-            "\(AtriaSpO2Copy.notAvailableOnStrap) \(AtriaSpO2Copy.wontFakeAPercentage)")
+            AtriaSpO2Copy.notAvailableOnThisStrap)
+        XCTAssertTrue(AtriaExperimentalSensorCopy.bloodOxygenFootnote(
+            strapModel: .strap3, decoderAvailable: false)
+            .hasPrefix(AtriaSpO2Copy.notAvailableOnThisStrap))
+        XCTAssertTrue(AtriaExperimentalSensorCopy.bloodOxygenFootnote(
+            strapModel: .strap3, decoderAvailable: false)
+            .contains(AtriaSpO2Copy.wontFakeAPercentage))
         XCTAssertEqual(AtriaExperimentalSensorCopy.bloodOxygenDetail(
             strapModel: .strap3, decoderAvailable: false, candidateFrames: 0),
             AtriaSpO2Copy.longUnavailable)
@@ -50,11 +57,16 @@ final class AtriaExperimentalSensorCopyTests: XCTestCase {
         }
     }
 
-    func testUnknownBloodOxygenHardwareDoesNotClaimUnsupported() {
+    func testUnknownBloodOxygenHardwareIsNotAvailableWithoutClaimingSensorAbsent() {
+        // An unknown strap is not-available-on-this-strap (feature-level) but its
+        // footnote must not assert the sensor is physically absent.
         XCTAssertEqual(AtriaExperimentalSensorCopy.bloodOxygenStatus(
             strapModel: .unknown,
             decoderAvailable: false),
-            AtriaSpO2Copy.decoderNotVerified)
+            AtriaSpO2Copy.notAvailableOnThisStrap)
+        XCTAssertTrue(AtriaExperimentalSensorCopy.bloodOxygenFootnote(
+            strapModel: .unknown, decoderAvailable: false)
+            .contains("decoder"))
     }
 
     func testAvailableBloodOxygenDecoderDoesNotUseLabValidationLanguage() {

@@ -101,6 +101,60 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertTrue(value.accessibilityText.contains("through "))
     }
 
+    private func partialVerified176() -> AtriaDailyStepPresentation {
+        AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: day.addingTimeInterval(2 * 86_400),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [stepDay(state: .missing,
+                                    stepCount: nil,
+                                    known: 176,
+                                    covered: 11_598,
+                                    missing: 43_626)],
+            calendar: utcCalendar
+        )
+    }
+
+    func testTerminalPureHRMotionRetainsLowerBoundAndShowsBlocker() {
+        var value = partialVerified176()
+        XCTAssertEqual(value.valueText, "176")
+        XCTAssertEqual(value.completeness, .partial)
+        let coverageDetail = value.detailText
+
+        value.motionAvailability = .unavailableInCurrentTransport
+        // The verified count and coverage are untouched by the classification.
+        XCTAssertEqual(value.valueText, "176")
+        XCTAssertEqual(value.detailText, coverageDetail)
+        // The forward-looking promise becomes the terminal blocker.
+        XCTAssertEqual(value.motionAvailabilityFootnote,
+                       "Strap motion is unavailable in the current connection mode. "
+                        + "Live heart rate is still connected.")
+    }
+
+    func testCatchingUpQualifyingLiveStaleMotionKeepProgressCopy() {
+        var value = partialVerified176()
+        for state: AtriaStrapMotionAvailability in [.catchingUp, .qualifying, .live, .stale] {
+            value.motionAvailability = state
+            XCTAssertNil(value.motionAvailabilityFootnote,
+                         "\(state) must keep the existing progress copy, not a blocker")
+        }
+        // Unclassified (nil) also keeps the existing copy.
+        value.motionAvailability = nil
+        XCTAssertNil(value.motionAvailabilityFootnote)
+    }
+
+    func testUnknownMotionUsesConservativeNonTerminalCopy() {
+        var value = partialVerified176()
+        value.motionAvailability = .unknown
+        XCTAssertEqual(value.motionAvailabilityFootnote,
+                       "Counted so far — updates when strap motion syncs.")
+        // Never asserts the terminal "unavailable in the current connection mode".
+        XCTAssertFalse(value.motionAvailabilityFootnote?
+            .contains("unavailable in the current connection mode") ?? false)
+    }
+
     func testConflictingExactCanonicalTotalsFailClosed() {
         let first = stepDay(state: .available, stepCount: 8_000,
                             known: 8_000, covered: 86_400, missing: 0)
@@ -610,5 +664,83 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
               rejectedOrUnknownEpochCount: 0,
               knownCoverageSeconds: covered,
               missingCoverageSeconds: missing)
+    }
+}
+
+final class AtriaStrapMotionAvailabilityTests: XCTestCase {
+    private func input(
+        owner: AtriaBLEManager.ProtectedR10CleanOwner,
+        state: AtriaBLEManager.ProtectedR10CleanOwnerState,
+        suppressed: Bool = false,
+        freshAge: TimeInterval? = nil,
+        ticket: Bool = false,
+        prior: Bool = false
+    ) -> AtriaStrapMotionAvailability.Input {
+        .init(cleanOwner: owner,
+              cleanOwnerState: state,
+              streamSuppressed: suppressed,
+              freshMotionAge: freshAge,
+              hasActiveMotionBankOffload: ticket,
+              hasPriorVerifiedMotion: prior)
+    }
+
+    func testProtectedV9QualifiedWithMinimalHRIsNotUnavailable() {
+        let result = AtriaStrapMotionAvailability.resolve(
+            input(owner: .protectedV9, state: .qualified, prior: true))
+        XCTAssertNotEqual(result, .unavailableInCurrentTransport)
+        XCTAssertEqual(result, .stale)
+    }
+
+    func testProtectedProvingAndLaunchPendingAreQualifying() {
+        XCTAssertEqual(AtriaStrapMotionAvailability.resolve(
+            input(owner: .protectedV9, state: .proving)), .qualifying)
+        XCTAssertEqual(AtriaStrapMotionAvailability.resolve(
+            input(owner: .protectedV9, state: .protectedLaunchPending)), .qualifying)
+    }
+
+    func testPureHRFallbackSuppressedNoMotionIsUnavailable() {
+        XCTAssertEqual(AtriaStrapMotionAvailability.resolve(
+            input(owner: .pureHRV10, state: .fallbackActive, suppressed: true, prior: true)),
+            .unavailableInCurrentTransport)
+        XCTAssertEqual(AtriaStrapMotionAvailability.resolve(
+            input(owner: .pureHRV8, state: .fallbackPending, suppressed: true)),
+            .unavailableInCurrentTransport)
+    }
+
+    func testPureHRFallbackWithActiveOffloadIsCatchingUpNotUnavailable() {
+        XCTAssertEqual(AtriaStrapMotionAvailability.resolve(
+            input(owner: .pureHRV10, state: .fallbackActive,
+                  suppressed: true, ticket: true, prior: true)),
+            .catchingUp)
+    }
+
+    func testFreshMotionIsLiveRegardlessOfFallbackMarker() {
+        XCTAssertEqual(AtriaStrapMotionAvailability.resolve(
+            input(owner: .pureHRV10, state: .fallbackActive,
+                  suppressed: true, freshAge: 5, prior: true)),
+            .live)
+    }
+
+    func testStaleAmbiguousOwnerIsNotTerminal() {
+        // Pure-HR owner + terminal state but NOT stream-suppressed: not the exact
+        // terminal conjunction, so it stays stale, never unavailable.
+        XCTAssertEqual(AtriaStrapMotionAvailability.resolve(
+            input(owner: .pureHRV10, state: .fallbackActive, suppressed: false, prior: true)),
+            .stale)
+    }
+
+    func testTransitionFromUnavailableToLiveWhenMotionReturns() {
+        let before = AtriaStrapMotionAvailability.resolve(
+            input(owner: .pureHRV10, state: .fallbackActive, suppressed: true, prior: true))
+        XCTAssertEqual(before, .unavailableInCurrentTransport)
+        let after = AtriaStrapMotionAvailability.resolve(
+            input(owner: .pureHRV10, state: .fallbackActive,
+                  suppressed: true, freshAge: 3, prior: true))
+        XCTAssertEqual(after, .live)
+    }
+
+    func testRelaunchWithoutFreshMotionFailsClosed() {
+        XCTAssertEqual(AtriaStrapMotionAvailability.resolve(
+            input(owner: .legacy, state: .none)), .unknown)
     }
 }

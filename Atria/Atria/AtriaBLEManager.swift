@@ -16319,6 +16319,37 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     var hasResumableMotionBankOffload: Bool { Self.resumableMotionBankOffloadPending() }
 
+    /// Typed strap-motion authority the step surfaces consume. Recomputed on
+    /// demand (only when a step surface rebuilds, never per HR sample) from the
+    /// durable owner/state/suppressed flags plus the freshest validated motion
+    /// clock. It classifies a terminal pure-HR fallback as
+    /// `unavailableInCurrentTransport`, but protected-R10 (protectedV9/qualified,
+    /// or launch-pending/proving) or an active motion-bank offload as
+    /// live/catchingUp/qualifying — never "unavailable" for the HR-minimal flag
+    /// alone. On relaunch, with no process-local fresh-motion clock it falls
+    /// through to stale/unknown rather than asserting a motion blocker.
+    var strapMotionAvailability: AtriaStrapMotionAvailability {
+        let now = Date()
+        let freshMotionAge: TimeInterval?
+        if let capturedAt = liveStrapMotionCapturedAt {
+            freshMotionAge = now.timeIntervalSince(capturedAt)
+        } else if let frameAt = lastR10MotionFrameAt {
+            freshMotionAge = now.timeIntervalSince(frameAt)
+        } else {
+            freshMotionAge = nil
+        }
+        let priorValidMotion = UserDefaults.standard
+            .double(forKey: RadioDefaults.passiveR10LastValidAt) > 0
+        return AtriaStrapMotionAvailability.resolve(.init(
+            cleanOwner: protectedR10CleanOwner,
+            cleanOwnerState: protectedR10CleanOwnerState,
+            streamSuppressed: protectedR10StreamSuppressed,
+            freshMotionAge: freshMotionAge,
+            hasActiveMotionBankOffload: hasResumableMotionBankOffload,
+            hasPriorVerifiedMotion: priorValidMotion
+        ))
+    }
+
     private func strapBacklogPendingForCatchUp(now: Date = Date()) -> Bool {
         Self.drainableStrapBacklogPendingFromDefaults(now: now)
     }
