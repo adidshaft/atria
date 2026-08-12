@@ -456,11 +456,13 @@ final class AtriaHistoricalPhysiologicalCycleTests: XCTestCase {
                        "no anchor sleep, no extension — a fake full-day span is forbidden")
     }
 
-    // Reclassifying the short overnight main to a nap moves it out of the
-    // current window (it no longer anchors anything) and into the prior
-    // wake-to-wake window by plain interval overlap — rows and markers agree
-    // because both consume the same selector and window.
-    func testNapMovesToPriorWindowAfterReclassification() {
+    // "Last night's nap" belongs to TODAY (2026-08-12 user decision): a nap
+    // reclassified out of the mains chains into the night block that anchors
+    // the current day (gap to the main sleep ≤ the resumed-sleep separation),
+    // shows on Today next to the sleep the user woke from, and no prior window
+    // claims it. Rows and markers agree because both consume the same selector
+    // and the same extended interval.
+    func testNightBlockNapBelongsToTodayAfterReclassification() {
         let calendar = utc
         let priorMain = sleep(id: "prior-main",
                               start: date(2026, 8, 10, 3, 30, calendar: calendar),
@@ -482,23 +484,24 @@ final class AtriaHistoricalPhysiologicalCycleTests: XCTestCase {
                                                          calendar: calendar)
         XCTAssertEqual(current.interval.start, longMain.end,
                        "the long main anchors the current day once the short record is a nap")
+        // The night block chains the 2h34m gap back to the nap's start, and the
+        // display interval covers the whole block.
+        XCTAssertEqual(current.displayInterval.start, nap.start,
+                       "the display window covers the full night block, nap included")
         let currentRows = AtriaActivitySelectedDaySleeps.overlapping(
             snapshot: snapshot,
             pendingReview: nil,
-            interval: current.interval,
+            interval: current.displayInterval,
             calendar: calendar,
             includeStartBoundarySleep: true,
             mainSleepOwnershipDay: nil
         )
-        XCTAssertEqual(Set(currentRows.map(\.id)), [longMain.id],
-                       "the current day shows exactly the sleep the user woke from — no nap row")
+        XCTAssertEqual(Set(currentRows.map(\.id)), [longMain.id, nap.id],
+                       "Today shows the whole night it woke from: the main sleep AND last night's nap")
 
-        // The nap must land on exactly one PRIOR day view. The Aug-10→Aug-12
-        // gap is split by the deterministic no-sleep rollover, so the nap's
-        // owning window is the Aug-11-labelled one — exactly the "yesterday"
-        // the user expects — and never the current day.
-        var napAppearances: [Date] = []
-        for dayOffset in 0...2 {
+        // No REACHABLE prior day view may also claim the night-block records
+        // (production navigation steps only through days before Today's label).
+        for dayOffset in 0...1 {
             let labelDay = calendar.date(byAdding: .day,
                                          value: dayOffset,
                                          to: calendar.startOfDay(for: priorMain.end))!
@@ -514,17 +517,43 @@ final class AtriaHistoricalPhysiologicalCycleTests: XCTestCase {
                 calendar: calendar,
                 mainSleepOwnershipDay: window.labelDay
             )
-            if rows.contains(where: { $0.id == nap.id }) {
-                napAppearances.append(labelDay)
-            }
-            XCTAssertEqual(rows.filter { $0.id == nap.id }.count <= 1, true,
-                           "a day may show the nap at most once")
+            XCTAssertFalse(rows.contains { $0.id == nap.id },
+                           "a prior window must not double-claim the current night block")
         }
-        XCTAssertEqual(napAppearances.count, 1,
-                       "the nap lands on exactly one prior day view")
-        XCTAssertEqual(napAppearances.first,
-                       date(2026, 8, 11, 0, calendar: calendar),
-                       "the nap belongs to the Aug-11-labelled window — the user's 'yesterday'")
+    }
+
+    // A distant nap (gap to the next main sleep beyond the resumed-sleep
+    // separation) does NOT chain into the night block: it keeps its
+    // interval-overlap placement on a prior day, and an overlapping
+    // nap-inside-sleep record (a real user data shape) chains with its host.
+    func testNightBlockChainRespectsSeparationAndOverlap() {
+        let calendar = utc
+        let distantNap = sleep(id: "distant-nap",
+                               start: date(2026, 8, 11, 13, 0, calendar: calendar),
+                               end: date(2026, 8, 11, 14, 0, calendar: calendar),
+                               source: "user_adjusted_nap")
+        let shortSleep = sleep(id: "short-sleep",
+                               start: date(2026, 8, 12, 0, 58, calendar: calendar),
+                               end: date(2026, 8, 12, 3, 41, calendar: calendar))
+        let insideNap = sleep(id: "inside-nap",
+                              start: date(2026, 8, 12, 1, 1, calendar: calendar),
+                              end: date(2026, 8, 12, 3, 17, calendar: calendar),
+                              source: "user_adjusted_nap")
+        let longMain = sleep(id: "long-main",
+                             start: date(2026, 8, 12, 6, 15, calendar: calendar),
+                             end: date(2026, 8, 12, 15, 27, calendar: calendar))
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [distantNap, shortSleep, insideNap, longMain],
+                                            calendar: calendar)
+        let blockStart = AtriaActivityDisplayWindow.nightBlockStart(
+            endingAt: longMain.end,
+            sleepHistory: snapshot
+        )
+        // 6:15 − 3:41 = 2h34m chains the short sleep; the nap INSIDE it chains
+        // by overlap; the 13:00–14:00 nap the previous afternoon is 10h51m
+        // before the block and stays out.
+        XCTAssertEqual(blockStart, shortSleep.start,
+                       "the block chains through the short sleep and its overlapping nap, not the distant afternoon nap")
     }
 
     private func calendar(timeZoneIdentifier: String) -> Calendar {
