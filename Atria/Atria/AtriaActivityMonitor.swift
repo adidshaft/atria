@@ -73,12 +73,59 @@ struct AtriaActivityDisplayWindow: Equatable {
             .start
     }
 
+    /// Maximum gap for a record to chain into the anchoring night block. Four
+    /// hours joins "last night's" fragments (a 1–4 AM nap before a 6 AM main
+    /// sleep, or a near-bedtime doze) while an afternoon nap seven hours before
+    /// bedtime stays on the day it happened — the boundary the existing
+    /// overlap-record tests pin.
+    static let nightBlockMaximumGap: TimeInterval = 4 * 60 * 60
+
+    /// The start of the NIGHT BLOCK that anchors `boundary`: chain backward from
+    /// the anchoring main through every confirmed sleep or nap whose gap to the
+    /// growing block is at most `nightBlockMaximumGap`. "Last night's nap"
+    /// (a 1–4 AM fragment a couple of hours before the main sleep) is part of
+    /// the night the user woke from, so the day that wake begins owns it —
+    /// physiological attribution the user can actually find. A boundary with no
+    /// anchoring saved sleep returns nil and nothing is extended.
+    static func nightBlockStart(endingAt boundary: Date,
+                                sleepHistory: SleepHistorySnapshot,
+                                tolerance: TimeInterval = 1) -> Date? {
+        guard let anchorStart = anchorSleepStart(endingAt: boundary,
+                                                 sleepHistory: sleepHistory,
+                                                 tolerance: tolerance) else { return nil }
+        let candidates = (sleepHistory.nights
+            + sleepHistory.additionalMainNights
+            + sleepHistory.napNights)
+            .filter { $0.confirmed }
+            .compactMap { night -> (start: Date, end: Date)? in
+                guard let start = night.start, let end = night.end,
+                      end > start, end <= boundary.addingTimeInterval(tolerance) else { return nil }
+                return (start, end)
+            }
+            .sorted { $0.end > $1.end }
+        var blockStart = anchorStart
+        var advanced = true
+        while advanced {
+            advanced = false
+            for candidate in candidates where candidate.start < blockStart {
+                // A negative gap is an overlapping record (e.g. a nap saved
+                // inside a sleep window) — it chains too.
+                let gap = blockStart.timeIntervalSince(candidate.end)
+                if gap <= Self.nightBlockMaximumGap {
+                    blockStart = candidate.start
+                    advanced = true
+                }
+            }
+        }
+        return blockStart
+    }
+
     private static func displayInterval(for interval: DateInterval,
                                         sleepHistory: SleepHistorySnapshot) -> DateInterval {
-        guard let anchorStart = anchorSleepStart(endingAt: interval.start,
-                                                 sleepHistory: sleepHistory),
-              anchorStart < interval.start else { return interval }
-        return DateInterval(start: anchorStart, end: interval.end)
+        guard let blockStart = nightBlockStart(endingAt: interval.start,
+                                               sleepHistory: sleepHistory),
+              blockStart < interval.start else { return interval }
+        return DateInterval(start: blockStart, end: interval.end)
     }
 
     static func current(now: Date,
@@ -565,9 +612,41 @@ enum AtriaActivitySelectedDaySleeps {
                             calendar: Calendar,
                             includeStartBoundarySleep: Bool = false,
                             mainSleepOwnershipDay: Date? = nil) -> [SleepHistorySnapshot.Night] {
-        canonical(snapshot: snapshot,
+        // A historical window ends at the NEXT day's anchoring wake — or at a
+        // rollover somewhere before it — so it can physically contain that
+        // day's night block ("last night's" naps and fragments). Those records
+        // belong to the day the wake begins, where the user looks for them, so
+        // a prior window must not also claim them. Key the exclusion on the
+        // first anchoring wake at-or-after this window's end (a rollover-ended
+        // window still yields to the following wake's block); distant naps
+        // keep their interval-overlap placement.
+        let closingNightBlockStart: Date?
+        if mainSleepOwnershipDay == nil {
+            closingNightBlockStart = nil
+        } else {
+            let nextWake = (snapshot.nights + snapshot.additionalMainNights)
+                .filter { $0.confirmed && !$0.isNapEvidence }
+                .compactMap(\.end)
+                .filter { $0 >= interval.end.addingTimeInterval(-1) }
+                .min()
+            closingNightBlockStart = nextWake.flatMap {
+                AtriaActivityDisplayWindow.nightBlockStart(endingAt: $0,
+                                                           sleepHistory: snapshot)
+            }
+        }
+        return canonical(snapshot: snapshot,
                   pendingReview: pendingReview,
                   napReviewCandidates: napReviewCandidates).filter { night in
+            // Only CONFIRMED records can belong to a night block; a pending
+            // review/candidate stays where its evidence overlaps until the
+            // user settles it.
+            if let closingNightBlockStart,
+               night.confirmed,
+               let start = night.start, let end = night.end,
+               start >= closingNightBlockStart,
+               end <= interval.end.addingTimeInterval(1) {
+                return false
+            }
             // A confirmed non-nap is a wake-boundary record. It belongs to the
             // date on which its final wake was recorded, never to every civil
             // date overlapped by its bedtime-to-wake interval. Naps and pending
@@ -1766,11 +1845,29 @@ struct AtriaActivityMonitorTab: View {
     nonisolated private static func makeDaySections(
         from source: DaySectionsSourceSnapshot
     ) -> DaySectionsResult {
+        // The current day owns its anchoring NIGHT BLOCK — the main sleep the
+        // user woke from plus last night's naps/fragments chained to it. Extend
+        // the sleep-selection interval back to the block start so those records
+        // appear where the user looks for them ("today's sleep story"); the
+        // closing-block exclusion inside the selector keeps prior days from
+        // also claiming them. Days without an anchoring saved sleep or with no
+        // chained records are unchanged.
+        let sleepInterval: DateInterval
+        if source.isCurrentPhysiologicalDay,
+           let blockStart = AtriaActivityDisplayWindow.nightBlockStart(
+               endingAt: source.interval.start,
+               sleepHistory: source.sleepSnapshot
+           ),
+           blockStart < source.interval.start {
+            sleepInterval = DateInterval(start: blockStart, end: source.interval.end)
+        } else {
+            sleepInterval = source.interval
+        }
         let sleeps = AtriaActivitySelectedDaySleeps.overlapping(
             snapshot: source.sleepSnapshot,
             pendingReview: source.pendingSleepReview,
             napReviewCandidates: source.napReviewCandidates,
-            interval: source.interval,
+            interval: sleepInterval,
             calendar: source.calendar,
             includeStartBoundarySleep: source.isCurrentPhysiologicalDay,
             mainSleepOwnershipDay: source.isCurrentPhysiologicalDay
@@ -3022,13 +3119,17 @@ struct AtriaActivityMonitorTab: View {
             }
             var spans: [TimelineSpan] = []
             // Exactly the row list's selector arguments (makeDaySections):
-            // same interval, same ownership rule, same boundary relaxation.
-            // Any divergence here re-opens the row-without-marker bug.
+            // same interval (the display interval already reaches back to the
+            // night block on the current day), same ownership rule, same
+            // boundary relaxation. Any divergence here re-opens the
+            // row-without-marker bug.
             let visibleSleeps = AtriaActivitySelectedDaySleeps.overlapping(
                 snapshot: sleepSnapshot,
                 pendingReview: pendingSleepReview,
                 napReviewCandidates: napReviewCandidates,
-                interval: displayWindow.interval,
+                interval: displayWindow.isCurrentPhysiologicalDay
+                    ? displayWindow.displayInterval
+                    : displayWindow.interval,
                 calendar: calendar,
                 includeStartBoundarySleep: displayWindow.isCurrentPhysiologicalDay,
                 mainSleepOwnershipDay: displayWindow.isCurrentPhysiologicalDay
