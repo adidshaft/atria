@@ -440,6 +440,20 @@ struct AtriaManualSleepSheet: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else {
+                    if night.isEstimatedStageDisplay {
+                        // Mandatory estimate label (2026-08-12): HR-only
+                        // estimated bars must carry their label in the same
+                        // card, never with checked-stage authority.
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(AtriaSleepStageEstimateLabel.title)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Metrics.electricSleep)
+                            Text(AtriaSleepStageEstimateLabel.caption)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                     AtriaManualSleepHypnogram(segments: night.displayStageSegments,
                                               start: night.start,
                                               end: night.end,

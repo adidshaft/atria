@@ -3237,6 +3237,17 @@ enum SleepStageEvidence: String, Codable, Equatable {
     }
 }
 
+/// Mandatory labeling for HR-only ESTIMATED stage rendering (2026-08-12,
+/// c7c15e1d product). HR-only nights may now render a reconciled hypnogram,
+/// but never with the visual authority of motion-validated stages: whenever
+/// estimated bars render anywhere, this title must be visible WITH them —
+/// never buried in a sheet — and the caption states exactly why the
+/// boundaries are estimates.
+enum AtriaSleepStageEstimateLabel {
+    static let title = "Estimated stages · HR-only"
+    static let caption = "Motion not available — stage boundaries are estimates from heart rate and breathing."
+}
+
 struct SleepStageSegment: Codable, Identifiable, Equatable {
     let id: String
     let start: Date
@@ -51847,9 +51858,27 @@ struct SleepHistorySnapshot: Equatable {
                 evidence = .hrOnlyEstimate
             }
             self.stageEvidence = evidence
-            self.displayStageSegments = (evidence == .none || evidence == .hrOnlyEstimate)
-                ? []
-                : Self.foldedDisplaySegments(from: stageSegments)
+            if evidence == .hrOnlyEstimate {
+                // Labeled HR-only ESTIMATE (2026-08-12, c7c15e1d product): a
+                // confirmed HR-only night with a structurally valid timeline
+                // renders a real hypnogram again — but only through a
+                // display-only reconciliation of the engine's over-called
+                // awake, and only on surfaces that show the mandatory
+                // `AtriaSleepStageEstimateLabel`. Stored segments stay
+                // untouched; failures fall closed to the generic estimate.
+                self.displayStageSegments = Self.reconciledHROnlyDisplaySegments(
+                    folded: Self.foldedDisplaySegments(from: stageSegments),
+                    effectiveSleepDuration: duration,
+                    start: start,
+                    end: end,
+                    confirmed: confirmed,
+                    source: source,
+                    stagesPassIntegrity: stagesPassIntegrity)
+            } else {
+                self.displayStageSegments = evidence == .none
+                    ? []
+                    : Self.foldedDisplaySegments(from: stageSegments)
+            }
             self.stageDurationsByStage = Self.stageDurations(from: displayStageSegments)
         }
 
@@ -51876,11 +51905,30 @@ struct SleepHistorySnapshot: Equatable {
         /// Folded segments independent of the HR-only DISPLAY gate. Daily-
         /// metric persistence and sleep-credit computation must keep storing
         /// exactly what they stored before the 2026-08-01 presentation
-        /// honesty pass; only rendered hypnograms are withheld.
+        /// honesty pass. For `.hrOnlyEstimate` this is the folded RAW
+        /// timeline — never the display-only reconciled estimate.
         var stageSegmentsForStorage: [SleepStageSegment] {
             stageEvidence == .hrOnlyEstimate
                 ? Self.foldedDisplaySegments(from: stageSegments)
                 : displayStageSegments
+        }
+
+        /// True when this night's rendered stage timeline is a display-only
+        /// HR-only ESTIMATE (reconciled, not motion-validated). Every surface
+        /// that renders these bars must show `AtriaSleepStageEstimateLabel`
+        /// alongside them — the label is part of the presentation contract,
+        /// not decoration.
+        var isEstimatedStageDisplay: Bool {
+            stageEvidence == .hrOnlyEstimate && !displayStageSegments.isEmpty
+        }
+
+        /// Per-night stage provenance label. Unlike `stageEvidence.label`
+        /// this distinguishes an HR-only night that renders labeled estimate
+        /// bars from one whose segments stay hidden ("Stages need motion
+        /// data" would contradict visible bars; the estimate title would
+        /// falsely promise bars on a hidden night).
+        var stageDisplayLabel: String {
+            isEstimatedStageDisplay ? AtriaSleepStageEstimateLabel.title : stageEvidence.label
         }
 
         /// The stored `sleepEfficiency` for an HR-only night is captured/span
@@ -51923,6 +51971,130 @@ struct SleepHistorySnapshot: Equatable {
                 }
             }
             return merged
+        }
+
+        /// Display-only reconciliation for the labeled HR-only ESTIMATE
+        /// hypnogram (2026-08-12, c7c15e1d product). The stage engine
+        /// over-calls awake on HR-only nights, so the raw timeline's
+        /// non-awake total under-runs the credited effective sleep duration
+        /// and fails the strict presentation reconcile. Because the estimate
+        /// presentation is explicitly labeled, it may reconcile FOR
+        /// PRESENTATION ONLY: interior over-called awake folds into a
+        /// neighboring sleep stage until displayed non-awake time matches
+        /// `effectiveSleepDuration`, and any surplus is trimmed so the
+        /// display can never exceed it. Stored segments are never modified.
+        /// Fails closed (returns []) — back to the generic estimated-asleep
+        /// window — for naps, unconfirmed candidates, manual windows,
+        /// integrity-failing timelines, and gaps reconciliation cannot
+        /// honestly close.
+        private static func reconciledHROnlyDisplaySegments(folded: [SleepStageSegment],
+                                                            effectiveSleepDuration: TimeInterval,
+                                                            start: Date?,
+                                                            end: Date?,
+                                                            confirmed: Bool,
+                                                            source: String,
+                                                            stagesPassIntegrity: Bool) -> [SleepStageSegment] {
+            guard confirmed,
+                  stagesPassIntegrity,
+                  !folded.isEmpty,
+                  effectiveSleepDuration > 0,
+                  let start, let end, end > start,
+                  !explicitNapSources.contains(source),
+                  !source.hasPrefix("manual_") else { return [] }
+
+            func nonAwakeTotal(_ segments: [SleepStageSegment]) -> TimeInterval {
+                segments.reduce(0) { $0 + ($1.stage == .awake ? 0 : $1.duration) }
+            }
+
+            var working = folded
+            var deficit = effectiveSleepDuration - nonAwakeTotal(working)
+            // Absorb interior over-called awake (a non-awake neighbor on at
+            // least one side), shortest bout first, splitting the last one
+            // so the displayed non-awake lands exactly on the effective
+            // sleep duration. Boundary awake — falling asleep and waking —
+            // is credible evidence and is left alone.
+            while deficit > 1 {
+                let candidates = working.indices.filter { index in
+                    working[index].stage == .awake
+                        && index > working.startIndex
+                        && index < working.endIndex - 1
+                        && (working[index - 1].stage != .awake || working[index + 1].stage != .awake)
+                }.sorted { working[$0].duration < working[$1].duration }
+                guard let index = candidates.first else { break }
+                let awake = working[index]
+                let absorbsBackward = working[index - 1].stage != .awake
+                if awake.duration <= deficit + 1 {
+                    deficit -= awake.duration
+                    if absorbsBackward {
+                        let neighbor = working[index - 1]
+                        working[index - 1] = SleepStageSegment(id: neighbor.id,
+                                                               start: neighbor.start,
+                                                               end: awake.end,
+                                                               stage: neighbor.stage)
+                    } else {
+                        let neighbor = working[index + 1]
+                        working[index + 1] = SleepStageSegment(id: neighbor.id,
+                                                               start: awake.start,
+                                                               end: neighbor.end,
+                                                               stage: neighbor.stage)
+                    }
+                    working.remove(at: index)
+                } else {
+                    if absorbsBackward {
+                        let neighbor = working[index - 1]
+                        working[index - 1] = SleepStageSegment(id: neighbor.id,
+                                                               start: neighbor.start,
+                                                               end: neighbor.end.addingTimeInterval(deficit),
+                                                               stage: neighbor.stage)
+                        working[index] = SleepStageSegment(id: awake.id,
+                                                           start: awake.start.addingTimeInterval(deficit),
+                                                           end: awake.end,
+                                                           stage: .awake)
+                    } else {
+                        let neighbor = working[index + 1]
+                        working[index + 1] = SleepStageSegment(id: neighbor.id,
+                                                               start: neighbor.start.addingTimeInterval(-deficit),
+                                                               end: neighbor.end,
+                                                               stage: neighbor.stage)
+                        working[index] = SleepStageSegment(id: awake.id,
+                                                           start: awake.start,
+                                                           end: awake.end.addingTimeInterval(-deficit),
+                                                           stage: .awake)
+                    }
+                    deficit = 0
+                }
+            }
+            // Cap: displayed non-awake must never exceed the credited
+            // effective sleep. Surplus trims from the end of the timeline —
+            // the excess is uncredited, so it renders as nothing rather
+            // than as fabricated wakefulness.
+            var surplus = nonAwakeTotal(working) - effectiveSleepDuration
+            var index = working.endIndex - 1
+            while surplus > 1, index >= working.startIndex {
+                let segment = working[index]
+                if segment.stage != .awake {
+                    if segment.duration <= surplus + 1 {
+                        surplus -= segment.duration
+                        working.remove(at: index)
+                    } else {
+                        working[index] = SleepStageSegment(id: segment.id,
+                                                           start: segment.start,
+                                                           end: segment.end.addingTimeInterval(-surplus),
+                                                           stage: segment.stage)
+                        surplus = 0
+                    }
+                }
+                index -= 1
+            }
+            // Publish only when the estimate now reconciles with the same
+            // effective-sleep authority the hero and Recovery use.
+            let display = foldedDisplaySegments(from: working)
+            guard nonAwakeTotal(display) <= effectiveSleepDuration + 1,
+                  AtriaSleepStageIntegrity.reconcilesForPresentation(
+                      display,
+                      effectiveSleepDuration: effectiveSleepDuration
+                  ) else { return [] }
+            return display
         }
 
         var durationHours: Double {

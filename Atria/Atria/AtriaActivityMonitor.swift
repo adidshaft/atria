@@ -5196,11 +5196,14 @@ struct AtriaSleepActivityReviewSheet: View {
                 .font(.system(size: 34, weight: .bold, design: .rounded))
                 .monospacedDigit()
             if let start = night.start, let end = night.end {
-                Text("\(clockText(start)) – \(clockText(end)) · \(night.stageEvidence.label)")
+                // stageDisplayLabel: an HR-only night that renders estimated
+                // bars is titled "Estimated stages · HR-only" here so the
+                // header never contradicts the hypnogram below it.
+                Text("\(clockText(start)) – \(clockText(end)) · \(night.stageDisplayLabel)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             } else {
-                Text(night.stageEvidence.label)
+                Text(night.stageDisplayLabel)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -5209,7 +5212,9 @@ struct AtriaSleepActivityReviewSheet: View {
 
     private var stageBreakdown: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("STAGES")
+            // The estimate marker stays attached to these per-stage bars —
+            // the labeled hypnogram card above is not enough on its own.
+            Text(night.isEstimatedStageDisplay ? "STAGES · HR-ONLY ESTIMATE" : "STAGES")
                 .font(.caption2.weight(.black))
                 .foregroundStyle(.tertiary)
                 .kerning(0.8)

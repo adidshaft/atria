@@ -2256,7 +2256,9 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
     // HR-only presentation honesty (2026-08-01, physical device review): a
     // confirmed/review sleep without validated motion showed "100%"
     // efficiency (actually captured/span coverage) and an all-deep stage
-    // band. Both are withheld at display time; stored data is untouched.
+    // band with full validated authority. Efficiency stays withheld and
+    // stored data stays untouched; since 2026-08-12 the stage band renders
+    // again, but strictly as the labeled HR-only ESTIMATE.
     func testHROnlyNightWithholdsEfficiencyAndStagesButKeepsStorage() {
         let start = date(2026, 7, 31, 22, 0)
         let end = date(2026, 8, 1, 6, 0)
@@ -2289,8 +2291,11 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         XCTAssertEqual(night.sleepEfficiencyFootnote, "Needs motion data")
         XCTAssertEqual(night.stageEvidence, .hrOnlyEstimate)
         XCTAssertEqual(night.stageEvidence.label, "Stages need motion data")
-        XCTAssertTrue(night.displayStageSegments.isEmpty,
-                      "no confident hypnogram from heart rate alone")
+        // The band renders as the mandatory labeled estimate — never with the
+        // "Checked stages"/plain-hypnogram authority the 2026-08-01 audit hit.
+        XCTAssertTrue(night.isEstimatedStageDisplay)
+        XCTAssertEqual(night.stageDisplayLabel, AtriaSleepStageEstimateLabel.title)
+        XCTAssertFalse(night.displayStageSegments.isEmpty)
         XCTAssertEqual(night.stageSegmentsForStorage.count, 1,
                        "presentation honesty must not rewrite stored/projected segments")
     }

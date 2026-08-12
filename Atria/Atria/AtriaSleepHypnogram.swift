@@ -12,11 +12,13 @@ import SwiftUI
 // Light #4C8DFF, Deep #7B6CF0 (the app's SWS band folds into Deep for
 // display, as everywhere else).
 //
-// Honesty (hard constraint): the timeline renders ONLY from motion-validated
-// display segments — `SleepHistorySnapshot.Night.displayStageSegments` is
-// already empty for `.hrOnlyEstimate`/`.none` nights. HR-only nights render a
-// single generic estimated-asleep window plus measured HR context — never a
-// fabricated Awake/REM/Light/Deep lane or stage distribution.
+// Honesty (hard constraint): motion-validated timelines render exactly as
+// before. A confirmed `.hrOnlyEstimate` night whose stored timeline passed
+// integrity now renders a display-only RECONCILED estimate timeline
+// (2026-08-12, c7c15e1d product) — but only under the mandatory
+// `AtriaSleepStageEstimateLabel` title + caption, visible with the bars.
+// HR-only nights whose segments failed integrity/reconciliation still render
+// the single generic estimated-asleep window plus measured HR context.
 
 /// Pure segment→lane / legend / axis math, unit-testable without SwiftUI.
 enum AtriaSleepHypnogramPresentation {
@@ -148,8 +150,12 @@ enum AtriaSleepHypnogramPresentation {
 struct AtriaSleepHypnogramCard: View, Equatable {
     enum DisplayState: Equatable {
         case timeline
-        /// HR-only night rendered as one generic estimated-asleep window. No
-        /// stage epochs or stage-level precision are permitted in this state.
+        /// Confirmed HR-only night whose reconciled display segments earned
+        /// a real timeline — rendered ONLY with the mandatory estimate
+        /// label + caption (never with `.timeline`'s visual authority).
+        case estimatedTimeline
+        /// HR-only night rendered as one generic estimated-asleep window —
+        /// the fail-closed state when no reconciled display segments exist.
         case estimate
         /// HR-only night without a usable time window.
         case needsMotion
@@ -178,9 +184,12 @@ struct AtriaSleepHypnogramCard: View, Equatable {
          eventTimeZoneIdentifier: String? = nil,
          isManualEntry: Bool = false,
          measuredHeartRate: Int? = nil) {
-        // Enforce the truth boundary even for direct/test initializers. The
-        // estimate UI is a generic window and must never retain stage input.
-        self.segments = stageEvidence == .hrOnlyEstimate ? [] : segments
+        // Truth boundary (updated 2026-08-12): `.hrOnlyEstimate` segments may
+        // render, but only as the labeled estimate timeline — the body pairs
+        // any bars for that evidence with `AtriaSleepStageEstimateLabel`.
+        // The canonical night initializer below feeds the reconciled,
+        // integrity-gated `displayStageSegments`, never raw engine output.
+        self.segments = segments
         self.start = start
         self.end = end
         self.stageEvidence = stageEvidence
@@ -200,10 +209,12 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         let feedSegments: [SleepStageSegment]
         switch night.stageEvidence {
         case .hrOnlyEstimate:
-            // Defense in depth: never pass raw HR-derived stage segments into
-            // the card. The estimate state draws its own non-stage window.
+            // Defense in depth: feed only the reconciled, integrity-gated
+            // display segments — never raw HR-derived engine output. When
+            // the night failed reconciliation these are empty and the card
+            // draws its generic non-stage estimate window.
             provenance = "\(night.confirmationText) · Estimate"
-            feedSegments = []
+            feedSegments = night.displayStageSegments
         case .none:
             provenance = night.confirmationText
             feedSegments = night.displayStageSegments
@@ -230,8 +241,10 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         // segments must say "manual entry", not promise motion or building.
         if isManualEntry, segments.isEmpty { return .manualEntry }
         if stageEvidence == .hrOnlyEstimate {
-            // Segment availability is deliberately irrelevant: raw HR-derived
-            // stages must never decide or populate the estimate presentation.
+            // Reconciled display segments earn the labeled estimate timeline;
+            // without them the presentation stays the generic window (or the
+            // terminal needs-motion state when no window exists either).
+            if !segments.isEmpty, let start, let end, end > start { return .estimatedTimeline }
             if let start, let end, end > start { return .estimate }
             return .needsMotion
         }
@@ -289,6 +302,19 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                     axis(windowStart: start, windowEnd: end)
                     legendTiles
                 }
+            case .estimatedTimeline:
+                // The estimate title is this card's section header (above);
+                // the caption renders directly under the bars so the two are
+                // never separated from the timeline they qualify.
+                if let start, let end {
+                    lanes(windowStart: start, windowEnd: end)
+                    axis(windowStart: start, windowEnd: end)
+                    legendTiles
+                    Text(AtriaSleepStageEstimateLabel.caption)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             case .estimate:
                 if let start, let end {
                     estimatedAsleepWindow(windowStart: start, windowEnd: end)
@@ -313,7 +339,13 @@ struct AtriaSleepHypnogramCard: View, Equatable {
     // MARK: - Estimate + timeline
 
     private var sectionTitle: String {
-        state == .estimate ? "Estimated asleep window" : "Stages · Hypnogram"
+        switch state {
+        case .estimate: return "Estimated asleep window"
+        // Mandatory label: estimated bars must never carry the plain
+        // "Stages · Hypnogram" authority of validated timelines.
+        case .estimatedTimeline: return AtriaSleepStageEstimateLabel.title
+        default: return "Stages · Hypnogram"
+        }
     }
 
     /// HR-only presentation intentionally has no lane/stage input. The single
@@ -466,6 +498,12 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                 .map { "\($0.stage.label) \(AtriaSleepHypnogramPresentation.durationText(minutes: $0.minutes))" }
                 .joined(separator: ", ")
             return "Sleep stages hypnogram. \(provenanceText). \(stages)."
+        case .estimatedTimeline:
+            let legend = AtriaSleepHypnogramPresentation.legend(for: segments)
+            let stages = legend
+                .map { "\($0.stage.label) \(AtriaSleepHypnogramPresentation.durationText(minutes: $0.minutes))" }
+                .joined(separator: ", ")
+            return "\(AtriaSleepStageEstimateLabel.title). \(AtriaSleepStageEstimateLabel.caption) \(provenanceText). \(stages)."
         case .estimate:
             let heartRate = Self.measuredHeartRateText(measuredHeartRate)
                 .map { ". \($0)" } ?? ""
