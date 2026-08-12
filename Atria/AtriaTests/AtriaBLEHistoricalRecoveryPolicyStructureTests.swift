@@ -2227,6 +2227,23 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
             "suppressAutomaticRetryForParkedSequenceGapIfNeeded"
         ), "the single automatic re-arm funnel must gate on the parked ticket")
 
+        // 2026-08-13 03:47 IST physical repro: the scheduler's 8-second task
+        // out-raced the ~12-second motion activation on a fresh connection,
+        // so the once-per-connection ticket burned with no command sent. A
+        // promoted-but-unactivated workout owner defers the automatic drain;
+        // the defer dissolves on activation consumption or owner fallback.
+        let motionDefer = try XCTUnwrap(scheduler.range(
+            of: "protectedR10CleanOwnerState == .protectedLaunchPending"
+        ), "the drain scheduler must yield to a pending workout-motion bring-up")
+        let taskArm = try XCTUnwrap(scheduler.range(
+            of: "rangeLossBackfillTask = Task { @MainActor in"
+        ))
+        XCTAssertLessThan(motionDefer.lowerBound, taskArm.lowerBound,
+                          "the bring-up defer must run before any drain task is armed")
+        XCTAssertTrue(scheduler.contains(
+            "Self.protectedR10ResponseEventDataSequenceSentKey"
+        ), "the defer must dissolve once the activation command is consumed")
+
         // Parking releases scheduling ownership only: it must never clear the
         // pending gap truth, delete ledger windows, or touch live HR / the
         // workout motion lease.
