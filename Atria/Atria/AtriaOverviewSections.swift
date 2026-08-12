@@ -10461,7 +10461,11 @@ struct AtriaMetricDetailSheet: View {
         // contain saved trend observations. The hero remains truthful while
         // the chart below explains what still has to be saved.
         if trendPoints.isEmpty, let latest = sleepHistory.latestMainSleep {
-            return SleepHistorySnapshot.formatDuration(latest.duration)
+            // Show the full day's effective sleep so a second same-day main
+            // sleep is not silently dropped from the headline total before the
+            // daily metric propagates. Recovery/need keep using `latest` alone.
+            return SleepHistorySnapshot.formatDuration(
+                sleepHistory.latestMainSleepDayEffectiveDuration ?? latest.duration)
         }
         return periodHeroText(summary: preparedHistory.sleepSummary[range],
                               points: trendPoints,

@@ -4847,6 +4847,7 @@ struct AtriaHomeView: View {
                               symbol: "exclamationmark.triangle.fill",
                               accessibilityLabel: "This recovery saved \(savedRecords) records, but recovery of the missing interval is not verified.")
             case .needsAttention:
+                if let synced = syncedStatusIfCurrent(now: now) { return synced }
                 guard live.rangeLossBackfillPending else {
                     return nil
                 }
@@ -4854,6 +4855,7 @@ struct AtriaHomeView: View {
                               symbol: "exclamationmark.triangle.fill",
                               accessibilityLabel: "Some strap history is missing. The gap has not been reconciled.")
             case .idle:
+                if let synced = syncedStatusIfCurrent(now: now) { return synced }
                 if live.rangeLossBackfillPending {
                     return Status(title: "Strap data gap · history incomplete",
                                   symbol: "exclamationmark.triangle.fill",
@@ -4862,6 +4864,29 @@ struct AtriaHomeView: View {
                 return nil
             }
         }
+
+        /// A positive terminal state: the durable strap-history frontier is
+        /// current (within a few seconds of now), so there is nothing meaningful
+        /// to catch up on. This takes precedence over a lingering (likely
+        /// unrecoverable) older range-loss flag so the banner never reads as a
+        /// gap while recent history is fully synced. Returns nil when the frontier
+        /// is missing or genuinely behind — never fabricating a "synced" claim.
+        private func syncedStatusIfCurrent(now: Date) -> Status? {
+            guard let frontier = UserDefaults.standard.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+            ) as? Double, frontier > 0 else { return nil }
+            let behind = now.timeIntervalSince1970 - frontier
+            guard behind >= 0, behind <= Self.syncedFrontierWindow else { return nil }
+            return Status(title: "Synced",
+                          symbol: "checkmark.circle.fill",
+                          accessibilityLabel: "Strap history is synced through now.")
+        }
+
+        /// The durable frontier is treated as current within this window — the
+        /// user's "no more than a few seconds of gap" bar. A caught-up strap
+        /// tracks the ~1 Hz live capture, so this cleanly separates "synced" from
+        /// a minutes/hours-behind backlog.
+        static let syncedFrontierWindow: TimeInterval = 5
 
         private struct Status {
             let title: String

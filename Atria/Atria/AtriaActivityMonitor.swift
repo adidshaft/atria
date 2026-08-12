@@ -2369,6 +2369,10 @@ struct AtriaActivityMonitorTab: View {
             }
         }
         .chartXAxis { timelineXAxis(axisTicks) }
+        // Clip the plot area (and its translucent AreaMark fill) to the rounded
+        // plot surface, matching the Stress chart — without this the gradient
+        // fill and trace bleed past the graph edges.
+        .atriaGraphPlotSurface()
         .frame(height: 154)
         .chartOverlay { proxy in
             GeometryReader { geometry in

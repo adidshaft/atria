@@ -185,21 +185,23 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             }
             return "Verified complete day"
         case (.verifiedCanonical, .partial):
-            // Progress framing, not a failure grade (2026-08-08 user note): the
-            // strap motion engine IS counting; the day just fills in as more
-            // motion syncs off the strap. Keep the card copy compact while
-            // naming the exact durable frontier so the user can tell how old
-            // the subtotal is without opening diagnostics.
+            // This percent is the share of the elapsed day carrying resolved
+            // step-motion, NOT a sync-completeness grade. A user whose strap is
+            // fully synced but sedentary legitimately reads low here (few steps
+            // over a mostly-still day). Never call it "synced" — that made a
+            // caught-up user think their data had barely uploaded (2026-08-12
+            // user report). Frame it as movement share and keep the durable
+            // frontier so the subtotal's age stays visible.
             if let coverageFraction {
                 let coverage = Int((coverageFraction * 100).rounded())
                 if let capturedAt {
-                    return "\(coverage)% · through "
+                    return "Moving \(coverage)% · through "
                         + capturedAt.formatted(
                             date: .omitted,
                             time: .shortened
                         )
                 }
-                return "\(coverage)% synced"
+                return "Moving \(coverage)% of day"
             }
             return capturedAt.map {
                 "Through " + $0.formatted(date: .omitted, time: .shortened)
@@ -257,12 +259,12 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             return "\(count) steps. Verified complete day."
         case (.verifiedCanonical, .partial):
             let coverage = coverageFraction.map {
-                "\(Int(($0 * 100).rounded())) percent"
-            } ?? "partially"
+                "moving \(Int(($0 * 100).rounded())) percent of your day"
+            } ?? "partially tracked"
             let frontier = capturedAt.map {
                 ", through \($0.formatted(date: .omitted, time: .shortened))"
             } ?? ""
-            return "At least \(count) steps, \(coverage) synced from your strap\(frontier)."
+            return "At least \(count) steps, \(coverage)\(frontier)."
         case (.live, .partial):
             return "\(isValidated ? "\(count)" : "Approximately \(count)") steps today so far."
         default:
