@@ -239,6 +239,112 @@ final class AtriaSleepActivityConsistencyTests: XCTestCase {
                           "the resumed segment must not add to the day total")
     }
 
+    // MARK: - "Which is your main sleep?" (dayPrimaryChoice) honoring
+
+    // Two mains wake on the same day (early 4h, late 8h). Default: the later wake
+    // anchors the physiological cycle and the longer is canonical.
+    func testSameDayMainsDefaultToLongestAndLatestWithoutChoice() {
+        let early = sleep(id: "early", start: date(10, 23), end: date(11, 3)) // 4h
+        let late = sleep(id: "late", start: date(11, 6), end: date(11, 14))   // 8h
+        let now = date(11, 16)
+        let boundaries = AtriaPhysiologicalCycle.boundaryEligibleMainSleeps(
+            now: now, confirmedSleeps: [early, late], calendar: Self.utcCalendar)
+        XCTAssertEqual(boundaries.last?.id, "late", "latest wake anchors by default")
+        XCTAssertEqual(boundaries.count, 2)
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [early, late],
+                                            calendar: Self.utcCalendar)
+        XCTAssertEqual(snapshot.latestMainSleep?.id, "late", "longer is canonical by default")
+    }
+
+    // Choosing the EARLIER, shorter sleep as primary makes it anchor the cycle and
+    // become canonical; the later/longer main is demoted to a second sleep.
+    func testChoosingEarlierSleepAsPrimaryOverridesHeuristic() {
+        let early = sleep(id: "early", start: date(10, 23), end: date(11, 3))
+            .replacingDayPrimaryChoice(true)
+        let late = sleep(id: "late", start: date(11, 6), end: date(11, 14))
+            .replacingDayPrimaryChoice(false)
+        let now = date(11, 16)
+        let boundaries = AtriaPhysiologicalCycle.boundaryEligibleMainSleeps(
+            now: now, confirmedSleeps: [early, late], calendar: Self.utcCalendar)
+        XCTAssertFalse(boundaries.contains { $0.id == "late" },
+                       "the non-primary same-day main must not anchor its own cycle")
+        XCTAssertEqual(boundaries.last?.id, "early",
+                       "the chosen primary anchors the physiological day")
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [early, late],
+                                            calendar: Self.utcCalendar)
+        XCTAssertEqual(snapshot.latestMainSleep?.id, "early",
+                       "the chosen primary is canonical even though it is shorter")
+        XCTAssertTrue(snapshot.additionalMainNights.contains { $0.id == "late" },
+                      "the non-primary main is preserved as a second sleep")
+    }
+
+    // Choosing the later/longer sleep keeps it as anchor/canonical and demotes the
+    // earlier one out of boundary eligibility.
+    func testChoosingLaterSleepAsPrimaryDemotesEarlier() {
+        let early = sleep(id: "early", start: date(10, 23), end: date(11, 3))
+            .replacingDayPrimaryChoice(false)
+        let late = sleep(id: "late", start: date(11, 6), end: date(11, 14))
+            .replacingDayPrimaryChoice(true)
+        let now = date(11, 16)
+        let boundaries = AtriaPhysiologicalCycle.boundaryEligibleMainSleeps(
+            now: now, confirmedSleeps: [early, late], calendar: Self.utcCalendar)
+        XCTAssertEqual(boundaries.map(\.id), ["late"],
+                       "only the chosen primary is boundary-eligible")
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [early, late],
+                                            calendar: Self.utcCalendar)
+        XCTAssertEqual(snapshot.latestMainSleep?.id, "late")
+        XCTAssertTrue(snapshot.additionalMainNights.contains { $0.id == "early" })
+    }
+
+    // The additive field round-trips and defaults to nil for legacy records.
+    func testDayPrimaryChoiceCodableRoundTripAndLegacyDefault() throws {
+        let chosen = sleep(id: "chosen", start: date(10, 23), end: date(11, 7))
+            .replacingDayPrimaryChoice(true)
+        let data = try JSONEncoder().encode(chosen)
+        let restored = try JSONDecoder().decode(UserConfirmedSleep.self, from: data)
+        XCTAssertEqual(restored.dayPrimaryChoice, true)
+        // A legacy record without the key decodes to nil (no migration break).
+        let legacy = sleep(id: "legacy", start: date(10, 23), end: date(11, 7))
+        XCTAssertNil(legacy.dayPrimaryChoice)
+        let legacyData = try JSONEncoder().encode(legacy)
+        XCTAssertNil(try JSONDecoder().decode(UserConfirmedSleep.self, from: legacyData).dayPrimaryChoice)
+    }
+
+    // Detection: a day with two same-wake-day mains and no recorded choice is
+    // surfaced, longest first; once answered it stops surfacing.
+    func testPendingSameDayMainChoiceDetectionLifecycle() {
+        let early = sleep(id: "early", start: date(10, 23), end: date(11, 3)) // 4h
+        let late = sleep(id: "late", start: date(11, 6), end: date(11, 14))   // 8h
+
+        let choice = SessionStore.pendingSameDayMainSleepChoice(
+            confirmedSleeps: [early, late], calendar: Self.utcCalendar)
+        XCTAssertNotNil(choice)
+        XCTAssertEqual(choice?.options.map(\.id), ["late", "early"], "longest first")
+        XCTAssertEqual(choice?.recommendedPrimaryID, "late")
+
+        // A single-main day never prompts.
+        XCTAssertNil(SessionStore.pendingSameDayMainSleepChoice(
+            confirmedSleeps: [late], calendar: Self.utcCalendar))
+
+        // Once either main carries a choice, the day is resolved — no re-prompt.
+        let resolvedEarly = early.replacingDayPrimaryChoice(false)
+        let resolvedLate = late.replacingDayPrimaryChoice(true)
+        XCTAssertNil(SessionStore.pendingSameDayMainSleepChoice(
+            confirmedSleeps: [resolvedEarly, resolvedLate], calendar: Self.utcCalendar))
+    }
+
+    // A resumed continuation is not a second main and never triggers the prompt.
+    func testPendingSameDayMainChoiceIgnoresResumedSegments() {
+        let main = sleep(id: "main", start: date(10, 23), end: date(11, 7))
+        let resumed = sleep(id: "resumed", start: date(11, 9), end: date(11, 11),
+                            source: "resumed_sleep")
+        XCTAssertNil(SessionStore.pendingSameDayMainSleepChoice(
+            confirmedSleeps: [main, resumed], calendar: Self.utcCalendar))
+    }
+
     func testActivityCenterShowsGenuineCandidateOnlyDayAsReview() throws {
         let candidateStart = date(12, 18)
         let candidateDay = AtriaHistoryReviewCandidateDay(
