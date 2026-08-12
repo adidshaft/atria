@@ -8412,6 +8412,50 @@ final class SessionStore: ObservableObject {
     ) {
         publishStressCalibrationFenceDidRelease(reason: reason)
     }
+
+    /// Deterministic seam for launch stage-backfill tests: installs records
+    /// through the real durable save with per-save publication deferred, the
+    /// exact state the deferred session load leaves behind.
+    @discardableResult
+    func debugInstallConfirmedSleepsForTesting(
+        _ sleeps: [UserConfirmedSleep]
+    ) async -> Bool {
+        await saveConfirmedSleeps(sleeps, deferDerivedPublication: true)
+    }
+
+    /// Runs the real deferred-load stage backfill (same flags as the
+    /// `deferred_session_load` follow-up call site).
+    func debugRunConfirmedSleepStageBackfillForTesting(
+        reason: String = "debug_backfill",
+        narrowPublicationAfterCommit: Bool = true
+    ) async -> ConfirmedSleepStageBackfillOutcome {
+        await backfillConfirmedSleepStagesFromSessions(
+            reason: reason,
+            deferDerivedPublication: true,
+            narrowPublicationAfterCommit: narrowPublicationAfterCommit
+        )
+    }
+
+    /// Direct seam for the narrow post-backfill publication (the stage
+    /// derivation itself is pinned by the engine/refresh suites and was
+    /// device-proven on 2026-08-13).
+    func debugPublishDeferredStageBackfillForTesting(
+        reason: String = "debug_publication"
+    ) {
+        publishDeferredConfirmedSleepStageBackfill(reason: reason)
+    }
+
+    /// Save with an explicit stale rebase base — the exact shape a backfill
+    /// commit has when a user edit landed while its stage build was off-main.
+    @discardableResult
+    func debugSaveConfirmedSleepsWithRecoveredBaseForTesting(
+        _ sleeps: [UserConfirmedSleep],
+        base: [UserConfirmedSleep]
+    ) async -> Bool {
+        await saveConfirmedSleeps(sleeps,
+                                  deferDerivedPublication: true,
+                                  recoveredMutationBase: base)
+    }
     #endif
     /// Posted by the history "Detected activities" surface (2026-07-17) so the
     /// Home shell — which owns the guided review sheet — can present the
@@ -14173,7 +14217,7 @@ final class SessionStore: ObservableObject {
                     executionShouldContinue: {
                         authority.cooperativeShouldContinue()
                     }
-                ) else {
+                ).succeeded else {
                     if ensureCurrent("sleep_stage_after_await") {
                         failProjection(
                             "confirmed_sleep_stage_backfill_failed",
@@ -39330,6 +39374,18 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Typed result of a confirmed-sleep stage backfill so the caller can
+    /// publish (or decline to publish) the exact commit it produced instead
+    /// of guessing from a Bool. `committedConfirmedSleepsRevision` is the
+    /// store's confirmed-sleep revision immediately after the durable save
+    /// this run performed; nil when nothing was saved.
+    struct ConfirmedSleepStageBackfillOutcome {
+        let changed: Bool
+        let succeeded: Bool
+        let affectedSleepIDs: [String]
+        let committedConfirmedSleepsRevision: Int?
+    }
+
     private struct ConfirmedSleepHRVRequalificationOutcome {
         let changed: Bool
         let succeeded: Bool
@@ -40308,11 +40364,12 @@ final class SessionStore: ObservableObject {
     private func backfillConfirmedSleepStagesFromSessions(
         reason: String,
         deferDerivedPublication: Bool = false,
+        narrowPublicationAfterCommit: Bool = false,
         affectedSince: Date? = nil,
         preparedSourceSessions: [SavedSession]? = nil,
         executionShouldContinue:
             @escaping @Sendable () -> Bool = { true }
-    ) async -> Bool {
+    ) async -> ConfirmedSleepStageBackfillOutcome {
         let sourceSessions = preparedSourceSessions
             ?? canonicalSessions(includeActiveJournal: true).filter {
                 session in
@@ -40322,17 +40379,24 @@ final class SessionStore: ObservableObject {
         guard executionShouldContinue(),
               !sourceSessions.isEmpty,
               !sourceSleeps.isEmpty else {
-            return executionShouldContinue()
+            return ConfirmedSleepStageBackfillOutcome(
+                changed: false,
+                succeeded: executionShouldContinue(),
+                affectedSleepIDs: [],
+                committedConfirmedSleepsRevision: nil
+            )
         }
         let preparation: (updated: [UserConfirmedSleep], repaired: Int,
-                          totalSegments: Int)? = await withCheckedContinuation {
+                          totalSegments: Int,
+                          affectedSleepIDs: [String])? = await withCheckedContinuation {
             continuation in
             DispatchQueue.global(qos: .utility).async {
                 let prepared = AtriaTransientWorkThread.run(
                     name: "atria.recovered-sleep-stage-prepare",
                     qualityOfService: .utility
                 ) { () -> (updated: [UserConfirmedSleep], repaired: Int,
-                           totalSegments: Int)? in
+                           totalSegments: Int,
+                           affectedSleepIDs: [String])? in
                     let deadline = Self.recoveredDataExecutionDeadline(
                         shouldContinue: executionShouldContinue
                     )
@@ -40487,14 +40551,21 @@ final class SessionStore: ObservableObject {
                         }
                         try deadline.checkpoint()
                         var totalSegments = 0
+                        // `updated` is strictly parallel to `sourceSleeps` —
+                        // every branch above appends exactly one record per
+                        // input — so the affected set is a pairwise diff.
+                        var affectedSleepIDs: [String] = []
                         for (index, sleep) in updated.enumerated() {
                             if index.isMultiple(of: 32) {
                                 try deadline.checkpoint()
                             }
                             totalSegments += sleep.stageSegments?.count ?? 0
+                            if sleep != sourceSleeps[index] {
+                                affectedSleepIDs.append(sleep.id)
+                            }
                         }
                         try deadline.checkpoint()
-                        return (updated, repaired, totalSegments)
+                        return (updated, repaired, totalSegments, affectedSleepIDs)
                     } catch {
                         return nil
                     }
@@ -40502,8 +40573,22 @@ final class SessionStore: ObservableObject {
                 continuation.resume(returning: prepared)
             }
         }
-        guard let preparation, executionShouldContinue() else { return false }
-        guard preparation.repaired > 0 else { return true }
+        guard let preparation, executionShouldContinue() else {
+            return ConfirmedSleepStageBackfillOutcome(
+                changed: false,
+                succeeded: false,
+                affectedSleepIDs: [],
+                committedConfirmedSleepsRevision: nil
+            )
+        }
+        guard preparation.repaired > 0 else {
+            return ConfirmedSleepStageBackfillOutcome(
+                changed: false,
+                succeeded: true,
+                affectedSleepIDs: [],
+                committedConfirmedSleepsRevision: nil
+            )
+        }
         let saved = await saveConfirmedSleeps(
             preparation.updated,
             deferDerivedPublication: deferDerivedPublication,
@@ -40511,12 +40596,67 @@ final class SessionStore: ObservableObject {
                 ? sourceSleeps : nil,
             executionShouldContinue: executionShouldContinue
         )
-        guard saved, executionShouldContinue() else { return false }
+        guard saved, executionShouldContinue() else {
+            return ConfirmedSleepStageBackfillOutcome(
+                changed: false,
+                succeeded: false,
+                affectedSleepIDs: [],
+                committedConfirmedSleepsRevision: nil
+            )
+        }
         AtriaDebugLog("ATRIADBG sleep_stage_backfill status=updated source=%@ records=%d total_segments=%d policy=hr_samples_labeled_estimate",
                       reason,
                       preparation.repaired,
                       preparation.totalSegments)
-        return true
+        // The launch follow-up defers per-save publication (this backfill is
+        // off the first-frame path), but the user must not need a relaunch to
+        // see stages the save just committed. Republish narrowly, exactly
+        // once, from post-commit truth — synchronously on the actor, so a
+        // newer user edit can only land after (and republish over) us.
+        if narrowPublicationAfterCommit {
+            publishDeferredConfirmedSleepStageBackfill(reason: reason)
+        }
+        return ConfirmedSleepStageBackfillOutcome(
+            changed: true,
+            succeeded: true,
+            affectedSleepIDs: preparation.affectedSleepIDs,
+            committedConfirmedSleepsRevision: confirmedSleepsRevision
+        )
+    }
+
+    /// One narrow, current-generation derived publication after a deferred
+    /// stage-backfill commit. Rebuilds the compact sleep snapshot from the
+    /// CURRENT confirmed-sleep cache (never the backfill's stale input array),
+    /// so any user edit that raced the off-main stage build wins by
+    /// construction. The heavy full-history rebuild stays off-main behind
+    /// `refreshHistorySnapshotCache`'s own revision fences. This method never
+    /// touches archive recovery, BLE history, or a synchronous dashboard
+    /// rebuild.
+    private func publishDeferredConfirmedSleepStageBackfill(reason: String) {
+        guard canonicalMutationAllowed else {
+            AtriaDebugLog("ATRIADBG sleep_stage_backfill_publication status=skipped reason=%@ guard=restore_in_progress",
+                          reason)
+            return
+        }
+        // A live recovered-data transaction owns its own terminal publication
+        // edge; publishing under it could expose a mid-transaction image.
+        guard recoveredDataMutationTransaction.activeTicket == nil else {
+            AtriaDebugLog("ATRIADBG sleep_stage_backfill_publication status=skipped reason=%@ guard=recovered_transaction_active",
+                          reason)
+            return
+        }
+        sleepHistorySnapshot = SleepHistorySnapshot(
+            rollups: historySnapshot.rollups,
+            confirmedSleeps: cachedConfirmedSleeps,
+            dismissedCandidates: dismissedSleepCandidates
+        )
+        invalidateSleepReviewCache(
+            reason: "sleep_stage_backfill_publication",
+            scheduleRefresh: true
+        )
+        refreshHistorySnapshotCache(deferred: true)
+        AtriaDebugLog("ATRIADBG sleep_stage_backfill_publication status=published reason=%@",
+                      reason)
     }
 
     nonisolated static func recoveredMotionProvenance(
@@ -49851,9 +49991,13 @@ final class SessionStore: ObservableObject {
                           elapsedMS)
             persistDailyRollups(from: dailyMetricHistory)
         }
-        await backfillConfirmedSleepStagesFromSessions(
+        // Stages committed by this launch pass must be visible in THIS
+        // launch: the narrow republish runs after the durable save, before
+        // card settlement below re-reads the same post-commit cache.
+        _ = await backfillConfirmedSleepStagesFromSessions(
             reason: "deferred_session_load",
-            deferDerivedPublication: true
+            deferDerivedPublication: true,
+            narrowPublicationAfterCommit: true
         )
         resumeDeferredLaunchCardSettlementIfNeeded(reason: "deferred_session_load")
         AtriaDebugLog("ATRIADBG session_store_finish_checkpoint stage=card_settlement_requested sessions=%d elapsed_ms=%d",

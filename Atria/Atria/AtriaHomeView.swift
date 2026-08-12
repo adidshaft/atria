@@ -4866,18 +4866,40 @@ struct AtriaHomeView: View {
                 guard live.rangeLossBackfillPending else {
                     return nil
                 }
-                return Status(title: "Strap data gap · history incomplete",
-                              symbol: "exclamationmark.triangle.fill",
-                              accessibilityLabel: "Some strap history is missing. The gap has not been reconciled.")
+                return pendingGapStatus()
             case .idle:
                 if let synced = syncedStatusIfCurrent(now: now) { return synced }
                 if live.rangeLossBackfillPending {
-                    return Status(title: "Strap data gap · history incomplete",
-                                  symbol: "exclamationmark.triangle.fill",
-                                  accessibilityLabel: "Some strap history is missing. The gap has not been reconciled.")
+                    return pendingGapStatus()
                 }
                 return nil
             }
+        }
+
+        /// True while the automatic history recovery for the current gap set
+        /// has terminally parked on an unrepairable flash sequence
+        /// discontinuity. The gap stays visible as data-quality truth; the
+        /// copy must distinguish "still repairing" from "won't retry
+        /// automatically" and must never read as fully synced.
+        private var sequenceGapParkedTerminal: Bool {
+            UserDefaults.standard.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.sequenceGapParkedAt
+            ) != nil
+        }
+
+        private func pendingGapStatus() -> Status {
+            if sequenceGapParkedTerminal {
+                return Status(
+                    title: "Strap history gap · interval unavailable",
+                    symbol: "exclamationmark.triangle.fill",
+                    accessibilityLabel: "One historical interval on the strap could not be recovered after repeated attempts and is marked unavailable. New strap data can reopen recovery."
+                )
+            }
+            return Status(
+                title: "Strap data gap · history incomplete",
+                symbol: "exclamationmark.triangle.fill",
+                accessibilityLabel: "Some strap history is missing. The gap has not been reconciled."
+            )
         }
 
         /// A positive terminal state: the durable strap-history frontier is
@@ -4892,6 +4914,16 @@ struct AtriaHomeView: View {
             ) as? Double, frontier > 0 else { return nil }
             let behind = now.timeIntervalSince1970 - frontier
             guard behind >= 0, behind <= Self.syncedFrontierWindow else { return nil }
+            // A terminally parked older interval is excluded from "Synced":
+            // the frontier being current is true, but the claim must carry
+            // the unavailable-interval truth beside it.
+            if sequenceGapParkedTerminal {
+                return Status(
+                    title: "Synced · older interval unavailable",
+                    symbol: "checkmark.circle.fill",
+                    accessibilityLabel: "Strap history is synced through now, but one older historical interval could not be recovered after repeated attempts and is unavailable."
+                )
+            }
             return Status(title: "Synced",
                           symbol: "checkmark.circle.fill",
                           accessibilityLabel: "Strap history is synced through now.")

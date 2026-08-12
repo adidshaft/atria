@@ -346,6 +346,62 @@ extension AtriaBLEManager {
             && currentGapFingerprint == historyStartTimeoutGapFingerprint
     }
 
+    /// One flash discontinuity that never passes the two-generation replay
+    /// proof (`history_sequence_gap_unconfirmed_…` on first observation,
+    /// `history_sequence_gap_replay_mismatch_…` on every retry) gets this
+    /// many automatic drain attempts per exact gap fingerprint before the
+    /// ticket parks as a terminal unavailable interval.
+    nonisolated static let historySequenceGapAttemptBudget = 6
+
+    nonisolated static func isHistorySequenceGapFailureDetail(
+        _ detail: String
+    ) -> Bool {
+        detail.contains("history_sequence_gap_")
+    }
+
+    /// Per-fingerprint attempt accounting: the same gap set increments, a
+    /// changed gap set starts over at one. Parking triggers at the budget.
+    nonisolated static func historySequenceGapAttemptAccounting(
+        storedFingerprint: String?,
+        storedAttempts: Int,
+        currentFingerprint: String,
+        budget: Int = historySequenceGapAttemptBudget
+    ) -> (attempts: Int, parked: Bool) {
+        let attempts = storedFingerprint == currentFingerprint
+            ? max(0, storedAttempts) + 1
+            : 1
+        return (attempts, attempts >= budget)
+    }
+
+    /// True while the automatic lane must stay quiet for a terminally parked
+    /// sequence-gap ticket. Suppression requires the exact parked fingerprint
+    /// to still describe the pending gap; a changed fingerprint (new strap
+    /// evidence closed or opened windows) or a drained frontier that moved
+    /// materially past the parked frontier disarms it — those are the only
+    /// automatic paths back to one fresh attempt. Explicit user repair is
+    /// never suppressed.
+    nonisolated static func shouldSuppressAutomaticSequenceGapRetry(
+        exactGapPending: Bool,
+        explicitUserRequest: Bool,
+        currentGapFingerprint: String?,
+        parkedGapFingerprint: String?,
+        parkedFrontierUnix: Double?,
+        currentFrontierUnix: Double?,
+        minimumFrontierAdvance: TimeInterval = 60 * 60
+    ) -> Bool {
+        guard exactGapPending,
+              !explicitUserRequest,
+              let currentGapFingerprint,
+              parkedGapFingerprint != nil,
+              currentGapFingerprint == parkedGapFingerprint else { return false }
+        if let parkedFrontierUnix,
+           let currentFrontierUnix,
+           currentFrontierUnix - parkedFrontierUnix >= minimumFrontierAdvance {
+            return false
+        }
+        return true
+    }
+
     /// Migrates an install that recorded the pre-circuit-breaker timeout but
     /// did not yet persist its exact-gap marker. All timestamps must describe
     /// the same short history-owner epoch; the current newest closed gap must

@@ -311,6 +311,21 @@ extension AtriaBLEManager {
         /// until the gap fingerprint changes. Explicit user retries bypass it.
         static let noRowsGapFingerprint = "atria.offlineSync.noRowsGapFingerprint.v1"
         static let noRowsGapAt = "atria.offlineSync.noRowsGapAt.v1"
+        /// Convergence state for a drain that repeatedly dies on the same
+        /// flash sequence discontinuity (`history_sequence_gap_*`) for the
+        /// same exact durable gap set (observed re-arming 2026-08-06 →
+        /// 2026-08-13). Attempts are counted per gap fingerprint; at the
+        /// budget the ticket parks as a truthful TERMINAL unavailable
+        /// interval: pending stays true (data-quality truth, excluded from
+        /// "Synced"), but the automatic lane stops re-arming. A changed gap
+        /// fingerprint or a materially newer drained frontier mints exactly
+        /// one fresh attempt; a minute ticker, relaunch, charging edge, or
+        /// unchanged replay does not. Explicit user repair always bypasses.
+        static let sequenceGapFingerprint = "atria.offlineSync.sequenceGapFingerprint.v1"
+        static let sequenceGapAttempts = "atria.offlineSync.sequenceGapAttempts.v1"
+        static let sequenceGapParkedAt = "atria.offlineSync.sequenceGapParkedAt.v1"
+        static let sequenceGapParkedFrontierUnix = "atria.offlineSync.sequenceGapParkedFrontierUnix.v1"
+        static let sequenceGapLastReason = "atria.offlineSync.sequenceGapLastReason.v1"
         /// A confirmed full-drain request can still time out before HISTORY_START.
         /// That is not proof the strap has no data, so the gap remains pending;
         /// it is, however, enough evidence that automatic ownership must not
