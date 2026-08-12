@@ -367,6 +367,166 @@ final class AtriaHistoricalPhysiologicalCycleTests: XCTestCase {
         XCTAssertTrue(sparseCycle.usesCivilFallback)
     }
 
+    // MARK: - Display-interval marker extension (handoff-5 P0-C)
+
+    // The current physiological window starts at the anchoring wake, so the
+    // sleep the user woke from ends exactly at `interval.start`. Its row is
+    // admitted (boundary relaxation) but a marker clipped to the physiological
+    // interval collapses to zero width — the physically reproduced "saved Sleep
+    // row below the chart, empty marker band above it". The display interval
+    // reaches back to the anchor's start so the marker carries factual bounds.
+    func testCurrentWindowDisplayIntervalReachesBackToAnchorSleep() {
+        let calendar = utc
+        let anchor = sleep(id: "anchor",
+                           start: date(2026, 8, 12, 6, 15, calendar: calendar),
+                           end: date(2026, 8, 12, 15, 27, calendar: calendar))
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [anchor],
+                                            calendar: calendar)
+        let now = date(2026, 8, 12, 18, 0, calendar: calendar)
+        let window = AtriaActivityDisplayWindow.current(now: now,
+                                                        sleepHistory: snapshot,
+                                                        calendar: calendar)
+        XCTAssertEqual(window.interval.start, anchor.end,
+                       "physiological accounting still starts at the wake")
+        XCTAssertEqual(window.displayInterval.start, anchor.start,
+                       "the display reaches back to the anchoring sleep's start")
+        XCTAssertEqual(window.displayInterval.end, window.interval.end)
+
+        // Row/marker parity: the admitted boundary row clips to a non-empty
+        // span against the display interval; against the physiological interval
+        // it collapses to zero width (the old bug, kept as documentation).
+        let rows = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot,
+            pendingReview: nil,
+            interval: window.interval,
+            calendar: calendar,
+            includeStartBoundarySleep: true,
+            mainSleepOwnershipDay: nil
+        )
+        XCTAssertEqual(rows.map(\.id), [anchor.id])
+        let clippedStart = max(anchor.start, window.displayInterval.start)
+        let clippedEnd = min(anchor.end, window.displayInterval.end)
+        XCTAssertGreaterThan(clippedEnd, clippedStart,
+                             "the marker span is non-empty under the display clip")
+        let physiologicalClipEnd = min(anchor.end, window.interval.end)
+        XCTAssertLessThanOrEqual(physiologicalClipEnd, window.interval.start,
+                                 "the physiological clip alone yields no span — the pre-fix failure")
+    }
+
+    func testHistoricalWindowDisplayIntervalReachesBackToAnchorSleep() {
+        let calendar = utc
+        let first = sleep(id: "first",
+                          start: date(2026, 8, 1, 23, calendar: calendar),
+                          end: date(2026, 8, 2, 7, calendar: calendar))
+        let second = sleep(id: "second",
+                           start: date(2026, 8, 2, 23, calendar: calendar),
+                           end: date(2026, 8, 3, 7, calendar: calendar))
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [first, second],
+                                            calendar: calendar)
+        let window = AtriaActivityDisplayWindow.historical(
+            day: date(2026, 8, 2, 0, calendar: calendar),
+            sleepHistory: snapshot,
+            calendar: calendar
+        )
+        XCTAssertEqual(window.interval.start, first.end)
+        XCTAssertEqual(window.displayInterval.start, first.start,
+                       "the historical display also reaches back to the wake-day anchor")
+    }
+
+    // A rollover or civil boundary has no saved sleep to reach back to; the
+    // display interval must stay exactly the physiological interval.
+    func testDisplayIntervalUnchangedWithoutAnchorSleep() {
+        let calendar = utc
+        let anchor = sleep(id: "anchor",
+                           start: date(2026, 8, 1, 23, calendar: calendar),
+                           end: date(2026, 8, 2, 7, calendar: calendar))
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [anchor],
+                                            calendar: calendar)
+        // Aug 4 has no sleep at all: the window starts on a rollover/civil
+        // boundary, not a wake.
+        let window = AtriaActivityDisplayWindow.historical(
+            day: date(2026, 8, 4, 0, calendar: calendar),
+            sleepHistory: snapshot,
+            calendar: calendar
+        )
+        XCTAssertEqual(window.displayInterval, window.interval,
+                       "no anchor sleep, no extension — a fake full-day span is forbidden")
+    }
+
+    // Reclassifying the short overnight main to a nap moves it out of the
+    // current window (it no longer anchors anything) and into the prior
+    // wake-to-wake window by plain interval overlap — rows and markers agree
+    // because both consume the same selector and window.
+    func testNapMovesToPriorWindowAfterReclassification() {
+        let calendar = utc
+        let priorMain = sleep(id: "prior-main",
+                              start: date(2026, 8, 10, 3, 30, calendar: calendar),
+                              end: date(2026, 8, 10, 11, 55, calendar: calendar))
+        let nap = sleep(id: "nap",
+                        start: date(2026, 8, 12, 0, 58, calendar: calendar),
+                        end: date(2026, 8, 12, 3, 41, calendar: calendar),
+                        source: "user_adjusted_nap")
+        let longMain = sleep(id: "long-main",
+                             start: date(2026, 8, 12, 6, 15, calendar: calendar),
+                             end: date(2026, 8, 12, 15, 27, calendar: calendar))
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [priorMain, nap, longMain],
+                                            calendar: calendar)
+        let now = date(2026, 8, 12, 18, 0, calendar: calendar)
+
+        let current = AtriaActivityDisplayWindow.current(now: now,
+                                                         sleepHistory: snapshot,
+                                                         calendar: calendar)
+        XCTAssertEqual(current.interval.start, longMain.end,
+                       "the long main anchors the current day once the short record is a nap")
+        let currentRows = AtriaActivitySelectedDaySleeps.overlapping(
+            snapshot: snapshot,
+            pendingReview: nil,
+            interval: current.interval,
+            calendar: calendar,
+            includeStartBoundarySleep: true,
+            mainSleepOwnershipDay: nil
+        )
+        XCTAssertEqual(Set(currentRows.map(\.id)), [longMain.id],
+                       "the current day shows exactly the sleep the user woke from — no nap row")
+
+        // The nap must land on exactly one PRIOR day view. The Aug-10→Aug-12
+        // gap is split by the deterministic no-sleep rollover, so the nap's
+        // owning window is the Aug-11-labelled one — exactly the "yesterday"
+        // the user expects — and never the current day.
+        var napAppearances: [Date] = []
+        for dayOffset in 0...2 {
+            let labelDay = calendar.date(byAdding: .day,
+                                         value: dayOffset,
+                                         to: calendar.startOfDay(for: priorMain.end))!
+            let window = AtriaActivityDisplayWindow.historical(
+                day: labelDay,
+                sleepHistory: snapshot,
+                calendar: calendar
+            )
+            let rows = AtriaActivitySelectedDaySleeps.overlapping(
+                snapshot: snapshot,
+                pendingReview: nil,
+                interval: window.interval,
+                calendar: calendar,
+                mainSleepOwnershipDay: window.labelDay
+            )
+            if rows.contains(where: { $0.id == nap.id }) {
+                napAppearances.append(labelDay)
+            }
+            XCTAssertEqual(rows.filter { $0.id == nap.id }.count <= 1, true,
+                           "a day may show the nap at most once")
+        }
+        XCTAssertEqual(napAppearances.count, 1,
+                       "the nap lands on exactly one prior day view")
+        XCTAssertEqual(napAppearances.first,
+                       date(2026, 8, 11, 0, calendar: calendar),
+                       "the nap belongs to the Aug-11-labelled window — the user's 'yesterday'")
+    }
+
     private func calendar(timeZoneIdentifier: String) -> Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.locale = Locale(identifier: "en_US_POSIX")

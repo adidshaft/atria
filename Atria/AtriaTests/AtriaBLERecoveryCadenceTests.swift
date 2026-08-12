@@ -9245,10 +9245,21 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(fbBody.contains("pure_hr_fallback_no_false_qualification"))
         XCTAssertFalse(fbBody.contains("ProtectedR10CleanOwnerState.qualified.rawValue"))
         let end = try XCTUnwrap(source.range(of: "func endWorkoutMotionLease"))
-        let endBody = String(source[end.lowerBound...].prefix(2_200))
+        let endBody = String(source[end.lowerBound...].prefix(4_400))
         XCTAssertTrue(endBody.contains("workoutMotionLeaseProfileArmed = false"))
         XCTAssertTrue(endBody.contains("lease_released_before_density_proof"))
-        XCTAssertFalse(endBody.contains("ProtectedR10CleanOwnerState.qualified.rawValue"))
+        // Refined 2026-08-12 (handoff-5 P0-B): a release may restore the
+        // captured QUALIFIED state only when this bring-up (a) started from a
+        // qualified owner AND (b) never consumed its proprietary command —
+        // nothing physical changed, so the demotion was purely provisional.
+        // Any consumed command still takes the evidence-honest fallback; an
+        // unfinished density proof can never be promoted to qualified.
+        XCTAssertTrue(endBody.contains("if priorWasQualified, !commandConsumed {"),
+                      "the restore branch must require both the captured qualified state and a never-issued command")
+        XCTAssertTrue(endBody.contains("persistProtectedR10CleanOwnerFallback"),
+                      "the consumed-command case must keep the evidence-honest fallback")
+        XCTAssertTrue(source.contains("protectedR10PreBringUpOwnerWasQualifiedKey"),
+                      "the pre-bring-up owner state must be captured durably, not inferred")
         XCTAssertTrue(source.contains("status=lease_full_bring_up_armed"))
     }
 
@@ -10365,13 +10376,20 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
 
         // Released explicit leases hand v24 ownership back to the governor.
         let end = try XCTUnwrap(source.range(of: "func endWorkoutMotionLease"))
-        let endBody = String(source[end.lowerBound...].prefix(3_000))
+        let endBody = String(source[end.lowerBound...].prefix(5_200))
         XCTAssertTrue(endBody.contains("evaluateAllDayMotionGovernor(reason: \"post_lease_release\")"))
         // Both connection paths and the liveness audit evaluate the governor,
         // but dense bring-up has a separate explicit-workout/calibration gate.
         XCTAssertTrue(source.contains("evaluateAllDayMotionGovernor(reason: \"did_connect\")"))
         XCTAssertTrue(source.contains("evaluateAllDayMotionGovernor(reason: \"state_restore_connected\")"))
         XCTAssertTrue(source.contains("evaluateAllDayMotionGovernor(reason: \"\\(reason)_all_day_audit\")"))
+        // Handoff-5 P0-B: history boundaries re-evaluate the governor too, so
+        // raw catch-up ownership can no longer park the bank for hours.
+        XCTAssertTrue(source.contains("evaluateAllDayMotionGovernor(\n                    reason: \"raw_catch_up_complete\"") ||
+                      source.contains("evaluateAllDayMotionGovernor(reason: \"raw_catch_up_complete\")"),
+                      "a completed raw catch-up must hand ownership back to the governor")
+        XCTAssertTrue(source.contains("reason: \"history_terminal_\\(reason)\""),
+                      "a history terminal without live restoration must still re-evaluate the governor")
 
         let dense = try XCTUnwrap(source.range(of: "private var denseBringUpIsWanted"))
         let denseBody = String(source[dense.lowerBound...].prefix(1_000))
@@ -11048,7 +11066,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             of: "private func sendWorkoutMotionActivationPair("
         ))
         let directEnd = try XCTUnwrap(source.range(
-            of: "private func suspendWorkoutMotionLeaseForHistoricalSync()",
+            of: "private func suspendWorkoutMotionLeaseForHistoricalSync(generation: UInt64)",
             range: directStart.upperBound..<source.endIndex
         ))
         let directBody = String(source[directStart.lowerBound..<directEnd.lowerBound])

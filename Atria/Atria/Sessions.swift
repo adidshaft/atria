@@ -897,7 +897,8 @@ struct AtriaHistoricalPhysiologicalCycle: Equatable {
                                       motionValidated: false,
                                       stageSegments: night.stageSegments,
                                       eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
-                                      sleepNeedSeconds: night.sleepNeedSeconds)
+                                      sleepNeedSeconds: night.sleepNeedSeconds,
+                                      dayPrimaryChoice: night.dayPrimaryChoice)
         }
     }
 }
@@ -963,7 +964,8 @@ struct AtriaPhysiologicalDay: Equatable {
                                           motionValidated: false,
                                           stageSegments: night.stageSegments,
                                           eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
-                                          sleepNeedSeconds: night.sleepNeedSeconds)
+                                          sleepNeedSeconds: night.sleepNeedSeconds,
+                                          dayPrimaryChoice: night.dayPrimaryChoice)
             }
         return current(now: now, confirmedSleeps: boundarySleeps, calendar: calendar)
     }
@@ -10656,6 +10658,14 @@ final class SessionStore: ObservableObject {
             isRecoveredPublication: isRecoveredPublication,
             projectionScanActive: recoveredProjectionScanActive
         ) else {
+            // The deferred branch must still advance the revision fence: the
+            // inputs (confirmed sleeps, workouts, sessions) may have already
+            // changed, and an in-flight worker captured BEFORE that change
+            // would otherwise still satisfy `revision == historySnapshotRevision`
+            // and republish the pre-edit snapshot on top of the synchronous
+            // post-save image. Advancing here makes every pre-defer worker
+            // stale by construction; the re-arm below recomputes fresh.
+            historySnapshotRevision &+= 1
             if recoveredProjectionScanActive, !nonExactArchiveConsumerShouldDefer {
                 // Single heavy lane (2026-08-05): re-armed on projection
                 // failure; the publish path's own history component covers
@@ -10665,6 +10675,9 @@ final class SessionStore: ObservableObject {
                     "ATRIADBG history_snapshot status=deferred_projection_scan_active action=single_heavy_lane"
                 )
             } else {
+                // Exact-recovery deferral previously re-armed nothing; reuse the
+                // same single-lane re-arm so the refresh is not silently lost.
+                pendingHistoryRefreshDeferredByProjectionScan = true
                 AtriaDebugLog(
                     "ATRIADBG history_snapshot status=deferred_exact_recovery_projection action=preserve_shared_projection_lane"
                 )
@@ -32717,6 +32730,17 @@ final class SessionStore: ObservableObject {
                                                isNap: isNap) {
                 return existing
             }
+            // A type-only edit (sleep <-> nap, identical window) is a label
+            // decision, not new evidence. Routing it through the sensor-
+            // coverage editor re-derives everything from RESIDENT sessions and
+            // fails closed once the window's raw sessions rotate out — the user
+            // saw "Couldn't save … less than 20 minutes of data" on a window
+            // whose duration was already proven. Reclassify by cloning the
+            // durable record instead; the window gate never applies.
+            if Self.sleepReviewWindowIsUnchanged(night: night, start: start, end: end),
+               isNap != night.isNapEvidence {
+                return await reclassifyConfirmedSleepType(existing: existing, isNap: isNap)
+            }
             return await adjustConfirmedSleepWindow(existing: existing,
                                               start: start,
                                               end: end,
@@ -32745,10 +32769,82 @@ final class SessionStore: ObservableObject {
         isNap: Bool,
         tolerance: TimeInterval = 1
     ) -> Bool {
+        sleepReviewWindowIsUnchanged(night: night,
+                                     start: start,
+                                     end: end,
+                                     tolerance: tolerance)
+            && isNap == night.isNapEvidence
+    }
+
+    nonisolated static func sleepReviewWindowIsUnchanged(
+        night: SleepHistorySnapshot.Night,
+        start: Date,
+        end: Date,
+        tolerance: TimeInterval = 1
+    ) -> Bool {
         guard let originalStart = night.start, let originalEnd = night.end else { return false }
         return abs(start.timeIntervalSince(originalStart)) <= tolerance
             && abs(end.timeIntervalSince(originalEnd)) <= tolerance
-            && isNap == night.isNapEvidence
+    }
+
+    /// Reclassifies a confirmed record between sleep and nap without touching
+    /// its window. The durable evidence (duration, span, stages, metrics,
+    /// frozen need, time zone) is cloned verbatim — only the source (and
+    /// therefore the derived ID) changes, so the sensor-coverage editor and its
+    /// resident-session gate never run for a label-only decision.
+    @discardableResult
+    func reclassifyConfirmedSleepType(existing: UserConfirmedSleep,
+                                      isNap: Bool) async -> UserConfirmedSleep? {
+        let newSource = isNap ? "user_adjusted_nap" : "user_adjusted_sleep"
+        guard newSource != existing.source else { return existing }
+        let id = confirmedSleepID(start: existing.start,
+                                  end: existing.end,
+                                  source: newSource)
+        let staged = UserConfirmedSleep(id: id,
+                                        createdAt: Date(),
+                                        start: existing.start,
+                                        end: existing.end,
+                                        source: newSource,
+                                        confidence: existing.confidence,
+                                        sessions: existing.sessions,
+                                        samples: existing.samples,
+                                        avgHR: existing.avgHR,
+                                        peakHR: existing.peakHR,
+                                        restingHR: existing.restingHR,
+                                        hrv: existing.hrv,
+                                        hrvWindowCount: existing.hrvWindowCount,
+                                        respiratoryRate: existing.respiratoryRate,
+                                        duration: existing.duration,
+                                        span: existing.span,
+                                        reason: "user_reclassified from \(existing.source)",
+                                        motionSource: existing.motionSource,
+                                        motionValidated: existing.motionValidated,
+                                        stageSegments: existing.stageSegments,
+                                        eventTimeZoneIdentifier: existing.eventTimeZoneIdentifier,
+                                        sleepNeedSeconds: isNap ? nil : existing.sleepNeedSeconds,
+                                        frozenSleepNeed: isNap ? nil : existing.frozenSleepNeed,
+                                        // A nap can never be a day primary, and a
+                                        // record newly promoted to a main must not
+                                        // inherit a stale answer — the per-day
+                                        // normalization and the choice prompt own
+                                        // that decision.
+                                        dayPrimaryChoice: nil)
+        var remaining = cachedConfirmedSleeps.filter { $0.id != id && $0.id != existing.id }
+        remaining.append(staged)
+        guard await saveConfirmedSleeps(
+            remaining,
+            publishStressContext:
+                Self.sleepStressContextAuthority(existing)
+                    != Self.sleepStressContextAuthority(staged)
+        ) else { return nil }
+        refreshSleepSnapshotAfterCandidateSettlement()
+        if autoSleepLoggedBanner?.sleepID == existing.id { autoSleepLoggedBanner = nil }
+        AtriaDebugLog("ATRIADBG sleep_adjust status=reclassified id=%@ from=%@ to=%@ duration_s=%.0f",
+                      staged.id,
+                      existing.source,
+                      newSource,
+                      staged.duration)
+        return staged
     }
 
     func latestSleepReviewNightForUI(rest: Int,
@@ -37597,7 +37693,13 @@ final class SessionStore: ObservableObject {
                                         motionSource: motionSource,
                                         motionValidated: motionValidated,
                                         stageSegments: stageSegments.isEmpty ? nil : stageSegments,
-                                        eventTimeZoneIdentifier: eventTimeZoneIdentifier)
+                                        eventTimeZoneIdentifier: eventTimeZoneIdentifier,
+                                        // An edit re-mints the ID, so the answered "which is your
+                                        // main sleep?" choice must ride along or the day silently
+                                        // re-prompts. A nap can never be a day primary; the save
+                                        // path's per-day normalization clears survivors when the
+                                        // collision itself dissolves.
+                                        dayPrimaryChoice: isNap ? nil : previouslySaved?.dayPrimaryChoice)
         let confirmed: UserConfirmedSleep
         if !stageSegments.isEmpty, !AtriaSleepStageIntegrity.validates(stageSegments, for: staged) {
             AtriaDebugLog("ATRIADBG sleep_stage_integrity status=suppressed source=%@ sleep_s=%.0f span_s=%.0f segments=%d",
@@ -39427,6 +39529,59 @@ final class SessionStore: ObservableObject {
         let nextRolloverBoundary: Date?
     }
 
+    /// A "which is your main sleep?" answer is only meaningful while its day
+    /// actually holds two or more physiological main sleeps. Reclassifying a
+    /// main to a nap (or deleting one) dissolves the collision, and a stale
+    /// `dayPrimaryChoice == false` on the survivor would silently exclude it
+    /// from boundary eligibility forever — de-anchoring the physiological day,
+    /// freezing the Today ring on the old rollup, and never re-prompting. Every
+    /// durable save therefore re-derives flag validity for the final image:
+    /// days that no longer collide have their flags cleared, and a record that
+    /// is not a physiological main can never carry one.
+    nonisolated static func normalizingDayPrimaryChoices(
+        in sleeps: [UserConfirmedSleep],
+        calendar: Calendar,
+        shouldContinue: @escaping @Sendable () -> Bool
+    ) -> [UserConfirmedSleep]? {
+        guard shouldContinue() else { return nil }
+        var mainCountByDay: [Date: Int] = [:]
+        for (index, sleep) in sleeps.enumerated() {
+            if index.isMultiple(of: 32), !shouldContinue() { return nil }
+            guard sleep.source != "resumed_sleep",
+                  confirmedSleepIsPhysiologicalMainSleep(sleep) else { continue }
+            let day = EventCivilTime.day(
+                containing: sleep.end,
+                eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                outputCalendar: calendar)
+            mainCountByDay[day, default: 0] += 1
+        }
+        var normalized: [UserConfirmedSleep] = []
+        normalized.reserveCapacity(sleeps.count)
+        for (index, sleep) in sleeps.enumerated() {
+            if index.isMultiple(of: 32), !shouldContinue() { return nil }
+            guard sleep.dayPrimaryChoice != nil else {
+                normalized.append(sleep)
+                continue
+            }
+            let isMain = sleep.source != "resumed_sleep"
+                && confirmedSleepIsPhysiologicalMainSleep(sleep)
+            if !isMain {
+                normalized.append(sleep.replacingDayPrimaryChoice(nil))
+                continue
+            }
+            let day = EventCivilTime.day(
+                containing: sleep.end,
+                eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+                outputCalendar: calendar)
+            if (mainCountByDay[day] ?? 0) < 2 {
+                normalized.append(sleep.replacingDayPrimaryChoice(nil))
+            } else {
+                normalized.append(sleep)
+            }
+        }
+        return normalized
+    }
+
     nonisolated private static func prepareConfirmedSleepSave(
         base: [UserConfirmedSleep],
         desired: [UserConfirmedSleep],
@@ -39444,23 +39599,28 @@ final class SessionStore: ObservableObject {
         shouldContinue: @escaping @Sendable () -> Bool
     ) -> ConfirmedSleepSavePreparation? {
         guard shouldContinue() else { return nil }
-        let rebased: [UserConfirmedSleep]?
+        let rebasedRaw: [UserConfirmedSleep]?
         if usesRecoveredRebase {
-            rebased = rebasedRecoveredConfirmedSleepsCancellable(
+            rebasedRaw = rebasedRecoveredConfirmedSleepsCancellable(
                 base: base,
                 desired: desired,
                 current: authoritativeCurrent,
                 shouldContinue: shouldContinue
             )
         } else {
-            rebased = rebasedConfirmedSleepsCancellable(
+            rebasedRaw = rebasedConfirmedSleepsCancellable(
                 base: base,
                 desired: desired,
                 current: authoritativeCurrent,
                 shouldContinue: shouldContinue
             )
         }
-        guard let rebased else { return nil }
+        guard let rebasedUnnormalized = rebasedRaw,
+              let rebased = normalizingDayPrimaryChoices(
+                in: rebasedUnnormalized,
+                calendar: calendar,
+                shouldContinue: shouldContinue
+              ) else { return nil }
 
         var existingNeedByID: [String: TimeInterval] = [:]
         var existingSleepIDs = Set<String>()
@@ -49916,13 +50076,29 @@ final class SessionStore: ObservableObject {
         calendar: Calendar = .current,
         preserveExistingSkinTemperature: Bool = true
     ) -> Bool {
+        // A silent bail here is indistinguishable from success in the field,
+        // yet it freezes the wake day's SavedDailyMetric/rollup at its pre-edit
+        // image (the exact "stale 2h37m ring" failure). Name the guard that
+        // fired so a de-anchored physiological day is diagnosable from logs.
         guard canonicalMutationAllowed,
-              recoveredDataMutationTransaction.activeTicket == nil,
-              let canonicalSleep = AtriaPhysiologicalCycle.latestCompletedMainSleep(
-                now: now,
-                confirmedSleeps: cachedConfirmedSleeps,
-                calendar: calendar
-              ) else {
+              recoveredDataMutationTransaction.activeTicket == nil else {
+            AtriaDebugLog(
+                "ATRIADBG morning_settlement status=bailed reason=%@ guard=mutation_authority allowed=%d recovered_ticket=%d",
+                reason,
+                canonicalMutationAllowed ? 1 : 0,
+                recoveredDataMutationTransaction.activeTicket == nil ? 0 : 1
+            )
+            return false
+        }
+        guard let canonicalSleep = AtriaPhysiologicalCycle.latestCompletedMainSleep(
+            now: now,
+            confirmedSleeps: cachedConfirmedSleeps,
+            calendar: calendar
+        ) else {
+            AtriaDebugLog(
+                "ATRIADBG morning_settlement status=bailed reason=%@ guard=no_completed_main_sleep",
+                reason
+            )
             return false
         }
         let sleep = SleepHistorySnapshot(
@@ -49934,6 +50110,11 @@ final class SessionStore: ObservableObject {
         guard let projectedNight = sleep.nights.first(where: {
             $0.id == canonicalSleep.id && $0.confirmed && !$0.isNapEvidence
         }) else {
+            AtriaDebugLog(
+                "ATRIADBG morning_settlement status=bailed reason=%@ guard=canonical_sleep_not_projected id=%@",
+                reason,
+                canonicalSleep.id
+            )
             return false
         }
         let wakeDay = EventCivilTime.day(
@@ -51518,6 +51699,12 @@ struct SleepHistorySnapshot: Equatable {
         /// separate, fail-closed receipt.
         private let hasTimeAlignedResearchStageReceipt: Bool
         private let stageDurationsByStage: [SleepStageKind: TimeInterval]
+        /// The durable "which is your main sleep?" answer. Compact snapshots
+        /// must carry it so the boundary rehydrations (`AtriaPhysiologicalDay`
+        /// and the historical cycle) compute the exact same physiological-day
+        /// anchor as the durable store — without it, Activity/Today windows and
+        /// SessionStore's cycle can disagree on the same data.
+        let dayPrimaryChoice: Bool?
 
         init(id: String,
              day: Date,
@@ -51538,7 +51725,8 @@ struct SleepHistorySnapshot: Equatable {
              eventTimeZoneIdentifier: String? = nil,
              motionValidated: Bool? = nil,
              sleepNeedSeconds: TimeInterval? = nil,
-             frozenSleepNeed: AtriaSleepBudget.FrozenNeed? = nil) {
+             frozenSleepNeed: AtriaSleepBudget.FrozenNeed? = nil,
+             dayPrimaryChoice: Bool? = nil) {
             self.id = id
             self.day = day
             self.savedAt = savedAt
@@ -51560,6 +51748,7 @@ struct SleepHistorySnapshot: Equatable {
             self.frozenSleepNeed = frozenSleepNeed
             self.sleepNeedSeconds = frozenSleepNeed?.seconds
                 ?? sleepNeedSeconds.flatMap { $0 > 0 ? $0 : nil }
+            self.dayPrimaryChoice = dayPrimaryChoice
 
             let stagesPassIntegrity: Bool
             if let start, let end, !stageSegments.isEmpty {
@@ -52013,7 +52202,8 @@ struct SleepHistorySnapshot: Equatable {
                               eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
                               motionValidated: sleep.motionValidated,
                               sleepNeedSeconds: sleep.sleepNeedSeconds,
-                              frozenSleepNeed: sleep.frozenSleepNeed)
+                              frozenSleepNeed: sleep.frozenSleepNeed,
+                              dayPrimaryChoice: sleep.dayPrimaryChoice)
             // Route confirmed naps into their own list, bypassing the day-keyed dict.
             // A same-calendar-day main sleep would otherwise last-writer-wins evict the
             // nap (or vice versa), silently dropping the nap credit from sameDayNapHours.
@@ -52357,7 +52547,8 @@ struct SleepHistorySnapshot: Equatable {
             eventTimeZoneIdentifier: main.eventTimeZoneIdentifier,
             motionValidated: main.motionValidated,
             sleepNeedSeconds: main.sleepNeedSeconds,
-            frozenSleepNeed: main.frozenSleepNeed
+            frozenSleepNeed: main.frozenSleepNeed,
+            dayPrimaryChoice: main.dayPrimaryChoice
         )
     }
 
@@ -52382,7 +52573,8 @@ struct SleepHistorySnapshot: Equatable {
               eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
               motionValidated: night.motionValidated,
               sleepNeedSeconds: night.sleepNeedSeconds,
-              frozenSleepNeed: night.frozenSleepNeed)
+              frozenSleepNeed: night.frozenSleepNeed,
+              dayPrimaryChoice: night.dayPrimaryChoice)
     }
 
     private static func legacyConfirmedSleepStageCompatibility(start: Date,
