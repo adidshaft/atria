@@ -5,19 +5,48 @@ import SwiftUI
 final class AtriaLiveTabAccessoryTests: XCTestCase {
     func testWorkoutWithUnavailableHeartRateDoesNotSpeakZeroBPM() {
         let presentation = AtriaLiveTabAccessoryPresentation(heartRate: 0,
-                                                             strain: 6.4)
+                                                             strainText: "6.4")
 
         XCTAssertEqual(presentation.accessibilityLabel,
-                       "Live workout minimized. Tap to return. Heart rate unavailable, strain 6.4.")
+                       "Live workout minimized. Tap to return. Heart rate unavailable, workout strain 6.4.")
         XCTAssertFalse(presentation.accessibilityLabel.contains("0"))
     }
 
     func testWorkoutWithHeartRateSpeaksBPM() {
         let presentation = AtriaLiveTabAccessoryPresentation(heartRate: 128,
-                                                             strain: 9.1)
+                                                             strainText: "9.1")
 
         XCTAssertEqual(presentation.accessibilityLabel,
-                       "Live workout minimized. Tap to return. Heart rate 128 beats per minute, strain 9.1.")
+                       "Live workout minimized. Tap to return. Heart rate 128 beats per minute, workout strain 9.1.")
+    }
+
+    func testWorkoutWithoutStrainEvidenceSpeaksHonestPlaceholder() {
+        let presentation = AtriaLiveTabAccessoryPresentation(heartRate: 92,
+                                                             strainText: "--")
+
+        XCTAssertEqual(presentation.accessibilityLabel,
+                       "Live workout minimized. Tap to return. Heart rate 92 beats per minute, workout strain not yet available.")
+    }
+
+    // 2026-08-13 physical report: the minimized-workout pill rendered the DAY
+    // strain (3.2) beside the workout timer while the workout screen said
+    // 1.5. The pill must carry the workout projection, never the hero ring's
+    // day total.
+    func testMinimizedWorkoutPillCarriesWorkoutStrainNotDayStrain() throws {
+        let source = try String(contentsOf: sourceRoot.appendingPathComponent("Atria/AtriaHomeView.swift"),
+                                encoding: .utf8)
+        let hostStart = try XCTUnwrap(source.range(
+            of: "private struct AtriaLiveTabAccessoryHost: View {"
+        )?.lowerBound)
+        let hostEnd = try XCTUnwrap(source.range(
+            of: "private struct AtriaLiveTabAccessory: View {",
+            range: hostStart..<source.endIndex
+        )?.lowerBound)
+        let host = String(source[hostStart..<hostEnd])
+        XCTAssertTrue(host.contains("metricStore.state.strainHUDText"),
+                      "the pill must render the workout projection's strain")
+        XCTAssertFalse(host.contains("heroStore"),
+                       "the pill must not read the hero ring's day strain")
     }
 
     func testBottomAccessoryIsReservedForARealMinimizedWorkout() throws {
