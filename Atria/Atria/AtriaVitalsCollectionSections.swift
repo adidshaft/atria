@@ -6446,27 +6446,47 @@ struct AtriaSleepStageSummary: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            HStack(spacing: 6) {
                 // Per-night label: "Estimated stages · HR-only" whenever the
                 // bars below are the labeled HR-only estimate.
                 Text(night.stageDisplayLabel)
                     .font(.caption.weight(.semibold))
+                if night.isEstimatedStageDisplay {
+                    Text("Low confidence")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.12),
+                                    in: Capsule(style: .continuous))
+                }
                 Spacer(minLength: 0)
                 Text(night.evidenceLabel)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
 
-            AtriaSleepStageHypnogram(segments: night.displayStageSegments,
-                                     start: night.start,
-                                     end: night.end,
-                                     duration: night.duration)
-                .frame(height: 120)
+            // One shared stepped timeline (2026-08-13 graph convergence):
+            // this card and the sleep detail sheet render the same component,
+            // never their own drawing grammar. The former five-lane barcode
+            // Canvas is retired from this surface.
+            if let start = night.start, let end = night.end, end > start {
+                let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
+                    for: night.displayStageSegments,
+                    windowStart: start,
+                    windowEnd: end
+                )
+                AtriaSleepStageTimelineChart(
+                    runs: timeline.runs,
+                    windowStart: start,
+                    windowEnd: end,
+                    calendar: eventCalendar,
+                    isEstimate: night.isEstimatedStageDisplay,
+                    composited: timeline.composited,
+                    accessibilitySummary: stageAccessibilitySummary
+                )
                 .atriaInspectableGraph(sleepStageGraph)
-                // Full-bleed stage lanes (2026-08-05 width audit): the
-                // hypnogram escapes this card's 10pt inset; header, legend
-                // tiles, and the restorative strip keep it.
-                .padding(.horizontal, -10)
+            }
 
             if night.isEstimatedStageDisplay {
                 // Mandatory estimate caption, rendered WITH the bars: HR-only
@@ -6477,78 +6497,56 @@ struct AtriaSleepStageSummary: View, Equatable {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 112), spacing: 8)], spacing: 8) {
-                ForEach(SleepStageKind.allCases) { stage in
-                    HStack(spacing: 7) {
-                        Image(systemName: Self.symbol(for: stage))
-                            .font(.caption2.weight(.bold))
-                            .frame(width: 16, height: 16)
-
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(stage.label.uppercased())
-                                .font(.caption2.weight(.bold))
-                            Text(night.stageText(stage))
-                                .font(.caption2.weight(.semibold).monospacedDigit())
-                                .foregroundStyle(.secondary)
+            // Compact per-stage chips from the SAME integrity-gated legend the
+            // detail sheet uses (SWS folds into Deep; zero-duration stages
+            // drop out instead of rendering an empty "--" tile).
+            let legend = AtriaSleepHypnogramPresentation.legend(
+                for: night.displayStageSegments
+            )
+            if !legend.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(legend, id: \.stage) { entry in
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(color(for: entry.stage))
+                                .frame(width: 6, height: 6)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(entry.stage.label)
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundStyle(.secondary)
+                                Text("\(AtriaSleepHypnogramPresentation.durationText(minutes: entry.minutes)) · \(entry.percent)%")
+                                    .font(.caption2.weight(.semibold).monospacedDigit())
+                                    .foregroundStyle(color(for: entry.stage))
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                            }
                         }
-
-                        Spacer(minLength: 0)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 8)
-                    .background(color(for: stage).opacity(0.10),
-                                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .foregroundStyle(color(for: stage))
                 }
             }
 
-            // Restorative-sleep visualization (2026-08-05): REM + SWS + deep as
-            // the recovery-relevant share of the night, shown as a proportional
-            // stage-composition bar with a restorative callout (upgrades the
-            // former text-only strip). Pure re-presentation of the same stage
-            // evidence above; hidden when stages carry no duration. Stage
-            // aggregation lives in the computed helpers below, off the render
-            // path.
-            let stageDurations = compositionStageDurations
+            // One quiet restorative summary row — the proportional rainbow
+            // bar competed with the plot above (2026-08-13 polish).
             let totalStaged = totalStagedDuration
             let restorativeSeconds = restorativeStageSeconds
             if totalStaged > 0 {
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "bolt.heart.fill")
-                            .font(.caption2.weight(.bold))
-                        Text("RESTORATIVE SLEEP")
-                            .font(.caption2.weight(.bold))
-                        Spacer(minLength: 0)
-                        Text("\(SleepHistorySnapshot.formatDuration(restorativeSeconds)) · \(Int((restorativeSeconds / totalStaged * 100).rounded()))%")
-                            .font(.caption2.weight(.bold).monospacedDigit())
-                    }
-                    .foregroundStyle(.indigo)
-
-                    // Proportional composition: restorative stages (deep→SWS→REM)
-                    // lead, then light and awake, so the recovery share reads as
-                    // the leading block of the bar.
-                    GeometryReader { geo in
-                        let w = geo.size.width
-                        HStack(spacing: 0) {
-                            ForEach(stageDurations.filter { $0.1 > 0 }, id: \.0) { stage, seconds in
-                                color(for: stage)
-                                    .frame(width: CGFloat(seconds / totalStaged) * w)
-                            }
-                        }
-                    }
-                    .frame(height: 10)
-                    .clipShape(Capsule(style: .continuous))
-                    .accessibilityHidden(true)
-
-                    Text("REM + SWS + Deep — the recovery-relevant share of the night.")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 6) {
+                    Image(systemName: "bolt.heart.fill")
+                        .font(.caption2.weight(.bold))
+                    Text("Restorative")
+                        .font(.caption2.weight(.semibold))
+                    Spacer(minLength: 0)
+                    Text("\(SleepHistorySnapshot.formatDuration(restorativeSeconds)) · \(Int((restorativeSeconds / totalStaged * 100).rounded()))% · REM + SWS + Deep")
+                        .font(.caption2.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                 }
-                .padding(.vertical, 8)
+                .foregroundStyle(.indigo)
+                .padding(.vertical, 7)
                 .padding(.horizontal, 10)
-                .background(Color.indigo.opacity(0.08),
+                .background(Color.indigo.opacity(0.07),
                             in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
         }
@@ -6564,6 +6562,23 @@ struct AtriaSleepStageSummary: View, Equatable {
 
     // Precomputed off the render path (static-gate rule: no aggregation
     // inside `some View` blocks).
+    /// Axis clocks render in the night's own event time zone, exactly like
+    /// the sleep detail sheet.
+    private var eventCalendar: Calendar {
+        var calendar = Calendar.current
+        if let identifier = night.eventTimeZoneIdentifier,
+           let zone = TimeZone(identifier: identifier) {
+            calendar.timeZone = zone
+        }
+        return calendar
+    }
+
+    /// VoiceOver keeps the full five-stage truth (raw SWS included) even
+    /// though the plot folds SWS into Deep for display.
+    private var stageAccessibilitySummary: String {
+        "\(night.stageDisplayLabel). Awake \(night.stageText(.awake)), Light \(night.stageText(.light)), REM \(night.stageText(.rem)), SWS \(night.stageText(.sws)), Deep \(night.stageText(.deep))."
+    }
+
     private var compositionStageDurations: [(SleepStageKind, TimeInterval)] {
         Self.compositionStageOrder.map { ($0, night.stageDuration($0)) }
     }

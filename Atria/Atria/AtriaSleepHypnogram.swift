@@ -136,6 +136,129 @@ enum AtriaSleepHypnogramPresentation {
     private static let endpointClearance = 0.12
     private static let maximumInteriorTicks = 3
 
+    // MARK: - Stepped timeline runs (2026-08-13 graph-system convergence)
+
+    /// One drawn run of a display stage on the stepped timeline. Identity is
+    /// derived from stage + real wall-clock bounds — never array offsets — so
+    /// SwiftUI diffing stays stable while segments stream in.
+    struct Run: Equatable, Identifiable {
+        let stage: SleepStageKind
+        let start: Date
+        let end: Date
+        /// True when a width-aware bucket collapsed more than one raw run
+        /// into this mark. Display-only; legend totals never read runs.
+        let isComposite: Bool
+
+        var id: String {
+            "\(stage.rawValue)-\(Int(start.timeIntervalSince1970))-\(Int(end.timeIntervalSince1970))"
+        }
+
+        var duration: TimeInterval { end.timeIntervalSince(start) }
+    }
+
+    /// Exactly-adjacent same-stage spans merge losslessly (epoch outputs abut
+    /// to the second); a real gap or stage change always starts a new run.
+    private static let adjacencyTolerance: TimeInterval = 0.5
+
+    /// Clip → fold (SWS→Deep) → lossless adjacent merge → width-aware
+    /// display compositor. `composited` is true only when sub-pixel runs
+    /// were collapsed, so callers can show a "Dense estimate" cue instead of
+    /// pretending the trace became scientifically cleaner.
+    static func timelineRuns(
+        for segments: [SleepStageSegment],
+        windowStart: Date,
+        windowEnd: Date,
+        maximumMarks: Int = 96
+    ) -> (runs: [Run], composited: Bool) {
+        guard windowEnd > windowStart else { return ([], false) }
+        var merged: [Run] = []
+        for segment in segments {
+            let clippedStart = max(segment.start, windowStart)
+            let clippedEnd = min(segment.end, windowEnd)
+            guard clippedEnd > clippedStart else { continue }
+            let display = segment.stage.displayStage
+            if let last = merged.last,
+               last.stage == display,
+               clippedStart.timeIntervalSince(last.end) <= adjacencyTolerance,
+               clippedStart >= last.start {
+                merged[merged.count - 1] = Run(stage: display,
+                                               start: last.start,
+                                               end: max(last.end, clippedEnd),
+                                               isComposite: last.isComposite)
+            } else {
+                merged.append(Run(stage: display,
+                                  start: clippedStart,
+                                  end: clippedEnd,
+                                  isComposite: false))
+            }
+        }
+        guard merged.count > maximumMarks, maximumMarks > 0 else {
+            return (merged, false)
+        }
+        return (compositedRuns(merged,
+                               windowStart: windowStart,
+                               windowEnd: windowEnd,
+                               maximumMarks: maximumMarks), true)
+    }
+
+    /// Pixel-bucket compositor: each bucket takes its DOMINANT stage by
+    /// covered duration. First/last boundaries are preserved exactly, long
+    /// runs survive by dominance, and adjacent equal-stage buckets re-merge,
+    /// so the output count is bounded by `maximumMarks`.
+    private static func compositedRuns(
+        _ runs: [Run],
+        windowStart: Date,
+        windowEnd: Date,
+        maximumMarks: Int
+    ) -> [Run] {
+        guard let firstRun = runs.first, let lastRun = runs.last else { return runs }
+        let windowDuration = windowEnd.timeIntervalSince(windowStart)
+        let bucketDuration = windowDuration / Double(maximumMarks)
+        guard bucketDuration > 0 else { return runs }
+        var buckets: [(stage: SleepStageKind, start: Date, end: Date, merged: Bool)] = []
+        var runIndex = 0
+        for bucket in 0..<maximumMarks {
+            let bucketStart = windowStart.addingTimeInterval(Double(bucket) * bucketDuration)
+            let bucketEnd = bucket == maximumMarks - 1
+                ? windowEnd
+                : windowStart.addingTimeInterval(Double(bucket + 1) * bucketDuration)
+            var coverage: [SleepStageKind: TimeInterval] = [:]
+            var contributors = 0
+            var probe = runIndex
+            while probe < runs.count, runs[probe].start < bucketEnd {
+                let overlap = min(runs[probe].end, bucketEnd)
+                    .timeIntervalSince(max(runs[probe].start, bucketStart))
+                if overlap > 0 {
+                    coverage[runs[probe].stage, default: 0] += overlap
+                    contributors += 1
+                }
+                if runs[probe].end <= bucketEnd { probe += 1 } else { break }
+            }
+            runIndex = probe
+            guard let dominant = coverage.max(by: {
+                $0.value != $1.value ? $0.value < $1.value
+                    : laneIndex(for: $0.key) > laneIndex(for: $1.key)
+            })?.key else { continue }
+            if let last = buckets.last, last.stage == dominant,
+               abs(last.end.timeIntervalSince(bucketStart)) <= adjacencyTolerance {
+                buckets[buckets.count - 1].end = bucketEnd
+                buckets[buckets.count - 1].merged =
+                    buckets[buckets.count - 1].merged || contributors > 1
+            } else {
+                buckets.append((dominant, bucketStart, bucketEnd, contributors > 1))
+            }
+        }
+        guard !buckets.isEmpty else { return runs }
+        // Endpoint truth: the first mark starts exactly where the first raw
+        // run started, the last mark ends exactly where the last raw run
+        // ended — a compositor may coarsen the middle, never the edges.
+        buckets[0].start = firstRun.start
+        buckets[buckets.count - 1].end = lastRun.end
+        return buckets.map {
+            Run(stage: $0.stage, start: $0.start, end: $0.end, isComposite: $0.merged)
+        }
+    }
+
     private static func nextWholeHour(after date: Date, calendar: Calendar) -> Date? {
         let truncated = calendar.dateInterval(of: .hour, for: date)?.start ?? date
         return truncated < date
@@ -298,8 +421,9 @@ struct AtriaSleepHypnogramCard: View, Equatable {
             switch state {
             case .timeline:
                 if let start, let end {
-                    lanes(windowStart: start, windowEnd: end)
-                    axis(windowStart: start, windowEnd: end)
+                    sharedTimeline(windowStart: start,
+                                   windowEnd: end,
+                                   isEstimate: false)
                     legendTiles
                 }
             case .estimatedTimeline:
@@ -307,8 +431,9 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                 // the caption renders directly under the bars so the two are
                 // never separated from the timeline they qualify.
                 if let start, let end {
-                    lanes(windowStart: start, windowEnd: end)
-                    axis(windowStart: start, windowEnd: end)
+                    sharedTimeline(windowStart: start,
+                                   windowEnd: end,
+                                   isEstimate: true)
                     legendTiles
                     Text(AtriaSleepStageEstimateLabel.caption)
                         .font(.caption2)
@@ -398,60 +523,23 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         return "Estimate from the saved sleep window. A measured resting-HR value is unavailable, and Awake, REM, Light, and Deep are not shown without qualified motion evidence."
     }
 
-    private func lanes(windowStart: Date, windowEnd: Date) -> some View {
-        let spans = AtriaSleepHypnogramPresentation.spans(for: segments,
-                                                          windowStart: windowStart,
-                                                          windowEnd: windowEnd)
-        return VStack(spacing: 5) {
-            ForEach(Array(AtriaSleepHypnogramPresentation.lanes.enumerated()),
-                    id: \.element) { laneIndex, stage in
-                HStack(spacing: AtriaDesignTokens.Spacing.sm) {
-                    Text(stage.label)
-                        .font(.system(size: 9.5, weight: .semibold))
-                        .foregroundStyle(Self.color(for: stage))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                        .frame(width: Self.laneLabelWidth, alignment: .leading)
-
-                    GeometryReader { proxy in
-                        ZStack(alignment: .topLeading) {
-                            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                .fill(Color.primary.opacity(0.045))
-                            ForEach(Array(spans.enumerated()), id: \.offset) { _, span in
-                                if span.laneIndex == laneIndex {
-                                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                        .fill(Self.color(for: span.stage))
-                                        .frame(width: max(2, proxy.size.width * (span.endFraction - span.startFraction)),
-                                               height: Self.laneHeight)
-                                        .offset(x: proxy.size.width * span.startFraction)
-                                }
-                            }
-                        }
-                    }
-                    .frame(height: Self.laneHeight)
-                }
-            }
-        }
-    }
-
-    private func axis(windowStart: Date, windowEnd: Date) -> some View {
-        let ticks = AtriaSleepHypnogramPresentation.axisTicks(windowStart: windowStart,
-                                                              windowEnd: windowEnd,
-                                                              calendar: eventCalendar)
-        return GeometryReader { proxy in
-            ForEach(Array(ticks.enumerated()), id: \.offset) { _, tick in
-                Text(tick.label)
-                    .font(.system(size: 10, weight: .medium).monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                    .fixedSize()
-                    .position(x: min(max(proxy.size.width * tick.fraction, 16),
-                                     proxy.size.width - 16),
-                              y: proxy.size.height / 2)
-            }
-        }
-        .frame(height: 14)
-        .padding(.leading, Self.laneLabelWidth + AtriaDesignTokens.Spacing.sm)
-        .accessibilityHidden(true)
+    private func sharedTimeline(windowStart: Date,
+                                windowEnd: Date,
+                                isEstimate: Bool) -> some View {
+        let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
+            for: segments,
+            windowStart: windowStart,
+            windowEnd: windowEnd
+        )
+        return AtriaSleepStageTimelineChart(
+            runs: timeline.runs,
+            windowStart: windowStart,
+            windowEnd: windowEnd,
+            calendar: eventCalendar,
+            isEstimate: isEstimate,
+            composited: timeline.composited,
+            accessibilitySummary: accessibilityText
+        )
     }
 
     private var legendTiles: some View {
@@ -520,3 +608,314 @@ struct AtriaSleepHypnogramCard: View, Equatable {
     private static let laneHeight: CGFloat = 16
     private static let laneLabelWidth: CGFloat = 40
 }
+
+/// One shared stepped sleep-stage timeline for every hypnogram surface
+/// (2026-08-13 graph-system convergence): the sleep detail card and the
+/// Vitals sleep section render THIS, never their own drawing grammar.
+/// Four lanes top→bottom (Awake/REM/Light/Deep, SWS folded into Deep for
+/// display per the existing presentation contract), calm rounded ribbons per
+/// run, a thin vertical connector at each real transition, quiet lane bands,
+/// and real clock ticks. Scrubbing shows the exact clock range and stage with
+/// `Estimated` provenance on HR-only nights — never a clinical claim.
+struct AtriaSleepStageTimelineChart: View {
+    let runs: [AtriaSleepHypnogramPresentation.Run]
+    let windowStart: Date
+    let windowEnd: Date
+    let calendar: Calendar
+    let isEstimate: Bool
+    let composited: Bool
+    let accessibilitySummary: String
+
+    @State private var selectedRunID: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private static let laneLabelWidth: CGFloat = 42
+    private static let ribbonHeight: CGFloat = 9
+    private static let plotHeight: CGFloat = 128
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let selected = runs.first(where: { $0.id == selectedRunID }) {
+                selectionCallout(for: selected)
+            } else if composited {
+                Text(isEstimate ? "Dense estimate" : "Dense timeline")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            HStack(alignment: .top, spacing: AtriaDesignTokens.Spacing.sm) {
+                laneLabels
+                plot
+            }
+            axisRow
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilitySummary)
+    }
+
+    private var laneLabels: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(AtriaSleepHypnogramPresentation.lanes.enumerated()),
+                    id: \.element) { _, stage in
+                Text(stage.label)
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(
+                        AtriaSleepHypnogramCard.color(for: stage).opacity(0.9)
+                    )
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(maxHeight: .infinity, alignment: .center)
+            }
+        }
+        .frame(width: Self.laneLabelWidth, height: Self.plotHeight)
+    }
+
+    private var plot: some View {
+        GeometryReader { proxy in
+            Canvas { context, size in
+                drawLaneBands(in: &context, size: size)
+                drawRuns(in: &context, size: size)
+            }
+            .background(Color.primary.opacity(0.035),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+            }
+            .contentShape(Rectangle())
+            .gesture(scrubGesture(plotWidth: proxy.size.width))
+        }
+        .frame(height: Self.plotHeight)
+    }
+
+    private var axisRow: some View {
+        GeometryReader { proxy in
+            let ticks = AtriaSleepHypnogramPresentation.axisTicks(
+                windowStart: windowStart,
+                windowEnd: windowEnd,
+                calendar: calendar
+            )
+            ZStack(alignment: .topLeading) {
+                ForEach(Array(ticks.enumerated()), id: \.offset) { _, tick in
+                    Text(tick.label)
+                        .font(.system(size: 9.5, weight: .medium).monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                        .fixedSize()
+                        .alignmentGuide(.leading) { dimensions in
+                            -((proxy.size.width - Self.laneLabelWidth
+                               - AtriaDesignTokens.Spacing.sm) * tick.fraction
+                              + Self.laneLabelWidth
+                              + AtriaDesignTokens.Spacing.sm
+                              - dimensions.width * tick.fraction)
+                        }
+                }
+            }
+        }
+        .frame(height: 12)
+    }
+
+    private func selectionCallout(for run: AtriaSleepHypnogramPresentation.Run) -> some View {
+        let range = "\(AtriaSleepHypnogramPresentation.clockLabel(run.start, calendar: calendar))–\(AtriaSleepHypnogramPresentation.clockLabel(run.end, calendar: calendar))"
+        let provenance = isEstimate ? " · Estimated" : ""
+        return Text("\(range) · \(run.stage.displayStage.label)\(provenance)")
+            .font(.caption2.weight(.semibold).monospacedDigit())
+            .foregroundStyle(AtriaSleepHypnogramCard.color(for: run.stage.displayStage))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                AtriaSleepHypnogramCard.color(for: run.stage.displayStage).opacity(0.12),
+                in: Capsule(style: .continuous)
+            )
+    }
+
+    private func laneCenterY(_ laneIndex: Int, height: CGFloat) -> CGFloat {
+        let laneHeight = height / CGFloat(AtriaSleepHypnogramPresentation.lanes.count)
+        return laneHeight * (CGFloat(laneIndex) + 0.5)
+    }
+
+    private func drawLaneBands(in context: inout GraphicsContext, size: CGSize) {
+        let laneHeight = size.height / CGFloat(AtriaSleepHypnogramPresentation.lanes.count)
+        for index in AtriaSleepHypnogramPresentation.lanes.indices {
+            let y = laneHeight * CGFloat(index)
+            if index.isMultiple(of: 2) {
+                context.fill(
+                    Path(CGRect(x: 0, y: y, width: size.width, height: laneHeight)),
+                    with: .color(Color.primary.opacity(0.018))
+                )
+            }
+            var guide = Path()
+            let centerY = y + laneHeight / 2
+            guide.move(to: CGPoint(x: 0, y: centerY))
+            guide.addLine(to: CGPoint(x: size.width, y: centerY))
+            context.stroke(guide,
+                           with: .color(Color.primary.opacity(0.05)),
+                           lineWidth: 1)
+        }
+    }
+
+    private func drawRuns(in context: inout GraphicsContext, size: CGSize) {
+        let windowDuration = windowEnd.timeIntervalSince(windowStart)
+        guard windowDuration > 0 else { return }
+        func x(_ date: Date) -> CGFloat {
+            size.width * CGFloat(date.timeIntervalSince(windowStart) / windowDuration)
+        }
+        var previous: AtriaSleepHypnogramPresentation.Run?
+        for run in runs {
+            let laneIndex = AtriaSleepHypnogramPresentation.laneIndex(for: run.stage)
+            let y = laneCenterY(laneIndex, height: size.height)
+            let startX = x(run.start)
+            let endX = x(run.end)
+            // Thin connector at the real transition between consecutive runs.
+            if let previous {
+                let previousY = laneCenterY(
+                    AtriaSleepHypnogramPresentation.laneIndex(for: previous.stage),
+                    height: size.height
+                )
+                if abs(previousY - y) > 0.5,
+                   abs(x(previous.end) - startX) < 3 {
+                    var connector = Path()
+                    connector.move(to: CGPoint(x: startX, y: previousY))
+                    connector.addLine(to: CGPoint(x: startX, y: y))
+                    context.stroke(connector,
+                                   with: .color(Color.secondary.opacity(0.28)),
+                                   lineWidth: 1.25)
+                }
+            }
+            let isSelected = run.id == selectedRunID
+            var ribbon = Path()
+            ribbon.move(to: CGPoint(x: startX + Self.ribbonHeight / 2, y: y))
+            ribbon.addLine(to: CGPoint(x: max(startX + Self.ribbonHeight / 2,
+                                              endX - Self.ribbonHeight / 2), y: y))
+            context.stroke(
+                ribbon,
+                with: .color(
+                    AtriaSleepHypnogramCard.color(for: run.stage)
+                        .opacity(isSelected ? 1.0 : 0.72)
+                ),
+                style: StrokeStyle(lineWidth: Self.ribbonHeight,
+                                   lineCap: .round)
+            )
+            previous = run
+        }
+    }
+
+    private func scrubGesture(plotWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                let windowDuration = windowEnd.timeIntervalSince(windowStart)
+                guard windowDuration > 0, plotWidth > 0 else { return }
+                let fraction = Double(
+                    min(max(value.location.x / plotWidth, 0), 1)
+                )
+                let scrubbed = windowStart.addingTimeInterval(
+                    windowDuration * fraction
+                )
+                let hit = runs.first {
+                    $0.start <= scrubbed && scrubbed < $0.end
+                } ?? runs.last(where: { $0.end <= scrubbed })
+                if hit?.id != selectedRunID {
+                    selectedRunID = hit?.id
+                    #if canImport(UIKit)
+                    if !reduceMotion {
+                        UISelectionFeedbackGenerator().selectionChanged()
+                    }
+                    #endif
+                }
+            }
+            .onEnded { _ in
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(4))
+                    selectedRunID = nil
+                }
+            }
+    }
+}
+
+#if DEBUG
+// Deterministic fixtures (handoff-7 2D): the dense HR-only estimate shape
+// from the 2026-08-13 user screenshot and a calm motion-validated night.
+private enum AtriaSleepStageTimelineFixtures {
+    static let anchor = Date(timeIntervalSinceReferenceDate: 805_000_000)
+
+    static func denseEstimate() -> [SleepStageSegment] {
+        var segments: [SleepStageSegment] = []
+        var cursor: TimeInterval = 0
+        let cycle: [(SleepStageKind, TimeInterval)] = [
+            (.light, 12 * 60), (.deep, 9 * 60), (.light, 3 * 60),
+            (.rem, 8 * 60), (.deep, 14 * 60), (.rem, 2 * 60)
+        ]
+        while cursor < 9 * 3_600 {
+            for (stage, duration) in cycle where cursor < 9 * 3_600 {
+                segments.append(SleepStageSegment(
+                    id: "fixture-\(Int(cursor))",
+                    start: anchor.addingTimeInterval(cursor),
+                    end: anchor.addingTimeInterval(cursor + duration),
+                    stage: stage
+                ))
+                cursor += duration
+            }
+        }
+        return segments
+    }
+
+    static func validated() -> [SleepStageSegment] {
+        let plan: [(SleepStageKind, TimeInterval)] = [
+            (.awake, 8 * 60), (.light, 45 * 60), (.deep, 70 * 60),
+            (.light, 30 * 60), (.rem, 55 * 60), (.light, 40 * 60),
+            (.deep, 50 * 60), (.rem, 65 * 60), (.light, 35 * 60),
+            (.awake, 6 * 60)
+        ]
+        var segments: [SleepStageSegment] = []
+        var cursor: TimeInterval = 0
+        for (stage, duration) in plan {
+            segments.append(SleepStageSegment(
+                id: "validated-\(Int(cursor))",
+                start: anchor.addingTimeInterval(cursor),
+                end: anchor.addingTimeInterval(cursor + duration),
+                stage: stage
+            ))
+            cursor += duration
+        }
+        return segments
+    }
+}
+
+#Preview("Stage timeline · dense HR-only estimate") {
+    let segments = AtriaSleepStageTimelineFixtures.denseEstimate()
+    let start = AtriaSleepStageTimelineFixtures.anchor
+    let end = segments.last?.end ?? start
+    let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
+        for: segments, windowStart: start, windowEnd: end
+    )
+    return AtriaSleepStageTimelineChart(
+        runs: timeline.runs,
+        windowStart: start,
+        windowEnd: end,
+        calendar: .current,
+        isEstimate: true,
+        composited: timeline.composited,
+        accessibilitySummary: "Estimated stages, dense HR-only fixture."
+    )
+    .padding()
+}
+
+#Preview("Stage timeline · motion validated · dark") {
+    let segments = AtriaSleepStageTimelineFixtures.validated()
+    let start = AtriaSleepStageTimelineFixtures.anchor
+    let end = segments.last?.end ?? start
+    let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
+        for: segments, windowStart: start, windowEnd: end
+    )
+    return AtriaSleepStageTimelineChart(
+        runs: timeline.runs,
+        windowStart: start,
+        windowEnd: end,
+        calendar: .current,
+        isEstimate: false,
+        composited: timeline.composited,
+        accessibilitySummary: "Validated stages fixture."
+    )
+    .padding()
+    .preferredColorScheme(.dark)
+}
+#endif
+
