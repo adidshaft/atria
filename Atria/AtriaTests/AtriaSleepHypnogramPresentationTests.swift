@@ -411,4 +411,120 @@ final class AtriaSleepHypnogramPresentationTests: XCTestCase {
                        "candidates must not surface a hypnogram from History")
         XCTAssertTrue(snapshot.confirmedNights(on: date(24, 12), calendar: calendar).isEmpty)
     }
+    // MARK: - Stepped timeline runs + display compositor (handoff-7 CP2A)
+
+    private func seg(_ stage: SleepStageKind,
+                     _ startMinute: Double,
+                     _ endMinute: Double,
+                     id: String = UUID().uuidString) -> SleepStageSegment {
+        SleepStageSegment(id: id,
+                          start: base.addingTimeInterval(startMinute * 60),
+                          end: base.addingTimeInterval(endMinute * 60),
+                          stage: stage)
+    }
+
+    private var base: Date { Date(timeIntervalSinceReferenceDate: 800_000_000) }
+
+    func testAdjacentSameStageRunsMergeLosslessly() {
+        let window = (base, base.addingTimeInterval(4 * 3_600))
+        let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
+            for: [seg(.light, 0, 30), seg(.light, 30, 60), seg(.deep, 60, 90),
+                  seg(.light, 100, 120)],
+            windowStart: window.0,
+            windowEnd: window.1
+        )
+        XCTAssertFalse(timeline.composited)
+        XCTAssertEqual(timeline.runs.map(\.stage), [.light, .deep, .light])
+        XCTAssertEqual(timeline.runs[0].start, base)
+        XCTAssertEqual(timeline.runs[0].end, base.addingTimeInterval(3_600),
+                       "abutting same-stage spans merge without losing a second")
+        XCTAssertEqual(timeline.runs[2].start,
+                       base.addingTimeInterval(100 * 60),
+                       "a real gap always starts a new run — never bridged")
+    }
+
+    func testRunsClipToTheExactSleepWindow() {
+        let windowStart = base.addingTimeInterval(600)
+        let windowEnd = base.addingTimeInterval(3_000)
+        let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
+            for: [seg(.rem, -10, 20), seg(.deep, 20, 70)],
+            windowStart: windowStart,
+            windowEnd: windowEnd
+        )
+        XCTAssertEqual(timeline.runs.first?.start, windowStart)
+        XCTAssertEqual(timeline.runs.last?.end, windowEnd)
+    }
+
+    func testRunIdentityDerivesFromStageAndBoundsNotArrayOffsets() {
+        let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
+            for: [seg(.rem, 0, 30), seg(.deep, 30, 60)],
+            windowStart: base,
+            windowEnd: base.addingTimeInterval(3_600)
+        )
+        let expected = "rem-\(Int(base.timeIntervalSince1970))-\(Int(base.addingTimeInterval(1_800).timeIntervalSince1970))"
+        XCTAssertEqual(timeline.runs.first?.id, expected)
+    }
+
+    func testSWSFoldsIntoDeepAtTheRunLevel() {
+        let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
+            for: [seg(.sws, 0, 30), seg(.deep, 30, 60)],
+            windowStart: base,
+            windowEnd: base.addingTimeInterval(3_600)
+        )
+        XCTAssertEqual(timeline.runs.count, 1,
+                       "SWS and Deep are one display level; abutting spans merge")
+        XCTAssertEqual(timeline.runs.first?.stage, .deep)
+    }
+
+    func testCompositorBoundsMarksPreservesEndpointsAndLongRuns() {
+        // 480 alternating 30s spans (4h) with one solid 1h deep block.
+        var segments: [SleepStageSegment] = []
+        for index in 0..<480 {
+            segments.append(seg(index.isMultiple(of: 2) ? .light : .rem,
+                                Double(index) * 0.5,
+                                Double(index + 1) * 0.5,
+                                id: "run-\(index)"))
+        }
+        segments.append(seg(.deep, 240, 300, id: "long-deep"))
+        let windowEnd = base.addingTimeInterval(300 * 60)
+        let timeline = AtriaSleepHypnogramPresentation.timelineRuns(
+            for: segments,
+            windowStart: base,
+            windowEnd: windowEnd,
+            maximumMarks: 96
+        )
+        XCTAssertTrue(timeline.composited,
+                      "sub-pixel runs collapse into a width-aware display composite")
+        XCTAssertLessThanOrEqual(timeline.runs.count, 96)
+        XCTAssertEqual(timeline.runs.first?.start, base,
+                       "the first boundary is preserved exactly")
+        XCTAssertEqual(timeline.runs.last?.end, windowEnd,
+                       "the last boundary is preserved exactly")
+        let deepCenter = base.addingTimeInterval(270 * 60)
+        XCTAssertEqual(
+            timeline.runs.first { $0.start <= deepCenter && deepCenter < $0.end }?.stage,
+            .deep,
+            "a long visible run survives compositing by dominance"
+        )
+        // Legend totals derive from the RAW segments and are untouched by the
+        // display compositor.
+        let legend = AtriaSleepHypnogramPresentation.legend(for: segments)
+        XCTAssertEqual(legend.first { $0.stage == .deep }?.minutes, 60)
+        XCTAssertEqual(legend.first { $0.stage == .light }?.minutes, 120)
+        XCTAssertEqual(legend.first { $0.stage == .rem }?.minutes, 120)
+    }
+
+    func testDegenerateWindowsProduceNoRuns() {
+        XCTAssertTrue(AtriaSleepHypnogramPresentation.timelineRuns(
+            for: [seg(.deep, 0, 30)],
+            windowStart: base,
+            windowEnd: base
+        ).runs.isEmpty)
+        XCTAssertTrue(AtriaSleepHypnogramPresentation.timelineRuns(
+            for: [],
+            windowStart: base,
+            windowEnd: base.addingTimeInterval(3_600)
+        ).runs.isEmpty)
+    }
+
 }
