@@ -905,11 +905,170 @@ struct AtriaTodayScreen: View {
         }
     }
 
+    /// How many days back the ring hero is browsing (0 = live today). Past
+    /// days render the FROZEN daily rollup — the same settled values the
+    /// trends and detail sheets read — never a re-derived live estimate.
+    @State private var ringDayOffset = 0
+
+    private var ringBrowseDay: Date {
+        Calendar.current.date(byAdding: .day,
+                              value: -ringDayOffset,
+                              to: Calendar.current.startOfDay(for: Date()))
+            ?? Calendar.current.startOfDay(for: Date())
+    }
+
+    private var ringBrowseEntry: DailyRollupStoreEntry? {
+        guard ringDayOffset > 0 else { return nil }
+        let day = ringBrowseDay
+        return dayDescendingRollups.first {
+            Calendar.current.isDate($0.day, inSameDayAs: day)
+        }
+    }
+
+    /// The furthest back the chevron may browse: the oldest saved rollup,
+    /// capped at 30 days. Browsing past saved history shows honest "--" days
+    /// rather than inventing values, so the cap is a courtesy, not a truth gate.
+    private var ringMaxDayOffset: Int {
+        guard let oldest = dayDescendingRollups.last?.day else { return 0 }
+        let days = Calendar.current.dateComponents(
+            [.day],
+            from: Calendar.current.startOfDay(for: oldest),
+            to: Calendar.current.startOfDay(for: Date())
+        ).day ?? 0
+        return min(max(days, 0), 30)
+    }
+
+    /// A past day's ring metric from its frozen rollup. Every value is the
+    /// settled number or an honest "--"; no live estimator runs for history.
+    private func historicalRingMetric(for slot: AtriaTriRingSlot,
+                                      entry: DailyRollupStoreEntry?) -> AtriaTriRingMetric {
+        let noValue = AtriaCompactMetricPresentation.noValue
+        switch slot {
+        case .sleep:
+            let seconds = entry?.sleepSeconds
+            let value = seconds.map { AtriaMetricFormat.sleepDuration(seconds: $0) } ?? noValue
+            let performance = entry?.sleepPerformance
+            let fill = performance.map { min(max(Double($0) / 100.0, 0), 1) }
+                ?? seconds.map { min(max(($0 / 3600.0) / max(sleepGoalHours, 1), 0), 1) }
+            let tint = fill.map { AtriaTriRing.zoneTint(.sleep, percent: $0 * 100) } ?? .secondary
+            return AtriaTriRingMetric(title: "Sleep",
+                                      value: value,
+                                      detail: performance.map { "\($0)% of need" } ?? "Saved day",
+                                      systemImage: "moon.fill",
+                                      tint: tint,
+                                      fill: fill,
+                                      stateTint: fill.map { AtriaTriRing.zoneTint(.sleep, percent: $0 * 100) })
+        case .recovery:
+            let percent = entry?.recovery
+            // Recovery's hue IS its 0–100 grade (same rule as the live ring):
+            // red under 34, yellow to 66, green above.
+            let tint: Color = percent.map {
+                $0 < 34 ? .red : ($0 < 67 ? .yellow : .green)
+            } ?? .secondary
+            return AtriaTriRingMetric(title: "Recovery",
+                                      value: percent.map { "\($0)%" } ?? noValue,
+                                      detail: percent == nil ? "No saved score" : "Saved day",
+                                      systemImage: "heart.fill",
+                                      tint: tint,
+                                      fill: percent.map { min(max(Double($0) / 100.0, 0), 1) })
+        case .strain:
+            let strain = entry?.strain
+            return AtriaTriRingMetric(title: "Strain",
+                                      value: strain.map { String(format: "%.1f", $0) } ?? noValue,
+                                      detail: strain == nil ? "No saved value" : "Saved day",
+                                      systemImage: "flame.fill",
+                                      tint: Metrics.electricStrain,
+                                      fill: strain.map { min(max($0 / 21.0, 0), 1) })
+        case .hrv:
+            let ms = entry?.lnRMSSD.map { Int(exp($0).rounded()) }
+            return AtriaTriRingMetric(title: "HRV",
+                                      value: ms.map { "\($0)" } ?? noValue,
+                                      detail: ms == nil ? "No saved value" : "Saved day",
+                                      systemImage: "waveform.path.ecg",
+                                      tint: Metrics.electricHRV,
+                                      fill: nil)
+        case .rhr:
+            let rhr = entry?.rhr
+            return AtriaTriRingMetric(title: "RHR",
+                                      value: rhr.map { "\($0)" } ?? noValue,
+                                      detail: rhr == nil ? "No saved value" : "Saved day",
+                                      systemImage: "heart.circle",
+                                      tint: .red,
+                                      fill: nil)
+        }
+    }
+
+    private static let ringBrowseDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE, MMM d"
+        return formatter
+    }()
+
+    /// Compact day switcher above the rings — "in case i want to see a day
+    /// back" (2026-08-12 user request). Chevrons step whole civil days; the
+    /// label snaps back to Today on tap.
+    private var ringDayNavigation: some View {
+        HStack(spacing: 12) {
+            Button {
+                ringDayOffset = min(ringDayOffset + 1, ringMaxDayOffset)
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 36, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(ringDayOffset >= ringMaxDayOffset)
+            .accessibilityLabel("Previous day")
+
+            Button {
+                ringDayOffset = 0
+            } label: {
+                Text(ringDayOffset == 0
+                     ? "Today"
+                     : Self.ringBrowseDayFormatter.string(from: ringBrowseDay))
+                    .textCase(.uppercase)
+                    .font(.caption2.weight(.bold))
+                    .tracking(0.8)
+                    .foregroundStyle(ringDayOffset == 0 ? Color.secondary : Color.primary)
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 30)
+                    .background(.quaternary.opacity(ringDayOffset == 0 ? 0.35 : 0.6),
+                                in: Capsule(style: .continuous))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(ringDayOffset == 0)
+            .accessibilityLabel(ringDayOffset == 0
+                                ? "Showing today"
+                                : "Showing \(ringBrowseDay.formatted(date: .complete, time: .omitted)). Returns to today.")
+
+            Button {
+                ringDayOffset = max(ringDayOffset - 1, 0)
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 36, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(ringDayOffset == 0)
+            .accessibilityLabel("Next day")
+        }
+    }
+
     private var triRingHero: some View {
-        let resolvedSlots = ringSlots.map {
-            AtriaTriRingSlotContent(slot: $0, metric: metric(for: $0))
+        let browsingEntry = ringBrowseEntry
+        let resolvedSlots = ringSlots.map { slot in
+            AtriaTriRingSlotContent(
+                slot: slot,
+                metric: ringDayOffset == 0
+                    ? metric(for: slot)
+                    : historicalRingMetric(for: slot, entry: browsingEntry)
+            )
         }
         return VStack(spacing: 10) {
+            ringDayNavigation
             // Ring-metric-picker migration: each ring position resolves
             // through `ringSlots`/`metric(for:)` to whichever of the five
             // supported metrics (sleep/recovery/strain/hrv/rhr) the user
@@ -927,17 +1086,41 @@ struct AtriaTodayScreen: View {
             // contained in the small child view -- the parent no longer reads
             // any scroll state, so it stops re-evaluating on scroll entirely.
             AtriaTodayHeroShrink(minScale: Self.heroMinScale) {
-                AtriaTriRing(slots: resolvedSlots,
-                             centerValue: centerValue,
-                             centerState: centerState,
-                             // Name the center's metric (2026-08-01 ring fix):
-                             // the numeral follows the user's configurable
-                             // center pick, so "7h 42m / 96% of need" must say
-                             // it is Sleep the moment the state line doesn't.
-                             centerMetricName: centerMetricName,
-                             centerDelta: centerDeltaText,
-                             accessibilitySummary: accessibilitySummary,
-                             actions: ringActions)
+                if ringDayOffset == 0 {
+                    AtriaTriRing(slots: resolvedSlots,
+                                 centerValue: centerValue,
+                                 centerState: centerState,
+                                 // Name the center's metric (2026-08-01 ring fix):
+                                 // the numeral follows the user's configurable
+                                 // center pick, so "7h 42m / 96% of need" must say
+                                 // it is Sleep the moment the state line doesn't.
+                                 centerMetricName: centerMetricName,
+                                 centerDelta: centerDeltaText,
+                                 accessibilitySummary: accessibilitySummary,
+                                 actions: ringActions)
+                } else {
+                    // A browsed past day is a read-only frozen snapshot: the
+                    // center carries the center slot's saved value, the state
+                    // line names the day, deltas/taps stay live-only so a
+                    // detail sheet can never show today's data under
+                    // yesterday's label.
+                    let centerSlot: AtriaTriRingSlot = {
+                        switch layoutConfig.ringCenterMetric {
+                        case .sleep: return .sleep
+                        case .strain: return .strain
+                        default: return .recovery
+                        }
+                    }()
+                    let centerMetric = historicalRingMetric(for: centerSlot,
+                                                            entry: browsingEntry)
+                    AtriaTriRing(slots: resolvedSlots,
+                                 centerValue: centerMetric.value,
+                                 centerState: Self.ringBrowseDayFormatter.string(from: ringBrowseDay),
+                                 centerMetricName: centerMetric.title,
+                                 centerDelta: nil,
+                                 accessibilitySummary: "Saved metrics for \(ringBrowseDay.formatted(date: .complete, time: .omitted))",
+                                 actions: [:])
+                }
             }
             // Strain Target card removed (user's strict screen-space rule,
             // 2026-07-07): strain appeared four times on one screen. The
