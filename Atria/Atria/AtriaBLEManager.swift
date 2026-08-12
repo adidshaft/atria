@@ -26821,6 +26821,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // Same workout re-adopted after a relaunch: keep the persisted
             // activation, frame and gap accounting instead of resetting it.
             workoutMotionOwnerStartedAt = startedAt
+            // A persisted user-started workout outranks background history
+            // recovery on the RE-ADOPT path too. Physically reproduced
+            // (2026-08-12): a launch-time requalification promoted the owner
+            // to protectedLaunchPending, but the pending range-loss backfill —
+            // re-arming forever behind a history_sequence_gap protocol
+            // violation — seized the fresh connection first; the bring-up's
+            // history guard then deferred and the once-per-connection
+            // activation ticket burned without a command ever being sent, on
+            // every attempt. Yield history exactly when the workout still
+            // needs its motion bring-up (owner promoted, no command consumed);
+            // an already-qualified or fallen-back owner re-adopts untouched so
+            // routine relaunches cannot churn a healthy drain.
+            if protectedR10CleanOwner == .protectedV9,
+               protectedR10CleanOwnerState == .protectedLaunchPending,
+               !defaults.bool(
+                forKey: Self.protectedR10ResponseEventDataSequenceSentKey
+               ) {
+                yieldHistoricalTransportToExplicitWorkoutIfNeeded(
+                    reason: "\(reason)_readopt_requalify"
+                )
+            }
             scheduleWorkoutMotionLeaseEvaluation(reason: "\(reason)_readopt")
             return
         }
