@@ -319,7 +319,7 @@ struct AtriaManualSleepSheet: View {
                         HStack(alignment: .top, spacing: 10) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.orange)
-                            Text("Couldn't save \u{2014} the strap has less than 20 minutes of data inside that window. Widen the times to cover when it was worn, then try again.")
+                            Text("Couldn't save \u{2014} this window overlaps another saved sleep or nap, or the strap has less than 20 minutes of data inside it. Two activities can never overlap: adjust the times, or edit the existing record instead.")
                                 .font(.caption.weight(.semibold))
                                 .fixedSize(horizontal: false, vertical: true)
                         }

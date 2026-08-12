@@ -37509,6 +37509,26 @@ final class SessionStore: ObservableObject {
         source.hasPrefix("manual_") || source.hasPrefix("user_adjusted_")
     }
 
+    /// Strict record atomicity (2026-08-12 user decision): two saved sleep
+    /// activities can never overlap. A user save whose window intersects an
+    /// existing confirmed record — other than the one it explicitly replaces —
+    /// is rejected so overlapping duplicates (a nap saved inside a sleep, two
+    /// sleeps stacked by repeated edits) can no longer be created. Returns the
+    /// first conflicting record so callers can name it.
+    nonisolated static func firstOverlappingConfirmedSleep(
+        in existing: [UserConfirmedSleep],
+        start: Date,
+        end: Date,
+        excludingIDs: Set<String> = []
+    ) -> UserConfirmedSleep? {
+        guard end > start else { return nil }
+        return existing.first {
+            !excludingIDs.contains($0.id)
+                && $0.start < end
+                && $0.end > start
+        }
+    }
+
     /// A confirmed night the auto extend may grow in place: a real overnight sleep
     /// (not a nap) that the user did not author/edit.
     nonisolated static func isExtendableAutoNight(_ sleep: UserConfirmedSleep) -> Bool {
@@ -37553,6 +37573,14 @@ final class SessionStore: ObservableObject {
         let id = confirmedSleepID(start: start, end: end, source: sleepSource)
         let previouslySaved = cachedConfirmedSleeps.first { $0.id == id }
         var existing = cachedConfirmedSleeps.filter { $0.id != id }
+        // Strict record atomicity: two saved activities can never overlap.
+        if let conflict = Self.firstOverlappingConfirmedSleep(
+            in: existing, start: start, end: end
+        ) {
+            AtriaDebugLog("ATRIADBG sleep_manual status=rejected reason=overlaps_existing conflict=%@",
+                          conflict.id)
+            return nil
+        }
         let duration = end.timeIntervalSince(start)
         let metrics = confirmedSleepWindowMetrics(start: start, end: end, rest: rest)
         let confirmed = UserConfirmedSleep(id: id,
@@ -37667,6 +37695,18 @@ final class SessionStore: ObservableObject {
             }
             ?? cachedConfirmedSleeps.first { $0.id == id }
         var remaining = cachedConfirmedSleeps.filter { $0.id != id && (existingID == nil || $0.id != existingID) }
+        // Strict record atomicity: two saved activities can never overlap. The
+        // record being replaced is already out of `remaining`, so an edit that
+        // keeps its own window always passes; only a window intruding on a
+        // DIFFERENT saved record is rejected.
+        if let conflict = Self.firstOverlappingConfirmedSleep(
+            in: remaining, start: start, end: end
+        ) {
+            AtriaDebugLog("ATRIADBG sleep_adjust status=rejected reason=overlaps_existing conflict=%@ from_source=%@",
+                          conflict.id,
+                          fromSource)
+            return nil
+        }
         let eventTimeZoneIdentifier = previouslySaved?.eventTimeZoneIdentifier
             ?? TimeZone.current.identifier
         let staged = UserConfirmedSleep(id: id,

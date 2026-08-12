@@ -487,6 +487,27 @@ final class AtriaSleepActivityConsistencyTests: XCTestCase {
             night: night, start: record.start.addingTimeInterval(120), end: record.end))
     }
 
+    // Strict record atomicity (2026-08-12 user decision): a user save whose
+    // window intersects a DIFFERENT saved record is rejected; the record being
+    // edited never blocks itself, and touching windows (end == start) are fine.
+    func testOverlapGuardRejectsIntersectingWindowsOnly() {
+        let existing = sleep(id: "existing", start: date(12, 0, 58), end: date(12, 3, 41))
+        // Intersecting: rejected.
+        XCTAssertNotNil(SessionStore.firstOverlappingConfirmedSleep(
+            in: [existing], start: date(12, 1, 1), end: date(12, 3, 17)))
+        XCTAssertNotNil(SessionStore.firstOverlappingConfirmedSleep(
+            in: [existing], start: date(12, 3, 0), end: date(12, 6, 0)))
+        // Editing the same record: its own id is excluded, so it never blocks.
+        XCTAssertNil(SessionStore.firstOverlappingConfirmedSleep(
+            in: [existing], start: date(12, 1, 0), end: date(12, 3, 0),
+            excludingIDs: [existing.id]))
+        // Adjacent (touching) windows do not overlap.
+        XCTAssertNil(SessionStore.firstOverlappingConfirmedSleep(
+            in: [existing], start: date(12, 3, 41), end: date(12, 5, 0)))
+        XCTAssertNil(SessionStore.firstOverlappingConfirmedSleep(
+            in: [existing], start: date(11, 20, 0), end: date(12, 0, 58)))
+    }
+
     func testActivityCenterShowsGenuineCandidateOnlyDayAsReview() throws {
         let candidateStart = date(12, 18)
         let candidateDay = AtriaHistoryReviewCandidateDay(

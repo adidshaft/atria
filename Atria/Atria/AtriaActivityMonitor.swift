@@ -159,9 +159,31 @@ struct AtriaActivityDisplayWindow: Equatable {
         )
         // Only a measured wake boundary can carry an anchor sleep; rollover and
         // civil starts stay unextended by construction of `anchorSleepStart`.
+        var display = displayInterval(for: cycle.interval,
+                                      sleepHistory: sleepHistory)
+        // A civil-owned nap (a point-in-day record placed on this label date)
+        // can start before a rollover-derived window does — a 1–3 AM nap on a
+        // day whose physiological span only begins mid-morning. The chart,
+        // marker band, and signal reads must still cover it, or its row would
+        // render with a zero-width marker outside the plot.
+        let earliestCivilNap = (sleepHistory.napNights)
+            .filter { $0.confirmed }
+            .compactMap { nap -> Date? in
+                guard let start = nap.start else { return nil }
+                let civilDay = EventCivilTime.day(
+                    containing: start,
+                    eventTimeZoneIdentifier: nap.eventTimeZoneIdentifier,
+                    outputCalendar: calendar)
+                return calendar.isDate(civilDay, inSameDayAs: cycle.displayDay)
+                    ? start
+                    : nil
+            }
+            .min()
+        if let earliestCivilNap, earliestCivilNap < display.start {
+            display = DateInterval(start: earliestCivilNap, end: display.end)
+        }
         return Self(interval: cycle.interval,
-                    displayInterval: displayInterval(for: cycle.interval,
-                                                     sleepHistory: sleepHistory),
+                    displayInterval: display,
                     labelDay: cycle.displayDay,
                     isCurrentPhysiologicalDay: false,
                     historicalStartBoundary: cycle.startBoundary,
@@ -647,9 +669,30 @@ enum AtriaActivitySelectedDaySleeps {
                end <= interval.end.addingTimeInterval(1) {
                 return false
             }
+            // A confirmed NAP is a point-in-day event the user placed on a
+            // calendar date: it belongs to the civil day it STARTED (in its
+            // event time zone), never to whichever wake-to-wake window happens
+            // to span it. A 1–3 AM nap the user moved to Aug 11 must appear on
+            // the Aug 11 view, not vanish into the physiological day that began
+            // the previous morning. (Night-block naps were already excluded
+            // above and belong to the following wake's day; pending candidates
+            // keep interval overlap until settled.)
+            if let mainSleepOwnershipDay,
+               night.confirmed,
+               night.isNapEvidence {
+                let ownershipDay = night.start.map {
+                    EventCivilTime.day(
+                        containing: $0,
+                        eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
+                        outputCalendar: calendar
+                    )
+                } ?? calendar.startOfDay(for: night.day)
+                return calendar.isDate(ownershipDay,
+                                       inSameDayAs: mainSleepOwnershipDay)
+            }
             // A confirmed non-nap is a wake-boundary record. It belongs to the
             // date on which its final wake was recorded, never to every civil
-            // date overlapped by its bedtime-to-wake interval. Naps and pending
+            // date overlapped by its bedtime-to-wake interval. Pending
             // detections remain interval-overlap records as before.
             if let mainSleepOwnershipDay,
                night.confirmed,
