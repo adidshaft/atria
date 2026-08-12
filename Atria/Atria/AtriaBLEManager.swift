@@ -3290,6 +3290,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let protectedR10V8WorkoutInProcessCutoverLeaseKey = "atria.protectedR10.v8WorkoutInProcessCutoverLease"
     nonisolated private static let protectedR10CleanOwnerKey = "atria.protectedR10.cleanOwner"
     nonisolated private static let protectedR10CleanOwnerStateKey = "atria.protectedR10.cleanOwnerState"
+    /// True while a lease bring-up demoted a previously QUALIFIED owner to
+    /// `protectedLaunchPending`. Releasing the lease before this attempt issues
+    /// any proprietary command restores the qualified owner instead of latching
+    /// the near-permanent pure-HR fallback — the physically reproduced
+    /// `lease_released_before_density_proof` failure that suppressed motion on
+    /// hardware with 154k lifetime frames and a persisted qualification.
+    nonisolated private static let protectedR10PreBringUpOwnerWasQualifiedKey = "atria.protectedR10.preBringUpOwnerWasQualified"
     nonisolated private static let protectedR10CleanOwnerProofStartedAtKey = "atria.protectedR10.cleanOwnerProofStartedAt"
     nonisolated private static let protectedR10CleanOwnerFailureReasonKey = "atria.protectedR10.cleanOwnerFailureReason"
     nonisolated private static let protectedR10EarlyDisconnectsKey = "atria.protectedR10.earlyDisconnects"
@@ -4139,8 +4146,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                          forKey: protectedR10CleanOwnerStateKey)
             defaults.set(true, forKey: protectedR10StreamSuppressedKey)
             defaults.set(true, forKey: protectedR10RollbackKey)
-            defaults.set(now.timeIntervalSince1970,
-                         forKey: protectedR10FallbackAtKey)
+            // Preserve the ORIGINAL fallback clock. Stamping `now` here meant
+            // every ordinary app launch that recovered an abandoned attempt
+            // restarted the 30-minute requalification cooldown — pinning the
+            // strap in pure-HR forever for a user who opens the app regularly.
+            if defaults.object(forKey: protectedR10FallbackAtKey) == nil {
+                defaults.set(now.timeIntervalSince1970,
+                             forKey: protectedR10FallbackAtKey)
+            }
             defaults.set(false,
                          forKey: protectedR10PureHRV10InProcessCutoverKey)
             defaults.removeObject(
@@ -4671,6 +4684,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                      forKey: WorkoutMotionDefaults.activationAttemptAt)
         defaults.set(defaults.integer(forKey: WorkoutMotionDefaults.activationAttempts) + 1,
                      forKey: WorkoutMotionDefaults.activationAttempts)
+        // Capture whether this bring-up is demoting a proven owner. Until the
+        // proprietary activation command is actually consumed, nothing physical
+        // has changed — an early lease release must be able to restore the
+        // qualified state rather than destroy it.
+        defaults.set(protectedR10CleanOwnerState == .qualified,
+                     forKey: Self.protectedR10PreBringUpOwnerWasQualifiedKey)
         defaults.set(ProtectedR10CleanOwnerState.protectedLaunchPending.rawValue,
                      forKey: Self.protectedR10CleanOwnerStateKey)
         if !gate4PassiveReconnectArmed {
@@ -13279,7 +13298,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         lastHistoricalRecoveryProgressPublishAt = nil
         lastHistoricalRecoveryProgressPublishedRecords = nil
         publishHistoricalRecoveryProgressIfNeeded(now: attemptAt)
-        suspendWorkoutMotionLeaseForHistoricalSync()
+        suspendWorkoutMotionLeaseForHistoricalSync(generation: syncGeneration)
         historyRealtimeStopRequestedGeneration = nil
         historyRealtimeStopCompletedGeneration = nil
         lastProprietaryWriteCompletion = nil
@@ -15111,6 +15130,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             armWorkoutHistoricalMotionBankIfPossible(
                 reason: "history_terminal_live_restored_\(reason)"
             )
+        } else {
+            // The direct re-arm above is double-gated on a fresh same-epoch
+            // 2A37 inside the restoration deadline; any transport-loss exit
+            // gives liveRestored == false and previously re-armed NOTHING,
+            // parking the bank for the rest of the day. The governor's own
+            // guards (connection, battery, owner) decide safely here.
+            Task { @MainActor [weak self] in
+                self?.evaluateAllDayMotionGovernor(
+                    reason: "history_terminal_\(reason)"
+                )
+            }
         }
         AtriaDebugLog("ATRIADBG offline_sync status=%@ reason=%@ generation=%llu rows=%d new_rows=%d live_restored=%d terminal_and_live_restored=%d action=%@",
                       publishedCompletionStatus,
@@ -15244,6 +15274,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 queuedConnectedRawHistoryCatchUpIntent = nil
             }
             action = "complete"
+            // A completed catch-up releases raw scheduling ownership: the
+            // governor previously had no hook at this boundary, so the bank
+            // stayed disarmed until a rare connect/lease event. Re-evaluate
+            // through the normal policy (battery/owner guards unchanged).
+            Task { @MainActor [weak self] in
+                self?.evaluateAllDayMotionGovernor(
+                    reason: "raw_catch_up_complete"
+                )
+            }
         case .awaitThermalRecovery:
             connectedRawHistoryCatchUpContinuationPending = true
             connectedRawHistoryCatchUpEvaluationNotBefore = nil
@@ -26916,15 +26955,41 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let defaults = UserDefaults.standard
         if workoutMotionLeaseProfileArmed {
             // Never leave a lease-scoped bring-up pending after release. An
-            // unfinished density proof cannot be promoted back to qualified;
+            // unfinished density proof cannot be promoted back to qualified —
+            // but a bring-up that never CONSUMED its proprietary command has
+            // not touched the strap either: demoting a previously qualified
+            // owner there latched a near-permanent pure-HR fallback on healthy
+            // hardware (physical `lease_released_before_density_proof`, with
+            // 154k lifetime frames and a persisted qualification). Restore the
+            // captured qualified state in that no-command case; otherwise
             // preserve HR/RR through the same evidence-honest fallback used by
             // an explicit proof failure.
             workoutMotionLeaseProfileArmed = false
             if protectedR10CleanOwnerState == .protectedLaunchPending {
-                persistProtectedR10CleanOwnerFallback(
-                    reason: "lease_released_before_density_proof"
+                let commandConsumed = defaults.bool(
+                    forKey: Self.protectedR10ResponseEventDataSequenceSentKey
                 )
+                let priorWasQualified = defaults.bool(
+                    forKey: Self.protectedR10PreBringUpOwnerWasQualifiedKey
+                )
+                if priorWasQualified, !commandConsumed {
+                    defaults.set(
+                        ProtectedR10CleanOwnerState.qualified.rawValue,
+                        forKey: Self.protectedR10CleanOwnerStateKey
+                    )
+                    AtriaDebugLog(
+                        "ATRIADBG protected_r10 status=bring_up_abandoned_restored_qualified reason=%@ action=no_command_issued_no_fallback",
+                        reason
+                    )
+                } else {
+                    persistProtectedR10CleanOwnerFallback(
+                        reason: "lease_released_before_density_proof"
+                    )
+                }
             }
+            defaults.removeObject(
+                forKey: Self.protectedR10PreBringUpOwnerWasQualifiedKey
+            )
         }
         defaults.removeObject(forKey: WorkoutMotionDefaults.ownerStartedAt)
         defaults.removeObject(forKey: WorkoutMotionDefaults.gapStartedAt)
@@ -27291,15 +27356,28 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             workoutMotionCalibrationHoldUntil.map { now < $0 } == true
         let explicitPresentCapturePriority =
             manualWorkoutActive || calibrationHoldActive
+        // The continuation flag is a SCHEDULING latch that stays true across
+        // hours of idle retry cadence while a backlog exists — treating it as
+        // radio ownership disarmed the all-day bank for ~12k seconds of a
+        // sampled day. A slice whose next evaluation is comfortably in the
+        // future owns no radio: let the bank capture present motion in the
+        // gap; the next history slice's serve cutover reclaims it cleanly.
+        // The 60s floor keeps 2s productive chains from arm/disarm churn.
+        let rawSliceIdleWindow: TimeInterval = 60
+        let rawContinuationActivelyOwnsRadio =
+            connectedRawHistoryCatchUpContinuationPending
+                && !(connectedRawHistoryCatchUpEvaluationNotBefore.map {
+                        $0.timeIntervalSince(now) >= rawSliceIdleWindow
+                    } ?? false)
         guard !historyOnlyProbeMode,
               !freshHistoryOwnerCutoverPending,
               !Self.historicalMotionBankRearmBlockedByRawOwnership(
                 historyTransportActive: offlineHistoricalSyncInProgress,
                 rawContinuationPending:
-                    connectedRawHistoryCatchUpContinuationPending,
+                    rawContinuationActivelyOwnsRadio,
                 postHistoryRawRestorationActive:
                     postHistoryLiveRestorationGeneration != nil
-                        && connectedRawHistoryCatchUpContinuationPending,
+                        && rawContinuationActivelyOwnsRadio,
                 explicitPresentCapturePriority:
                     explicitPresentCapturePriority
               ) else {
@@ -30948,8 +31026,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     /// History owns the proprietary service as one transaction. A pending
     /// workout lease remains durable, but its discovery/command tasks must not
-    /// interleave with the history command epoch.
-    private func suspendWorkoutMotionLeaseForHistoricalSync() {
+    /// interleave with the history command epoch. The suspension is bound to
+    /// the exact history generation that requested it: a stale G1 caller
+    /// arriving after an explicit workout (G2) preempted history must not
+    /// cancel the new owner's activation tasks or revoke its step lease.
+    private func suspendWorkoutMotionLeaseForHistoricalSync(generation: UInt64) {
+        guard generation == offlineHistoricalSyncGeneration,
+              offlineHistoricalSyncInProgress else {
+            AtriaDebugLog(
+                "ATRIADBG workout_motion status=lease_suspend_rejected reason=stale_history_generation requested=%llu current=%llu in_progress=%d",
+                generation,
+                offlineHistoricalSyncGeneration,
+                offlineHistoricalSyncInProgress ? 1 : 0
+            )
+            return
+        }
         workoutMotionActivationTask?.cancel()
         workoutMotionActivationTask = nil
         workoutMotionCommandTask?.cancel()
@@ -44310,6 +44401,11 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 defaults.removeObject(
                     forKey: Self.workoutHistoricalMotionBankArmedAtKey
                 )
+                // The process-local armed bit must fall with the connection:
+                // a stale `true` short-circuits the 1 Hz accepted-HR prearm on
+                // the replacement link and suppresses all-day capture there.
+                workoutHistoricalMotionBankArmed = false
+                workoutHistoricalMotionBankArmedConnectionStartedAt = nil
                 AtriaDebugLog(
                     "ATRIADBG workout_motion_bank status=connection_epoch_closed reason=ble_disconnect at=%.3f action=durable_ticket_rearm_after_fresh_hr",
                     disconnectNow.timeIntervalSince1970

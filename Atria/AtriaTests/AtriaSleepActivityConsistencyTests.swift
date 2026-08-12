@@ -345,6 +345,148 @@ final class AtriaSleepActivityConsistencyTests: XCTestCase {
             confirmedSleeps: [main, resumed], calendar: Self.utcCalendar))
     }
 
+    // MARK: - Main→nap reclassification recomputes day ownership (handoff-5 P0-A)
+
+    // The physically reproduced topology: a short overnight main (00:58–03:41,
+    // 2.62h) plus a long daytime main (06:15–15:27) colliding on one wake day.
+    // The user answered "which is your main sleep?" with the SHORT one (the
+    // worst case), then reclassified it to a nap. Without normalization the
+    // long sleep keeps `dayPrimaryChoice == false`, is excluded from boundary
+    // eligibility forever, and the physiological day de-anchors — the exact
+    // "stale 2h37m ring / inverted Activity days" failure.
+    func testMainToNapReclassificationRecomputesDayOwnershipAtomically() throws {
+        let short = sleep(id: "short",
+                          start: date(12, 0, 58),
+                          end: date(12, 3, 41),
+                          source: "user_adjusted_sleep")
+        let long = sleep(id: "long",
+                         start: date(12, 6, 15),
+                         end: date(12, 15, 27),
+                         source: "user_adjusted_sleep")
+
+        // 1. The collision prompts.
+        XCTAssertNotNil(SessionStore.pendingSameDayMainSleepChoice(
+            confirmedSleeps: [short, long], calendar: Self.utcCalendar))
+
+        // 2. The user answers with the SHORT one as primary.
+        let answeredShort = short.replacingDayPrimaryChoice(true)
+        let answeredLong = long.replacingDayPrimaryChoice(false)
+
+        // 3. Reclassify the short main to a nap (type-only edit: same window,
+        //    new source, flag dropped — exactly what the reclassify path does).
+        let nap = UserConfirmedSleep(id: "\(Int(answeredShort.start.timeIntervalSince1970))-\(Int(answeredShort.end.timeIntervalSince1970))-user_adjusted_nap",
+                                     createdAt: Date(timeIntervalSinceReferenceDate: 0),
+                                     start: answeredShort.start,
+                                     end: answeredShort.end,
+                                     source: "user_adjusted_nap",
+                                     confidence: answeredShort.confidence,
+                                     sessions: answeredShort.sessions,
+                                     samples: answeredShort.samples,
+                                     avgHR: answeredShort.avgHR,
+                                     peakHR: answeredShort.peakHR,
+                                     restingHR: answeredShort.restingHR,
+                                     hrv: answeredShort.hrv,
+                                     hrvWindowCount: answeredShort.hrvWindowCount,
+                                     duration: answeredShort.duration,
+                                     span: answeredShort.span,
+                                     reason: "user_reclassified",
+                                     motionSource: answeredShort.motionSource,
+                                     motionValidated: answeredShort.motionValidated,
+                                     stageSegments: answeredShort.stageSegments,
+                                     eventTimeZoneIdentifier: answeredShort.eventTimeZoneIdentifier)
+
+        // 4. Every durable save normalizes: the day no longer collides, so the
+        //    survivor's stale `false` must clear.
+        let normalized = try XCTUnwrap(SessionStore.normalizingDayPrimaryChoices(
+            in: [nap, answeredLong],
+            calendar: Self.utcCalendar,
+            shouldContinue: { true }))
+        let survivedLong = try XCTUnwrap(normalized.first { $0.id == answeredLong.id })
+        XCTAssertNil(survivedLong.dayPrimaryChoice,
+                     "a dissolved collision must clear the survivor's stale answer")
+        let survivedNap = try XCTUnwrap(normalized.first { $0.source == "user_adjusted_nap" })
+        XCTAssertNil(survivedNap.dayPrimaryChoice)
+
+        // 5. The physiological anchor recomputes from the remaining main.
+        let now = date(12, 18)
+        let boundaries = AtriaPhysiologicalCycle.boundaryEligibleMainSleeps(
+            now: now, confirmedSleeps: normalized, calendar: Self.utcCalendar)
+        XCTAssertEqual(boundaries.map(\.id), [survivedLong.id],
+                       "only the long main anchors; the nap never does")
+        XCTAssertEqual(AtriaPhysiologicalCycle.current(
+            now: now, confirmedSleeps: normalized, calendar: Self.utcCalendar).start,
+            long.end,
+            "the current physiological day starts at the long sleep's wake")
+
+        // 6. The snapshot agrees: the long sleep is the canonical main, the nap
+        //    is a nap exactly once, and the ring source is the long sleep.
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: normalized,
+                                            calendar: Self.utcCalendar)
+        XCTAssertEqual(snapshot.latestMainSleep?.id, survivedLong.id)
+        XCTAssertEqual(snapshot.napNights.filter { $0.id == survivedNap.id }.count, 1)
+        XCTAssertFalse(snapshot.nights.contains { $0.id == survivedNap.id },
+                       "the nap must not occupy a canonical main slot")
+
+        // 7. Daily metrics: the wake day's recovery/sleep authority is the long
+        //    main; the nap contributes nothing to the main-sleep duration.
+        let metrics = SessionStore.makeSavedDailyMetrics(
+            rollups: [],
+            sleep: snapshot,
+            baseline: PersonalBaseline(),
+            calendar: Self.utcCalendar)
+        let wakeDay = Self.utcCalendar.startOfDay(for: long.end)
+        let metric = try XCTUnwrap(metrics.first { $0.day == wakeDay })
+        XCTAssertEqual(metric.sleepStart, long.start)
+        XCTAssertEqual(metric.sleepEnd, long.end)
+        XCTAssertEqual(try XCTUnwrap(metric.sleepDuration), long.duration, accuracy: 0.5,
+                       "the nap must not inflate or replace the main-sleep total")
+
+        // 8. No re-prompt: one main on the day means no pending choice.
+        XCTAssertNil(SessionStore.pendingSameDayMainSleepChoice(
+            confirmedSleeps: normalized, calendar: Self.utcCalendar))
+    }
+
+    // Normalization boundaries: a still-colliding day keeps its answer; flags
+    // on non-mains always clear.
+    func testDayPrimaryNormalizationKeepsValidAnswersAndClearsInvalidOnes() throws {
+        let early = sleep(id: "early", start: date(10, 23), end: date(11, 3))
+            .replacingDayPrimaryChoice(true)
+        let late = sleep(id: "late", start: date(11, 6), end: date(11, 14))
+            .replacingDayPrimaryChoice(false)
+        let kept = try XCTUnwrap(SessionStore.normalizingDayPrimaryChoices(
+            in: [early, late], calendar: Self.utcCalendar, shouldContinue: { true }))
+        XCTAssertEqual(kept.first { $0.id == "early" }?.dayPrimaryChoice, true,
+                       "a live collision keeps its recorded answer")
+        XCTAssertEqual(kept.first { $0.id == "late" }?.dayPrimaryChoice, false)
+
+        let strayNap = sleep(id: "stray", start: date(12, 13), end: date(12, 14, 30),
+                             source: "user_adjusted_nap")
+            .replacingDayPrimaryChoice(false)
+        let cleaned = try XCTUnwrap(SessionStore.normalizingDayPrimaryChoices(
+            in: [strayNap], calendar: Self.utcCalendar, shouldContinue: { true }))
+        XCTAssertNil(cleaned.first?.dayPrimaryChoice,
+                     "a nap can never carry a day-primary answer")
+    }
+
+    // A type-only edit is recognized as a window-unchanged save so it can take
+    // the clone path instead of the sensor-coverage editor.
+    func testWindowUnchangedRecognizesTypeOnlyEdits() {
+        let record = sleep(id: "rec", start: date(12, 0, 58), end: date(12, 3, 41))
+        let snapshot = SleepHistorySnapshot(rollups: [],
+                                            confirmedSleeps: [record],
+                                            calendar: Self.utcCalendar)
+        guard let night = snapshot.latestMainSleep else { return XCTFail("night missing") }
+        XCTAssertTrue(SessionStore.sleepReviewWindowIsUnchanged(
+            night: night, start: record.start, end: record.end))
+        // The combined predicate still reports "changed" for a nap flip, which
+        // routes into the reclassify path rather than the idempotent return.
+        XCTAssertFalse(SessionStore.sleepReviewSaveIsUnchanged(
+            night: night, start: record.start, end: record.end, isNap: true))
+        XCTAssertFalse(SessionStore.sleepReviewWindowIsUnchanged(
+            night: night, start: record.start.addingTimeInterval(120), end: record.end))
+    }
+
     func testActivityCenterShowsGenuineCandidateOnlyDayAsReview() throws {
         let candidateStart = date(12, 18)
         let candidateDay = AtriaHistoryReviewCandidateDay(

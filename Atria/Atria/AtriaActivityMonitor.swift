@@ -42,6 +42,13 @@ struct AtriaActivitySectionsRequestKey: Equatable {
 
 struct AtriaActivityDisplayWindow: Equatable {
     let interval: DateInterval
+    /// Presentation window for the chart, axis, marker band, and signal reads.
+    /// It equals `interval` except when a confirmed main sleep ends exactly at
+    /// the physiological start (the sleep the user woke from): the display then
+    /// reaches back to that sleep's start so its row has a factual, time-aligned
+    /// marker above the plot instead of being clipped to an empty band.
+    /// Physiological accounting (cycles, rollups, strain) keeps `interval`.
+    let displayInterval: DateInterval
     let labelDay: Date
     let isCurrentPhysiologicalDay: Bool
     /// Historical windows expose whether they came from measured wake
@@ -50,6 +57,29 @@ struct AtriaActivityDisplayWindow: Equatable {
     /// this nil.
     let historicalStartBoundary: AtriaHistoricalPhysiologicalCycle.StartBoundary?
     let historicalEndBoundary: AtriaHistoricalPhysiologicalCycle.EndBoundary?
+
+    /// The confirmed non-nap sleep whose wake anchors `boundary`, if any. Only a
+    /// factual saved record may extend the display window: a no-sleep rollover
+    /// or civil fallback has no sleep to reach back to.
+    static func anchorSleepStart(endingAt boundary: Date,
+                                 sleepHistory: SleepHistorySnapshot,
+                                 tolerance: TimeInterval = 1) -> Date? {
+        (sleepHistory.nights + sleepHistory.additionalMainNights)
+            .filter { $0.confirmed && !$0.isNapEvidence }
+            .first { night in
+                guard let end = night.end else { return false }
+                return abs(end.timeIntervalSince(boundary)) <= tolerance
+            }?
+            .start
+    }
+
+    private static func displayInterval(for interval: DateInterval,
+                                        sleepHistory: SleepHistorySnapshot) -> DateInterval {
+        guard let anchorStart = anchorSleepStart(endingAt: interval.start,
+                                                 sleepHistory: sleepHistory),
+              anchorStart < interval.start else { return interval }
+        return DateInterval(start: anchorStart, end: interval.end)
+    }
 
     static func current(now: Date,
                         sleepHistory: SleepHistorySnapshot,
@@ -62,7 +92,10 @@ struct AtriaActivityDisplayWindow: Equatable {
                                                sleepHistory: sleepHistory,
                                                calendar: calendar)
         let stableEnd = max(day.start, minuteNow)
-        return Self(interval: DateInterval(start: day.start, end: stableEnd),
+        let interval = DateInterval(start: day.start, end: stableEnd)
+        return Self(interval: interval,
+                    displayInterval: displayInterval(for: interval,
+                                                     sleepHistory: sleepHistory),
                     labelDay: day.displayDay,
                     isCurrentPhysiologicalDay: true,
                     historicalStartBoundary: nil,
@@ -77,7 +110,11 @@ struct AtriaActivityDisplayWindow: Equatable {
             sleepHistory: sleepHistory,
             calendar: calendar
         )
+        // Only a measured wake boundary can carry an anchor sleep; rollover and
+        // civil starts stay unextended by construction of `anchorSleepStart`.
         return Self(interval: cycle.interval,
+                    displayInterval: displayInterval(for: cycle.interval,
+                                                     sleepHistory: sleepHistory),
                     labelDay: cycle.displayDay,
                     isCurrentPhysiologicalDay: false,
                     historicalStartBoundary: cycle.startBoundary,
@@ -1314,6 +1351,10 @@ struct AtriaActivityMonitorTab: View {
     /// refresh boundaries.
     private struct TimelineSignalWindowKey: Hashable {
         let start: Date
+        /// Display-interval start (reaches back to the anchoring sleep). Folded
+        /// so an edit that moves the anchor re-reads the signal for the new
+        /// extended region instead of reusing a projection clipped at the wake.
+        var displayStart: Date? = nil
         let historicalEnd: Date?
         let isCurrent: Bool
         let completenessRevision: UInt64
@@ -1575,8 +1616,15 @@ struct AtriaActivityMonitorTab: View {
                 timelineDay = currentDisplayWindow.labelDay
                 viewingCurrentPhysiologicalDay = true
             } label: {
+                // The current physiological day may be LABELLED an earlier
+                // civil date (its anchoring wake happened before midnight).
+                // Rendering the bare word "Today" over an Aug-11-labelled
+                // window hid a real day-ownership inversion on device; show
+                // the factual label date whenever it is not the civil today.
                 Text(viewingCurrentPhysiologicalDay
-                     ? "Today"
+                     ? (calendar.isDateInToday(currentDisplayWindow.labelDay)
+                        ? "Today"
+                        : "Today · \(currentDisplayWindow.labelDay.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))")
                      : timelineDay.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()))
                     .textCase(.uppercase)
                     .font(.footnote.weight(.bold))
@@ -1895,6 +1943,7 @@ struct AtriaActivityMonitorTab: View {
         private var timelineSignalWindowKey: TimelineSignalWindowKey {
         let window = currentDisplayWindow
         return TimelineSignalWindowKey(start: window.interval.start,
+                                       displayStart: window.displayInterval.start,
                                        historicalEnd: window.isCurrentPhysiologicalDay ? nil : window.interval.end,
                                        isCurrent: window.isCurrentPhysiologicalDay,
                                        completenessRevision: timelineCompletenessRevision,
@@ -2037,8 +2086,10 @@ struct AtriaActivityMonitorTab: View {
         appendFreshLiveHeartRate(stressMonitorStore.liveHeartRate)
 
         let end = window.isCurrentPhysiologicalDay ? max(window.interval.end, Date()) : window.interval.end
-        let interval = DateInterval(start: window.interval.start,
-                                    end: max(end, window.interval.start.addingTimeInterval(1)))
+        // Read over the DISPLAY interval: the plot now reaches back to the
+        // anchoring sleep's start, so its HR trace must cover that region too.
+        let interval = DateInterval(start: window.displayInterval.start,
+                                    end: max(end, window.displayInterval.start.addingTimeInterval(1)))
         let snapshot = TimelineHeartRateSourceSnapshot(
             sessions: window.isCurrentPhysiologicalDay ? store.sessions : [],
             observedHeartRate: stressMonitorStore.heartRateHistory.map {
@@ -2150,8 +2201,10 @@ struct AtriaActivityMonitorTab: View {
             stressProjectionWindowKey = requestKey.window
         }
         let end = window.isCurrentPhysiologicalDay ? max(window.interval.end, Date()) : window.interval.end
-        let interval = DateInterval(start: window.interval.start,
-                                    end: max(end, window.interval.start.addingTimeInterval(1)))
+        // Match the HR read: cover the display interval so the extended plot
+        // region (the anchoring sleep) carries its measured stress trace too.
+        let interval = DateInterval(start: window.displayInterval.start,
+                                    end: max(end, window.displayInterval.start.addingTimeInterval(1)))
         let snapshot = AtriaActivityTimelineStressSourceSnapshot(
             history: stressMonitorStore.history
         )
@@ -2228,11 +2281,15 @@ struct AtriaActivityMonitorTab: View {
         let calendar = Calendar.current
         let window = currentDisplayWindow
         let liveEnd = window.isCurrentPhysiologicalDay ? max(window.interval.end, Date()) : window.interval.end
-        let plotEnd = max(liveEnd, window.interval.start.addingTimeInterval(60))
-        let plotRange = window.interval.start...plotEnd
+        // The plot spans the DISPLAY interval so the sleep the user woke from is
+        // a real, time-aligned marker (and trace region) instead of an admitted
+        // row with no marker. On days without an anchoring saved sleep the
+        // display interval equals the physiological one and nothing changes.
+        let plotEnd = max(liveEnd, window.displayInterval.start.addingTimeInterval(60))
+        let plotRange = window.displayInterval.start...plotEnd
         let spans = timelineSpans
         let axisTicks = AtriaActivityTimelineAxis.ticks(
-                                                        interval: DateInterval(start: window.interval.start,
+                                                        interval: DateInterval(start: window.displayInterval.start,
                                                                                end: plotEnd),
                                                         isCurrent: window.isCurrentPhysiologicalDay,
                                                         calendar: calendar)
@@ -2951,21 +3008,29 @@ struct AtriaActivityMonitorTab: View {
                                    detectionsRevision: detectionsRevision,
                                    reviewFingerprint: reviewFingerprint,
                                    calendar: calendar)
-            let dayStart = displayWindow.interval.start
-            let dayEnd = displayWindow.interval.end
+            // Markers clip against the DISPLAY interval, which reaches back to
+            // the anchoring sleep's start. Clipping against the physiological
+            // interval silently dropped the boundary sleep (end == start of the
+            // window), producing the visible-row / empty-marker-band mismatch.
+            let dayStart = displayWindow.displayInterval.start
+            let dayEnd = displayWindow.displayInterval.end
             let key = TimelineKey(source: source,
-                                  interval: displayWindow.interval,
+                                  interval: displayWindow.displayInterval,
                                   isCurrent: displayWindow.isCurrentPhysiologicalDay)
             if timelineKey == key {
                 return timelineValue
             }
             var spans: [TimelineSpan] = []
+            // Exactly the row list's selector arguments (makeDaySections):
+            // same interval, same ownership rule, same boundary relaxation.
+            // Any divergence here re-opens the row-without-marker bug.
             let visibleSleeps = AtriaActivitySelectedDaySleeps.overlapping(
                 snapshot: sleepSnapshot,
                 pendingReview: pendingSleepReview,
                 napReviewCandidates: napReviewCandidates,
                 interval: displayWindow.interval,
                 calendar: calendar,
+                includeStartBoundarySleep: displayWindow.isCurrentPhysiologicalDay,
                 mainSleepOwnershipDay: displayWindow.isCurrentPhysiologicalDay
                     ? nil
                     : displayWindow.labelDay
