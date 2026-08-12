@@ -10477,6 +10477,37 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           reason)
             return false
         }
+        // Terminal sequence-gap park (belt to the scheduler gate: direct
+        // callers of this method must not re-adopt the parked gap either).
+        if connectedRawHistoryCatchUpRequestAuthority == nil,
+           Self.shouldSuppressAutomaticSequenceGapRetry(
+            exactGapPending: recoverableGapPending,
+            explicitUserRequest: explicitHistoricalRequest,
+            currentGapFingerprint: gapFingerprint,
+            parkedGapFingerprint: historySequenceGapIsParked(defaults)
+                ? defaults.string(
+                    forKey: OfflineSyncDefaults.sequenceGapFingerprint
+                )
+                : nil,
+            parkedFrontierUnix: defaults.object(
+                forKey: OfflineSyncDefaults.sequenceGapParkedFrontierUnix
+            ) as? Double,
+            currentFrontierUnix: defaults.object(
+                forKey: OfflineSyncDefaults.drainedThroughUnix
+            ) as? Double
+           ) {
+            retainPendingOfflineHistoricalSyncRequest(
+                reason: reason,
+                force: force,
+                explicitRequest: false
+            )
+            defaults.set("sequence_gap_parked_retained",
+                         forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog("ATRIADBG offline_sync status=sequence_gap_parked_retained reason=%@ detail=terminal_unavailable_interval action=suppress_automatic_reentry_preserve_live_radio explicit=0",
+                          reason)
+            return false
+        }
         let rawOnlyDisconnectedRecovery = Self.shouldAttemptRawOnlyHistoricalRecovery(
             exactGapPending: recoverableGapPending,
             rawHistoryVerified: verifiedHistoryCapability,
@@ -15044,6 +15075,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }
         }
         if rangeLossResolved {
+            defaults.removeObject(forKey: OfflineSyncDefaults.sequenceGapFingerprint)
+            defaults.removeObject(forKey: OfflineSyncDefaults.sequenceGapAttempts)
+            defaults.removeObject(forKey: OfflineSyncDefaults.sequenceGapParkedAt)
+            defaults.removeObject(forKey: OfflineSyncDefaults.sequenceGapParkedFrontierUnix)
+            defaults.removeObject(forKey: OfflineSyncDefaults.sequenceGapLastReason)
             defaults.removeObject(forKey: OfflineSyncDefaults.noRowsGapFingerprint)
             defaults.removeObject(forKey: OfflineSyncDefaults.noRowsGapAt)
             defaults.removeObject(
@@ -15859,6 +15895,122 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
+    private func historySequenceGapIsParked(_ defaults: UserDefaults) -> Bool {
+        defaults.object(forKey: OfflineSyncDefaults.sequenceGapParkedAt) != nil
+    }
+
+    /// Counts one automatic drain attempt that died on a flash sequence
+    /// discontinuity, keyed by the exact durable gap fingerprint the drain was
+    /// serving. At the budget the ticket parks terminally: the gap ledger and
+    /// `rangeLossBackfillPending` remain untouched (the missing interval stays
+    /// visible data-quality truth), but the automatic re-arm lane goes quiet
+    /// until the fingerprint changes or the drained frontier materially
+    /// advances. Valid durable rows on either side of the gap are never
+    /// rewritten by parking — this is scheduling state only.
+    private func registerHistorySequenceGapDrainFailure(detail: String) {
+        let defaults = UserDefaults.standard
+        guard let fingerprint = offlineHistoricalSyncGapFingerprint else {
+            AtriaDebugLog("ATRIADBG offline_sync status=sequence_gap_attempt_unkeyed detail=%@ action=skip_accounting",
+                          detail)
+            return
+        }
+        let accounting = Self.historySequenceGapAttemptAccounting(
+            storedFingerprint: defaults.string(
+                forKey: OfflineSyncDefaults.sequenceGapFingerprint
+            ),
+            storedAttempts: defaults.integer(
+                forKey: OfflineSyncDefaults.sequenceGapAttempts
+            ),
+            currentFingerprint: fingerprint
+        )
+        defaults.set(fingerprint,
+                     forKey: OfflineSyncDefaults.sequenceGapFingerprint)
+        defaults.set(accounting.attempts,
+                     forKey: OfflineSyncDefaults.sequenceGapAttempts)
+        defaults.set(detail,
+                     forKey: OfflineSyncDefaults.sequenceGapLastReason)
+        AtriaDebugLog("ATRIADBG offline_sync status=sequence_gap_attempt_recorded attempts=%d budget=%d detail=%@",
+                      accounting.attempts,
+                      Self.historySequenceGapAttemptBudget,
+                      detail)
+        guard accounting.parked, !historySequenceGapIsParked(defaults) else {
+            return
+        }
+        defaults.set(Date().timeIntervalSince1970,
+                     forKey: OfflineSyncDefaults.sequenceGapParkedAt)
+        defaults.set(defaults.double(
+                        forKey: OfflineSyncDefaults.drainedThroughUnix
+                     ),
+                     forKey: OfflineSyncDefaults.sequenceGapParkedFrontierUnix)
+        defaults.set("sequence_gap_parked_terminal",
+                     forKey: OfflineSyncDefaults.lastStatus)
+        rangeLossBackfillTask?.cancel()
+        rangeLossBackfillTask = nil
+        rangeLossBackfillMaintenanceTickerTask?.cancel()
+        rangeLossBackfillMaintenanceTickerTask = nil
+        AtriaDebugLog("ATRIADBG offline_sync status=sequence_gap_parked_terminal attempts=%d detail=%@ action=retain_gap_release_ownership_stop_rearm",
+                      accounting.attempts,
+                      detail)
+    }
+
+    /// True when the automatic lane must stay quiet for a parked sequence-gap
+    /// ticket. When fresh evidence disarms suppression (changed fingerprint or
+    /// materially newer drained frontier), this mints exactly ONE new attempt
+    /// by unparking with the budget already spent down to its final slot.
+    private func suppressAutomaticRetryForParkedSequenceGapIfNeeded(
+        reason: String
+    ) -> Bool {
+        let defaults = UserDefaults.standard
+        guard historySequenceGapIsParked(defaults) else { return false }
+        let recoveryStartValue = defaults.object(forKey: OfflineSyncDefaults.recoveryWindowStart)
+        let recoveryEndValue = defaults.object(forKey: OfflineSyncDefaults.recoveryWindowEnd)
+        let currentFingerprint = Self.historicalGapFingerprint(
+            windows: AtriaHistoricalGapLedger.windows(defaults: defaults),
+            recoveryStart: (recoveryStartValue as? Date)
+                ?? (recoveryStartValue as? Double).map(Date.init(timeIntervalSince1970:)),
+            recoveryEnd: (recoveryEndValue as? Date)
+                ?? (recoveryEndValue as? Double).map(Date.init(timeIntervalSince1970:)),
+            requestedAt: defaults.object(forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt) as? Double
+        )
+        let suppressed = Self.shouldSuppressAutomaticSequenceGapRetry(
+            exactGapPending: defaults.bool(
+                forKey: OfflineSyncDefaults.rangeLossBackfillPending
+            ),
+            explicitUserRequest: false,
+            currentGapFingerprint: currentFingerprint,
+            parkedGapFingerprint: defaults.string(
+                forKey: OfflineSyncDefaults.sequenceGapFingerprint
+            ),
+            parkedFrontierUnix: defaults.object(
+                forKey: OfflineSyncDefaults.sequenceGapParkedFrontierUnix
+            ) as? Double,
+            currentFrontierUnix: defaults.object(
+                forKey: OfflineSyncDefaults.drainedThroughUnix
+            ) as? Double
+        )
+        if suppressed {
+            rangeLossBackfillTask?.cancel()
+            rangeLossBackfillTask = nil
+            defaults.set("sequence_gap_parked_retained",
+                         forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog("ATRIADBG offline_sync status=sequence_gap_parked_retained reason=%@ action=suppress_automatic_rearm_keep_gap_truth",
+                          reason)
+            return true
+        }
+        defaults.removeObject(forKey: OfflineSyncDefaults.sequenceGapParkedAt)
+        defaults.removeObject(
+            forKey: OfflineSyncDefaults.sequenceGapParkedFrontierUnix
+        )
+        defaults.set(
+            max(0, Self.historySequenceGapAttemptBudget - 1),
+            forKey: OfflineSyncDefaults.sequenceGapAttempts
+        )
+        AtriaDebugLog("ATRIADBG offline_sync status=sequence_gap_fresh_attempt_minted reason=%@ action=one_attempt_then_repark_unless_repaired",
+                      reason)
+        return false
+    }
+
     private func scheduleRangeLossBackfillIfNeeded(reason: String) {
         let defaults = UserDefaults.standard
         guard defaults.bool(forKey: OfflineSyncDefaults.enabled) else { return }
@@ -15875,6 +16027,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         scheduleStaleArmedRangeLossBackfillReconciliation(reason: reason)
         guard defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return }
         guard !offlineHistoricalSyncInProgress else { return }
+        // Terminal sequence-gap ticket: the gap remains truthfully pending,
+        // but the automatic lane must not re-arm for the unchanged evidence.
+        guard !suppressAutomaticRetryForParkedSequenceGapIfNeeded(
+            reason: reason
+        ) else { return }
         // Drain-keeping P3: a genuine re-arm attempt is proceeding for a real
         // backlog. Refresh the clock the maintenance ticker watches so its
         // HR-independent backstop only fires once this normal loop has gone
@@ -36927,6 +37084,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                              forKey: OfflineSyncDefaults.lastDrainFailurePersistedFrames)
                 defaults.set(historyDrain.acknowledgedBatchCount,
                              forKey: OfflineSyncDefaults.lastDrainFailureAcknowledgedBatches)
+                if case .protocolViolation(let violationDetail) = failure,
+                   Self.isHistorySequenceGapFailureDetail(violationDetail) {
+                    registerHistorySequenceGapDrainFailure(
+                        detail: violationDetail
+                    )
+                }
                 AtriaDebugLog("ATRIADBG historyDrain status=failed generation=%llu failure=%@ action=rebuild_link_without_ack_or_abort_retain_gap",
                               generation,
                               String(describing: failure))
@@ -36948,7 +37111,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                         generation: generation
                     )
                 }
-                if needsSequenceConfirmationRetry && !preservedRealtimeOwner {
+                if needsSequenceConfirmationRetry && !preservedRealtimeOwner
+                    && !historySequenceGapIsParked(defaults) {
                     scheduleHistorySequenceConfirmationRetry(
                         failedGeneration: generation,
                         reason: failedReason

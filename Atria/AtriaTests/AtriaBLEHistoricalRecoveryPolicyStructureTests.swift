@@ -1755,8 +1755,10 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
             of: "offlineHistoricalSyncInProgress = true",
             range: ownership.upperBound..<start.endIndex
         ))
+        // 2026-08-12 (fe6662d8 S10): the suspension is generation-fenced so a
+        // stale G1 cannot revoke G2's lease; the ordering contract is unchanged.
         let suspension = try XCTUnwrap(start.range(
-            of: "suspendWorkoutMotionLeaseForHistoricalSync()",
+            of: "suspendWorkoutMotionLeaseForHistoricalSync(generation:",
             range: inProgress.upperBound..<start.endIndex
         ))
         XCTAssertLessThan(ownership.lowerBound, inProgress.lowerBound)
@@ -2095,5 +2097,181 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         XCTAssertTrue(characteristics.contains("case UUIDs.heartRateMeasure, UUIDs.batteryLevel"))
         XCTAssertTrue(characteristics.contains("peripheral.setNotifyValue(true, for: ch)"),
                       "the discovered 2A37 must be enabled on the fresh history-owner link")
+    }
+    // MARK: - Terminal sequence-gap convergence (handoff-6 CP2)
+
+    func testSequenceGapFailureDetailRecognition() {
+        XCTAssertTrue(AtriaBLEManager.isHistorySequenceGapFailureDetail(
+            "history_sequence_gap_unconfirmed_previous_405_received_409"
+        ))
+        XCTAssertTrue(AtriaBLEManager.isHistorySequenceGapFailureDetail(
+            "history_sequence_gap_replay_mismatch_expected_409_received_412"
+        ))
+        XCTAssertFalse(AtriaBLEManager.isHistorySequenceGapFailureDetail(
+            "history_start_timeout"
+        ))
+    }
+
+    func testSequenceGapAttemptAccountingParksAtBudgetAndResetsOnNewGap() {
+        var attempts = 0
+        var parked = false
+        for round in 1...AtriaBLEManager.historySequenceGapAttemptBudget {
+            let accounting = AtriaBLEManager.historySequenceGapAttemptAccounting(
+                storedFingerprint: round == 1 ? nil : "gap-a",
+                storedAttempts: attempts,
+                currentFingerprint: "gap-a"
+            )
+            attempts = accounting.attempts
+            parked = accounting.parked
+            XCTAssertEqual(attempts, round)
+            XCTAssertEqual(parked,
+                           round >= AtriaBLEManager.historySequenceGapAttemptBudget,
+                           "the ticket must park exactly at the attempt budget")
+        }
+        XCTAssertTrue(parked)
+        // A changed gap set is new evidence: accounting starts over.
+        let fresh = AtriaBLEManager.historySequenceGapAttemptAccounting(
+            storedFingerprint: "gap-a",
+            storedAttempts: attempts,
+            currentFingerprint: "gap-b"
+        )
+        XCTAssertEqual(fresh.attempts, 1)
+        XCTAssertFalse(fresh.parked)
+    }
+
+    func testParkedSequenceGapSuppressesOnlyUnchangedAutomaticEvidence() {
+        // Unchanged fingerprint + unchanged frontier: a minute ticker, a
+        // relaunch, or a charging edge replays exactly these inputs and must
+        // stay suppressed.
+        XCTAssertTrue(AtriaBLEManager.shouldSuppressAutomaticSequenceGapRetry(
+            exactGapPending: true,
+            explicitUserRequest: false,
+            currentGapFingerprint: "gap-a",
+            parkedGapFingerprint: "gap-a",
+            parkedFrontierUnix: 1_000_000,
+            currentFrontierUnix: 1_000_500
+        ), "sub-threshold frontier movement is not fresh evidence")
+        // Explicit user repair always bypasses the park.
+        XCTAssertFalse(AtriaBLEManager.shouldSuppressAutomaticSequenceGapRetry(
+            exactGapPending: true,
+            explicitUserRequest: true,
+            currentGapFingerprint: "gap-a",
+            parkedGapFingerprint: "gap-a",
+            parkedFrontierUnix: 1_000_000,
+            currentFrontierUnix: 1_000_000
+        ))
+        // A materially newer drained frontier mints a fresh attempt.
+        XCTAssertFalse(AtriaBLEManager.shouldSuppressAutomaticSequenceGapRetry(
+            exactGapPending: true,
+            explicitUserRequest: false,
+            currentGapFingerprint: "gap-a",
+            parkedGapFingerprint: "gap-a",
+            parkedFrontierUnix: 1_000_000,
+            currentFrontierUnix: 1_000_000 + 60 * 60
+        ))
+        // A changed gap set is fresh evidence.
+        XCTAssertFalse(AtriaBLEManager.shouldSuppressAutomaticSequenceGapRetry(
+            exactGapPending: true,
+            explicitUserRequest: false,
+            currentGapFingerprint: "gap-b",
+            parkedGapFingerprint: "gap-a",
+            parkedFrontierUnix: 1_000_000,
+            currentFrontierUnix: 1_000_000
+        ))
+        // No parked ticket, or the gap already cleared: nothing to suppress.
+        XCTAssertFalse(AtriaBLEManager.shouldSuppressAutomaticSequenceGapRetry(
+            exactGapPending: true,
+            explicitUserRequest: false,
+            currentGapFingerprint: "gap-a",
+            parkedGapFingerprint: nil,
+            parkedFrontierUnix: nil,
+            currentFrontierUnix: nil
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldSuppressAutomaticSequenceGapRetry(
+            exactGapPending: false,
+            explicitUserRequest: false,
+            currentGapFingerprint: "gap-a",
+            parkedGapFingerprint: "gap-a",
+            parkedFrontierUnix: 1_000_000,
+            currentFrontierUnix: 1_000_000
+        ))
+    }
+
+    func testSequenceGapConvergenceManagerWiringStructure() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let manager = try String(
+            contentsOf: appDirectory.appendingPathComponent("AtriaBLEManager.swift"),
+            encoding: .utf8
+        )
+
+        // The failure edge records the attempt with the drain's exact gap
+        // fingerprint before the transport is rebuilt.
+        XCTAssertTrue(manager.contains(
+            "Self.isHistorySequenceGapFailureDetail(violationDetail)"
+        ), "drain failure edge must classify sequence-gap violations")
+        XCTAssertTrue(manager.contains(
+            "registerHistorySequenceGapDrainFailure("
+        ), "the failure edge must run attempt accounting")
+
+        // The automatic scheduler consults the park BEFORE arming a task.
+        let schedulerStart = try XCTUnwrap(manager.range(
+            of: "private func scheduleRangeLossBackfillIfNeeded(reason: String) {"
+        )?.lowerBound)
+        let schedulerEnd = try XCTUnwrap(manager.range(
+            of: "func schedulePendingHistoricalRecovery(reason: String)",
+            range: schedulerStart..<manager.endIndex
+        )?.lowerBound)
+        let scheduler = String(manager[schedulerStart..<schedulerEnd])
+        XCTAssertTrue(scheduler.contains(
+            "suppressAutomaticRetryForParkedSequenceGapIfNeeded"
+        ), "the single automatic re-arm funnel must gate on the parked ticket")
+
+        // Parking releases scheduling ownership only: it must never clear the
+        // pending gap truth, delete ledger windows, or touch live HR / the
+        // workout motion lease.
+        let parkStart = try XCTUnwrap(manager.range(
+            of: "private func registerHistorySequenceGapDrainFailure(detail: String) {"
+        )?.lowerBound)
+        let parkEnd = try XCTUnwrap(manager.range(
+            of: "private func suppressAutomaticRetryForParkedSequenceGapIfNeeded(",
+            range: parkStart..<manager.endIndex
+        )?.lowerBound)
+        let park = String(manager[parkStart..<parkEnd])
+        XCTAssertFalse(park.contains("rangeLossBackfillPending"),
+                       "parking must not clear or write the pending gap truth")
+        XCTAssertFalse(park.contains("AtriaHistoricalGapLedger"),
+                       "parking must never rewrite ledger windows")
+        XCTAssertFalse(park.contains("cancelPeripheralConnection"),
+                       "parking is scheduling state, not a transport action")
+        XCTAssertFalse(park.contains("WorkoutMotion"),
+                       "parking must not touch the workout motion lease")
+
+        // The two-generation confirmation retry also respects the park.
+        XCTAssertTrue(manager.contains(
+            "&& !historySequenceGapIsParked(defaults)"
+        ), "the sequence-confirmation retry must not resurrect a parked ticket")
+
+        // Repairing the gap clears the convergence state.
+        XCTAssertTrue(manager.contains(
+            "defaults.removeObject(forKey: OfflineSyncDefaults.sequenceGapParkedAt)"
+        ))
+    }
+
+    func testSequenceGapBannerDistinguishesRepairingTerminalAndSynced() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let home = try String(
+            contentsOf: appDirectory.appendingPathComponent("AtriaHomeView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(home.contains("Strap data gap · history incomplete"),
+                      "the repairing state keeps its existing honest copy")
+        XCTAssertTrue(home.contains("Strap history gap · interval unavailable"),
+                      "a parked ticket must read as a terminal unavailable interval")
+        XCTAssertTrue(home.contains("Synced · older interval unavailable"),
+                      "a current frontier over a parked interval must not claim plain Synced")
+        XCTAssertTrue(home.contains("sequenceGapParkedTerminal"),
+                      "banner variants must key on the parked ticket state")
     }
 }

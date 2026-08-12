@@ -143,6 +143,10 @@ final class AtriaSleepStageIntegrityTests: XCTestCase {
             "motionSource: motionSource",
             "motionValidated: motionValidated",
             "eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier",
+            // 2026-08-13 handoff-6: an evidence refresh rewrites the same id;
+            // dropping the user's main-sleep answer silently re-prompted the
+            // day and re-anchored its cycle. Never overwrite ownership.
+            "dayPrimaryChoice: sleep.dayPrimaryChoice",
         ] {
             XCTAssertTrue(refreshPath.contains(token), "Missing ownership token: \(token)")
         }

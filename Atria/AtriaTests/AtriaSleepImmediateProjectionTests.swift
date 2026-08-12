@@ -1213,4 +1213,349 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
                             kind: "workout",
                             eventTimeZoneIdentifier: TimeZone.current.identifier)
     }
+    // MARK: - Launch stage-backfill same-process publication (handoff-6 CP1)
+
+    private func denseStageSession(start: Date,
+                                   end: Date,
+                                   bpm: Int) -> SavedSession {
+        let duration = end.timeIntervalSince(start)
+        // 5-second cadence passes the stage engine's density gate
+        // (<=15s gaps, >=6 samples/min, boundary samples at both edges).
+        let points = stride(from: 0.0, through: duration, by: 5.0).map {
+            SavedSession.Point(t: $0,
+                               bpm: bpm + (Int($0 / 300).isMultiple(of: 2) ? 1 : 0))
+        }
+        return SavedSession(id: UUID(),
+                            start: start,
+                            end: end,
+                            label: "Dense stage-backfill fixture",
+                            points: points,
+                            eventTimeZoneIdentifier: TimeZone.current.identifier)
+    }
+
+    /// Earlier tests in this shared-process suite can leave stores with
+    /// in-flight async follow-ups that write the process-global confirmed
+    /// file. Give them a moment to settle so this test's saves are not
+    /// interleaved with a zombie instance's rebases. (Production has exactly
+    /// one store; this is test-topology, not a product race.)
+    @MainActor
+    private func quiesceSharedConfirmedStore() async {
+        for _ in 0..<3 { await Task.yield() }
+        try? await Task.sleep(for: .milliseconds(750))
+    }
+
+    @MainActor
+    func testDeferredStageBackfillPublicationExposesCommittedStagesInProcess() async throws {
+        await quiesceSharedConfirmedStore()
+        let now = Date(timeIntervalSinceReferenceDate: 805_316_709)
+        let store = makeStore(now: now)
+        let sleepStart = now.addingTimeInterval(-10 * 60 * 60)
+        let sleepDuration: TimeInterval = 8 * 60 * 60
+        // The exact stored shape the launch backfill commits: estimate-
+        // provenance segments whose non-awake total reconciles with the
+        // measured duration. (Stage DERIVATION is pinned by the engine and
+        // refresh-gate suites and was device-proven on 2026-08-13; this test
+        // pins the same-process PUBLICATION of an already-committed backfill.)
+        let stages = [
+            SleepStageSegment(id: SleepStageSegment.hrEstimateIDPrefix + "publish-a",
+                              start: sleepStart,
+                              end: sleepStart.addingTimeInterval(4 * 60 * 60),
+                              stage: .light),
+            SleepStageSegment(id: SleepStageSegment.hrEstimateIDPrefix + "publish-b",
+                              start: sleepStart.addingTimeInterval(4 * 60 * 60),
+                              end: sleepStart.addingTimeInterval(sleepDuration),
+                              stage: .deep)
+        ]
+        let record = confirmedSleep(start: sleepStart,
+                                    duration: sleepDuration,
+                                    source: "user_adjusted_sleep",
+                                    motionSource: "hr_only",
+                                    motionValidated: false,
+                                    stages: stages,
+                                    restingHR: 52,
+                                    id: "stage-backfill-publication-fixture")
+        // The deferred save is exactly what the launch backfill performs:
+        // durable commit, no per-save publication.
+        await store.debugInstallConfirmedSleepsForTesting([record])
+        addTeardownBlock { @MainActor in
+            _ = await store.debugInstallConfirmedSleepsForTesting([])
+        }
+        XCTAssertFalse(
+            (store.sleepHistorySnapshot.nights
+                + store.sleepHistorySnapshot.additionalMainNights).contains {
+                $0.start == sleepStart
+            },
+            "a deferred save must not have published the snapshot by itself"
+        )
+
+        let revisionBefore = store.sleepHistorySnapshotRevision
+        store.debugPublishDeferredStageBackfillForTesting()
+
+        XCTAssertEqual(store.sleepHistorySnapshotRevision, revisionBefore + 1,
+                       "the narrow publication rebuilds the compact snapshot exactly once")
+        let night = try XCTUnwrap(
+            (store.sleepHistorySnapshot.nights
+                + store.sleepHistorySnapshot.additionalMainNights).first {
+                $0.start == sleepStart
+            },
+            "the committed stages must be visible in the live snapshot without a relaunch"
+        )
+        XCTAssertEqual(night.stageEvidence, .hrOnlyEstimate)
+        XCTAssertTrue(night.isEstimatedStageDisplay,
+                      "estimate-provenance stages render only through the labeled lane")
+    }
+
+    func testLaunchBackfillCallSitePublishesNarrowlyExactlyOnce() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let sourceURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/Sessions.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        // The deferred-load follow-up opts into the narrow publication.
+        let followUpStart = try XCTUnwrap(source.range(
+            of: "private func continueDeferredLoadFollowUp"
+        )?.lowerBound)
+        let followUpEnd = try XCTUnwrap(source.range(
+            of: "nonisolated static func deferredLaunchCardSettlementMatches",
+            range: followUpStart..<source.endIndex
+        )?.lowerBound)
+        let followUp = String(source[followUpStart..<followUpEnd])
+        XCTAssertTrue(followUp.contains("narrowPublicationAfterCommit: true"),
+                      "the launch backfill must publish its commit in the same launch")
+        let resume = try XCTUnwrap(followUp.range(
+            of: "resumeDeferredLaunchCardSettlementIfNeeded(reason: \"deferred_session_load\")"
+        ))
+        let backfillCall = try XCTUnwrap(followUp.range(
+            of: "narrowPublicationAfterCommit: true"
+        ))
+        XCTAssertLessThan(backfillCall.lowerBound, resume.lowerBound,
+                          "publication precedes card settlement so settlement reads post-commit truth")
+
+        // The backfill runs the publication exactly once, only after a
+        // repaired>0 durable save succeeded.
+        let backfillStart = try XCTUnwrap(source.range(
+            of: "private func backfillConfirmedSleepStagesFromSessions("
+        )?.lowerBound)
+        let backfillEnd = try XCTUnwrap(source.range(
+            of: "/// One narrow, current-generation derived publication",
+            range: backfillStart..<source.endIndex
+        )?.lowerBound)
+        let backfill = String(source[backfillStart..<backfillEnd])
+        XCTAssertEqual(
+            backfill.components(
+                separatedBy: "publishDeferredConfirmedSleepStageBackfill(reason:"
+            ).count - 1,
+            1,
+            "exactly one narrow publication per backfill run"
+        )
+        let saveGuard = try XCTUnwrap(backfill.range(of: "guard saved, executionShouldContinue()"))
+        let publishCall = try XCTUnwrap(backfill.range(
+            of: "publishDeferredConfirmedSleepStageBackfill(reason:"
+        ))
+        XCTAssertLessThan(saveGuard.lowerBound, publishCall.lowerBound,
+                          "a failed or stale save publishes nothing")
+
+        // The publication helper: fences + post-commit truth + deferred full
+        // rebuild. It never touches archive recovery or BLE history.
+        let helperStart = try XCTUnwrap(source.range(
+            of: "private func publishDeferredConfirmedSleepStageBackfill(reason: String) {"
+        )?.lowerBound)
+        let helperEnd = try XCTUnwrap(source.range(
+            of: "nonisolated static func recoveredMotionProvenance(",
+            range: helperStart..<source.endIndex
+        )?.lowerBound)
+        let helper = String(source[helperStart..<helperEnd])
+        XCTAssertTrue(helper.contains("guard canonicalMutationAllowed"))
+        XCTAssertTrue(helper.contains(
+            "guard recoveredDataMutationTransaction.activeTicket == nil"
+        ), "a live recovered transaction owns its own terminal publication")
+        XCTAssertTrue(helper.contains("confirmedSleeps: cachedConfirmedSleeps"),
+                      "publication reads post-commit truth so a newer user edit wins")
+        XCTAssertTrue(helper.contains("refreshHistorySnapshotCache(deferred: true)"),
+                      "the heavy full rebuild stays off-main behind its revision fences")
+        XCTAssertFalse(helper.contains("requestOfflineHistoricalSync"),
+                       "publication must never trigger archive recovery or BLE history")
+    }
+
+    @MainActor
+    func testStaleStageBackfillCommitCannotOverwriteNewerUserEdit() async throws {
+        let now = Date(timeIntervalSinceReferenceDate: 805_316_709)
+        let store = makeStore(now: now)
+        let start = now.addingTimeInterval(-12 * 60 * 60)
+        let original = confirmedSleep(start: start,
+                                      duration: 8 * 60 * 60,
+                                      source: "user_adjusted_sleep",
+                                      motionSource: "hr_only",
+                                      motionValidated: false,
+                                      stages: nil,
+                                      restingHR: 52,
+                                      id: "stage-backfill-race-fixture")
+        await store.debugInstallConfirmedSleepsForTesting([original])
+        addTeardownBlock { @MainActor in
+            _ = await store.debugInstallConfirmedSleepsForTesting([])
+        }
+
+        // A user edit lands while the backfill's stage build is off-main:
+        // same id, moved bounds.
+        let edited = confirmedSleep(start: start.addingTimeInterval(30 * 60),
+                                    duration: 7 * 60 * 60,
+                                    source: "user_adjusted_sleep",
+                                    motionSource: "hr_only",
+                                    motionValidated: false,
+                                    stages: nil,
+                                    restingHR: 52,
+                                    id: "stage-backfill-race-fixture")
+        await store.debugInstallConfirmedSleepsForTesting([edited])
+
+        // The stale backfill commit carries stages derived for the ORIGINAL
+        // bounds and rebases over the base it captured before the edit.
+        let staleStages = [
+            SleepStageSegment(id: SleepStageSegment.hrEstimateIDPrefix + "stale",
+                              start: start,
+                              end: start.addingTimeInterval(8 * 60 * 60),
+                              stage: .deep)
+        ]
+        let staleStaged = confirmedSleep(start: start,
+                                         duration: 8 * 60 * 60,
+                                         source: "user_adjusted_sleep",
+                                         motionSource: "hr_only",
+                                         motionValidated: false,
+                                         stages: staleStages,
+                                         restingHR: 52,
+                                         id: "stage-backfill-race-fixture")
+        _ = await store.debugSaveConfirmedSleepsWithRecoveredBaseForTesting(
+            [staleStaged],
+            base: [original]
+        )
+
+        let survivor = try XCTUnwrap(store.confirmedSleeps.first {
+            $0.id == "stage-backfill-race-fixture"
+        })
+        XCTAssertEqual(survivor.start, edited.start,
+                       "the newer user edit's bounds must win over the stale stage commit")
+        XCTAssertEqual(survivor.duration, edited.duration)
+        XCTAssertNil(survivor.stageSegments,
+                     "stages derived for the pre-edit window must not attach to the edited record")
+
+        // Re-minted variant: the user's edit replaced the record id entirely.
+        let reminted = confirmedSleep(start: start.addingTimeInterval(60 * 60),
+                                      duration: 6 * 60 * 60,
+                                      source: "user_adjusted_sleep",
+                                      motionSource: "hr_only",
+                                      motionValidated: false,
+                                      stages: nil,
+                                      restingHR: 52,
+                                      id: "stage-backfill-race-reminted")
+        await store.debugInstallConfirmedSleepsForTesting([reminted])
+        _ = await store.debugSaveConfirmedSleepsWithRecoveredBaseForTesting(
+            [staleStaged],
+            base: [original]
+        )
+        XCTAssertEqual(store.confirmedSleeps.map(\.id),
+                       ["stage-backfill-race-reminted"],
+                       "a stale stage commit must never resurrect a record the user replaced")
+    }
+    // MARK: - Nap/main reclassification racing the launch backfill (handoff-6 CP3)
+
+    @MainActor
+    func testReclassifyToNapSurvivesStageBackfillAndRelaunchPasses() async throws {
+        await quiesceSharedConfirmedStore()
+        let calendar = Calendar.current
+        // Past-dated and clear of the suite's other fixture windows — see
+        // testLaunchStageBackfillPublishesStagesInSameProcessExactlyOnce.
+        let now = Date(timeIntervalSinceReferenceDate: 806_500_000)
+        let store = makeStore(now: now)
+        // The physically reported shape: a short early episode and a long
+        // 9h12 main on the same civil date.
+        let shortStart = now.addingTimeInterval(-20 * 60 * 60)
+        let shortEnd = shortStart.addingTimeInterval(2 * 3_600 + 43 * 60)
+        let longStart = now.addingTimeInterval(-14 * 60 * 60)
+        let longDuration: TimeInterval = 9 * 3_600 + 12 * 60
+        let longEnd = longStart.addingTimeInterval(longDuration)
+        let session = denseStageSession(start: longStart.addingTimeInterval(-120),
+                                        end: longEnd.addingTimeInterval(120),
+                                        bpm: 55)
+        XCTAssertTrue(store.add(session, deferDerivedPublication: true))
+        let short = confirmedSleep(start: shortStart,
+                                   duration: shortEnd.timeIntervalSince(shortStart),
+                                   source: "user_adjusted_sleep",
+                                   motionSource: "hr_only",
+                                   motionValidated: false,
+                                   stages: nil,
+                                   restingHR: 52,
+                                   id: "cp3-short")
+        let long = confirmedSleep(start: longStart,
+                                  duration: longDuration,
+                                  source: "user_adjusted_sleep",
+                                  motionSource: "hr_only",
+                                  motionValidated: false,
+                                  stages: nil,
+                                  restingHR: 52,
+                                  id: "cp3-long")
+        await store.debugInstallConfirmedSleepsForTesting([short, long])
+        addTeardownBlock { @MainActor in
+            _ = await store.debugInstallConfirmedSleepsForTesting([])
+            store.deleteSession(id: session.id)
+        }
+
+        // Launch pass 1: the backfill stages the long main.
+        let first = await store.debugRunConfirmedSleepStageBackfillForTesting()
+        XCTAssertTrue(first.succeeded)
+
+        // The user's reclassification commits: same window, nap source,
+        // re-minted id — exactly what the type-only reclassify path writes.
+        // (The concurrent-commit variant of this protection is pinned
+        // deterministically at the save layer by
+        // testStaleStageBackfillCommitCannotOverwriteNewerUserEdit.)
+        let stagedLong = store.confirmedSleeps.first { $0.id == "cp3-long" } ?? long
+        let nap = confirmedSleep(start: shortStart,
+                                 duration: shortEnd.timeIntervalSince(shortStart),
+                                 source: "user_adjusted_nap",
+                                 motionSource: "hr_only",
+                                 motionValidated: false,
+                                 stages: nil,
+                                 restingHR: 52,
+                                 id: "cp3-short-as-nap")
+        await store.debugInstallConfirmedSleepsForTesting([nap, stagedLong])
+
+        // Launch pass 2 (the relaunch shape): the backfill must not revert
+        // the reclassification, resurrect the replaced record, or lose either.
+        let relaunch = await store.debugRunConfirmedSleepStageBackfillForTesting()
+        XCTAssertTrue(relaunch.succeeded)
+        let finalRecords = store.confirmedSleeps.filter {
+            $0.id.hasPrefix("cp3-")
+        }
+        XCTAssertEqual(Set(finalRecords.map(\.id)),
+                       ["cp3-short-as-nap", "cp3-long"])
+        let survivedNap = try XCTUnwrap(finalRecords.first {
+            $0.id == "cp3-short-as-nap"
+        })
+        XCTAssertEqual(survivedNap.source, "user_adjusted_nap",
+                       "a backfill pass must never overwrite an explicit nap classification")
+        XCTAssertFalse(store.confirmedSleeps.contains { $0.id == "cp3-short" },
+                       "the replaced main must not be resurrected by the backfill")
+
+        // Ownership: only the long main anchors the physiological cycle.
+        let boundaries = AtriaPhysiologicalCycle.boundaryEligibleMainSleeps(
+            now: now,
+            confirmedSleeps: finalRecords,
+            calendar: calendar
+        )
+        XCTAssertEqual(boundaries.map(\.id), ["cp3-long"],
+                       "the nap must never anchor the day; the long main owns the ring")
+
+        // The compact snapshot reaches a terminal, consistent row set: the
+        // nap renders exactly once as a nap and never as a canonical main.
+        let snapshot = SleepHistorySnapshot(
+            rollups: [],
+            confirmedSleeps: finalRecords,
+            calendar: calendar
+        )
+        XCTAssertEqual(snapshot.napNights.filter {
+            $0.start == shortStart
+        }.count, 1)
+        XCTAssertFalse(snapshot.nights.contains { $0.start == shortStart },
+                       "the reclassified nap must not occupy a canonical main slot")
+    }
 }
