@@ -164,6 +164,9 @@ final class AtriaAnalyticsTests: XCTestCase {
         let stageKinds = Set(stages.map(\.stage))
 
         XCTAssertFalse(stages.isEmpty)
+        XCTAssertTrue(stages.allSatisfy {
+            $0.id.hasPrefix(SleepStageSegment.motionReceiptIDPrefix)
+        }, "motion-backed staging must mint the motion receipt on every segment")
         XCTAssertTrue(stageKinds.contains(.awake), "expected an awake edge segment")
         XCTAssertTrue(stageKinds.contains(.light), "expected light sleep to be distinguishable")
         XCTAssertTrue(stageKinds.contains(.rem), "expected REM to be distinguishable")
@@ -173,7 +176,7 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(stages.last?.end ?? start, end.addingTimeInterval(-30))
     }
 
-    func testSleepStageResearchWithholdsHROnlyBreakdown() {
+    func testSleepStageResearchHROnlyStagesCarryEstimateProvenanceOnly() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let end = start.addingTimeInterval(4 * 60 * 60)
         let samples = stride(from: 0, through: 4 * 60 * 60, by: 5).map { second in
@@ -181,14 +184,38 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                bpm: 61 + ((second / 30).isMultiple(of: 10) ? 1 : 0))
         }
 
+        // The estimate lane is opt-in: without it, an insufficient-motion
+        // window still fails closed at near-zero cost so hot settlement
+        // callers keep their production deadlines.
+        let withheld = AtriaSleepWakeResearch.stageSegments(samples: samples,
+                                                            start: start,
+                                                            end: end,
+                                                            restingHR: 60,
+                                                            isNap: false,
+                                                            motionValidated: false)
+        XCTAssertTrue(withheld.isEmpty,
+                      "without the opt-in, a record-level motion Boolean still cannot stage")
+
         let stages = AtriaSleepWakeResearch.stageSegments(samples: samples,
                                                           start: start,
                                                           end: end,
                                                           restingHR: 60,
                                                           isNap: false,
-                                                          motionValidated: false)
-        XCTAssertTrue(stages.isEmpty,
-                      "a record-level motion Boolean cannot replace time-aligned epochs")
+                                                          motionValidated: false,
+                                                          allowHROnlyEstimate: true)
+        // 2026-08-12: dense HR without time-aligned motion epochs may stage
+        // a labeled ESTIMATE on the deliberate lanes — but the output must
+        // carry estimate provenance in every segment id and never the motion
+        // receipt. A record-level motion Boolean still cannot replace
+        // time-aligned epochs for motion authority.
+        XCTAssertFalse(stages.isEmpty,
+                       "dense HR must stage an estimate-provenance timeline")
+        XCTAssertTrue(stages.allSatisfy {
+            $0.id.hasPrefix(SleepStageSegment.hrEstimateIDPrefix)
+        }, "HR-only staging must mint estimate provenance ids")
+        XCTAssertFalse(stages.contains {
+            $0.id.hasPrefix(SleepStageSegment.motionReceiptIDPrefix)
+        }, "HR-only staging must never mint the motion receipt")
     }
 
     func testSleepStageResearchHandlesFullNightOneHertzStream() {

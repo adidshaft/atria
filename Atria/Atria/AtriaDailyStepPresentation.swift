@@ -185,28 +185,24 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             }
             return "Verified complete day"
         case (.verifiedCanonical, .partial):
-            // This percent is how much of the elapsed day the strap actually
-            // RECORDED step-motion for — a motion-data coverage figure, NOT a
-            // transport-sync grade and NOT an activity level. On the HR-only
-            // radio mode the strap only banks motion in short windows, so a
-            // fully-synced day legitimately reads low (2026-08-12 device
-            // evidence: ~1h of motion data over a 14h day). Never say "synced"
-            // (reads as "barely uploaded") and never say "moving" (reads as
-            // "you were only active N%"). Say "tracked" and keep the frontier.
-            if let coverageFraction {
-                let coverage = Int((coverageFraction * 100).rounded())
-                if let capturedAt {
-                    return "\(coverage)% tracked · through "
-                        + capturedAt.formatted(
-                            date: .omitted,
-                            time: .shortened
-                        )
-                }
-                return "\(coverage)% of day tracked"
+            // 2026-08-12 user decision: the glance line must NOT lead with a
+            // coverage percent. The number is honest (how much of the elapsed
+            // day the strap actually recorded step-motion for — a data-
+            // coverage figure, not a sync grade and not an activity level),
+            // but "32% covered/tracked" reliably reads as "the strap is
+            // detecting my steps wrong". On the HR-only radio mode the strap
+            // only banks motion in short windows, so a fully-synced day
+            // legitimately reads low (~1h of motion over a 14h day). The
+            // frontier timestamp says the same true thing — this count is
+            // what's known up to that time — without the failure connotation.
+            // The explained percent stays available in `accessibilityText`.
+            // Never say "synced" (reads as "barely uploaded") and never say
+            // "moving" (reads as "you were only active N%").
+            if let capturedAt {
+                return "Counted through "
+                    + capturedAt.formatted(date: .omitted, time: .shortened)
             }
-            return capturedAt.map {
-                "Through " + $0.formatted(date: .omitted, time: .shortened)
-            } ?? "Syncing steps"
+            return coverageFraction != nil ? "Partial day so far" : "Syncing steps"
         case (.live, .partial):
             return isValidated ? "Today so far · live" : "Today so far · estimate"
         default:

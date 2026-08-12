@@ -32,6 +32,23 @@ final class AtriaSleepStageIntegrityTests: XCTestCase {
             candidateCoverage: 12_001,
             hasTimeAlignedMotionEpochs: true
         ), "motion arrival must refresh stages even when HR and coverage do not grow")
+        XCTAssertTrue(SessionStore.shouldRefreshUserAdjustedSleepEvidence(
+            source: "user_adjusted_sleep",
+            existingSamples: 1_000,
+            candidateSamples: 1_000,
+            existingDuration: 12_000,
+            candidateCoverage: 12_001,
+            hasStoredStageSegments: false
+        ), "a stage-less record with real HR evidence must stay refresh-eligible"
+            + " so pre-estimate-lane records (2026-08-12) gain their stages")
+        XCTAssertFalse(SessionStore.shouldRefreshUserAdjustedSleepEvidence(
+            source: "user_adjusted_sleep",
+            existingSamples: 11,
+            candidateSamples: 11,
+            existingDuration: 12_000,
+            candidateCoverage: 12_001,
+            hasStoredStageSegments: false
+        ), "the stage-less retrigger still requires minimum HR evidence")
         XCTAssertFalse(SessionStore.shouldRefreshUserAdjustedSleepEvidence(
             source: "auto_confirmed_sleep",
             existingSamples: 1_000,

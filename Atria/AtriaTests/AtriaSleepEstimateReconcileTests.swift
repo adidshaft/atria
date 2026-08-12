@@ -287,4 +287,73 @@ final class AtriaSleepEstimateReconcileTests: XCTestCase {
                                                             end: result.end),
                        .timeline)
     }
+
+    // MARK: - HR-only estimate provenance ids (2026-08-12)
+
+    private var estimateProvenanceSegments: [SleepStageSegment] {
+        // Contiguous, structurally valid, reconcile-passing (non-awake 5.75h
+        // of a 6h duration, inside the 5% tolerance) — the shape that would
+        // previously have rendered as confident `.sensorResearch` bars when a
+        // record-level flag claimed validated motion.
+        [
+            segment(SleepStageSegment.hrEstimateIDPrefix + "a", .awake, date(0), date(0, 15)),
+            segment(SleepStageSegment.hrEstimateIDPrefix + "b", .light, date(0, 15), date(3)),
+            segment(SleepStageSegment.hrEstimateIDPrefix + "c", .deep, date(3), date(6))
+        ]
+    }
+
+    func testEstimateProvenanceIdsNeverRenderAboveEstimateEvenWithValidatedFlags() {
+        // The strongest false-authority claim a record can carry: an explicit
+        // validated-motion flag AND a motion-validated confidence. Provenance
+        // in the segment ids must still cap the rendering at the labeled
+        // estimate — the engine that minted them never saw sufficient motion.
+        let result = night(segments: estimateProvenanceSegments,
+                           motionValidated: true,
+                           confidence: "user_confirmed_motion_validated")
+
+        XCTAssertEqual(result.stageEvidence, .hrOnlyEstimate,
+                       "estimate-provenance ids must never claim research/validated authority")
+        XCTAssertTrue(result.isEstimatedStageDisplay)
+        XCTAssertEqual(result.stageDisplayLabel, AtriaSleepStageEstimateLabel.title)
+        XCTAssertFalse(result.displayStageSegments.isEmpty,
+                       "the labeled estimate timeline should still render")
+        XCTAssertEqual(AtriaSleepHypnogramCard.displayState(segments: result.displayStageSegments,
+                                                            stageEvidence: result.stageEvidence,
+                                                            start: result.start,
+                                                            end: result.end),
+                       .estimatedTimeline)
+    }
+
+    func testEffectiveSleepDurationNeverCreditsEstimateProvenanceSegments() {
+        let start = date(0)
+        let end = date(6)
+        // Estimate segments with 5h of classified non-awake against 6h of
+        // observed sleep: crediting them would silently shrink the night.
+        let estimate = [
+            segment(SleepStageSegment.hrEstimateIDPrefix + "a", .awake, date(0), date(1)),
+            segment(SleepStageSegment.hrEstimateIDPrefix + "b", .deep, date(1), date(6))
+        ]
+        XCTAssertEqual(UserConfirmedSleep.effectiveSleepDuration(source: "user_adjusted_sleep",
+                                                                 observedDuration: 6 * 3_600,
+                                                                 start: start,
+                                                                 end: end,
+                                                                 span: 6 * 3_600,
+                                                                 stageSegments: estimate),
+                       6 * 3_600,
+                       "estimate provenance must leave measured hours untouched")
+        // The identical shape under the motion receipt keeps the existing
+        // classified-sleep credit.
+        let motionBacked = [
+            segment(SleepStageSegment.motionReceiptIDPrefix + "a", .awake, date(0), date(1)),
+            segment(SleepStageSegment.motionReceiptIDPrefix + "b", .deep, date(1), date(6))
+        ]
+        XCTAssertEqual(UserConfirmedSleep.effectiveSleepDuration(source: "user_adjusted_sleep",
+                                                                 observedDuration: 6 * 3_600,
+                                                                 start: start,
+                                                                 end: end,
+                                                                 span: 6 * 3_600,
+                                                                 stageSegments: motionBacked),
+                       5 * 3_600,
+                       "motion-receipt segments keep their duration authority")
+    }
 }

@@ -94,10 +94,14 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
 
         XCTAssertEqual(value.valueText, "3210")
         XCTAssertEqual(value.completeness, .partial)
-        // The coverage percent is motion-data coverage, not a transport-sync
-        // grade and not an activity level — the copy must say neither "synced"
-        // (reads as "barely uploaded") nor "moving" (reads as "only N% active").
-        XCTAssertTrue(value.detailText.hasPrefix("50% tracked · through "))
+        // 2026-08-12: the glance line leads with the capture frontier, never a
+        // coverage percent — "50% tracked" read as "the strap detects steps
+        // wrong". The percent (motion-data coverage, not a transport-sync
+        // grade and not an activity level) stays explained in accessibility.
+        // The copy must still say neither "synced" (reads as "barely
+        // uploaded") nor "moving" (reads as "only N% active").
+        XCTAssertTrue(value.detailText.hasPrefix("Counted through "))
+        XCTAssertFalse(value.detailText.contains("%"))
         XCTAssertFalse(value.detailText.contains("Today so far"))
         XCTAssertFalse(value.detailText.lowercased().contains("synced"))
         XCTAssertFalse(value.detailText.lowercased().contains("moving"))
@@ -393,7 +397,12 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             11_598.0 / 55_224.0,
             accuracy: 0.000_001
         )
-        XCTAssertTrue(value.detailText.hasPrefix("21%"))
+        // 2026-08-12: the glance line is frontier-led (no leading percent);
+        // the 21% figure stays explained in accessibility.
+        XCTAssertTrue(value.detailText.hasPrefix("Counted through "))
+        XCTAssertTrue(value.accessibilityText.contains(
+            "motion tracked for 21 percent of your day"
+        ))
         XCTAssertNotEqual(value.count, 4_257)
         XCTAssertNotEqual(value.count, 4_433)
     }

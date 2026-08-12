@@ -266,7 +266,7 @@ enum Metrics {
 
         var coverageText: String? {
             guard quality == .partial, let coverageFraction else { return nil }
-            return "Partial · \(Int((coverageFraction * 100).rounded()))% covered"
+            return "Partial · \(Int((coverageFraction * 100).rounded()))% tracked"
         }
     }
 

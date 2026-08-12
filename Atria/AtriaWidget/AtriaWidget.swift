@@ -1410,7 +1410,7 @@ private enum AtriaDailyOverviewPreviewFixture {
             recoveryConfidence: "unverified",
             recoveryDetail: "Limited confidence · HRV unavailable",
             strain: 4.2,
-            strainDetail: "Partial · 52% covered",
+            strainDetail: "Partial · 52% tracked",
             strainCapturedAt: now.addingTimeInterval(-60),
             strainCycleStart: now.addingTimeInterval(-8 * 60 * 60),
             strainCycleExpiresAt: now.addingTimeInterval(16 * 60 * 60),
@@ -2947,16 +2947,21 @@ enum AtriaWidgetMetric: String, Identifiable {
                 guard let steps = atriaCurrentStepValue(snapshot, now: now) else {
                     return "Step archive expired"
                 }
-                let coverage = snapshot.stepsCoverageFraction.map {
-                    "\(Int(($0 * 100).rounded()))% covered"
-                }
                 if snapshot.stepsCompleteness == "partial" {
+                    // 2026-08-12: never lead with a coverage percent — it
+                    // reads as "the strap detects steps wrong" (it is data
+                    // coverage of the elapsed day, legitimately low on the
+                    // HR-only radio mode). The capture frontier carries the
+                    // same truth without the failure connotation.
+                    let frontier = snapshot.stepsCapturedAt.map {
+                        "through \(atriaCaptureTimeText($0))"
+                    }
                     let progress = snapshot.dailyStepGoal.flatMap { goal -> String? in
                         guard goal > 0 else { return nil }
                         let percent = min(999, max(0, Int((Double(steps) / Double(goal) * 100).rounded())))
                         return "\(percent)% goal"
                     }
-                    return (["Partial archive", coverage, progress].compactMap { $0 })
+                    return (["Counted", frontier, progress].compactMap { $0 })
                         .joined(separator: " · ")
                 }
                 if let cycleExpiresAt = snapshot.stepsCycleExpiresAt,
@@ -3054,10 +3059,12 @@ enum AtriaWidgetMetric: String, Identifiable {
         case .steps:
             guard snapshot.stepsSource == "verifiedCanonical",
                   snapshot.stepsCompleteness == "partial" else { return nil }
-            if let coverage = snapshot.stepsCoverageFraction {
-                return "Partial archive · \(Int((coverage * 100).rounded()))% covered"
+            // Frontier over percent (2026-08-12): a coverage % on the tile
+            // reads as bad step detection. See statusText for the rationale.
+            if let capturedAt = snapshot.stepsCapturedAt {
+                return "Partial day · counted through \(atriaCaptureTimeText(capturedAt))"
             }
-            return "Partial archive coverage"
+            return "Partial day so far"
         case .strain:
             guard snapshot.strainDetail?.localizedCaseInsensitiveContains("partial") == true else { return nil }
             return snapshot.strainDetail

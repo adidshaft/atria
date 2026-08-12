@@ -206,13 +206,15 @@ enum AtriaSleepWakeResearch {
                               restingHR: Int,
                               isNap: Bool,
                               motionValidated _: Bool,
-                              motionEpochs: [AtriaRecoveredMotionEpoch] = []) -> [SleepStageSegment] {
+                              motionEpochs: [AtriaRecoveredMotionEpoch] = [],
+                              allowHROnlyEstimate: Bool = false) -> [SleepStageSegment] {
         (try? stageSegmentsCore(samples: samples,
                                 start: start,
                                 end: end,
                                 restingHR: restingHR,
                                 isNap: isNap,
                                 motionEpochs: motionEpochs,
+                                allowHROnlyEstimate: allowHROnlyEstimate,
                                 workCounter: nil,
                                 cooperativeDeadline: nil)) ?? []
     }
@@ -228,6 +230,7 @@ enum AtriaSleepWakeResearch {
         isNap: Bool,
         motionValidated _: Bool,
         motionEpochs: [AtriaRecoveredMotionEpoch] = [],
+        allowHROnlyEstimate: Bool = false,
         cooperativeDeadline: AtriaSleepSettlementDeadline
     ) throws -> [SleepStageSegment] {
         try stageSegmentsCore(samples: samples,
@@ -236,6 +239,7 @@ enum AtriaSleepWakeResearch {
                               restingHR: restingHR,
                               isNap: isNap,
                               motionEpochs: motionEpochs,
+                              allowHROnlyEstimate: allowHROnlyEstimate,
                               workCounter: nil,
                               cooperativeDeadline: cooperativeDeadline)
     }
@@ -247,6 +251,7 @@ enum AtriaSleepWakeResearch {
         restingHR: Int,
         isNap: Bool,
         motionEpochs: [AtriaRecoveredMotionEpoch],
+        allowHROnlyEstimate: Bool = false,
         workCounter: StageWorkCounter?,
         cooperativeDeadline: AtriaSleepSettlementDeadline?
     ) throws -> [SleepStageSegment] {
@@ -255,9 +260,15 @@ enum AtriaSleepWakeResearch {
         guard duration >= 20 * 60,
               restingHR > 0 else { return [] }
 
-        // A record-level Boolean is not time-aligned evidence. Stages require
-        // actual recovered epochs covering this exact window; otherwise fail
-        // closed even when a legacy record says `motionValidated == true`.
+        // A record-level Boolean is not time-aligned evidence. The motion
+        // RECEIPT still requires actual recovered epochs covering this exact
+        // window, even when a legacy record says `motionValidated == true`.
+        // 2026-08-12: insufficient motion no longer discards the night —
+        // dense HR alone may still stage, but the output is minted with
+        // `SleepStageSegment.hrEstimateIDPrefix` so it can only ever render
+        // through the labeled-estimate lane and never claims motion authority.
+        // Every other gate below (dense local HR, epoch quorum, dense local
+        // timeline evidence) applies identically to both lanes.
         workCounter?.visit(motionEpochs.count)
         let motionProvenance: AtriaRecoveredMotionAnalytics.SleepProvenance
         if let cooperativeDeadline {
@@ -274,7 +285,14 @@ enum AtriaSleepWakeResearch {
                 end: end
             )
         }
-        guard motionProvenance.measurementSufficient else { return [] }
+        let motionBacked = motionProvenance.measurementSufficient
+        // The estimate lane is OPT-IN because it is expensive: before it
+        // existed, an insufficient-motion window returned [] here at near-zero
+        // cost, and hot callers (compact latest-night settlement, review
+        // projections) budget their production deadlines around that. Only
+        // deliberate lanes — a user-initiated save, the cooperative stage
+        // backfill — pay for HR-only staging.
+        guard motionBacked || allowHROnlyEstimate else { return [] }
 
         workCounter?.visit(samples.count)
         let sorted: [HeartSample]
@@ -315,6 +333,7 @@ enum AtriaSleepWakeResearch {
                                          end: end,
                                          epochCount: epochCount,
                                          motionEpochs: motionEpochs,
+                                         motionBacked: motionBacked,
                                          workCounter: workCounter,
                                          cooperativeDeadline: cooperativeDeadline)
         var staged: [(start: Date, end: Date, stage: SleepStageKind)] = []
@@ -330,7 +349,9 @@ enum AtriaSleepWakeResearch {
         }
 
         guard staged.count >= max(8, epochCount / 3) else { return [] }
-        let merged = try merge(staged, cooperativeDeadline: cooperativeDeadline)
+        let merged = try merge(staged,
+                               motionBacked: motionBacked,
+                               cooperativeDeadline: cooperativeDeadline)
         return try timelineHasDenseLocalEvidence(merged,
                                                  start: start,
                                                  end: end,
@@ -344,6 +365,7 @@ enum AtriaSleepWakeResearch {
                                       end: Date,
                                       epochCount: Int,
                                       motionEpochs: [AtriaRecoveredMotionEpoch],
+                                      motionBacked: Bool,
                                       workCounter: StageWorkCounter?,
                                       cooperativeDeadline: AtriaSleepSettlementDeadline?) throws -> [EpochFeature] {
         try cooperativeDeadline?.checkpoint()
@@ -447,9 +469,13 @@ enum AtriaSleepWakeResearch {
                                            end: epochEnd,
                                            workCounter: workCounter,
                                            cooperativeDeadline: cooperativeDeadline)
-            // An epoch without sufficiently covered, validated, time-aligned
-            // motion remains blank; a whole-record Boolean cannot fill it.
-            guard let motion else { continue }
+            // In the motion-backed lane an epoch without sufficiently
+            // covered, validated, time-aligned motion remains blank; a
+            // whole-record Boolean cannot fill it. The HR-only ESTIMATE lane
+            // (2026-08-12) instead stages such epochs from HR with a neutral
+            // motion prior and `motionMeasurementValidated == false`, which
+            // routes the classifier to its stricter HR-only awake rule.
+            if motionBacked, motion == nil { continue }
             features.append(EpochFeature(start: epochStart,
                                          end: epochEnd,
                                          averageHR: averageHR,
@@ -458,9 +484,9 @@ enum AtriaSleepWakeResearch {
                                          differenceOfGaussians: shortSmoothHR - longSmoothHR,
                                          localVariability: variability,
                                          progress: progress,
-                                         motionStillnessPrior: motion.stillness,
-                                         motionMovementIntensity: motion.intensity,
-                                         motionMeasurementValidated: true))
+                                         motionStillnessPrior: motion?.stillness ?? 1,
+                                         motionMovementIntensity: motion?.intensity ?? 0,
+                                         motionMeasurementValidated: motion != nil))
         }
         try cooperativeDeadline?.checkpoint()
         return features
@@ -835,9 +861,16 @@ enum AtriaSleepWakeResearch {
 
     private static func merge(
         _ staged: [(start: Date, end: Date, stage: SleepStageKind)],
+        motionBacked: Bool,
         cooperativeDeadline: AtriaSleepSettlementDeadline?
     ) throws -> [SleepStageSegment] {
         try cooperativeDeadline?.checkpoint()
+        // Provenance is encoded in the segment id itself so every downstream
+        // consumer (receipt checks, duration credit, migration preservation)
+        // can distinguish the lanes without trusting record-level flags.
+        let provenancePrefix = motionBacked
+            ? SleepStageSegment.motionReceiptIDPrefix
+            : SleepStageSegment.hrEstimateIDPrefix
         var merged: [(start: Date, end: Date, stage: SleepStageKind)] = []
         for (index, item) in staged.enumerated() {
             if index.isMultiple(of: 256) {
@@ -854,7 +887,7 @@ enum AtriaSleepWakeResearch {
         }
         if cooperativeDeadline == nil {
             return merged.enumerated().map { index, item in
-                SleepStageSegment(id: "research-motion-v2-\(Int(item.start.timeIntervalSince1970))-\(index)-\(item.stage.rawValue)",
+                SleepStageSegment(id: "\(provenancePrefix)\(Int(item.start.timeIntervalSince1970))-\(index)-\(item.stage.rawValue)",
                                   start: item.start,
                                   end: item.end,
                                   stage: item.stage)
@@ -867,7 +900,7 @@ enum AtriaSleepWakeResearch {
                 try cooperativeDeadline?.checkpoint()
             }
             segments.append(SleepStageSegment(
-                id: "research-motion-v2-\(Int(item.start.timeIntervalSince1970))-\(index)-\(item.stage.rawValue)",
+                id: "\(provenancePrefix)\(Int(item.start.timeIntervalSince1970))-\(index)-\(item.stage.rawValue)",
                 start: item.start,
                 end: item.end,
                 stage: item.stage

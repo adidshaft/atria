@@ -1968,7 +1968,11 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(widgetSource.contains(
             ": \"Verified through \\(atriaCaptureTimeText(capturedAt))\""
         ))
-        XCTAssertTrue(widgetSource.contains("\"Partial archive\""))
+        // 2026-08-12: the partial tile leads with the capture frontier —
+        // "Counted · through <time> · N% goal" — never a coverage percent
+        // (which read as bad step detection).
+        XCTAssertTrue(widgetSource.contains("[\"Counted\", frontier, progress]"))
+        XCTAssertFalse(widgetSource.contains("% covered"))
         XCTAssertTrue(widgetSource.contains("snapshot.stepsAreEstimated == false"),
                       "only explicit validated provenance may claim exact steps or goal completion")
         XCTAssertTrue(widgetSource.contains("return \"Goal ✓ · confirmed · \\(captured)\""))
@@ -2332,15 +2336,16 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(publisher.contains("? \"Review nap\" : \"Review sleep\""))
         XCTAssertTrue(publisher.contains("strainConfidence.localizedCaseInsensitiveContains(\"partial\")"))
         // 2026-07-31: 81eea260 moved the percent disclosure into the shared
-        // StrainPresentation.coverageText ("% covered", matching the step
-        // card's wording) with the sparse-HR fallback kept in the publisher.
+        // StrainPresentation.coverageText with the sparse-HR fallback kept in
+        // the publisher. 2026-08-12: the word is "tracked" — "covered" read
+        // as the strap detecting wrongly.
         XCTAssertTrue(publisher.contains("strainPresentation.coverageText ?? \"Partial · sparse HR\""))
         let metricsURL = testsDirectory
             .deletingLastPathComponent()
             .appendingPathComponent("Atria/Metrics.swift")
         let metrics = try String(contentsOf: metricsURL, encoding: .utf8)
         XCTAssertTrue(metrics.contains(
-            "\"Partial · \\(Int((coverageFraction * 100).rounded()))% covered\""
+            "\"Partial · \\(Int((coverageFraction * 100).rounded()))% tracked\""
         ), "the partial percent disclosure must survive in the shared authority")
         XCTAssertTrue(widget.contains("snapshot.strainDetail ?? \"Updated"))
         XCTAssertTrue(widget.contains("? \"≥ \\(numeric)\""))
@@ -2489,7 +2494,7 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(source.contains("#Preview(\"Daily Overview · Concentric\""))
         XCTAssertTrue(source.contains("#Preview(\"Daily Overview · Separate · Partial\""))
         XCTAssertTrue(source.contains("sleepDetail: \"Review sleep\""))
-        XCTAssertTrue(source.contains("strainDetail: \"Partial · 52% covered\""))
+        XCTAssertTrue(source.contains("strainDetail: \"Partial · 52% tracked\""))
     }
 
     func testSeparateDailyRingsUseTheMediumHeightWithoutCompressingEvidence() throws {
