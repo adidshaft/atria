@@ -5094,6 +5094,83 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             || pendingOneShotBatteryResponse
     }
 
+    /// One exhaustive owner decision for strap-service discovery. BOTH
+    /// delegate stages (service and characteristic discovery) must route
+    /// through this. The 2026-08-13 04:30 IST physical stall (cutover true,
+    /// sequence false, zero IMU frames) was the characteristic stage
+    /// suppressing the protected-v9 profile whenever any workout-bank flag
+    /// was set — which is precisely when the motion requalifier runs. A
+    /// pending/proving v9 bring-up temporarily outranks the bank; the bank's
+    /// durable ticket/config is never touched and resumes at the v9 terminal.
+    enum AtriaStrapDiscoveryOwner: String, CaseIterable {
+        case history
+        case diagnostic
+        case protectedV9BringUp
+        case workoutBank
+        case standardHR
+    }
+
+    nonisolated static func resolveStrapDiscoveryOwner(
+        historyRecoveryActive: Bool,
+        diagnosticActive: Bool,
+        standardHROnlyMode: Bool,
+        protectedV9Owner: Bool,
+        launchOrProofActive: Bool,
+        workoutBankTransportRequested: Bool
+    ) -> AtriaStrapDiscoveryOwner {
+        if historyRecoveryActive { return .history }
+        if diagnosticActive { return .diagnostic }
+        if standardHROnlyMode, protectedV9Owner, launchOrProofActive {
+            return .protectedV9BringUp
+        }
+        if standardHROnlyMode, workoutBankTransportRequested {
+            return .workoutBank
+        }
+        return .standardHR
+    }
+
+    /// The four durable workout-bank request flags, read identically by both
+    /// discovery stages (previously duplicated inline in each callback).
+    nonisolated static func workoutBankTransportCurrentlyRequested(
+        _ defaults: UserDefaults
+    ) -> Bool {
+        defaults.object(forKey: WorkoutMotionDefaults.ownerStartedAt) != nil
+            || defaults.bool(forKey: Self.workoutHistoricalMotionBankEnabledKey)
+            || defaults.bool(forKey: Self.workoutHistoricalMotionBankStopPendingKey)
+            || defaults.bool(forKey: Self.workoutHistoricalMotionBankPrearmRequestedKey)
+    }
+
+    nonisolated static let protectedV9BringUpTraceKey = "atria.protectedV9.bringUpTrace.v1"
+    private static let protectedV9BringUpTraceLimit = 48
+
+    /// Bounded, versioned edge receipts for the protected-v9 dense bring-up.
+    /// Console capture is unreliable across reconnects, so every seam that
+    /// can decline or stall the profile leaves a durable receipt carrying
+    /// enough authority (connection generation, owner state, bank flag,
+    /// peripheral hash) to reject a stale edge. No payload bytes, no health
+    /// samples, never written per IMU frame.
+    private func recordProtectedV9BringUpEdge(_ edge: String) {
+        let defaults = UserDefaults.standard
+        let generation = Int(connectedAt?.timeIntervalSince1970 ?? 0)
+        let bank = Self.workoutBankTransportCurrentlyRequested(defaults)
+        let owner = defaults.string(
+            forKey: Self.protectedR10CleanOwnerStateKey
+        ) ?? "none"
+        let peripheralHash = peripheral.map {
+            String($0.identifier.uuidString.prefix(8))
+        } ?? "none"
+        let line = "t=\(Int(Date().timeIntervalSince1970)) edge=\(edge) gen=\(generation) owner=\(owner) bank=\(bank ? 1 : 0) ph=\(peripheralHash)"
+        var lines = (defaults.string(forKey: Self.protectedV9BringUpTraceKey) ?? "")
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+        lines.append(line)
+        if lines.count > Self.protectedV9BringUpTraceLimit {
+            lines.removeFirst(lines.count - Self.protectedV9BringUpTraceLimit)
+        }
+        defaults.set(lines.joined(separator: "\n"),
+                     forKey: Self.protectedV9BringUpTraceKey)
+    }
+
     /// Protected-v9 discovery owns the normal response/event/data profile, but
     /// must step aside while the generation-bound history transport owns those
     /// same characteristics. Returning from the delegate after its inner guard
@@ -11796,14 +11873,42 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         characteristics: [CBCharacteristic],
         error: Error?
     ) {
-        guard motionHandshakeDiagnostic == nil,
-              standardHROnlyMode,
-              !historyOnlyProbeMode,
-              protectedR10CleanOwner == .protectedV9,
-              protectedR10CleanOwnerState == .protectedLaunchPending,
-              protectedR10InitialProfilePeripheralID == peripheral.identifier,
-              peripheral.state == .connected else { return }
+        // Each decline leaves a named receipt: the 2026-08-13 03:51 stall sat
+        // invisibly behind this guard set for eight minutes.
+        guard motionHandshakeDiagnostic == nil else {
+            recordProtectedV9BringUpEdge("protected_profile_rejected_diagnostic_active")
+            return
+        }
+        guard standardHROnlyMode else {
+            recordProtectedV9BringUpEdge("protected_profile_rejected_standard_hr_off")
+            return
+        }
+        guard !historyOnlyProbeMode else {
+            recordProtectedV9BringUpEdge("protected_profile_rejected_history_probe")
+            return
+        }
+        guard protectedR10CleanOwner == .protectedV9 else {
+            recordProtectedV9BringUpEdge(
+                "protected_profile_rejected_owner_\(protectedR10CleanOwner.rawValue)"
+            )
+            return
+        }
+        guard protectedR10CleanOwnerState == .protectedLaunchPending else {
+            recordProtectedV9BringUpEdge(
+                "protected_profile_rejected_state_\(protectedR10CleanOwnerState.rawValue)"
+            )
+            return
+        }
+        guard protectedR10InitialProfilePeripheralID == peripheral.identifier else {
+            recordProtectedV9BringUpEdge("protected_profile_rejected_peripheral_mismatch")
+            return
+        }
+        guard peripheral.state == .connected else {
+            recordProtectedV9BringUpEdge("protected_profile_rejected_not_connected")
+            return
+        }
         if let error {
+            recordProtectedV9BringUpEdge("protected_profile_rejected_discovery_error")
             persistProtectedR10CleanOwnerFallback(
                 reason: "response_event_data_discovery_error_\(error.localizedDescription)"
             )
@@ -11847,6 +11952,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
 
+        recordProtectedV9BringUpEdge("protected_profile_begin_accepted")
         let startedAt = Date()
         let defaults = UserDefaults.standard
         defaults.set(ProtectedR10CleanOwnerState.proving.rawValue,
@@ -11871,6 +11977,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 && !protectedR10ProfileRequestedNotifyUUIDs.contains($0)
         }), let characteristic = protectedR10ProfileCharacteristics[nextUUID] {
             protectedR10ProfileRequestedNotifyUUIDs.insert(nextUUID)
+            recordProtectedV9BringUpEdge("notify_requested_\(nextUUID.uuidString)")
             peripheral.setNotifyValue(true, for: characteristic)
             incrementRadioCounter(RadioDefaults.customNotifyEnabled,
                                   reason: "protected_v9_initial_profile")
@@ -11910,6 +12017,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return true
         }
         protectedR10ProfileConfirmedNotifyUUIDs.insert(characteristic.uuid)
+        recordProtectedV9BringUpEdge("notify_confirmed_\(characteristic.uuid.uuidString)")
         activeProprietaryNotifyUUIDs.insert(characteristic.uuid)
         if characteristic.uuid == Self.UUIDs.strapStream5 {
             strapStream5NotifyConfirmed = true
@@ -11920,22 +12028,44 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     private func sendProtectedR10ResponseEventDataSequenceIfReady(peripheral: CBPeripheral) {
-        guard !readOnlyHistoryCaptureRequested else { return }
-        guard protectedR10ResponseEventDataProofIsActive,
-              protectedR10CommandSequenceTask == nil,
-              !protectedR10ActivationSent,
-              Self.protectedR10ResponseEventDataNotifyOrder.allSatisfy(
-                protectedR10ProfileConfirmedNotifyUUIDs.contains
-              ),
-              let txCharacteristic,
-              txCharacteristic.properties.contains(.writeWithoutResponse),
-              peripheral.state == .connected else { return }
+        guard !readOnlyHistoryCaptureRequested else {
+            recordProtectedV9BringUpEdge("sequence_preflight_blocked_read_only_history")
+            return
+        }
+        guard protectedR10ResponseEventDataProofIsActive else {
+            recordProtectedV9BringUpEdge("sequence_preflight_blocked_proof_inactive")
+            return
+        }
+        guard protectedR10CommandSequenceTask == nil else {
+            recordProtectedV9BringUpEdge("sequence_preflight_blocked_command_in_flight")
+            return
+        }
+        guard !protectedR10ActivationSent else {
+            recordProtectedV9BringUpEdge("sequence_preflight_blocked_already_sent_local")
+            return
+        }
+        guard Self.protectedR10ResponseEventDataNotifyOrder.allSatisfy(
+            protectedR10ProfileConfirmedNotifyUUIDs.contains
+        ) else {
+            recordProtectedV9BringUpEdge("sequence_preflight_blocked_notify_incomplete")
+            return
+        }
+        guard let txCharacteristic,
+              txCharacteristic.properties.contains(.writeWithoutResponse) else {
+            recordProtectedV9BringUpEdge("sequence_preflight_blocked_tx_unavailable")
+            return
+        }
+        guard peripheral.state == .connected else {
+            recordProtectedV9BringUpEdge("sequence_preflight_blocked_disconnected")
+            return
+        }
         let motionBattery = motionEligibilityBatteryLevel()
         guard Self.shouldArmHighFrequencyMotion(
             batteryLevel: motionBattery,
             isCharging: motionEligibilityIsCharging,
             calibrationActive: stepCalibrationCaptureIsActive
         ) else {
+            recordProtectedV9BringUpEdge("sequence_preflight_blocked_low_battery")
             deferProtectedWorkoutMotionAtCommandBoundaryForLowBattery(
                 batteryLevel: motionBattery
             )
@@ -11943,11 +12073,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: Self.protectedR10ResponseEventDataSequenceSentKey) else {
+            recordProtectedV9BringUpEdge("sequence_preflight_blocked_already_sent_durable")
             persistProtectedR10CleanOwnerFallback(reason: "response_event_data_sequence_already_sent")
             return
         }
 
         let startedAt = Date()
+        recordProtectedV9BringUpEdge("sequence_started")
         defaults.set(true, forKey: Self.protectedR10ResponseEventDataSequenceSentKey)
         defaults.set(startedAt.timeIntervalSince1970,
                      forKey: Self.protectedR10ActivationSentAtKey)
@@ -12368,6 +12500,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                          forKey: Self.protectedR10CleanOwnerStateKey)
             defaults.removeObject(forKey: Self.protectedR10CleanOwnerProofStartedAtKey)
             defaults.removeObject(forKey: Self.protectedR10CleanOwnerFailureReasonKey)
+            recordProtectedV9BringUpEdge("qualified")
+            // v9 terminal: one bank-owner resumption under the existing
+            // generation fence (mirrors the fallback terminal).
+            evaluateAllDayMotionGovernor(reason: "protected_v9_qualified_terminal")
         }
         defaults.set(status, forKey: RadioDefaults.passiveR10Status)
         protectedR10CleanOwnerProofTimeoutTask?.cancel()
@@ -12380,6 +12516,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// link is left untouched: no CCCD disable, service rediscovery,
     /// connection cancellation or history handoff is allowed here.
     private func persistProtectedR10CleanOwnerFallback(reason: String) {
+        recordProtectedV9BringUpEdge("fallback_\(reason)")
+        // The v9 owner reached a terminal state: resume the workout-bank
+        // owner exactly once. The governor is generation-fenced and
+        // self-guarded, and the bank's durable ticket was never cleared.
+        evaluateAllDayMotionGovernor(reason: "protected_v9_fallback_terminal")
         let defaults = UserDefaults.standard
         if workoutMotionLeaseProfileArmed {
             // The current per-connection proof owns the truth state. It cleared
@@ -35098,6 +35239,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard protectedR10ActivationSent else { return }
         protectedR10FramesAfterActivation += 1
         if protectedR10FramesAfterActivation == 1 {
+            recordProtectedV9BringUpEdge("first_crc_valid_motion_frame")
             protectedR10MissingFrameTask?.cancel()
             protectedR10MissingFrameTask = nil
             let defaults = UserDefaults.standard
@@ -45235,19 +45377,22 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             )
         }
         let workoutBankTransportRequested =
-            fastLaneDefaults.object(
-                forKey: WorkoutMotionDefaults.ownerStartedAt
-            ) != nil
-            || fastLaneDefaults.bool(
-                forKey: Self.workoutHistoricalMotionBankEnabledKey
-            )
-            || fastLaneDefaults.bool(
-                forKey: Self.workoutHistoricalMotionBankStopPendingKey
-            )
-            || fastLaneDefaults.bool(
-                forKey: Self.workoutHistoricalMotionBankPrearmRequestedKey
-            )
+            Self.workoutBankTransportCurrentlyRequested(fastLaneDefaults)
         let callbackPolicy = callbackPolicyState.snapshot()
+        let strapDiscoveryOwner = Self.resolveStrapDiscoveryOwner(
+            historyRecoveryActive: historyOnlyProbeMode,
+            diagnosticActive: motionHandshakeDiagnostic != nil,
+            standardHROnlyMode: callbackPolicy.standardHROnly,
+            protectedV9Owner: protectedR10CleanOwner == .protectedV9,
+            launchOrProofActive: protectedR10CleanOwnerState == .protectedLaunchPending
+                || protectedR10CleanOwnerState == .proving,
+            workoutBankTransportRequested: workoutBankTransportRequested
+        )
+        let resolvedServiceOwnerEdge =
+            "service_owner_resolved_\(strapDiscoveryOwner.rawValue)"
+        Task { @MainActor in
+            self.recordProtectedV9BringUpEdge(resolvedServiceOwnerEdge)
+        }
         for service in peripheral.services ?? [] {
             let characteristics: [CBUUID]?
             if motionHandshakeDiagnostic != nil {
@@ -45294,24 +45439,10 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 default:
                     characteristics = nil
                 }
-            } else if callbackPolicy.standardHROnly,
-                      !historyOnlyProbeMode,
-                      workoutBankTransportRequested,
-                      service.uuid == Self.UUIDs.strapService {
-                var requested = Self.protectedStandardHRCharacteristics(
-                    for: service.uuid,
-                    streamSuppressed: protectedR10StreamSuppressed,
-                    cleanOwner: protectedR10CleanOwner
-                ) ?? []
-                if !requested.contains(Self.UUIDs.strapTX) {
-                    requested.append(Self.UUIDs.strapTX)
-                }
-                characteristics = requested
-            } else if callbackPolicy.standardHROnly,
-                      !historyOnlyProbeMode,
-                      protectedR10CleanOwner == .protectedV9,
-                      (protectedR10CleanOwnerState == .protectedLaunchPending
-                        || protectedR10CleanOwnerState == .proving) {
+            } else if strapDiscoveryOwner == .protectedV9BringUp {
+                // A pending/proving v9 bring-up owns strap discovery even when
+                // the workout bank holds a durable request — the requalifier
+                // exists exactly when a workout is running (2026-08-13 stall).
                 if service.uuid == Self.UUIDs.strapService {
                     characteristics = callbackPolicy.protectedProfileIsEmpty
                         ? Self.protectedStandardHRCharacteristics(
@@ -45329,6 +45460,17 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 } else {
                     characteristics = nil
                 }
+            } else if strapDiscoveryOwner == .workoutBank,
+                      service.uuid == Self.UUIDs.strapService {
+                var requested = Self.protectedStandardHRCharacteristics(
+                    for: service.uuid,
+                    streamSuppressed: protectedR10StreamSuppressed,
+                    cleanOwner: protectedR10CleanOwner
+                ) ?? []
+                if !requested.contains(Self.UUIDs.strapTX) {
+                    requested.append(Self.UUIDs.strapTX)
+                }
+                characteristics = requested
             } else if callbackPolicy.standardHROnly, !historyOnlyProbeMode {
                 if gate4HistoricalIMUWindowProbeRequested,
                    service.uuid == Self.UUIDs.strapService {
@@ -45484,27 +45626,28 @@ extension AtriaBLEManager: CBPeripheralDelegate {
             return
         }
         let workoutBankTransportRequested =
-            fastLaneDefaults.object(
-                forKey: WorkoutMotionDefaults.ownerStartedAt
-            ) != nil
-            || fastLaneDefaults.bool(
-                forKey: Self.workoutHistoricalMotionBankEnabledKey
-            )
-            || fastLaneDefaults.bool(
-                forKey: Self.workoutHistoricalMotionBankStopPendingKey
-            )
-            || fastLaneDefaults.bool(
-                forKey: Self.workoutHistoricalMotionBankPrearmRequestedKey
-            )
+            Self.workoutBankTransportCurrentlyRequested(fastLaneDefaults)
         let callbackPolicy = callbackPolicyState.snapshot()
-        if Self.shouldUseProtectedV9CharacteristicHandler(
-            standardHROnlyMode: callbackPolicy.standardHROnly,
+        let strapDiscoveryOwner = Self.resolveStrapDiscoveryOwner(
             historyRecoveryActive: historyOnlyProbeMode,
-            strapService: service.uuid == Self.UUIDs.strapService,
+            diagnosticActive: motionHandshakeDiagnostic != nil,
+            standardHROnlyMode: callbackPolicy.standardHROnly,
             protectedV9Owner: protectedR10CleanOwner == .protectedV9,
             launchOrProofActive: protectedR10CleanOwnerState == .protectedLaunchPending
-                || protectedR10CleanOwnerState == .proving
-        ), !workoutBankTransportRequested {
+                || protectedR10CleanOwnerState == .proving,
+            workoutBankTransportRequested: workoutBankTransportRequested
+        )
+        if service.uuid == Self.UUIDs.strapService {
+            let resolvedCharacteristicOwnerEdge =
+                "characteristic_owner_resolved_\(strapDiscoveryOwner.rawValue)"
+            Task { @MainActor in
+                self.recordProtectedV9BringUpEdge(resolvedCharacteristicOwnerEdge)
+            }
+        }
+        // The bank's durable request no longer vetoes the v9 profile: the
+        // resolver already ranked them (2026-08-13 priority-inversion fix).
+        if service.uuid == Self.UUIDs.strapService,
+           strapDiscoveryOwner == .protectedV9BringUp {
             let characteristics = service.characteristics ?? []
             Task { @MainActor in
                 guard self.acceptsBLECallback(
