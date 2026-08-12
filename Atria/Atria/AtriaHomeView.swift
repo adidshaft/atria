@@ -1357,7 +1357,7 @@ struct AtriaHomeView: View {
             .tabBarMinimizeBehavior(.onScrollDown)
             .tabViewBottomAccessory(isEnabled: shouldShowLiveAccessory) {
                 AtriaLiveTabAccessoryHost(pulseStore: model.pulseLiveStore,
-                                          heroStore: model.heroStore,
+                                          metricStore: liveWorkoutMetricStore,
                                           workoutStart: workoutSession?.start,
                                           workoutSystemImage: workoutSession?.activityType.icon ?? AtriaWorkoutActivityType.other.icon,
                                           onOpenWorkout: reopenMinimizedWorkout)
@@ -8541,19 +8541,30 @@ private struct AtriaDashboardScrollSurface<Content: View>: View {
 
 struct AtriaLiveTabAccessoryPresentation: Equatable {
     let heartRate: Int
-    let strain: Double
+    /// WORKOUT strain (the projection's HUD text, "--" before evidence).
+    /// This pill is the minimized workout: rendering the day total here made
+    /// the bar read "3.2 strain" while the workout screen it reopens said
+    /// 1.5 (physically reported 2026-08-13). Workout surfaces carry workout
+    /// numbers; the day total lives on the hero ring.
+    let strainText: String
 
     var accessibilityLabel: String {
         let heartRateText = heartRate > 0
             ? "Heart rate \(heartRate) beats per minute"
             : "Heart rate unavailable"
-        return "Live workout minimized. Tap to return. \(heartRateText), strain \(String(format: "%.1f", strain))."
+        let strainPhrase = strainText == "--"
+            ? "workout strain not yet available"
+            : "workout strain \(strainText)"
+        return "Live workout minimized. Tap to return. \(heartRateText), \(strainPhrase)."
     }
 }
 
 private struct AtriaLiveTabAccessoryHost: View {
     let pulseStore: AtriaHomeModel.PulseLiveStore
-    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
+    // Only this accessory subtree observes the 750 ms workout projection —
+    // the tab shell keeps retaining the store by identity without observing
+    // it (the store's own publication contract).
+    @ObservedObject var metricStore: AtriaLiveWorkoutMetricStore
     let workoutStart: Date?
     let workoutSystemImage: String
     let onOpenWorkout: () -> Void
@@ -8562,7 +8573,7 @@ private struct AtriaLiveTabAccessoryHost: View {
         AtriaLiveTabAccessory(pulseStore: pulseStore,
                               workoutStart: workoutStart,
                               workoutSystemImage: workoutSystemImage,
-                              strain: heroStore.state.strain,
+                              strainText: metricStore.state.strainHUDText,
                               onOpenWorkout: onOpenWorkout)
     }
 }
@@ -8571,7 +8582,7 @@ private struct AtriaLiveTabAccessory: View {
     let pulseStore: AtriaHomeModel.PulseLiveStore
     let workoutStart: Date?
     let workoutSystemImage: String
-    let strain: Double
+    let strainText: String
     let onOpenWorkout: () -> Void
     @Environment(\.tabViewBottomAccessoryPlacement) private var placement
 
@@ -8584,7 +8595,7 @@ private struct AtriaLiveTabAccessory: View {
             AtriaLiveWorkoutTabAccessory(pulseStore: pulseStore,
                                          workoutStart: workoutStart,
                                          workoutSystemImage: workoutSystemImage,
-                                         strain: strain,
+                                         strainText: strainText,
                                          isInline: isInline,
                                          onOpenWorkout: onOpenWorkout)
         }
@@ -8595,14 +8606,14 @@ private struct AtriaLiveWorkoutTabAccessory: View {
     @ObservedObject var pulseStore: AtriaHomeModel.PulseLiveStore
     let workoutStart: Date
     let workoutSystemImage: String
-    let strain: Double
+    let strainText: String
     let isInline: Bool
     let onOpenWorkout: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         let presentation = AtriaLiveTabAccessoryPresentation(heartRate: pulseStore.state.heartRate,
-                                                              strain: strain)
+                                                              strainText: strainText)
         Button(action: onOpenWorkout) {
             HStack(spacing: isInline ? 8 : 10) {
                 Image(systemName: workoutSystemImage)
@@ -8632,13 +8643,13 @@ private struct AtriaLiveWorkoutTabAccessory: View {
                     .allowsTightening(true)
                     .layoutPriority(3)
 
-                Text(String(format: "%.1f strain", strain))
+                Text("\(strainText) strain")
                     .font((isInline ? Font.caption2 : Font.caption).weight(.semibold))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                     .contentTransition(reduceMotion ? .identity : .numericText())
                     .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.emphatic),
-                               value: strain)
+                               value: strainText)
                     .lineLimit(1)
                     .minimumScaleFactor(0.76)
 
