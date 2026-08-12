@@ -99,7 +99,7 @@ final class AtriaSleepStageFallbackPerformanceTests: XCTestCase {
                           Double(fourHours.sampleVisits) * 2.2)
     }
 
-    func testMotionGapLongerThanReceiptLimitFailsClosed() {
+    func testMotionGapLongerThanReceiptLimitDemotesToEstimateProvenance() {
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let end = start.addingTimeInterval(60 * 60)
         let samples = stride(from: 0, through: 60 * 60, by: 5).map {
@@ -113,7 +113,8 @@ final class AtriaSleepStageFallbackPerformanceTests: XCTestCase {
                 || $0.start >= start.addingTimeInterval(22 * 60)
         }
 
-        let stages = AtriaSleepWakeResearch.stageSegments(
+        // Hot callers (no opt-in) keep the fail-closed, near-zero-cost path.
+        let withheld = AtriaSleepWakeResearch.stageSegments(
             samples: samples,
             start: start,
             end: end,
@@ -122,8 +123,32 @@ final class AtriaSleepStageFallbackPerformanceTests: XCTestCase {
             motionValidated: true,
             motionEpochs: epochs
         )
+        XCTAssertTrue(withheld.isEmpty,
+                      "without the opt-in a gapped motion timeline fails closed")
 
-        XCTAssertTrue(stages.isEmpty)
+        let stages = AtriaSleepWakeResearch.stageSegments(
+            samples: samples,
+            start: start,
+            end: end,
+            restingHR: 60,
+            isNap: false,
+            motionValidated: true,
+            motionEpochs: epochs,
+            allowHROnlyEstimate: true
+        )
+
+        // 2026-08-12: a motion timeline with a hole beyond the receipt limit
+        // can never claim the motion receipt; on the deliberate lanes dense
+        // HR still stages a labeled estimate. The receipt demotion is what
+        // this test protects.
+        XCTAssertFalse(stages.isEmpty,
+                       "dense HR must still stage an estimate timeline")
+        XCTAssertTrue(stages.allSatisfy {
+            $0.id.hasPrefix(SleepStageSegment.hrEstimateIDPrefix)
+        }, "insufficient motion must demote every segment to estimate provenance")
+        XCTAssertFalse(stages.contains {
+            $0.id.hasPrefix(SleepStageSegment.motionReceiptIDPrefix)
+        }, "a gapped motion timeline must never mint the motion receipt")
     }
 
     func testFourSamplesPerMinuteFailsEvenWhenGapIsAtLimit() {

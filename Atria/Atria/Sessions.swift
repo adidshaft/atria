@@ -3257,6 +3257,27 @@ struct SleepStageSegment: Codable, Identifiable, Equatable {
     var duration: TimeInterval {
         max(0, end.timeIntervalSince(start))
     }
+
+    /// Provenance receipt minted only when the fail-closed engine staged from
+    /// dense, local HR PLUS sufficient time-aligned recovered motion epochs.
+    /// Segments with this prefix are the only ones eligible for the
+    /// time-aligned research receipt (and therefore validated-style display).
+    static let motionReceiptIDPrefix = "research-motion-v2-"
+
+    /// Provenance mark for HR-only ESTIMATE staging (2026-08-12): the same
+    /// fail-closed engine, same dense-HR gates, but motion evidence was
+    /// insufficient for this exact window. These segments may only ever render
+    /// through the labeled-estimate lane (`AtriaSleepStageEstimateLabel`) and
+    /// never contribute duration credit or motion authority.
+    static let hrEstimateIDPrefix = "research-hr-estimate-v1-"
+
+    /// True when every segment in a non-empty set carries the HR-only
+    /// estimate provenance mark. Mixed sets are NOT estimate-provenance —
+    /// they fail toward the stricter handling of their non-estimate members.
+    static func allHREstimateProvenance(_ segments: [SleepStageSegment]?) -> Bool {
+        guard let segments, !segments.isEmpty else { return false }
+        return segments.allSatisfy { $0.id.hasPrefix(hrEstimateIDPrefix) }
+    }
 }
 
 struct UserConfirmedSleep: Codable, Identifiable, Equatable {
@@ -3350,6 +3371,12 @@ struct UserConfirmedSleep: Codable, Identifiable, Equatable {
                                        stageSegments: [SleepStageSegment]?) -> TimeInterval {
         guard let stageSegments,
               !stageSegments.isEmpty,
+              // HR-only ESTIMATE segments are display material, not duration
+              // authority. Their engine over-calls awake, so crediting
+              // `classifiedSleep` here would silently shrink a night's saved
+              // hours the moment estimate stages appear. Measured/confirmed
+              // hours stay the duration source for those nights.
+              !SleepStageSegment.allHREstimateProvenance(stageSegments),
               AtriaSleepStageIntegrity.validates(stageSegments,
                                                  start: start,
                                                  end: end,
@@ -37677,7 +37704,11 @@ final class SessionStore: ObservableObject {
                                                             end: end,
                                                             restingHR: metrics.restingHR,
                                                             isNap: isNap,
-                                                            motionValidated: motionValidated)
+                                                            motionValidated: motionValidated,
+                                                            // User-initiated save: the deliberate
+                                                            // lane that may pay for HR-only
+                                                            // ESTIMATE staging (2026-08-12).
+                                                            allowHROnlyEstimate: true)
         let span = end.timeIntervalSince(start)
         // Sensor-covered time inside the window (sum of overlapping session spans
         // clipped to [start,end]); mirrors how an AggregateSleepCandidate's
@@ -38595,7 +38626,8 @@ final class SessionStore: ObservableObject {
                                                                end: Date,
                                                                restingHR: Int,
                                                                isNap: Bool,
-                                                               motionValidated: Bool) -> [SleepStageSegment] {
+                                                               motionValidated: Bool,
+                                                               allowHROnlyEstimate: Bool = false) -> [SleepStageSegment] {
         (try? sleepStageResearchSegmentsCore(
             from: sessions,
             start: start,
@@ -38603,6 +38635,7 @@ final class SessionStore: ObservableObject {
             restingHR: restingHR,
             isNap: isNap,
             motionValidated: motionValidated,
+            allowHROnlyEstimate: allowHROnlyEstimate,
             maximumRows: nil,
             cooperativeDeadline: nil
         )) ?? []
@@ -38615,6 +38648,7 @@ final class SessionStore: ObservableObject {
         restingHR: Int,
         isNap: Bool,
         motionValidated: Bool,
+        allowHROnlyEstimate: Bool = false,
         maximumRows: Int,
         cooperativeDeadline: AtriaSleepSettlementDeadline
     ) throws -> [SleepStageSegment] {
@@ -38625,6 +38659,7 @@ final class SessionStore: ObservableObject {
             restingHR: restingHR,
             isNap: isNap,
             motionValidated: motionValidated,
+            allowHROnlyEstimate: allowHROnlyEstimate,
             maximumRows: maximumRows,
             cooperativeDeadline: cooperativeDeadline
         )
@@ -38637,6 +38672,7 @@ final class SessionStore: ObservableObject {
         restingHR: Int,
         isNap: Bool,
         motionValidated: Bool,
+        allowHROnlyEstimate: Bool = false,
         maximumRows: Int?,
         cooperativeDeadline: AtriaSleepSettlementDeadline?
     ) throws -> [SleepStageSegment] {
@@ -38688,6 +38724,7 @@ final class SessionStore: ObservableObject {
                 isNap: isNap,
                 motionValidated: motionValidated,
                 motionEpochs: recoveredMotionEpochs,
+                allowHROnlyEstimate: allowHROnlyEstimate,
                 cooperativeDeadline: cooperativeDeadline
             )
         }
@@ -38698,7 +38735,8 @@ final class SessionStore: ObservableObject {
             restingHR: restingHR,
             isNap: isNap,
             motionValidated: motionValidated,
-            motionEpochs: recoveredMotionEpochs
+            motionEpochs: recoveredMotionEpochs,
+            allowHROnlyEstimate: allowHROnlyEstimate
         )
     }
 
@@ -38788,11 +38826,15 @@ final class SessionStore: ObservableObject {
         if sleep.source == "manual_sleep" || sleep.source == "manual_nap" { return false }
         guard AtriaSleepStageIntegrity.validates(stageSegments, for: sleep) else { return false }
         if sleep.source == "validated_sleep_stages" { return true }
-        // This versioned ID is a bounded migration receipt: only the fail-
-        // closed engine that requires dense, local HR plus actual recovered
-        // motion epochs emits it. Legacy `research-*` segments have no such
-        // provenance and are stripped until source sessions reconstruct them.
-        guard stageSegments.allSatisfy({ $0.id.hasPrefix("research-motion-v2-") }) else {
+        // These versioned IDs are bounded migration receipts: only the fail-
+        // closed engine emits them — `research-motion-v2-` when dense, local
+        // HR plus actual recovered motion epochs backed the night, and
+        // `research-hr-estimate-v1-` when dense HR alone staged a labeled
+        // ESTIMATE (2026-08-12; renders only through the estimate lane).
+        // Legacy `research-*` segments have neither provenance and are
+        // stripped until source sessions reconstruct them.
+        guard stageSegments.allSatisfy({ $0.id.hasPrefix(SleepStageSegment.motionReceiptIDPrefix) })
+                || SleepStageSegment.allHREstimateProvenance(stageSegments) else {
             return false
         }
         let hasSleepStageEstimate = stageSegments.contains { $0.stage != .awake }
@@ -40106,12 +40148,20 @@ final class SessionStore: ObservableObject {
         candidateSamples: Int,
         existingDuration: TimeInterval,
         candidateCoverage: TimeInterval,
-        hasTimeAlignedMotionEpochs: Bool = false
+        hasTimeAlignedMotionEpochs: Bool = false,
+        hasStoredStageSegments: Bool = true
     ) -> Bool {
         guard source.hasPrefix("user_adjusted_") else { return false }
         return hasTimeAlignedMotionEpochs
             || candidateSamples > existingSamples
             || candidateCoverage > existingDuration + 1
+            // A stage-less record with real HR evidence stays refresh-eligible
+            // even without sample growth: records saved before the HR-only
+            // estimate lane existed (2026-08-12) have `stageSegments == nil`
+            // that no growth trigger would ever revisit. The stager remains
+            // fail-closed, so this converges the first time it can stage —
+            // and no-change re-derivations return nil (never a save loop).
+            || (!hasStoredStageSegments && candidateSamples >= 12)
     }
 
     private nonisolated static func recoveredDataExecutionDeadline(
@@ -40154,7 +40204,9 @@ final class SessionStore: ObservableObject {
                                                           existingDuration: sleep.duration,
                                                           candidateCoverage: sensorCovered,
                                                           hasTimeAlignedMotionEpochs:
-                                                            motionProvenance.hasRecoveredEpochs) else {
+                                                            motionProvenance.hasRecoveredEpochs,
+                                                          hasStoredStageSegments:
+                                                            sleep.stageSegments?.isEmpty == false) else {
             return nil
         }
 
@@ -40185,6 +40237,9 @@ final class SessionStore: ObservableObject {
             restingHR: metrics.restingHR,
             isNap: isNap,
             motionValidated: motionProvenance.lowMotionValidated,
+            // Cooperative backfill lane: allowed to pay for HR-only
+            // ESTIMATE staging so stage-less records converge (2026-08-12).
+            allowHROnlyEstimate: true,
             maximumRows: Int.max,
             cooperativeDeadline: cooperativeDeadline
         )
@@ -40223,7 +40278,13 @@ final class SessionStore: ObservableObject {
                                            stageSegments: stages.isEmpty ? nil : stages,
                                            eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
                                            sleepNeedSeconds: sleep.sleepNeedSeconds,
-                                           frozenSleepNeed: sleep.frozenSleepNeed)
+                                           frozenSleepNeed: sleep.frozenSleepNeed,
+                                           // Evidence refresh rewrites the same
+                                           // record id; dropping the user's
+                                           // "which is your main sleep?" answer
+                                           // here would silently re-prompt the
+                                           // day and re-anchor its cycle.
+                                           dayPrimaryChoice: sleep.dayPrimaryChoice)
         // Never invent REM/deep/light from aggregate HR or clock position. A
         // recovered sleep keeps stages only when timestamped HR/motion evidence
         // produced a complete, integrity-valid segmentation.
@@ -40331,7 +40392,13 @@ final class SessionStore: ObservableObject {
                             }
                             if sleep.source.hasPrefix("user_adjusted_") {
                                 if !hasRecoveredEpochOverlap,
-                                   sleep.stageSegments?.isEmpty == false {
+                                   sleep.stageSegments?.isEmpty == false,
+                                   // HR-only ESTIMATE segments are backed by
+                                   // dense HR, not motion epochs — the epoch
+                                   // hygiene strip must not erase them.
+                                   !SleepStageSegment.allHREstimateProvenance(
+                                    sleep.stageSegments
+                                   ) {
                                     repaired += 1
                                     updated.append(Self.copyConfirmedSleep(
                                         sleep,
@@ -40375,6 +40442,9 @@ final class SessionStore: ObservableObject {
                                 ),
                                 motionValidated:
                                     provenance.lowMotionValidated,
+                                // Cooperative backfill lane (2026-08-12):
+                                // may pay for HR-only ESTIMATE staging.
+                                allowHROnlyEstimate: true,
                                 maximumRows: Int.max,
                                 cooperativeDeadline: deadline
                             )
@@ -51855,6 +51925,15 @@ struct SleepHistorySnapshot: Equatable {
                Self.qualifiesForHROnlyEstimate(source: source,
                                                stageSegments: stageSegments,
                                                stagesPassIntegrity: stagesPassIntegrity) {
+                evidence = .hrOnlyEstimate
+            }
+            // Estimate provenance is encoded in the segment ids themselves
+            // (`research-hr-estimate-v1-`). No record-level flag — not a
+            // legacy `motionValidated == true`, not a "ready" confidence —
+            // may promote HR-only estimate bars to validated-style authority.
+            // Contradictory records fail toward the estimate label.
+            if evidence != .none,
+               SleepStageSegment.allHREstimateProvenance(stageSegments) {
                 evidence = .hrOnlyEstimate
             }
             self.stageEvidence = evidence
