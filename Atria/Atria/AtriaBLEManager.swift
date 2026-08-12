@@ -16027,6 +16027,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         scheduleStaleArmedRangeLossBackfillReconciliation(reason: reason)
         guard defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) else { return }
         guard !offlineHistoricalSyncInProgress else { return }
+        // A promoted workout-motion owner that has not yet consumed its
+        // once-per-connection activation ticket needs the first quiet
+        // seconds of a fresh link: this scheduler's 8-second task otherwise
+        // starts a drain that the activation guard sees at ~12 seconds, so
+        // the ticket burns without a command ever being sent (physically
+        // reproduced 2026-08-13 03:47 IST — attempts 538→540, imuFrames=0,
+        // drain owned the shared link; the 7b651294 re-adopt eviction frees
+        // the CURRENT drain but cannot stop the NEXT tick from re-seizing).
+        // Bounded by the owner state machine: the defer dissolves the moment
+        // the activation command is consumed, the proof resolves, or the
+        // owner falls back — and live HR never depends on this lane.
+        if protectedR10CleanOwner == .protectedV9,
+           protectedR10CleanOwnerState == .protectedLaunchPending,
+           !defaults.bool(
+            forKey: Self.protectedR10ResponseEventDataSequenceSentKey
+           ) {
+            rangeLossBackfillTask?.cancel()
+            rangeLossBackfillTask = nil
+            defaults.set("deferred_workout_motion_bring_up",
+                         forKey: OfflineSyncDefaults.lastStatus)
+            defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+            AtriaDebugLog("ATRIADBG offline_sync status=deferred_workout_motion_bring_up reason=%@ action=hold_drain_until_activation_consumed_or_fallback",
+                          reason)
+            return
+        }
         // Terminal sequence-gap ticket: the gap remains truthfully pending,
         // but the automatic lane must not re-arm for the unchanged evidence.
         guard !suppressAutomaticRetryForParkedSequenceGapIfNeeded(
