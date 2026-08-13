@@ -34195,6 +34195,58 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Handoff-13 CP1: the single frozen positive-awake-evidence primitive.
+    /// Awake bins are five-minute physiology bins whose median sits at or
+    /// above resting + 8 — clearly outside the sleep band this user's core
+    /// bins occupy (≤ resting + 4). Evidence exists on a side only when a
+    /// SUSTAINED run of near-adjacent awake bins (≥ 25 minutes, matching the
+    /// wake-boundary lane's sustained-wake lookback) lies within the two-hour
+    /// search window beside the boundary. A single spike bin can never brace
+    /// an episode; neither can silence.
+    enum SustainedAwakeEvidenceSide { case before, after }
+
+    nonisolated static func sustainedAwakeEvidenceExists(
+        awakeBinStarts: [Date],
+        boundary: Date,
+        side: SustainedAwakeEvidenceSide,
+        binSeconds: TimeInterval = 5 * 60,
+        searchWindow: TimeInterval = 2 * 60 * 60,
+        minimumRun: TimeInterval = 25 * 60
+    ) -> Bool {
+        let windowStart: Date
+        let windowEnd: Date
+        switch side {
+        case .before:
+            windowStart = boundary.addingTimeInterval(-searchWindow)
+            windowEnd = boundary
+        case .after:
+            windowStart = boundary
+            windowEnd = boundary.addingTimeInterval(searchWindow)
+        }
+        var runStart: Date?
+        var previous: Date?
+        for binStart in awakeBinStarts {
+            guard binStart >= windowStart.addingTimeInterval(-binSeconds),
+                  binStart <= windowEnd else {
+                if binStart > windowEnd { break }
+                continue
+            }
+            if let last = previous,
+               binStart.timeIntervalSince(last) <= binSeconds * 1.5 {
+                if runStart == nil { runStart = last }
+            } else {
+                runStart = binStart
+            }
+            previous = binStart
+            if let runStart,
+               binStart.addingTimeInterval(binSeconds)
+                   .timeIntervalSince(runStart) >= minimumRun {
+                return true
+            }
+        }
+        return false
+    }
+
     private nonisolated static func physiologicalSleepReviewNightDraftCore(
         in sessions: [SavedSession],
         confirmedSleeps: [UserConfirmedSleep],
@@ -34214,6 +34266,7 @@ final class SessionStore: ObservableObject {
         let cutoff = newestEnd.addingTimeInterval(-36 * 60 * 60)
         let binSeconds: TimeInterval = 5 * 60
         var valuesByBucket: [Int: [Int]] = [:]
+        var awakeBinStarts: [Date] = []
         for (sessionIndex, session) in sessions.enumerated()
         where session.end >= cutoff {
             if sessionIndex.isMultiple(of: 8) {
@@ -34255,8 +34308,20 @@ final class SessionStore: ObservableObject {
                     median: median,
                     sampleCount: values.count
                 ))
+            } else if median >= rest + 8 {
+                // Handoff-13 CP1: positive awake evidence. Bins clearly above
+                // the sleep band brace a shifted daytime episode — absence of
+                // low-HR bins alone never proves wakefulness.
+                awakeBinStarts.append(Date(
+                    timeIntervalSince1970: Double(bucket) * binSeconds
+                ))
             }
         }
+        try cooperativeStableSort(
+            &awakeBinStarts,
+            cooperativeDeadline: cooperativeDeadline,
+            areInIncreasingOrder: <
+        )
         try cooperativeStableSort(
             &bins,
             cooperativeDeadline: cooperativeDeadline,
@@ -34304,6 +34369,29 @@ final class SessionStore: ObservableObject {
                 && coreOverlap >= AggregateSleepCandidate.minimumAutoConfirmSleepCoreOverlap
                 && (captured >= AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration
                     || coreOverlapFraction >= 0.60)
+            // Handoff-13 CP1: a SHIFTED daytime sleep has zero 00:00–06:00
+            // core overlap by definition, so the night-core gate can never
+            // admit it (the physical Aug-13 09:56–13:39 candidate). Admit a
+            // main-sleep-shaped daytime episode only when POSITIVE sustained
+            // awake evidence braces it on BOTH sides — a run of clearly
+            // above-band bins before the episode and after it. A mere end
+            // timestamp, ambient quiet, or absence of motion is never enough,
+            // and this remains review-only: it changes no auto-confirm gate.
+            let shiftedDaytimeReview = !mainSleep
+                && captured >= 150 * 60
+                && span >= AggregateSleepCandidate.strictMinimumDuration
+                && captured < AggregateSleepCandidate
+                    .minimumAutoConfirmMainSleepDuration
+                && Self.sustainedAwakeEvidenceExists(
+                    awakeBinStarts: awakeBinStarts,
+                    boundary: start,
+                    side: .before
+                )
+                && Self.sustainedAwakeEvidenceExists(
+                    awakeBinStarts: awakeBinStarts,
+                    boundary: end,
+                    side: .after
+                )
             // This fallback has HR bins only. During the day, low HR is not
             // specific to sleep: active wear can contain long low-HR stretches
             // between brief exertion (the physical 2026-07-22 false nap had a
@@ -34318,12 +34406,13 @@ final class SessionStore: ObservableObject {
                                                                candidateEnd: end,
                                                                candidateDuration: min(captured, span),
                                                                isNap: nap) != nil
-            guard mainSleep || nap,
+            guard mainSleep || shiftedDaytimeReview || nap,
                   !overlapsConfirmed || extendsConfirmed,
                   !dismissedCandidates.contains(where: {
                       $0.suppresses(start: start, end: end)
                   }) else { continue }
-            let source = mainSleep ? "sleep_episode_review" : "nap_candidate"
+            let source = (mainSleep || shiftedDaytimeReview)
+                ? "sleep_episode_review" : "nap_candidate"
             let day = endHour <= 11 ? calendar.startOfDay(for: end) : calendar.startOfDay(for: start)
             let weightedCount = episode.reduce(0) { $0 + $1.sampleCount }
             let weightedMedian = weightedCount > 0
@@ -50997,6 +51086,21 @@ final class SessionStore: ObservableObject {
             }
         }
         #endif
+        // Handoff-13 CP3-C: one read-only whole-container storage accounting
+        // per launch, off the critical path. It measures physically allocated
+        // bytes across every managed store and records the honest retention
+        // state — currently blocked, and the receipt names exactly why.
+        Task.detached(priority: .utility) {
+            let categories = AtriaManagedStorageInventory.measure()
+            AtriaManagedStorageInventory.recordReceipt(
+                categories: categories,
+                retentionExecution:
+                    AtriaManagedStorageInventory
+                        .currentRetentionExecutionBlocked,
+                nextEligibleAction:
+                    "enable cold-session consumer parity, then archive-wide maintenance lease"
+            )
+        }
         // Insights compute AFTER the launch render (off the critical path). It's
         // light now, but never let it touch the first-frame budget on a big store.
         Task { @MainActor [weak self] in self?.recomputeBehaviorInsights() }

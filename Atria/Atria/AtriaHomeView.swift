@@ -9721,7 +9721,7 @@ final class AtriaHomeModel {
     private var historicalStressReplayGate = AtriaHistoricalStressReplayGenerationGate()
     private var historicalStressCalibrationPublicationGate =
         AtriaHistoricalStressCalibrationPublicationGate()
-    private var historicalStressReplayWorker: Task<AtriaHistoricalStressReplay.Result, Never>?
+    private var historicalStressReplayWorker: Task<(AtriaHistoricalStressReplay.Result, AtriaHistoricalStressReplay.GapClassificationDraft?), Never>?
     private let historicalStressReplayTriggerSubject = PassthroughSubject<Void, Never>()
     /// Publishes the exact fallback resting-HR scalar consumed by historical
     /// personalization while the durable baseline is still learning.
@@ -11322,7 +11322,8 @@ final class AtriaHomeModel {
         let confirmedSleeps = store.confirmedSleeps
 
         let worker = Task.detached(priority: .utility)
-            { () -> AtriaHistoricalStressReplay.Result in
+            { () -> (AtriaHistoricalStressReplay.Result,
+                     AtriaHistoricalStressReplay.GapClassificationDraft?) in
             // Handoff-12 CP2: today's live-period minutes live in the resident
             // journal, not in any saved session, so a replay sourced only from
             // saved sessions could never reconcile a minute the live scorer
@@ -11353,18 +11354,25 @@ final class AtriaHomeModel {
                     personalization: personalization,
                     now: now
                 )
-            }) else { return .empty }
+            }) else { return (.empty, nil) }
             let result = AtriaHistoricalStressReplay.evaluate(snapshot)
-            AtriaHistoricalStressReplay.recordGapReceipts(
+            // Handoff-13 CP2: the draft classifies against the replay SOURCE
+            // only; the finalize step on the main actor overlays merged-store
+            // presence and the active-journal row-cap deferral, where those
+            // truths live.
+            let draft = AtriaHistoricalStressReplay.classifyGapMinutes(
                 sessions: unionSessions,
                 producedFacts: result.facts,
+                activeJournalSpan: journal.map {
+                    $0.start.timeIntervalSince1970...$0.end.timeIntervalSince1970
+                },
                 now: now
             )
-            return result
+            return (result, draft)
         }
         historicalStressReplayWorker = worker
         Task { @MainActor [weak self] in
-            let replay = await worker.value
+            let (replay, draft) = await worker.value
             guard !worker.isCancelled,
                   let self,
                   self.historicalStressReplayGate.accepts(generation) else {
@@ -11380,6 +11388,20 @@ final class AtriaHomeModel {
                 replay,
                 now: now
             )
+            if let draft {
+                let cadence = AtriaPhysiologicalStressModel.evaluationCadence
+                let mergedMinutes = Set(
+                    self.stressMonitorStore.history.map {
+                        Int(floor($0.t.timeIntervalSince1970 / cadence)
+                            * cadence)
+                    }
+                )
+                AtriaHistoricalStressReplay.finalizeGapReceipts(
+                    draft: draft,
+                    mergedStoreMinutes: mergedMinutes,
+                    now: now
+                )
+            }
         }
     }
 

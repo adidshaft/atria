@@ -232,11 +232,17 @@ final class AtriaHandoff12Tests: XCTestCase {
                 ))
             ) { produced.append(fact) }
         }
-        AtriaHistoricalStressReplay.recordGapReceipts(
+        let draft = AtriaHistoricalStressReplay.classifyGapMinutes(
             sessions: [dense],
             producedFacts: produced,
+            activeJournalSpan: nil,
             now: now,
-            windowHours: 2,
+            windowHours: 2
+        )
+        AtriaHistoricalStressReplay.finalizeGapReceipts(
+            draft: draft,
+            mergedStoreMinutes: [],
+            now: now,
             defaults: defaults
         )
         let data = try XCTUnwrap(defaults.data(
@@ -260,6 +266,65 @@ final class AtriaHandoff12Tests: XCTestCase {
             summary.missingMinutes.count,
             AtriaHistoricalStressReplay.gapReceiptMinuteCap
         )
+        // Handoff-13 CP2: categories sum exactly to the window's minute keys.
+        let total = summary.presentInMergedStore
+            + summary.qualifiedAndReconciled + summary.rawHRGap
+            + summary.insufficientHRSpan + summary.insufficientHRSamples
+            + summary.sourceNotYetDurable
+            + summary.activeJournalRowCapDeferred + summary.kernelDeclined
+        XCTAssertEqual(total, draft.classesByMinute.count)
+    }
+
+    /// Handoff-13 CP2: a minute already present in the merged store can never
+    /// be called missing, and a shortfall inside the unsealed active journal's
+    /// span is a named row-cap deferral, not a generic evidence failure.
+    func testGapReceiptsHonorMergedStoreAndActiveJournalRowCap() throws {
+        let calendar = Calendar.current
+        let base = calendar.startOfDay(for: Date()).addingTimeInterval(12 * 3_600)
+        let now = base.addingTimeInterval(2 * 3_600)
+        let dense = denseSession(start: base,
+                                 duration: 3_600,
+                                 bpm: { _ in 70 })
+        let journalStart = base.addingTimeInterval(3_600).timeIntervalSince1970
+        let journalEnd = now.timeIntervalSince1970
+        let draft = AtriaHistoricalStressReplay.classifyGapMinutes(
+            sessions: [dense],
+            producedFacts: [],
+            activeJournalSpan: journalStart...journalEnd,
+            now: now,
+            windowHours: 2
+        )
+        // Pretend the merged store already has live facts for the first
+        // 20 dense minutes.
+        let cadence = AtriaPhysiologicalStressModel.evaluationCadence
+        var merged: Set<Int> = []
+        for index in 6..<26 {
+            let t = base.addingTimeInterval(Double(index) * 60)
+            merged.insert(Int(floor(t.timeIntervalSince1970 / cadence) * cadence))
+        }
+        AtriaHistoricalStressReplay.finalizeGapReceipts(
+            draft: draft,
+            mergedStoreMinutes: merged,
+            now: now,
+            defaults: defaults
+        )
+        let data = try XCTUnwrap(defaults.data(
+            forKey: AtriaHistoricalStressReplay.gapReceiptKey
+        ))
+        let summary = try JSONDecoder().decode(
+            AtriaHistoricalStressReplay.GapReceiptSummary.self,
+            from: data
+        )
+        XCTAssertEqual(summary.presentInMergedStore, merged.count,
+                       "live facts cannot inflate missing counts")
+        XCTAssertGreaterThan(summary.activeJournalRowCapDeferred, 0,
+                             "the capped active tail is deferred, not blamed")
+        XCTAssertTrue(summary.missingMinutes.contains {
+            $0.hasSuffix("|source_not_yet_durable(active_journal_row_cap)")
+        })
+        XCTAssertFalse(summary.missingMinutes.contains { entry in
+            merged.contains(Int(entry.split(separator: "|")[0]) ?? -1)
+        }, "no minute present in the merged store may be listed missing")
     }
 
     /// The reconciliation source (dense resident HR through the same batch

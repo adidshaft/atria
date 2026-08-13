@@ -1,0 +1,202 @@
+import Foundation
+
+/// Handoff-13 CP3-C: one read-only, whole-container accounting of every
+/// Atria-managed store, in physically allocated bytes (SQLite -wal/-shm and
+/// hidden temporaries included). This is TRUTH, not enforcement: production
+/// archive-wide maintenance remains gated off and the compact cold-session
+/// consumers are still shadow-only, so no nominal cap is a guarantee. The
+/// receipt this writes says exactly that — a false storage promise is worse
+/// than an honest blocker.
+enum AtriaManagedStorageInventory {
+    struct CategoryBytes: Codable, Equatable {
+        let category: String
+        let bytes: Int64
+        let fileCount: Int
+    }
+
+    struct Receipt: Codable {
+        var schema: Int = 1
+        var recordedAtUnix: TimeInterval
+        var categories: [CategoryBytes]
+        var totalBytes: Int64
+        /// The high-volume raw+replay sub-cap this pass inherits (bytes).
+        var rawReplaySubCapBytes: Int64 = 512 * 1_024 * 1_024
+        /// Whole managed-health target after maintenance (bytes).
+        var managedHealthTargetBytes: Int64 = 768 * 1_024 * 1_024
+        /// Generated/export budget, separately visible (bytes).
+        var generatedExportBudgetBytes: Int64 = 256 * 1_024 * 1_024
+        /// Whole Atria-managed warning threshold (bytes).
+        var warningThresholdBytes: Int64 = 1_024 * 1_024 * 1_024
+        /// The exact reason destructive retention is not running. Honest by
+        /// construction: automatic archive-wide maintenance is disabled in
+        /// production and every compact cold consumer is shadow-only, so age
+        /// tiers are diagnostic targets, not enforced bounds.
+        var retentionExecution: String
+        var reclaimedBytes: Int64 = 0
+        var nextEligibleAction: String
+    }
+
+    static let receiptKey = "atria.debug.managedStorageInventory.v1"
+
+    /// The category → directory/file map. Paths are relative to Documents
+    /// unless prefixed `AS:` (Application Support). Kept as data so the test
+    /// and the accounting walk cannot drift apart.
+    static let categoryPaths: [(category: String, paths: [String])] = [
+        ("raw_history", ["atria-historical/segments"]),
+        ("archive_identity_and_manifest",
+         ["atria-historical/historical-archive.jsonl",
+          "atria-historical/historical-archive.identity.jsonl"]),
+        ("retired_replay_evidence", ["atria-historical/retired-replay-v1"]),
+        ("aggregates_and_sidecars",
+         ["atria-historical/aggregates-v2",
+          "atria-historical/retention-manifests-v2",
+          "atria-historical/drain-completions-v1",
+          "atria-historical/retirement-intents-v1",
+          "atria-historical/hr-index-v1"]),
+        ("long_term_rollups", ["atria-historical/long-term-rollups-v1"]),
+        ("cold_sessions",
+         ["atria-full-fidelity-cold-sessions-v1",
+          "atria-cold-session-tier-v1",
+          "sessions-cold.json"]),
+        ("sessions_and_daily",
+         ["sessions.json", "daily-rollups.json", "daily-metrics.json",
+          "biological-age-cache.json"]),
+        ("stress_history", ["AS:Atria/stress-history-v3"]),
+        ("projections_and_receipts",
+         ["AS:atria-projections", "AS:Atria/HistoricalRecovery",
+          "AS:Atria/verified-step-evidence-v1",
+          "atria-historical/ble-request-authority-v1",
+          "atria-historical/full-drain-authority-v1",
+          "atria-historical/history-drain-state-v1"]),
+        ("generated_exports",
+         ["atria-raw-exports", "atria-captures", "atria-backups",
+          "whoop-backups", "atria-hr-reference-packages"]),
+    ]
+
+    /// Physically allocated bytes for one file, including its SQLite
+    /// sidecars when present. Never follows symlinks.
+    private static func allocatedBytes(
+        at url: URL,
+        fileManager: FileManager
+    ) -> (bytes: Int64, files: Int) {
+        var total: Int64 = 0
+        var count = 0
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: url.path,
+                                     isDirectory: &isDirectory) else {
+            return (0, 0)
+        }
+        if isDirectory.boolValue {
+            guard let enumerator = fileManager.enumerator(
+                at: url,
+                includingPropertiesForKeys: [
+                    .totalFileAllocatedSizeKey,
+                    .fileAllocatedSizeKey,
+                    .isSymbolicLinkKey,
+                    .isRegularFileKey,
+                ],
+                options: []
+            ) else { return (0, 0) }
+            for case let file as URL in enumerator {
+                guard let values = try? file.resourceValues(forKeys: [
+                    .totalFileAllocatedSizeKey,
+                    .fileAllocatedSizeKey,
+                    .isSymbolicLinkKey,
+                    .isRegularFileKey,
+                ]) else { continue }
+                if values.isSymbolicLink == true { continue }
+                guard values.isRegularFile == true else { continue }
+                total += Int64(values.totalFileAllocatedSize
+                               ?? values.fileAllocatedSize ?? 0)
+                count += 1
+            }
+        } else {
+            if let values = try? url.resourceValues(forKeys: [
+                .totalFileAllocatedSizeKey,
+                .fileAllocatedSizeKey,
+                .isSymbolicLinkKey,
+            ]), values.isSymbolicLink != true {
+                total = Int64(values.totalFileAllocatedSize
+                              ?? values.fileAllocatedSize ?? 0)
+                count = 1
+            }
+            // SQLite sidecars sit beside the base file.
+            for suffix in ["-wal", "-shm"] {
+                let sidecar = URL(fileURLWithPath: url.path + suffix)
+                if let values = try? sidecar.resourceValues(forKeys: [
+                    .totalFileAllocatedSizeKey, .fileAllocatedSizeKey,
+                ]) {
+                    total += Int64(values.totalFileAllocatedSize
+                                   ?? values.fileAllocatedSize ?? 0)
+                    count += 1
+                }
+            }
+        }
+        return (total, count)
+    }
+
+    static func measure(
+        documentsURL: URL? = nil,
+        applicationSupportURL: URL? = nil,
+        fileManager: FileManager = .default
+    ) -> [CategoryBytes] {
+        let documents = documentsURL
+            ?? fileManager.urls(for: .documentDirectory,
+                                in: .userDomainMask).first
+            ?? fileManager.temporaryDirectory
+        let support = applicationSupportURL
+            ?? fileManager.urls(for: .applicationSupportDirectory,
+                                in: .userDomainMask).first
+            ?? fileManager.temporaryDirectory
+        var results: [CategoryBytes] = []
+        for (category, paths) in categoryPaths {
+            var bytes: Int64 = 0
+            var files = 0
+            for path in paths {
+                let url: URL
+                if path.hasPrefix("AS:") {
+                    url = support.appendingPathComponent(
+                        String(path.dropFirst(3))
+                    )
+                } else {
+                    url = documents.appendingPathComponent(path)
+                }
+                let measured = allocatedBytes(at: url,
+                                              fileManager: fileManager)
+                bytes += measured.bytes
+                files += measured.files
+            }
+            results.append(CategoryBytes(category: category,
+                                         bytes: bytes,
+                                         fileCount: files))
+        }
+        return results
+    }
+
+    /// Records the bounded maintenance receipt. `retentionExecution` must
+    /// state the exact blocker while destructive maintenance stays disabled.
+    static func recordReceipt(
+        categories: [CategoryBytes],
+        retentionExecution: String,
+        nextEligibleAction: String,
+        now: Date = Date(),
+        defaults: UserDefaults = .standard
+    ) {
+        let receipt = Receipt(
+            recordedAtUnix: now.timeIntervalSince1970,
+            categories: categories,
+            totalBytes: categories.reduce(0) { $0 + $1.bytes },
+            retentionExecution: retentionExecution,
+            nextEligibleAction: nextEligibleAction
+        )
+        guard let data = try? JSONEncoder().encode(receipt) else { return }
+        defaults.set(data, forKey: receiptKey)
+    }
+
+    /// The truthful current blocker, derived from the same authorities the
+    /// planner consults. Automatic execution is a debug-only override and
+    /// every compact cold consumer is shadow-only — so retention execution
+    /// is blocked, and the receipt says by exactly what.
+    static let currentRetentionExecutionBlocked =
+        "RETENTION_EXECUTION_BLOCKED(automatic_execution_disabled+cold_session_consumers_shadow_only)"
+}

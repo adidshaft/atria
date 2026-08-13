@@ -1709,15 +1709,24 @@ enum AtriaHistoricalStressReplay {
     /// against the same `AtriaPhysiologicalStressModel` gates the kernel
     /// enforces — never interpolation. Diagnostic only; no product reader.
     struct GapReceiptSummary: Codable {
-        var schema: Int = 1
+        var schema: Int = 2
         var recordedAtUnix: TimeInterval
         var windowStartUnix: TimeInterval
         var windowEndUnix: TimeInterval
+        /// Minutes already present in the FINAL merged Stress store (live or
+        /// prior replay). Handoff-13 CP2: these were previously misclassified
+        /// as evidence shortfalls because the draft compared only against the
+        /// facts this one replay produced.
+        var presentInMergedStore: Int
         var qualifiedAndReconciled: Int
         var rawHRGap: Int
         var insufficientHRSpan: Int
         var insufficientHRSamples: Int
         var sourceNotYetDurable: Int
+        /// Minutes inside the unsealed active session's span but beyond the
+        /// row-capped resident-journal window — deferred, not missing; they
+        /// terminalize when the session seals into a saved session.
+        var activeJournalRowCapDeferred: Int
         var kernelDeclined: Int
         /// "minuteUnix|classification", newest last, capped.
         var missingMinutes: [String]
@@ -1726,13 +1735,29 @@ enum AtriaHistoricalStressReplay {
     static let gapReceiptKey = "atria.debug.stressGapReceipts.v1"
     static let gapReceiptMinuteCap = 96
 
-    static func recordGapReceipts(
+    /// Handoff-13 CP2 stage 1 (any executor): classify every minute of the
+    /// window against the replay SOURCE evidence and the facts this replay
+    /// produced. The draft deliberately knows nothing about the merged store;
+    /// `finalizeGapReceipts` overlays store presence and the active-journal
+    /// row-cap state on the main actor, where both truths live.
+    struct GapClassificationDraft {
+        let windowStartUnix: TimeInterval
+        let windowEndUnix: TimeInterval
+        /// minuteUnix -> raw classification (produced facts count as
+        /// qualified_and_reconciled).
+        let classesByMinute: [Int: String]
+        /// Span of the unsealed active-journal session included in the
+        /// source, when one was unioned in.
+        let activeJournalSpan: ClosedRange<TimeInterval>?
+    }
+
+    static func classifyGapMinutes(
         sessions: [SavedSession],
         producedFacts: [AtriaPhysiologicalStressModel.MinuteFact],
+        activeJournalSpan: ClosedRange<TimeInterval>?,
         now: Date,
-        windowHours: Double = 12,
-        defaults: UserDefaults = .standard
-    ) {
+        windowHours: Double = 12
+    ) -> GapClassificationDraft {
         let cadence = AtriaPhysiologicalStressModel.evaluationCadence
         let window = AtriaPhysiologicalStressModel.windowDuration
         let windowEnd = floor(now.timeIntervalSince1970 / cadence) * cadence
@@ -1752,78 +1777,118 @@ enum AtriaHistoricalStressReplay {
         heartRateUnix.sort()
         let newestHR = heartRateUnix.last ?? windowStart
         let produced = Set(producedFacts.map {
-            floor($0.date.timeIntervalSince1970 / cadence) * cadence
+            Int(floor($0.date.timeIntervalSince1970 / cadence) * cadence)
         })
+        var classes: [Int: String] = [:]
+        var minute = windowStart
+        while minute < windowEnd {
+            defer { minute += cadence }
+            let key = Int(minute)
+            if produced.contains(key) {
+                classes[key] = "qualified_and_reconciled"
+                continue
+            }
+            if minute > newestHR + cadence {
+                classes[key] = "source_not_yet_durable"
+                continue
+            }
+            let lower = minute - window
+            var lo = 0
+            var hi = heartRateUnix.count
+            while lo < hi {
+                let mid = (lo + hi) / 2
+                if heartRateUnix[mid] <= lower { lo = mid + 1 } else { hi = mid }
+            }
+            var first = lo
+            var samples = 0
+            var firstDate: TimeInterval?
+            var lastDate: TimeInterval?
+            var maxGap: TimeInterval = 0
+            var previous: TimeInterval?
+            while first < heartRateUnix.count,
+                  heartRateUnix[first] <= minute {
+                let t = heartRateUnix[first]
+                samples += 1
+                if firstDate == nil { firstDate = t }
+                lastDate = t
+                if let previous { maxGap = max(maxGap, t - previous) }
+                previous = t
+                first += 1
+            }
+            if samples
+                < AtriaPhysiologicalStressModel.minimumQualifiedHRSamples {
+                classes[key] = "insufficient_hr_samples"
+            } else if let firstDate, let lastDate,
+                      lastDate - firstDate
+                        < AtriaPhysiologicalStressModel.minimumQualifiedHRSpan {
+                classes[key] = "insufficient_hr_span"
+            } else if maxGap > AtriaPhysiologicalStressModel
+                .maximumRawHeartRateGap {
+                classes[key] = "raw_hr_gap"
+            } else {
+                classes[key] = "kernel_declined"
+            }
+        }
+        return GapClassificationDraft(windowStartUnix: windowStart,
+                                      windowEndUnix: windowEnd,
+                                      classesByMinute: classes,
+                                      activeJournalSpan: activeJournalSpan)
+    }
+
+    /// Handoff-13 CP2 stage 2: overlay the merged-store truth. A minute
+    /// already present in the final merged store can never be "missing"; a
+    /// minute inside the unsealed active session but beyond the row-capped
+    /// journal window is deferred (`active_journal_row_cap`), not an
+    /// evidence shortfall. Categories sum exactly to the window's minutes.
+    static func finalizeGapReceipts(
+        draft: GapClassificationDraft,
+        mergedStoreMinutes: Set<Int>,
+        now: Date,
+        defaults: UserDefaults = .standard
+    ) {
         var summary = GapReceiptSummary(
             recordedAtUnix: now.timeIntervalSince1970,
-            windowStartUnix: windowStart,
-            windowEndUnix: windowEnd,
+            windowStartUnix: draft.windowStartUnix,
+            windowEndUnix: draft.windowEndUnix,
+            presentInMergedStore: 0,
             qualifiedAndReconciled: 0,
             rawHRGap: 0,
             insufficientHRSpan: 0,
             insufficientHRSamples: 0,
             sourceNotYetDurable: 0,
+            activeJournalRowCapDeferred: 0,
             kernelDeclined: 0,
             missingMinutes: []
         )
-        var minute = windowStart
-        while minute < windowEnd {
-            defer { minute += cadence }
-            if produced.contains(minute) {
+        for key in draft.classesByMinute.keys.sorted() {
+            var classification = draft.classesByMinute[key] ?? "kernel_declined"
+            if classification == "qualified_and_reconciled" {
                 summary.qualifiedAndReconciled += 1
                 continue
             }
-            let classification: String
-            if minute > newestHR + cadence {
-                classification = "source_not_yet_durable"
-                summary.sourceNotYetDurable += 1
+            if mergedStoreMinutes.contains(key) {
+                summary.presentInMergedStore += 1
+                continue
+            }
+            if let span = draft.activeJournalSpan,
+               span.contains(TimeInterval(key)),
+               classification == "insufficient_hr_samples"
+                || classification == "insufficient_hr_span" {
+                classification = "source_not_yet_durable(active_journal_row_cap)"
+                summary.activeJournalRowCapDeferred += 1
             } else {
-                let lower = minute - window
-                var lo = 0
-                var hi = heartRateUnix.count
-                while lo < hi {
-                    let mid = (lo + hi) / 2
-                    if heartRateUnix[mid] <= lower { lo = mid + 1 } else { hi = mid }
-                }
-                var first = lo
-                var samples = 0
-                var firstDate: TimeInterval?
-                var lastDate: TimeInterval?
-                var maxGap: TimeInterval = 0
-                var previous: TimeInterval?
-                while first < heartRateUnix.count,
-                      heartRateUnix[first] <= minute {
-                    let t = heartRateUnix[first]
-                    samples += 1
-                    if firstDate == nil { firstDate = t }
-                    lastDate = t
-                    if let previous { maxGap = max(maxGap, t - previous) }
-                    previous = t
-                    first += 1
-                }
-                if samples
-                    < AtriaPhysiologicalStressModel.minimumQualifiedHRSamples {
-                    classification = "insufficient_hr_samples"
+                switch classification {
+                case "raw_hr_gap": summary.rawHRGap += 1
+                case "insufficient_hr_span": summary.insufficientHRSpan += 1
+                case "insufficient_hr_samples":
                     summary.insufficientHRSamples += 1
-                } else if let firstDate, let lastDate,
-                          lastDate - firstDate
-                            < AtriaPhysiologicalStressModel
-                                .minimumQualifiedHRSpan {
-                    classification = "insufficient_hr_span"
-                    summary.insufficientHRSpan += 1
-                } else if maxGap > AtriaPhysiologicalStressModel
-                    .maximumRawHeartRateGap {
-                    classification = "raw_hr_gap"
-                    summary.rawHRGap += 1
-                } else {
-                    classification = "kernel_declined"
-                    summary.kernelDeclined += 1
+                case "source_not_yet_durable":
+                    summary.sourceNotYetDurable += 1
+                default: summary.kernelDeclined += 1
                 }
             }
             if summary.missingMinutes.count < gapReceiptMinuteCap {
-                summary.missingMinutes.append(
-                    "\(Int(minute))|\(classification)"
-                )
+                summary.missingMinutes.append("\(key)|\(classification)")
             }
         }
         guard let data = try? JSONEncoder().encode(summary) else { return }
