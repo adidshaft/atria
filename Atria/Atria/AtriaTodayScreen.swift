@@ -905,39 +905,6 @@ struct AtriaTodayScreen: View {
         }
     }
 
-    /// How many days back the ring hero is browsing (0 = live today). Past
-    /// days render the FROZEN daily rollup — the same settled values the
-    /// trends and detail sheets read — never a re-derived live estimate.
-    @State private var ringDayOffset = 0
-
-    private var ringBrowseDay: Date {
-        Calendar.current.date(byAdding: .day,
-                              value: -ringDayOffset,
-                              to: Calendar.current.startOfDay(for: Date()))
-            ?? Calendar.current.startOfDay(for: Date())
-    }
-
-    private var ringBrowseEntry: DailyRollupStoreEntry? {
-        guard ringDayOffset > 0 else { return nil }
-        let day = ringBrowseDay
-        return dayDescendingRollups.first {
-            Calendar.current.isDate($0.day, inSameDayAs: day)
-        }
-    }
-
-    /// The furthest back the chevron may browse: the oldest saved rollup,
-    /// capped at 30 days. Browsing past saved history shows honest "--" days
-    /// rather than inventing values, so the cap is a courtesy, not a truth gate.
-    private var ringMaxDayOffset: Int {
-        guard let oldest = dayDescendingRollups.last?.day else { return 0 }
-        let days = Calendar.current.dateComponents(
-            [.day],
-            from: Calendar.current.startOfDay(for: oldest),
-            to: Calendar.current.startOfDay(for: Date())
-        ).day ?? 0
-        return min(max(days, 0), 30)
-    }
-
     /// A past day's ring metric from its frozen rollup. Every value is the
     /// settled number or an honest "--"; no live estimator runs for history.
     private func historicalRingMetric(for slot: AtriaTriRingSlot,
@@ -998,135 +965,48 @@ struct AtriaTodayScreen: View {
         }
     }
 
-    private static let ringBrowseDayFormatter: DateFormatter = {
+    fileprivate static let ringBrowseDayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEE, MMM d"
         return formatter
     }()
 
-    /// Compact day switcher above the rings — "in case i want to see a day
-    /// back" (2026-08-12 user request). Chevrons step whole civil days; the
-    /// label snaps back to Today on tap.
-    private var ringDayNavigation: some View {
-        HStack(spacing: 12) {
-            Button {
-                ringDayOffset = min(ringDayOffset + 1, ringMaxDayOffset)
-            } label: {
-                Image(systemName: "chevron.left")
-                    .font(.caption.weight(.bold))
-                    .frame(width: 36, height: 30)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(ringDayOffset >= ringMaxDayOffset)
-            .accessibilityLabel("Previous day")
-
-            Button {
-                ringDayOffset = 0
-            } label: {
-                Text(ringDayOffset == 0
-                     ? "Today"
-                     : Self.ringBrowseDayFormatter.string(from: ringBrowseDay))
-                    .textCase(.uppercase)
-                    .font(.caption2.weight(.bold))
-                    .tracking(0.8)
-                    .foregroundStyle(ringDayOffset == 0 ? Color.secondary : Color.primary)
-                    .padding(.horizontal, 12)
-                    .frame(minHeight: 30)
-                    .background(.quaternary.opacity(ringDayOffset == 0 ? 0.35 : 0.6),
-                                in: Capsule(style: .continuous))
-                    .contentShape(Capsule())
-            }
-            .buttonStyle(.plain)
-            .disabled(ringDayOffset == 0)
-            .accessibilityLabel(ringDayOffset == 0
-                                ? "Showing today"
-                                : "Showing \(ringBrowseDay.formatted(date: .complete, time: .omitted)). Returns to today.")
-
-            Button {
-                ringDayOffset = max(ringDayOffset - 1, 0)
-            } label: {
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.bold))
-                    .frame(width: 36, height: 30)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(ringDayOffset == 0)
-            .accessibilityLabel("Next day")
-        }
-    }
 
     private var triRingHero: some View {
-        let browsingEntry = ringBrowseEntry
-        let resolvedSlots = ringSlots.map { slot in
-            AtriaTriRingSlotContent(
-                slot: slot,
-                metric: ringDayOffset == 0
-                    ? metric(for: slot)
-                    : historicalRingMetric(for: slot, entry: browsingEntry)
-            )
-        }
-        return VStack(spacing: 10) {
-            ringDayNavigation
-            // Ring-metric-picker migration: each ring position resolves
-            // through `ringSlots`/`metric(for:)` to whichever of the five
-            // supported metrics (sleep/recovery/strain/hrv/rhr) the user
-            // assigned it, via AtriaTriRing's new slots array API
-            // (coordinated with the IA-6.1 static-check pin update in
-            // test_handoff_static_checks.py -- see that file for the note
-            // citing this migration).
-            //
-            // Perf pass (2026-07-06): `AtriaTodayHeroShrink` now OWNS the
-            // scroll-shrink `progress` @State and the `.onScrollGeometryChange`
-            // observation. Previously the progress lived on AtriaTodayScreen
-            // and was read here, so every quantized scroll write re-evaluated
-            // this whole property (ring construction + slot/metric plumbing)
-            // AND the rest of the parent body. Now the per-step churn is fully
-            // contained in the small child view -- the parent no longer reads
-            // any scroll state, so it stops re-evaluating on scroll entirely.
-            AtriaTodayHeroShrink(minScale: Self.heroMinScale) {
-                if ringDayOffset == 0 {
-                    AtriaTriRing(slots: resolvedSlots,
-                                 centerValue: centerValue,
-                                 centerState: centerState,
-                                 // Name the center's metric (2026-08-01 ring fix):
-                                 // the numeral follows the user's configurable
-                                 // center pick, so "7h 42m / 96% of need" must say
-                                 // it is Sleep the moment the state line doesn't.
-                                 centerMetricName: centerMetricName,
-                                 centerDelta: centerDeltaText,
-                                 accessibilitySummary: accessibilitySummary,
-                                 actions: ringActions)
-                } else {
-                    // A browsed past day is a read-only frozen snapshot: the
-                    // center carries the center slot's saved value, the state
-                    // line names the day, deltas/taps stay live-only so a
-                    // detail sheet can never show today's data under
-                    // yesterday's label.
-                    let centerSlot: AtriaTriRingSlot = {
-                        switch layoutConfig.ringCenterMetric {
-                        case .sleep: return .sleep
-                        case .strain: return .strain
-                        default: return .recovery
-                        }
-                    }()
-                    let centerMetric = historicalRingMetric(for: centerSlot,
-                                                            entry: browsingEntry)
-                    AtriaTriRing(slots: resolvedSlots,
-                                 centerValue: centerMetric.value,
-                                 centerState: Self.ringBrowseDayFormatter.string(from: ringBrowseDay),
-                                 centerMetricName: centerMetric.title,
-                                 centerDelta: nil,
-                                 accessibilitySummary: "Saved metrics for \(ringBrowseDay.formatted(date: .complete, time: .omitted))",
-                                 actions: [:])
+        // Handoff-13 CP3-A: the day browser is its own leaf. A chevron tap
+        // mutates only the leaf's selection state — the parent Today deck no
+        // longer re-evaluates per historical-day change, selection resolves
+        // through an O(1) day index instead of a linear rollup scan, and the
+        // hit targets meet 44x44. The frozen-day truth rule is unchanged: a
+        // browsed day renders its settled rollup or an honest "--".
+        AtriaTodayRingDayBrowser(
+            rollups: dayDescendingRollups,
+            revision: sessionProjectionStore.state.dailyRollupHistoryRevision,
+            ringSlots: ringSlots,
+            centerSlot: {
+                switch layoutConfig.ringCenterMetric {
+                case .sleep: return .sleep
+                case .strain: return .strain
+                default: return .recovery
                 }
+            }(),
+            heroMinScale: Self.heroMinScale,
+            historicalMetric: { slot, entry in
+                historicalRingMetric(for: slot, entry: entry)
+            },
+            liveRing: {
+                AtriaTriRing(slots: ringSlots.map { slot in
+                                 AtriaTriRingSlotContent(slot: slot,
+                                                         metric: metric(for: slot))
+                             },
+                             centerValue: centerValue,
+                             centerState: centerState,
+                             centerMetricName: centerMetricName,
+                             centerDelta: centerDeltaText,
+                             accessibilitySummary: accessibilitySummary,
+                             actions: ringActions)
             }
-            // Strain Target card removed (user's strict screen-space rule,
-            // 2026-07-07): strain appeared four times on one screen. The
-            // strain legend chip carries value + target ("3.1 of 10.3") and
-            // the plan card carries the guidance + remaining-to-target.
-        }
+        )
     }
 
     private var compactRingPresentation: AtriaTodayCompactRingPresentation? {
@@ -3025,6 +2905,165 @@ enum AtriaTodaySleepDeltaAuthority {
 /// (glance grid, plan card, AI coach card, etc.) on every eval. `progress` is
 /// still owned and driven by the parent's `.onScrollGeometryChange` (measured-
 /// perf pass, 2026-07-05) -- this view is a pure pass-through consumer of it.
+/// Handoff-13 CP3-A: the historical ring day browser, isolated exactly like
+/// `AtriaTodayHeroShrink` so a chevron tap invalidates only this leaf. The
+/// leaf owns the selection index and a bounded O(1) day index built once per
+/// rollup revision (or civil-day change); every accepted tap is one ordered
+/// adjacent-day transition; chevron hit regions are 44x44 with the compact
+/// icon unchanged. A day without a settled rollup renders an honest "--"
+/// snapshot immediately — no archive scan, no whole-history work, no
+/// MainActor file I/O anywhere in this leaf.
+private struct AtriaTodayRingDayBrowser: View {
+    let rollups: [DailyRollupStoreEntry]
+    let revision: Int
+    let ringSlots: [AtriaTriRingSlot]
+    let centerSlot: AtriaTriRingSlot
+    let heroMinScale: CGFloat
+    let historicalMetric: (AtriaTriRingSlot, DailyRollupStoreEntry?)
+        -> AtriaTriRingMetric
+    let liveRing: () -> AtriaTriRing
+
+    static let maximumBrowseDays = 30
+
+    @State private var selectedIndex = 0
+    @State private var browseDays: [Date] = []
+    @State private var entriesByDay: [Date: DailyRollupStoreEntry] = [:]
+    @State private var builtRevision = Int.min
+    @State private var builtDayKey = Date.distantPast
+
+    private var maximumIndex: Int { max(0, browseDays.count - 1) }
+
+    private var selectedDay: Date {
+        browseDays.indices.contains(selectedIndex)
+            ? browseDays[selectedIndex]
+            : Calendar.current.startOfDay(for: Date())
+    }
+
+    var body: some View {
+        AtriaBodyEvalProbe.tick("AtriaTodayRingDayBrowser")
+        return VStack(spacing: 10) {
+            navigation
+            AtriaTodayHeroShrink(minScale: heroMinScale) {
+                if selectedIndex == 0 {
+                    liveRing()
+                } else {
+                    historicalRing
+                }
+            }
+        }
+        .onChange(of: revision, initial: true) { _, _ in
+            rebuildIndexIfNeeded()
+        }
+    }
+
+    private var navigation: some View {
+        HStack(spacing: 4) {
+            Button {
+                selectedIndex = min(selectedIndex + 1, maximumIndex)
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(selectedIndex >= maximumIndex)
+            .accessibilityLabel("Previous day")
+
+            Button {
+                selectedIndex = 0
+            } label: {
+                Text(selectedIndex == 0
+                     ? "Today"
+                     : AtriaTodayScreen.ringBrowseDayFormatter.string(
+                        from: selectedDay
+                     ))
+                    .textCase(.uppercase)
+                    .font(.caption2.weight(.bold))
+                    .tracking(0.8)
+                    .foregroundStyle(selectedIndex == 0
+                                     ? Color.secondary : Color.primary)
+                    .padding(.horizontal, 12)
+                    .frame(minHeight: 44)
+                    .background(.quaternary.opacity(selectedIndex == 0
+                                                    ? 0.35 : 0.6),
+                                in: Capsule(style: .continuous))
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(selectedIndex == 0)
+            .accessibilityLabel(selectedIndex == 0
+                                ? "Showing today"
+                                : "Showing \(selectedDay.formatted(date: .complete, time: .omitted)). Returns to today.")
+
+            Button {
+                selectedIndex = max(selectedIndex - 1, 0)
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(selectedIndex == 0)
+            .accessibilityLabel("Next day")
+        }
+    }
+
+    private var historicalRing: some View {
+        let entry = entriesByDay[selectedDay]
+        let resolvedSlots = ringSlots.map { slot in
+            AtriaTriRingSlotContent(slot: slot,
+                                    metric: historicalMetric(slot, entry))
+        }
+        let centerMetric = historicalMetric(centerSlot, entry)
+        // A browsed past day is a read-only frozen snapshot: the center
+        // carries the center slot's saved value, the state line names the
+        // day, deltas/taps stay live-only so a detail sheet can never show
+        // today's data under yesterday's label.
+        return AtriaTriRing(
+            slots: resolvedSlots,
+            centerValue: centerMetric.value,
+            centerState: AtriaTodayScreen.ringBrowseDayFormatter.string(
+                from: selectedDay
+            ),
+            centerMetricName: centerMetric.title,
+            centerDelta: nil,
+            accessibilitySummary:
+                "Saved metrics for \(selectedDay.formatted(date: .complete, time: .omitted))",
+            actions: [:]
+        )
+    }
+
+    private func rebuildIndexIfNeeded() {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard builtRevision != revision || builtDayKey != today else { return }
+        builtRevision = revision
+        builtDayKey = today
+        var days: [Date] = []
+        days.reserveCapacity(Self.maximumBrowseDays + 1)
+        for offset in 0...Self.maximumBrowseDays {
+            guard let day = calendar.date(byAdding: .day,
+                                          value: -offset,
+                                          to: today) else { break }
+            days.append(day)
+        }
+        browseDays = days
+        var index: [Date: DailyRollupStoreEntry] = [:]
+        let cutoff = days.last ?? today
+        for entry in rollups {
+            let day = calendar.startOfDay(for: entry.day)
+            // The source is day-descending; everything past the browse
+            // window is irrelevant to this leaf.
+            if day < cutoff { break }
+            if index[day] == nil { index[day] = entry }
+        }
+        entriesByDay = index
+        if selectedIndex > maximumIndex { selectedIndex = maximumIndex }
+    }
+}
+
 private struct AtriaTodayHeroShrink<Content: View>: View {
     let minScale: CGFloat
     @ViewBuilder let content: () -> Content

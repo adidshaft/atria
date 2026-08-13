@@ -4647,6 +4647,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// only then may the proven ordered strap profile start.
     private func beginHRFirstDenseBringUpIfNeeded(peripheral: CBPeripheral,
                                                    reason: String) {
+        // Handoff-13 CP0-A: an expired predecessor proof must terminalize
+        // before any further protected work is considered on this edge.
+        enforceProtectedR10ProofDeadlineIfNeeded(
+            trigger: "dense_bring_up_\(reason)"
+        )
         guard self.peripheral?.identifier == peripheral.identifier,
               peripheral.state == .connected,
               denseBringUpIsWanted,
@@ -12503,19 +12508,79 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       Self.protectedR10PassiveGraceDuration)
     }
 
+    /// Handoff-13 CP0-A: whether a proof-timeout fire may terminalize. Pure:
+    /// the fire must belong to the exact proof it was armed for (the durable
+    /// proof timestamp is the identity — a stale timer from an older
+    /// connection can neither qualify nor roll back a newer proof), and the
+    /// proof must still be active.
+    nonisolated static func protectedR10ProofTimeoutFireShouldTerminalize(
+        capturedStartedAtUnix: TimeInterval,
+        currentStartedAtUnix: TimeInterval,
+        proofActive: Bool
+    ) -> Bool {
+        guard proofActive else { return false }
+        guard currentStartedAtUnix > 0 else { return false }
+        return abs(capturedStartedAtUnix - currentStartedAtUnix) < 0.5
+    }
+
     private func scheduleProtectedR10CleanOwnerProofTimeout(startedAt: Date) {
         protectedR10CleanOwnerProofTimeoutTask?.cancel()
         protectedR10CleanOwnerProofTimeoutTask = Task { @MainActor [weak self] in
             let age = max(0, Date().timeIntervalSince(startedAt))
             let remaining = max(0, Self.protectedR10PassiveReprobeTimeout - age)
             try? await Task.sleep(for: .seconds(remaining))
-            guard let self, !Task.isCancelled,
-                  self.protectedR10CleanOwnerProofIsActive else { return }
+            guard let self, !Task.isCancelled else { return }
+            // Handoff-13 CP0-A: the fire is bound to the exact proof it was
+            // armed for via the durable proof timestamp, not merely to "a
+            // proof is active" — a replacement proof must never be
+            // terminalized by its predecessor's timer.
+            let currentStartedAt = UserDefaults.standard.double(
+                forKey: Self.protectedR10CleanOwnerProofStartedAtKey
+            )
+            guard Self.protectedR10ProofTimeoutFireShouldTerminalize(
+                capturedStartedAtUnix: startedAt.timeIntervalSince1970,
+                currentStartedAtUnix: currentStartedAt,
+                proofActive: self.protectedR10CleanOwnerProofIsActive
+            ) else { return }
             self.protectedR10CleanOwnerProofTimeoutTask = nil
             self.persistProtectedR10CleanOwnerFallback(
                 reason: "clean_owner_proof_timeout"
             )
         }
+    }
+
+    /// Handoff-13 CP0-A: the wall-clock deadline backstop. The 150-second
+    /// proof deadline previously lived only in a suspendable `Task.sleep`
+    /// (physically observed: a proof still "active" 47 minutes after
+    /// activation), with the only sweep gated behind live HR publishes and
+    /// silenced during history phases. This runs synchronously at process/
+    /// scene/BLE edges BEFORE further protected work: an expired proof
+    /// terminalizes exactly once with its own distinct reason. Safe in any
+    /// transport phase — it writes owner state only, never the radio.
+    @discardableResult
+    func enforceProtectedR10ProofDeadlineIfNeeded(
+        trigger: String
+    ) -> Bool {
+        guard protectedR10CleanOwnerProofIsActive else { return false }
+        let startedAtUnix = UserDefaults.standard.double(
+            forKey: Self.protectedR10CleanOwnerProofStartedAtKey
+        )
+        let age: TimeInterval? = startedAtUnix > 0
+            ? Date().timeIntervalSince1970 - startedAtUnix
+            : nil
+        guard Self.protectedR10CleanOwnerProofHasExpired(
+            proofActive: true,
+            attemptAge: age
+        ) else { return false }
+        AtriaDebugLog(
+            "ATRIADBG protected_r10 status=proof_deadline_expired trigger=%@ age_s=%.0f",
+            trigger,
+            age ?? -1
+        )
+        persistProtectedR10CleanOwnerFallback(
+            reason: "proof_deadline_expired"
+        )
+        return true
     }
 
     private func qualifyProtectedR10RecoveryIfNeeded(at qualifiedAt: Date,
@@ -22437,6 +22502,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         protectedR10MissingFrameTask?.cancel()
         protectedR10StabilityTask?.cancel()
         protectedR10CleanOwnerProofTimeoutTask?.cancel()
+        // Handoff-13 CP0-A: this teardown used to cancel the proof deadline
+        // and walk away with the durable state still `.proving` — an orphan
+        // with no in-process deadline at all (one of the paths behind the
+        // physically observed 47-minute proof). Terminalize an expired proof
+        // here; a young proof keeps its persisted timestamp and the next
+        // edge's synchronous sweep owns it.
+        enforceProtectedR10ProofDeadlineIfNeeded(
+            trigger: "suspend_for_canonical_restore_failure"
+        )
         protectedR10CommandSequenceTask?.cancel()
         protectedR10StandardDiscoveryTask?.cancel()
         hrvLiveRefreshTask?.cancel()
@@ -44028,6 +44102,11 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 self.protectedR10MissingFrameTask = nil
                 self.protectedR10StabilityTask?.cancel()
                 self.protectedR10StabilityTask = nil
+                // Handoff-13 CP0-A: restoration is a process relaunch — the
+                // persisted proof may already be far past its deadline.
+                self.enforceProtectedR10ProofDeadlineIfNeeded(
+                    trigger: "will_restore_state"
+                )
                 // CoreBluetooth restoration is a process relaunch mid-link:
                 // the persisted workout lease re-arms on this restored
                 // connection epoch with the same one-attempt bound.
@@ -44490,6 +44569,10 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             protectedR10MissingFrameTask = nil
             protectedR10StabilityTask?.cancel()
             protectedR10StabilityTask = nil
+            // Handoff-13 CP0-A: a fresh connection is the first reliable
+            // post-suspension edge — synchronously terminalize any proof that
+            // outlived its 150 s deadline before protected work resumes.
+            enforceProtectedR10ProofDeadlineIfNeeded(trigger: "did_connect")
             // A new connection epoch grants an active workout lease one fresh
             // bounded activation attempt after passive grace; repeated
             // lifecycle callbacks on the same connection cannot resend it.
