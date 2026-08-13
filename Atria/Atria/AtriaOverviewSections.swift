@@ -1121,6 +1121,14 @@ private struct AtriaSleepReviewCard: View {
         if isResumedSleep {
             return "Confirm to link with your earlier sleep. Awake time stays excluded."
         }
+        // Handoff-11 honesty: an HR/RR-only candidate says what the evidence
+        // is — and that motion did not verify it — before asking the user to
+        // confirm. "Not verified" (a bounded or missing read), never "absent".
+        if night.motionValidated != true {
+            return isNap
+                ? "HR/RR estimate · motion not verified. Confirm to save this nap separately."
+                : "HR/RR estimate · motion not verified. Confirm to add to today's recovery."
+        }
         return isNap
             ? "Confirm to save this nap separately."
             : "Confirm to add to today's recovery."
