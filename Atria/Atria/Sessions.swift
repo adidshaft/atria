@@ -8727,6 +8727,13 @@ final class SessionStore: ObservableObject {
             AtriaWhoop4MotionTickCompactStore.LatestNightReadFailure
         )
         case compactSourceChanged
+        /// Handoff-11: the compact motion read failed with a review-eligible
+        /// reason and resident HR/RR evidence was consulted, but no candidate
+        /// passed the bounded review gates. A named terminal carrying the
+        /// exact motion blocker, never a silent discard.
+        case hrRRReviewNotQualified(
+            AtriaWhoop4MotionTickCompactStore.LatestNightReadFailure
+        )
     }
 
     struct CompactLatestNightSessionSlice: @unchecked Sendable {
@@ -8777,8 +8784,39 @@ final class SessionStore: ObservableObject {
         let rrRows: Int
     }
 
+    /// Handoff-11: immutable MainActor captures that let the settlement lane
+    /// build a degraded HR/RR-only review candidate when the compact motion
+    /// read is incomplete. Nil disables the degraded lane entirely and keeps
+    /// the pre-H11 withhold behavior.
+    struct CompactLatestNightReviewContext: @unchecked Sendable {
+        let snapshot: SleepHistorySnapshot
+        let confirmedSleeps: [UserConfirmedSleep]
+        let dismissedCandidates: [AtriaDismissedSleepCandidate]
+        let calendar: Calendar
+    }
+
+    /// Handoff-11: one review-only sleep candidate born from resident HR/RR
+    /// evidence while motion could not be verified. Deliberately carries NO
+    /// compact receipt, NO commit authority and NO settlement proposal, so
+    /// the canonical commit path is unreachable from this value by type.
+    struct CompactLatestNightDegradedReviewProposal: @unchecked Sendable {
+        let night: SleepHistorySnapshot.Night
+        let motionBlocker:
+            AtriaWhoop4MotionTickCompactStore.LatestNightReadFailure
+        let evidenceFingerprint: String
+        let preparedAt: Date
+        let sourceStrapIdentifier: UUID
+        let sessionCount: Int
+        let heartRateRows: Int
+        let rrRows: Int
+    }
+
     enum CompactLatestNightSettlementPreparation: @unchecked Sendable {
         case ready(CompactLatestNightSettlementProposal)
+        /// Handoff-11: strong HR/RR evidence survived a review-eligible motion
+        /// read failure. Review-only: may be persisted for user review, never
+        /// auto-confirmed, never a source of Recovery or canonical mutation.
+        case reviewOnly(CompactLatestNightDegradedReviewProposal)
         case withheld(CompactLatestNightSettlementFailure)
     }
 
@@ -33244,6 +33282,11 @@ final class SessionStore: ObservableObject {
         let dismissedCandidates = dismissedSleepCandidates
         let snapshot = sleepHistorySnapshot
         let maxHR = profile.maxHR
+        // Handoff-11: durable pending-review records name their source strap;
+        // a re-pair must invalidate them at load. Identity only — no BLE work.
+        let persistedStrapIdentifier = AtriaWhoop4MotionTickDailyStore
+            .persistedStrapIdentifiers()
+            .first
         let preparedAt = Date()
         let startedAt = DispatchTime.now().uptimeNanoseconds
         let budgetNanoseconds = UInt64(
@@ -33326,7 +33369,8 @@ final class SessionStore: ObservableObject {
                     durablePending = AtriaPendingSleepReviewStore.load(
                         now: preparedAt,
                         confirmedSleeps: confirmedSleeps,
-                        dismissedCandidates: dismissedCandidates
+                        dismissedCandidates: dismissedCandidates,
+                        currentStrapIdentifier: persistedStrapIdentifier
                     )
                 } else {
                     durablePending = nil
@@ -35132,6 +35176,10 @@ final class SessionStore: ObservableObject {
         thermalState: ProcessInfo.ThermalState,
         compactStore: AtriaWhoop4MotionTickCompactStore = .shared,
         autoConfirmLimit: Int = 2,
+        // Handoff-11: when supplied, a review-eligible motion read failure
+        // (missing/cap-bounded — motion unverifiable, not impugned) may yield
+        // one degraded HR/RR review-only candidate instead of a withhold.
+        degradedReviewContext: CompactLatestNightReviewContext? = nil,
         deadlineUptimeNanoseconds suppliedDeadline: UInt64? = nil
     ) -> CompactLatestNightSettlementPreparation {
         precondition(!Thread.isMainThread)
@@ -35178,7 +35226,17 @@ final class SessionStore: ObservableObject {
         case .qualified(let evidence):
             compactEvidence = evidence
         case .incomplete(let failure):
-            return .withheld(.compactMotion(failure))
+            return makeCompactLatestNightDegradedReviewPreparation(
+                motionFailure: failure,
+                slice: slice,
+                degradedReviewContext: degradedReviewContext,
+                activeJournalSession: activeJournalSession,
+                now: now,
+                rest: rest,
+                maxHR: maxHR,
+                sourceStrapIdentifier: sourceStrapIdentifier,
+                cooperativeDeadline: cooperativeDeadline
+            )
         }
         var sessions: [SavedSession] = []
         sessions.reserveCapacity(slice.sessions.count)
@@ -35247,6 +35305,123 @@ final class SessionStore: ObservableObject {
             compactReceipt: compactEvidence.receipt,
             commitAuthority: commitAuthority,
             sessionCount: sessions.count,
+            heartRateRows: slice.heartRateRows,
+            rrRows: slice.rrRows
+        ))
+    }
+
+    /// Handoff-11 Checkpoint 2: which compact motion read failures may enter
+    /// the degraded HR/RR review lane. A missing or cap-bounded read means
+    /// motion could not be VERIFIED — the resident HR/RR evidence is still
+    /// real. Identity, integrity, thermal and deadline failures veto instead:
+    /// they impugn the read (or the system state) rather than merely bounding
+    /// it, so the entire settlement stays withheld. Exhaustive on purpose —
+    /// a future failure case must be classified here consciously.
+    nonisolated static func compactMotionFailurePermitsHRRRReview(
+        _ failure: AtriaWhoop4MotionTickCompactStore.LatestNightReadFailure
+    ) -> Bool {
+        switch failure {
+        case .missingShard, .shardCapExceeded, .byteCapExceeded,
+             .rowCapExceeded:
+            return true
+        case .invalidRequest, .thermalCritical, .integrityFailure,
+             .deadlineExceeded, .sourceChanged:
+            return false
+        }
+    }
+
+    /// Durable identity for one degraded review's evidence. Built only from
+    /// values that survive relaunch (candidate window, strap, resident row
+    /// counts, blocker) — never process-local generations, in-memory revision
+    /// counters or file timestamps — so an identical re-preparation after a
+    /// relaunch deduplicates instead of re-arming.
+    nonisolated static func degradedSleepReviewEvidenceFingerprint(
+        nightStart: Date?,
+        nightEnd: Date?,
+        sourceStrapIdentifier: UUID,
+        heartRateRows: Int,
+        rrRows: Int,
+        motionBlocker: AtriaWhoop4MotionTickCompactStore.LatestNightReadFailure
+    ) -> String {
+        let start = nightStart.map {
+            Int($0.timeIntervalSince1970.rounded())
+        } ?? -1
+        let end = nightEnd.map {
+            Int($0.timeIntervalSince1970.rounded())
+        } ?? -1
+        return "v1|\(start)|\(end)|\(sourceStrapIdentifier.uuidString)"
+            + "|hr:\(heartRateRows)|rr:\(rrRows)|blk:\(motionBlocker.rawValue)"
+    }
+
+    /// Handoff-11 Checkpoints 1+3: resolve an incomplete compact motion read
+    /// into exactly one of three truthful outcomes — a review-only candidate
+    /// built through the existing bounded review gates, the named
+    /// `hrRRReviewNotQualified` terminal, or the pre-H11 withhold. The
+    /// review-only value can never reach the canonical commit path: it holds
+    /// no compact receipt and no commit authority, and this builder never
+    /// mints one.
+    nonisolated static func makeCompactLatestNightDegradedReviewPreparation(
+        motionFailure:
+            AtriaWhoop4MotionTickCompactStore.LatestNightReadFailure,
+        slice: CompactLatestNightSessionSlice,
+        degradedReviewContext: CompactLatestNightReviewContext?,
+        activeJournalSession: SavedSession?,
+        now: Date,
+        rest: Int,
+        maxHR: Int,
+        sourceStrapIdentifier: UUID,
+        cooperativeDeadline: AtriaSleepSettlementDeadline
+    ) -> CompactLatestNightSettlementPreparation {
+        guard let degradedReviewContext,
+              compactMotionFailurePermitsHRRRReview(motionFailure) else {
+            return .withheld(.compactMotion(motionFailure))
+        }
+        // The compact read produced no epochs, so sessions enter the bounded
+        // review gates exactly as sliced: HR/RR only, skin evidence already
+        // cleared by the slice, newest-first as the evaluation union expects.
+        var sessions = slice.sessions
+        sessions.sort { $0.start > $1.start }
+        let evaluationSessions = foregroundSleepEvaluationSessions(
+            from: sessions,
+            activeJournalSession: activeJournalSession,
+            now: now
+        )
+        let projection: (
+            main: SleepHistorySnapshot.Night?,
+            naps: [SleepHistorySnapshot.Night]
+        )
+        do {
+            projection = try makeBoundedSleepReviewCacheProjection(
+                snapshot: degradedReviewContext.snapshot,
+                canonicalSessions: evaluationSessions,
+                confirmedSleeps: degradedReviewContext.confirmedSleeps,
+                dismissedCandidates:
+                    degradedReviewContext.dismissedCandidates,
+                rest: rest,
+                maxHR: maxHR,
+                calendar: degradedReviewContext.calendar,
+                cooperativeDeadline: cooperativeDeadline
+            )
+        } catch {
+            return .withheld(.deadlineExceeded)
+        }
+        guard let night = projection.main, !night.confirmed else {
+            return .withheld(.hrRRReviewNotQualified(motionFailure))
+        }
+        return .reviewOnly(.init(
+            night: night,
+            motionBlocker: motionFailure,
+            evidenceFingerprint: degradedSleepReviewEvidenceFingerprint(
+                nightStart: night.start,
+                nightEnd: night.end,
+                sourceStrapIdentifier: sourceStrapIdentifier,
+                heartRateRows: slice.heartRateRows,
+                rrRows: slice.rrRows,
+                motionBlocker: motionFailure
+            ),
+            preparedAt: now,
+            sourceStrapIdentifier: sourceStrapIdentifier,
+            sessionCount: evaluationSessions.count,
             heartRateRows: slice.heartRateRows,
             rrRows: slice.rrRows
         ))
@@ -35430,6 +35605,15 @@ final class SessionStore: ObservableObject {
             .persistedStrapIdentifiers()
             .first
         let preparationThermalState = ProcessInfo.processInfo.thermalState
+        // Handoff-11: immutable captures for the degraded HR/RR review lane,
+        // taken on the main actor with the other inputs so the worker never
+        // touches live store state.
+        let degradedReviewContext = CompactLatestNightReviewContext(
+            snapshot: sleepHistorySnapshot,
+            confirmedSleeps: cachedConfirmedSleeps,
+            dismissedCandidates: dismissedSleepCandidates,
+            calendar: Calendar.current
+        )
         let workItem = DispatchWorkItem { [weak self] in
             guard executionShouldContinue() else {
                 Task { @MainActor [weak self] in
@@ -35466,7 +35650,8 @@ final class SessionStore: ObservableObject {
                 learnedWindow: learnedWindow,
                 strapIdentifier: compactStrapIdentifier,
                 thermalState: preparationThermalState,
-                autoConfirmLimit: autoConfirmLimit
+                autoConfirmLimit: autoConfirmLimit,
+                degradedReviewContext: degradedReviewContext
             )
             guard executionShouldContinue() else {
                 Task { @MainActor [weak self] in
@@ -35478,10 +35663,21 @@ final class SessionStore: ObservableObject {
             }
             guard case .ready(let prepared) = preparation else {
                 let failure: CompactLatestNightSettlementFailure
-                if case .withheld(let reason) = preparation {
+                let degradedReview:
+                    CompactLatestNightDegradedReviewProposal?
+                switch preparation {
+                case .withheld(let reason):
                     failure = reason
-                } else {
+                    degradedReview = nil
+                case .reviewOnly(let review):
+                    // A persisted review still finishes as "not settled": the
+                    // compact retry below may yet verify motion, and a later
+                    // qualified settlement enriches or replaces the review.
+                    failure = .compactMotion(review.motionBlocker)
+                    degradedReview = review
+                case .ready:
                     failure = .compactSourceChanged
+                    degradedReview = nil
                 }
                 Task { @MainActor [weak self] in
                     guard let self,
@@ -35499,11 +35695,46 @@ final class SessionStore: ObservableObject {
                     self.pendingForegroundSleepSettlementWorkItem = nil
                     self.lastForegroundSleepAutoConfirmAt = now
                         .addingTimeInterval(-20 * 60)
-                    AtriaDebugLog(
-                        "ATRIADBG sleep_foreground_compact status=withheld reason=%@ source=%@",
-                        String(describing: failure),
-                        reason
-                    )
+                    if let degradedReview {
+                        self.persistCompactLatestNightDegradedReview(
+                            degradedReview,
+                            rest: rest,
+                            source: reason
+                        )
+                    } else {
+                        AtriaDebugLog(
+                            "ATRIADBG sleep_foreground_compact status=withheld reason=%@ source=%@",
+                            String(describing: failure),
+                            reason
+                        )
+                        switch failure {
+                        case .compactMotion(let motionFailure):
+                            SessionStore.recordDegradedSleepReviewDiagnostic(
+                                preparedAt: now,
+                                motionBlocker: motionFailure.rawValue,
+                                reviewEligible: SessionStore
+                                    .compactMotionFailurePermitsHRRRReview(
+                                        motionFailure
+                                    ),
+                                reviewQualified: false,
+                                persistence: "none",
+                                fingerprint: nil,
+                                source: reason
+                            )
+                        case .hrRRReviewNotQualified(let motionFailure):
+                            SessionStore.recordDegradedSleepReviewDiagnostic(
+                                preparedAt: now,
+                                motionBlocker: motionFailure.rawValue,
+                                reviewEligible: true,
+                                reviewQualified: false,
+                                persistence: "none",
+                                fingerprint: nil,
+                                source: reason
+                            )
+                        default:
+                            break
+                        }
+                    }
                     self.scheduleCompactLatestNightSettlementRetry(
                         reason: reason,
                         remainingAttempts: compactRetryRemainingAttempts,
@@ -35748,6 +35979,115 @@ final class SessionStore: ObservableObject {
         let completions = pendingForegroundSleepSettlementCompletions
         pendingForegroundSleepSettlementCompletions.removeAll(keepingCapacity: true)
         completions.forEach { $0(succeeded) }
+    }
+
+    /// Handoff-11 Checkpoint 4: persist one degraded review-only candidate
+    /// durably. Runs on the main actor from the settlement completion path in
+    /// ANY application state, and deliberately mutates no `@Published`
+    /// projection, widget snapshot, HealthKit record or notification: in the
+    /// background the record simply waits, and the foreground projection lane
+    /// (which already consults the durable store) reconciles it exactly once
+    /// on the next active edge. The strap identity is re-checked here so a
+    /// preparation that outlived a re-pair cannot persist a stale claim.
+    private func persistCompactLatestNightDegradedReview(
+        _ review: CompactLatestNightDegradedReviewProposal,
+        rest: Int,
+        source: String
+    ) {
+        let currentStrapIdentifier = AtriaWhoop4MotionTickDailyStore
+            .persistedStrapIdentifiers()
+            .first
+        let outcome: AtriaPendingSleepReviewStore.DegradedSaveOutcome
+        if let currentStrapIdentifier,
+           UUID(uuidString: currentStrapIdentifier)
+            == review.sourceStrapIdentifier {
+            outcome = AtriaPendingSleepReviewStore.saveDegradedReview(
+                review.night,
+                motionBlocker: review.motionBlocker.rawValue,
+                evidenceFingerprint: review.evidenceFingerprint,
+                sourceStrapIdentifier:
+                    review.sourceStrapIdentifier.uuidString
+            )
+        } else {
+            outcome = .rejectedStrapChanged
+        }
+        AtriaDebugLog(
+            "ATRIADBG sleep_foreground_compact status=review_only blocker=%@ persistence=%@ fingerprint=%@ source=%@",
+            review.motionBlocker.rawValue,
+            outcome.rawValue,
+            review.evidenceFingerprint,
+            source
+        )
+        SessionStore.recordDegradedSleepReviewDiagnostic(
+            preparedAt: review.preparedAt,
+            motionBlocker: review.motionBlocker.rawValue,
+            reviewEligible: true,
+            reviewQualified: true,
+            persistence: outcome.rawValue,
+            fingerprint: review.evidenceFingerprint,
+            source: source
+        )
+        guard outcome == .saved || outcome == .deduplicated else { return }
+        // Durable dirty signal: the next projection build must rebuild from
+        // live inputs (whose durable fallback consults the store). When the
+        // scene is already active, run it now; otherwise the deferred flag
+        // hands the record to the existing foreground edge untouched.
+        sleepReviewCacheInputKey = nil
+        sleepReviewRefreshDeferredUntilForeground = true
+        if UIApplication.shared.applicationState == .active {
+            scheduleSleepReviewCacheRefresh(
+                rest: rest,
+                calendar: .current,
+                reason: "degraded_review_persisted"
+            )
+        }
+    }
+
+    /// Handoff-11 bounded diagnostic receipt: the single latest degraded-path
+    /// settlement attempt, for physical acceptance and field forensics. Debug
+    /// evidence only — no product surface reads this key.
+    nonisolated static func recordDegradedSleepReviewDiagnostic(
+        preparedAt: Date,
+        motionBlocker: String?,
+        reviewEligible: Bool,
+        reviewQualified: Bool,
+        persistence: String,
+        fingerprint: String?,
+        source: String,
+        defaults: UserDefaults = .standard
+    ) {
+        struct Receipt: Codable {
+            let schema: Int
+            let preparedAtUnix: TimeInterval
+            let recordedAtUnix: TimeInterval
+            let motionBlocker: String?
+            let reviewEligible: Bool
+            let reviewQualified: Bool
+            let persistence: String
+            let fingerprint: String?
+            let source: String
+            /// Structural marker: the degraded lane can never mint or consume
+            /// a latest-night commit authority, so canonical sleep, Recovery
+            /// and their derived surfaces are unreachable from this attempt.
+            let canonicalCommitBlocked: Bool
+        }
+        let receipt = Receipt(
+            schema: 1,
+            preparedAtUnix: preparedAt.timeIntervalSince1970,
+            recordedAtUnix: Date().timeIntervalSince1970,
+            motionBlocker: motionBlocker,
+            reviewEligible: reviewEligible,
+            reviewQualified: reviewQualified,
+            persistence: persistence,
+            fingerprint: fingerprint,
+            source: source,
+            canonicalCommitBlocked: true
+        )
+        guard let data = try? JSONEncoder().encode(receipt) else { return }
+        defaults.set(
+            data,
+            forKey: "atria.debug.sleepCompactReviewReceipt.v1"
+        )
     }
 
     nonisolated static func compactLatestNightRetryAction(
@@ -50181,6 +50521,143 @@ final class SessionStore: ObservableObject {
                         dump,
                         forKey: "atria.debug.notificationAcceptanceDump.v1"
                     )
+                }
+            }
+        }
+        // Handoff-11 physical acceptance fixture: run the REAL degraded
+        // preparation against a real, empty, isolated compact store — whose
+        // latest-night read fails `.missingShard` exactly as a device with
+        // unarrived motion shards — over a dense synthetic HR/RR night, then
+        // persist through the real degraded persistence path. Uses the
+        // already-persisted strap identity when one exists and NEVER writes
+        // the saved-link key; on a strapless simulator it falls back to the
+        // store-level save so the durable/UI reconciliation stays the real
+        // production path. The candidate is review-only by construction:
+        // no confirmation, Recovery or canonical mutation can result.
+        if ProcessInfo.processInfo.arguments.contains(
+            "--atria-debug-degraded-sleep-review-fixture"
+        ) {
+            let fixtureRest = 60
+            Task.detached(priority: .utility) { [weak self] in
+                let directory = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(
+                        "atria-degraded-review-fixture-\(UUID().uuidString)"
+                    )
+                defer { try? FileManager.default.removeItem(at: directory) }
+                let compactStore = AtriaWhoop4MotionTickCompactStore(
+                    directoryURL: directory
+                )
+                let now = Date()
+                let end = now.addingTimeInterval(-45 * 60)
+                let duration: TimeInterval = 6 * 60 * 60
+                let start = end.addingTimeInterval(-duration)
+                var night = SavedSession(
+                    id: UUID(),
+                    start: start,
+                    end: end,
+                    label: "Degraded review fixture night",
+                    points: stride(from: 0.0, through: duration, by: 1.0)
+                        .map {
+                            .init(t: $0, bpm: 52 + ((Int($0) / 300) % 3))
+                        }
+                )
+                night.rrPoints = stride(
+                    from: 0.0,
+                    through: duration,
+                    by: 1.0
+                ).map {
+                    .init(
+                        t: $0,
+                        ms: 1_020,
+                        source: .standardHeartRateMeasurement2A37
+                    )
+                }
+                let persistedStrap = AtriaWhoop4MotionTickDailyStore
+                    .persistedStrapIdentifiers()
+                    .first
+                let strapIdentifier = persistedStrap ?? UUID().uuidString
+                let preparation = SessionStore
+                    .makeCompactLatestNightSettlementPreparation(
+                        fingerprint: .init(
+                            canonicalSessionsRevision: 1,
+                            confirmedSleepsRevision: 1,
+                            restingHR: fixtureRest,
+                            baselineRestingIsTrusted: true,
+                            baselineRestingIsNearTrusted: true,
+                            maxHR: 190
+                        ),
+                        canonicalSessions: [night],
+                        now: now,
+                        rest: fixtureRest,
+                        maxHR: 190,
+                        learnedWindow: nil,
+                        strapIdentifier: strapIdentifier,
+                        thermalState: .nominal,
+                        compactStore: compactStore,
+                        degradedReviewContext: .init(
+                            snapshot: .empty,
+                            confirmedSleeps: [],
+                            dismissedCandidates: [],
+                            calendar: .current
+                        )
+                    )
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    switch preparation {
+                    case .reviewOnly(let review):
+                        if persistedStrap != nil {
+                            self.persistCompactLatestNightDegradedReview(
+                                review,
+                                rest: fixtureRest,
+                                source: "degraded_review_fixture"
+                            )
+                        } else {
+                            let outcome = AtriaPendingSleepReviewStore
+                                .saveDegradedReview(
+                                    review.night,
+                                    motionBlocker:
+                                        review.motionBlocker.rawValue,
+                                    evidenceFingerprint:
+                                        review.evidenceFingerprint,
+                                    sourceStrapIdentifier: nil
+                                )
+                            SessionStore.recordDegradedSleepReviewDiagnostic(
+                                preparedAt: review.preparedAt,
+                                motionBlocker: review.motionBlocker.rawValue,
+                                reviewEligible: true,
+                                reviewQualified: true,
+                                persistence: outcome.rawValue,
+                                fingerprint: review.evidenceFingerprint,
+                                source: "degraded_review_fixture_strapless"
+                            )
+                            AtriaDebugLog(
+                                "ATRIADBG sleep_foreground_compact status=review_only blocker=%@ persistence=%@ fingerprint=%@ source=degraded_review_fixture_strapless",
+                                review.motionBlocker.rawValue,
+                                outcome.rawValue,
+                                review.evidenceFingerprint
+                            )
+                            self.sleepReviewCacheInputKey = nil
+                            self.sleepReviewRefreshDeferredUntilForeground =
+                                true
+                            if UIApplication.shared.applicationState
+                                == .active {
+                                self.scheduleSleepReviewCacheRefresh(
+                                    rest: fixtureRest,
+                                    calendar: .current,
+                                    reason: "degraded_review_fixture"
+                                )
+                            }
+                        }
+                    case .withheld(let failure):
+                        AtriaDebugLog(
+                            "ATRIADBG sleep_foreground_compact status=fixture_withheld reason=%@",
+                            String(describing: failure)
+                        )
+                    case .ready:
+                        AtriaDebugLog(
+                            "ATRIADBG sleep_foreground_compact status=fixture_unexpected_ready"
+                        )
+                    }
                 }
             }
         }
