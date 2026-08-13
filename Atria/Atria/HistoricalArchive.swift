@@ -1342,6 +1342,12 @@ enum HistoricalArchive {
             )
         }
         flushDurableDiagnostics(generation: generation)
+        // Handoff-9 CP1: durable history appends intentionally bypass
+        // `appendJSONLine`, so chunks sealed by drain-driven rotation would
+        // otherwise wait for the next launch backfill. Every lock is released
+        // here; hand any freshly sealed chunks to the coalesced utility
+        // sidecar builder (best-effort, per durable batch — never per frame).
+        scheduleHeartRateSidecarBuildsForFreshlySealedChunks()
         NotificationCenter.default.post(name: didUpdateNotification, object: nil)
         return receipt
     }
