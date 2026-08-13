@@ -4,6 +4,7 @@ import CryptoKit
 import Combine
 import Darwin
 import Accelerate
+import UserNotifications
 
 private struct ConfirmedWorkoutHRRehydrationAttemptPayload: Encodable {
     let algorithmVersion: String
@@ -50103,10 +50104,59 @@ final class SessionStore: ObservableObject {
                 ProcessInfo.processInfo.arguments[valueIndex]
                ) {
                 Task.detached(priority: .utility) {
-                    _ = HistoricalArchive.metricHeartRatePoints(
+                    // Handoff-9 CP1 acceptance: one cold read (receipt ring)
+                    // then one warm repeat of the identical window, so the
+                    // in-memory cache path gets a measured elapsed too.
+                    let coldStartedAt = Date()
+                    let cold = HistoricalArchive.metricHeartRatePoints(
                         start: Date(timeIntervalSince1970: startUnix),
                         end: Date(timeIntervalSince1970: startUnix + 24 * 3_600),
                         maximumPoints: 100_000
+                    )
+                    let coldMs = Int(Date().timeIntervalSince(coldStartedAt) * 1_000)
+                    let warmStartedAt = Date()
+                    let warm = HistoricalArchive.metricHeartRatePoints(
+                        start: Date(timeIntervalSince1970: startUnix),
+                        end: Date(timeIntervalSince1970: startUnix + 24 * 3_600),
+                        maximumPoints: 100_000
+                    )
+                    let warmMs = Int(Date().timeIntervalSince(warmStartedAt) * 1_000)
+                    UserDefaults.standard.set(
+                        "cold_ms=\(coldMs) warm_ms=\(warmMs) "
+                            + "cold_points=\(cold?.points.count ?? -1) "
+                            + "warm_points=\(warm?.points.count ?? -1)",
+                        forKey: "atria.debug.hrWindowProbeSummary.v1"
+                    )
+                }
+            }
+        }
+        // Handoff-9 CP3: read-only notification acceptance probe. Dumps the
+        // pending user-facing requests, per-category enable states, and the
+        // authorization status to one defaults key for the physical audit.
+        // Never schedules, cancels, or mutates anything.
+        if ProcessInfo.processInfo.arguments.contains(
+            "--atria-debug-dump-pending-notifications"
+        ) {
+            let settings = AtriaNotificationSettings.load()
+            let categoryStates = AtriaNotificationCategory.allCases.map {
+                "\($0.rawValue)=\(settings[keyPath: $0.settingKeyPath] ? 1 : 0)"
+            }.joined(separator: " ")
+            let center = UNUserNotificationCenter.current()
+            center.getNotificationSettings { authorization in
+                center.getPendingNotificationRequests { requests in
+                    let pending = requests.map { request in
+                        "\(request.identifier)|\(request.content.title)"
+                    }.joined(separator: "\n")
+                    let dump = """
+                    authorization=\(authorization.authorizationStatus.rawValue)
+                    master=\(settings.allowNotifications ? 1 : 0)
+                    categories=\(AtriaNotificationCategory.allCases.count) \(categoryStates)
+                    pendingCount=\(requests.count)
+                    \(pending)
+                    """
+                    UserDefaults.standard.set(
+                        dump,
+                        forKey: "atria.debug.notificationAcceptanceDump.v1"
                     )
                 }
             }
