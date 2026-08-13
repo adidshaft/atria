@@ -3090,6 +3090,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var protectedR10ActivationSent = false
     private var protectedR10ActivationAt: Date?
     private var protectedR10FramesAfterActivation = 0
+    /// Handoff-12 CP0: frames rejected by the CRC32 guard on this connection.
+    /// In-memory only (no per-frame defaults writes); persisted exclusively
+    /// inside the proof-disconnect context so a decoder-rejection failure is
+    /// finally distinguishable from "no frames served".
+    private var protectedR10CRCRejectedFramesThisConnection = 0
     private var protectedR10ActivationGraceTask: Task<Void, Never>?
     private var protectedR10MissingFrameTask: Task<Void, Never>?
     private var protectedR10StabilityTask: Task<Void, Never>?
@@ -3362,6 +3367,35 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case none
         case fallbackToPureHR
     }
+
+    /// Handoff-12 CP0: everything the `clean_owner_proof_disconnect` terminal
+    /// previously threw away. One bounded durable record per proof-interrupting
+    /// disconnect so the seven failure classes (no frames, decoder rejection,
+    /// CCCD collision, activation unacknowledged, connection failure,
+    /// app-owned premature rollback, watchdog rollback) stop collapsing into
+    /// one unattributable reason string. Diagnostic only.
+    struct ProtectedR10ProofDisconnectContext: Codable {
+        var schema: Int = 1
+        var atUnix: TimeInterval
+        var decision: String
+        var errorDomain: String?
+        var errorCode: Int?
+        var centralState: Int
+        var confirmedNotifyUUIDs: String
+        var framesAfterActivation: Int
+        var crcRejectedFrames: Int
+        var activationAgeSeconds: Double?
+        var proofStartedAgeSeconds: Double?
+        var connectedDurationSeconds: Double
+        var owner: String
+        var ownerState: String
+        var ownerGenerationUnix: Double
+        var lastRollbackReason: String?
+        var ambientDisconnectIntervalSeconds: Double?
+    }
+
+    nonisolated static let protectedR10ProofDisconnectContextKey =
+        "atria.protectedR10.proofDisconnectContext.v1"
 
     /// A short, CRC-valid burst proves only that the command profile reached
     /// the strap. Physical captures repeatedly show that replaying that profile
@@ -34595,6 +34629,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             | (UInt32(b[len + 2]) << 16)
             | (UInt32(b[len + 3]) << 24)
         guard expectedCRC == actualCRC else {
+            protectedR10CRCRejectedFramesThisConnection += 1
             AtriaDebugLog("ATRIADBG frameReject reason=crc32_mismatch type=%02x len=%d expected=%08x actual=%08x full=%@",
                   payload.first ?? 0, b.count, expectedCRC, actualCRC, Self.hex(b))
             return
@@ -38626,6 +38661,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     self?.finishHistoricalConsumerMaterialization(
                         reason: "terminal_archive_failed"
                     )
+                    // Handoff-12: this generic terminal catch was the one
+                    // failure lane with no self re-arm — a transient
+                    // publicationCheckpointMissing (catalog snapshot changed
+                    // before its generation advanced; physically observed as
+                    // site37794) parked the consumers until an unrelated
+                    // trigger. Reuse the same bounded 15-minute retry the
+                    // dependency-mismatch sibling already earns; the
+                    // suppression caches still bound repeat attempts.
+                    self?.scheduleTerminalConsumerDependencyRetry()
                 }
             }
         }
@@ -39769,7 +39813,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return false
         }
         if cachedFingerprint == currentFingerprint {
-            return true
+            // Handoff-12: fingerprint equality used to suppress forever — the
+            // fingerprint carries no clock or frontier term, so a stable
+            // authority could park every terminal consumer permanently
+            // (physically observed Aug-13: sleep projection starved behind
+            // one cached coverage failure). Equality still suppresses, but
+            // only inside the same bounded retry interval as inequality.
+            guard let cachedAt else { return true }
+            let age = now.timeIntervalSince(cachedAt)
+            return age >= 0
+                && age < Self.terminalConsumerCoverageFailureRetryInterval
         }
         guard let cachedAt else { return false }
         let age = now.timeIntervalSince(cachedAt)
@@ -44703,8 +44756,23 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             let protectedActivationStartedAt = protectedR10ActivationAt
             let protectedFrames = protectedR10FramesAfterActivation
             let cleanOwnerProofWasActive = protectedR10CleanOwnerProofIsActive
+            // Handoff-12 CP0: capture proof-attribution evidence BEFORE the
+            // teardown below clears it. These fields feed the disconnect
+            // context record; nothing here mutates radio state.
+            let confirmedNotifyUUIDsAtDisconnect =
+                protectedR10ProfileConfirmedNotifyUUIDs
+                    .map(\.uuidString)
+                    .sorted()
+                    .joined(separator: ",")
+            let crcRejectedFramesAtDisconnect =
+                protectedR10CRCRejectedFramesThisConnection
+            let proofStartedAtUnix = UserDefaults.standard.double(
+                forKey: Self.protectedR10CleanOwnerProofStartedAtKey
+            )
+            let centralStateAtDisconnect = self.central?.state.rawValue ?? -1
             let pureHRV10CutoverWasPending = protectedR10CleanOwner == .pureHRV10
                 && protectedR10CleanOwnerState == .fallbackPending
+            protectedR10CRCRejectedFramesThisConnection = 0
             protectedR10ActivationGraceTask?.cancel()
             protectedR10ActivationGraceTask = nil
             protectedR10MissingFrameTask?.cancel()
@@ -44826,6 +44894,49 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 if gate4PassiveReconnectAfterTimeout {
                     prepareGate4PassiveR10ReconnectAfterTimeout()
                 } else {
+                    // Handoff-12 CP0: the terminal reason alone proved
+                    // unattributable (the Aug-13 06:22→07:10 attempt left no
+                    // way to tell decoder rejection from silence from ambient
+                    // churn). Persist the full disconnect context before the
+                    // fallback, on BOTH decision branches — the decision
+                    // string records whether the owner actually beat ambient
+                    // churn or the fallback was purely proof-integrity.
+                    let nsError = error as NSError?
+                    let context = ProtectedR10ProofDisconnectContext(
+                        atUnix: disconnectNow.timeIntervalSince1970,
+                        decision: proofDisconnectDecision == .fallbackToPureHR
+                            ? "owner_beat_ambient_churn"
+                            : "ambient_or_unattributed",
+                        errorDomain: nsError?.domain,
+                        errorCode: nsError?.code,
+                        centralState: centralStateAtDisconnect,
+                        confirmedNotifyUUIDs: confirmedNotifyUUIDsAtDisconnect,
+                        framesAfterActivation: protectedFrames,
+                        crcRejectedFrames: crcRejectedFramesAtDisconnect,
+                        activationAgeSeconds: protectedActivationStartedAt.map {
+                            disconnectNow.timeIntervalSince($0)
+                        },
+                        proofStartedAgeSeconds: proofStartedAtUnix > 0
+                            ? disconnectNow.timeIntervalSince1970
+                                - proofStartedAtUnix
+                            : nil,
+                        connectedDurationSeconds: connectedDuration,
+                        owner: protectedR10CleanOwner.rawValue,
+                        ownerState: protectedR10CleanOwnerState.rawValue,
+                        ownerGenerationUnix:
+                            connectedAt?.timeIntervalSince1970 ?? 0,
+                        lastRollbackReason: defaults.string(
+                            forKey: "atria.protectedR10.rollbackReason"
+                        ),
+                        ambientDisconnectIntervalSeconds:
+                            ambientDisconnectInterval
+                    )
+                    if let contextData = try? JSONEncoder().encode(context) {
+                        defaults.set(
+                            contextData,
+                            forKey: Self.protectedR10ProofDisconnectContextKey
+                        )
+                    }
                     if proofDisconnectDecision == .fallbackToPureHR {
                         defaults.set(previousProofInterruptions + 1,
                                      forKey: Self.protectedR10ProofChurnFailureCountKey)

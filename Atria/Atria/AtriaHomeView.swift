@@ -4325,6 +4325,12 @@ struct AtriaHomeView: View {
             // only that missed presentation into CoreLive after the returning
             // scene has drawn, without the archive/diagnostic work of forceRefresh.
             model.refreshHistoricalRecoveryPresentationForForeground()
+            // Handoff-12 CP2: one bounded stress-continuity reconciliation per
+            // foreground return. Minutes the live scorer missed (background,
+            // starved MainActor, skipped tick, relaunch) replay from canonical
+            // resident evidence through the same v3 kernel; the generation
+            // gate and 750 ms debounce keep this to one coalesced worker.
+            model.enqueueStressContinuityReconciliation()
             motionActivityMonitor.start()
             // A diagnosis that began before suspension needs one fresh
             // derivation on return. Its persistence gate is then owned by a
@@ -11286,6 +11292,14 @@ final class AtriaHomeModel {
         historicalStressReplayTriggerSubject.send(())
     }
 
+    /// Handoff-12 CP2: the foreground-return entry into the same debounced,
+    /// generation-gated replay lane every other trigger uses. No new worker
+    /// kind — reconciliation IS the historical replay, now sourced from the
+    /// resident journal union so live-period minutes are reachable.
+    func enqueueStressContinuityReconciliation() {
+        invalidateAndEnqueueHistoricalStressReplay()
+    }
+
     /// Recovered history is captured only after SessionStore's complete
     /// publication fence. MainActor retains bounded COW source storage without
     /// walking HR/RR rows; scalar materialization, context qualification, window
@@ -11303,16 +11317,50 @@ final class AtriaHomeModel {
             fallbackRestingHeartRate: liveSessionDerived.rest,
             now: now
         )
-        guard let snapshot = AtriaHistoricalStressReplay.snapshot(
-            sessions: store.historySnapshot.sessions,
-            confirmedWorkouts: store.confirmedWorkouts,
-            confirmedSleeps: store.confirmedSleeps,
-            personalization: personalization,
-            now: now
-        ) else { return }
+        let savedSessions = store.historySnapshot.sessions
+        let confirmedWorkouts = store.confirmedWorkouts
+        let confirmedSleeps = store.confirmedSleeps
 
-        let worker = Task.detached(priority: .utility) {
-            AtriaHistoricalStressReplay.evaluate(snapshot)
+        let worker = Task.detached(priority: .utility)
+            { () -> AtriaHistoricalStressReplay.Result in
+            // Handoff-12 CP2: today's live-period minutes live in the resident
+            // journal, not in any saved session, so a replay sourced only from
+            // saved sessions could never reconcile a minute the live scorer
+            // missed (backgrounded, starved MainActor, skipped tick, relaunch)
+            // until the session sealed — the physically measured 16:12–16:19
+            // dense-HR hole. Union the row-capped resident journal in; a cold
+            // or busy journal cache keeps the previous source unchanged.
+            let journal = (try? SessionStore
+                .loadCachedResidentJournalSessionForSleepReview(
+                    now: now,
+                    cooperativeDeadline: .init(
+                        uptimeNanoseconds:
+                            DispatchTime.now().uptimeNanoseconds
+                            + 2_000_000_000
+                    )
+                )) ?? nil
+            var sourceSessions = savedSessions
+            if let journal {
+                sourceSessions.removeAll { $0.id == journal.id }
+                sourceSessions.append(journal)
+            }
+            let unionSessions = sourceSessions
+            guard let snapshot = await MainActor.run(body: {
+                AtriaHistoricalStressReplay.snapshot(
+                    sessions: unionSessions,
+                    confirmedWorkouts: confirmedWorkouts,
+                    confirmedSleeps: confirmedSleeps,
+                    personalization: personalization,
+                    now: now
+                )
+            }) else { return .empty }
+            let result = AtriaHistoricalStressReplay.evaluate(snapshot)
+            AtriaHistoricalStressReplay.recordGapReceipts(
+                sessions: unionSessions,
+                producedFacts: result.facts,
+                now: now
+            )
+            return result
         }
         historicalStressReplayWorker = worker
         Task { @MainActor [weak self] in

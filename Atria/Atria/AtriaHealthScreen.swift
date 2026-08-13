@@ -627,6 +627,10 @@ struct AtriaHealthScreen: View {
     // detail sheet rather than just the education sheet.
     @State private var metricDetail: AtriaMetricDetailKind?
     @State private var showBreathworkSession = false
+    /// Handoff-12 CP3: the Live monitor Stress section is the single Stress
+    /// owner on this screen; it opens the detail through this flag, hosted by
+    /// the invisible coordinator that also feeds breathwork.
+    @State private var showStressDetail = false
     /// Reference identity lives here, but HealthScreen deliberately does not
     /// observe its publications. Only the presented session host observes the
     /// reading, keeping 30-second stress updates from rebuilding all of Vitals.
@@ -735,7 +739,10 @@ struct AtriaHealthScreen: View {
                                                     stressMonitorStore: stressMonitorStore,
                                                     baseline: vitals.baseline,
                                                     pulseSparklineStore: pulseSparklineStore,
-                                                    isActive: isActive)
+                                                    isActive: isActive,
+                                                    onOpenStressDetail: {
+                                                        showStressDetail = true
+                                                    })
                         AtriaHealthMonitorLiveHost(liveStore: liveStore,
                                                    heroStore: heroStore,
                                                    profileStore: profileStore,
@@ -1235,18 +1242,11 @@ struct AtriaHealthScreen: View {
             }
             .opacity(isDisconnected(live: live) && currentMetrics.hasEvidence ? 0.65 : 1)
 
-            // Stress owns a timeline and action, so it remains full width while
-            // the glanceable readiness metrics use a compact adaptive grid.
-            AtriaHealthStressSection(behaviorJournalEntries: store.behaviorJournalEntries,
-                                     isActive: isActive,
-                                     stressMonitorStore: stressMonitorStore,
-                                     breathworkStressStore: breathworkStressStore,
-                                     onStartBreathwork: {
-                                         showBreathworkSession = true
-                                     },
-                                     onOpenEducation: { educationTopic = .stress })
-                .opacity(isDisconnected(live: live) && currentMetrics.hasEvidence ? 0.65 : 1)
-
+            // Handoff-12 CP3: the Health Monitor no longer repeats a full
+            // "Physiological stress" row under the Live monitor's Stress
+            // chart — one metric, one owner per screen. The invisible
+            // coordinator keeps the detail cover and the breathwork feed
+            // alive without contributing layout.
             monitorGroupKicker("Sleep & body")
 
             LazyVGrid(columns: monitorGridColumns, alignment: .leading, spacing: 8) {
@@ -1326,6 +1326,20 @@ struct AtriaHealthScreen: View {
                             ))
                 .opacity(isDisconnected(live: live) && currentMetrics.hasEvidence ? 0.65 : 1)
         }
+        // Handoff-12 CP3: zero-layout coordinator — hosts the stress detail
+        // cover (opened from the Live monitor owner) and the breathwork feed
+        // that used to ride on the removed duplicate stress row.
+        .background(
+            AtriaHealthStressSection(behaviorJournalEntries: store.behaviorJournalEntries,
+                                     isActive: isActive,
+                                     stressMonitorStore: stressMonitorStore,
+                                     breathworkStressStore: breathworkStressStore,
+                                     showStressDetail: $showStressDetail,
+                                     onStartBreathwork: {
+                                         showBreathworkSession = true
+                                     },
+                                     onOpenEducation: { educationTopic = .stress })
+        )
         // No outer mega-card chrome (2026-08-01 Vitals IA split): the tiles
         // are the cards now, so wrapping them in a second surface would
         // reintroduce the box-inside-box stack this change removes.
@@ -1765,26 +1779,27 @@ private struct AtriaHealthBreathworkSessionHost: View {
     }
 }
 
+/// Handoff-12 CP3: no longer a visible row. The Live monitor Stress section
+/// is the screen's single Stress owner; this invisible coordinator keeps two
+/// responsibilities that must survive the dedup — publishing measured stress
+/// to the breathwork store, and hosting the full-screen stress detail cover
+/// the owner opens through the shared binding.
 private struct AtriaHealthStressSection: View {
     let behaviorJournalEntries: [BehaviorJournalEntry]
     let isActive: Bool
     @ObservedObject var stressMonitorStore: AtriaStressMonitorStore
     let breathworkStressStore: AtriaHealthBreathworkStressStore
+    @Binding var showStressDetail: Bool
     let onStartBreathwork: () -> Void
     let onOpenEducation: () -> Void
 
     @State private var lastStressEvaluationAt: Date?
-    @State private var showStressDetail = false
 
     var body: some View {
         Group {
-            AtriaHealthMetricRow(title: stressPresentation.metricTitle,
-                                 value: stressValue,
-                                 detail: stressDetail,
-                                 systemImage: "bolt.heart.fill",
-                                 tint: stressTint,
-                                 hint: stressHint,
-                                 onTap: { showStressDetail = true })
+            Color.clear
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
         }
         .onChange(of: isActive, initial: true) { _, active in
             guard active else { return }
@@ -1845,31 +1860,6 @@ private struct AtriaHealthStressSection: View {
         )
     }
 
-    /// Falls back to the deterministic no-value token, not to the state's label.
-    /// Falling back to the label put "No signal" on the VALUE line while every
-    /// sibling row showed "--" -- a third vocabulary for one state. The reason is
-    /// not lost: `stressDetail` below already surfaces that same label as the
-    /// detail, which is where an explanation belongs.
-    private var stressValue: String {
-        stressPresentation.value
-    }
-
-    private var stressDetail: String {
-        stressPresentation.detail
-    }
-
-    private var stressPresentation: AtriaStressPresentation {
-        AtriaStressPresentation.make(state: stressMonitorStore.state)
-    }
-
-    private var stressTint: Color {
-        stressMonitorStore.state.level?.tint ?? .secondary
-    }
-
-    private var stressHint: String? {
-        guard stressMonitorStore.state.level == .high else { return nil }
-        return "High \u{2014} try a few slow breaths"
-    }
 }
 
 /// Narrow sibling-to-presentation bridge for measured stress. The large Health

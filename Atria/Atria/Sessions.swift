@@ -5010,6 +5010,15 @@ struct AggregateSleepCandidate {
     /// complete window contains dense HR and RR evidence. This tiny tolerance
     /// is review-only; it never weakens automatic sleep confirmation.
     static let nearStrictMorningReviewTolerance: TimeInterval = 60
+    /// Handoff-12: total unobserved seam time the shifted-morning REVIEW tier
+    /// tolerates across its cluster (span minus observed duration). A strap
+    /// reconnect between two dense sessions leaves a real 2–3 minute hole —
+    /// the physical Aug-13 candidate carried one 164 s seam across 3 h 40 m of
+    /// dense HR/RR and was silently discarded by the previous 60 s bound.
+    /// Review-only: the dense-long tier already allows 600 s, auto-confirm
+    /// still requires its own stricter continuity, and the duration floor
+    /// deliberately keeps the tighter 60 s tolerance above.
+    static let morningReviewSeamTolerance: TimeInterval = 300
     static let fragmentedMinimumDuration: TimeInterval = 2.5 * 60 * 60
     static let fragmentedMinimumSpan: TimeInterval = 3 * 60 * 60
     /// Automatic promotion must be much more specific than merely surfacing a
@@ -35751,6 +35760,13 @@ final class SessionStore: ObservableObject {
                         generation: generation,
                         succeeded: false
                     )
+                    // Handoff-12 CP1: a withheld or review-only settlement no
+                    // longer ends in silence — the admission lane leaves one
+                    // terminal decision receipt and can persist the review.
+                    self.scheduleCurrentCycleSleepReviewAdmission(
+                        reason: "settlement_withheld_\(reason)",
+                        compactMotionOutcome: String(describing: failure)
+                    )
                 }
                 return
             }
@@ -35957,6 +35973,15 @@ final class SessionStore: ObservableObject {
                     generation: generation,
                     succeeded: persistenceSucceeded
                 )
+                // Handoff-12 CP1: even a completed canonical settlement pass
+                // must leave a terminal admission decision — a shifted HR-only
+                // review candidate is invisible to the auto-confirm path and
+                // previously vanished without any record when nothing saved.
+                self.scheduleCurrentCycleSleepReviewAdmission(
+                    reason: "settlement_completed_\(reason)",
+                    compactMotionOutcome: saved
+                        ? "qualified_saved" : "qualified_not_saved"
+                )
             }
         }
         pendingForegroundSleepSettlementWorkItem = workItem
@@ -36088,6 +36113,313 @@ final class SessionStore: ObservableObject {
             data,
             forKey: "atria.debug.sleepCompactReviewReceipt.v1"
         )
+    }
+
+    /// Handoff-12 Checkpoint 1: one terminal decision record per current-cycle
+    /// review admission attempt. The Aug-13 incident produced NOTHING when the
+    /// candidate failed a review gate — silence is indistinguishable from
+    /// never-attempted, so every attempt now ends in exactly one of these.
+    /// Debug evidence only; no product surface reads this key. Bounded to the
+    /// eight most recent attempts.
+    struct SleepReviewAdmissionReceipt: Codable {
+        var schema: Int = 1
+        var attemptedAtUnix: TimeInterval
+        var source: String
+        var sourceRevisionKey: String
+        var strapPseudonymousID: String?
+        var candidateStartUnix: TimeInterval?
+        var candidateEndUnix: TimeInterval?
+        var candidateDuration: TimeInterval?
+        var heartRateRows: Int
+        var rrRows: Int
+        var gateResult: String
+        var compactMotionOutcome: String
+        var frontierUnix: TimeInterval
+        var pendingStoreOutcome: String
+        /// saved_review | duplicate | already_confirmed | dismissed |
+        /// source_not_ready | not_qualified(<gate>) | stale_generation |
+        /// authority_revoked | deadline | integrity_failure
+        var finalOutcome: String
+    }
+
+    nonisolated static let sleepReviewAdmissionReceiptKey =
+        "atria.debug.sleepReviewAdmissionReceipts.v1"
+    nonisolated static let sleepReviewAdmissionReceiptCapacity = 8
+
+    nonisolated static func recordSleepReviewAdmissionReceipt(
+        _ receipt: SleepReviewAdmissionReceipt,
+        defaults: UserDefaults = .standard
+    ) {
+        var ring = loadSleepReviewAdmissionReceipts(defaults: defaults)
+        ring.append(receipt)
+        if ring.count > sleepReviewAdmissionReceiptCapacity {
+            ring.removeFirst(ring.count - sleepReviewAdmissionReceiptCapacity)
+        }
+        guard let data = try? JSONEncoder().encode(ring) else { return }
+        defaults.set(data, forKey: sleepReviewAdmissionReceiptKey)
+    }
+
+    nonisolated static func loadSleepReviewAdmissionReceipts(
+        defaults: UserDefaults = .standard
+    ) -> [SleepReviewAdmissionReceipt] {
+        guard let data = defaults.data(
+            forKey: sleepReviewAdmissionReceiptKey
+        ), let ring = try? JSONDecoder().decode(
+            [SleepReviewAdmissionReceipt].self,
+            from: data
+        ) else { return [] }
+        return ring
+    }
+
+    /// Names the first failing review-tier clause for a no-candidate attempt.
+    /// Diagnostic only — the bounded review builder remains the sole
+    /// qualification authority; this mirrors its dense morning/long tier
+    /// clause tables over the best recent cluster so the decision receipt can
+    /// say WHY nothing qualified instead of staying silent. Sessions are
+    /// clustered across gaps of at most 30 minutes, newest cluster first.
+    nonisolated static func sleepReviewAdmissionDiagnosis(
+        sessions: [SavedSession],
+        rest: Int,
+        calendar: Calendar = .current
+    ) -> String {
+        let ordered = sessions.sorted { $0.start < $1.start }
+        guard !ordered.isEmpty else { return "no_recent_sessions" }
+        var clusters: [[SavedSession]] = []
+        for session in ordered {
+            if var current = clusters.last,
+               let previous = current.last,
+               session.start.timeIntervalSince(previous.end) <= 30 * 60 {
+                current.append(session)
+                clusters[clusters.count - 1] = current
+            } else {
+                clusters.append([session])
+            }
+        }
+        func totalDuration(_ cluster: [SavedSession]) -> TimeInterval {
+            cluster.reduce(0) { $0 + $1.end.timeIntervalSince($1.start) }
+        }
+        guard let cluster = clusters.max(by: {
+            totalDuration($0) < totalDuration($1)
+        }), let first = cluster.first, let last = cluster.last else {
+            return "no_recent_sessions"
+        }
+        let duration = totalDuration(cluster)
+        let span = last.end.timeIntervalSince(first.start)
+        let bpms = cluster.flatMap { session in
+            session.points.map { Double($0.bpm) }
+        }
+        guard !bpms.isEmpty else { return "no_heart_rate_rows" }
+        let avg = bpms.reduce(0, +) / Double(bpms.count)
+        let restDouble = Double(rest)
+        let startHour = calendar.component(.hour, from: first.start)
+        let endHour = calendar.component(.hour, from: last.end)
+        let morningClock = (startHour >= 3 && startHour <= 8 && endHour <= 11)
+            || (startHour >= 8 && startHour <= 13 && endHour <= 16)
+        if duration < AggregateSleepCandidate.strictMinimumDuration
+            - AggregateSleepCandidate.nearStrictMorningReviewTolerance {
+            return "duration_below_review_floor"
+        }
+        if duration >= AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration {
+            // Long-tier shapes fail elsewhere; name the seam if it exceeds
+            // the long tier's own allowance.
+            if span > duration + 10 * 60 { return "long_tier_span_seam_exceeded" }
+        } else {
+            if span > duration
+                + AggregateSleepCandidate.morningReviewSeamTolerance {
+                return "morning_tier_span_seam_exceeded"
+            }
+            if !morningClock { return "outside_shifted_morning_clock_window" }
+        }
+        if avg > restDouble + 18 { return "mean_hr_above_sleep_band" }
+        return "review_builder_gate"
+    }
+
+    /// Handoff-12 Checkpoint 1: evaluate current-cycle review evidence exactly
+    /// once per stable source revision and end in one terminal decision
+    /// receipt — even when the canonical settlement was withheld, already
+    /// finished, or a downstream consumer dependency stayed parked. Uses the
+    /// existing bounded review builder (never a second classifier), persists
+    /// at most one unconfirmed candidate through the pending store, and
+    /// mutates no `@Published` state so background execution stays legal.
+    private func scheduleCurrentCycleSleepReviewAdmission(
+        reason: String,
+        compactMotionOutcome: String
+    ) {
+        let revisionKey = [
+            String(reviewEvidenceRevision),
+            String(confirmedSleepsRevision),
+            String(sleepHistorySnapshotRevision),
+            activeJournalSleepReviewIdentity.id?.uuidString ?? "-",
+            activeJournalSleepReviewIdentity.endFiveMinuteBucket
+                .map(String.init) ?? "-",
+        ].joined(separator: "|")
+        if let last = Self.loadSleepReviewAdmissionReceipts().last,
+           last.sourceRevisionKey == revisionKey {
+            // Once per stable source revision: identical evidence must stay
+            // byte-stable and must not notify twice.
+            return
+        }
+        let canonicalSessions = cachedCanonicalSessions
+        let confirmedSleeps = cachedConfirmedSleeps
+        let dismissedCandidates = dismissedSleepCandidates
+        let snapshot = sleepHistorySnapshot
+        let rest = baseline.restingInt ?? 60
+        let maxHR = profile.maxHR
+        let strapIdentifier = AtriaWhoop4MotionTickDailyStore
+            .persistedStrapIdentifiers()
+            .first
+        let frontierUnix = UserDefaults.standard.double(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+        )
+        let now = Date()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var receipt = SleepReviewAdmissionReceipt(
+                attemptedAtUnix: now.timeIntervalSince1970,
+                source: reason,
+                sourceRevisionKey: revisionKey,
+                strapPseudonymousID: strapIdentifier,
+                candidateStartUnix: nil,
+                candidateEndUnix: nil,
+                candidateDuration: nil,
+                heartRateRows: 0,
+                rrRows: 0,
+                gateResult: "unevaluated",
+                compactMotionOutcome: compactMotionOutcome,
+                frontierUnix: frontierUnix,
+                pendingStoreOutcome: "none",
+                finalOutcome: "integrity_failure"
+            )
+            var night: SleepHistorySnapshot.Night?
+            do {
+                let deadline = AtriaSleepSettlementDeadline(
+                    uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
+                        + UInt64(SessionStore.sleepReviewProjectionDeadlineSeconds
+                                 * 1_000_000_000)
+                )
+                let journal = try? SessionStore
+                    .loadCachedResidentJournalSessionForSleepReview(
+                        now: now,
+                        cooperativeDeadline: deadline
+                    )
+                let residentSources = try SessionStore.sleepReviewSourceSessions(
+                    canonicalSessions: canonicalSessions,
+                    activeJournalSession: journal ?? nil,
+                    cooperativeDeadline: deadline
+                )
+                let slice: CompactLatestNightSessionSlice
+                switch SessionStore.compactLatestNightSessionSlice(
+                    from: residentSources,
+                    now: now,
+                    deadlineUptimeNanoseconds: .max,
+                    cooperativeDeadline: deadline,
+                    preserveAttachedMotion: true
+                ) {
+                case .success(let prepared):
+                    slice = prepared
+                case .failure(.noRecentSessions):
+                    receipt.gateResult = "no_recent_sessions"
+                    receipt.finalOutcome = "source_not_ready"
+                    SessionStore.recordSleepReviewAdmissionReceipt(receipt)
+                    return
+                case .failure(let failure):
+                    receipt.gateResult = String(describing: failure)
+                    receipt.finalOutcome = "deadline"
+                    SessionStore.recordSleepReviewAdmissionReceipt(receipt)
+                    return
+                }
+                receipt.heartRateRows = slice.heartRateRows
+                receipt.rrRows = slice.rrRows
+                let projection = try SessionStore
+                    .makeBoundedSleepReviewCacheProjection(
+                        snapshot: snapshot,
+                        canonicalSessions: slice.sessions,
+                        confirmedSleeps: confirmedSleeps,
+                        dismissedCandidates: dismissedCandidates,
+                        rest: rest,
+                        maxHR: maxHR,
+                        cooperativeDeadline: deadline
+                    )
+                night = projection.main
+                if let main = projection.main {
+                    receipt.candidateStartUnix =
+                        main.start?.timeIntervalSince1970
+                    receipt.candidateEndUnix = main.end?.timeIntervalSince1970
+                    receipt.candidateDuration = main.duration
+                    receipt.gateResult = "qualified"
+                } else {
+                    receipt.gateResult = SessionStore
+                        .sleepReviewAdmissionDiagnosis(
+                            sessions: slice.sessions,
+                            rest: rest
+                        )
+                    receipt.finalOutcome = receipt.gateResult
+                        == "no_recent_sessions"
+                        ? "source_not_ready"
+                        : "not_qualified(\(receipt.gateResult))"
+                }
+            } catch {
+                receipt.gateResult = "deadline_or_cancelled"
+                receipt.finalOutcome = "deadline"
+                SessionStore.recordSleepReviewAdmissionReceipt(receipt)
+                return
+            }
+            Task { @MainActor [weak self] in
+                guard let self else {
+                    receipt.finalOutcome = "authority_revoked"
+                    SessionStore.recordSleepReviewAdmissionReceipt(receipt)
+                    return
+                }
+                let currentRevisionKey = [
+                    String(self.reviewEvidenceRevision),
+                    String(self.confirmedSleepsRevision),
+                    String(self.sleepHistorySnapshotRevision),
+                    self.activeJournalSleepReviewIdentity.id?.uuidString
+                        ?? "-",
+                    self.activeJournalSleepReviewIdentity.endFiveMinuteBucket
+                        .map(String.init) ?? "-",
+                ].joined(separator: "|")
+                guard currentRevisionKey == revisionKey else {
+                    receipt.finalOutcome = "stale_generation"
+                    SessionStore.recordSleepReviewAdmissionReceipt(receipt)
+                    return
+                }
+                guard let night else {
+                    SessionStore.recordSleepReviewAdmissionReceipt(receipt)
+                    return
+                }
+                if night.confirmed {
+                    receipt.finalOutcome = "already_confirmed"
+                    SessionStore.recordSleepReviewAdmissionReceipt(receipt)
+                    return
+                }
+                let persisted = AtriaPendingSleepReviewStore.save(night)
+                receipt.pendingStoreOutcome = persisted
+                    ? "saved" : "rejected"
+                receipt.finalOutcome = persisted
+                    ? "saved_review"
+                    : "not_qualified(pending_store_validity)"
+                SessionStore.recordSleepReviewAdmissionReceipt(receipt)
+                guard persisted else { return }
+                AtriaDebugLog(
+                    "ATRIADBG sleep_review_admission status=saved_review source=%@ start=%.0f end=%.0f",
+                    reason,
+                    receipt.candidateStartUnix ?? -1,
+                    receipt.candidateEndUnix ?? -1
+                )
+                // Durable dirty signal, exactly like the degraded lane: no
+                // @Published mutation here; the foreground projection lane's
+                // durable fallback surfaces the record on the next active edge.
+                self.sleepReviewCacheInputKey = nil
+                self.sleepReviewRefreshDeferredUntilForeground = true
+                if UIApplication.shared.applicationState == .active {
+                    self.scheduleSleepReviewCacheRefresh(
+                        rest: rest,
+                        calendar: .current,
+                        reason: "sleep_review_admission"
+                    )
+                }
+            }
+        }
     }
 
     nonisolated static func compactLatestNightRetryAction(
@@ -44131,7 +44463,7 @@ final class SessionStore: ObservableObject {
                     && totalDuration >= AggregateSleepCandidate.strictMinimumDuration
                         - AggregateSleepCandidate.nearStrictMorningReviewTolerance
                     && totalDuration < AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration
-                    && span <= totalDuration + AggregateSleepCandidate.nearStrictMorningReviewTolerance
+                    && span <= totalDuration + AggregateSleepCandidate.morningReviewSeamTolerance
                     && denseReviewClockWindow
                     && avg <= rest + 12
                     && hrStandardDeviation <= 9.5

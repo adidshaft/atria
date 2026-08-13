@@ -1649,6 +1649,7 @@ private struct AtriaVitalsPulseCardHost: View {
     @State private var didDebugOpenHeartRateExplorer = false
     @StateObject private var heartRateExplorerPresenter = AtriaHeartRateExplorerPresentationController()
     let pulseSparklineStore: AtriaHomeModel.PulseSparklineStore
+    var onOpenStressDetail: (() -> Void)?
 
     init(liveStore: AtriaHomeModel.CoreLiveStore,
          pulseStore: AtriaHomeModel.PulseLiveStore,
@@ -1656,7 +1657,8 @@ private struct AtriaVitalsPulseCardHost: View {
          stressMonitorStore: AtriaStressMonitorStore,
          baselineSnapshot: AtriaVitalsPulseBaselineSnapshot,
          pulseSparklineStore: AtriaHomeModel.PulseSparklineStore,
-         isActive: Bool) {
+         isActive: Bool,
+         onOpenStressDetail: (() -> Void)? = nil) {
         self.liveStore = liveStore
         self.pulseStore = pulseStore
         self.homeStatsStore = homeStatsStore
@@ -1664,6 +1666,7 @@ private struct AtriaVitalsPulseCardHost: View {
         self.baselineSnapshot = baselineSnapshot
         self.pulseSparklineStore = pulseSparklineStore
         self.isActive = isActive
+        self.onOpenStressDetail = onOpenStressDetail
         _live = State(initialValue: liveStore.state)
         _pulse = State(initialValue: AtriaVitalsPulsePresentationState(pulseStore.state))
         _homeStats = State(initialValue: homeStatsStore.state)
@@ -1749,7 +1752,8 @@ private struct AtriaVitalsPulseCardHost: View {
                                   baselineTarget: baselineSnapshot.baselineTarget,
                                   restingGreenDelta: restingGreenDelta,
                                   restingYellowDelta: restingYellowDelta,
-                                  onOpenHeartRate: openHeartRateExplorer)
+                                  onOpenHeartRate: openHeartRateExplorer,
+                                  onOpenStressDetail: onOpenStressDetail)
             .onAppear(perform: openDebugTimelineIfReady)
             .onChange(of: timelineKey, initial: true) { _, _ in
                 heartRateExplorerPresenter.updateLiveInput(points: chartPoints,
@@ -1873,6 +1877,7 @@ struct AtriaVitalsLivePulseSection: View {
     let baseline: PersonalBaseline
     let pulseSparklineStore: AtriaHomeModel.PulseSparklineStore
     let isActive: Bool
+    var onOpenStressDetail: (() -> Void)? = nil
 
     var body: some View {
         AtriaVitalsPulseCardHost(liveStore: liveStore,
@@ -1881,7 +1886,8 @@ struct AtriaVitalsLivePulseSection: View {
                                  stressMonitorStore: stressMonitorStore,
                                  baselineSnapshot: AtriaVitalsPulseBaselineSnapshot(baseline),
                                  pulseSparklineStore: pulseSparklineStore,
-                                 isActive: isActive)
+                                 isActive: isActive,
+                                 onOpenStressDetail: onOpenStressDetail)
     }
 }
 
@@ -3751,7 +3757,10 @@ enum AtriaVitalsStressTimelineProjection {
 }
 
 enum AtriaVitalsStressTimelineCopy {
-    static let gapNote = "Five-minute estimates · HR-only is lower confidence · gaps remain blank."
+    // Handoff-12 CP3: the visible footer says what the chart is and what a
+    // blank means — provenance/confidence prose stays in the info sheet and
+    // the accessibility label below, not repeated across the viewport.
+    static let gapNote = "5-min estimates · gaps are missing data"
     static let accessibilityLabel = "Physiological stress timeline, scale 0 through 3. Calm is 0 to 1, Moderate is 1 to 2, and High is 2 to 3. HR-only estimates are lower confidence. Collection gaps remain blank. Pinch to zoom between 12 and 4 hours."
 }
 
@@ -3773,6 +3782,9 @@ private struct AtriaVitalsLiveSignalCard: View {
     let restingGreenDelta: Int
     let restingYellowDelta: Int
     let onOpenHeartRate: () -> Void
+    /// Handoff-12 CP3: the Live monitor is the sole Stress owner on Vitals;
+    /// the removed Health Monitor row's detail navigation lands here.
+    var onOpenStressDetail: (() -> Void)? = nil
     @State private var mode: AtriaVitalsLiveSignalMode = .stress
 
     private var hasReadablePulse: Bool {
@@ -3843,7 +3855,14 @@ private struct AtriaVitalsLiveSignalCard: View {
                     // feature pitch rather than a useful live surface.
                     Text("Current reading")
                         .font(.subheadline.weight(.bold))
-                    Text(stressPresentation.detail)
+                    // Handoff-12 CP3: a scored reading shows its zone word
+                    // and nothing else — provenance and confidence prose live
+                    // in the info sheet and the accessibility value, not in
+                    // four places per viewport. Unscored states keep one
+                    // short truthful blocker.
+                    Text(stressPresentation.numericScore != nil
+                            ? stressState.label
+                            : stressPresentation.detail)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -3855,7 +3874,19 @@ private struct AtriaVitalsLiveSignalCard: View {
                     .font(.system(.title2, design: .rounded, weight: .black))
                     .monospacedDigit()
                     .foregroundStyle(stressState.level?.tint ?? .secondary)
+                if onOpenStressDetail != nil {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
             }
+            .contentShape(Rectangle())
+            .onTapGesture { onOpenStressDetail?() }
+            .accessibilityElement(children: .combine)
+            .accessibilityValue(Text(stressPresentation.detail))
+            .accessibilityHint(onOpenStressDetail != nil
+                               ? Text("Opens the stress detail timeline.")
+                               : Text(""))
 
             switch projection.presentation {
             case .physiologicalStress:
@@ -4193,12 +4224,8 @@ private struct AtriaVitalsStressTimelineChart: View {
                           y: .value("Inspected stress", selectedPoint.reading.score))
                     .symbolSize(36)
                     .foregroundStyle(.primary)
-                    .annotation(position: .top,
-                                alignment: .center,
-                                overflowResolution: .init(x: .fit(to: .chart),
-                                                          y: .disabled)) {
-                        inspectionCard(selectedPoint.reading)
-                    }
+                // Handoff-12 CP3: the wide top annotation is gone — the
+                // compact clamped card renders plot-locally in chartOverlay.
             }
         }
         .atriaGraphPlotSurface()
@@ -4243,20 +4270,46 @@ private struct AtriaVitalsStressTimelineChart: View {
         )
         .chartOverlay { proxy in
             GeometryReader { geometry in
-                Rectangle()
-                    .fill(.clear)
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { value in
-                                guard let plotFrame = proxy.plotFrame else { return }
-                                let frame = geometry[plotFrame]
-                                let x = value.location.x - frame.origin.x
-                                guard x >= 0, x <= frame.width,
-                                      let date: Date = proxy.value(atX: x) else { return }
-                                selectedDate = nearestPoint(to: date)?.reading.date
-                            }
-                    )
+                ZStack(alignment: .topLeading) {
+                    Rectangle()
+                        .fill(.clear)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 0)
+                                .onChanged { value in
+                                    guard let plotFrame = proxy.plotFrame else { return }
+                                    let frame = geometry[plotFrame]
+                                    let x = value.location.x - frame.origin.x
+                                    guard x >= 0, x <= frame.width,
+                                          let date: Date = proxy.value(atX: x) else { return }
+                                    selectedDate = nearestPoint(to: date)?.reading.date
+                                }
+                        )
+                    if let selectedPoint,
+                       let plotFrame = proxy.plotFrame,
+                       let xPosition = proxy.position(
+                            forX: selectedPoint.reading.date
+                       ),
+                       let yPosition = proxy.position(
+                            forY: selectedPoint.reading.score
+                       ) {
+                        let frame = geometry[plotFrame]
+                        let placement = AtriaChartPointerPlacement.place(
+                            anchor: CGPoint(x: frame.origin.x + xPosition,
+                                            y: frame.origin.y + yPosition),
+                            plot: frame
+                        )
+                        inspectionCard(selectedPoint.reading)
+                            .frame(
+                                width: AtriaChartPointerPlacement
+                                    .defaultCardSize.width,
+                                alignment: .leading
+                            )
+                            .offset(x: placement.origin.x,
+                                    y: placement.origin.y)
+                            .allowsHitTesting(false)
+                    }
+                }
             }
         }
         .accessibilityLabel(AtriaVitalsStressTimelineCopy.accessibilityLabel)
@@ -4274,6 +4327,10 @@ private struct AtriaVitalsStressTimelineChart: View {
         }
     }
 
+    /// Handoff-12 CP3: three visible lines — time, score · zone, HR. The
+    /// complete semantic description (HRV availability, motion context,
+    /// confidence) stays in the accessibility value; the visible card must
+    /// not repeat the provenance literature on every drag.
     @ViewBuilder
     private func inspectionCard(_ reading: AtriaStressDetailReading) -> some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -4283,17 +4340,17 @@ private struct AtriaVitalsStressTimelineChart: View {
                 .font(.caption.monospacedDigit().weight(.bold))
             Text(reading.heartRate.map { "HR \(Int($0.rounded())) bpm" }
                 ?? "HR unavailable")
-            Text(reading.rmssd.map {
-                "RMSSD \($0.formatted(.number.precision(.fractionLength(1)))) ms"
-            } ?? "HR-only estimate")
-            Text("\(reading.motionContext.displayName) · \(reading.confidence.displayName) confidence")
         }
         .font(.caption2)
+        .lineLimit(1)
         .foregroundStyle(.primary)
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
         .accessibilityElement(children: .combine)
+        .accessibilityValue(Text(
+            "\(reading.rmssd.map { "RMSSD \($0.formatted(.number.precision(.fractionLength(1)))) milliseconds" } ?? "HR-only estimate") · \(reading.motionContext.displayName) · \(reading.confidence.displayName) confidence"
+        ))
     }
 }
 

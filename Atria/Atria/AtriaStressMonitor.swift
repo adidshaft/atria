@@ -1702,6 +1702,134 @@ enum AtriaHistoricalStressReplay {
         return evaluate(snapshot)
     }
 
+    /// Handoff-12 CP2: bounded per-minute classification of recent Stress
+    /// gaps, written beside each replay so a visibly missing minute is never
+    /// unexplained. `qualified_and_reconciled` counts minutes this replay
+    /// could score; every other class names the exact evidence shortfall
+    /// against the same `AtriaPhysiologicalStressModel` gates the kernel
+    /// enforces — never interpolation. Diagnostic only; no product reader.
+    struct GapReceiptSummary: Codable {
+        var schema: Int = 1
+        var recordedAtUnix: TimeInterval
+        var windowStartUnix: TimeInterval
+        var windowEndUnix: TimeInterval
+        var qualifiedAndReconciled: Int
+        var rawHRGap: Int
+        var insufficientHRSpan: Int
+        var insufficientHRSamples: Int
+        var sourceNotYetDurable: Int
+        var kernelDeclined: Int
+        /// "minuteUnix|classification", newest last, capped.
+        var missingMinutes: [String]
+    }
+
+    static let gapReceiptKey = "atria.debug.stressGapReceipts.v1"
+    static let gapReceiptMinuteCap = 96
+
+    static func recordGapReceipts(
+        sessions: [SavedSession],
+        producedFacts: [AtriaPhysiologicalStressModel.MinuteFact],
+        now: Date,
+        windowHours: Double = 12,
+        defaults: UserDefaults = .standard
+    ) {
+        let cadence = AtriaPhysiologicalStressModel.evaluationCadence
+        let window = AtriaPhysiologicalStressModel.windowDuration
+        let windowEnd = floor(now.timeIntervalSince1970 / cadence) * cadence
+        let windowStart = windowEnd - windowHours * 3_600
+        var heartRateUnix: [TimeInterval] = []
+        for session in sessions {
+            let base = session.start.timeIntervalSince1970
+            guard session.end.timeIntervalSince1970 >= windowStart - window,
+                  base <= windowEnd else { continue }
+            for point in session.points {
+                let t = base + point.t
+                if t >= windowStart - window, t <= windowEnd {
+                    heartRateUnix.append(t)
+                }
+            }
+        }
+        heartRateUnix.sort()
+        let newestHR = heartRateUnix.last ?? windowStart
+        let produced = Set(producedFacts.map {
+            floor($0.date.timeIntervalSince1970 / cadence) * cadence
+        })
+        var summary = GapReceiptSummary(
+            recordedAtUnix: now.timeIntervalSince1970,
+            windowStartUnix: windowStart,
+            windowEndUnix: windowEnd,
+            qualifiedAndReconciled: 0,
+            rawHRGap: 0,
+            insufficientHRSpan: 0,
+            insufficientHRSamples: 0,
+            sourceNotYetDurable: 0,
+            kernelDeclined: 0,
+            missingMinutes: []
+        )
+        var minute = windowStart
+        while minute < windowEnd {
+            defer { minute += cadence }
+            if produced.contains(minute) {
+                summary.qualifiedAndReconciled += 1
+                continue
+            }
+            let classification: String
+            if minute > newestHR + cadence {
+                classification = "source_not_yet_durable"
+                summary.sourceNotYetDurable += 1
+            } else {
+                let lower = minute - window
+                var lo = 0
+                var hi = heartRateUnix.count
+                while lo < hi {
+                    let mid = (lo + hi) / 2
+                    if heartRateUnix[mid] <= lower { lo = mid + 1 } else { hi = mid }
+                }
+                var first = lo
+                var samples = 0
+                var firstDate: TimeInterval?
+                var lastDate: TimeInterval?
+                var maxGap: TimeInterval = 0
+                var previous: TimeInterval?
+                while first < heartRateUnix.count,
+                      heartRateUnix[first] <= minute {
+                    let t = heartRateUnix[first]
+                    samples += 1
+                    if firstDate == nil { firstDate = t }
+                    lastDate = t
+                    if let previous { maxGap = max(maxGap, t - previous) }
+                    previous = t
+                    first += 1
+                }
+                if samples
+                    < AtriaPhysiologicalStressModel.minimumQualifiedHRSamples {
+                    classification = "insufficient_hr_samples"
+                    summary.insufficientHRSamples += 1
+                } else if let firstDate, let lastDate,
+                          lastDate - firstDate
+                            < AtriaPhysiologicalStressModel
+                                .minimumQualifiedHRSpan {
+                    classification = "insufficient_hr_span"
+                    summary.insufficientHRSpan += 1
+                } else if maxGap > AtriaPhysiologicalStressModel
+                    .maximumRawHeartRateGap {
+                    classification = "raw_hr_gap"
+                    summary.rawHRGap += 1
+                } else {
+                    classification = "kernel_declined"
+                    summary.kernelDeclined += 1
+                }
+            }
+            if summary.missingMinutes.count < gapReceiptMinuteCap {
+                summary.missingMinutes.append(
+                    "\(Int(minute))|\(classification)"
+                )
+            }
+        }
+        guard let data = try? JSONEncoder().encode(summary) else { return }
+        defaults.set(data, forKey: gapReceiptKey)
+    }
+
     /// Frames exact overlapping five-minute windows at one-minute boundaries
     /// and calls the same pure v3 kernel used by live scoring. The two sliding
     /// ranges make framing O(rows + minute windows), with at most five copies of
