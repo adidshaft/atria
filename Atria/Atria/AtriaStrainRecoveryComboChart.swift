@@ -59,10 +59,11 @@ struct AtriaStrainRecoveryComboChart: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
-            // Full-bleed plot inside the card (2026-08-05 width audit): only
-            // the chart escapes the 14pt inset; header and caption keep it.
+            // Handoff-10 CP3: the former full-bleed negative padding plus a
+            // whole-chart `.clipped()` cut the top `21`/`100%` labels and the
+            // trailing axis. The plot now keeps the card inset and gets
+            // explicit headroom instead.
             chart
-                .padding(.horizontal, -14)
             Text("Strain (0–21, left) and recovery % (right) as two lines. Recovery points are colored by band; each line breaks on days with no reading rather than drawing across the gap.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -137,14 +138,20 @@ struct AtriaStrainRecoveryComboChart: View {
         .chartXAxis {
             AxisMarks(values: weekDays) { value in
                 AxisGridLine()
-                AxisValueLabel(format: .dateTime.weekday(.narrow))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.quaternary)
+                AxisValueLabel {
+                    if let day = value.as(Date.self) {
+                        Text(Self.dayTickLabel(for: day, calendar: calendar))
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
         }
         .chartYScale(domain: 0...strainAxisMax)
         .chartYAxis {
             AxisMarks(position: .leading, values: [0, 7, 14, 21]) { value in
                 AxisGridLine()
+                    .foregroundStyle(.quaternary)
                 AxisValueLabel {
                     if let raw = value.as(Double.self) {
                         Text("\(Int(raw))")
@@ -161,8 +168,21 @@ struct AtriaStrainRecoveryComboChart: View {
                 }
             }
         }
-        .frame(height: 150)
-        .clipped()
+        // Explicit plot insets (handoff-10 CP3): headroom keeps the top
+        // `21` / `100%` labels and edge points fully visible; no `.clipped()`.
+        .chartPlotStyle { plot in
+            plot.padding(.top, 10)
+        }
+        .frame(height: 158)
+    }
+
+    /// Compact weekday + day-of-month tick (`M 10`, `T 11`) so a week whose
+    /// narrow weekday initials repeat (`S S`, `T T`) stays unambiguous.
+    /// Internal for the tick-formatter tests.
+    static func dayTickLabel(for day: Date, calendar: Calendar = .current) -> String {
+        let weekday = day.formatted(.dateTime.weekday(.narrow))
+        let dayOfMonth = calendar.component(.day, from: day)
+        return "\(weekday) \(dayOfMonth)"
     }
 }
 

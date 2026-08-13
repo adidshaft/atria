@@ -11412,10 +11412,10 @@ private struct AtriaPreparedMetricChart: View {
             } else if points.count == 1 {
                 singleObservationState
             } else {
-                // Full-bleed plot (2026-08-05 width audit): only the chart
-                // escapes the card inset — header/legend/summary keep the 14pt.
+                // Handoff-10 CP3: the full-bleed negative inset clipped edge
+                // labels/points against the card bounds; the plot now keeps
+                // the card inset and carries explicit headroom instead.
                 chartContent
-                    .padding(.horizontal, -14)
                 chartLegendAndCompanions
             }
         }
@@ -11541,28 +11541,49 @@ private struct AtriaPreparedMetricChart: View {
         .chartYAxisLabel(unit)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine(); AxisTick(); AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                AxisGridLine().foregroundStyle(.quaternary)
+                AxisTick()
+                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
             }
         }
-        .frame(height: 210).clipped()
+        // Handoff-10 CP3: explicit top headroom instead of `.clipped()`, so
+        // the top axis label and edge points always render fully.
+        .chartPlotStyle { plot in
+            plot.padding(.top, 8)
+        }
+        .frame(height: 210)
         .onTapGesture(count: 2) {
             if let target = scrubbedDay, let onOpenDay { onOpenDay(target) }
         }
         .accessibilityLabel(accessibilitySummary)
     }
 
+    /// Handoff-10 CP3: one observation renders a compact terminal summary
+    /// (`Aug 12 · 92%`) instead of a mostly-empty 150-point faux-chart panel.
+    /// The single real sample stays the headline; the trend explanation is a
+    /// caption, not the centerpiece.
     private var singleObservationState: some View {
-        VStack(spacing: 6) {
-            Text("One observation in this view")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text("A trend needs multiple days. Choose a longer period when more history is available.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 18)
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Circle()
+                .fill(tint)
+                .frame(width: 8, height: 8)
+                .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 2 }
+            VStack(alignment: .leading, spacing: 2) {
+                if let only = points.first {
+                    Text("\(only.day.formatted(.dateTime.month(.abbreviated).day())) · \(valueText(only.value))")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                }
+                Text("One observation in this view · a trend needs multiple days")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, minHeight: 150)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
         .accessibilityLabel("\(accessibilitySummary) One observation in this view. A trend needs multiple days.")
     }
