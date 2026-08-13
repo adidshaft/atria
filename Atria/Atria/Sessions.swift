@@ -50103,10 +50103,15 @@ final class SessionStore: ObservableObject {
                let startUnix = Double(
                 ProcessInfo.processInfo.arguments[valueIndex]
                ) {
-                Task.detached(priority: .utility) {
+                Task.detached(priority: .userInitiated) {
                     // Handoff-9 CP1 acceptance: one cold read (receipt ring)
                     // then one warm repeat of the identical window, so the
-                    // in-memory cache path gets a measured elapsed too.
+                    // in-memory cache path gets a measured elapsed too. The
+                    // priority matches the production Activity navigation
+                    // (a MainActor task), and the short settle mirrors a user
+                    // reaching the day view a few seconds after cold launch
+                    // instead of racing the launch itself.
+                    try? await Task.sleep(for: .seconds(8))
                     let coldStartedAt = Date()
                     let cold = HistoricalArchive.metricHeartRatePoints(
                         start: Date(timeIntervalSince1970: startUnix),
