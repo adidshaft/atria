@@ -252,6 +252,11 @@ extension LocalNotificationScheduler {
             // Re-check under the same in-flight ordering as the checks above:
             // two overlapping passes can both pass the synchronous gate.
             guard !AtriaNotificationEventKeyStore.hasNotified(eventKey) else { return }
+            guard AtriaNotificationSettings.load().allows(kind: kind) else {
+                AtriaDebugLog("ATRIADBG notification_skip kind=%@ reason=user_disabled_before_add",
+                              kind)
+                return
+            }
             let adjustedDelay = respectQuietHours
                 ? quietHoursAdjustedDelay(kind: kind, delay: delay, now: now)
                 : delay

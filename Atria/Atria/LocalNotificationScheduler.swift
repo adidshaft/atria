@@ -2038,6 +2038,13 @@ enum LocalNotificationScheduler {
 
     private static func add(decision: NotificationDecision,
                             center: UNUserNotificationCenter) async throws {
+        // Final toggle fence: a request can be in flight while the settings
+        // callback persists OFF and cancels the already-pending set.
+        guard AtriaNotificationSettings.load().allows(kind: decision.kind) else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=%@ reason=user_disabled_before_add",
+                          decision.kind)
+            return
+        }
         let workoutCandidateID = decision.kind == "workout_review"
             ? decision.reason.split(separator: "_", maxSplits: 1).dropFirst().first.map(String.init)
             : nil

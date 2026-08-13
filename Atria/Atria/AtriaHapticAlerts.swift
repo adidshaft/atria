@@ -122,7 +122,8 @@ struct AtriaNotificationSettings: Codable, Equatable {
         if kind == "diagnostic" { return true }
         guard allowNotifications else { return false }
         guard let category = AtriaNotificationCategory.category(forKind: kind) else {
-            return true
+            AtriaDebugLog("ATRIADBG notification_skip kind=%@ reason=unknown_kind_fail_closed", kind)
+            return false
         }
         return self[keyPath: category.settingKeyPath]
     }
@@ -387,7 +388,7 @@ struct AtriaNotificationSettingsCard: View {
     }
 
     private var masterToggle: some View {
-        Toggle("Allow notifications", isOn: binding(for: \.allowNotifications))
+        Toggle("Allow notifications", isOn: masterBinding)
             .font(.subheadline.weight(.semibold))
             .toggleStyle(.switch)
             .tint(.blue)
@@ -397,7 +398,7 @@ struct AtriaNotificationSettingsCard: View {
     }
 
     private func categoryRow(_ category: AtriaNotificationCategory) -> some View {
-        Toggle(isOn: binding(for: category.settingKeyPath)) {
+        Toggle(isOn: binding(for: category)) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(category.displayName)
                     .font(.caption.weight(.semibold))
@@ -415,20 +416,74 @@ struct AtriaNotificationSettingsCard: View {
         .accessibilityLabel("\(category.displayName). \(category.honestDescription)")
     }
 
-    private func binding(for keyPath: WritableKeyPath<AtriaNotificationSettings, Bool>) -> Binding<Bool> {
+    private var masterBinding: Binding<Bool> {
         Binding(
-            get: { settings[keyPath: keyPath] },
+            get: { settings.allowNotifications },
             set: { enabled in
-                settings[keyPath: keyPath] = enabled
+                settings.allowNotifications = enabled
                 settings.save()
                 if enabled {
                     // Provisional (quiet) authorization is the default posture;
                     // an explicit user enable is the one moment full alert
                     // authorization may be requested.
                     LocalNotificationScheduler.requestFullAuthorizationForExplicitEnable()
+                } else {
+                    AtriaPendingNotificationCancellation.cancelAllUserFacing()
                 }
             }
         )
+    }
+
+    private func binding(for category: AtriaNotificationCategory) -> Binding<Bool> {
+        Binding(
+            get: { settings[keyPath: category.settingKeyPath] },
+            set: { enabled in
+                settings[keyPath: category.settingKeyPath] = enabled
+                settings.save()
+                if enabled {
+                    LocalNotificationScheduler.requestFullAuthorizationForExplicitEnable()
+                } else {
+                    AtriaPendingNotificationCancellation.cancel(category: category)
+                }
+            }
+        )
+    }
+}
+
+/// Side-effect adapter around the pure identifier policy. It only removes
+/// pending requests selected by the category catalog; delivered history and
+/// identifiers not owned by an Atria user-facing category remain untouched.
+enum AtriaPendingNotificationCancellation {
+    static func cancel(category: AtriaNotificationCategory,
+                       center: UNUserNotificationCenter = .current()) {
+        center.getPendingNotificationRequests { requests in
+            guard !AtriaNotificationSettings.load().allows(kind: category.kind) else {
+                return
+            }
+            let identifiers = AtriaPendingNotificationCancellationPolicy.identifiersToCancel(
+                from: requests.map(\.identifier),
+                category: category
+            )
+            guard !identifiers.isEmpty else { return }
+            center.removePendingNotificationRequests(withIdentifiers: identifiers)
+            AtriaDebugLog("ATRIADBG notification_cancel category=%@ pending_count=%d reason=user_disabled",
+                          category.rawValue,
+                          identifiers.count)
+        }
+    }
+
+    static func cancelAllUserFacing(
+        center: UNUserNotificationCenter = .current()
+    ) {
+        center.getPendingNotificationRequests { requests in
+            guard !AtriaNotificationSettings.load().allowNotifications else { return }
+            let identifiers = AtriaPendingNotificationCancellationPolicy
+                .allUserFacingIdentifiersToCancel(from: requests.map(\.identifier))
+            guard !identifiers.isEmpty else { return }
+            center.removePendingNotificationRequests(withIdentifiers: identifiers)
+            AtriaDebugLog("ATRIADBG notification_cancel category=all_user_facing pending_count=%d reason=master_disabled",
+                          identifiers.count)
+        }
     }
 }
 
