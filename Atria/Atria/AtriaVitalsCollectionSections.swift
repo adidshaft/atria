@@ -703,6 +703,9 @@ private struct AtriaHealthMonitorCard: View {
                         educationTopic = topic
                     })
                 }
+                if skinTemperatureEnabled {
+                    AtriaRelativeSkinSignalRowView()
+                }
             }
         }
         // The monitor's timeline/empty-state is the primary surface. Remove
@@ -793,6 +796,40 @@ private struct AtriaHealthMonitorCard: View {
                               valueText: detail,
                               points: [],
                               rangeState: value == nil ? .building : .research)
+    }
+}
+
+/// Handoff-8 CP3: the experimental relative skin signal, kept visually
+/// separate from the validated skin-temperature research row above it. Renders
+/// only baseline-building progress or a fully qualified raw-unit delta; every
+/// other blocker renders nothing (the validated row already says "Decoder not
+/// verified"). Never a temperature, never a °C/°F value.
+private struct AtriaRelativeSkinSignalRowView: View {
+    @ObservedObject private var center = AtriaRelativeSkinSignalCenter.shared
+
+    var body: some View {
+        if let content = AtriaRelativeSkinSignalPresentation.content(
+            for: center.summary
+        ) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Image(systemName: "waveform.path")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text("Relative skin signal")
+                        .font(.subheadline.weight(.medium))
+                    Spacer(minLength: 0)
+                }
+                Text(content.headline)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                Text(content.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 2)
+            .accessibilityElement(children: .combine)
+        }
     }
 }
 
