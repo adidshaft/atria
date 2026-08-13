@@ -56,11 +56,12 @@ enum AtriaPendingSleepReviewStore {
     private static let key = "atria.sleepReview.pendingReceipt.v1"
     static let maximumAge: TimeInterval = 72 * 60 * 60
 
+    @discardableResult
     static func save(
         _ night: SleepHistorySnapshot.Night,
         now: Date = Date(),
         defaults: UserDefaults = .standard
-    ) {
+    ) -> Bool {
         guard !night.confirmed,
               let start = night.start,
               let end = night.end,
@@ -68,7 +69,7 @@ enum AtriaPendingSleepReviewStore {
                     end: end,
                     duration: night.duration,
                     savedAt: now,
-                    now: now) else { return }
+                    now: now) else { return false }
         let record = Record(
             schema: schema,
             id: night.id,
@@ -88,8 +89,9 @@ enum AtriaPendingSleepReviewStore {
             savedAt: now,
             motionValidated: night.motionValidated
         )
-        guard let data = try? JSONEncoder().encode(record) else { return }
+        guard let data = try? JSONEncoder().encode(record) else { return false }
         defaults.set(data, forKey: key)
+        return true
     }
 
     /// Handoff-11 Checkpoint 4: persist one degraded HR/RR review-only
