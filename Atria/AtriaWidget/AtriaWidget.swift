@@ -167,9 +167,9 @@ private func atriaCaptureTimeText(_ capturedAt: Date) -> String {
 struct AtriaWidgetSnapshot: Codable {
     let schema: Int
     let createdAt: Date
-    let recoveryPercent: Int?
+    var recoveryPercent: Int?
     let recoveryConfidence: String
-    let recoveryDetail: String
+    var recoveryDetail: String
     let strain: Double
     /// Additive optional evidence qualifier in the schema-4 payload.
     var strainDetail: String? = nil
@@ -182,9 +182,29 @@ struct AtriaWidgetSnapshot: Codable {
     let hrvState: String
     let maxHR: Int
     // Optional so schema-1 payloads still decode (missing keys -> nil).
-    let sleepHours: Double?
+    var sleepHours: Double?
     /// Additive optional display-only sleep provenance in schema 4.
     var sleepDetail: String? = nil
+    /// Handoff-10 CP1: presentation identity for recovery/sleep. Past the
+    /// expiry (end of the display civil day) the extension blanks these
+    /// values instead of wearing a prior day's numbers under today's label.
+    var displayCivilDay: Date? = nil
+    var recoveryValueState: String? = nil
+    var recoveryExpiresAt: Date? = nil
+    var sleepExpiresAt: Date? = nil
+
+    /// Fail-closed identity enforcement (handoff-10 CP1). Legacy snapshots
+    /// without the identity keys keep their existing behavior.
+    mutating func atriaEnforceCurrentDayIdentity(now: Date = Date()) {
+        if let expires = recoveryExpiresAt, now >= expires {
+            recoveryPercent = nil
+            recoveryDetail = "Awaiting today's data"
+        }
+        if let expires = sleepExpiresAt, now >= expires {
+            sleepHours = nil
+            sleepDetail = "Awaiting current sleep"
+        }
+    }
     let steps: Int?
     /// Optional for snapshots written before preliminary strap steps were
     /// exposed honestly in widgets.
@@ -283,8 +303,17 @@ struct AtriaWidgetProvider: TimelineProvider {
            cycleExpiresAt < refreshAt {
             entryDates.append(cycleExpiresAt)
         }
-        let entries = Set(entryDates).sorted().map {
-            AtriaWidgetEntry(date: $0, snapshot: snapshot)
+        // Handoff-10 CP1: reload exactly when the display-day identity expires
+        // so a retained snapshot blanks recovery/sleep on its own.
+        for identityExpiry in [snapshot?.recoveryExpiresAt, snapshot?.sleepExpiresAt] {
+            if let identityExpiry, identityExpiry > now, identityExpiry < refreshAt {
+                entryDates.append(identityExpiry)
+            }
+        }
+        let entries = Set(entryDates).sorted().map { date in
+            var entrySnapshot = snapshot
+            entrySnapshot?.atriaEnforceCurrentDayIdentity(now: date)
+            return AtriaWidgetEntry(date: date, snapshot: entrySnapshot)
         }
         completion(Timeline(entries: entries, policy: .after(refreshAt)))
     }
@@ -295,7 +324,11 @@ struct AtriaWidgetProvider: TimelineProvider {
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(AtriaWidgetSnapshot.self, from: data)
+        guard var snapshot = try? decoder.decode(AtriaWidgetSnapshot.self, from: data) else {
+            return nil
+        }
+        snapshot.atriaEnforceCurrentDayIdentity()
+        return snapshot
     }
 }
 

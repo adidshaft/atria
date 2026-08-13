@@ -31,6 +31,15 @@ struct WidgetSnapshot: Codable {
     /// Display-only provenance. A reviewable duration may be shown here without
     /// authorizing that sleep for Recovery, debt, or physiological boundaries.
     var sleepDetail: String? = nil
+    /// Handoff-10 CP1: presentation identity for recovery and sleep —
+    /// additive schema-4 keys so installed extensions keep decoding. The
+    /// expiries are the end of the display civil day: past them a widget
+    /// fails closed to its placeholder instead of wearing a prior day's
+    /// values under today's label after a withheld republish.
+    var displayCivilDay: Date? = nil
+    var recoveryValueState: String? = nil
+    var recoveryExpiresAt: Date? = nil
+    var sleepExpiresAt: Date? = nil
     // Lock Screen single-metric widgets (Steps / BPM, alongside Strain / HRV).
     var steps: Int?
     /// `true` means a fresh strap-derived preliminary count. Widgets must
@@ -1443,15 +1452,53 @@ enum WidgetSnapshotPublisher {
             && persistedBattery.chargeAge >= 0
             ? now.addingTimeInterval(-persistedBattery.chargeAge)
             : nil
+        // Handoff-10 CP1: the widget applies the same presentation identity as
+        // the Home hero — a snapshot published under today's label may not
+        // carry a prior cycle's recovery/sleep as primary values.
+        let widgetTodayRollup = store.dailyRollupHistory.first {
+            calendar.isDate($0.day, inSameDayAs: calendar.startOfDay(for: now))
+        }
+        let widgetDayResolution = AtriaCurrentDayPresentation.resolve(
+            now: now,
+            cycleStart: physiologicalCycle.start,
+            cycleEnd: AtriaPhysiologicalCycle.nextNoSleepRollover(
+                now: now,
+                confirmedSleeps: store.confirmedSleeps,
+                calendar: calendar
+            ),
+            anchorSleepID: physiologicalCycle.anchorSleepID,
+            cycleValueSourceDay: physiologicalCycle.boundaryKind == .mainSleep
+                ? latestSleep.map { $0.end ?? $0.day }
+                : physiologicalCycle.start,
+            currentDayPartialRecovery: AtriaCurrentDayPresentation
+                .currentDayPartialRecovery(
+                    fromRollupSummary: widgetTodayRollup?.recoverySummary,
+                    rollupDay: widgetTodayRollup?.day,
+                    now: now,
+                    calendar: calendar
+                ),
+            currentDayPartialStrain: widgetTodayRollup?.strain,
+            priorCycle: nil,
+            calendar: calendar
+        )
+        let presentedWidgetRecovery = widgetDayResolution.recoveryOverride ?? widgetRecovery
+        let presentedWidgetStrain = widgetDayResolution.strainOverride ?? strain
+        let widgetSleepIsCurrentDay = AtriaCurrentDayPresentation
+            .sleepIsCurrentDayPrimary(sleepEnd: latestDisplaySleep?.end, now: now)
+        let displayDayEnd = calendar.date(
+            byAdding: .day, value: 1, to: calendar.startOfDay(for: now)
+        )
         // Optional evidence qualifiers are an additive schema-4 extension so
         // already-installed widget extensions continue decoding the payload.
         var snapshot = WidgetSnapshot(schema: 4,
                                       createdAt: now,
-                                      recoveryPercent: recoveryPercent,
-                                      recoveryConfidence: widgetRecovery.confidence.rawValue,
-                                      recoveryDetail: widgetRecovery.detail,
-                                      strain: strain,
-                                      strainDetail: strainDetail,
+                                      recoveryPercent: presentedWidgetRecovery.percent,
+                                      recoveryConfidence: presentedWidgetRecovery.confidence.rawValue,
+                                      recoveryDetail: presentedWidgetRecovery.detail,
+                                      strain: presentedWidgetStrain,
+                                      strainDetail: widgetDayResolution.strainOverride != nil
+                                        ? "Partial · current day"
+                                        : strainDetail,
                                       // `dayStrain` was recomputed immediately
                                       // above; this is its true computation
                                       // clock, not a generic snapshot fallback.
@@ -1468,10 +1515,14 @@ enum WidgetSnapshotPublisher {
                                       hrvRMSSD: hrvRMSSD,
                                       hrvState: hrvState,
                                       maxHR: store.profile.maxHR,
-                                      sleepHours: latestDisplaySleep?.durationHours,
-                                      sleepDetail: latestDisplaySleep.map {
-                                        $0.confirmed ? "Confirmed sleep" : ($0.isNapEvidence ? "Review nap" : "Review sleep")
-                                      },
+                                      sleepHours: widgetSleepIsCurrentDay
+                                        ? latestDisplaySleep?.durationHours
+                                        : nil,
+                                      sleepDetail: widgetSleepIsCurrentDay
+                                        ? latestDisplaySleep.map {
+                                            $0.confirmed ? "Confirmed sleep" : ($0.isNapEvidence ? "Review nap" : "Review sleep")
+                                          }
+                                        : AtriaCurrentDayPresentation.awaitingCurrentSleepDetail,
                                       steps: publishedSteps,
                                       // Old widget processes do not understand
                                       // the additive lower-bound qualifier.
@@ -1533,6 +1584,13 @@ enum WidgetSnapshotPublisher {
                                       appGroupEnabled: widgetDiagnostics.appGroupEnabled,
                                       widgetTargetPresent: widgetDiagnostics.widgetTargetPresent,
                                       complicationTargetPresent: widgetDiagnostics.complicationTargetPresent)
+        // Handoff-10 CP1: the identity that lets a retained snapshot expire on
+        // its own. Past the end of the display civil day, extensions and the
+        // App Intent fail closed instead of re-wearing these values.
+        snapshot.displayCivilDay = calendar.startOfDay(for: now)
+        snapshot.recoveryValueState = widgetDayResolution.identity.valueState.rawValue
+        snapshot.recoveryExpiresAt = displayDayEnd
+        snapshot.sleepExpiresAt = displayDayEnd
         // Cold-start + card-settlement guard: landing sessions makes the UI
         // interactive before the async confirmed-sleep -> metric -> rollup chain
         // is complete. Preserve the last durable widget until both authorities

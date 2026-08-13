@@ -333,7 +333,25 @@ enum AtriaIntentSnapshotStore {
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try? decoder.decode(WidgetSnapshot.self, from: data)
+        guard let snapshot = try? decoder.decode(WidgetSnapshot.self, from: data) else {
+            return nil
+        }
+        // Handoff-10 CP1: past the display-day identity expiry this snapshot
+        // may no longer answer for "today" — fail closed to the learning
+        // dialog instead of re-wearing a prior day's values after relaunch.
+        guard snapshotAnswersForCurrentDay(
+            recoveryExpiresAt: snapshot.recoveryExpiresAt
+        ) else { return nil }
+        return snapshot
+    }
+
+    /// Pure display-day identity check (handoff-10 CP1). Legacy snapshots
+    /// without the expiry key keep their existing behavior.
+    static func snapshotAnswersForCurrentDay(
+        recoveryExpiresAt: Date?,
+        now: Date = Date()
+    ) -> Bool {
+        recoveryExpiresAt.map { now < $0 } ?? true
     }
 }
 

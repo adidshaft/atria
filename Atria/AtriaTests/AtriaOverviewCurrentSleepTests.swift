@@ -74,8 +74,16 @@ final class AtriaOverviewCurrentSleepTests: XCTestCase {
         XCTAssertTrue(source.contains("let latest = latestSleep"))
         XCTAssertTrue(source.contains("latest == nil, latestDisplaySleep != nil"),
                       "review-only sleep must not inherit an older night's need/performance")
-        XCTAssertTrue(source.contains("let value = latestDisplaySleep?.durationText"),
+        // Handoff-10 CP1: the primary value must come from the CURRENT-day
+        // gated evidence (a fresh first night ending today still renders its
+        // measured duration through `currentDaySleep`); the day-agnostic
+        // newest-rollup fallback is gone.
+        XCTAssertTrue(source.contains("let value = currentDaySleep?.durationText"),
                       "fresh first-night evidence should render its measured duration")
+        XCTAssertTrue(source.contains("sleepIsCurrentDayPrimary"),
+                      "the Today ring must gate its primary on the wake's civil day")
+        XCTAssertFalse(source.contains("latestRollup?.sleepSeconds"),
+                       "the day-agnostic newest-rollup sleep fallback must stay deleted")
         XCTAssertTrue(source.contains("evidence.isNapEvidence ? \"Review nap\" : \"Review sleep\""))
         XCTAssertFalse(source.contains("let latest = sleepHistory.latestMainSleep"))
     }

@@ -9314,6 +9314,13 @@ final class AtriaHomeModel {
         /// the score (it is still real), but never imply it belongs to today's
         /// sleep cycle.
         let recoveryIsFromPreviousSleep: Bool
+        /// Handoff-10 CP1: the explicit presentation identity of this hero.
+        /// A Today-labelled surface may only render `.current`/`.currentPartial`
+        /// values as primary; the prior cycle survives in `priorCycleDisclosure`
+        /// as a dated secondary line. Included in equality so a cycle/day
+        /// change forces a republish even when the numbers happen to match.
+        let identity: AtriaMetricPresentationIdentity?
+        let priorCycleDisclosure: AtriaPriorCycleDisclosure?
         let strain: Double
         let strainConfidence: String
         /// Fraction of the elapsed physiological day covered by accepted strap
@@ -9471,6 +9478,8 @@ final class AtriaHomeModel {
                 && lhs.recoveryEstimate.detail == rhs.recoveryEstimate.detail
                 && lhs.recoveryIsProvisional == rhs.recoveryIsProvisional
                 && lhs.recoveryIsFromPreviousSleep == rhs.recoveryIsFromPreviousSleep
+                && lhs.identity == rhs.identity
+                && lhs.priorCycleDisclosure == rhs.priorCycleDisclosure
                 && lhs.strainConfidence == rhs.strainConfidence
                 && lhs.dayWearCoverageFraction == rhs.dayWearCoverageFraction
                 && lhs.guidance == rhs.guidance
@@ -11938,10 +11947,56 @@ final class AtriaHomeModel {
         let recoveryIsProvisional = sleepRecoveryIsProvisional
             || recovery.confidence == .unverified
             || recovery.confidence == .learning
-        let recoveryIsFromPreviousSleep = recovery.percent != nil
-            && latestSleep.flatMap({ $0.end ?? $0.day }).map {
-                !calendar.isDateInToday($0)
-            } == true
+        // Handoff-10 CP1: the presentation identity decides what a
+        // Today-labelled surface may show as PRIMARY. The cycle's frozen
+        // values belong to the anchoring wake's civil day (or the fallback
+        // boundary's); when that is not today, the primary becomes today's
+        // own partial row (with its real limited confidence) or a terminal
+        // awaiting state, and the prior cycle survives only as a dated
+        // disclosure. The wake-to-wake math above is unchanged.
+        let cycleValueSourceDay: Date? = physiologicalCycle.boundaryKind == .mainSleep
+            ? latestSleep.map { $0.end ?? $0.day }
+            : physiologicalCycle.start
+        let todayRollup = store.dailyRollupHistory.first {
+            calendar.isDate($0.day, inSameDayAs: calendar.startOfDay(for: now))
+        }
+        let priorCycleRollup = cycleValueSourceDay.flatMap { sourceDay in
+            store.dailyRollupHistory.first {
+                calendar.isDate($0.day, inSameDayAs: sourceDay) && $0.recovery != nil
+            }
+        }
+        let dayResolution = AtriaCurrentDayPresentation.resolve(
+            now: now,
+            cycleStart: physiologicalCycle.start,
+            cycleEnd: AtriaPhysiologicalCycle.nextNoSleepRollover(
+                now: now,
+                confirmedSleeps: store.confirmedSleeps,
+                calendar: calendar
+            ),
+            anchorSleepID: physiologicalCycle.anchorSleepID,
+            cycleValueSourceDay: cycleValueSourceDay,
+            currentDayPartialRecovery: AtriaCurrentDayPresentation
+                .currentDayPartialRecovery(
+                    fromRollupSummary: todayRollup?.recoverySummary,
+                    rollupDay: todayRollup?.day,
+                    now: now,
+                    calendar: calendar
+                ),
+            currentDayPartialStrain: todayRollup?.strain,
+            priorCycle: priorCycleRollup.map {
+                AtriaPriorCycleDisclosure(civilDay: $0.day,
+                                          recoveryPercent: $0.recovery,
+                                          sleepSeconds: $0.sleepSeconds,
+                                          strain: $0.strain)
+            },
+            calendar: calendar
+        )
+        let presentedRecovery = dayResolution.recoveryOverride ?? recovery
+        let presentedRecoveryIsProvisional = dayResolution.recoveryOverride != nil
+            || recoveryIsProvisional
+        // The primary never carries a prior cycle's value anymore; the dated
+        // disclosure replaces the old heuristic marker.
+        let recoveryIsFromPreviousSleep = false
         let stress = HeroSnapshot.resolvedStressPresentation(
             state: stressState,
             lastMeasuredAt: stressLastMeasuredAt,
@@ -12010,11 +12065,26 @@ final class AtriaHomeModel {
                                    load: load,
                                    frozenTarget: frozenTarget?.target,
                                    frozenRecovery: frozenTarget?.recovery)
-        return HeroSnapshot(recoveryEstimate: recovery,
-                            recoveryIsProvisional: recoveryIsProvisional,
+        // Handoff-10 CP1: present the identity-resolved values. Cycle math
+        // (guidance, strain target) above intentionally still uses the
+        // wake-to-wake projection; only what the Today surface DISPLAYS as
+        // primary changes.
+        let presentedStrain = dayResolution.strainOverride ?? strain
+        let presentedStrainConfidence = dayResolution.strainOverride != nil
+            ? Metrics.StrainPresentation.resolve(
+                value: presentedStrain,
+                coverageFraction: wearCoverage,
+                baseConfidence: baseStrainConfidence,
+                additionalIncompleteEvidence: true
+              ).confidence
+            : strainConfidence
+        return HeroSnapshot(recoveryEstimate: presentedRecovery,
+                            recoveryIsProvisional: presentedRecoveryIsProvisional,
                             recoveryIsFromPreviousSleep: recoveryIsFromPreviousSleep,
-                            strain: strain,
-                            strainConfidence: strainConfidence,
+                            identity: dayResolution.identity,
+                            priorCycleDisclosure: dayResolution.priorCycle,
+                            strain: presentedStrain,
+                            strainConfidence: presentedStrainConfidence,
                             dayWearCoverageFraction: wearCoverage,
                             guidance: guidance,
                             hrvValue: deferredDetails?.hrvValue ?? fallbackHrv.value,
@@ -12112,6 +12182,8 @@ final class AtriaHomeModel {
         return HeroSnapshot(recoveryEstimate: recovery,
                             recoveryIsProvisional: !night.confirmed,
                             recoveryIsFromPreviousSleep: false,
+                            identity: nil,
+                            priorCycleDisclosure: nil,
                             strain: strain,
                             strainConfidence: "local",
                             // Night-scoped snapshot: day wear coverage is not
@@ -12310,6 +12382,8 @@ final class AtriaHomeModel {
                                                                        contributors: []),
                             recoveryIsProvisional: false,
                             recoveryIsFromPreviousSleep: false,
+                            identity: nil,
+                            priorCycleDisclosure: nil,
                             strain: 0,
                             strainConfidence: "standby",
                             // Standby/reconnecting snapshot: nothing has been
