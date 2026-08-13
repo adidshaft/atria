@@ -36174,9 +36174,12 @@ final class SessionStore: ObservableObject {
     /// Names the first failing review-tier clause for a no-candidate attempt.
     /// Diagnostic only — the bounded review builder remains the sole
     /// qualification authority; this mirrors its dense morning/long tier
-    /// clause tables over the best recent cluster so the decision receipt can
-    /// say WHY nothing qualified instead of staying silent. Sessions are
-    /// clustered across gaps of at most 30 minutes, newest cluster first.
+    /// clause tables over the largest cluster, formed at the engine's own
+    /// two-hour cluster gap, so the decision receipt describes the cluster
+    /// the aggregator actually judged. (Physically measured Aug-13: 8 h of
+    /// continuous post-sleep wear merges a shifted daytime sleep into one
+    /// mega-cluster whose mean HR honestly fails the sleep band — the
+    /// receipt must name that reality, not a differently-clustered one.)
     nonisolated static func sleepReviewAdmissionDiagnosis(
         sessions: [SavedSession],
         rest: Int,
@@ -36188,7 +36191,7 @@ final class SessionStore: ObservableObject {
         for session in ordered {
             if var current = clusters.last,
                let previous = current.last,
-               session.start.timeIntervalSince(previous.end) <= 30 * 60 {
+               session.start.timeIntervalSince(previous.end) <= 2 * 60 * 60 {
                 current.append(session)
                 clusters[clusters.count - 1] = current
             } else {
