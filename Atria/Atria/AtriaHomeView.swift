@@ -4407,6 +4407,11 @@ struct AtriaHomeView: View {
                     .max()
                 LocalNotificationScheduler.scheduleEveningJournalCheckIn(lastJournalActivity: lastJournalActivity)
                 LocalNotificationScheduler.scheduleMorningJournalCheckIn(lastJournalActivity: lastJournalActivity)
+                // Observational event pass (2026-08-13): same-day second-sleep
+                // prompt, opt-in bedtime wind-down, and the opt-in sync-truth
+                // notifications (catch-up complete, parked interval). Reads
+                // published state only; every event carries a durable dedup key.
+                LocalNotificationScheduler.runEventObservationPass(store: store)
             }
             foregroundResumeAuthority.complete(ticket)
             foregroundResumeTask = nil

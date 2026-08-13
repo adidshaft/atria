@@ -32806,6 +32806,10 @@ final class SessionStore: ObservableObject {
             calendar: .current)
         if pendingSameDayMainSleepChoiceForUI != next {
             pendingSameDayMainSleepChoiceForUI = next
+            // Notification entry point for the same prompt: schedules when a
+            // new unresolved double-sleep day appears while the app is not
+            // active, and cancels the pending notification once resolved.
+            LocalNotificationScheduler.refreshSameDayPrimarySleepPrompt(choice: next)
         }
     }
 

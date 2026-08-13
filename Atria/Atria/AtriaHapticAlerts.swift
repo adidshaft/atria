@@ -60,6 +60,8 @@ struct AtriaHapticAlertSettings: Codable, Equatable {
 /// User choice for which LOCAL notifications Atria may post. All notifications are
 /// on-device only (UNUserNotificationCenter); there is no cloud/push. Read by
 /// LocalNotificationScheduler at schedule time so the user is always in control.
+/// The category catalog (kind strings, display copy, defaults) lives in
+/// `AtriaNotificationCategory`; each case maps onto exactly one field here.
 struct AtriaNotificationSettings: Codable, Equatable {
     var allowNotifications = true
     var recoveryReady = true
@@ -72,6 +74,16 @@ struct AtriaNotificationSettings: Codable, Equatable {
     var strapBattery = true
     var bluetoothOff = true
     var fitCheck = true
+    // Kinds that previously fell through `allows` to an implicit `true`; now
+    // explicit toggles with the same effective default.
+    var sleepLogged = true
+    var eveningCheckIn = true
+    var syncNudge = true
+    // New categories (2026-08-13) default OFF — the user opts in.
+    var secondSleepPrimary = false
+    var bedtimeWindDown = false
+    var catchUpComplete = false
+    var parkedInterval = false
 
     init() {}
 
@@ -88,11 +100,20 @@ struct AtriaNotificationSettings: Codable, Equatable {
         strapBattery = try container.decodeIfPresent(Bool.self, forKey: .strapBattery) ?? true
         bluetoothOff = try container.decodeIfPresent(Bool.self, forKey: .bluetoothOff) ?? true
         fitCheck = try container.decodeIfPresent(Bool.self, forKey: .fitCheck) ?? true
+        sleepLogged = try container.decodeIfPresent(Bool.self, forKey: .sleepLogged) ?? true
+        eveningCheckIn = try container.decodeIfPresent(Bool.self, forKey: .eveningCheckIn) ?? true
+        syncNudge = try container.decodeIfPresent(Bool.self, forKey: .syncNudge) ?? true
+        secondSleepPrimary = try container.decodeIfPresent(Bool.self, forKey: .secondSleepPrimary) ?? false
+        bedtimeWindDown = try container.decodeIfPresent(Bool.self, forKey: .bedtimeWindDown) ?? false
+        catchUpComplete = try container.decodeIfPresent(Bool.self, forKey: .catchUpComplete) ?? false
+        parkedInterval = try container.decodeIfPresent(Bool.self, forKey: .parkedInterval) ?? false
     }
 
     var enabledCount: Int {
         guard allowNotifications else { return 0 }
-        return [recoveryReady, strainTarget, sleepReview, workoutReview, morningSummary, weeklyReport, healthDeviation, strapBattery, bluetoothOff, fitCheck].filter { $0 }.count
+        return AtriaNotificationCategory.allCases
+            .filter { self[keyPath: $0.settingKeyPath] }
+            .count
     }
 
     /// Whether a scheduler decision of the given `kind` is permitted by the user.
@@ -100,19 +121,10 @@ struct AtriaNotificationSettings: Codable, Equatable {
     func allows(kind: String) -> Bool {
         if kind == "diagnostic" { return true }
         guard allowNotifications else { return false }
-        switch kind {
-        case "recovery": return recoveryReady
-        case "strain": return strainTarget
-        case "sleep_review": return sleepReview
-        case "workout_review": return workoutReview
-        case "morning_summary": return morningSummary
-        case "weekly_report": return weeklyReport
-        case "health_deviation": return healthDeviation
-        case "battery": return strapBattery
-        case "bluetooth_off": return bluetoothOff
-        case "fit_check": return fitCheck
-        default: return true
+        guard let category = AtriaNotificationCategory.category(forKind: kind) else {
+            return true
         }
+        return self[keyPath: category.settingKeyPath]
     }
 
     private static let key = "atria.notificationSettings.v1"
@@ -337,10 +349,11 @@ struct AtriaHapticAlertSettingsCard: View, Equatable {
 }
 
 /// Self-contained "choice of notifications" card: persists straight to UserDefaults
-/// (the scheduler reads the same store at schedule time), so it needs no app-model wiring.
+/// (the scheduler reads the same store at schedule time), so it needs no app-model
+/// wiring. Rows come from `AtriaNotificationCategory`, so every category the
+/// scheduler can post has a toggle and an honest one-line description here.
 struct AtriaNotificationSettingsCard: View {
     @State private var settings = AtriaNotificationSettings.load()
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -355,22 +368,15 @@ struct AtriaNotificationSettingsCard: View {
                     .font(.subheadline.weight(.semibold))
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Notifications. Choose coaching nudges Atria can send on this phone. Nothing leaves your device.")
+            .accessibilityLabel("Notifications. Choose which notifications Atria can send on this phone. Nothing leaves your device.")
 
-            notificationToggle("Allow coach notifications", keyPath: \.allowNotifications, prominent: true)
+            masterToggle
 
             if settings.allowNotifications {
-                LazyVGrid(columns: AtriaAlertSettingsGrid.columns(for: dynamicTypeSize), spacing: 8) {
-                    notificationToggle("Recovery check-ins", keyPath: \.recoveryReady)
-                    notificationToggle("Strain milestones", keyPath: \.strainTarget)
-                    notificationToggle("Sleep review", keyPath: \.sleepReview)
-                    notificationToggle("Workout review", keyPath: \.workoutReview)
-                    notificationToggle("Morning summary", keyPath: \.morningSummary)
-                    notificationToggle("Weekly report", keyPath: \.weeklyReport)
-                    notificationToggle("Health monitor", keyPath: \.healthDeviation)
-                    notificationToggle("Strap battery", keyPath: \.strapBattery)
-                    notificationToggle("Bluetooth help", keyPath: \.bluetoothOff)
-                    notificationToggle("Fit check reminders", keyPath: \.fitCheck)
+                VStack(spacing: 8) {
+                    ForEach(AtriaNotificationCategory.allCases) { category in
+                        categoryRow(category)
+                    }
                 }
                 .transition(.opacity)
             }
@@ -380,22 +386,49 @@ struct AtriaNotificationSettingsCard: View {
         .animation(.snappy(duration: AtriaDesignTokens.Motion.standard), value: settings.allowNotifications)
     }
 
-    private func notificationToggle(_ title: String,
-                                    keyPath: WritableKeyPath<AtriaNotificationSettings, Bool>,
-                                    prominent: Bool = false) -> some View {
-        Toggle(title, isOn: Binding(
-            get: { settings[keyPath: keyPath] },
-            set: { enabled in
-                settings[keyPath: keyPath] = enabled
-                settings.save()
+    private var masterToggle: some View {
+        Toggle("Allow notifications", isOn: binding(for: \.allowNotifications))
+            .font(.subheadline.weight(.semibold))
+            .toggleStyle(.switch)
+            .tint(.blue)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 8)
+            .atriaInsetCard(cornerRadius: 14, tint: .blue)
+    }
+
+    private func categoryRow(_ category: AtriaNotificationCategory) -> some View {
+        Toggle(isOn: binding(for: category.settingKeyPath)) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(category.displayName)
+                    .font(.caption.weight(.semibold))
+                Text(category.honestDescription)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-        ))
-        .font((prominent ? Font.subheadline : Font.caption).weight(.semibold))
+        }
         .toggleStyle(.switch)
         .tint(.blue)
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .atriaInsetCard(cornerRadius: 14, tint: .blue)
+        .accessibilityLabel("\(category.displayName). \(category.honestDescription)")
+    }
+
+    private func binding(for keyPath: WritableKeyPath<AtriaNotificationSettings, Bool>) -> Binding<Bool> {
+        Binding(
+            get: { settings[keyPath: keyPath] },
+            set: { enabled in
+                settings[keyPath: keyPath] = enabled
+                settings.save()
+                if enabled {
+                    // Provisional (quiet) authorization is the default posture;
+                    // an explicit user enable is the one moment full alert
+                    // authorization may be requested.
+                    LocalNotificationScheduler.requestFullAuthorizationForExplicitEnable()
+                }
+            }
+        )
     }
 }
 

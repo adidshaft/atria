@@ -832,6 +832,13 @@ struct AtriaApp: App {
             // is materialized; mirrors the launch cadence exactly and the
             // scheduler's own debounce prevents duplicate fires.
             await LocalNotificationScheduler.scheduleBackgroundReviewPass(store: store, ble: ble)
+            // Observational event pass (2026-08-13): the background wake is the
+            // moment the same-day second-sleep prompt, the opt-in bedtime
+            // wind-down, and the opt-in sync-truth notifications (catch-up
+            // complete, parked interval) matter most — the user is not looking
+            // at the app. Reads published state only; each event carries a
+            // durable dedup key so BGTask replays never double-fire.
+            LocalNotificationScheduler.runEventObservationPass(store: store)
             // Materialize archive-derived metrics (sleep efficiency/stages, daily
             // rollups) in the BACKGROUND too (2026-08-08, backlog #1). Projection
             // was foreground-only because it CPU-spiked into cpu_resource_fatal;
