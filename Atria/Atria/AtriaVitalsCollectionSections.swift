@@ -804,7 +804,7 @@ private struct AtriaHealthMonitorCard: View {
 /// only baseline-building progress or a fully qualified raw-unit delta; every
 /// other blocker renders nothing (the validated row already says "Decoder not
 /// verified"). Never a temperature, never a °C/°F value.
-private struct AtriaRelativeSkinSignalRowView: View {
+struct AtriaRelativeSkinSignalRowView: View {
     @ObservedObject private var center = AtriaRelativeSkinSignalCenter.shared
 
     var body: some View {

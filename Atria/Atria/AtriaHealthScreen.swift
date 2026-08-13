@@ -1310,6 +1310,21 @@ struct AtriaHealthScreen: View {
             // Dimmed while disconnected: these are saved values, not a live
             // read (paired with the last-known row above).
             .opacity(isDisconnected(live: live) && currentMetrics.hasEvidence ? 0.65 : 1)
+
+            // Handoff-9 CP4: the experimental relative skin signal, kept
+            // visually separate from the validated Skin temp tile above. It
+            // renders a truthful named blocker/progress state or the fully
+            // qualified raw-unit delta — never a temperature, never a number
+            // while blocked.
+            AtriaRelativeSkinSignalRowView()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(.quaternary.opacity(0.2),
+                            in: RoundedRectangle(
+                                cornerRadius: AtriaDesignTokens.Radius.chip,
+                                style: .continuous
+                            ))
+                .opacity(isDisconnected(live: live) && currentMetrics.hasEvidence ? 0.65 : 1)
         }
         // No outer mega-card chrome (2026-08-01 Vitals IA split): the tiles
         // are the cards now, so wrapping them in a second surface would
