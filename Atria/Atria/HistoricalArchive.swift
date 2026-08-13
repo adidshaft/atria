@@ -1425,6 +1425,9 @@ enum HistoricalArchive {
             contentSHA256: build.aggregate.source.rawSHA256,
             now: completedAt
         )
+        // Handoff-9 CP1: the catalog lock is released; hand the freshly sealed
+        // chunk to the coalesced utility sidecar builder (best-effort).
+        scheduleHeartRateSidecarBuildsForFreshlySealedChunks()
         NotificationCenter.default.post(name: didUpdateNotification, object: nil)
         return .init(chunkID: active.chunkID,
                      sourceURL: active.fileURL,
@@ -7366,6 +7369,18 @@ enum HistoricalArchive {
     }
 
     private static func appendJSONLine<T: Encodable>(_ value: T) throws -> URL {
+        let url = try appendJSONLineHoldingPromotionLock(value)
+        // Handoff-9 CP1: derived HR-sidecar work is scheduled strictly AFTER
+        // the promotion lock (and the catalog lock inside it) is released. It
+        // is best-effort and can never delay or fail the append that just
+        // completed.
+        scheduleHeartRateSidecarBuildsForFreshlySealedChunks()
+        return url
+    }
+
+    private static func appendJSONLineHoldingPromotionLock<T: Encodable>(
+        _ value: T
+    ) throws -> URL {
         // Serialize with compactArchive/promoteMetricUsableRows: both rewrite the
         // base file wholesale; an unlocked append during that window would land
         // on the doomed inode and be silently destroyed by the swap.
@@ -7958,6 +7973,83 @@ enum HistoricalArchive {
             AtriaDebugLog("ATRIADBG hr_sidecar_backfill status=built count=%d", built)
         }
         return built
+    }
+
+    // MARK: - Seal-triggered sidecar builds (handoff-9 CP1)
+
+    private static let heartRateSidecarBuildQueue = DispatchQueue(
+        label: "atria.historical.hr-sidecar-build", qos: .utility
+    )
+    private static let heartRateSidecarBuildStateLock = NSLock()
+    private static var heartRateSidecarBuildsInFlight: Set<String> = []
+
+    /// Drains the catalog store's freshly-sealed queue and schedules one
+    /// coalesced sidecar build per chunk. Called only after the promotion and
+    /// catalog locks are released; a failure here never surfaces to appends.
+    static func scheduleHeartRateSidecarBuildsForFreshlySealedChunks() {
+        guard let store = try? catalogStoreLocked() else { return }
+        let sealedIDs = store.takeSealedChunksAwaitingDerivedIndexes()
+        for chunkID in sealedIDs {
+            scheduleHeartRateSidecarBuild(forSealedChunkID: chunkID)
+        }
+    }
+
+    /// Coalesced by exact chunk identity: while a build for a chunk is in
+    /// flight, further requests drop. A query racing the build either scans
+    /// conservatively or sees a complete binding-valid sidecar — the atomic
+    /// temp-file+rename write means a partial file is never visible.
+    static func scheduleHeartRateSidecarBuild(forSealedChunkID chunkID: String) {
+        heartRateSidecarBuildStateLock.lock()
+        let alreadyRunning = heartRateSidecarBuildsInFlight.contains(chunkID)
+        if !alreadyRunning { heartRateSidecarBuildsInFlight.insert(chunkID) }
+        heartRateSidecarBuildStateLock.unlock()
+        guard !alreadyRunning else { return }
+        heartRateSidecarBuildQueue.async {
+            defer {
+                heartRateSidecarBuildStateLock.lock()
+                heartRateSidecarBuildsInFlight.remove(chunkID)
+                heartRateSidecarBuildStateLock.unlock()
+            }
+            buildHeartRateSidecarNow(chunkID: chunkID)
+        }
+    }
+
+    private static func buildHeartRateSidecarNow(chunkID: String) {
+        guard let catalog = (try? catalogStoreLocked()).flatMap({ try? $0.snapshot() }),
+              let chunk = catalog.chunks.first(where: { $0.id == chunkID }),
+              chunk.state == .sealed,
+              chunk.contentSHA256 != nil else { return }
+        let root = archiveDirectory
+        let fileURL = root.appendingPathComponent(chunk.relativePath)
+            .standardizedFileURL
+        let sidecarURL = heartRateSidecarURL(
+            forChunkRelativePath: chunk.relativePath, archiveRoot: root
+        )
+        if validHeartRateSidecarBinding(sidecarURL: sidecarURL, chunk: chunk) != nil {
+            return
+        }
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(for: [fileURL])
+        guard !descriptors.isEmpty else { return }
+        var rows: [HeartRatePoint] = []
+        let result = AtriaHistoricalJSONLRecentScanner.scan(
+            sources: descriptors.map { .init(descriptor: $0, startOffset: 0) },
+            cutoff: 0
+        ) { line in
+            guard let text = String(data: line, encoding: .utf8),
+                  let point = fastHeartRatePoint(from: text) else { return }
+            rows.append(point)
+        }
+        guard result.complete else { return }
+        if writeHeartRateSidecar(rows: rows, chunk: chunk, archiveRoot: root) {
+            AtriaDebugLog("ATRIADBG hr_sidecar_seal_build status=built chunk=%@ rows=%d",
+                          chunkID, rows.count)
+        }
+    }
+
+    /// Test seam: block until every currently queued sidecar build drains.
+    static func flushHeartRateSidecarBuildQueueForTesting() {
+        heartRateSidecarBuildQueue.sync {}
     }
 
     // MARK: - Exact-window HR result cache (handoff-8 CP1)
