@@ -50006,6 +50006,13 @@ final class SessionStore: ObservableObject {
         refreshOverviewTrendPointsCache(deferred: true)
         refreshTrainingLoadSummaryCache(deferred: true)
         refreshTodayHRZoneMinutesCache(deferred: true)
+        // Handoff-8 CP1: warm the per-chunk HR sidecar index off-main so a
+        // completed Activity day's exact lookup meets a valid index instead
+        // of paying a raw-archive scan. One-time per sealed chunk; cooperative
+        // and utility-priority; never touches the raw archive itself.
+        Task.detached(priority: .utility) {
+            HistoricalArchive.backfillHeartRateSidecars()
+        }
         // Launch is most users' first morning foreground. Use the same off-main
         // immutable proposal path as app resume so the first interactive frame
         // never decodes or aggregates the growing live journal.
@@ -50013,6 +50020,29 @@ final class SessionStore: ObservableObject {
         if ProcessInfo.processInfo.arguments.contains("--atria-compact-archive") {
             compactHistoricalArchiveIfUseful(reason: "debug_launch_arg")
         }
+        #if DEBUG
+        // Handoff-8 CP1 attribution probe: run the exact Activity-day HR
+        // window read off-main and persist its diagnostic receipt, without
+        // needing UI navigation. Value is the window's start unix; the window
+        // is that instant plus 24 hours. Diagnostic metadata only.
+        if let probeIndex = ProcessInfo.processInfo.arguments.firstIndex(
+            of: "--atria-debug-hr-window-probe"
+        ) {
+            let valueIndex = ProcessInfo.processInfo.arguments.index(after: probeIndex)
+            if ProcessInfo.processInfo.arguments.indices.contains(valueIndex),
+               let startUnix = Double(
+                ProcessInfo.processInfo.arguments[valueIndex]
+               ) {
+                Task.detached(priority: .utility) {
+                    _ = HistoricalArchive.metricHeartRatePoints(
+                        start: Date(timeIntervalSince1970: startUnix),
+                        end: Date(timeIntervalSince1970: startUnix + 24 * 3_600),
+                        maximumPoints: 100_000
+                    )
+                }
+            }
+        }
+        #endif
         // Insights compute AFTER the launch render (off the critical path). It's
         // light now, but never let it touch the first-frame budget on a big store.
         Task { @MainActor [weak self] in self?.recomputeBehaviorInsights() }
