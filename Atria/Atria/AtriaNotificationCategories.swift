@@ -12,7 +12,7 @@ import Foundation
 /// only what the app truthfully detects. No medical/fever/illness claims, no
 /// coaching promises, no fabricated precision — numeric values appear only
 /// where the underlying value is actually measured.
-enum AtriaNotificationCategory: String, CaseIterable, Identifiable {
+enum AtriaNotificationCategory: String, CaseIterable, Identifiable, Sendable {
     // Long-shipped categories. Their defaults are preserved as shipped.
     case recoveryReady
     case strainTarget
@@ -169,6 +169,97 @@ enum AtriaNotificationCategory: String, CaseIterable, Identifiable {
 
     static func category(forKind kind: String) -> AtriaNotificationCategory? {
         allCases.first { $0.kind == kind }
+    }
+}
+
+/// Exact ownership map for pending local-notification requests. Turning one
+/// category off removes only requests owned by that category; turning the
+/// master switch off removes every Atria-owned pending request except the
+/// explicit developer-only diagnostic. Category switches never use a broad
+/// prefix, while the master switch intentionally covers future Atria request
+/// identifiers without touching requests owned by another app/system path.
+enum AtriaPendingNotificationCancellationPolicy {
+    enum IdentifierRule: Equatable, Sendable {
+        case exact(String)
+        case prefix(String)
+
+        func matches(_ identifier: String) -> Bool {
+            switch self {
+            case .exact(let expected):
+                return identifier == expected
+            case .prefix(let expected):
+                return identifier.hasPrefix(expected)
+            }
+        }
+    }
+
+    static func rules(for category: AtriaNotificationCategory) -> [IdentifierRule] {
+        switch category {
+        case .recoveryReady:
+            return [.exact("atria.recovery.ready")]
+        case .strainTarget:
+            return [.exact("atria.strain.target")]
+        case .sleepReview:
+            return [.exact("atria.sleep.review")]
+        case .workoutReview:
+            return [.exact("atria.workout.review")]
+        case .morningSummary:
+            return [
+                .prefix("atria.morningSummary."),
+                .prefix("atria.morningJournal."),
+            ]
+        case .weeklyReport:
+            return [.prefix("atria.weeklyReport.")]
+        case .healthDeviation:
+            return [.exact("atria.health.deviation")]
+        case .strapBattery:
+            return [
+                .exact("atria.battery.low"),
+                .exact("atria.strap.chargeReminder"),
+            ]
+        case .bluetoothOff:
+            return [.exact("atria.bluetooth.off")]
+        case .fitCheck:
+            return [.exact("atria.fitcheck.needed")]
+        case .sleepLogged:
+            return [.exact("atria.sleep.logged")]
+        case .eveningCheckIn:
+            return [.prefix("atria.eveningJournal.")]
+        case .syncNudge:
+            return [.exact("atria.sync.nudge")]
+        case .secondSleepPrimary:
+            return [.exact("atria.sleep.secondPrimary")]
+        case .bedtimeWindDown:
+            return [.prefix("atria.bedtime.windDown.")]
+        case .catchUpComplete:
+            return [.exact("atria.sync.catchUpComplete")]
+        case .parkedInterval:
+            return [.exact("atria.sync.parkedInterval")]
+        }
+    }
+
+    static func identifiersToCancel(
+        from pendingIdentifiers: [String],
+        category: AtriaNotificationCategory
+    ) -> [String] {
+        identifiersToCancel(from: pendingIdentifiers, rules: rules(for: category))
+    }
+
+    static func allUserFacingIdentifiersToCancel(
+        from pendingIdentifiers: [String]
+    ) -> [String] {
+        pendingIdentifiers.filter {
+            $0.hasPrefix("atria.") && $0 != "atria.diagnostic.delivery"
+        }
+    }
+
+    private static func identifiersToCancel(
+        from pendingIdentifiers: [String],
+        rules: [IdentifierRule]
+    ) -> [String] {
+        pendingIdentifiers.filter { identifier in
+            rules.contains { $0.matches(identifier) }
+        }
     }
 }
 

@@ -88,6 +88,89 @@ final class AtriaNotificationCategoryTests: XCTestCase {
         XCTAssertEqual(settings.enabledCount, 0)
     }
 
+    func testUnknownUserFacingKindsFailClosedButDiagnosticRemainsAllowed() {
+        let settings = AtriaNotificationSettings()
+        XCTAssertFalse(settings.allows(kind: "future_user_facing_kind"))
+        XCTAssertFalse(settings.allows(kind: ""))
+        XCTAssertTrue(settings.allows(kind: "diagnostic"))
+    }
+
+    // MARK: Pending-request cancellation ownership
+
+    func testEveryCategoryHasExactPendingRequestOwnershipRules() {
+        typealias Rule = AtriaPendingNotificationCancellationPolicy.IdentifierRule
+        let expected: [AtriaNotificationCategory: [Rule]] = [
+            .recoveryReady: [.exact("atria.recovery.ready")],
+            .strainTarget: [.exact("atria.strain.target")],
+            .sleepReview: [.exact("atria.sleep.review")],
+            .workoutReview: [.exact("atria.workout.review")],
+            .morningSummary: [
+                .prefix("atria.morningSummary."),
+                .prefix("atria.morningJournal."),
+            ],
+            .weeklyReport: [.prefix("atria.weeklyReport.")],
+            .healthDeviation: [.exact("atria.health.deviation")],
+            .strapBattery: [
+                .exact("atria.battery.low"),
+                .exact("atria.strap.chargeReminder"),
+            ],
+            .bluetoothOff: [.exact("atria.bluetooth.off")],
+            .fitCheck: [.exact("atria.fitcheck.needed")],
+            .sleepLogged: [.exact("atria.sleep.logged")],
+            .eveningCheckIn: [.prefix("atria.eveningJournal.")],
+            .syncNudge: [.exact("atria.sync.nudge")],
+            .secondSleepPrimary: [.exact("atria.sleep.secondPrimary")],
+            .bedtimeWindDown: [.prefix("atria.bedtime.windDown.")],
+            .catchUpComplete: [.exact("atria.sync.catchUpComplete")],
+            .parkedInterval: [.exact("atria.sync.parkedInterval")],
+        ]
+
+        XCTAssertEqual(expected.count, AtriaNotificationCategory.allCases.count)
+        for category in AtriaNotificationCategory.allCases {
+            XCTAssertEqual(AtriaPendingNotificationCancellationPolicy.rules(for: category),
+                           expected[category],
+                           "pending-request ownership drifted for \(category.rawValue)")
+        }
+    }
+
+    func testCategoryCancellationSelectsOnlyThatCategoriesPendingRequests() {
+        let pending = [
+            "atria.battery.low",
+            "atria.strap.chargeReminder",
+            "atria.sync.nudge",
+            "atria.diagnostic.delivery",
+            "atria.unowned.future",
+            "unrelated.request",
+        ]
+        XCTAssertEqual(
+            AtriaPendingNotificationCancellationPolicy.identifiersToCancel(
+                from: pending,
+                category: .strapBattery
+            ),
+            ["atria.battery.low", "atria.strap.chargeReminder"]
+        )
+    }
+
+    func testMasterCancellationSelectsAllKnownUserFacingRequestsOnly() {
+        let pending = [
+            "atria.recovery.ready",
+            "atria.morningSummary.2026-08-13",
+            "atria.morningJournal.2026-08-13",
+            "atria.eveningJournal.2026-08-13",
+            "atria.weeklyReport.2026-W33",
+            "atria.bedtime.windDown.2026-08-13",
+            "atria.sync.parkedInterval",
+            "atria.diagnostic.delivery",
+            "atria.unowned.future",
+            "unrelated.request",
+        ]
+        XCTAssertEqual(
+            AtriaPendingNotificationCancellationPolicy
+                .allUserFacingIdentifiersToCancel(from: pending),
+            Array(pending.prefix(7)) + ["atria.unowned.future"]
+        )
+    }
+
     // MARK: Persistence
 
     func testSaveLoadRoundTripPersistsEveryToggle() {
