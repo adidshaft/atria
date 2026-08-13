@@ -55,6 +55,124 @@ final class AtriaHistoricalArchiveCatalogTests: XCTestCase {
         XCTAssertEqual(catalog.activeChunk?.relativePath, relative(second, root: root))
     }
 
+    /// Handoff-9 CP1: the production raw-v2 active cap is 4 MiB — the exact
+    /// cold-latency floor of the Activity historical HR reader. The unrelated
+    /// 32/128 MiB spool/rotation constants must not be confused with it.
+    func testProductionActiveChunkLimitIsFourMiB() {
+        XCTAssertEqual(AtriaHistoricalArchiveCatalogStore.productionMaximumActiveBytes,
+                       4 * 1024 * 1024)
+    }
+
+    func testRotationHappensAtConfiguredBoundaryAndNeverBefore() throws {
+        let root = try temporaryDirectory()
+        let ids = IdentifierSource(["active-a", "active-b"])
+        let store = AtriaHistoricalArchiveCatalogStore(rootURL: root,
+                                                       maximumActiveBytes: 1_000,
+                                                       makeIdentifier: ids.next)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        _ = try store.loadOrRecover(discoveredLegacyURLs: [], now: now)
+        let first = try store.writableChunkURL(now: now)
+        try FileManager.default.createDirectory(at: first.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try Data(repeating: 1, count: 999).write(to: first)
+        XCTAssertEqual(try store.writableChunkURL(now: now.addingTimeInterval(1)),
+                       first,
+                       "One byte under the limit must not rotate")
+        XCTAssertTrue(store.takeSealedChunksAwaitingDerivedIndexes().isEmpty)
+
+        try Data(repeating: 1, count: 1_000).write(to: first)
+        let second = try store.writableChunkURL(now: now.addingTimeInterval(2))
+        XCTAssertNotEqual(second, first, "At the limit the chunk must seal")
+    }
+
+    /// Upgrade fixture: an active file written under the old 32 MiB limit is
+    /// far above the new limit. On the next ordinary append boundary it seals
+    /// INTACT — byte count and digest match the untouched file — and a fresh
+    /// active chunk owns the next line. The old bytes are never rewritten.
+    func testOversizedActiveFileSealsIntactOnNextAppendUnderLowerLimit() throws {
+        let root = try temporaryDirectory()
+        let firstIDs = IdentifierSource(["active-old", "unused"])
+        let bigStore = AtriaHistoricalArchiveCatalogStore(rootURL: root,
+                                                          maximumActiveBytes: 1_000_000,
+                                                          makeIdentifier: firstIDs.next)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        _ = try bigStore.loadOrRecover(discoveredLegacyURLs: [], now: now)
+        let oversized = try bigStore.writableChunkURL(now: now)
+        try FileManager.default.createDirectory(at: oversized.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        var oldBytes = Data()
+        for row in 0..<400 {
+            oldBytes.append(Data("{\"unix7\":\(1_700_000_000 + row)}\n".utf8))
+        }
+        try oldBytes.write(to: oversized)
+        let expectedDigest = try AtriaHistoricalRetentionTransaction.sha256(of: oversized)
+
+        // The "upgraded" store re-opens the same root under the lower limit.
+        let secondIDs = IdentifierSource(["active-new"])
+        let smallStore = AtriaHistoricalArchiveCatalogStore(rootURL: root,
+                                                            maximumActiveBytes: 1_024,
+                                                            makeIdentifier: secondIDs.next)
+        _ = try smallStore.loadOrRecover(discoveredLegacyURLs: [], now: now.addingTimeInterval(5))
+        let fresh = try smallStore.writableChunkURL(now: now.addingTimeInterval(6))
+
+        XCTAssertNotEqual(fresh, oversized)
+        let catalog = try smallStore.snapshot()
+        let sealed = try XCTUnwrap(catalog.chunks.first {
+            $0.relativePath == relative(oversized, root: root)
+        })
+        XCTAssertEqual(sealed.state, .sealed)
+        XCTAssertEqual(sealed.byteCount, UInt64(oldBytes.count))
+        XCTAssertEqual(sealed.contentSHA256, expectedDigest)
+        XCTAssertEqual(try Data(contentsOf: oversized), oldBytes,
+                       "Sealing must never rewrite, truncate, or split old bytes")
+        XCTAssertEqual(catalog.activeChunk?.relativePath, relative(fresh, root: root))
+        XCTAssertEqual(try smallStore.writableChunkURL(now: now.addingTimeInterval(7)),
+                       fresh,
+                       "The sealed filename is never reopened")
+        XCTAssertEqual(smallStore.takeSealedChunksAwaitingDerivedIndexes(),
+                       [sealed.id],
+                       "The upgrade seal must queue exactly one derived-index build")
+    }
+
+    /// Both seal paths hand the freshly sealed chunk to the derived-index
+    /// queue exactly once; draining is idempotent.
+    func testSealQueuesDerivedIndexWorkExactlyOncePerChunk() throws {
+        let root = try temporaryDirectory()
+        let ids = IdentifierSource(["active-a", "active-b", "active-c"])
+        let store = AtriaHistoricalArchiveCatalogStore(rootURL: root,
+                                                       maximumActiveBytes: 10,
+                                                       makeIdentifier: ids.next)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        _ = try store.loadOrRecover(discoveredLegacyURLs: [], now: now)
+        let first = try store.writableChunkURL(now: now)
+        try FileManager.default.createDirectory(at: first.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        try Data(repeating: 1, count: 10).write(to: first)
+        _ = try store.writableChunkURL(now: now.addingTimeInterval(1))
+        let catalogAfterRotation = try store.snapshot()
+        let rotatedID = try XCTUnwrap(catalogAfterRotation.chunks.first {
+            $0.relativePath == relative(first, root: root)
+        }).id
+
+        XCTAssertEqual(store.takeSealedChunksAwaitingDerivedIndexes(), [rotatedID])
+        XCTAssertTrue(store.takeSealedChunksAwaitingDerivedIndexes().isEmpty,
+                      "Draining the queue is exactly-once")
+
+        // Terminal seal path queues too.
+        let second = try store.writableChunkURL(now: now.addingTimeInterval(2))
+        try Data("{\"unix7\":1}\n".utf8).write(to: second)
+        let activeID = try XCTUnwrap(try store.snapshot().activeChunk).id
+        try store.sealActiveChunkAtTerminal(
+            chunkID: activeID,
+            rowCount: 1,
+            firstTimestamp: Date(timeIntervalSince1970: 1),
+            lastTimestamp: Date(timeIntervalSince1970: 1),
+            contentSHA256: try AtriaHistoricalRetentionTransaction.sha256(of: second),
+            now: now.addingTimeInterval(3)
+        )
+        XCTAssertEqual(store.takeSealedChunksAwaitingDerivedIndexes(), [activeID])
+    }
+
     func testDayBoundaryRotatesEvenWhenChunkIsSmall() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

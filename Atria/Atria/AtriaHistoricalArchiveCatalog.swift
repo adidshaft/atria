@@ -111,7 +111,12 @@ struct AtriaHistoricalArchiveCatalog: Codable, Equatable, Sendable {
 }
 
 final class AtriaHistoricalArchiveCatalogStore {
-    static let productionMaximumActiveBytes: UInt64 = 32 * 1024 * 1024
+    /// Handoff-9 CP1: 4 MiB (was 32 MiB). The active chunk is the only raw
+    /// file the exact-window HR reader must always conservatively scan, so its
+    /// cap is the reader's cold-latency floor. Smaller chunks also shrink the
+    /// in-lock seal digest. Oversized pre-existing active files seal intact on
+    /// the next ordinary append; their bytes are never rewritten.
+    static let productionMaximumActiveBytes: UInt64 = 4 * 1024 * 1024
 
     enum StoreError: Error, Equatable {
         case catalogNotLoaded
@@ -144,6 +149,12 @@ final class AtriaHistoricalArchiveCatalogStore {
     private let fileManager: FileManager
     private let makeIdentifier: () -> String
     private var catalog: AtriaHistoricalArchiveCatalog?
+    /// Chunk IDs sealed by this store instance whose derived HR sidecars have
+    /// not been scheduled yet (handoff-9 CP1). Appended inside the seal
+    /// critical sections; consumed by `takeSealedChunksAwaitingDerivedIndexes`
+    /// strictly AFTER the caller has released every archive lock, so derived
+    /// index work can never delay or reorder an append, flush, or seal.
+    private var sealedChunkIDsAwaitingDerivedIndexes: [String] = []
 
     init(rootURL: URL,
          maximumActiveBytes: UInt64 = AtriaHistoricalArchiveCatalogStore.productionMaximumActiveBytes,
@@ -258,6 +269,7 @@ final class AtriaHistoricalArchiveCatalogStore {
             value.generation &+= 1
             try persistDurably(value)
             catalog = value
+            sealedChunkIDsAwaitingDerivedIndexes.append(value.chunks[activeIndex].id)
             return rootURL.appendingPathComponent(next.relativePath)
         }
 
@@ -568,6 +580,19 @@ final class AtriaHistoricalArchiveCatalogStore {
         value.generation &+= 1
         try persistDurably(value)
         catalog = value
+        sealedChunkIDsAwaitingDerivedIndexes.append(chunkID)
+    }
+
+    /// Drains the freshly sealed chunk IDs so the caller can schedule derived
+    /// HR-sidecar builds. Call only after every archive lock is released —
+    /// building an index is best-effort, derived work and must never sit
+    /// inside an append/flush/seal critical section (handoff-9 CP1).
+    func takeSealedChunksAwaitingDerivedIndexes() -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        let pending = sealedChunkIDsAwaitingDerivedIndexes
+        sealedChunkIDsAwaitingDerivedIndexes.removeAll()
+        return pending
     }
 
     /// Finalizes the metric bounds of an already sealed immutable chunk. This
