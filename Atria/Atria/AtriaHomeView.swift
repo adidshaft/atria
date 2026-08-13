@@ -2890,6 +2890,13 @@ struct AtriaHomeView: View {
         if debugLaunchFixtureValue(arguments: arguments) == "detected-activities" {
             return .vitals
         }
+        // The Sleep scope's own screenshot fixture (sleep-scope) already
+        // exists in AtriaHealthScreen; it just needs the root tab routed the
+        // same way the Trends fixture routes it. Same rationale: neither
+        // simctl nor iPhone Mirroring can reliably tap the tab bar.
+        if debugLaunchFixtureValue(arguments: arguments) == "sleep-scope" {
+            return .vitals
+        }
         // Same screenshot-loop rationale as above: neither simctl nor iPhone
         // Mirroring can tap the tab bar, so device marker verification routes
         // the root tab at launch. DEBUG-only; carries no fixture data.
