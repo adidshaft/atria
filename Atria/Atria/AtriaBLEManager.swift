@@ -13407,6 +13407,36 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                      forKey: OfflineSyncDefaults.attempts)
         defaults.set("starting", forKey: OfflineSyncDefaults.lastStatus)
         defaults.set(reason, forKey: OfflineSyncDefaults.lastReason)
+        // Handoff-10 CP2B: durable slice-START receipt for the connected
+        // catch-up lane. If this process dies before the terminal receipt,
+        // the surviving `.started` row re-arms catch-up scheduling on the
+        // next launch/reconnect/accepted-HR without a foreground rescue. It
+        // asserts nothing about ACK, durable persistence, or success — the
+        // terminal write at the durable boundary replaces it.
+        if activeConnectedRawHistoryCatchUpAuthority(
+            generation: syncGeneration
+        ) != nil {
+            Self.storeDurableProductiveSliceReceipt(
+                .init(
+                    generation: syncGeneration,
+                    attemptStartedAtUnix: attemptAt.timeIntervalSince1970,
+                    startFrontierUnix: defaults.double(
+                        forKey: OfflineSyncDefaults.drainedThroughUnix
+                    ),
+                    endFrontierUnix: 0,
+                    durableRowsDelta: 0,
+                    flushBoundaryIdentity: "slice_started_\(reason)",
+                    liveRestoredAtUnix: nil,
+                    gapFingerprint: currentHistoricalGapFingerprintForCadence(
+                        defaults: defaults
+                    ),
+                    status: .started,
+                    recordedAtUnix: attemptAt.timeIntervalSince1970,
+                    processInstanceID: Self.processInstanceID
+                ),
+                defaults: defaults
+            )
+        }
         offlineHistoricalSyncRawOnlyGapFingerprint = rawOnlyGapFingerprint
         offlineHistoricalSyncGapFingerprint = gapFingerprint
         if !Self.continuesHistoricalRecoveryEpisode(
@@ -14666,6 +14696,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     // MARK: - Durable productive-slice receipt (handoff-9 CP2)
 
+    /// Process-lifetime identity for slice-start receipts (handoff-10 CP2B):
+    /// a `.started` receipt from a DIFFERENT instance proves a prior process
+    /// died mid-slice and re-arms scheduling only.
+    nonisolated static let processInstanceID = UUID().uuidString
+
     nonisolated static func loadDurableProductiveSliceReceipt(
         defaults: UserDefaults
     ) -> AtriaHistoricalDurableProductiveSliceReceipt? {
@@ -15460,6 +15495,30 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 : nil
             connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
             connectedRawNoRadioCaptureDeferral = nil
+            // Handoff-10 CP2B: a live-HR preempt is a deliberate release, not
+            // a crash — retire this generation's `.started` receipt so it
+            // cannot masquerade as an orphaned slice after relaunch. No
+            // progress is claimed; the fast cadence is not earned.
+            Self.storeDurableProductiveSliceReceipt(
+                .init(
+                    generation: authority.generation,
+                    attemptStartedAtUnix: authority.startedAt.timeIntervalSince1970,
+                    startFrontierUnix: authority.startFrontierUnix,
+                    endFrontierUnix: defaults.double(
+                        forKey: OfflineSyncDefaults.drainedThroughUnix
+                    ),
+                    durableRowsDelta: 0,
+                    flushBoundaryIdentity: "connected_raw_slice_\(reason)",
+                    liveRestoredAtUnix: nil,
+                    gapFingerprint: currentHistoricalGapFingerprintForCadence(
+                        defaults: defaults
+                    ),
+                    status: .noProgress,
+                    recordedAtUnix: now.timeIntervalSince1970,
+                    processInstanceID: Self.processInstanceID
+                ),
+                defaults: defaults
+            )
             AtriaDebugLog(
                 "ATRIADBG offline_sync status=connected_raw_catch_up_preemption_finalized generation=%llu retry_unix=%.3f cooldown_active=%d action=release_immediate_continuation_retain_backlog_without_extending_failure_cooldown",
                 authority.generation,
@@ -16727,11 +16786,18 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// catch-up lane yields on this one when a motion offload is waiting, so the
     /// single shared transport isn't perpetually re-seized by HR while motion
     /// tickets starve (2026-08-08 motion-offload fix).
-    enum StrapBacklogReason: Equatable { case none, ticket, freshDebt, frontierStale }
+    enum StrapBacklogReason: Equatable {
+        case none, ticket, freshDebt, frontierStale
+        /// Handoff-10 CP2B: a prior process started a catch-up slice and died
+        /// before its terminal receipt. Scheduling re-arms; the durable
+        /// gap/debt/frontier truth is then re-evaluated normally.
+        case unresolvedSliceStart
+    }
 
     nonisolated static func strapBacklogReason(
         now: Date = Date(),
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        processInstanceID: String = AtriaBLEManager.processInstanceID
     ) -> StrapBacklogReason {
         if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) { return .ticket }
         if let observedAt = defaults.object(forKey: OfflineSyncDefaults.flushDebtObservedAt) as? Double,
@@ -16749,6 +16815,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return flushDebtLevel(pendingRecords: records) == .caughtUp
                 ? .none
                 : .freshDebt
+        }
+        // Handoff-10 CP2B: an orphaned slice-start receipt (a prior process
+        // began a slice, never wrote a terminal) keeps scheduling armed even
+        // when the frontier looks recent — exactly the state a mid-slice kill
+        // leaves behind. It grants no ACK/durability/success authority; the
+        // re-entered lane re-verifies everything on the normal brake.
+        if let receipt = loadDurableProductiveSliceReceipt(defaults: defaults),
+           receipt.isOrphanedStart(currentProcessInstanceID: processInstanceID) {
+            return .unresolvedSliceStart
         }
         let frontier = defaults.double(forKey: OfflineSyncDefaults.drainedThroughUnix)
         if frontier > 0, now.timeIntervalSince1970 - frontier >= frontierBacklogFloorSeconds {

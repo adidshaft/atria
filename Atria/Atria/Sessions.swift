@@ -35119,6 +35119,11 @@ final class SessionStore: ObservableObject {
     nonisolated static func makeCompactLatestNightSettlementPreparation(
         fingerprint: ForegroundSleepSettlementFingerprint,
         canonicalSessions: [SavedSession],
+        // Handoff-10 CP2A: the durable resident live-journal session, so the
+        // current sleep's evidence through wake + tail is visible to the
+        // settlement lane without waiting for the archive frontier. Nil keeps
+        // the previous canonical-only behavior.
+        activeJournalSession: SavedSession? = nil,
         now: Date,
         rest: Int,
         maxHR: Int,
@@ -35214,7 +35219,7 @@ final class SessionStore: ObservableObject {
             settlement = try makeForegroundSleepSettlementProposal(
                 fingerprint: fingerprint,
                 canonicalSessions: sessions,
-                activeJournalSession: nil,
+                activeJournalSession: activeJournalSession,
                 now: now,
                 rest: rest,
                 maxHR: maxHR,
@@ -35438,10 +35443,23 @@ final class SessionStore: ObservableObject {
                 assertionFailure("Foreground sleep settlement must not build on the main thread")
                 return
             }
+            // Handoff-10 CP2A: the durable resident journal is already
+            // row-capped and busy/cold-safe; a cold cache defers to the
+            // previous canonical-only behavior rather than blocking.
+            let residentJournalSession = (try? SessionStore
+                .loadCachedResidentJournalSessionForSleepReview(
+                    now: now,
+                    cooperativeDeadline: .init(
+                        uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
+                            + UInt64(SessionStore.compactLatestNightDeadlineSeconds
+                                     * 1_000_000_000)
+                    )
+                )) ?? nil
             let preparation = SessionStore
                 .makeCompactLatestNightSettlementPreparation(
                 fingerprint: fingerprint,
                 canonicalSessions: canonicalSessions,
+                activeJournalSession: residentJournalSession,
                 now: now,
                 rest: rest,
                 maxHR: maxHR,

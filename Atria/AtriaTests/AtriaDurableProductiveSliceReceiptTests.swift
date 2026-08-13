@@ -132,6 +132,145 @@ final class AtriaDurableProductiveSliceReceiptTests: XCTestCase {
 
     // MARK: - Persistence
 
+    // MARK: - Slice-start receipt + process-interruption self-heal (handoff-10 CP2B)
+
+    private func startedReceipt(
+        generation: UInt64 = 12,
+        processInstanceID: String? = "process-a"
+    ) -> AtriaHistoricalDurableProductiveSliceReceipt {
+        var value = receipt(generation: generation,
+                            endFrontier: 0,
+                            durableRows: 0,
+                            liveRestoredAt: nil,
+                            status: .started)
+        value.processInstanceID = processInstanceID
+        return value
+    }
+
+    func testStartedReceiptFromAnotherProcessIsAnOrphanAndReArmsScheduling() throws {
+        let orphan = startedReceipt(processInstanceID: "dead-process")
+        XCTAssertTrue(orphan.isOrphanedStart(currentProcessInstanceID: "live-process"))
+        XCTAssertFalse(orphan.isOrphanedStart(currentProcessInstanceID: "dead-process"),
+                       "A .started row from the CURRENT process is in-flight, not orphaned")
+
+        let suiteName = "AtriaSliceStartReArm-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        // A recent frontier + no ticket + no fresh debt normally reads .none —
+        // the exact state a mid-slice kill leaves behind.
+        defaults.set(Date().timeIntervalSince1970 - 60,
+                     forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix)
+        XCTAssertEqual(
+            AtriaBLEManager.strapBacklogReason(defaults: defaults,
+                                               processInstanceID: "live-process"),
+            .none
+        )
+        AtriaBLEManager.storeDurableProductiveSliceReceipt(
+            startedReceipt(processInstanceID: "dead-process"), defaults: defaults
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.strapBacklogReason(defaults: defaults,
+                                               processInstanceID: "live-process"),
+            .unresolvedSliceStart,
+            "An orphaned slice start must keep catch-up scheduling armed"
+        )
+        // The same receipt seen by the writing process is NOT an orphan.
+        XCTAssertEqual(
+            AtriaBLEManager.strapBacklogReason(defaults: defaults,
+                                               processInstanceID: "dead-process"),
+            .none
+        )
+    }
+
+    func testBacklogAuthorityOutranksOrphanedStart() throws {
+        let suiteName = "AtriaSliceStartPriority-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        AtriaBLEManager.storeDurableProductiveSliceReceipt(
+            startedReceipt(processInstanceID: "dead-process"), defaults: defaults
+        )
+        // A real range-loss ticket wins.
+        defaults.set(true, forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending)
+        XCTAssertEqual(
+            AtriaBLEManager.strapBacklogReason(defaults: defaults,
+                                               processInstanceID: "live-process"),
+            .ticket
+        )
+        defaults.set(false, forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending)
+        // A fresh verified caught-up cursor still reads caught-up: the strap
+        // itself says there is nothing to drain right now, and the orphan
+        // grants no backlog authority of its own.
+        defaults.set(Date().timeIntervalSince1970,
+                     forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtObservedAt)
+        defaults.set(0, forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtPendingRecords)
+        XCTAssertEqual(
+            AtriaBLEManager.strapBacklogReason(defaults: defaults,
+                                               processInstanceID: "live-process"),
+            .none
+        )
+    }
+
+    func testStartedReceiptNeverEarnsTheFastCadence() {
+        XCTAssertEqual(
+            interval(startedReceipt(), lastCompletedGeneration: 12),
+            brake,
+            "A slice start proves nothing about durable progress"
+        )
+    }
+
+    func testTerminalReceiptReplacesSameGenerationStart() throws {
+        let suiteName = "AtriaSliceStartTerminal-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        AtriaBLEManager.storeDurableProductiveSliceReceipt(
+            startedReceipt(generation: 9), defaults: defaults
+        )
+        AtriaBLEManager.storeDurableProductiveSliceReceipt(
+            receipt(generation: 9, status: .productive), defaults: defaults
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.loadDurableProductiveSliceReceipt(defaults: defaults)?.status,
+            .productive
+        )
+        // And a NEWER generation's start replaces an older terminal.
+        AtriaBLEManager.storeDurableProductiveSliceReceipt(
+            startedReceipt(generation: 10), defaults: defaults
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.loadDurableProductiveSliceReceipt(defaults: defaults)?.status,
+            .started
+        )
+        // A stale older-generation terminal can never restore itself.
+        AtriaBLEManager.storeDurableProductiveSliceReceipt(
+            receipt(generation: 9, status: .failed), defaults: defaults
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.loadDurableProductiveSliceReceipt(defaults: defaults)?
+                .generation,
+            10
+        )
+    }
+
+    func testLegacyReceiptWithoutProcessFieldDecodesAndIsNeverAnOrphan() throws {
+        // A handoff-9 era payload has no processInstanceID and no .started
+        // status — it must decode and behave exactly as before.
+        let legacyJSON = """
+        {"generation":7,"attemptStartedAtUnix":4000,"startFrontierUnix":1000,
+         "endFrontierUnix":2000,"durableRowsDelta":500,
+         "flushBoundaryIdentity":"connected_raw_slice_test",
+         "liveRestoredAtUnix":5000,"status":"productive","recordedAtUnix":5001}
+        """
+        let decoded = try JSONDecoder().decode(
+            AtriaHistoricalDurableProductiveSliceReceipt.self,
+            from: Data(legacyJSON.utf8)
+        )
+        XCTAssertEqual(decoded.status, .productive)
+        XCTAssertNil(decoded.processInstanceID)
+        XCTAssertFalse(decoded.isOrphanedStart(currentProcessInstanceID: "any"))
+        XCTAssertEqual(interval(decoded), productive,
+                       "Legacy productive receipts keep earning the fast cadence")
+    }
+
     func testStoreReplacesForwardOnlyAndStaleGenerationCannotOverwrite() throws {
         let suiteName = "AtriaDurableProductiveSliceReceiptTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
