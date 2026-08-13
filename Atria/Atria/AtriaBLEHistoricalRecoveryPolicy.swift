@@ -5,6 +5,31 @@ import Foundation
 /// response payload `[24,responseSeq,22,requestSeq,data...]` and mirror the
 /// physically verified W/U/T layout. The observation never authorizes a trim,
 /// acknowledgement, rewind, or local gap deletion.
+/// Handoff-9 CP2: the exact durable evidence of ONE finished history slice,
+/// persisted only from the final durable boundary of its generation. This is
+/// the sole permission for the fast (60 s) connected retry cadence — a
+/// received frame is not progress; only a durably advanced frontier is.
+struct AtriaHistoricalDurableProductiveSliceReceipt: Codable, Equatable, Sendable {
+    enum Status: String, Codable, Sendable {
+        case productive
+        case noProgress
+        case failed
+    }
+
+    let generation: UInt64
+    let attemptStartedAtUnix: Double
+    let startFrontierUnix: Double
+    let endFrontierUnix: Double
+    let durableRowsDelta: Int
+    /// Identity of the boundary this receipt was minted from (the published
+    /// completion status of the exact durable/live-restored terminal).
+    let flushBoundaryIdentity: String
+    let liveRestoredAtUnix: Double?
+    let gapFingerprint: String?
+    let status: Status
+    let recordedAtUnix: Double
+}
+
 struct AtriaWhoop4HistoryCursorRange: Equatable, Sendable {
     let responseSequence: UInt8
     let requestSequenceEcho: UInt8
@@ -630,6 +655,39 @@ extension AtriaBLEManager {
     ) -> TimeInterval {
         guard backlogPending else { return ordinaryInterval }
         return lastAttemptYieldedRows ? productiveInterval : backlogInterval
+    }
+
+    /// Handoff-9 CP2: the connected-handoff retry interval, computed ONCE and
+    /// fed to BOTH the eligibility gate and the transport throttle gate so the
+    /// two can never contradict each other. The fast (productive) cadence is
+    /// earned only by an exact durable productive-slice receipt: same
+    /// completed generation, at least one durably persisted row, a succeeded
+    /// durable flush boundary, a frontier that actually advanced past the
+    /// attempt's captured start, restored live-HR authority, and an unchanged
+    /// gap fingerprint. A missing, unreadable, stale-generation, failed,
+    /// no-progress, or fingerprint-mismatched receipt keeps the existing brake.
+    /// Receiving a frame (`stream5Received > 0`) is deliberately NOT enough —
+    /// parse/persist/flush/authority failure can still follow a received frame.
+    nonisolated static func connectedHandoffRetryInterval(
+        receipt: AtriaHistoricalDurableProductiveSliceReceipt?,
+        currentGapFingerprint: String?,
+        lastCompletedGeneration: UInt64?,
+        productiveInterval: TimeInterval,
+        brakeInterval: TimeInterval
+    ) -> TimeInterval {
+        guard let receipt,
+              receipt.status == .productive,
+              receipt.durableRowsDelta > 0,
+              receipt.startFrontierUnix.isFinite,
+              receipt.endFrontierUnix.isFinite,
+              receipt.endFrontierUnix > receipt.startFrontierUnix,
+              receipt.liveRestoredAtUnix != nil,
+              let lastCompletedGeneration,
+              receipt.generation == lastCompletedGeneration,
+              receipt.gapFingerprint == currentGapFingerprint else {
+            return brakeInterval
+        }
+        return productiveInterval
     }
 
     /// Autonomous cursor-anchored catch-up admission (2026-08-07, the last

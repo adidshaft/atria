@@ -10919,7 +10919,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let minimumInterval = Self.historicalAttemptMinimumInterval(
             automaticConnectedHandoff: admittedAutomaticConnectedHandoff,
             ordinaryInterval: offlineHistoricalSyncMinimumInterval(for: reason),
-            connectedHandoffInterval: automaticConnectedHistoryAttemptCooldown
+            // Handoff-9 CP2: the SAME receipt-computed interval the
+            // eligibility gate uses — never two contradictory cooldowns.
+            connectedHandoffInterval: automaticConnectedHistoryRetryInterval()
         )
         // `force` is also used internally once an automatic pending request is
         // old enough to take a safe radio handoff. It must not disable cadence
@@ -11587,7 +11589,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             acceptedFreshnessWindow: offlineSyncLiveAcceptedHRProtectionWindow,
             minimumSamples: autoSaveMinSamples,
             minimumGapAge: rangeLossBackfillReadyForceInterval,
-            attemptCooldown: automaticConnectedHistoryAttemptCooldown
+            // Handoff-9 CP2: a durably productive last slice earns the
+            // 60-second retry; every other outcome keeps the 5-minute brake.
+            attemptCooldown: automaticConnectedHistoryRetryInterval()
         )
     }
 
@@ -14660,6 +14664,73 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       historyDrain.phaseForDiagnostics)
     }
 
+    // MARK: - Durable productive-slice receipt (handoff-9 CP2)
+
+    nonisolated static func loadDurableProductiveSliceReceipt(
+        defaults: UserDefaults
+    ) -> AtriaHistoricalDurableProductiveSliceReceipt? {
+        guard let data = defaults.data(
+            forKey: OfflineSyncDefaults.durableProductiveSliceReceipt
+        ) else { return nil }
+        return try? JSONDecoder().decode(
+            AtriaHistoricalDurableProductiveSliceReceipt.self, from: data
+        )
+    }
+
+    /// Replace-only-forward: a stale callback from an older generation can
+    /// never overwrite the receipt of a newer finished slice.
+    nonisolated static func storeDurableProductiveSliceReceipt(
+        _ receipt: AtriaHistoricalDurableProductiveSliceReceipt,
+        defaults: UserDefaults
+    ) {
+        if let existing = loadDurableProductiveSliceReceipt(defaults: defaults),
+           existing.generation > receipt.generation {
+            return
+        }
+        guard let data = try? JSONEncoder().encode(receipt) else { return }
+        defaults.set(data, forKey: OfflineSyncDefaults.durableProductiveSliceReceipt)
+    }
+
+    /// The pending-gap picture used for receipt fingerprinting — computed the
+    /// same way at the durable boundary (write) and at both admission gates
+    /// (read), so "the gap changed since the productive slice" is an exact
+    /// value comparison, nil-safe for the cursor-anchored lane.
+    private func currentHistoricalGapFingerprintForCadence(
+        defaults: UserDefaults = .standard
+    ) -> String? {
+        let recoveryStartValue = defaults.object(
+            forKey: OfflineSyncDefaults.recoveryWindowStart
+        )
+        let recoveryEndValue = defaults.object(
+            forKey: OfflineSyncDefaults.recoveryWindowEnd
+        )
+        let recoveryStart = (recoveryStartValue as? Date)
+            ?? (recoveryStartValue as? Double).map(Date.init(timeIntervalSince1970:))
+        let recoveryEnd = (recoveryEndValue as? Date)
+            ?? (recoveryEndValue as? Double).map(Date.init(timeIntervalSince1970:))
+        return Self.historicalGapFingerprint(
+            windows: AtriaHistoricalGapLedger.windows(defaults: defaults),
+            recoveryStart: recoveryStart,
+            recoveryEnd: recoveryEnd,
+            requestedAt: defaults.object(
+                forKey: OfflineSyncDefaults.rangeLossBackfillRequestedAt
+            ) as? Double
+        )
+    }
+
+    /// Handoff-9 CP2: ONE computed connected-handoff interval feeding both
+    /// the eligibility gate and the transport throttle gate. Productive
+    /// durable receipt → 60 s; anything else keeps the 5-minute brake.
+    private func automaticConnectedHistoryRetryInterval() -> TimeInterval {
+        Self.connectedHandoffRetryInterval(
+            receipt: Self.loadDurableProductiveSliceReceipt(defaults: .standard),
+            currentGapFingerprint: currentHistoricalGapFingerprintForCadence(),
+            lastCompletedGeneration: lastCompletedHistoricalSyncGeneration,
+            productiveInterval: catchUpProductiveRetryInterval,
+            brakeInterval: automaticConnectedHistoryAttemptCooldown
+        )
+    }
+
     private func finishHistoricalDrainTelemetry(generation: UInt64, trigger: String) {
         emitHistoricalDrainTelemetry(generation: generation, trigger: trigger)
         if historicalDrainTelemetry.generation == generation {
@@ -15405,6 +15476,41 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             endFrontierUnix: defaults.double(
                 forKey: OfflineSyncDefaults.drainedThroughUnix
             )
+        )
+        // Handoff-9 CP2: mint the durable productive-slice receipt at this —
+        // and only this — final durable boundary. `productive` requires the
+        // full chain: durable flush boundary succeeded, live HR restored,
+        // at least one durably persisted row, AND the frontier advanced past
+        // the attempt's captured start. A received frame alone is never
+        // progress. This receipt is what earns the next attempt the 60-second
+        // connected retry; every other outcome keeps the 5-minute brake.
+        let receiptStatus: AtriaHistoricalDurableProductiveSliceReceipt.Status
+        if !durableBoundary || !liveRestored {
+            receiptStatus = .failed
+        } else if progress.durableRows > 0, progress.frontierAdvanceSeconds > 0 {
+            receiptStatus = .productive
+        } else {
+            receiptStatus = .noProgress
+        }
+        Self.storeDurableProductiveSliceReceipt(
+            .init(
+                generation: authority.generation,
+                attemptStartedAtUnix: authority.startedAt.timeIntervalSince1970,
+                startFrontierUnix: authority.startFrontierUnix,
+                endFrontierUnix: defaults.double(
+                    forKey: OfflineSyncDefaults.drainedThroughUnix
+                ),
+                durableRowsDelta: progress.durableRows,
+                flushBoundaryIdentity: "connected_raw_slice_\(reason)",
+                liveRestoredAtUnix: liveRestored
+                    ? now.timeIntervalSince1970 : nil,
+                gapFingerprint: currentHistoricalGapFingerprintForCadence(
+                    defaults: defaults
+                ),
+                status: receiptStatus,
+                recordedAtUnix: now.timeIntervalSince1970
+            ),
+            defaults: defaults
         )
         let backlogPending = strapBacklogPendingForCatchUp(now: now)
         let thermalState = ProcessInfo.processInfo.thermalState
