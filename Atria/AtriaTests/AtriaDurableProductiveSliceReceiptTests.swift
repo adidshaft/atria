@@ -240,14 +240,50 @@ final class AtriaDurableProductiveSliceReceiptTests: XCTestCase {
             AtriaBLEManager.loadDurableProductiveSliceReceipt(defaults: defaults)?.status,
             .started
         )
-        // A stale older-generation terminal can never restore itself.
+        // A stale older-generation terminal FROM THE SAME PROCESS can never
+        // restore itself.
+        var staleSameProcess = receipt(generation: 9, status: .failed)
+        staleSameProcess.processInstanceID = "process-a"
         AtriaBLEManager.storeDurableProductiveSliceReceipt(
-            receipt(generation: 9, status: .failed), defaults: defaults
+            staleSameProcess, defaults: defaults
         )
         XCTAssertEqual(
             AtriaBLEManager.loadDurableProductiveSliceReceipt(defaults: defaults)?
                 .generation,
             10
+        )
+    }
+
+    /// Slice generations are process-local and reset at relaunch — physically
+    /// observed: a prior run's generation-390 receipt swallowed every fresh
+    /// process's gen-1..n writes. A different process instance's receipt is
+    /// always replaceable; forward-only ordering applies within one process.
+    func testNewProcessReceiptReplacesPriorProcessHighGeneration() throws {
+        let suiteName = "AtriaSliceCrossProcess-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        var oldProcess = receipt(generation: 390, status: .productive)
+        oldProcess.processInstanceID = "old-process"
+        AtriaBLEManager.storeDurableProductiveSliceReceipt(oldProcess, defaults: defaults)
+        var newProcess = receipt(generation: 1, status: .productive)
+        newProcess.processInstanceID = "new-process"
+        AtriaBLEManager.storeDurableProductiveSliceReceipt(newProcess, defaults: defaults)
+        let stored = try XCTUnwrap(
+            AtriaBLEManager.loadDurableProductiveSliceReceipt(defaults: defaults)
+        )
+        XCTAssertEqual(stored.generation, 1)
+        XCTAssertEqual(stored.processInstanceID, "new-process",
+                       "The current process's truth supersedes a dead process's receipt")
+        // Legacy (nil-process) rows are likewise replaceable by a tagged writer.
+        defaults.removeObject(forKey: AtriaBLEManager.OfflineSyncDefaults.durableProductiveSliceReceipt)
+        AtriaBLEManager.storeDurableProductiveSliceReceipt(
+            receipt(generation: 390, status: .productive), defaults: defaults
+        )
+        AtriaBLEManager.storeDurableProductiveSliceReceipt(newProcess, defaults: defaults)
+        XCTAssertEqual(
+            AtriaBLEManager.loadDurableProductiveSliceReceipt(defaults: defaults)?
+                .processInstanceID,
+            "new-process"
         )
     }
 
