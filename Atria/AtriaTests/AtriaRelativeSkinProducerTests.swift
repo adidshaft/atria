@@ -359,19 +359,50 @@ final class AtriaRelativeSkinProducerTests: XCTestCase {
         XCTAssertEqual(buildingContent.headline,
                        "Building personal baseline · 3 of 7 nights")
 
-        for blocker in [AtriaRelativeSkinSignalBlocker.incompleteArchive,
-                        .noCurrentConfirmedMainSleep,
-                        .mixedSensorAuthority,
-                        .unknownSensorAuthority,
-                        .noCurrentRawEvidence] {
+        // Handoff-9 CP4: every blocker renders visible, exact, nonnumeric copy.
+        let expectedBlockerCopy: [(AtriaRelativeSkinSignalBlocker, String, String)] = [
+            (.incompleteArchive, "Waiting for complete strap history",
+             "Relative skin signal · Experimental · no value yet"),
+            (.noCurrentConfirmedMainSleep, "Needs a confirmed main sleep",
+             "Relative skin signal · Experimental"),
+            (.noCurrentRawEvidence, "No usable skin signal for this sleep",
+             "Experimental · uncalibrated"),
+            (.unknownSensorAuthority, "Sensor identity could not be verified",
+             "No relative value published"),
+            (.mixedSensorAuthority, "Mixed sensor history",
+             "No relative value published"),
+            (.insufficientRows, "Not enough skin samples for this sleep",
+             "Experimental · no value yet"),
+            (.insufficientCoveredMinutes, "Not enough covered sleep time",
+             "Relative skin signal · Experimental"),
+            (.insufficientCoverage, "Nightly skin coverage is too sparse",
+             "Experimental · no value yet"),
+            (.staleEvidence, "Sleep evidence changed",
+             "Recalculating relative skin signal"),
+        ]
+        for (blocker, headline, detail) in expectedBlockerCopy {
             let blockedSummary = AtriaRelativeSkinSignal.resolve(
                 currentNight: nil,
                 priorNights: [],
                 blockerIfNoCurrent: blocker
             )
-            XCTAssertNil(AtriaRelativeSkinSignalPresentation.content(for: blockedSummary),
-                         "Blocker \(blocker) must render nothing")
+            let content = try XCTUnwrap(
+                AtriaRelativeSkinSignalPresentation.content(for: blockedSummary),
+                "Blocker \(blocker) must render a visible named state"
+            )
+            XCTAssertEqual(content.headline, headline)
+            XCTAssertEqual(content.detail, detail)
+            for text in [content.headline, content.detail] {
+                XCTAssertFalse(text.contains("°"),
+                               "Blocked copy must never carry a degree symbol")
+                XCTAssertNil(text.rangeOfCharacter(from: .decimalDigits),
+                             "Blocked copy must never carry a number: \"\(text)\"")
+            }
         }
+
+        // The pre-reseed empty summary (no blocker, no value) still renders
+        // nothing — there is no truthful state to name yet.
+        XCTAssertNil(AtriaRelativeSkinSignalPresentation.content(for: .empty))
     }
 
     func testPresentationCopyNeverClaimsTemperatureOrIllness() throws {
@@ -394,7 +425,23 @@ final class AtriaRelativeSkinProducerTests: XCTestCase {
             texts.append(content.headline)
             texts.append(content.detail)
         }
-        XCTAssertFalse(texts.isEmpty)
+        // Handoff-9 CP4: sweep every visible blocker state too.
+        let allBlockers: [AtriaRelativeSkinSignalBlocker] = [
+            .noCurrentConfirmedMainSleep, .noCurrentRawEvidence,
+            .unknownSensorAuthority, .mixedSensorAuthority, .incompleteArchive,
+            .insufficientRows, .insufficientCoveredMinutes,
+            .insufficientCoverage, .buildingBaseline, .staleEvidence,
+        ]
+        for blocker in allBlockers {
+            let summary = AtriaRelativeSkinSignal.resolve(
+                currentNight: nil, priorNights: [], blockerIfNoCurrent: blocker
+            )
+            if let content = AtriaRelativeSkinSignalPresentation.content(for: summary) {
+                texts.append(content.headline)
+                texts.append(content.detail)
+            }
+        }
+        XCTAssertGreaterThanOrEqual(texts.count, 20)
         // Whole-word matching: "stillness" must not trip "ill"/"illness".
         let forbiddenWords: Set<String> = ["celsius", "fahrenheit", "temperature",
                                            "temp", "fever", "ill", "illness",

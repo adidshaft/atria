@@ -291,7 +291,11 @@ enum AtriaRelativeSkinSignalPresentation {
     static func content(
         for summary: AtriaRelativeSkinSignalSummary
     ) -> Content? {
-        if summary.blocker == .buildingBaseline {
+        // Handoff-9 CP4: every blocker renders a truthful named state instead
+        // of hiding the row. Nonnumeric only — a blocked night never shows a
+        // raw delta, a degree, or any medical/recovery wording.
+        switch summary.blocker {
+        case .buildingBaseline:
             let count = max(0, min(summary.baselineNightCount,
                                    AtriaRelativeSkinSignal.minimumPriorNights))
             return .init(
@@ -299,9 +303,37 @@ enum AtriaRelativeSkinSignalPresentation {
                     + "\(AtriaRelativeSkinSignal.minimumPriorNights) nights",
                 detail: "Experimental · uncalibrated"
             )
+        case .incompleteArchive:
+            return .init(headline: "Waiting for complete strap history",
+                         detail: "Relative skin signal · Experimental · no value yet")
+        case .noCurrentConfirmedMainSleep:
+            return .init(headline: "Needs a confirmed main sleep",
+                         detail: "Relative skin signal · Experimental")
+        case .noCurrentRawEvidence:
+            return .init(headline: "No usable skin signal for this sleep",
+                         detail: "Experimental · uncalibrated")
+        case .unknownSensorAuthority:
+            return .init(headline: "Sensor identity could not be verified",
+                         detail: "No relative value published")
+        case .mixedSensorAuthority:
+            return .init(headline: "Mixed sensor history",
+                         detail: "No relative value published")
+        case .insufficientRows:
+            return .init(headline: "Not enough skin samples for this sleep",
+                         detail: "Experimental · no value yet")
+        case .insufficientCoveredMinutes:
+            return .init(headline: "Not enough covered sleep time",
+                         detail: "Relative skin signal · Experimental")
+        case .insufficientCoverage:
+            return .init(headline: "Nightly skin coverage is too sparse",
+                         detail: "Experimental · no value yet")
+        case .staleEvidence:
+            return .init(headline: "Sleep evidence changed",
+                         detail: "Recalculating relative skin signal")
+        case nil:
+            break
         }
-        guard summary.blocker == nil,
-              let rawDelta = summary.rawDelta else { return nil }
+        guard let rawDelta = summary.rawDelta else { return nil }
         let deltaText = String(format: "%+.0f raw sensor units", rawDelta)
         if summary.motionQualified, let index = summary.normalizedIndex {
             let direction: String
