@@ -257,6 +257,10 @@ struct AtriaActivityHeartRateWindowIdentity: Equatable, Sendable {
 enum AtriaActivityHeartRateLoadState: Equatable, Sendable {
     case idle
     case loading
+    /// The exact-window read is running but safe background preparation
+    /// (first-touch sidecar extraction) is still in flight past the 500 ms
+    /// budget. Same request generation republishes when ready (handoff-8).
+    case preparing
     case loaded
     case unavailable
     case interrupted
@@ -2241,6 +2245,18 @@ struct AtriaActivityMonitorTab: View {
         let reader = Task.detached(priority: .utility) {
             Self.readTimelineHeartRate(snapshot)
         }
+        // Progressive state (handoff-8): if the exact-window read is still
+        // running past 500 ms (first-touch sidecar extraction, cold archive),
+        // name the preparation instead of sitting on a generic spinner. The
+        // SAME request generation republishes the terminal below.
+        let preparingCue = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled,
+                  heartRateRequestID == requestID,
+                  heartRateLoadState == .loading else { return }
+            heartRateLoadState = .preparing
+        }
+        defer { preparingCue.cancel() }
         let result = await withTaskCancellationHandler {
             await reader.value
         } onCancel: {
@@ -2720,7 +2736,8 @@ struct AtriaActivityMonitorTab: View {
         case .stress: date = stressProjection.points.last?.t
         }
         if let date { return "Last updated \(date.formatted(date: .omitted, time: .shortened))" }
-        if selectedSignal == .heartRate, heartRateLoadState == .loading {
+        if selectedSignal == .heartRate,
+           heartRateLoadState == .loading || heartRateLoadState == .preparing {
             return "Loading recorded signal"
         }
         return currentDisplayWindow.isCurrentPhysiologicalDay ? "Since waking" : "Selected day"
@@ -2731,6 +2748,7 @@ struct AtriaActivityMonitorTab: View {
         switch heartRateLoadState {
         case .idle: return "Heart-rate history has not loaded yet."
         case .loading: return "Loading recorded heart rate…"
+        case .preparing: return "Preparing recorded history…"
         case .loaded: return "No heart-rate samples were captured in this window."
         case .unavailable: return "Heart-rate history couldn’t be read for this window."
         case .interrupted: return "Heart-rate history refresh stopped before this window was available."

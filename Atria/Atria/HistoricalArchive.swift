@@ -507,6 +507,43 @@ enum HistoricalArchive {
         let scannedByteCount: Int
     }
 
+    /// Bounded attribution receipt for one exact-window HR lookup (handoff-8
+    /// CP1): which candidates existed, how many the sealed-catalog identity
+    /// proof excluded, and what the scan actually touched. Persisted as a
+    /// short diagnostic ring — request metadata only, never health samples.
+    struct HeartRateWindowReadDiagnostics: Codable, Equatable, Sendable {
+        var startUnix: Double
+        var endUnix: Double
+        var elapsedMilliseconds: Int
+        var candidateFileCount: Int
+        var trustedOutsideWindowSkipped: Int
+        var selectedFileCount: Int
+        var scannedFileCount: Int
+        var scannedByteCount: Int
+        var scannedLineCount: Int
+        var heartRateCandidateLineCount: Int
+        var inWindowPointCount: Int
+        var catalogGeneration: UInt64
+        var catalogChunkCount: Int
+        var terminal: String
+
+        static let ringKey = "atria.debug.hrWindowReadReceipts.v1"
+        private static let ringLimit = 12
+
+        func persistToRing(defaults: UserDefaults = .standard) {
+            guard let encoded = try? JSONEncoder().encode(self),
+                  let line = String(data: encoded, encoding: .utf8) else { return }
+            var lines = (defaults.string(forKey: Self.ringKey) ?? "")
+                .split(separator: "\n", omittingEmptySubsequences: true)
+                .map(String.init)
+            lines.append(line)
+            if lines.count > Self.ringLimit {
+                lines.removeFirst(lines.count - Self.ringLimit)
+            }
+            defaults.set(lines.joined(separator: "\n"), forKey: Self.ringKey)
+        }
+    }
+
     /// Cheap, read-only identity of every raw source a consumer scan can read.
     /// It deliberately uses filesystem identity/size/mtime plus the catalog
     /// generation; hashing sealed archives here would recreate the very
@@ -7080,15 +7117,106 @@ enum HistoricalArchive {
         maximumPoints: Int
     ) -> HeartRateWindowRead? {
         guard end > start, maximumPoints > 0 else { return nil }
+        let requestStartedAt = Date()
         let candidates = recentReadableFileURLs()
         let catalog = (try? catalogStoreLocked()).flatMap { try? $0.snapshot() }
-        return exactMetricHeartRatePoints(
+        // Warm repeat-navigation path: any archive mutation changes the
+        // fingerprint (paths/sizes/mtimes/catalog generation) so a stale hit
+        // is structurally impossible.
+        let fingerprint = makeConsumerSourceFingerprint(
+            catalogGeneration: catalog?.generation,
+            descriptors: AtriaHistoricalJSONLRecentScanner.descriptors(for: candidates)
+        )
+        var fingerprintHasher = Hasher()
+        if let encoded = try? JSONEncoder().encode(fingerprint) {
+            fingerprintHasher.combine(encoded)
+        }
+        let cacheKey = HeartRateWindowResultCache.Key(
+            startUnix: start.timeIntervalSince1970,
+            endUnix: end.timeIntervalSince1970,
+            fingerprintHash: fingerprintHasher.finalize(),
+            readerVersion: HeartRateChunkIndex.readerVersion
+        )
+        if let cached = HeartRateWindowResultCache.value(for: cacheKey) {
+            AtriaDebugLog("ATRIADBG hr_window_read status=cache_hit elapsed_ms=%d points=%d",
+                          Int(Date().timeIntervalSince(requestStartedAt) * 1_000),
+                          cached.points.count)
+            return cached
+        }
+        var diagnostics = HeartRateWindowReadDiagnostics(
+            startUnix: start.timeIntervalSince1970,
+            endUnix: end.timeIntervalSince1970,
+            elapsedMilliseconds: 0,
+            candidateFileCount: candidates.count,
+            trustedOutsideWindowSkipped: 0,
+            selectedFileCount: 0,
+            scannedFileCount: 0,
+            scannedByteCount: 0,
+            scannedLineCount: 0,
+            heartRateCandidateLineCount: 0,
+            inWindowPointCount: 0,
+            catalogGeneration: catalog?.generation ?? 0,
+            catalogChunkCount: catalog?.chunks.count ?? 0,
+            terminal: "unset"
+        )
+        let read = exactMetricHeartRatePoints(
             in: candidates,
             catalog: catalog,
             archiveRoot: archiveDirectory,
             start: start,
             end: end,
-            maximumPoints: maximumPoints
+            maximumPoints: maximumPoints,
+            diagnostics: &diagnostics
+        )
+        diagnostics.elapsedMilliseconds = Int(
+            Date().timeIntervalSince(requestStartedAt) * 1_000
+        )
+        diagnostics.terminal = read == nil
+            ? "incomplete"
+            : (read?.points.isEmpty == true ? "empty" : "points")
+        diagnostics.persistToRing()
+        if let read {
+            HeartRateWindowResultCache.install(read, for: cacheKey)
+        }
+        AtriaDebugLog("ATRIADBG hr_window_read elapsed_ms=%d candidates=%d skipped=%d selected=%d bytes=%d lines=%d hr_lines=%d points=%d terminal=%@",
+                      diagnostics.elapsedMilliseconds,
+                      diagnostics.candidateFileCount,
+                      diagnostics.trustedOutsideWindowSkipped,
+                      diagnostics.selectedFileCount,
+                      diagnostics.scannedByteCount,
+                      diagnostics.scannedLineCount,
+                      diagnostics.heartRateCandidateLineCount,
+                      diagnostics.inWindowPointCount,
+                      diagnostics.terminal)
+        return read
+    }
+
+    static func exactMetricHeartRatePoints(
+        in candidates: [URL],
+        catalog: AtriaHistoricalArchiveCatalog?,
+        archiveRoot: URL,
+        start: Date,
+        end: Date,
+        maximumPoints: Int,
+        fileManager: FileManager = .default
+    ) -> HeartRateWindowRead? {
+        var diagnostics = HeartRateWindowReadDiagnostics(
+            startUnix: 0, endUnix: 0, elapsedMilliseconds: 0,
+            candidateFileCount: 0, trustedOutsideWindowSkipped: 0,
+            selectedFileCount: 0, scannedFileCount: 0, scannedByteCount: 0,
+            scannedLineCount: 0, heartRateCandidateLineCount: 0,
+            inWindowPointCount: 0, catalogGeneration: 0,
+            catalogChunkCount: 0, terminal: "unset"
+        )
+        return exactMetricHeartRatePoints(
+            in: candidates,
+            catalog: catalog,
+            archiveRoot: archiveRoot,
+            start: start,
+            end: end,
+            maximumPoints: maximumPoints,
+            fileManager: fileManager,
+            diagnostics: &diagnostics
         )
     }
 
@@ -7101,7 +7229,8 @@ enum HistoricalArchive {
         start: Date,
         end: Date,
         maximumPoints: Int,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        diagnostics: inout HeartRateWindowReadDiagnostics
     ) -> HeartRateWindowRead? {
         guard end > start, maximumPoints > 0 else { return nil }
         let selected: [URL]
@@ -7117,12 +7246,27 @@ enum HistoricalArchive {
         } else {
             selected = candidates
         }
+        diagnostics.trustedOutsideWindowSkipped = candidates.count - selected.count
+        diagnostics.selectedFileCount = selected.count
         guard selected.allSatisfy({ fileManager.fileExists(atPath: $0.path) }) else {
             return nil
         }
-        let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(for: selected)
-        guard selected.isEmpty || !descriptors.isEmpty else {
-            return nil
+
+        // Per-file processing (handoff-8 CP1): a sealed, digested chunk with
+        // a binding-valid sidecar is served from ~1 MB of sorted HR rows; a
+        // sealed chunk WITHOUT one pays the raw scan exactly once and leaves
+        // a sidecar behind (built from the same pass, best effort). Active,
+        // legacy, digestless, or mismatch cases stay on the conservative raw
+        // scan — the sidecar is an accelerator, never a second truth source.
+        let canonicalRoot = archiveRoot.standardizedFileURL
+        let chunksByCanonicalPath: [String: [AtriaHistoricalArchiveCatalog.RawChunk]]
+        if let catalog {
+            chunksByCanonicalPath = Dictionary(grouping: catalog.chunks) { chunk in
+                canonicalRoot.appendingPathComponent(chunk.relativePath)
+                    .standardizedFileURL.path
+            }
+        } else {
+            chunksByCanonicalPath = [:]
         }
 
         var points: [HeartRatePoint] = []
@@ -7130,31 +7274,95 @@ enum HistoricalArchive {
                                        max(2, end.timeIntervalSince(start) + 1)))
         points.reserveCapacity(durationCapacity)
         var overflowed = false
-        let result = AtriaHistoricalJSONLRecentScanner.scan(
-            sources: descriptors.map { .init(descriptor: $0, startOffset: 0) },
-            // Current-session rows may need capturedAt correction, so raw unix
-            // is not a safe lower-bound prefilter here.
-            cutoff: 0
-        ) { line in
-            guard !overflowed,
-                  let text = String(data: line, encoding: .utf8),
-                  let point = fastHeartRatePoint(from: text),
-                  point.t >= start,
-                  point.t < end else { return }
-            guard points.count < maximumPoints else {
-                overflowed = true
-                return
+        var scannedLines = 0
+        var heartRateLines = 0
+        var scannedFiles = 0
+        var scannedBytes = 0
+
+        func rawScan(_ url: URL,
+                     collectAllRows: Bool) -> (windowRows: [HeartRatePoint],
+                                               allRows: [HeartRatePoint])? {
+            let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(for: [url])
+            guard !descriptors.isEmpty else { return nil }
+            var windowRows: [HeartRatePoint] = []
+            var allRows: [HeartRatePoint] = []
+            let result = AtriaHistoricalJSONLRecentScanner.scan(
+                sources: descriptors.map { .init(descriptor: $0, startOffset: 0) },
+                // Current-session rows may need capturedAt correction, so raw
+                // unix is not a safe lower-bound prefilter here.
+                cutoff: 0
+            ) { line in
+                scannedLines += 1
+                guard let text = String(data: line, encoding: .utf8),
+                      let point = fastHeartRatePoint(from: text) else { return }
+                heartRateLines += 1
+                if collectAllRows { allRows.append(point) }
+                guard point.t >= start, point.t < end else { return }
+                windowRows.append(point)
             }
-            points.append(point)
+            scannedFiles += result.statistics.fileReadCount
+            scannedBytes += result.statistics.byteCount
+            guard result.complete else { return nil }
+            return (windowRows, allRows)
         }
-        guard result.complete, !overflowed else { return nil }
+
+        for url in selected {
+            let canonicalPath = url.standardizedFileURL.path
+            let matching = chunksByCanonicalPath[canonicalPath] ?? []
+            if matching.count == 1,
+               let chunk = matching.first,
+               chunk.state == .sealed,
+               chunk.contentSHA256 != nil {
+                let sidecarURL = heartRateSidecarURL(
+                    forChunkRelativePath: chunk.relativePath,
+                    archiveRoot: canonicalRoot
+                )
+                if validHeartRateSidecarBinding(sidecarURL: sidecarURL,
+                                                chunk: chunk,
+                                                fileManager: fileManager) != nil,
+                   let sidecarPoints = sidecarHeartRatePoints(
+                    sidecarURL: sidecarURL,
+                    start: start,
+                    end: end,
+                    maximumPoints: max(1, maximumPoints - points.count)
+                   ) {
+                    heartRateLines += sidecarPoints.count
+                    points.append(contentsOf: sidecarPoints)
+                    if points.count >= maximumPoints { overflowed = true; break }
+                    continue
+                }
+                // First touch of this sealed chunk: one raw scan, sidecar
+                // written from the same pass so it never scans again.
+                guard let scanned = rawScan(url, collectAllRows: true) else {
+                    return nil
+                }
+                writeHeartRateSidecar(rows: scanned.allRows,
+                                      chunk: chunk,
+                                      archiveRoot: canonicalRoot,
+                                      fileManager: fileManager)
+                points.append(contentsOf: scanned.windowRows)
+            } else {
+                guard let scanned = rawScan(url, collectAllRows: false) else {
+                    return nil
+                }
+                points.append(contentsOf: scanned.windowRows)
+            }
+            if points.count >= maximumPoints { overflowed = true; break }
+        }
+
+        diagnostics.scannedLineCount = scannedLines
+        diagnostics.heartRateCandidateLineCount = heartRateLines
+        diagnostics.scannedFileCount = scannedFiles
+        diagnostics.scannedByteCount = scannedBytes
+        diagnostics.inWindowPointCount = points.count
+        guard !overflowed else { return nil }
         points.sort {
             if $0.t != $1.t { return $0.t < $1.t }
             return $0.bpm < $1.bpm
         }
         return .init(points: points,
-                     scannedFileCount: result.statistics.fileReadCount,
-                     scannedByteCount: result.statistics.byteCount)
+                     scannedFileCount: scannedFiles,
+                     scannedByteCount: scannedBytes)
     }
 
     private static func appendJSONLine<T: Encodable>(_ value: T) throws -> URL {
@@ -7552,6 +7760,247 @@ enum HistoricalArchive {
     /// A file is excluded only when one immutable catalog row, still matching
     /// its on-disk byte identity, proves the complete chunk is before or after
     /// the requested window. Unknown and active files remain scan candidates.
+    // MARK: - Exact-window HR chunk sidecar index (handoff-8 CP1)
+    //
+    // Attribution receipt from the physical Aug-11 probe: exclusion worked
+    // (171 candidates → 8 selected) but the selected files held 226 MB /
+    // 157k mixed-channel lines, ground through at ~2.7 MB/s for 83 s. The
+    // day's rows genuinely live inside huge sealed chunks, so the fix is a
+    // once-per-chunk HR channel extraction: a versioned sidecar bound to the
+    // exact catalog identity (relative path + byte count + content digest —
+    // the same proof the exclusion path trusts; deliberately NOT file mtime,
+    // which container migrations rewrite). Reads then touch ~1 MB of sorted
+    // HR rows instead of the raw archive. Anything unproven — active,
+    // legacy, digestless, corrupt or mismatched sidecars — falls back to the
+    // conservative raw scan. The raw archive is never rewritten.
+    enum HeartRateChunkIndex {
+        static let readerVersion = 1
+        static let directoryName = "hr-index-v1"
+
+        struct Binding: Codable, Equatable {
+            let version: Int
+            let relativePath: String
+            let byteCount: UInt64
+            let contentSHA256: String
+            let rowCount: Int
+        }
+    }
+
+    static func heartRateSidecarDirectory(archiveRoot: URL) -> URL {
+        archiveRoot.appendingPathComponent(
+            HeartRateChunkIndex.directoryName, isDirectory: true
+        )
+    }
+
+    static func heartRateSidecarURL(
+        forChunkRelativePath relativePath: String,
+        archiveRoot: URL
+    ) -> URL {
+        let sanitized = relativePath
+            .replacingOccurrences(of: "/", with: "__")
+            .replacingOccurrences(of: "..", with: "_")
+        return heartRateSidecarDirectory(archiveRoot: archiveRoot)
+            .appendingPathComponent(sanitized + ".hr.v\(HeartRateChunkIndex.readerVersion).jsonl")
+    }
+
+    /// A sidecar is trusted only when its header binding matches the CURRENT
+    /// catalog row byte-for-byte on identity: version, relative path, raw
+    /// byte count, and content digest. Any mismatch, truncation, or decode
+    /// failure fails closed to the raw scan.
+    static func validHeartRateSidecarBinding(
+        sidecarURL: URL,
+        chunk: AtriaHistoricalArchiveCatalog.RawChunk,
+        fileManager: FileManager = .default
+    ) -> HeartRateChunkIndex.Binding? {
+        guard chunk.state == .sealed,
+              let digest = chunk.contentSHA256,
+              fileManager.fileExists(atPath: sidecarURL.path),
+              let handle = try? FileHandle(forReadingFrom: sidecarURL) else {
+            return nil
+        }
+        defer { try? handle.close() }
+        guard let headerData = try? handle.read(upToCount: 4_096),
+              let newline = headerData.firstIndex(of: 0x0A) else { return nil }
+        let headerLine = headerData[headerData.startIndex..<newline]
+        guard let binding = try? JSONDecoder().decode(
+            HeartRateChunkIndex.Binding.self, from: Data(headerLine)
+        ),
+              binding.version == HeartRateChunkIndex.readerVersion,
+              binding.relativePath == chunk.relativePath,
+              binding.byteCount == chunk.byteCount,
+              binding.contentSHA256 == digest,
+              binding.rowCount >= 0 else {
+            return nil
+        }
+        return binding
+    }
+
+    /// Sorted in-window HR rows from a validated sidecar. Returns nil on any
+    /// malformed row so the caller falls back to the raw scan — a sidecar is
+    /// an accelerator, never a second source of truth.
+    static func sidecarHeartRatePoints(
+        sidecarURL: URL,
+        start: Date,
+        end: Date,
+        maximumPoints: Int
+    ) -> [HeartRatePoint]? {
+        guard let data = try? Data(contentsOf: sidecarURL),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        var points: [HeartRatePoint] = []
+        var isHeader = true
+        let startUnix = start.timeIntervalSince1970
+        let endUnix = end.timeIntervalSince1970
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            if isHeader { isHeader = false; continue }
+            let parts = line.split(separator: " ")
+            guard parts.count == 2,
+                  let t = Double(parts[0]),
+                  let bpm = Int(parts[1]),
+                  t.isFinite, bpm > 0 else { return nil }
+            if t >= endUnix { break }   // rows are written sorted
+            guard t >= startUnix else { continue }
+            guard points.count < maximumPoints else { return nil }
+            points.append(HeartRatePoint(t: Date(timeIntervalSince1970: t), bpm: bpm))
+        }
+        return points
+    }
+
+    /// Extracts the full HR channel of one chunk (already scanned rows) into
+    /// an atomically-written sidecar. Best effort: failure to persist never
+    /// fails the read that produced the rows.
+    @discardableResult
+    static func writeHeartRateSidecar(
+        rows: [HeartRatePoint],
+        chunk: AtriaHistoricalArchiveCatalog.RawChunk,
+        archiveRoot: URL,
+        fileManager: FileManager = .default
+    ) -> Bool {
+        guard chunk.state == .sealed,
+              let digest = chunk.contentSHA256 else { return false }
+        let binding = HeartRateChunkIndex.Binding(
+            version: HeartRateChunkIndex.readerVersion,
+            relativePath: chunk.relativePath,
+            byteCount: chunk.byteCount,
+            contentSHA256: digest,
+            rowCount: rows.count
+        )
+        guard let header = try? JSONEncoder().encode(binding),
+              let headerLine = String(data: header, encoding: .utf8) else {
+            return false
+        }
+        var body = headerLine + "\n"
+        for row in rows.sorted(by: { $0.t < $1.t }) {
+            body += "\(row.t.timeIntervalSince1970) \(row.bpm)\n"
+        }
+        let directory = heartRateSidecarDirectory(archiveRoot: archiveRoot)
+        let destination = heartRateSidecarURL(
+            forChunkRelativePath: chunk.relativePath,
+            archiveRoot: archiveRoot
+        )
+        do {
+            try fileManager.createDirectory(at: directory,
+                                            withIntermediateDirectories: true)
+            let temporary = directory.appendingPathComponent(
+                destination.lastPathComponent + ".tmp-\(UUID().uuidString)"
+            )
+            try body.data(using: .utf8)?.write(to: temporary, options: .atomic)
+            if fileManager.fileExists(atPath: destination.path) {
+                _ = try? fileManager.replaceItemAt(destination, withItemAt: temporary)
+            } else {
+                try fileManager.moveItem(at: temporary, to: destination)
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// One-time cooperative backfill: build sidecars for sealed, digested
+    /// chunks that lack a valid one. Runs off-main (launch follow-up) so
+    /// real navigations meet a warm index. Returns the number built.
+    @discardableResult
+    static func backfillHeartRateSidecars(
+        shouldContinue: @escaping () -> Bool = { true }
+    ) -> Int {
+        guard let catalog = (try? catalogStoreLocked()).flatMap({ try? $0.snapshot() }),
+              (try? catalog.validate()) != nil else { return 0 }
+        let root = archiveDirectory
+        var built = 0
+        for chunk in catalog.chunks {
+            guard shouldContinue() else { break }
+            guard chunk.state == .sealed, chunk.contentSHA256 != nil else { continue }
+            let fileURL = root.appendingPathComponent(chunk.relativePath)
+                .standardizedFileURL
+            let sidecarURL = heartRateSidecarURL(
+                forChunkRelativePath: chunk.relativePath, archiveRoot: root
+            )
+            if validHeartRateSidecarBinding(sidecarURL: sidecarURL, chunk: chunk) != nil {
+                continue
+            }
+            guard FileManager.default.fileExists(atPath: fileURL.path) else { continue }
+            let descriptors = AtriaHistoricalJSONLRecentScanner.descriptors(for: [fileURL])
+            guard !descriptors.isEmpty else { continue }
+            var rows: [HeartRatePoint] = []
+            let result = AtriaHistoricalJSONLRecentScanner.scan(
+                sources: descriptors.map { .init(descriptor: $0, startOffset: 0) },
+                cutoff: 0
+            ) { line in
+                guard let text = String(data: line, encoding: .utf8),
+                      let point = fastHeartRatePoint(from: text) else { return }
+                rows.append(point)
+            }
+            guard result.complete else { continue }
+            if writeHeartRateSidecar(rows: rows, chunk: chunk, archiveRoot: root) {
+                built += 1
+            }
+        }
+        if built > 0 {
+            AtriaDebugLog("ATRIADBG hr_sidecar_backfill status=built count=%d", built)
+        }
+        return built
+    }
+
+    // MARK: - Exact-window HR result cache (handoff-8 CP1)
+
+    /// In-memory repeat-navigation cache. The key folds the closed-open
+    /// window, the reader version, and a hash of the full consumer source
+    /// fingerprint (paths + sizes + mtimes + catalog generation), so any
+    /// archive mutation produces a different key rather than a stale hit.
+    enum HeartRateWindowResultCache {
+        struct Key: Hashable {
+            let startUnix: Double
+            let endUnix: Double
+            let fingerprintHash: Int
+            let readerVersion: Int
+        }
+
+        private static let lock = NSLock()
+        private static var storage: [Key: HeartRateWindowRead] = [:]
+        private static var order: [Key] = []
+        private static let capacity = 16
+
+        static func value(for key: Key) -> HeartRateWindowRead? {
+            lock.lock(); defer { lock.unlock() }
+            return storage[key]
+        }
+
+        static func install(_ read: HeartRateWindowRead, for key: Key) {
+            lock.lock(); defer { lock.unlock() }
+            if storage[key] == nil {
+                order.append(key)
+                if order.count > capacity {
+                    storage.removeValue(forKey: order.removeFirst())
+                }
+            }
+            storage[key] = read
+        }
+
+        static func removeAll() {
+            lock.lock(); defer { lock.unlock() }
+            storage.removeAll(); order.removeAll()
+        }
+    }
+
     static func exactWindowProjectionFileURLs(
         candidates: [URL],
         catalog: AtriaHistoricalArchiveCatalog,
