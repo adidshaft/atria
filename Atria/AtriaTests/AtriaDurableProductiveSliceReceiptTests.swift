@@ -1,0 +1,265 @@
+import XCTest
+@testable import Atria
+
+/// Handoff-9 CP2: the durable productive-slice receipt is the ONLY permission
+/// for the fast (60 s) connected retry cadence. Everything else — a received
+/// frame without durable frontier advance, a flush failure, an unchanged
+/// frontier, a stale generation, a changed gap fingerprint, or no receipt at
+/// all — keeps the existing 5-minute brake.
+final class AtriaDurableProductiveSliceReceiptTests: XCTestCase {
+    private let productive: TimeInterval = 60
+    private let brake: TimeInterval = 300
+
+    private func receipt(
+        generation: UInt64 = 7,
+        startFrontier: Double = 1_000,
+        endFrontier: Double = 2_000,
+        durableRows: Int = 500,
+        liveRestoredAt: Double? = 5_000,
+        gapFingerprint: String? = nil,
+        status: AtriaHistoricalDurableProductiveSliceReceipt.Status = .productive
+    ) -> AtriaHistoricalDurableProductiveSliceReceipt {
+        .init(generation: generation,
+              attemptStartedAtUnix: 4_000,
+              startFrontierUnix: startFrontier,
+              endFrontierUnix: endFrontier,
+              durableRowsDelta: durableRows,
+              flushBoundaryIdentity: "connected_raw_slice_test",
+              liveRestoredAtUnix: liveRestoredAt,
+              gapFingerprint: gapFingerprint,
+              status: status,
+              recordedAtUnix: 5_001)
+    }
+
+    private func interval(
+        _ receipt: AtriaHistoricalDurableProductiveSliceReceipt?,
+        currentGapFingerprint: String? = nil,
+        lastCompletedGeneration: UInt64? = 7
+    ) -> TimeInterval {
+        AtriaBLEManager.connectedHandoffRetryInterval(
+            receipt: receipt,
+            currentGapFingerprint: currentGapFingerprint,
+            lastCompletedGeneration: lastCompletedGeneration,
+            productiveInterval: productive,
+            brakeInterval: brake
+        )
+    }
+
+    // MARK: - Earning the fast cadence
+
+    func testExactDurableFrontierAdvanceWithLiveRestorationEarnsFastRetry() {
+        XCTAssertEqual(interval(receipt()), productive)
+    }
+
+    func testMissingReceiptKeepsBrake() {
+        XCTAssertEqual(interval(nil), brake)
+    }
+
+    // MARK: - A received frame is not progress
+
+    func testRowsWithoutFrontierAdvanceKeepBrake() {
+        // Stream5 frames arrived and even persisted rows, but the verified
+        // frontier did not move past the attempt's captured start.
+        XCTAssertEqual(
+            interval(receipt(startFrontier: 2_000, endFrontier: 2_000)),
+            brake
+        )
+        XCTAssertEqual(
+            interval(receipt(startFrontier: 2_000, endFrontier: 1_500)),
+            brake
+        )
+    }
+
+    func testFlushFailureKeepsBrakeEvenWithRows() {
+        XCTAssertEqual(interval(receipt(status: .failed)), brake)
+    }
+
+    func testNoProgressStatusKeepsBrake() {
+        XCTAssertEqual(
+            interval(receipt(durableRows: 0, status: .noProgress)),
+            brake
+        )
+    }
+
+    func testZeroDurableRowsKeepBrakeEvenIfMarkedProductive() {
+        XCTAssertEqual(interval(receipt(durableRows: 0)), brake)
+    }
+
+    func testMissingLiveRestorationKeepsBrake() {
+        XCTAssertEqual(interval(receipt(liveRestoredAt: nil)), brake)
+    }
+
+    func testNonFiniteFrontiersKeepBrake() {
+        XCTAssertEqual(
+            interval(receipt(startFrontier: .nan, endFrontier: 2_000)),
+            brake
+        )
+        XCTAssertEqual(
+            interval(receipt(startFrontier: 1_000, endFrontier: .infinity)),
+            brake
+        )
+    }
+
+    // MARK: - Scope invalidation
+
+    func testStaleGenerationKeepsBrake() {
+        XCTAssertEqual(
+            interval(receipt(generation: 6), lastCompletedGeneration: 7),
+            brake
+        )
+        XCTAssertEqual(interval(receipt(), lastCompletedGeneration: nil), brake)
+    }
+
+    func testChangedGapFingerprintKeepsBrake() {
+        XCTAssertEqual(
+            interval(receipt(gapFingerprint: "gap-a"),
+                     currentGapFingerprint: "gap-b"),
+            brake
+        )
+        XCTAssertEqual(
+            interval(receipt(gapFingerprint: nil),
+                     currentGapFingerprint: "gap-b"),
+            brake
+        )
+        // Matching fingerprints (including nil == nil for the cursor-anchored
+        // lane) preserve the earned cadence.
+        XCTAssertEqual(
+            interval(receipt(gapFingerprint: "gap-a"),
+                     currentGapFingerprint: "gap-a"),
+            productive
+        )
+    }
+
+    // MARK: - Persistence
+
+    func testStoreReplacesForwardOnlyAndStaleGenerationCannotOverwrite() throws {
+        let suiteName = "AtriaDurableProductiveSliceReceiptTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        XCTAssertNil(AtriaBLEManager.loadDurableProductiveSliceReceipt(defaults: defaults))
+        let newer = receipt(generation: 9)
+        AtriaBLEManager.storeDurableProductiveSliceReceipt(newer, defaults: defaults)
+        XCTAssertEqual(
+            AtriaBLEManager.loadDurableProductiveSliceReceipt(defaults: defaults),
+            newer
+        )
+
+        // A stale callback from an older generation must not overwrite.
+        AtriaBLEManager.storeDurableProductiveSliceReceipt(
+            receipt(generation: 8, status: .failed), defaults: defaults
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.loadDurableProductiveSliceReceipt(defaults: defaults)?
+                .generation,
+            9
+        )
+
+        // The same generation's exact final boundary may replace (e.g. the
+        // definitive terminal after an interim write).
+        let sameGenerationFinal = receipt(generation: 9, status: .noProgress)
+        AtriaBLEManager.storeDurableProductiveSliceReceipt(
+            sameGenerationFinal, defaults: defaults
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.loadDurableProductiveSliceReceipt(defaults: defaults)?
+                .status,
+            .noProgress
+        )
+
+        // Corrupt payload fails closed to nil (→ brake at the gates).
+        defaults.set(Data("garbage".utf8),
+                     forKey: AtriaBLEManager.OfflineSyncDefaults.durableProductiveSliceReceipt)
+        XCTAssertNil(AtriaBLEManager.loadDurableProductiveSliceReceipt(defaults: defaults))
+    }
+
+    // MARK: - Blocked admission states stay blocked regardless of cadence
+
+    func testActiveWorkoutAndStaleHRRemainBlockedEvenWithFastCadence() {
+        let now = Date(timeIntervalSince1970: 10_000)
+        // Active explicit workout blocks admission outright.
+        XCTAssertFalse(AtriaBLEManager.shouldAttemptAutomaticConnectedHistoricalHandoff(
+            linkConnected: true,
+            exactGapPending: true,
+            verifiedMetricRecovery: true,
+            activeExplicitWorkout: true,
+            syncInProgress: false,
+            connectedAt: now.addingTimeInterval(-600),
+            hasContact: true,
+            acceptedSampleCount: 100,
+            lastAcceptedHRAt: now.addingTimeInterval(-5),
+            requestedAt: now.addingTimeInterval(-600),
+            lastAttemptAt: now.addingTimeInterval(-120),
+            now: now,
+            attemptCooldown: 60
+        ))
+        // Stale accepted HR blocks admission outright.
+        XCTAssertFalse(AtriaBLEManager.shouldAttemptAutomaticConnectedHistoricalHandoff(
+            linkConnected: true,
+            exactGapPending: true,
+            verifiedMetricRecovery: true,
+            activeExplicitWorkout: false,
+            syncInProgress: false,
+            connectedAt: now.addingTimeInterval(-600),
+            hasContact: true,
+            acceptedSampleCount: 100,
+            lastAcceptedHRAt: now.addingTimeInterval(-300),
+            requestedAt: now.addingTimeInterval(-600),
+            lastAttemptAt: now.addingTimeInterval(-120),
+            now: now,
+            attemptCooldown: 60
+        ))
+        // The earned 60-second cadence admits a productive follow-up attempt
+        // that the 5-minute brake would still hold.
+        XCTAssertTrue(AtriaBLEManager.shouldAttemptAutomaticConnectedHistoricalHandoff(
+            linkConnected: true,
+            exactGapPending: true,
+            verifiedMetricRecovery: true,
+            activeExplicitWorkout: false,
+            syncInProgress: false,
+            connectedAt: now.addingTimeInterval(-600),
+            hasContact: true,
+            acceptedSampleCount: 100,
+            lastAcceptedHRAt: now.addingTimeInterval(-5),
+            requestedAt: now.addingTimeInterval(-600),
+            lastAttemptAt: now.addingTimeInterval(-90),
+            now: now,
+            attemptCooldown: 60
+        ))
+        XCTAssertFalse(AtriaBLEManager.shouldAttemptAutomaticConnectedHistoricalHandoff(
+            linkConnected: true,
+            exactGapPending: true,
+            verifiedMetricRecovery: true,
+            activeExplicitWorkout: false,
+            syncInProgress: false,
+            connectedAt: now.addingTimeInterval(-600),
+            hasContact: true,
+            acceptedSampleCount: 100,
+            lastAcceptedHRAt: now.addingTimeInterval(-5),
+            requestedAt: now.addingTimeInterval(-600),
+            lastAttemptAt: now.addingTimeInterval(-90),
+            now: now,
+            attemptCooldown: 300
+        ), "The 5-minute brake still holds a 90-second-old attempt")
+    }
+
+    /// Both connected-handoff gates must read the one receipt-computed
+    /// interval — reintroducing a hardcoded cooldown at either site recreates
+    /// the contradictory double gate this pass removed.
+    func testBothGatesReadTheSharedReceiptComputedInterval() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        let source = try String(
+            contentsOf: root.appendingPathComponent("AtriaBLEManager.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(source.contains(
+            "attemptCooldown: automaticConnectedHistoryRetryInterval()"
+        ), "Eligibility gate must use the shared receipt-computed interval")
+        XCTAssertTrue(source.contains(
+            "connectedHandoffInterval: automaticConnectedHistoryRetryInterval()"
+        ), "Transport throttle gate must use the shared receipt-computed interval")
+    }
+}

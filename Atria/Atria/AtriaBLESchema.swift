@@ -406,6 +406,12 @@ extension AtriaBLEManager {
         static let flushDebtPendingRecords = "atria.offlineSync.flushDebtPendingRecords.v1"
         static let flushDebtObservedAt = "atria.offlineSync.flushDebtObservedAt.v1"
         static let flushDebtLevel = "atria.offlineSync.flushDebtLevel.v1"
+        // Handoff-9 CP2: JSON-encoded AtriaHistoricalDurableProductiveSliceReceipt —
+        // the exact generation-scoped proof of the last finished history slice.
+        // Written only from the final durable boundary; the sole permission for
+        // the fast connected retry cadence.
+        static let durableProductiveSliceReceipt =
+            "atria.offlineSync.durableProductiveSliceReceipt.v1"
     }
 
     enum KeepaliveDefaults {
