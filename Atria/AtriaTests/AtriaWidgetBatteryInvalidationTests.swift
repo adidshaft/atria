@@ -2332,8 +2332,13 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             .appendingPathComponent("Atria/WidgetSnapshot.swift")
         let publisher = try String(contentsOf: publisherURL, encoding: .utf8)
 
-        XCTAssertTrue(publisher.contains("sleepHours: latestDisplaySleep?.durationHours"))
+        // Handoff-10 CP1: sleep hours publish only when the wake falls on the
+        // snapshot's display civil day; otherwise the widget carries the
+        // awaiting state instead of a prior night under today's label.
+        XCTAssertTrue(publisher.contains("sleepHours: widgetSleepIsCurrentDay"))
+        XCTAssertTrue(publisher.contains("? latestDisplaySleep?.durationHours"))
         XCTAssertTrue(publisher.contains("? \"Review nap\" : \"Review sleep\""))
+        XCTAssertTrue(publisher.contains("AtriaCurrentDayPresentation.awaitingCurrentSleepDetail"))
         XCTAssertTrue(publisher.contains("strainConfidence.localizedCaseInsensitiveContains(\"partial\")"))
         // 2026-07-31: 81eea260 moved the percent disclosure into the shared
         // StrainPresentation.coverageText with the sparse-HR fallback kept in

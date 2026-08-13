@@ -1532,6 +1532,8 @@ struct AtriaTodayScreen: View {
         return AtriaHomeModel.HeroSnapshot(recoveryEstimate: recovery,
                                            recoveryIsProvisional: false,
                                            recoveryIsFromPreviousSleep: false,
+                                           identity: nil,
+                                           priorCycleDisclosure: nil,
                                            strain: strain,
                                            strainConfidence: "local",
                                            // Debug fixture pins strain-target
@@ -1758,21 +1760,33 @@ struct AtriaTodayScreen: View {
     }
 
     private var sleepMetric: AtriaTriRingMetric {
-        let performance = sleepPerformancePercent
-        // Hours-first, always: falls back to the rollup's stored duration
-        // before ever falling back to a bare percent as the primary number.
-        let value = latestDisplaySleep?.durationText
-            ?? latestRollup?.sleepSeconds.map { AtriaMetricFormat.sleepDuration(seconds: $0) }
+        // Handoff-10 CP1: a Today-labelled sleep ring may only carry a sleep
+        // whose wake falls on today's civil day. A prior night (and the old
+        // day-agnostic newest-rollup fallback, which leaked yesterday's hours
+        // whenever today's row was absent) renders only as the dated
+        // disclosure in the detail line — never as the primary value or fill.
+        let displaySleepIsCurrentDay = AtriaCurrentDayPresentation
+            .sleepIsCurrentDayPrimary(
+                sleepEnd: latestDisplaySleep?.end,
+                now: Date()
+            )
+        let currentDaySleep = displaySleepIsCurrentDay ? latestDisplaySleep : nil
+        let performance = displaySleepIsCurrentDay ? sleepPerformancePercent : nil
+        let value = currentDaySleep?.durationText
             // Deterministic no-value token, matching recovery and strain. With
             // this left as the old word, the ring legend rendered "Sleep /
             // Learning" directly beside "Strain / --" for the same not-ready
             // state -- two vocabularies for one condition, in one row.
             ?? AtriaCompactMetricPresentation.noValue
         let detail: String
-        if let evidence = latestDisplaySleep, !evidence.confirmed {
+        if let evidence = currentDaySleep, !evidence.confirmed {
             detail = evidence.isNapEvidence ? "Review nap" : "Review sleep"
-        } else {
+        } else if currentDaySleep != nil {
             detail = sleepNeedDetailText(performance: performance)
+        } else if let prior = latestDisplaySleep {
+            detail = "Last cycle · \(prior.day.formatted(.dateTime.month(.abbreviated).day())) · \(prior.durationText)"
+        } else {
+            detail = AtriaCurrentDayPresentation.awaitingCurrentSleepDetail
         }
         // Hours-vs-goal fallback fill (2026-08-10, user request): when the
         // need-based performance percent can't be computed yet, the ring used to
@@ -1782,8 +1796,7 @@ struct AtriaTodayScreen: View {
         // measured sleep. The need-based percent still owns the fill and color
         // once available; the closure marker (`targetFraction`) stays gated on a
         // real computed need, so nothing is fabricated.
-        let sleptHoursForFill = latestDisplaySleep?.durationHours
-            ?? latestRollup?.sleepSeconds.map { Double($0) / 3600.0 }
+        let sleptHoursForFill = currentDaySleep?.durationHours
         let goalFraction = sleptHoursForFill.map {
             min(max($0 / max(sleepGoalHours, 1), 0), 1)
         }
