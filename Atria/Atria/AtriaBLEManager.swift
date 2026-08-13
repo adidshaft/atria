@@ -14712,13 +14712,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         )
     }
 
-    /// Replace-only-forward: a stale callback from an older generation can
-    /// never overwrite the receipt of a newer finished slice.
+    /// Replace-only-forward WITHIN one process instance: a stale callback from
+    /// an older generation can never overwrite a newer finished slice's
+    /// receipt. Slice generations are process-local and reset at relaunch
+    /// (physically observed in handoff-10 acceptance: a prior run's
+    /// generation-390 receipt silently swallowed every new process's gen-1..n
+    /// writes, breaking both the earned cadence and the .started self-heal),
+    /// so a receipt written by a DIFFERENT process instance is always
+    /// replaceable — the current process's truth supersedes it.
     nonisolated static func storeDurableProductiveSliceReceipt(
         _ receipt: AtriaHistoricalDurableProductiveSliceReceipt,
         defaults: UserDefaults
     ) {
         if let existing = loadDurableProductiveSliceReceipt(defaults: defaults),
+           existing.processInstanceID == receipt.processInstanceID,
            existing.generation > receipt.generation {
             return
         }
@@ -15567,7 +15574,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     defaults: defaults
                 ),
                 status: receiptStatus,
-                recordedAtUnix: now.timeIntervalSince1970
+                recordedAtUnix: now.timeIntervalSince1970,
+                processInstanceID: Self.processInstanceID
             ),
             defaults: defaults
         )
