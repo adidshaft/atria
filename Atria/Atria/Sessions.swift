@@ -14007,6 +14007,49 @@ final class SessionStore: ObservableObject {
             }
             completeStage("session_motion_skin_projection")
 
+            // Handoff-8 CP3: experimental relative skin signal. Plan from the
+            // same integrity-gated snapshot + confirmed sleeps, persist the
+            // compact qualified-night summaries atomically, then install the
+            // UI result via a bounded MainActor value swap behind the exact
+            // ticket/authority/confirmed-sleeps rechecks. A revoked execution
+            // returns before the store write, so the previous committed
+            // result stands and no partial summary exists.
+            if executionShouldContinue() {
+                let relativeSkinStore = AtriaRelativeSkinNightStore.production
+                let relativeSkinPlan = AtriaRelativeSkinProducer.plan(
+                    sleeps: confirmedSleeps.map(
+                        AtriaRelativeSkinSleepWindow.init(confirmedSleep:)
+                    ),
+                    rows: recoveredSnapshot.skinTemperatureRawPoints,
+                    stored: relativeSkinStore.load(),
+                    environment: .init(
+                        snapshotChannelComplete:
+                            recoveredSnapshot.skinTemperatureCompleteness
+                                == .complete,
+                        drainedThroughUnix: UserDefaults.standard.double(
+                            forKey: AtriaBLEManager.OfflineSyncDefaults
+                                .drainedThroughUnix
+                        ),
+                        now: Date()
+                    )
+                )
+                if executionShouldContinue() {
+                    relativeSkinStore.replaceAll(relativeSkinPlan.nightsToPersist)
+                    let uiSummary = relativeSkinPlan.uiSummary
+                    Task { @MainActor [weak self, ticket, authority] in
+                        guard let self,
+                              self.recoveredDataExecutionIsCurrent(
+                                  ticket: ticket,
+                                  authority: authority,
+                                  requireRunnable: false
+                              ),
+                              self.confirmedSleepsRevision
+                                  == sourceConfirmedSleepsRevision else { return }
+                        AtriaRelativeSkinSignalCenter.shared.install(uiSummary)
+                    }
+                }
+            }
+
             guard executionShouldContinue() else {
                 deferForLostAuthority(
                     "install_preparation",
@@ -50012,6 +50055,28 @@ final class SessionStore: ObservableObject {
         // and utility-priority; never touches the raw archive itself.
         Task.detached(priority: .utility) {
             HistoricalArchive.backfillHeartRateSidecars()
+        }
+        // Handoff-8 CP3: relaunch restores the identical relative-skin result
+        // from the persisted compact night summaries. Read-only — the store
+        // is only rewritten by the recovered pipeline's gated producer.
+        let relativeSkinReseedSleeps = confirmedSleeps.map(
+            AtriaRelativeSkinSleepWindow.init(confirmedSleep:)
+        )
+        Task.detached(priority: .utility) {
+            let store = AtriaRelativeSkinNightStore.production
+            let plan = AtriaRelativeSkinProducer.plan(
+                sleeps: relativeSkinReseedSleeps,
+                rows: [],
+                stored: store.load(),
+                environment: .init(
+                    snapshotChannelComplete: false,
+                    drainedThroughUnix: 0,
+                    now: Date()
+                )
+            )
+            await MainActor.run {
+                AtriaRelativeSkinSignalCenter.shared.install(plan.uiSummary)
+            }
         }
         // Launch is most users' first morning foreground. Use the same off-main
         // immutable proposal path as app resume so the first interactive frame
