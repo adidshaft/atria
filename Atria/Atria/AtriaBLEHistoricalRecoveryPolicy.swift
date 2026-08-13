@@ -11,6 +11,11 @@ import Foundation
 /// received frame is not progress; only a durably advanced frontier is.
 struct AtriaHistoricalDurableProductiveSliceReceipt: Codable, Equatable, Sendable {
     enum Status: String, Codable, Sendable {
+        /// Handoff-10 CP2B: written at slice START, before any terminal is
+        /// known. A surviving `.started` row after relaunch proves a prior
+        /// process died mid-slice — it re-arms scheduling only, and never
+        /// implies ACK, durable persistence, prefix retirement, or success.
+        case started
         case productive
         case noProgress
         case failed
@@ -28,6 +33,16 @@ struct AtriaHistoricalDurableProductiveSliceReceipt: Codable, Equatable, Sendabl
     let gapFingerprint: String?
     let status: Status
     let recordedAtUnix: Double
+    /// Process-lifetime identity of the writer (handoff-10 CP2B). A `.started`
+    /// row from the CURRENT process is an in-flight slice, not an orphan.
+    var processInstanceID: String? = nil
+
+    /// True when this receipt proves a prior process started a slice and died
+    /// before writing any terminal — the one condition that re-arms catch-up
+    /// scheduling after relaunch without foreground help.
+    func isOrphanedStart(currentProcessInstanceID: String) -> Bool {
+        status == .started && processInstanceID != currentProcessInstanceID
+    }
 }
 
 struct AtriaWhoop4HistoryCursorRange: Equatable, Sendable {
