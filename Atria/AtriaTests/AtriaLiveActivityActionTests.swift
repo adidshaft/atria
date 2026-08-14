@@ -765,7 +765,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             heartRateCapturedAt: nil,
             stepsCapturedAt: nil,
             fallback: fallback
-        ), fallback.addingTimeInterval(90))
+        ), fallback.addingTimeInterval(6))
     }
 
     func testExpiredOrUnavailableSourceCannotKeepFreshWorkoutContentGloballyStale() {
@@ -780,7 +780,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             heartRateAvailability: .live,
             stepsAvailability: .stale,
             sensorHasContact: true
-        ), freshHeartRate.addingTimeInterval(90),
+        ), freshHeartRate.addingTimeInterval(6),
         "stale steps stay labelled stale, but must not mark current HR and workout metrics globally stale")
 
         XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
@@ -926,7 +926,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("AtriaShared/AtriaLiveWorkoutControlIntent.swift"), encoding: .utf8)
 
-        XCTAssertTrue(source.contains("state.heartRateCapturedAt?.addingTimeInterval(90)"))
+        XCTAssertTrue(source.contains("state.heartRateCapturedAt?.addingTimeInterval(6)"))
         XCTAssertTrue(source.contains("state.stepsCapturedAt?.addingTimeInterval(15)"))
         XCTAssertTrue(source.contains("state.batteryCapturedAt?.addingTimeInterval(10 * 60)"))
         XCTAssertTrue(source.contains("expiry > canonicalState.appliedAt"),
@@ -1032,7 +1032,7 @@ final class AtriaLiveActivityActionTests: XCTestCase {
         let source = try String(contentsOf: widgetSourceURL, encoding: .utf8)
 
         XCTAssertTrue(source.contains("state.sensorHasContact != false"))
-        XCTAssertTrue(source.contains("now.timeIntervalSince(capturedAt) <= atriaHeartRateFreshness"))
+        XCTAssertTrue(source.contains("now.timeIntervalSince(capturedAt) <= atriaLiveHeartRateFreshness"))
         XCTAssertFalse(source.contains("state.heartRateCapturedAt ?? state.updatedAt"),
                        "unrelated activity updates must not make a legacy HR reading fresh")
         XCTAssertTrue(source.contains("guard let capturedAt = state.heartRateCapturedAt"),
@@ -1175,6 +1175,37 @@ final class AtriaLiveActivityActionTests: XCTestCase {
             fallback: now,
             strainAvailability: .stale
         ), now)
+    }
+
+    func testLiveActivityUsesCanonicalPulseZoneAndSixSecondFreshness() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let home = try String(
+            contentsOf: root.appendingPathComponent("Atria/AtriaHomeView.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(home.range(
+            of: "private func updateLiveActivity(forceActivityWrite: Bool = false)"
+        ))
+        let end = try XCTUnwrap(home.range(
+            of: "private func liveWorkoutHeartRateAvailability",
+            range: start.upperBound..<home.endIndex
+        ))
+        let body = String(home[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(body.contains("let pulse = model.pulseLiveStore.state"))
+        XCTAssertTrue(body.contains("heartRateZoneIndex: zone?.index"))
+        XCTAssertTrue(body.contains("heartRateZoneName: zone?.name"))
+        XCTAssertFalse(body.contains("store.baseline.restingInt ?? 60"))
+
+        let sample = Date(timeIntervalSince1970: 2_000_000_000)
+        XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
+            heartRateCapturedAt: sample,
+            stepsCapturedAt: nil,
+            fallback: sample,
+            heartRateAvailability: .live,
+            sensorHasContact: true
+        ), sample.addingTimeInterval(6))
     }
 
     func testBatteryClockParticipatesInLiveActivityStalenessWithoutRenewingHR() {

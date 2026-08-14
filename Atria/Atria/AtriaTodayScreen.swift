@@ -1734,13 +1734,15 @@ struct AtriaTodayScreen: View {
         // measured sleep. The need-based percent still owns the fill and color
         // once available; the closure marker (`targetFraction`) stays gated on a
         // real computed need, so nothing is fabricated.
-        let sleptHoursForFill = currentDaySleep?.durationHours
-        let goalFraction = sleptHoursForFill.map {
-            min(max($0 / max(sleepGoalHours, 1), 0), 1)
+        let fillProjection = AtriaCurrentCycleSleepFillProjection.resolve(
+            sleptHours: currentDaySleep?.durationHours,
+            nightlyNeedHours: sleepNeedHoursValue,
+            configuredGoalHours: sleepGoalHours
+        )
+        let fillFraction = fillProjection.fraction
+        let ringTint = fillFraction.map {
+            AtriaTriRing.zoneTint(.sleep, percent: $0 * 100)
         }
-        let fillFraction = performance.map { min(max(Double($0) / 100.0, 0), 1) } ?? goalFraction
-        let ringTint = performance.map { AtriaTriRing.zoneTint(.sleep, percent: Double($0)) }
-            ?? goalFraction.map { AtriaTriRing.zoneTint(.sleep, percent: $0 * 100) }
             ?? .secondary
         return AtriaTriRingMetric(title: "Sleep",
                                   value: value,
@@ -1755,12 +1757,13 @@ struct AtriaTodayScreen: View {
                                   // sleep-performance card correctly say green.
                                   tint: ringTint,
                                   fill: fillFraction,
-                                  stateTint: performance.map { AtriaTriRing.zoneTint(.sleep, percent: Double($0)) }
-                                      ?? goalFraction.map { AtriaTriRing.zoneTint(.sleep, percent: $0 * 100) },
+                                  stateTint: fillFraction.map {
+                                      AtriaTriRing.zoneTint(.sleep, percent: $0 * 100)
+                                  },
                                   // A marker at 1.0 (ring closure) exactly when there's a real,
                                   // computed nightly need to close against -- never a fabricated
                                   // target when `sleepNeedHoursValue` can't be computed yet.
-                                  targetFraction: sleepNeedHoursValue != nil ? 1.0 : nil)
+                                  targetFraction: fillProjection.authority == .nightlyNeed ? 1.0 : nil)
     }
 
     /// Recovery is owned by the physiological-cycle resolver in `SessionStore`.

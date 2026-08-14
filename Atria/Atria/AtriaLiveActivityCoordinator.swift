@@ -238,8 +238,8 @@ final class AtriaLiveActivityCoordinator {
         var startedAt: Date
         var activityName: String
         var activitySystemImage: String
-        var heartRateZoneIndex: Int
-        var heartRateZoneName: String
+        var heartRateZoneIndex: Int?
+        var heartRateZoneName: String?
         var steps: Int?
         var stepsAreEstimated: Bool
         var stepsCapturedAt: Date? = nil
@@ -651,14 +651,14 @@ final class AtriaLiveActivityCoordinator {
     /// ActivityKit has one activity-level stale deadline, while HR and motion
     /// have independent freshness windows. Ask the system to redraw at the
     /// first source expiry. The widget then evaluates each source clock on its
-    /// own, so 15-second motion staleness cannot keep looking live until the
-    /// 90-second HR deadline (or incorrectly make fresh HR stale).
+    /// own, so 15-second motion staleness cannot keep looking live past the
+    /// app's strict six-second HR deadline (or incorrectly make fresh HR stale).
     nonisolated static func sensorStaleDate(heartRateCapturedAt: Date?,
                                             stepsCapturedAt: Date?,
                                             strainCapturedAt: Date? = nil,
                                             batteryCapturedAt: Date? = nil,
                                             fallback: Date = Date(),
-                                            heartRateFreshnessWindow: TimeInterval = 90,
+                                            heartRateFreshnessWindow: TimeInterval = AtriaHomeModel.liveHeartRateFreshnessInterval,
                                             stepFreshnessWindow: TimeInterval = 15,
                                             batteryFreshnessWindow: TimeInterval = 10 * 60,
                                             heartRateAvailability: AtriaLiveSensorAvailability? = nil,

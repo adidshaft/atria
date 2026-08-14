@@ -37,6 +37,10 @@ struct WidgetSnapshot: Codable {
     /// fails closed to its placeholder instead of wearing a prior day's
     /// values under today's label after a withheld republish.
     var displayCivilDay: Date? = nil
+    /// Stable local civil-date identity. `Date` alone loses the publishing
+    /// timezone and can be reinterpreted as another day after travel.
+    var displayCivilDayKey: String? = nil
+    var displayTimeZoneIdentifier: String? = nil
     var recoveryValueState: String? = nil
     var recoveryExpiresAt: Date? = nil
     var sleepExpiresAt: Date? = nil
@@ -126,6 +130,19 @@ struct WidgetSnapshot: Codable {
     /// Frozen need denominator for an honest sleep-vs-need gauge; nil = no
     /// truthful denominator.
     var sleepNeedHours: Double? = nil
+    /// Exact Today-resolved ring fill. WidgetKit renders this verbatim instead
+    /// of independently dividing hours or falling back to a dotted ring.
+    var sleepFillFraction: Double? = nil
+    var sleepFillAuthority: String? = nil
+    /// Today-resolved recovery band. Widgets render this identifier verbatim so
+    /// custom thresholds cannot drift back to hard-coded 67/34 cutoffs.
+    var recoveryZone: String? = nil
+    /// True evidence clock for displayed HRV. A live/battery patch must not turn
+    /// an overnight value into "Updated now" by advancing `createdAt`.
+    var hrvCapturedAt: Date? = nil
+    /// End of the civil day owning current-cycle RHR/HRV. Recovery and sleep had
+    /// separate expiry keys already; this closes the remaining biomarker lane.
+    var biomarkerExpiresAt: Date? = nil
 }
 
 /// 2026-08-14 (§13.6): pre-rendered morning-whiteboard rows. Display truth is
@@ -149,6 +166,42 @@ enum WidgetSnapshotPublisher {
         let appGroupEnabled: Bool
         let widgetTargetPresent: Bool
         let complicationTargetPresent: Bool
+    }
+
+    enum PublishLane: Equatable {
+        case stable
+        case live
+    }
+
+    struct PublishLaneTicket: Equatable {
+        let lane: PublishLane
+        let generation: UInt64
+    }
+
+    /// Independent monotonic generations prevent a high-frequency live pulse
+    /// from cancelling or completing a one-shot stable sleep/Recovery/HRV
+    /// rebuild. Kept pure for deterministic interleaving tests.
+    struct PublishLaneAuthority: Equatable {
+        private(set) var stableGeneration: UInt64 = 0
+        private(set) var liveGeneration: UInt64 = 0
+
+        mutating func mint(_ lane: PublishLane) -> PublishLaneTicket {
+            switch lane {
+            case .stable:
+                stableGeneration &+= 1
+                return PublishLaneTicket(lane: lane, generation: stableGeneration)
+            case .live:
+                liveGeneration &+= 1
+                return PublishLaneTicket(lane: lane, generation: liveGeneration)
+            }
+        }
+
+        func isCurrent(_ ticket: PublishLaneTicket) -> Bool {
+            switch ticket.lane {
+            case .stable: return ticket.generation == stableGeneration
+            case .live: return ticket.generation == liveGeneration
+            }
+        }
     }
 
     /// The narrow, durable input consumed by the receipt-only widget lane.
@@ -182,7 +235,9 @@ enum WidgetSnapshotPublisher {
     // mobileprovision Data(contentsOf:) on the main thread. Compute once and
     // cache (MainActor-isolated, so the cache write is race-free).
     private static var cachedDiagnostics: Diagnostics?
-    private static var scheduledPublishTask: Task<Void, Never>?
+    private static var scheduledStablePublishTask: Task<Void, Never>?
+    private static var scheduledLiveWorkoutPatchTask: Task<Void, Never>?
+    private static var publishLaneAuthority = PublishLaneAuthority()
     /// Receipt saves must not compete with or be cancelled by the broader
     /// recovery/widget publisher. This lane reads the already-durable receipt
     /// and rewrites only step fields in the latest shared snapshot.
@@ -210,6 +265,8 @@ enum WidgetSnapshotPublisher {
     /// return animation.
     static func scheduleLiveWorkoutPatch(heartRate: Int?,
                                          heartRateCapturedAt: Date?,
+                                         heartRateZoneIndex: Int? = nil,
+                                         heartRateZoneName: String? = nil,
                                          steps: Int?,
                                          stepsAreEstimated: Bool,
                                          stepsCapturedAt: Date?,
@@ -227,22 +284,36 @@ enum WidgetSnapshotPublisher {
                                          batteryChargeStatus: String,
                                          batteryChargeText: String,
                                          reason: String,
+                                         forceImmediateTimelineReload: Bool = false,
                                          delay: Duration = .milliseconds(60)) {
-        scheduledPublishTask?.cancel()
-        scheduledPublishTask = Task { @MainActor in
-            await Task.yield()
-            if delay > .zero { try? await Task.sleep(for: delay) }
-            guard !Task.isCancelled else { return }
+        scheduledLiveWorkoutPatchTask?.cancel()
+        let ticket = publishLaneAuthority.mint(.live)
+        scheduledLiveWorkoutPatchTask = Task { @MainActor in
+            if !forceImmediateTimelineReload { await Task.yield() }
+            if !forceImmediateTimelineReload, delay > .zero {
+                try? await Task.sleep(for: delay)
+            }
+            guard !Task.isCancelled,
+                  publishLaneAuthority.isCurrent(ticket) else { return }
             let widgetDiagnostics = diagnostics
-            let defaults = widgetDiagnostics.appGroupEnabled
-                ? (UserDefaults(suiteName: appGroupID) ?? .standard)
-                : .standard
+            guard let defaults = sharedWidgetDefaults() else {
+                AtriaDebugLog(
+                    "ATRIADBG widget_snapshot status=live_workout_patch_skipped reason=%@ detail=app_group_unavailable",
+                    reason
+                )
+                if publishLaneAuthority.isCurrent(ticket) {
+                    scheduledLiveWorkoutPatchTask = nil
+                }
+                return
+            }
             guard let data = defaults.data(forKey: key),
                   let current = try? JSONDecoder.widgetSnapshotDecoder.decode(
                     WidgetSnapshot.self,
                     from: data
                   ) else {
-                scheduledPublishTask = nil
+                if publishLaneAuthority.isCurrent(ticket) {
+                    scheduledLiveWorkoutPatchTask = nil
+                }
                 return
             }
             let patched = liveWorkoutPatchedSnapshot(
@@ -250,6 +321,8 @@ enum WidgetSnapshotPublisher {
                 createdAt: Date(),
                 heartRate: heartRate,
                 heartRateCapturedAt: heartRateCapturedAt,
+                heartRateZoneIndex: heartRateZoneIndex,
+                heartRateZoneName: heartRateZoneName,
                 steps: steps,
                 stepsAreEstimated: stepsAreEstimated,
                 stepsCapturedAt: stepsCapturedAt,
@@ -268,19 +341,26 @@ enum WidgetSnapshotPublisher {
                 batteryChargeText: batteryChargeText
             )
             guard let patchedData = try? JSONEncoder.widgetSnapshotEncoder.encode(patched) else {
-                scheduledPublishTask = nil
+                if publishLaneAuthority.isCurrent(ticket) {
+                    scheduledLiveWorkoutPatchTask = nil
+                }
                 return
             }
             defaults.set(patchedData, forKey: key)
             #if canImport(WidgetKit)
             if widgetDiagnostics.appGroupEnabled {
-                scheduleTimelineReload(for: patched)
+                scheduleTimelineReload(
+                    for: patched,
+                    forceImmediate: forceImmediateTimelineReload
+                )
             }
             #endif
             AtriaDebugLog("ATRIADBG widget_snapshot status=live_workout_patch reason=%@ bytes=%d",
                           reason,
                           patchedData.count)
-            scheduledPublishTask = nil
+            if publishLaneAuthority.isCurrent(ticket) {
+                scheduledLiveWorkoutPatchTask = nil
+            }
         }
     }
 
@@ -314,9 +394,13 @@ enum WidgetSnapshotPublisher {
                 return
             }
             let widgetDiagnostics = diagnostics
-            let defaults = widgetDiagnostics.appGroupEnabled
-                ? (UserDefaults(suiteName: appGroupID) ?? .standard)
-                : .standard
+            guard let defaults = sharedWidgetDefaults() else {
+                AtriaDebugLog(
+                    "ATRIADBG widget_snapshot status=durable_steps_skipped reason=%@ detail=app_group_unavailable",
+                    reason
+                )
+                return
+            }
             guard let data = defaults.data(forKey: key),
                   let current = try? JSONDecoder.widgetSnapshotDecoder.decode(
                     WidgetSnapshot.self,
@@ -921,6 +1005,8 @@ enum WidgetSnapshotPublisher {
         createdAt: Date,
         heartRate: Int?,
         heartRateCapturedAt: Date?,
+        heartRateZoneIndex: Int? = nil,
+        heartRateZoneName: String? = nil,
         steps: Int?,
         stepsAreEstimated: Bool,
         stepsCapturedAt: Date?,
@@ -938,9 +1024,6 @@ enum WidgetSnapshotPublisher {
         batteryChargeStatus: String,
         batteryChargeText: String
     ) -> WidgetSnapshot {
-        let heartRateZone = heartRate.map {
-            HRZone.zone(for: $0, maxHR: current.maxHR, restingHR: current.restingHR)
-        }
         let incomingStepEvidenceAt = steps.flatMap { _ in stepsCapturedAt }
         let currentStepEvidenceAt = [
             current.stepsReceiptCapturedAt,
@@ -981,7 +1064,7 @@ enum WidgetSnapshotPublisher {
         let patchedStepsAuthorityVersion = acceptsIncomingSteps
             ? (steps == nil ? nil : stepsAuthorityVersion)
             : current.stepsAuthorityVersion
-        var patched = WidgetSnapshot(
+        let patched = WidgetSnapshot(
             schema: current.schema,
             createdAt: max(current.createdAt, createdAt),
             recoveryPercent: current.recoveryPercent,
@@ -1044,8 +1127,8 @@ enum WidgetSnapshotPublisher {
             dailyStepGoal: current.dailyStepGoal,
             heartRate: heartRate,
             heartRateCapturedAt: heartRate == nil ? nil : heartRateCapturedAt,
-            heartRateZoneIndex: heartRate == nil ? nil : heartRateZone?.rawValue,
-            heartRateZoneName: heartRate == nil ? nil : heartRateZone?.name,
+            heartRateZoneIndex: heartRate == nil ? nil : heartRateZoneIndex,
+            heartRateZoneName: heartRate == nil ? nil : heartRateZoneName,
             batteryLevel: batteryLevel,
             batteryCapturedAt: batteryLevel == nil ? nil : batteryCapturedAt,
             batteryCorroboratedAt: batteryLevel == nil ? nil : batteryCorroboratedAt,
@@ -1064,10 +1147,10 @@ enum WidgetSnapshotPublisher {
         // 2026-08-14 (§13.6): a live patch updates only live fields; the
         // whiteboard mirror and its expiry ride along unchanged from the
         // delivered snapshot.
-        patched.whiteboardRows = current.whiteboardRows
-        patched.whiteboardExpiresAt = current.whiteboardExpiresAt
-        patched.sleepNeedHours = current.sleepNeedHours
-        return patched
+        return snapshotCarryingStablePresentation(
+            from: current,
+            into: patched
+        )
     }
 
     /// A pulse-time patch may make an already-qualified cumulative value more
@@ -1087,6 +1170,55 @@ enum WidgetSnapshotPublisher {
         return next ?? previous
     }
 
+    /// A partial publisher owns only its named live/battery fields. Carry every
+    /// stable presentation and identity value as one unit so adding a new field
+    /// cannot silently erase the current-day fence during a workout pulse.
+    nonisolated static func snapshotCarryingStablePresentation(
+        from current: WidgetSnapshot,
+        into candidate: WidgetSnapshot
+    ) -> WidgetSnapshot {
+        var carried = candidate
+        carried.displayCivilDay = current.displayCivilDay
+        carried.displayCivilDayKey = current.displayCivilDayKey
+        carried.displayTimeZoneIdentifier = current.displayTimeZoneIdentifier
+        carried.recoveryValueState = current.recoveryValueState
+        carried.recoveryExpiresAt = current.recoveryExpiresAt
+        carried.sleepExpiresAt = current.sleepExpiresAt
+        carried.whiteboardRows = current.whiteboardRows
+        carried.whiteboardExpiresAt = current.whiteboardExpiresAt
+        carried.sleepNeedHours = current.sleepNeedHours
+        carried.sleepFillFraction = current.sleepFillFraction
+        carried.sleepFillAuthority = current.sleepFillAuthority
+        carried.recoveryZone = current.recoveryZone
+        carried.hrvCapturedAt = current.hrvCapturedAt
+        carried.biomarkerExpiresAt = current.biomarkerExpiresAt
+        return carried
+    }
+
+    nonisolated static func recoveryZoneIdentifier(
+        percent: Int?,
+        greenLower: Double,
+        yellowLower: Double
+    ) -> String? {
+        guard let percent else { return nil }
+        if Double(percent) >= greenLower { return "green" }
+        if Double(percent) >= yellowLower { return "yellow" }
+        return "red"
+    }
+
+    nonisolated static func civilDayKey(
+        for date: Date,
+        calendar: Calendar
+    ) -> String {
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
+    }
+
     /// Coalesces publisher bursts and lets scene/UI transitions commit before
     /// recovery, strain, JSON encoding, defaults writes, and WidgetKit reloads
     /// run on the main actor. Callers that require an immediate return value
@@ -1094,26 +1226,38 @@ enum WidgetSnapshotPublisher {
     static func schedulePublish(store: SessionStore,
                                 ble: AtriaBLEManager,
                                 reason: String,
+                                forceImmediateTimelineReload: Bool = false,
                                 delay: Duration = .milliseconds(60)) {
-        scheduledPublishTask?.cancel()
-        scheduledPublishTask = Task { @MainActor in
-            await Task.yield()
-            if delay > .zero {
+        scheduledStablePublishTask?.cancel()
+        let ticket = publishLaneAuthority.mint(.stable)
+        scheduledStablePublishTask = Task { @MainActor in
+            if !forceImmediateTimelineReload { await Task.yield() }
+            if !forceImmediateTimelineReload, delay > .zero {
                 try? await Task.sleep(for: delay)
             }
-            guard !Task.isCancelled else { return }
-            _ = publish(store: store, ble: ble, reason: reason)
-            scheduledPublishTask = nil
+            guard !Task.isCancelled,
+                  publishLaneAuthority.isCurrent(ticket) else { return }
+            _ = publish(
+                store: store,
+                ble: ble,
+                reason: reason,
+                forceImmediateTimelineReload: forceImmediateTimelineReload
+            )
+            if publishLaneAuthority.isCurrent(ticket) {
+                scheduledStablePublishTask = nil
+            }
         }
     }
 
     /// Clears only disputed battery fields immediately, even before deferred
     /// session loading permits a full snapshot rewrite.
     static func invalidateBatteryProjection(defaults injectedDefaults: UserDefaults? = nil) {
-        let widgetDiagnostics = Self.diagnostics
-        let defaults = injectedDefaults ?? (widgetDiagnostics.appGroupEnabled
-            ? (UserDefaults(suiteName: appGroupID) ?? .standard)
-            : .standard)
+        guard let defaults = injectedDefaults ?? sharedWidgetDefaults() else {
+            AtriaDebugLog(
+                "ATRIADBG widget_snapshot status=battery_invalidation_skipped reason=app_group_unavailable"
+            )
+            return
+        }
         guard let data = defaults.data(forKey: key),
               let snapshot = try? JSONDecoder.widgetSnapshotDecoder.decode(WidgetSnapshot.self, from: data) else { return }
         var sanitized = WidgetSnapshot(schema: snapshot.schema,
@@ -1178,9 +1322,10 @@ enum WidgetSnapshotPublisher {
                                        widgetTargetPresent: snapshot.widgetTargetPresent,
                                        complicationTargetPresent: snapshot.complicationTargetPresent)
         // 2026-08-14 (§13.6): battery sanitation must not erase the mirror.
-        sanitized.whiteboardRows = snapshot.whiteboardRows
-        sanitized.whiteboardExpiresAt = snapshot.whiteboardExpiresAt
-        sanitized.sleepNeedHours = snapshot.sleepNeedHours
+        sanitized = snapshotCarryingStablePresentation(
+            from: snapshot,
+            into: sanitized
+        )
         guard let sanitizedData = try? JSONEncoder.widgetSnapshotEncoder.encode(sanitized) else { return }
         defaults.set(sanitizedData, forKey: key)
         #if canImport(WidgetKit)
@@ -1202,8 +1347,8 @@ enum WidgetSnapshotPublisher {
             info.extensionPoint == "com.apple.watchkit"
                 || (info.extensionPoint == "com.apple.widgetkit-extension" && info.supportsAccessoryFamilies)
         }
-        let appGroupEnabled = hasAppGroupEntitlement()
-        return Diagnostics(storage: appGroupEnabled ? "app_group_userdefaults" : "app_local_userdefaults",
+        let appGroupEnabled = sharedWidgetDefaults() != nil
+        return Diagnostics(storage: appGroupEnabled ? "app_group_userdefaults" : "unavailable",
                            appGroupEnabled: appGroupEnabled,
                            widgetTargetPresent: widgetTargetPresent,
                            complicationTargetPresent: complicationTargetPresent)
@@ -1231,26 +1376,33 @@ enum WidgetSnapshotPublisher {
         displayed: Metrics.RecoveryEstimate,
         frozen: FrozenRecoverySummary?
     ) -> Metrics.RecoveryEstimate {
-        frozen?.recoveryEstimate ?? displayed
+        SessionStore.numericFrozenRecovery(frozen?.recoveryEstimate) ?? displayed
     }
 
     @discardableResult
     static func publish(store: SessionStore,
                         ble: AtriaBLEManager,
                         reason: String = "update",
-                        now: Date = Date()) -> WidgetSnapshot {
+                        now: Date = Date(),
+                        forceImmediateTimelineReload: Bool = false) -> WidgetSnapshot {
         // Cold-start strain-flash fix (2026-07-07, device-diagnosed): the
         // volatile live BLE resting reading used to outrank the stable
         // saved-session resting, so the first widget snapshots computed
         // strain from a transient value (86 bpm -> 73) and flashed a wrong
         // number until session load. Stable sources first; the live reading
         // is only the last resort before the session_load republish.
-        let rest = store.baseline.restingInt ?? store.sessions.first?.restingStable ?? ble.restingHR
+        let rest = store.baseline.restingInt
+            ?? ble.restingHR
+            ?? store.sessions.first?.restingStable
         let presentationRestingHeartRate = store.currentCycleRestingHeartRateForPresentation(
             on: now
         )
-        let validatedHRV = store.latestReferenceValidatedRecoveryHRV(on: now)
-        let fallbackHRV = validatedHRV ?? store.latestLocalRecoveryHRV(on: now)
+        let displayHRV = AtriaCurrentCycleHRVDisplayProjection.resolve(
+            validated: store.latestReferenceValidatedHRVForDisplay,
+            live: ble.hrvSnapshot,
+            local: store.latestLocalRMSSDForDisplay,
+            now: now
+        )
         let latestSleep = store.sleepHistorySnapshot.latestMainSleep
             .flatMap { _ in store.currentPhysiologicalMainSleep(on: now) }
         let latestDisplaySleep = AtriaOverviewCurrentSleep.resolveDisplayEvidence(
@@ -1261,35 +1413,16 @@ enum WidgetSnapshotPublisher {
         let physiologicalCycle = AtriaPhysiologicalCycle.current(now: now,
                                                                  confirmedSleeps: store.confirmedSleeps,
                                                                  calendar: calendar)
-        let frozenRecovery = DailyRecoveryResolver.summary(
-            rollups: store.dailyRollupHistory,
-            metrics: store.dailyMetricHistory,
-            physiologicalCycle: physiologicalCycle,
-            anchorSleep: latestSleep,
-            calendar: calendar
-        )
-        // Resolve the durable wake-to-wake summary before evaluating the
-        // provisional projection, then carry one complete estimate through the
-        // entire snapshot. This is intentionally defensive: a widget publish
-        // can race deferred daily-metric settlement, and mixing the provisional
-        // score/detail/confidence with a newly available frozen summary made
-        // Home show 39 while the widget persisted 42 on the same device.
-        let displayedRecovery = store.recoveryProjection(
+        // This is the exact presentation projection used by Today. A pending
+        // review can fill a truly absent score visually, but cannot enter the
+        // canonical Recovery cache or baseline.
+        let widgetRecovery = store.recoveryProjectionForPresentation(
             now: now,
             calendar: calendar,
             initialFallbackHRVSnapshot: ble.recoveryHRVSnapshot,
-            liveRestingHeartRate: ble.restingHR
+            liveRestingHeartRate: ble.restingHR,
+            pendingSleepReview: store.pendingSleepReviewNightForUI
         )
-        let widgetRecovery = canonicalRecovery(
-            displayed: displayedRecovery,
-            frozen: frozenRecovery
-        )
-        let recoveryPercent = widgetRecovery.percent
-        let frozenTodayRollup = store.dailyRollupHistory.first {
-            physiologicalCycle.boundaryKind == .mainSleep
-                && calendar.isDate($0.day, inSameDayAs: physiologicalCycle.start)
-                && $0.recovery != nil
-        }
         let savedAggregate = store.homeSavedAggregate(rest: rest ?? 60,
                                                        maxHR: store.profile.maxHR,
                                                        activeSessionID: ble.currentLiveSessionID,
@@ -1423,7 +1556,7 @@ enum WidgetSnapshotPublisher {
         let liveHeartRateZone = liveHeartRate > 0
             ? HRZone.zone(for: liveHeartRate,
                           maxHR: store.profile.maxHR,
-                          restingHR: presentationRestingHeartRate ?? rest)
+                          restingHR: rest)
             : nil
         let publishedSteps = dailySteps.count
         let stepsAreValidated = dailySteps.isValidated
@@ -1436,20 +1569,7 @@ enum WidgetSnapshotPublisher {
             ? currentCycleDisplayedReceiptContentRevision : nil
         let storedDailyStepGoal = UserDefaults.standard.integer(forKey: "atria.target.steps.goal")
         let dailyStepGoal = storedDailyStepGoal > 0 ? storedDailyStepGoal : 8_000
-        let hrvRMSSD: Int?
-        if let frozenRecovery {
-            hrvRMSSD = frozenRecovery.usesHRV
-                ? frozenTodayRollup?.lnRMSSD.map { Int(exp($0).rounded()) }
-                : nil
-        } else if widgetRecovery.usesHRV {
-            if let snapshot = ble.hrvSnapshot, snapshot.isDisplayEligible(on: now) {
-                hrvRMSSD = Int(snapshot.rmssd.rounded())
-            } else {
-                hrvRMSSD = fallbackHRV
-            }
-        } else {
-            hrvRMSSD = nil
-        }
+        let hrvRMSSD = displayHRV?.value
         let hrvState: String
         if hrvRMSSD == nil {
             hrvState = "learning"
@@ -1460,9 +1580,7 @@ enum WidgetSnapshotPublisher {
         }
         let layout = currentHomeLayoutConfig()
         let widgetDiagnostics = Self.diagnostics
-        let defaults = widgetDiagnostics.appGroupEnabled
-            ? (UserDefaults(suiteName: appGroupID) ?? .standard)
-            : .standard
+        let defaults = sharedWidgetDefaults()
         let strainCycleExpiresAt = cumulativeStrainCycleExpiration(
             cycle: physiologicalCycle,
             confirmedSleeps: store.confirmedSleeps,
@@ -1619,6 +1737,8 @@ enum WidgetSnapshotPublisher {
         // its own. Past the end of the display civil day, extensions and the
         // App Intent fail closed instead of re-wearing these values.
         snapshot.displayCivilDay = calendar.startOfDay(for: now)
+        snapshot.displayCivilDayKey = civilDayKey(for: now, calendar: calendar)
+        snapshot.displayTimeZoneIdentifier = calendar.timeZone.identifier
         snapshot.recoveryValueState = widgetDayResolution.identity.valueState.rawValue
         snapshot.recoveryExpiresAt = displayDayEnd
         snapshot.sleepExpiresAt = displayDayEnd
@@ -1647,12 +1767,9 @@ enum WidgetSnapshotPublisher {
         } else {
             whiteboardNeedHours = nil
         }
-        // Whiteboard HRV drops the recovery usesHRV gate (Today shows measured
-        // HRV even when Recovery excludes it) but keeps frozen-rollup-first +
-        // display-eligibility.
-        let whiteboardHRVMS = frozenTodayRollup?.lnRMSSD.map { Int(exp($0).rounded()) }
-            ?? ble.hrvSnapshot.flatMap { $0.isDisplayEligible(on: now) ? Int($0.rmssd.rounded()) : nil }
-            ?? fallbackHRV
+        // Same display projection as Today/Vitals and the dedicated HRV widget.
+        // Recovery-only or whole-session candidates cannot leak into this row.
+        let whiteboardHRVMS = displayHRV?.value
         let whiteboardModel = AtriaTodayMorningWhiteboardModel.make(
             hrvMS: whiteboardHRVMS,
             restingHR: presentationRestingHeartRate,
@@ -1672,6 +1789,27 @@ enum WidgetSnapshotPublisher {
         }
         snapshot.whiteboardExpiresAt = displayDayEnd
         snapshot.sleepNeedHours = widgetSleepIsCurrentDay ? whiteboardNeedHours : nil
+        let configuredSleepGoal = (UserDefaults.standard.object(
+            forKey: "atria.target.sleep.goalHours"
+        ) as? Double) ?? 8
+        let sleepFill = AtriaCurrentCycleSleepFillProjection.resolve(
+            sleptHours: widgetSleepIsCurrentDay ? latestDisplaySleep?.durationHours : nil,
+            nightlyNeedHours: widgetSleepIsCurrentDay ? whiteboardNeedHours : nil,
+            configuredGoalHours: configuredSleepGoal
+        )
+        snapshot.sleepFillFraction = sleepFill.fraction
+        snapshot.sleepFillAuthority = sleepFill.authority?.rawValue
+        snapshot.recoveryZone = recoveryZoneIdentifier(
+            percent: snapshot.recoveryPercent,
+            greenLower: (UserDefaults.standard.object(
+                forKey: "atria.target.recovery.greenLower"
+            ) as? Double) ?? 67,
+            yellowLower: (UserDefaults.standard.object(
+                forKey: "atria.target.recovery.yellowLower"
+            ) as? Double) ?? 34
+        )
+        snapshot.hrvCapturedAt = displayHRV?.measuredAt
+        snapshot.biomarkerExpiresAt = displayDayEnd
         // Cold-start + card-settlement guard: landing sessions makes the UI
         // interactive before the async confirmed-sleep -> metric -> rollup chain
         // is complete. Preserve the last durable widget until both authorities
@@ -1705,7 +1843,7 @@ enum WidgetSnapshotPublisher {
                     now: max(now, Date()),
                     calendar: calendar
                 ).receipt?.contentRevision
-        if let currentData = defaults.data(forKey: key),
+        if let currentData = defaults?.data(forKey: key),
            let current = try? JSONDecoder.widgetSnapshotDecoder.decode(
             WidgetSnapshot.self,
             from: currentData
@@ -1717,7 +1855,8 @@ enum WidgetSnapshotPublisher {
                     authoritativeReceiptContentRevision
             )
         }
-        if let data = try? JSONEncoder.widgetSnapshotEncoder.encode(snapshot) {
+        if let data = try? JSONEncoder.widgetSnapshotEncoder.encode(snapshot),
+           let defaults {
             defaults.set(data, forKey: key)
             AtriaDebugLog("ATRIADBG widget_snapshot status=ok reason=%@ schema=%d recovery=%@ confidence=%@ hrv=%@ strain=%.1f rhr=%@ max_hr=%d battery=%@ charge=%@ bytes=%d storage=%@ app_group=%d widget_target=%d complication_target=%d",
                           reason,
@@ -1748,11 +1887,14 @@ enum WidgetSnapshotPublisher {
                           readinessAction)
 #if canImport(WidgetKit)
             if widgetDiagnostics.appGroupEnabled {
-                scheduleTimelineReload(for: snapshot)
+                scheduleTimelineReload(
+                    for: snapshot,
+                    forceImmediate: forceImmediateTimelineReload
+                )
             }
 #endif
         } else {
-            AtriaDebugLog("ATRIADBG widget_snapshot status=error reason=encode_failed")
+            AtriaDebugLog("ATRIADBG widget_snapshot status=error reason=encode_or_app_group_unavailable")
         }
         return snapshot
     }
@@ -1883,14 +2025,28 @@ enum WidgetSnapshotPublisher {
         var parts: [String] = []
         parts.append(snapshot.recoveryPercent.map(String.init) ?? "learning")
         parts.append(snapshot.recoveryConfidence)
+        parts.append(snapshot.recoveryDetail)
+        parts.append(snapshot.recoveryZone ?? "recovery_zone_absent")
+        parts.append(snapshot.displayCivilDay.map { String($0.timeIntervalSince1970) } ?? "display_day_absent")
+        parts.append(snapshot.displayCivilDayKey ?? "display_day_key_absent")
+        parts.append(snapshot.displayTimeZoneIdentifier ?? "display_tz_absent")
+        parts.append(snapshot.recoveryValueState ?? "recovery_value_state_absent")
+        parts.append(snapshot.recoveryExpiresAt.map { String($0.timeIntervalSince1970) } ?? "recovery_expiry_absent")
         parts.append(String(format: "%.1f", snapshot.strain))
         parts.append(snapshot.strainDetail ?? "strain_detail_absent")
         parts.append(snapshot.strainCycleStart.map { String($0.timeIntervalSince1970) } ?? "strain_cycle_absent")
         parts.append(snapshot.strainCycleExpiresAt.map { String($0.timeIntervalSince1970) } ?? "strain_expiry_absent")
         parts.append(snapshot.restingHR.map(String.init) ?? "-")
         parts.append(snapshot.hrvRMSSD.map(String.init) ?? "-")
+        parts.append(snapshot.hrvState)
+        parts.append(snapshot.hrvCapturedAt.map { String($0.timeIntervalSince1970) } ?? "hrv_clock_absent")
+        parts.append(snapshot.biomarkerExpiresAt.map { String($0.timeIntervalSince1970) } ?? "biomarker_expiry_absent")
         parts.append(snapshot.sleepHours.map { String(format: "%.1f", $0) } ?? "-")
         parts.append(snapshot.sleepDetail ?? "sleep_detail_absent")
+        parts.append(snapshot.sleepNeedHours.map { String(format: "%.3f", $0) } ?? "sleep_need_absent")
+        parts.append(snapshot.sleepFillFraction.map { String(format: "%.4f", $0) } ?? "sleep_fill_absent")
+        parts.append(snapshot.sleepFillAuthority ?? "sleep_fill_authority_absent")
+        parts.append(snapshot.sleepExpiresAt.map { String($0.timeIntervalSince1970) } ?? "sleep_expiry_absent")
         // Exact step/HR values and capture clocks are handled by the bounded
         // sensor lane above. Presence and semantic transitions stay immediate.
         parts.append(snapshot.steps == nil ? "steps_absent" : "steps_present")
@@ -1903,6 +2059,8 @@ enum WidgetSnapshotPublisher {
         )
         parts.append(snapshot.stepsCycleStart.map { String($0.timeIntervalSince1970) } ?? "steps_cycle_absent")
         parts.append(snapshot.stepsCycleExpiresAt.map { String($0.timeIntervalSince1970) } ?? "steps_expiry_absent")
+        parts.append(snapshot.stepsPriorCycleSteps.map(String.init) ?? "prior_steps_absent")
+        parts.append(snapshot.stepsPriorCycleEndedAt.map { String($0.timeIntervalSince1970) } ?? "prior_steps_end_absent")
         parts.append(snapshot.dailyStepGoal.map(String.init) ?? "-")
         let exactDailyStepGoalReached = snapshot.stepsAreEstimated == false
             && snapshot.stepsCompleteness != "partial"
@@ -1913,6 +2071,7 @@ enum WidgetSnapshotPublisher {
         parts.append(snapshot.heartRate == nil ? "hr_absent" : "hr_present")
         parts.append(snapshot.heartRateCapturedAt == nil ? "hr_clock_absent" : "hr_clock_present")
         parts.append(snapshot.heartRateZoneIndex.map(String.init) ?? "-")
+        parts.append(snapshot.heartRateZoneName ?? "hr_zone_name_absent")
         let batteryBucket: String = snapshot.batteryLevel.map { String(($0 / 10) * 10) } ?? "-"
         parts.append(batteryBucket)
         parts.append(snapshot.batteryChargeStatus ?? "-")
@@ -1923,14 +2082,28 @@ enum WidgetSnapshotPublisher {
         // 2026-08-14 (§13.6): band/sentence changes must reload the mirror
         // promptly.
         parts.append(snapshot.whiteboardRows.map { rows in
-            rows.map { "\($0.value)#\($0.sentence)#\($0.tone)" }.joined(separator: ";")
+            rows.map {
+                "\($0.id)#\($0.symbol)#\($0.value)#\($0.sentence)#\($0.tone)"
+            }.joined(separator: ";")
         } ?? "whiteboard_absent")
+        parts.append(snapshot.whiteboardExpiresAt.map { String($0.timeIntervalSince1970) } ?? "whiteboard_expiry_absent")
         return parts.joined(separator: "|")
     }
 
 #if canImport(WidgetKit)
-    private static func scheduleTimelineReload(for snapshot: WidgetSnapshot,
-                                               now: Date = Date()) {
+    private static func scheduleTimelineReload(
+        for snapshot: WidgetSnapshot,
+        forceImmediate: Bool = false,
+        now: Date = Date()
+    ) {
+        if forceImmediate {
+            pendingTimelineReloadTask?.cancel()
+            pendingTimelineReloadTask = nil
+            pendingTimelineReloadSnapshot = nil
+            pendingTimelineReloadDeadline = nil
+            deliverTimelineReload(snapshot, now: now)
+            return
+        }
         let delay = timelineReloadDelay(previous: lastTimelineReloadSnapshot,
                                         lastReloadAt: lastTimelineReloadDate,
                                         snapshot: snapshot,
@@ -2169,13 +2342,14 @@ enum WidgetSnapshotPublisher {
         }
     }
 
-    private static func hasAppGroupEntitlement() -> Bool {
-        guard let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
-              let data = try? Data(contentsOf: url),
-              let text = String(data: data, encoding: .isoLatin1) ?? String(data: data, encoding: .utf8) else {
-            return false
-        }
-        return text.contains(appGroupID)
+    /// The app and extension communicate only through the signed App Group.
+    /// Falling back to `.standard` creates a fresh-looking snapshot that the
+    /// extension can never read, so container resolution is the authority gate.
+    private static func sharedWidgetDefaults() -> UserDefaults? {
+        guard FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID
+        ) != nil else { return nil }
+        return UserDefaults(suiteName: appGroupID)
     }
 }
 
