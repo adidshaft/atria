@@ -1435,8 +1435,16 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertEqual(saved.start, editedStart)
         XCTAssertEqual(saved.end, editedEnd)
         XCTAssertEqual(saved.createdAt, original.createdAt)
-        XCTAssertEqual(saved.zoneBoundaries,
-                       AtriaHRRZoneBoundaries(restingHR: 60, maxHR: 190))
+        // GAP-03 (2026-08-14): a window edit recomputes zone seconds from the
+        // evidence but preserves the workout's FROZEN boundary identity — it
+        // no longer re-mints boundaries from the edit call's profile values.
+        // The freeze is stamped by the store at persistence time, so the
+        // authoritative pre-edit boundaries live on the PERSISTED record (the
+        // value `confirmWorkoutWindowForUI` returned predates that stamp).
+        let persistedOriginal = try unwrap(beforeFailure.first { $0.id == original.id })
+        XCTAssertNotNil(persistedOriginal.zoneBoundaries)
+        XCTAssertEqual(saved.zoneBoundaries, persistedOriginal.zoneBoundaries,
+                       "an edit must never rewrite the frozen zone boundaries")
         XCTAssertNotEqual(saved.id, original.id)
         XCTAssertFalse(store.confirmedWorkouts.contains(where: { $0.id == original.id }))
         XCTAssertEqual(store.confirmedWorkouts.filter { $0.id == saved.id }, [saved])
@@ -1504,6 +1512,80 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertEqual(result.reason, "historical_archive_real_hr")
         XCTAssertGreaterThan(result.avgHR, 0)
         XCTAssertNotNil(result.strain)
+    }
+
+    // MARK: GAP-03 — the per-workout zone freeze survives every copy-forward path
+
+    func testArchiveRehydrationPreservesFrozenZoneBoundariesAndUsesThemForZoneSeconds() throws {
+        let start = Date(timeIntervalSince1970: 1_783_767_620)
+        let end = start.addingTimeInterval(50 * 60)
+        var old = sparseConfirmedWorkout(start: start, end: end, samples: 2, coverage: 3)
+        // Frozen at completion with a DIFFERENT profile than today's: rest 40 /
+        // max 200 → warm-up starts at 120 bpm. Today's 60/190 would put the
+        // warm-up boundary at 125 bpm instead.
+        let frozen = try XCTUnwrap(AtriaHRRZoneBoundaries(restingHR: 40, maxHR: 200))
+        old.zoneBoundaries = frozen
+        // Constant 122 bpm: warm-up under the frozen boundaries, rest under
+        // today's profile — the bucket proves which values were used.
+        let archive = stride(from: 0.0, through: 50 * 60, by: 10).map {
+            HistoricalArchive.HeartRatePoint(t: start.addingTimeInterval($0), bpm: 122)
+        }
+
+        let result = try XCTUnwrap(SessionStore.rehydratedConfirmedWorkout(
+            old,
+            existingPoints: [],
+            archivePoints: archive,
+            rest: 60,
+            maxHR: 190,
+            profile: testAthleteProfile
+        ))
+
+        XCTAssertEqual(result.zoneBoundaries, frozen,
+                       "recovered HR evidence must never rewrite the frozen zone identity")
+        XCTAssertGreaterThan(result.zoneSeconds?["warmup"] ?? 0, 0,
+                             "zone seconds must be bucketed with the frozen boundaries")
+        XCTAssertEqual(result.zoneSeconds?["rest"] ?? 0, 0,
+                       "today's profile boundaries must not have classified these samples")
+    }
+
+    func testArchiveRehydrationMintsBoundariesFromValuesUsedForLegacyRecords() throws {
+        let start = Date(timeIntervalSince1970: 1_783_767_620)
+        let end = start.addingTimeInterval(50 * 60)
+        let old = sparseConfirmedWorkout(start: start, end: end, samples: 2, coverage: 3)
+        XCTAssertNil(old.zoneBoundaries)
+        let archive = stride(from: 0.0, through: 50 * 60, by: 10).map {
+            HistoricalArchive.HeartRatePoint(t: start.addingTimeInterval($0),
+                                             bpm: 105 + (Int($0) / 10) % 20)
+        }
+
+        let result = try XCTUnwrap(SessionStore.rehydratedConfirmedWorkout(
+            old,
+            existingPoints: [],
+            archivePoints: archive,
+            rest: 60,
+            maxHR: 190,
+            profile: testAthleteProfile
+        ))
+
+        XCTAssertEqual(result.zoneBoundaries,
+                       AtriaHRRZoneBoundaries(restingHR: 60, maxHR: 190),
+                       "a legacy record's first rehydration freezes the values actually used")
+    }
+
+    /// Rename and step-evidence merges are private/actor paths; these pins keep
+    /// their zone-freeze (and rename's muscular-receipt) carries in place.
+    func testCopyForwardConstructorsCarryTheZoneFreeze() throws {
+        let source = try durabilitySource("Sessions.swift")
+        XCTAssertTrue(source.contains("merged.zoneBoundaries = workout.zoneBoundaries"),
+                      "step-evidence merge must carry the frozen boundaries")
+        XCTAssertTrue(source.contains("renamed.zoneBoundaries = old.zoneBoundaries"),
+                      "rename must carry the frozen boundaries")
+        XCTAssertTrue(source.contains("renamed.muscularLoadReceipt = old.muscularLoadReceipt"),
+                      "rename must carry the muscular-load receipt")
+        XCTAssertTrue(source.contains("let editZoneRest = old.zoneBoundaries?.restingHR ?? rest"),
+                      "window edits must recompute zones with the frozen boundaries")
+        XCTAssertTrue(source.contains("let zoneRest = old.zoneBoundaries?.restingHR ?? rest"),
+                      "rehydration must recompute zones with the frozen boundaries")
     }
 
     func testRecoveredWorkoutEvidenceAcceptsMoreExactSamplesAtSameRoundedCoverage() {

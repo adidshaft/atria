@@ -1,6 +1,47 @@
 import SwiftUI
 import UIKit
 
+/// MetricAuthority — the single-authority and fail-closed contract for every
+/// user-facing metric. This block is the central policy the scattered
+/// per-algorithm comments defer to; new metrics and new consumers must obey it.
+///
+/// **One authority per concept.** Each metric has exactly one canonical
+/// calculation, and every surface (chart, ledger, detail sheet, accessibility
+/// text, widget, intent, notification) consumes that one result:
+/// - **Recovery**: `Metrics.recoveryV2` /
+///   `AtriaAnalytics.Recovery.estimate(hrvSnapshot:...)`, or a
+///   `FrozenRecoverySummary` minted by it and replayed verbatim. The deprecated
+///   ungated estimators (`recovery(restingNow:)`, `recovery(hrvNow:)`) must
+///   never reach a view; a guard test pins their call sites.
+/// - **Strain**: kernel in `AtriaStrainLoadModel` (Banister TRIMP, HRR form);
+///   whether a day total may present as exact is decided only by
+///   `Metrics.StrainPresentation.resolve`.
+/// - **Sleep Need**: `AtriaSleepBudget.sleepNeedComponents`; historical nights
+///   read only their settlement-frozen `FrozenNeed` receipt — never a
+///   recomputation with today's baseline, debt, or strain.
+/// - **Sleep Consistency**: `AtriaSleepConsistency.result` is the only engine;
+///   score, strip visual, trend, and copy all consume the same result object.
+/// - **Heart-rate zones**: HRR boundaries
+///   (`restingHR + fraction × (maxHR − restingHR)`), frozen per completed
+///   workout via `AtriaHRRZoneBoundaries`; later profile edits never rewrite
+///   a completed workout's boundaries.
+/// - **Current cycle vs dated history**: owned by `AtriaHealthMetricAuthority`
+///   (AtriaHealthScreen.swift).
+///
+/// **Fail-closed rules.** Missing evidence produces a gap, a limited-confidence
+/// label, or no score — never a fabricated number:
+/// - Never promote HRV from heart-rate-only data.
+/// - Never display SpO2 or absolute skin temperature until the docs/14
+///   validation protocol passes; display is gated by `AtriaResearchProbe`'s
+///   validated-decoder flags, which are hard-false today.
+/// - Never substitute population averages for a missing personal baseline.
+/// - Never silently recompute frozen historical values (Recovery, Sleep Need,
+///   zone boundaries) with later profile data.
+///
+/// **New metrics** must declare a confidence tier and provenance before they
+/// ship; see docs/16-metric-authority-and-confidence-policy.md.
+enum MetricAuthority {}
+
 /// Industry-style headline metrics computed locally from strap data.
 ///
 /// These are independent local metrics, not replicas of proprietary scores:
@@ -86,27 +127,19 @@ enum Metrics {
 
     static func heartRateZone(bpm: Int, rest: Int, max: Int) -> HeartRateZone? {
         guard bpm > 0, max > rest else { return nil }
-        // User-visible Z0...Z5 labels must match workout targets, saved zone
-        // minutes, haptics, widgets, and Live Activity. Those surfaces use
-        // percent-of-max bands. HR reserve remains available here only as the
-        // physiological lens/strain input; it no longer changes the zone name.
+        // GAP-03: every user-visible zone derives from heart-rate reserve
+        // (restingHR + fraction × HRR) via the same HRZone boundaries the live
+        // workout screen, Live Activity, widget, and haptics use — one BPM can
+        // never display different zones on different surfaces, and the zone
+        // index always agrees with the load model's HRR lens.
         let rawReserveFraction = Double(bpm - rest) / Double(max - rest)
         let reserveFraction = Swift.min(Swift.max(rawReserveFraction, 0), 1)
-        let maxFraction = Double(bpm) / Double(max)
-        let index: Int
-        switch maxFraction {
-        case ..<0.50: index = 0
-        case ..<0.60: index = 1
-        case ..<0.70: index = 2
-        case ..<0.80: index = 3
-        case ..<0.90: index = 4
-        default: index = 5
-        }
-        let names = ["Rest", "Warm-up", "Fat burn", "Aerobic", "Anaerobic", "Max"]
+        let zone = HRZone.zone(for: bpm, maxHR: max, restingHR: rest)
+        let index = zone.rawValue
         return HeartRateZone(index: index,
                              title: "Zone \(index)",
                              shortLabel: "Z\(index)",
-                             name: names[index],
+                             name: zone.name,
                              reserveFraction: reserveFraction,
                              tint: heartRateZoneTint(index))
     }

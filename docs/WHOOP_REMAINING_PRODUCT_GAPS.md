@@ -1,8 +1,29 @@
 # Remaining WHOOP-Informed Product Gaps
 
 Status: filtered implementation backlog  
-Reviewed: 2026-08-06  
+Reviewed: 2026-08-14 (full-replacement directive pass)  
 Scope: Recovery, Strain, Sleep, automatic activity/sleep detection, and the WHOOP screenshots reviewed with those systems
+
+## Status as of 2026-08-14 (directive WP pass)
+
+| Gap | Status | Notes |
+| --- | --- | --- |
+| GAP-01 Frozen Sleep Need | **CLOSED** | Edit paths carry the itemized `FrozenNeed` receipt (bound edits + same-id rebuilds); Hours-vs-Need chart breaks the line at receiptless nights; `AtriaFrozenSleepNeedTests`. |
+| GAP-02 One Consistency engine | **CLOSED** | `AtriaSleepConsistency.result` is the only engine; strip rows consume its qualified deviations; latest-night highlight, typical band, recommended window; nights without a recorded timezone fail closed; `AtriaSleepConsistencyEngineTests`. |
+| GAP-03 HRR zones everywhere | **CLOSED** | `Metrics.heartRateZone` now derives from HRR (same `HRZone` bands as live/haptics/widget); freeze survives rename, step-merge, window edit, and archive rehydration; session Time-in-zone shows BPM ranges with "Legacy range" fallback; `AtriaHeartRateZoneConsistencyTests`, zone-freeze tests in `AtriaWorkoutSaveDurabilityTests`. |
+| GAP-04 Nap Recovery uplift | **CLOSED** | Regression + source-guard tests in `AtriaRecoveryFreezeTests` (implementation was already correct). |
+| GAP-05 Honest overnight naming | **CLOSED** | No user-facing "sleep stress" copy; copy-guard regex test pins it. |
+| GAP-06 Composite Sleep Score | **CLOSED (provisional)** | `AtriaSleepScore.provisional` is the only production entry point (overnight-load slot API-pinned nil). The night's receipt now persists on `DailyRollupStoreEntry.sleepScore`, derived only from frozen inputs (frozen need, morning-frozen consistency, motion-qualified efficiency); the Health screen prefers the stored receipt for settled nights. Still labeled provisional until weights are validated. `AtriaSleepScoreProvisionalTests`, `AtriaSleepScorePersistenceTests`. |
+| GAP-07 Overnight HR trace | **CLOSED** | High-load marks render at identical timestamps in both chart modes; high-period merging extracted to `AtriaSleepStressProjection.highPeriods` and directly tested; event-timezone consumer pinned; `AtriaSleepStressProjectionTests`. |
+| GAP-08 Supersets | **CLOSED** | `AtriaStrengthLog.supersetReceipt` is the single derivation site; edits preserve identity/timestamp/receipt; regrouping reuses the group id; JSON round-trip + density-boundary tests. |
+| GAP-09 Muscular load + fusion | **SHIPPED (provisional)** | Deterministic logged-input model fused into the one 0–21 day Strain across today/widget/rollups/trend; see docs/17-muscular-load-and-fusion.md; `AtriaMuscularFusionTests`. |
+| GAP-10 Overnight load validation | OPEN | Unchanged — research program required before the composite's overnight-load slot or any "overnight strain" claim. |
+| GAP-11 Activity classifier | OPEN | Unchanged — needs labeled physical captures. |
+
+WP-0 safety rails also landed: central `MetricAuthority` contract in
+`Metrics.swift`, docs/16-metric-authority-and-confidence-policy.md, and
+`AtriaMetricAuthorityGuardTests` (deprecated ungated recovery estimators can
+never gain a caller).
 
 ## Purpose
 

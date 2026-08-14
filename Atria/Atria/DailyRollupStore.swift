@@ -697,6 +697,15 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
     /// time. Additive/optional so legacy rollup rows without this field keep
     /// decoding via `decodeIfPresent` (nil).
     var fitnessAgeDelta: Int?
+    /// GAP-06: the night's provisional composite Sleep Score receipt, derived
+    /// exclusively from that morning's frozen inputs (Sufficiency from the
+    /// frozen need receipt, Consistency as persisted on the day's metric, and
+    /// motion-qualified efficiency) — never from today's rolling windows, so a
+    /// settled night's score cannot drift as later nights land. Additive /
+    /// optional per the docs/16 migration policy: legacy rows decode nil and
+    /// cold-session imports simply omit it (a re-mint from the same frozen
+    /// inputs reproduces it byte-identically).
+    var sleepScore: AtriaSleepScore?
 
     var id: Date { day }
 
@@ -719,6 +728,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         case vitals
         case nutrition
         case fitnessAgeDelta
+        case sleepScore
     }
 
     init(day: Date,
@@ -739,6 +749,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
          vitals: DailyRollupVitals? = nil,
          nutrition: AtriaNutritionSummary? = nil,
          fitnessAgeDelta: Int? = nil,
+         sleepScore: AtriaSleepScore? = nil,
          calendar: Calendar = .current) {
         let normalizedDay = calendar.startOfDay(for: day)
         self.day = normalizedDay
@@ -760,6 +771,9 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         self.vitals = vitals
         self.nutrition = nutrition
         self.fitnessAgeDelta = fitnessAgeDelta
+        // A composite with no score is Sufficiency-on-its-own; never store it
+        // as a receipt.
+        self.sleepScore = sleepScore.flatMap { $0.score == nil ? nil : $0 }
     }
 
     init(from decoder: Decoder) throws {
@@ -798,6 +812,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         vitals = try container.decodeIfPresent(DailyRollupVitals.self, forKey: .vitals)
         nutrition = try container.decodeIfPresent(AtriaNutritionSummary.self, forKey: .nutrition)
         fitnessAgeDelta = try container.decodeIfPresent(Int.self, forKey: .fitnessAgeDelta)
+        sleepScore = try container.decodeIfPresent(AtriaSleepScore.self, forKey: .sleepScore)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -826,6 +841,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         try container.encodeIfPresent(vitals, forKey: .vitals)
         try container.encodeIfPresent(nutrition, forKey: .nutrition)
         try container.encodeIfPresent(fitnessAgeDelta, forKey: .fitnessAgeDelta)
+        try container.encodeIfPresent(sleepScore, forKey: .sleepScore)
     }
 
     private static func dayFormatter(tzOffsetMinutes: Int) -> DateFormatter? {

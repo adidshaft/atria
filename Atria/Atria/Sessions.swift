@@ -11949,6 +11949,7 @@ final class SessionStore: ObservableObject {
         let baselineSnapshot = baseline
         let maxHR = profile.maxHR
         let confirmedSleeps = cachedConfirmedSleeps
+        let confirmedWorkouts = cachedConfirmedWorkouts
         let recoveredSkinTemperatureDeviationByDay =
             cachedRecoveredSkinTemperatureDeviationByDay
         let archiveHeartRatePoints = cachedHistoricalTodayHeartRatePoints
@@ -11964,6 +11965,7 @@ final class SessionStore: ObservableObject {
                                                      baselineSnapshot,
                                                      maxHR,
                                                      confirmedSleeps,
+                                                     confirmedWorkouts,
                                                      recoveredSkinTemperatureDeviationByDay,
                                                      archiveHeartRatePoints,
                                                      biologicalSex,
@@ -11985,6 +11987,7 @@ final class SessionStore: ObservableObject {
                     baseline: baselineSnapshot,
                     maxHR: maxHR,
                     confirmedSleeps: confirmedSleeps,
+                    confirmedWorkouts: confirmedWorkouts,
                     recoveredSkinTemperatureDeviationByDay:
                         recoveredSkinTemperatureDeviationByDay,
                     archiveHeartRatePoints: archiveHeartRatePoints,
@@ -12084,6 +12087,7 @@ final class SessionStore: ObservableObject {
         let baselineSnapshot = baseline
         let maxHR = profile.maxHR
         let confirmedSleeps = cachedConfirmedSleeps
+        let confirmedWorkouts = cachedConfirmedWorkouts
         let archiveHeartRatePoints = cachedHistoricalTodayHeartRatePoints
         let biologicalSex = profile.biologicalSex
         let preparedAt = Date()
@@ -12094,6 +12098,7 @@ final class SessionStore: ObservableObject {
                                                      baselineSnapshot,
                                                      maxHR,
                                                      confirmedSleeps,
+                                                     confirmedWorkouts,
                                                      archiveHeartRatePoints,
                                                      biologicalSex,
                                                      preparedAt,
@@ -12104,6 +12109,7 @@ final class SessionStore: ObservableObject {
                                                                     baseline: baselineSnapshot,
                                                                     maxHR: maxHR,
                                                                     confirmedSleeps: confirmedSleeps,
+                                                                    confirmedWorkouts: confirmedWorkouts,
                                                                     archiveHeartRatePoints: archiveHeartRatePoints,
                                                                     biologicalSex: biologicalSex,
                                                                     preparedAt: preparedAt,
@@ -12286,6 +12292,7 @@ final class SessionStore: ObservableObject {
                                                                             baseline: PersonalBaseline,
                                                                             maxHR: Int,
                                                                             confirmedSleeps: [UserConfirmedSleep],
+                                                                            confirmedWorkouts: [UserConfirmedWorkout] = [],
                                                                             recoveredSkinTemperatureDeviationByDay: [Date: Double] = [:],
                                                                             archiveHeartRatePoints: [HistoricalArchive.HeartRatePoint],
                                                                             biologicalSex: AthleteProfile.BiologicalSex,
@@ -12325,6 +12332,7 @@ final class SessionStore: ObservableObject {
                                                 baseline: baseline,
                                                 maxHR: maxHR,
                                                 confirmedSleeps: confirmedSleeps,
+                                                confirmedWorkouts: confirmedWorkouts,
                                                 archiveHeartRatePoints: archiveHeartRatePoints,
                                                 biologicalSex: biologicalSex,
                                                 preparedAt: now,
@@ -12340,6 +12348,7 @@ final class SessionStore: ObservableObject {
         baseline: PersonalBaseline,
         maxHR: Int,
         confirmedSleeps: [UserConfirmedSleep],
+        confirmedWorkouts: [UserConfirmedWorkout] = [],
         recoveredSkinTemperatureDeviationByDay: [Date: Double] = [:],
         archiveHeartRatePoints: [HistoricalArchive.HeartRatePoint],
         biologicalSex: AthleteProfile.BiologicalSex,
@@ -12393,6 +12402,7 @@ final class SessionStore: ObservableObject {
             baseline: baseline,
             maxHR: maxHR,
             confirmedSleeps: confirmedSleeps,
+            confirmedWorkouts: confirmedWorkouts,
             archiveHeartRatePoints: archiveHeartRatePoints,
             biologicalSex: biologicalSex,
             preparedAt: now,
@@ -12408,6 +12418,7 @@ final class SessionStore: ObservableObject {
                                                                      baseline: PersonalBaseline,
                                                                      maxHR: Int,
                                                                      confirmedSleeps: [UserConfirmedSleep],
+                                                                     confirmedWorkouts: [UserConfirmedWorkout] = [],
                                                                      archiveHeartRatePoints: [HistoricalArchive.HeartRatePoint],
                                                                      biologicalSex: AthleteProfile.BiologicalSex,
                                                                      preparedAt: Date,
@@ -12434,7 +12445,10 @@ final class SessionStore: ObservableObject {
             excludedLoadIntervals: confirmedSleeps.map {
                 DateInterval(start: $0.start, end: $0.end)
             },
-            rawSessionCount: sessions.count
+            rawSessionCount: sessions.count,
+            // GAP-09: the persisted active-cycle strain row must fuse the same
+            // logged muscular work as the live hero aggregate.
+            confirmedWorkouts: confirmedWorkouts
         )
         let activeCycleStrain = physiologicalAggregate.hasSavedToday
             ? Metrics.strain(fromTRIMP: physiologicalAggregate.savedTodayTRIMP)
@@ -12449,6 +12463,9 @@ final class SessionStore: ObservableObject {
                                                   maxHR: maxHR,
                                                   napHoursByDay: napHoursByDay,
                                                   respiratoryRateByMorningDay: respiratoryPreparation.respiratoryRateByMorningDay,
+                                                  displaySleepEfficiencyByDay:
+                                                    displaySleepEfficiencyByMorningDay(sleep: sleep,
+                                                                                       calendar: calendar),
                                                   calendar: calendar)
         let respiratoryRows = entries.filter { $0.respiratoryRate != nil }.count
         return DailyMetricRollupPreparation(metrics: cycleAlignedMetrics,
@@ -12469,6 +12486,7 @@ final class SessionStore: ObservableObject {
         baseline: PersonalBaseline,
         maxHR: Int,
         confirmedSleeps: [UserConfirmedSleep],
+        confirmedWorkouts: [UserConfirmedWorkout] = [],
         archiveHeartRatePoints: [HistoricalArchive.HeartRatePoint],
         biologicalSex: AthleteProfile.BiologicalSex,
         preparedAt: Date,
@@ -12512,6 +12530,9 @@ final class SessionStore: ObservableObject {
                 DateInterval(start: $0.start, end: $0.end)
             },
             rawSessionCount: sessions.count,
+            // GAP-09: the persisted active-cycle strain row must fuse the same
+            // logged muscular work as the live hero aggregate.
+            confirmedWorkouts: confirmedWorkouts,
             shouldContinue: shouldContinue
         ) else { return nil }
         let activeCycleStrain = aggregate.hasSavedToday
@@ -12559,6 +12580,9 @@ final class SessionStore: ObservableObject {
             napHoursByDay: napHoursByDay,
             respiratoryRateByMorningDay:
                 respiratory.respiratoryRateByMorningDay,
+            displaySleepEfficiencyByDay:
+                displaySleepEfficiencyByMorningDay(sleep: sleep,
+                                                   calendar: calendar),
             calendar: calendar,
             shouldContinue: shouldContinue
         ) else { return nil }
@@ -12859,8 +12883,9 @@ final class SessionStore: ObservableObject {
         let rest = baseline.restingInt ?? 60
         let maxHR = profile.maxHR
         let confirmedSleeps = cachedConfirmedSleeps
+        let workouts = cachedConfirmedWorkouts
         let delay: TimeInterval = deferred ? 0.12 : 0
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self, source, rest, maxHR, confirmedSleeps, revision, executionShouldContinue] in
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) { [weak self, source, rest, maxHR, confirmedSleeps, workouts, revision, executionShouldContinue] in
             guard executionShouldContinue() else {
                 DispatchQueue.main.async { completion?(false) }
                 return
@@ -12879,6 +12904,7 @@ final class SessionStore: ObservableObject {
                     rest: rest,
                     maxHR: maxHR,
                     confirmedSleeps: confirmedSleeps,
+                    confirmedWorkouts: workouts,
                     shouldContinue: executionShouldContinue
                 )
             }
@@ -18716,12 +18742,14 @@ final class SessionStore: ObservableObject {
                                                     maxHR: Int,
                                                     confirmedSleeps: [UserConfirmedSleep] = [],
                                                     now: Date = Date(),
-                                                    calendar: Calendar = .current) -> [AtriaTrendPoint] {
+                                                    calendar: Calendar = .current,
+                                                    confirmedWorkouts: [UserConfirmedWorkout] = []) -> [AtriaTrendPoint] {
         makeOverviewTrendPointsCancellable(
             sessions: sessions,
             rest: rest,
             maxHR: maxHR,
             confirmedSleeps: confirmedSleeps,
+            confirmedWorkouts: confirmedWorkouts,
             now: now,
             calendar: calendar,
             shouldContinue: { true }
@@ -18733,6 +18761,7 @@ final class SessionStore: ObservableObject {
         rest: Int,
         maxHR: Int,
         confirmedSleeps: [UserConfirmedSleep] = [],
+        confirmedWorkouts: [UserConfirmedWorkout] = [],
         now: Date = Date(),
         calendar: Calendar = .current,
         shouldContinue: @escaping @Sendable () -> Bool
@@ -18848,7 +18877,21 @@ final class SessionStore: ObservableObject {
             let acceptedRestingHRs = orderedRows.compactMap(\.acceptedRestingHR).filter { $0 > 0 }
             guard let sourceID = orderedRows.first?.session.id
                     ?? dailyLoadByDay[day]?.sourceID else { continue }
-            let dayTRIMP = dailyLoadByDay[day]?.trimp ?? 0
+            // GAP-09: trend days fuse the same logged muscular equivalents as
+            // today's aggregate and the frozen rollups — the chart must agree
+            // with the day numbers it summarizes. (A day whose only evidence
+            // is a logged workout with no HR sessions keeps no trend point;
+            // trend rows require session evidence for their identity.)
+            let muscularTRIMP = muscularTRIMPEquivalentTotal(
+                confirmedWorkouts.filter { workout in
+                    calendar.isDate(EventCivilTime.day(
+                        containing: workout.end,
+                        eventTimeZoneIdentifier: workout.eventTimeZoneIdentifier,
+                        outputCalendar: calendar
+                    ), inSameDayAs: day)
+                }
+            )
+            let dayTRIMP = (dailyLoadByDay[day]?.trimp ?? 0) + muscularTRIMP
             result.append(AtriaTrendPoint(
                 id: sourceID,
                 date: day,
@@ -20125,7 +20168,11 @@ final class SessionStore: ObservableObject {
             let strainCoverage = strainElapsed > 0
                 ? min(1, max(0, strainObserved / strainElapsed))
                 : nil
-            let strainValue = Metrics.strain(fromTRIMP: strainTRIMP + archiveTRIMP)
+            // GAP-09: logged muscular work fuses into the same day total in
+            // TRIMP space, before the one saturating 0–21 display map. It is
+            // logged evidence, so it does not change HR coverage accounting.
+            let muscularTRIMP = muscularTRIMPEquivalentTotal(confirmedWorkoutsByDay[day] ?? [])
+            let strainValue = Metrics.strain(fromTRIMP: strainTRIMP + archiveTRIMP + muscularTRIMP)
             let strainPresentation = Metrics.StrainPresentation.resolve(
                 value: strainValue,
                 coverageFraction: strainCoverage,
@@ -20215,6 +20262,18 @@ final class SessionStore: ObservableObject {
     /// scores. score() saturates, so averaging per-session scores under-reports
     /// a day's strain ~2x versus the day-summed strain every other surface
     /// shows — trend charts must use this (2026-07-08 calc-consistency audit).
+    /// GAP-09 fusion, day side: the summed muscular TRIMP-equivalent of a
+    /// day's logged strength receipts. Only effort-complete receipts (a
+    /// non-nil muscularInputScore, i.e. every load-qualified set carried an
+    /// explicit RPE) contribute; an unlogged or partially logged session adds
+    /// exactly zero — muscular load is never inferred from HR or duration.
+    nonisolated static func muscularTRIMPEquivalentTotal(_ workouts: [UserConfirmedWorkout]) -> Double {
+        workouts.reduce(0) {
+            $0 + AtriaStrainLoadModel.muscularTRIMPEquivalent(
+                inputScore: $1.muscularLoadReceipt?.muscularInputScore)
+        }
+    }
+
     nonisolated static func perDayStrains(_ sessions: [SavedSession],
                                           rest: Int,
                                           maxHR: Int,
@@ -21821,12 +21880,28 @@ final class SessionStore: ObservableObject {
         return shouldContinue() ? result : nil
     }
 
+    /// GAP-06: the motion-qualified display efficiency per morning day, from
+    /// the snapshot's confirmed main-sleep nights. Only qualified values are
+    /// present — an HR-only night simply has no efficiency component.
+    nonisolated static func displaySleepEfficiencyByMorningDay(
+        sleep: SleepHistorySnapshot,
+        calendar: Calendar = .current
+    ) -> [Date: Double] {
+        sleep.nights.reduce(into: [:]) { result, night in
+            guard night.confirmed,
+                  !night.isNapEvidence,
+                  let efficiency = night.displaySleepEfficiency else { return }
+            result[calendar.startOfDay(for: night.day)] = efficiency
+        }
+    }
+
     nonisolated static func makeDailyRollupStoreEntries(metrics: [SavedDailyMetric],
                                                                 sessions: [SavedSession] = [],
                                                                 rest: Int = 60,
                                                                 maxHR: Int = 190,
                                                                 napHoursByDay: [Date: Double] = [:],
                                                                 respiratoryRateByMorningDay: [Date: Double]? = nil,
+                                                                displaySleepEfficiencyByDay: [Date: Double] = [:],
                                                                 calendar: Calendar = .current) -> [DailyRollupStoreEntry] {
         let sorted = metrics.sorted { $0.day < $1.day }
         let fallbackRespiratoryRates = respiratoryRateByMorningDay
@@ -21854,6 +21929,28 @@ final class SessionStore: ObservableObject {
             let priorAndCurrentRespiratoryRates = resolvedRespiratoryRates[max(0, index - 27)...index].compactMap { $0 }
             let hrvMilliseconds = metric.hrv.flatMap { $0 > 0 ? Double($0) : nil }
             let resolvedRespRate = resolvedRespiratoryRates[index]
+            let sleepPerformance = metric.sleepNeedSeconds.flatMap { need -> Int? in
+                guard let duration = metric.sleepDuration,
+                      duration > 0,
+                      need > 0 else { return nil }
+                return AtriaSleepBudget.performancePercent(
+                    slept: duration / 3_600,
+                    needed: need / 3_600
+                )
+            }
+            // GAP-06: the night's composite receipt, derived ONLY from frozen
+            // inputs — Sufficiency from the frozen need receipt, Consistency
+            // exactly as persisted on this day's metric (as-of that morning,
+            // never today's rolling window), and motion-qualified efficiency.
+            // Re-minting from the same inputs is deterministic, so a settled
+            // night's stored score can only change through legitimate new
+            // evidence (a user edit, or motion validating an HR-only night).
+            let sleepScore = AtriaSleepScore.provisional(
+                sufficiencyPercent: sleepPerformance.map(Double.init),
+                consistencyPercent: metric.sleepConsistencyPercent.map(Double.init),
+                efficiencyPercent: displaySleepEfficiencyByDay[calendar.startOfDay(for: metric.day)]
+                    .map { $0 * 100 }
+            )
             return DailyRollupStoreEntry(day: metric.day,
                                          recovery: metric.recoveryPercent,
                                          recoverySummary: metric.recoverySummary,
@@ -21861,15 +21958,7 @@ final class SessionStore: ObservableObject {
                                          rhr: metric.restingHR,
                                          sleepSeconds: metric.sleepDuration,
                                          sleepNeedSeconds: metric.sleepNeedSeconds,
-                                         sleepPerformance: metric.sleepNeedSeconds.flatMap { need in
-                                             guard let duration = metric.sleepDuration,
-                                                   duration > 0,
-                                                   need > 0 else { return nil }
-                                             return AtriaSleepBudget.performancePercent(
-                                                 slept: duration / 3_600,
-                                                 needed: need / 3_600
-                                             )
-                                         },
+                                         sleepPerformance: sleepPerformance,
                                          bedtimeMinutes: metric.sleepStart.map { bedtimeMinutes(from: $0, calendar: calendar) },
                                          strain: metric.strain,
                                          strainCoverageFraction: metric.strainCoverageFraction,
@@ -21881,6 +21970,7 @@ final class SessionStore: ObservableObject {
                                             hrv: welfordStat(priorAndCurrent.compactMap { $0.hrv.map(Double.init) }),
                                             resp: welfordStat(priorAndCurrentRespiratoryRates)
                                          ),
+                                         sleepScore: sleepScore,
                                          calendar: calendar)
         }
     }
@@ -21892,6 +21982,7 @@ final class SessionStore: ObservableObject {
         maxHR: Int = 190,
         napHoursByDay: [Date: Double] = [:],
         respiratoryRateByMorningDay: [Date: Double]? = nil,
+        displaySleepEfficiencyByDay: [Date: Double] = [:],
         calendar: Calendar = .current,
         shouldContinue: @escaping @Sendable () -> Bool
     ) -> [DailyRollupStoreEntry]? {
@@ -21947,6 +22038,23 @@ final class SessionStore: ObservableObject {
             let hrvMilliseconds = metric.hrv.flatMap {
                 $0 > 0 ? Double($0) : nil
             }
+            let sleepPerformance = metric.sleepNeedSeconds.flatMap { need -> Int? in
+                guard let duration = metric.sleepDuration,
+                      duration > 0,
+                      need > 0 else { return nil }
+                return AtriaSleepBudget.performancePercent(
+                    slept: duration / 3_600,
+                    needed: need / 3_600
+                )
+            }
+            // GAP-06: the night's composite receipt, derived ONLY from frozen
+            // inputs — identical to the non-cancellable entries builder.
+            let sleepScore = AtriaSleepScore.provisional(
+                sufficiencyPercent: sleepPerformance.map(Double.init),
+                consistencyPercent: metric.sleepConsistencyPercent.map(Double.init),
+                efficiencyPercent: displaySleepEfficiencyByDay[calendar.startOfDay(for: metric.day)]
+                    .map { $0 * 100 }
+            )
             entries.append(DailyRollupStoreEntry(
                 day: metric.day,
                 recovery: metric.recoveryPercent,
@@ -21955,15 +22063,7 @@ final class SessionStore: ObservableObject {
                 rhr: metric.restingHR,
                 sleepSeconds: metric.sleepDuration,
                 sleepNeedSeconds: metric.sleepNeedSeconds,
-                sleepPerformance: metric.sleepNeedSeconds.flatMap { need in
-                    guard let duration = metric.sleepDuration,
-                          duration > 0,
-                          need > 0 else { return nil }
-                    return AtriaSleepBudget.performancePercent(
-                        slept: duration / 3_600,
-                        needed: need / 3_600
-                    )
-                },
+                sleepPerformance: sleepPerformance,
                 bedtimeMinutes: metric.sleepStart.map {
                     bedtimeMinutes(from: $0, calendar: calendar)
                 },
@@ -21982,6 +22082,7 @@ final class SessionStore: ObservableObject {
                     }),
                     resp: welfordStat(priorRates)
                 ),
+                sleepScore: sleepScore,
                 calendar: calendar
             ))
         }
@@ -24401,7 +24502,8 @@ final class SessionStore: ObservableObject {
                                                 },
                                                 rawSessionCount: sessions.count,
                                                 confirmedSleepsRevision:
-                                                    confirmedSleepsRevision)
+                                                    confirmedSleepsRevision,
+                                                confirmedWorkouts: cachedConfirmedWorkouts)
         cachedHomeSavedAggregate = aggregate
         return aggregate
     }
@@ -24467,7 +24569,8 @@ final class SessionStore: ObservableObject {
                                                cycleStart: Date? = nil,
                                                excludedLoadIntervals: [DateInterval] = [],
                                                rawSessionCount: Int? = nil,
-                                               confirmedSleepsRevision: Int = 0)
+                                               confirmedSleepsRevision: Int = 0,
+                                               confirmedWorkouts: [UserConfirmedWorkout] = [])
         -> HomeSavedAggregate {
         let day = cycleStart ?? calendar.startOfDay(for: now)
         let dayEnd = now
@@ -24482,7 +24585,14 @@ final class SessionStore: ObservableObject {
                 subtotal + session.dailyLoadTRIMP(rest: rest, max: maxHR, within: interval)
             }
         }
-        let savedTodayTRIMP = canonicalSavedTRIMP + loadIntervals.reduce(0) {
+        // GAP-09: logged muscular work from workouts completed inside this
+        // cycle fuses into the same day total in TRIMP space, before the one
+        // saturating 0–21 display map — so today's number and the frozen
+        // rollup agree on what a strength-heavy day costs.
+        let muscularTRIMP = muscularTRIMPEquivalentTotal(
+            confirmedWorkouts.filter { $0.end > day && $0.end <= dayEnd }
+        )
+        let savedTodayTRIMP = canonicalSavedTRIMP + muscularTRIMP + loadIntervals.reduce(0) {
             $0 + archiveOnlyTRIMP(
                 archiveHeartRatePoints,
                 excludingCoverageFrom: todaySessions,
@@ -24574,6 +24684,7 @@ final class SessionStore: ObservableObject {
         excludedLoadIntervals: [DateInterval] = [],
         rawSessionCount: Int? = nil,
         confirmedSleepsRevision: Int = 0,
+        confirmedWorkouts: [UserConfirmedWorkout] = [],
         shouldContinue: () -> Bool
     ) -> HomeSavedAggregate? {
         guard shouldContinue() else { return nil }
@@ -24641,7 +24752,13 @@ final class SessionStore: ObservableObject {
                 activeTotal = max(0, session.strapStepResearchCount ?? 0)
             }
         }
-        let savedTodayTRIMP = canonicalTRIMP + archiveTRIMP
+        // GAP-09: logged muscular work from workouts completed inside this
+        // cycle fuses into the same day total in TRIMP space, before the one
+        // saturating 0–21 display map — identical to the non-cancellable path.
+        let muscularTRIMP = muscularTRIMPEquivalentTotal(
+            confirmedWorkouts.filter { $0.end > day && $0.end <= now }
+        )
+        let savedTodayTRIMP = canonicalTRIMP + archiveTRIMP + muscularTRIMP
         return shouldContinue() ? HomeSavedAggregate(
             day: day,
             rest: rest,
@@ -31568,6 +31685,11 @@ final class SessionStore: ObservableObject {
         merged.activeEnergyKilocalories = workout.activeEnergyKilocalories
         merged.activeEnergyConfidence = workout.activeEnergyConfidence
         merged.zoneSeconds = workout.zoneSeconds
+        // GAP-03: the frozen per-workout zone boundaries are part of the
+        // completed record's identity — a step-evidence merge or type edit
+        // must never drop them, or a later profile change silently rewrites
+        // the workout's zone ranges.
+        merged.zoneBoundaries = workout.zoneBoundaries
         merged.workoutSteps = workout.workoutSteps
         merged.workoutStepsAreEstimated = workout.workoutStepsAreEstimated
         merged.workoutStepsCapturedAt = workout.workoutStepsCapturedAt
@@ -32049,6 +32171,12 @@ final class SessionStore: ObservableObject {
         cachedConfirmedWorkouts = sorted
         backupCanonicalRevision &+= 1
         confirmedWorkoutsRevision &+= 1
+        // GAP-09: workouts now contribute muscular load to the day aggregate,
+        // so a workout mutation must invalidate the cached aggregate — a
+        // freshly logged strength session has to reach today's Strain without
+        // waiting for an unrelated invalidation.
+        cachedHomeSavedAggregate = nil
+        cachedTodayTRIMP = nil
         // This is the authoritative mutation boundary. Every caller—including
         // live-workout completion and review confirmation—must publish Activity
         // immediately after the atomic write, not wait for an unrelated metric.
@@ -32281,6 +32409,7 @@ final class SessionStore: ObservableObject {
         renamed.activitySubtype = old.activitySubtype
         renamed.exerciseNames = old.exerciseNames
         renamed.strengthSets = old.strengthSets
+        renamed.muscularLoadReceipt = old.muscularLoadReceipt
         renamed.excludedIntervals = old.excludedIntervals
         renamed.reviewSource = old.reviewSource
         renamed.reviewCandidateID = old.reviewCandidateID
@@ -32289,6 +32418,9 @@ final class SessionStore: ObservableObject {
         renamed.activeEnergyKilocalories = old.activeEnergyKilocalories
         renamed.activeEnergyConfidence = old.activeEnergyConfidence
         renamed.zoneSeconds = old.zoneSeconds
+        // GAP-03: a rename must never drop the frozen zone boundaries (and a
+        // relabel of a strength workout must never drop its muscular receipt).
+        renamed.zoneBoundaries = old.zoneBoundaries
         renamed.workoutSteps = old.workoutSteps
         renamed.workoutStepsAreEstimated = old.workoutStepsAreEstimated
         renamed.workoutStepsCapturedAt = old.workoutStepsCapturedAt
@@ -32466,10 +32598,17 @@ final class SessionStore: ObservableObject {
 
         let strain = Metrics.strain(fromTRIMP: window.trimp(rest: rest, max: maxHR))
         let activeEnergy = window.activeCalories(rest: rest, profile: profile)
+        // GAP-03: recovered HR evidence repairs the trace, not the zone
+        // identity. When the workout froze its boundaries at completion, the
+        // rehydrated zone seconds are computed with those same values; only a
+        // legacy record (no freeze) falls back to the current profile, and
+        // then the freeze is minted from the values actually used.
+        let zoneRest = old.zoneBoundaries?.restingHR ?? rest
+        let zoneMax = old.zoneBoundaries?.maxHR ?? maxHR
         let zoneSummary = Metrics.maxHeartRateZoneSeconds(
             active.points.map { (t: $0.t, bpm: $0.bpm) },
-            maxHR: maxHR,
-            restingHR: rest
+            maxHR: zoneMax,
+            restingHR: zoneRest
         )
 
         let replacement = UserConfirmedWorkout(
@@ -32507,6 +32646,9 @@ final class SessionStore: ObservableObject {
                 ? (profile.hasEnergyProfile ? nil : "needs_profile")
                 : "estimate",
             zoneSeconds: zoneSummary.isEmpty ? nil : zoneSummary.storage,
+            zoneBoundaries: old.zoneBoundaries
+                ?? (zoneSummary.isEmpty ? nil : AtriaHRRZoneBoundaries(restingHR: zoneRest,
+                                                                       maxHR: zoneMax)),
             eventTimeZoneIdentifier: old.eventTimeZoneIdentifier,
             workoutSteps: old.workoutSteps,
             workoutStepsAreEstimated: old.workoutStepsAreEstimated,
@@ -32765,10 +32907,16 @@ final class SessionStore: ObservableObject {
                 let editTRIMP = window.trimp(rest: rest, max: maxHR)
                 let editStrain = Metrics.strain(fromTRIMP: editTRIMP)
                 let editActiveEnergy = window.activeCalories(rest: rest, profile: profile)
+                // GAP-03: recomputing an edited window's zone seconds must use
+                // the workout's frozen boundaries when they exist — a bound
+                // edit is not permission to rewrite the zone identity with
+                // today's profile values.
+                let editZoneRest = old.zoneBoundaries?.restingHR ?? rest
+                let editZoneMax = old.zoneBoundaries?.maxHR ?? maxHR
                 let editZoneSummary = Metrics.maxHeartRateZoneSeconds(
                     activeProjection.points.map { (t: $0.t, bpm: $0.bpm) },
-                    maxHR: maxHR,
-                    restingHR: rest
+                    maxHR: editZoneMax,
+                    restingHR: editZoneRest
                 )
                 let workoutSource = "live_workout_window"
                 let confidence = readiness.ready ? "live_window_user_confirmed" :
@@ -32815,7 +32963,8 @@ final class SessionStore: ObservableObject {
                 zoneSeconds: editZoneSummary.isEmpty ? nil : editZoneSummary.storage,
                     zoneBoundaries: editZoneSummary.isEmpty
                         ? nil
-                        : AtriaHRRZoneBoundaries(restingHR: rest, maxHR: maxHR),
+                        : (old.zoneBoundaries
+                            ?? AtriaHRRZoneBoundaries(restingHR: editZoneRest, maxHR: editZoneMax)),
                     eventTimeZoneIdentifier: old.eventTimeZoneIdentifier ?? TimeZone.current.identifier,
                     workoutSteps: nil,
                     workoutStepsAreEstimated: nil,
@@ -38735,6 +38884,23 @@ final class SessionStore: ObservableObject {
         }
         let eventTimeZoneIdentifier = previouslySaved?.eventTimeZoneIdentifier
             ?? TimeZone.current.identifier
+        // A bound edit mints a new record id, so the id-keyed carry in
+        // saveConfirmedSleeps can never see the original frozen Sleep Need.
+        // Editing a window must preserve the already-frozen receipt — only a
+        // genuinely new main sleep may mint one at settlement. Converting a
+        // sleep to a nap drops the night receipt on purpose: a nap does not
+        // own a nightly need.
+        let carriedNeedSeconds: TimeInterval?
+        let carriedFrozenNeed: AtriaSleepBudget.FrozenNeed?
+        if !isNap,
+           let previouslySaved,
+           Self.confirmedSleepIsPhysiologicalMainSleep(previouslySaved) {
+            carriedNeedSeconds = previouslySaved.sleepNeedSeconds
+            carriedFrozenNeed = previouslySaved.frozenSleepNeed
+        } else {
+            carriedNeedSeconds = nil
+            carriedFrozenNeed = nil
+        }
         let staged = UserConfirmedSleep(id: id,
                                         createdAt: Date(),
                                         start: start,
@@ -38760,6 +38926,8 @@ final class SessionStore: ObservableObject {
                                         motionValidated: motionValidated,
                                         stageSegments: stageSegments.isEmpty ? nil : stageSegments,
                                         eventTimeZoneIdentifier: eventTimeZoneIdentifier,
+                                        sleepNeedSeconds: carriedNeedSeconds,
+                                        frozenSleepNeed: carriedFrozenNeed,
                                         // An edit re-mints the ID, so the answered "which is your
                                         // main sleep?" choice must ride along or the day silently
                                         // re-prompts. A nap can never be a day primary; the save
@@ -40711,7 +40879,12 @@ final class SessionStore: ObservableObject {
                 shouldContinue: shouldContinue
               ) else { return nil }
 
-        var existingNeedByID: [String: TimeInterval] = [:]
+        // GAP-01: the carry preserves the full itemized FrozenNeed receipt
+        // when the stored record has one — a same-id rebuild must never
+        // downgrade a receipt to a bare scalar, or receipt-only surfaces
+        // (Sufficiency, ledger, day history) go blank while the chart still
+        // plots the line.
+        var existingNeedByID: [String: (need: TimeInterval, receipt: AtriaSleepBudget.FrozenNeed?)] = [:]
         var existingSleepIDs = Set<String>()
         existingNeedByID.reserveCapacity(authoritativeCurrent.count)
         existingSleepIDs.reserveCapacity(authoritativeCurrent.count)
@@ -40719,7 +40892,7 @@ final class SessionStore: ObservableObject {
             if index.isMultiple(of: 32), !shouldContinue() { return nil }
             existingSleepIDs.insert(sleep.id)
             if let need = sleep.sleepNeedSeconds, need > 0 {
-                existingNeedByID[sleep.id] = need
+                existingNeedByID[sleep.id] = (need: need, receipt: sleep.frozenSleepNeed)
             }
         }
         var needPreservingRebase: [UserConfirmedSleep] = []
@@ -40728,9 +40901,12 @@ final class SessionStore: ObservableObject {
         for (index, sleep) in rebased.enumerated() {
             if index.isMultiple(of: 32), !shouldContinue() { return nil }
             let preserved: UserConfirmedSleep
-            if sleep.sleepNeedSeconds == nil,
-               let existingNeed = existingNeedByID[sleep.id] {
-                preserved = sleep.replacingSleepNeedSeconds(existingNeed)
+            if sleep.frozenSleepNeed == nil,
+               let receipt = existingNeedByID[sleep.id]?.receipt {
+                preserved = sleep.replacingFrozenSleepNeed(receipt)
+            } else if sleep.sleepNeedSeconds == nil,
+               let existing = existingNeedByID[sleep.id] {
+                preserved = sleep.replacingSleepNeedSeconds(existing.need)
             } else {
                 preserved = sleep
             }
@@ -43452,11 +43628,16 @@ final class SessionStore: ObservableObject {
         }
         let dayEnd = calendar.date(byAdding: .day, value: 1, to: day) ?? day
         let interval = DateInterval(start: day, end: dayEnd)
-        let value = canonicalSessions()
+        let cardio = canonicalSessions()
             .filter { $0.end > day && $0.start < dayEnd }
             .reduce(0) {
                 $0 + $1.dailyLoadTRIMP(rest: rest, max: max, within: interval)
             }
+        // GAP-09: the widget's day TRIMP fuses logged muscular work exactly
+        // like the hero aggregate, so both surfaces show one day Strain.
+        let value = cardio + Self.muscularTRIMPEquivalentTotal(
+            cachedConfirmedWorkouts.filter { $0.end > day && $0.end < dayEnd }
+        )
         cachedTodayTRIMP = (rest: rest, maxHR: max, day: day, value: value)
         return value
     }
@@ -51613,6 +51794,8 @@ final class SessionStore: ObservableObject {
             rest: baseline.restingInt ?? 60,
             maxHR: profile.maxHR,
             napHoursByDay: Self.napHoursByMorningDay(sleep: sleep, calendar: calendar),
+            displaySleepEfficiencyByDay:
+                Self.displaySleepEfficiencyByMorningDay(sleep: sleep, calendar: calendar),
             calendar: calendar
         )
         guard var rollup = preparedRollups.first(where: {
@@ -54647,10 +54830,22 @@ struct AtriaSleepConsistency: Equatable {
 
     struct NightDeviation: Equatable, Identifiable {
         let id: String
+        /// Wake day — lets consumers label rows and identify the latest night
+        /// without re-deriving anything from a parallel nights array.
+        let day: Date
         let bedtimeMinutes: Int
         let wakeMinutes: Int
         let bedtimeDeviationMinutes: Int
         let wakeDeviationMinutes: Int
+    }
+
+    /// Optional planner-derived target window (GAP-02): median qualified wake
+    /// time minus the configured sleep target, expressed in the same anchored
+    /// civil minutes as `NightDeviation`, so the schedule visual can draw it
+    /// without a parallel calculation.
+    struct RecommendedWindow: Equatable {
+        let bedtimeMinutes: Int
+        let wakeMinutes: Int
     }
 
     let bedtimeRegularity: Int?
@@ -54660,6 +54855,12 @@ struct AtriaSleepConsistency: Equatable {
     let typicalBedtimeMinutes: Int?
     let typicalWakeTimeMinutes: Int?
     let deviations: [NightDeviation]
+    let recommendedWindow: RecommendedWindow?
+
+    /// The newest qualified night — every consumer highlights the same row.
+    var latestNight: NightDeviation? {
+        deviations.max { $0.day < $1.day }
+    }
 
     var isQualified: Bool { combinedPercent != nil }
     var displayText: String { combinedPercent.map { "\($0)%" } ?? "--" }
@@ -54680,19 +54881,30 @@ struct AtriaSleepConsistency: Equatable {
         return "Variable bed or wake timing; a steadier schedule will improve this."
     }
 
-    static func result(from nights: [SleepHistorySnapshot.Night]) -> Self {
+    static func result(from nights: [SleepHistorySnapshot.Night],
+                       targetSleepHours: Double? = nil) -> Self {
         let timings = nights
             .filter { $0.confirmed && !$0.isNapEvidence }
-            .compactMap { night -> (id: String, bedtime: Int, wake: Int)? in
+            .compactMap { night -> (id: String, day: Date, bedtime: Int, wake: Int)? in
                 guard let start = night.start, let end = night.end, end > start else { return nil }
+                // GAP-02 fail-closed timezone rule: a consistency civil time is
+                // only trustworthy in the sleep event's own recorded zone. A
+                // legacy record without one cannot prove its civil bed/wake
+                // times, and interpreting it in the phone's current zone would
+                // silently shift old nights after travel — so it does not
+                // qualify. (Every record written since 2026-07-13 carries the
+                // identifier.)
+                guard let identifier = night.eventTimeZoneIdentifier,
+                      let timeZone = TimeZone(identifier: identifier) else { return nil }
                 var calendar = Calendar(identifier: .gregorian)
-                calendar.timeZone = TimeZone(identifier: night.eventTimeZoneIdentifier ?? "") ?? .current
+                calendar.timeZone = timeZone
                 let startParts = calendar.dateComponents([.hour, .minute], from: start)
                 let endParts = calendar.dateComponents([.hour, .minute], from: end)
                 let bedtime = (startParts.hour ?? 0) * 60 + (startParts.minute ?? 0)
                 let wake = (endParts.hour ?? 0) * 60 + (endParts.minute ?? 0)
                 // Anchor both timings at the night that starts in the evening.
                 return (night.id,
+                        night.day,
                         bedtime < 12 * 60 ? bedtime + 24 * 60 : bedtime,
                         wake < 12 * 60 ? wake + 24 * 60 : wake)
             }
@@ -54705,7 +54917,8 @@ struct AtriaSleepConsistency: Equatable {
                         qualifiedNightCount: timings.count,
                         typicalBedtimeMinutes: nil,
                         typicalWakeTimeMinutes: nil,
-                        deviations: [])
+                        deviations: [],
+                        recommendedWindow: nil)
         }
         let bedtimes = timings.map(\.bedtime)
         let wakes = timings.map(\.wake)
@@ -54713,6 +54926,7 @@ struct AtriaSleepConsistency: Equatable {
         let typicalWake = Int((Double(wakes.reduce(0, +)) / Double(wakes.count)).rounded())
         let deviations = timings.map {
             NightDeviation(id: $0.id,
+                           day: $0.day,
                            bedtimeMinutes: $0.bedtime,
                            wakeMinutes: $0.wake,
                            bedtimeDeviationMinutes: abs($0.bedtime - typicalBedtime),
@@ -54724,16 +54938,27 @@ struct AtriaSleepConsistency: Equatable {
         }
         let bedtimeRegularity = regularity(bedtimes, typical: typicalBedtime)
         let wakeRegularity = regularity(wakes, typical: typicalWake)
+        // Same shape as the planner's live nudge: median qualified wake time
+        // minus the configured target. Exposed as data so the schedule visual
+        // never maintains a parallel calculation.
+        let recommendedWindow = targetSleepHours.map { target -> RecommendedWindow in
+            let sortedWakes = wakes.sorted()
+            let medianWake = sortedWakes[sortedWakes.count / 2]
+            let targetMinutes = Int((min(max(target, 6), 10) * 60).rounded())
+            return RecommendedWindow(bedtimeMinutes: medianWake - targetMinutes,
+                                     wakeMinutes: medianWake)
+        }
         return Self(bedtimeRegularity: bedtimeRegularity,
                     wakeTimeRegularity: wakeRegularity,
                     combinedPercent: Int((Double(bedtimeRegularity + wakeRegularity) / 2).rounded()),
                     qualifiedNightCount: timings.count,
                     typicalBedtimeMinutes: typicalBedtime,
                     typicalWakeTimeMinutes: typicalWake,
-                    deviations: deviations)
+                    deviations: deviations,
+                    recommendedWindow: recommendedWindow)
     }
 
-    private static func clockText(_ minute: Int?) -> String {
+    static func clockText(_ minute: Int?) -> String {
         guard let minute else { return "--" }
         let normalized = ((minute % 1_440) + 1_440) % 1_440
         let hour24 = normalized / 60
@@ -55632,7 +55857,9 @@ struct SessionDetail: View {
                     .atriaCard(cornerRadius: 22, emphasis: .soft)
 
                     if summary.metricsComplete {
-                        TimeInZoneView(rows: summary.zoneRows, total: summary.zoneTotal)
+                        TimeInZoneView(rows: summary.zoneRows,
+                                       total: summary.zoneTotal,
+                                       boundaries: summary.zoneBoundaries)
                             .padding()
                             .atriaCard(cornerRadius: 22, emphasis: .soft)
                     } else {
@@ -55695,6 +55922,7 @@ private struct SessionDetailSummary {
     let strainText: String
     let zoneRows: [TimeInZoneRow]
     let zoneTotal: Double
+    let zoneBoundaries: AtriaHRRZoneBoundaries?
     let metricsComplete: Bool
     let coverageText: String
 
@@ -55721,6 +55949,11 @@ private struct SessionDetailSummary {
         let zoneMap: [HRZone: TimeInterval] = metricsComplete
             ? session.timeInZone(maxHR: resolvedMaxHR, restingHR: rest)
             : [:]
+        // GAP-03: surface the exact HRR boundaries these rows were computed
+        // with, so the zone labels can show real BPM ranges.
+        zoneBoundaries = metricsComplete
+            ? AtriaHRRZoneBoundaries(restingHR: rest, maxHR: resolvedMaxHR)
+            : nil
         zoneRows = HRZone.allCases.compactMap { zone in
                 guard let seconds = zoneMap[zone], seconds > 0 else { return nil }
                 return TimeInZoneRow(zone: zone, seconds: seconds)

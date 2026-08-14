@@ -1012,7 +1012,8 @@ struct AtriaHealthScreen: View {
 
             // Real bed-to-wake windows, now explicitly explained with their
             // typical schedule and spread instead of a decorative bar stack.
-            AtriaSleepConsistencyStrip(nights: vitalsStore.state.sleepHistorySnapshot.nights)
+            AtriaSleepConsistencyStrip(nights: vitalsStore.state.sleepHistorySnapshot.nights,
+                                       targetSleepHours: sleepGoalHours)
         }
         // The screen already provides its own horizontal rhythm. Keeping an
         // additional container here made the metric tiles, stage evidence and
@@ -1037,16 +1038,26 @@ struct AtriaHealthScreen: View {
     /// qualified. Overnight load stays out until its model is validated.
     private var provisionalSleepScore: AtriaSleepScore? {
         guard let currentSleep = currentMainSleep else { return nil }
+        // GAP-06: a settled night's persisted receipt is authoritative — it
+        // was derived from that morning's frozen inputs (frozen need,
+        // consistency as-of that morning, motion-qualified efficiency) and
+        // cannot drift as later nights move the rolling consistency window.
+        // Only a night with no stored receipt yet (the in-progress cycle
+        // before its rollup lands) computes live.
+        if let stored = vitalsStore.state.dailyRollupHistory
+            .first(where: { Calendar.current.isDate($0.day, inSameDayAs: currentSleep.day) })?
+            .sleepScore {
+            return stored.score == nil ? nil : stored
+        }
         let sufficiency = sleepPerformancePercentUnified.map(Double.init)
         let consistency = AtriaSleepConsistency
             .result(from: vitalsStore.state.sleepHistorySnapshot.nights)
             .combinedPercent
             .map(Double.init)
         let efficiency = currentSleep.displaySleepEfficiency.map { $0 * 100 }
-        let score = AtriaSleepScore.make(sufficiencyPercent: sufficiency,
-                                         consistencyPercent: consistency,
-                                         efficiencyPercent: efficiency,
-                                         validatedOvernightLoadPercent: nil)
+        let score = AtriaSleepScore.provisional(sufficiencyPercent: sufficiency,
+                                                consistencyPercent: consistency,
+                                                efficiencyPercent: efficiency)
         // Below the minimum present components the composite is withheld and
         // Sleep Sufficiency remains the primary measure — don't mount the card.
         return score.score == nil ? nil : score
@@ -2351,6 +2362,50 @@ struct AtriaSleepStressProjection: Equatable {
     static let unavailable = Self(samples: [], heartRateSamples: [], availability: .unavailable)
     static let loading = Self(samples: [], heartRateSamples: [], availability: .loading)
 
+    struct HighPeriod: Equatable, Identifiable {
+        let start: Date
+        let end: Date
+
+        var id: Date { start }
+        /// Samples are five-minute observed buckets; include the final bucket
+        /// so a single reading reads as a five-minute period, not zero time.
+        var duration: TimeInterval { end.timeIntervalSince(start) + 5 * 60 }
+    }
+
+    /// GAP-07: contiguous score ≥ 2 buckets merged into high-load periods.
+    /// Adjacent five-minute buckets (≤ 6 min apart) merge into one period; a
+    /// missing-wear gap is never bridged into a longer period. Extracted from
+    /// the card so both chart modes and the timing caption mark the exact same
+    /// timestamps — and so the rule is directly testable.
+    static func highPeriods(samples: [Sample]) -> [HighPeriod] {
+        let highSamples = samples
+            .filter { $0.score >= 2 }
+            .sorted { $0.date < $1.date }
+        guard let first = highSamples.first else { return [] }
+
+        var result: [HighPeriod] = []
+        var start = first.date
+        var end = first.date
+        for sample in highSamples.dropFirst() {
+            if sample.date.timeIntervalSince(end) <= 6 * 60 {
+                end = sample.date
+            } else {
+                result.append(HighPeriod(start: start, end: end))
+                start = sample.date
+                end = sample.date
+            }
+        }
+        result.append(HighPeriod(start: start, end: end))
+        return result
+    }
+
+    /// The heart-rate buckets that sit inside high-load buckets — the HR mode
+    /// marks these, so high periods align timestamp-for-timestamp across modes.
+    var highHeartRateSamples: [HeartRateSample] {
+        let highDates = Set(samples.filter { $0.score >= 2 }.map(\.date))
+        return heartRateSamples.filter { highDates.contains($0.date) }
+    }
+
     static func make(points: [HistoricalArchive.HeartRatePoint],
                      sleepStart: Date,
                      sleepEnd: Date,
@@ -2497,16 +2552,6 @@ struct AtriaSleepStressCard: View {
     private enum Mode: String, CaseIterable, Identifiable { case heartRate = "Heart rate", load = "HR load"; var id: String { rawValue } }
     @State private var mode: Mode = .heartRate
 
-    private struct HighPeriod: Identifiable {
-        let start: Date
-        let end: Date
-
-        var id: Date { start }
-        /// Samples are five-minute observed buckets; include the final bucket
-        /// so a single reading reads as a five-minute period, not zero time.
-        var duration: TimeInterval { end.timeIntervalSince(start) + 5 * 60 }
-    }
-
     private var points: [AtriaStressTimelinePoint] {
         // Ambient stress trace: brief hiccups (≤5 min) stay one smooth run; a
         // genuine dropout still breaks and stays blank. Strict fact-continuity
@@ -2543,28 +2588,8 @@ struct AtriaSleepStressCard: View {
         }
     }
 
-    private var highPeriods: [HighPeriod] {
-        let highSamples = projection.samples
-            .filter { $0.score >= 2 }
-            .sorted { $0.date < $1.date }
-        guard let first = highSamples.first else { return [] }
-
-        var result: [HighPeriod] = []
-        var start = first.date
-        var end = first.date
-        for sample in highSamples.dropFirst() {
-            // Consecutive real five-minute buckets form one period. Gaps stay
-            // gaps — we do not bridge missing wear into a longer high period.
-            if sample.date.timeIntervalSince(end) <= 6 * 60 {
-                end = sample.date
-            } else {
-                result.append(HighPeriod(start: start, end: end))
-                start = sample.date
-                end = sample.date
-            }
-        }
-        result.append(HighPeriod(start: start, end: end))
-        return result
+    private var highPeriods: [AtriaSleepStressProjection.HighPeriod] {
+        AtriaSleepStressProjection.highPeriods(samples: projection.samples)
     }
 
     private var highDuration: TimeInterval {
@@ -2651,6 +2676,15 @@ struct AtriaSleepStressCard: View {
                                 .foregroundStyle(.linearGradient(colors: [.red, .orange],
                                                                   startPoint: .bottom,
                                                                   endPoint: .top))
+                        }
+                        // GAP-07: high-load buckets are marked on the HR trace
+                        // too, at exactly the timestamps the load mode marks —
+                        // switching modes must never move a high period.
+                        ForEach(projection.highHeartRateSamples) { sample in
+                            PointMark(x: .value("Time", sample.date),
+                                      y: .value("BPM", sample.bpm))
+                                .symbolSize(28)
+                                .foregroundStyle(.orange)
                         }
                     }
                 }
@@ -2793,49 +2827,60 @@ struct AtriaSleepStressCard: View {
 /// but makes the times and the consistency verdict explicit.
 private struct AtriaSleepConsistencyStrip: View {
     let nights: [SleepHistorySnapshot.Night]
+    var targetSleepHours: Double? = nil
 
     private var consistency: AtriaSleepConsistency {
-        AtriaSleepConsistency.result(from: nights)
+        AtriaSleepConsistency.result(from: nights, targetSleepHours: targetSleepHours)
     }
 
     // Night-centric axis: anchored at 18:00, spanning 18h to 12:00 next day.
-    private static let anchorHour: Double = 18
-    private static let spanHours: Double = 18
+    // The engine's anchored civil minutes map directly: 18:00 → 1080,
+    // next-day noon → 2160.
+    private static let axisStartMinutes = 18 * 60
+    private static let axisSpanMinutes = 18 * 60
 
     private struct Row: Identifiable {
         let id: String
         let dayLabel: String
         let startFrac: CGFloat
         let endFrac: CGFloat
-        let startHour: Double
-        let endHour: Double
+        let isLatest: Bool
     }
 
+    private func fraction(_ anchoredMinutes: Int) -> CGFloat? {
+        let rel = anchoredMinutes - Self.axisStartMinutes
+        guard rel >= 0, rel <= Self.axisSpanMinutes else { return nil }
+        return CGFloat(rel) / CGFloat(Self.axisSpanMinutes)
+    }
+
+    // GAP-02 single authority: rows are the engine's own qualified deviations —
+    // the exact set the score was computed from — so the drawn schedule can
+    // never include a night the number excluded, or cover a different window.
     private var rows: [Row] {
-        nights.prefix(14).compactMap { night in
-            guard let start = night.start, let end = night.end, end > start else { return nil }
-            var calendar = Calendar.current
-            if let identifier = night.eventTimeZoneIdentifier,
-               let timeZone = TimeZone(identifier: identifier) {
-                calendar.timeZone = timeZone
+        let latestID = consistency.latestNight?.id
+        return consistency.deviations
+            .sorted { $0.day > $1.day }
+            .compactMap { night in
+                guard let startFrac = fraction(night.bedtimeMinutes),
+                      let endFrac = fraction(night.wakeMinutes),
+                      endFrac > startFrac else { return nil }
+                return Row(id: night.id,
+                           dayLabel: night.day.formatted(.dateTime.weekday(.narrow)),
+                           startFrac: startFrac,
+                           endFrac: endFrac,
+                           isLatest: night.id == latestID)
             }
-            func relativeHour(_ date: Date) -> Double? {
-                let comps = calendar.dateComponents([.hour, .minute], from: date)
-                let hour = Double(comps.hour ?? 0) + Double(comps.minute ?? 0) / 60
-                var rel = (hour - Self.anchorHour).truncatingRemainder(dividingBy: 24)
-                if rel < 0 { rel += 24 }
-                guard rel <= Self.spanHours else { return nil }   // outside the night window (daytime nap)
-                return rel
-            }
-            guard let startHour = relativeHour(start),
-                  let endHour = relativeHour(end),
-                  endHour > startHour else { return nil }
-            return Row(id: night.id,
-                       dayLabel: night.day.formatted(.dateTime.weekday(.narrow)),
-                       startFrac: CGFloat(startHour / Self.spanHours),
-                       endFrac: CGFloat(endHour / Self.spanHours),
-                       startHour: startHour,
-                       endHour: endHour)
+    }
+
+    private var latestNightText: String? {
+        consistency.latestNight.map {
+            "Last night \(AtriaSleepConsistency.clockText($0.bedtimeMinutes)) – \(AtriaSleepConsistency.clockText($0.wakeMinutes))"
+        }
+    }
+
+    private var recommendedWindowText: String? {
+        consistency.recommendedWindow.map {
+            "Aim for \(AtriaSleepConsistency.clockText($0.bedtimeMinutes)) – \(AtriaSleepConsistency.clockText($0.wakeMinutes))"
         }
     }
 
@@ -2867,6 +2912,15 @@ private struct AtriaSleepConsistencyStrip: View {
                         Text("Usually \(typicalBedtime) – \(typicalWakeTime)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                        if let latestNightText {
+                            Text(latestNightText)
+                                .font(.caption2.weight(.semibold))
+                        }
+                        if let recommendedWindowText {
+                            Text(recommendedWindowText)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 Spacer(minLength: 0)
@@ -2889,29 +2943,50 @@ private struct AtriaSleepConsistencyStrip: View {
 
                 GeometryReader { geo in
                     let plotWidth = geo.size.width - 28
-                    VStack(spacing: 5) {
-                        ForEach(rows) { row in
-                            HStack(spacing: 7) {
-                                Text(row.dayLabel)
-                                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: 21, alignment: .leading)
-                                ZStack(alignment: .leading) {
-                                    Capsule(style: .continuous)
-                                        .fill(Color.primary.opacity(0.05))
-                                        .frame(height: 11)
-                                    Capsule(style: .continuous)
-                                        .fill(consistencyVerdict.tint.opacity(0.84))
-                                        .frame(width: max(3, (row.endFrac - row.startFrac) * plotWidth), height: 11)
-                                        .offset(x: row.startFrac * plotWidth)
-                                    Circle()
-                                        .fill(consistencyVerdict.tint)
-                                        .frame(width: 7, height: 7)
-                                        .offset(x: row.startFrac * plotWidth - 3.5)
-                                    Circle()
-                                        .fill(consistencyVerdict.tint)
-                                        .frame(width: 7, height: 7)
-                                        .offset(x: row.endFrac * plotWidth - 3.5)
+                    ZStack(alignment: .topLeading) {
+                        // The typical bed→wake window sits behind every row so
+                        // each night's deviation is readable against the same
+                        // reference the score measures it from.
+                        if let bedFrac = consistency.typicalBedtimeMinutes.flatMap(fraction),
+                           let wakeFrac = consistency.typicalWakeTimeMinutes.flatMap(fraction),
+                           wakeFrac > bedFrac {
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(consistencyVerdict.tint.opacity(0.10))
+                                .frame(width: max(3, (wakeFrac - bedFrac) * plotWidth))
+                                .offset(x: 28 + bedFrac * plotWidth)
+                        }
+                        VStack(spacing: 5) {
+                            ForEach(rows) { row in
+                                HStack(spacing: 7) {
+                                    Text(row.dayLabel)
+                                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                                        .foregroundStyle(row.isLatest ? .primary : .secondary)
+                                        .frame(width: 21, alignment: .leading)
+                                    ZStack(alignment: .leading) {
+                                        Capsule(style: .continuous)
+                                            .fill(Color.primary.opacity(0.05))
+                                            .frame(height: 11)
+                                        Capsule(style: .continuous)
+                                            .fill(consistencyVerdict.tint.opacity(row.isLatest ? 1.0 : 0.55))
+                                            .frame(width: max(3, (row.endFrac - row.startFrac) * plotWidth), height: 11)
+                                            .offset(x: row.startFrac * plotWidth)
+                                            .overlay(alignment: .leading) {
+                                                if row.isLatest {
+                                                    Capsule(style: .continuous)
+                                                        .strokeBorder(Color.primary.opacity(0.5), lineWidth: 1)
+                                                        .frame(width: max(3, (row.endFrac - row.startFrac) * plotWidth), height: 11)
+                                                        .offset(x: row.startFrac * plotWidth)
+                                                }
+                                            }
+                                        Circle()
+                                            .fill(consistencyVerdict.tint)
+                                            .frame(width: 7, height: 7)
+                                            .offset(x: row.startFrac * plotWidth - 3.5)
+                                        Circle()
+                                            .fill(consistencyVerdict.tint)
+                                            .frame(width: 7, height: 7)
+                                            .offset(x: row.endFrac * plotWidth - 3.5)
+                                    }
                                 }
                             }
                         }
@@ -2949,28 +3024,8 @@ private struct AtriaSleepConsistencyStrip: View {
         .atriaInsetCard(tint: .cyan)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(consistency.isQualified
-                            ? "Sleep schedule across \(consistency.qualifiedNightCount) qualified recent nights. Usually \(typicalBedtime) to \(typicalWakeTime). \(consistencyVerdict.title). Bedtime varies \(minutesText(bedtimeSpreadMinutes)); wake time varies \(minutesText(wakeTimeSpreadMinutes))."
+                            ? "Sleep schedule across \(consistency.qualifiedNightCount) qualified recent nights. Usually \(typicalBedtime) to \(typicalWakeTime). \(latestNightText.map { $0 + "." } ?? "") \(consistencyVerdict.title). Bedtime varies \(minutesText(bedtimeSpreadMinutes)); wake time varies \(minutesText(wakeTimeSpreadMinutes))."
                             : "Sleep schedule, \(consistency.footnote)")
-    }
-
-    private func averageHour(_ values: [Double]) -> Double {
-        guard !values.isEmpty else { return 0 }
-        return values.reduce(0, +) / Double(values.count)
-    }
-
-    private func spreadMinutes(_ values: [Double]) -> Int {
-        guard values.count >= 2 else { return 0 }
-        let mean = averageHour(values)
-        let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count)
-        return Int((sqrt(variance) * 60).rounded())
-    }
-
-    private func clockText(_ relativeHour: Double) -> String {
-        let totalMinutes = Int((relativeHour * 60).rounded()) + Int(Self.anchorHour * 60)
-        let hour24 = ((totalMinutes / 60) % 24 + 24) % 24
-        let minute = ((totalMinutes % 60) + 60) % 60
-        let hour12 = hour24 % 12 == 0 ? 12 : hour24 % 12
-        return String(format: "%d:%02d %@", hour12, minute, hour24 < 12 ? "AM" : "PM")
     }
 
     private func minutesText(_ minutes: Int) -> String {

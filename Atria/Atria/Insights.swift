@@ -765,14 +765,24 @@ struct TimeInZoneRow: Identifiable {
 struct TimeInZoneView: View {
     let rows: [TimeInZoneRow]
     let total: Double
+    /// GAP-03: the HRR boundaries that produced these rows, so every zone
+    /// label carries its actual BPM range. Nil marks a legacy computation
+    /// whose exact ranges are no longer provable.
+    var boundaries: AtriaHRRZoneBoundaries? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Time in zone").font(.headline)
             ForEach(rows) { row in
                 HStack(spacing: 8) {
-                    Text(row.zone.name)
-                        .font(.caption).frame(width: 78, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(row.zone.name)
+                            .font(.caption)
+                        Text(boundaries?.rangeText(for: row.zone) ?? "Legacy range")
+                            .font(.system(size: 9, weight: .medium).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(width: 88, alignment: .leading)
                     GeometryReader { geo in
                         RoundedRectangle(cornerRadius: 4)
                             .fill(row.zone.color.gradient)

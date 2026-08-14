@@ -597,6 +597,115 @@ final class AtriaRecoveryFreezeTests: XCTestCase {
         XCTAssertNotEqual(reminted.recoveryPercent, frozen.recoveryPercent)
     }
 
+    // MARK: GAP-04 — a later nap must never rewrite the morning's frozen Recovery
+
+    func testPublishingNapAfterMorningFreezeLeavesRecoveryUntouched() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let day = try XCTUnwrap(calendar.date(from: DateComponents(year: 2027, month: 1, day: 16)))
+        let main = UserConfirmedSleep(id: "gap04-main",
+                                      createdAt: day,
+                                      start: day.addingTimeInterval(-7 * 3_600),
+                                      end: day,
+                                      source: "manual_sleep",
+                                      confidence: "manual_user_entered",
+                                      sessions: 1,
+                                      samples: 1_000,
+                                      avgHR: 52,
+                                      peakHR: 66,
+                                      restingHR: 48,
+                                      hrv: 58,
+                                      hrvWindowCount: 4,
+                                      duration: 7 * 3_600,
+                                      span: 7 * 3_600,
+                                      reason: "test",
+                                      motionSource: "manual",
+                                      motionValidated: false,
+                                      stageSegments: nil)
+        let morningSnapshot = SleepHistorySnapshot(rollups: [],
+                                                   confirmedSleeps: [main],
+                                                   calendar: calendar)
+        let morning = try XCTUnwrap(SessionStore.makeMorningFrozenDailyMetric(
+            for: day,
+            computed: [],
+            sessions: [],
+            sleep: morningSnapshot,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: day.addingTimeInterval(2 * 3_600),
+            calendar: calendar))
+
+        // Early afternoon: a confirmed nap with conspicuously strong HRV lands
+        // AFTER the morning freeze. If any nap-uplift path still existed, this
+        // is exactly the evidence that would raise the score.
+        let nap = UserConfirmedSleep(id: "gap04-nap",
+                                     createdAt: day.addingTimeInterval(6 * 3_600),
+                                     start: day.addingTimeInterval(5 * 3_600),
+                                     end: day.addingTimeInterval(6 * 3_600),
+                                     source: "manual_nap",
+                                     confidence: "manual_user_entered",
+                                     sessions: 1,
+                                     samples: 200,
+                                     avgHR: 50,
+                                     peakHR: 58,
+                                     restingHR: 44,
+                                     hrv: 120,
+                                     hrvWindowCount: 5,
+                                     duration: 3_600,
+                                     span: 3_600,
+                                     reason: "test",
+                                     motionSource: "manual",
+                                     motionValidated: false,
+                                     stageSegments: nil)
+        let afternoonSnapshot = SleepHistorySnapshot(rollups: [],
+                                                     confirmedSleeps: [main, nap],
+                                                     calendar: calendar)
+
+        let merged = SessionStore.mergeDailyMetricHistory(
+            existing: [morning],
+            computed: [],
+            sessions: [],
+            sleep: afternoonSnapshot,
+            baseline: PersonalBaseline(),
+            maxHR: 190,
+            now: day.addingTimeInterval(8 * 3_600),
+            calendar: calendar)
+        let today = try XCTUnwrap(merged.first { calendar.isDate($0.day, inSameDayAs: day) })
+
+        XCTAssertEqual(today.recoveryPercent, morning.recoveryPercent,
+                       "a nap published after the morning freeze must not move Recovery")
+        XCTAssertEqual(today.recoveryConfidence, morning.recoveryConfidence)
+        XCTAssertEqual(today.hrv, morning.hrv,
+                       "the nap's own HRV must stay on the nap, never the cycle metric")
+        XCTAssertEqual(today.restingHR, morning.restingHR)
+
+        // The nap still owes its credit to the NEXT sleep need calculation.
+        let mainNight = try XCTUnwrap(afternoonSnapshot.nights.first { $0.id == "gap04-main" })
+        XCTAssertEqual(afternoonSnapshot.sameDayNapHours(for: mainNight, calendar: calendar), 0,
+                       "a nap after the wake belongs to tonight's need, not the finished night's")
+    }
+
+    /// GAP-04 guard: the nap-uplift path stays deleted. If a symbol like
+    /// AtriaNapRecovery or napAdjustedRecovery reappears in the app module,
+    /// this fails before any surface can consume it.
+    func testNapRecoveryUpliftPathStaysDeleted() throws {
+        let appDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        let files = try FileManager.default.contentsOfDirectory(at: appDirectory,
+                                                                includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "swift" }
+        XCTAssertGreaterThan(files.count, 100)
+        for file in files {
+            let source = try String(contentsOf: file, encoding: .utf8)
+            XCTAssertFalse(source.contains("AtriaNapRecovery"),
+                           "\(file.lastPathComponent) reintroduces the nap Recovery uplift")
+            XCTAssertFalse(source.contains("napAdjustedRecovery"),
+                           "\(file.lastPathComponent) reintroduces the nap Recovery uplift")
+        }
+    }
+
     func testMatchingConfirmedSleepRepairsPreviouslyBlankDayOneRecovery() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
