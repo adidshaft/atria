@@ -2843,6 +2843,10 @@ struct DailyRollup {
     let strain: Double
     var strainCoverageFraction: Double? = nil
     var strainEvidenceQuality: Metrics.StrainEvidenceQuality? = nil
+    /// Assessment P1.7 (2026-08-14): the raw day TRIMP that produced `strain`
+    /// through the versioned display skin. Nil for rows built before truth
+    /// persistence; never reconstructed by inverting the display curve.
+    var trimp: Double? = nil
     let avgHRV: Int?
     /// Exact count of qualified five-minute HRV windows contributing to this
     /// rollup. Zero is both the safe legacy default and the representation for
@@ -2879,6 +2883,10 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
     /// Persisted qualification prevents a partial lower bound from becoming an
     /// exact value after relaunch.
     let strainEvidenceQuality: Metrics.StrainEvidenceQuality?
+    /// Assessment P1.7 (2026-08-14): raw daily TRIMP is the stored truth; the
+    /// 0–21 `strain` above is its versioned display skin. Legacy rows decode
+    /// nil and are never reconstructed by inverting the display curve.
+    let dayTRIMP: Double?
     let skinTemperatureDeviationCelsius: Double?
     let recoverySummary: FrozenRecoverySummary?
 
@@ -2901,6 +2909,7 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
          strain: Double?,
          strainCoverageFraction: Double? = nil,
          strainEvidenceQuality: Metrics.StrainEvidenceQuality? = nil,
+         dayTRIMP: Double? = nil,
          skinTemperatureDeviationCelsius: Double? = nil,
          recoverySummary: FrozenRecoverySummary? = nil) {
         let coherentSummary = recoverySummary.flatMap { summary in
@@ -2925,6 +2934,7 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         self.strain = strain
         self.strainCoverageFraction = strainCoverageFraction.map { min(1, max(0, $0)) }
         self.strainEvidenceQuality = strainEvidenceQuality
+        self.dayTRIMP = dayTRIMP.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         self.skinTemperatureDeviationCelsius = skinTemperatureDeviationCelsius
         self.recoverySummary = coherentSummary
     }
@@ -2949,6 +2959,7 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         case strain
         case strainCoverageFraction
         case strainEvidenceQuality
+        case dayTRIMP
         case skinTemperatureDeviationCelsius
         case recoverySummary
     }
@@ -2985,6 +2996,8 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
             Metrics.StrainEvidenceQuality.self,
             forKey: .strainEvidenceQuality
         )
+        dayTRIMP = try container.decodeIfPresent(Double.self, forKey: .dayTRIMP)
+            .flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         skinTemperatureDeviationCelsius = try container.decodeIfPresent(
             Double.self,
             forKey: .skinTemperatureDeviationCelsius
@@ -3025,6 +3038,7 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
         try container.encodeIfPresent(strain, forKey: .strain)
         try container.encodeIfPresent(strainCoverageFraction, forKey: .strainCoverageFraction)
         try container.encodeIfPresent(strainEvidenceQuality, forKey: .strainEvidenceQuality)
+        try container.encodeIfPresent(dayTRIMP, forKey: .dayTRIMP)
         try container.encodeIfPresent(skinTemperatureDeviationCelsius,
                                       forKey: .skinTemperatureDeviationCelsius)
         try container.encodeIfPresent(recoverySummary, forKey: .recoverySummary)
@@ -12247,6 +12261,7 @@ final class SessionStore: ObservableObject {
         in metrics: [SavedDailyMetric],
         cycleStart: Date,
         strain: Double?,
+        trimp: Double? = nil,
         calendar: Calendar = .current
     ) -> [SavedDailyMetric] {
         let cycleDay = calendar.startOfDay(for: cycleStart)
@@ -12269,6 +12284,9 @@ final class SessionStore: ObservableObject {
                                     strain: strain,
                                     strainCoverageFraction: metric.strainCoverageFraction,
                                     strainEvidenceQuality: metric.strainEvidenceQuality,
+                                    // Assessment P1.7: the raw TRIMP truth
+                                    // rides with its display skin.
+                                    dayTRIMP: trimp ?? metric.dayTRIMP,
                                     skinTemperatureDeviationCelsius: metric.skinTemperatureDeviationCelsius,
                                     recoverySummary: metric.recoverySummary)
         }
@@ -12456,6 +12474,9 @@ final class SessionStore: ObservableObject {
         let cycleAlignedMetrics = replacingActiveCycleStrain(in: metrics,
                                                               cycleStart: cycle.start,
                                                               strain: activeCycleStrain,
+                                                              trimp: physiologicalAggregate.hasSavedToday
+                                                                  ? physiologicalAggregate.savedTodayTRIMP
+                                                                  : nil,
                                                               calendar: calendar)
         let entries = makeDailyRollupStoreEntries(metrics: cycleAlignedMetrics,
                                                   sessions: sessions,
@@ -12563,6 +12584,11 @@ final class SessionStore: ObservableObject {
                     strain: activeCycleStrain,
                     strainCoverageFraction: metric.strainCoverageFraction,
                     strainEvidenceQuality: metric.strainEvidenceQuality,
+                    // Assessment P1.7: the raw TRIMP truth rides with its
+                    // display skin.
+                    dayTRIMP: aggregate.hasSavedToday
+                        ? aggregate.savedTodayTRIMP
+                        : metric.dayTRIMP,
                     skinTemperatureDeviationCelsius:
                         metric.skinTemperatureDeviationCelsius,
                     recoverySummary: metric.recoverySummary
@@ -20172,7 +20198,10 @@ final class SessionStore: ObservableObject {
             // TRIMP space, before the one saturating 0–21 display map. It is
             // logged evidence, so it does not change HR coverage accounting.
             let muscularTRIMP = muscularTRIMPEquivalentTotal(confirmedWorkoutsByDay[day] ?? [])
-            let strainValue = Metrics.strain(fromTRIMP: strainTRIMP + archiveTRIMP + muscularTRIMP)
+            // Assessment P1.7: keep the raw fused day TRIMP as truth; the 0–21
+            // value below is its versioned display skin.
+            let dayTRIMP = strainTRIMP + archiveTRIMP + muscularTRIMP
+            let strainValue = Metrics.strain(fromTRIMP: dayTRIMP)
             let strainPresentation = Metrics.StrainPresentation.resolve(
                 value: strainValue,
                 coverageFraction: strainCoverage,
@@ -20204,6 +20233,7 @@ final class SessionStore: ObservableObject {
                                strain: strainValue,
                                strainCoverageFraction: strainCoverage,
                                strainEvidenceQuality: strainPresentation.quality,
+                               trimp: dayTRIMP > 0 ? dayTRIMP : nil,
                                avgHRV: averageIntSnapshot(hrvs),
                                hrvWindowCount: hrvWindowCount,
                                restingHR: aggregateSleep?.restingHR ?? fallbackRHRs.min(),
@@ -21420,6 +21450,7 @@ final class SessionStore: ObservableObject {
                                         strain: rollup.flatMap { $0.strain > 0 ? $0.strain : nil },
                                         strainCoverageFraction: rollup?.strainCoverageFraction,
                                         strainEvidenceQuality: rollup?.strainEvidenceQuality,
+                                        dayTRIMP: rollup?.trimp,
                                         skinTemperatureDeviationCelsius: resolvedSkinTemperatureDeviationByDay[day],
                                         // This bulk historical rebuild may run
                                         // after the personal baseline has
@@ -21531,6 +21562,7 @@ final class SessionStore: ObservableObject {
                 strain: rollup.flatMap { $0.strain > 0 ? $0.strain : nil },
                 strainCoverageFraction: rollup?.strainCoverageFraction,
                 strainEvidenceQuality: rollup?.strainEvidenceQuality,
+                dayTRIMP: rollup?.trimp,
                 skinTemperatureDeviationCelsius: resolvedSkin[day],
                 recoverySummary: FrozenRecoverySummary(
                     estimate: recovery,
@@ -21689,6 +21721,7 @@ final class SessionStore: ObservableObject {
                                                 ?? base.strainCoverageFraction,
                                              strainEvidenceQuality: freshToday?.strainEvidenceQuality
                                                 ?? base.strainEvidenceQuality,
+                                             dayTRIMP: freshToday?.dayTRIMP ?? base.dayTRIMP,
                                              skinTemperatureDeviationCelsius: todayIsAuthoritative
                                                 ? freshMorning?.skinTemperatureDeviationCelsius
                                                 : (freshToday?.skinTemperatureDeviationCelsius ?? base.skinTemperatureDeviationCelsius),
@@ -21846,6 +21879,7 @@ final class SessionStore: ObservableObject {
                         ?? base.strainCoverageFraction,
                     strainEvidenceQuality: freshToday?.strainEvidenceQuality
                         ?? base.strainEvidenceQuality,
+                    dayTRIMP: freshToday?.dayTRIMP ?? base.dayTRIMP,
                     skinTemperatureDeviationCelsius: todayIsAuthoritative
                         ? freshMorning?.skinTemperatureDeviationCelsius
                         : (freshToday?.skinTemperatureDeviationCelsius
@@ -21963,6 +21997,7 @@ final class SessionStore: ObservableObject {
                                          strain: metric.strain,
                                          strainCoverageFraction: metric.strainCoverageFraction,
                                          strainEvidenceQuality: metric.strainEvidenceQuality,
+                                         trimp: metric.dayTRIMP,
                                          respiratoryRate: resolvedRespRate,
                                          skinTemperatureDeviationCelsius: metric.skinTemperatureDeviationCelsius,
                                          vitals: DailyRollupVitals(
@@ -22070,6 +22105,7 @@ final class SessionStore: ObservableObject {
                 strain: metric.strain,
                 strainCoverageFraction: metric.strainCoverageFraction,
                 strainEvidenceQuality: metric.strainEvidenceQuality,
+                trimp: metric.dayTRIMP,
                 respiratoryRate: resolvedRates[index],
                 skinTemperatureDeviationCelsius:
                     metric.skinTemperatureDeviationCelsius,
@@ -22616,6 +22652,11 @@ final class SessionStore: ObservableObject {
                                 strain: strain,
                                 strainCoverageFraction: strainCoverage,
                                 strainEvidenceQuality: strainPresentation.quality,
+                                // Assessment P1.7: persist the raw TRIMP truth
+                                // beside its display skin. The wear fallback
+                                // freezes the exact integral it displayed.
+                                dayTRIMP: computedToday?.dayTRIMP
+                                    ?? (wearStrainTRIMP > 0 ? wearStrainTRIMP : nil),
                                 skinTemperatureDeviationCelsius: skinTemperatureDeviation,
                                 recoverySummary: FrozenRecoverySummary(
                                     estimate: recovery,
@@ -40289,9 +40330,13 @@ final class SessionStore: ObservableObject {
                     napHours += candidate.effectiveSleepDuration / 3_600
                 }
             }
+            // Assessment P1.8: yesterday's persisted TRIMP is the truth-first
+            // input; the 0–21 value is only a fallback for legacy rows that
+            // predate dayTRIMP persistence.
             let components = AtriaSleepBudget.sleepNeedComponents(
                 baseHours: baseNeedHours,
-                yesterdayStrain: latestPriorMetric?.strain,
+                yesterdayTRIMP: latestPriorMetric?.dayTRIMP,
+                yesterdayStrainFallback: latestPriorMetric?.strain,
                 debtHours: AtriaSleepBudget.sleepDebt(nights: priorFrozenNights),
                 sameDayNapHours: napHours
             )
