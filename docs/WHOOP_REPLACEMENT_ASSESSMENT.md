@@ -940,4 +940,93 @@ Protect motion. Measure HRV. Freeze the night. Coach from the whiteboard.
 - Phillips et al. (2017) — Sleep Regularity Index
 - Gabbett — ACWR as a *heuristic*, not a law
 - Miller et al. / other wearable-vs-PSG papers — sleep/wake ok, stages weak
+
+---
+
+## 13. Post-handoff remaining work (after items 2–10)
+
+Reviewed: 2026-08-14, on `codex/whoop-remaining-product-gaps` after:
+
+| Item | Commit | What shipped |
+|---|---|---|
+| 2+3 | `280c7a88` | Sleep Score / Fitness Age off the default Home glance; Recovery `.validated` reserved; UI says Personal baseline |
+| 4 | `1e50cdb3` | `AtriaTodayMorningWhiteboardModel` — HRV, RHR, slept vs frozen need, yesterday strain |
+| 5+6 | `563b59a2` | Recovery **v4**: personal sleep baseline (population fallback caps tier at unverified); 30-day median/MAD HRV comparator; `recoveryV2ModelVersion = 4`; frozen v3 receipts untouched |
+| 7+8 | `cc50038b` | `dayTRIMP` persisted; Sleep Need adder consumes TRIMP via the display authority; 37-min-at-15 stays a labeled heuristic |
+| 9 | `5751f6d8` | Journal pairs to HRV and RHR first, Recovery second |
+| 10 | `2b6031de` | Silent sleep auto-confirm requires qualified RR; banner Undo |
+
+**Software formula work from §9 is done.** What remains is not another week of invented constants. Motion/steps/IMU remain **do not touch** (§0).
+
+### Still perfect — do not reopen
+
+- 2A37 as live HR/RR truth; no HR-only HRV
+- Quality-gated RMSSD / lnRMSSD; last-SWS window only when stages are motion-validated
+- Recovery v4: personal z, robust 30-day HRV, personal sleep term, fail-closed contributors, morning freeze, naps cannot rewrite
+- Banister TRIMP kernel; 15 s gap rejection; HRR zones frozen per workout
+- Frozen Sleep Need receipts; one consistency engine; timezone fail-closed
+- Wake-to-wake physiological day
+- Sleep Score and Fitness Age off the default Today glance
+- Morning whiteboard leading with measured numbers
+- Journal statistical gating, now on HRV/RHR
+- Auto-confirm only on high-agreement + qualified RR + Undo
+- SpO2 % and absolute °C still blank
+- Gate 4 / tick / gravity / R10 left alone
+
+### Still leftover, and worth doing (sure product improvement, no motion)
+
+These are the only remaining **code** items this document is willing to call net-positive without new labeled captures.
+
+1. **Reliability (standing item 1).** Never-lose-the-night is still the moat. Drain, locked reconnect, freeze, cycle boundary. This is how you replace WHOOP, not another score. Do not trade it for features.
+
+2. **Whiteboard still prints 0–21 Strain, not TRIMP.** P1.7 stored TRIMP as truth; the card still says `Strain %.1f`. Show yesterday’s TRIMP (and keep 0–21 as a parenthetical skin), or the “TRIMP is truth” work is invisible.
+
+3. **Coach `9 / 13 / 17` from Recovery % is the last WHOOP-shaped fiction on the daily loop.** `Coach.baseStrainTarget` still maps Recovery 0–33→9, 67+→17. The ring center is still Recovery. Replace the *sentence* with the whiteboard: if HRV is below the personal band or RHR is above it, recommend a lighter day than yesterday’s TRIMP; otherwise “room to match yesterday.” Do **not** invent a new 0–21 formula. Do **not** retune 9–17.
+
+4. **Un-fuse muscular load on the day surface.** The 45 × (score/100)^1.6 fuse is still engineering-provisional and still added into the one Strain number. Show cardio TRIMP and logged lifting work as two bars. Keep the fuse off the hero, or behind a labeled combined total. Incomplete RPE already contributes zero — keep that.
+
+5. **Health still mounts a provisional Sleep Score and a Fitness Age card.** They are gone from the default Home glance; they still exist as WHOOP-shaped composites on Health. If the product rule is “nothing provisional,” those cards should not lead Health. Sufficiency + consistency + efficiency stay. Fitness Age can remain in Customize / a lab section.
+
+6. **Widget / Live Activity still lead Recovery %.** Today now leads with the whiteboard; the Home Screen widget is still a Recovery gauge (`AtriaWidget.swift`). Mirror HRV / RHR / sleep-vs-need / yesterday load, or the lock screen will keep teaching the old religion.
+
+### Still leftover, but do **not** code until you have nights
+
+These are measurement campaigns. Writing more Swift without data would create the next provisional number.
+
+| ID | What | Why not now |
+|---|---|---|
+| Sleep Need slope fit | Hours of extra sleep per unit TRIMP from *your* nights | The 37-min-at-15 mapping is labeled. Fitting without a corpus is a new invention. |
+| Recovery outcome calibration (§9.12) | Does blended z predict next-day HRV / RHR / RPE? | Needs 30–90 worn days. Until then Recovery stays an index. |
+| `docs/14` SpO2 + skin °C | Health Monitor tiles 4 and 5 | Hardware exists; decoder does not. Reference oximeter + skin probe. |
+| GAP-10 overnight load | Real stress-during-sleep model | HR-only 0–3 chart is enough. Do not put it in Sleep Score. |
+| GAP-12 stages vs PSG | REM/Deep as measured | Keep estimate labels. Do not promote. |
+| GAP-11 activity type | Named sport auto-detect | IMU. Blocked by §0 until Gate 4 is sealed. |
+| Smart wake | Light/awake + HR slope | UI already admits hard alarm. Do not build on HR-only stages. |
+
+### Still bullshit if it leads the product
+
+| Thing | Status now | Action |
+|---|---|---|
+| Recovery % as the day’s decision | Secondary on Today; still ring center + widget + coach target | Keep as index. Lead with whiteboard everywhere. |
+| Sleep Score 50/25/15/10 | Persisted, labeled provisional, still on Health | Demote off Health hero. |
+| Fitness Age / Healthspan | Off default Home; still a Health card | Hide or lab-only. |
+| Coach 9–17 | Unchanged | Replace the sentence, not the kernel. |
+| Muscular fuse into one 0–21 | Shipped provisional | Split the display. |
+| 12.4 Atria = 12.4 WHOOP | Never claimed in code; users will still compare | Never chase. |
+| All-day steps “just fix it” | Gate 4 open | **Do not touch.** |
+| Stages as EEG | Honesty gates exist | Do not promote. |
+| SpO2 % / °C from raw u16s | Still forbidden | Keep forbidden. |
+
+### What replacing WHOOP still requires (no APIs, no cost)
+
+You already have the daily loop’s **measurements**. What official WHOOP still wins on, without you copying their scores:
+
+1. **The night never vanishes.** This is reliability, not a metric. Item 1. Highest remaining replacement value.
+2. **Morning sentence + lock screen** that match the whiteboard, not a lone Recovery ring. Items 2, 3, 6 above.
+3. **Health Monitor completeness** — HRV, RHR, respiration are local. SpO2 and skin deviation wait on `docs/14`.
+4. **Automatic enough sleep** — you just gated auto-confirm. Let it bake on-device. Do not retune motion constants.
+5. **Workout as review, not auto-typed sport.** Already correct. Do not start GAP-11.
+6. **You will not replace MG ECG / BP / Healthspan on a 4.0.** Do not try.
+
+“Nothing provisional” now means: **stop adding composites.** Ship reliability, show TRIMP, split lifting from cardio, demote the remaining Health/widget heroes, then wear the strap for `docs/14` and a Recovery outcome log. Anything else is another invented percent.
 )

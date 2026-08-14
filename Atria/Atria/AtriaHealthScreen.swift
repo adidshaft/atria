@@ -223,6 +223,9 @@ enum AtriaHealthMetricAuthority {
         let wearCoverageFraction: Double?
         let cycleStart: Date?
         let projectedAt: Date?
+        // §13.4 display split metadata; defaults keep test fixtures compiling.
+        let dayTRIMP: Double?
+        let muscularTRIMP: Double
 
         init(recoveryPercent: Int?,
              recoveryDetail: String,
@@ -234,7 +237,9 @@ enum AtriaHealthMetricAuthority {
              strainIsPartial: Bool = false,
              wearCoverageFraction: Double? = nil,
              cycleStart: Date? = nil,
-             projectedAt: Date? = nil) {
+             projectedAt: Date? = nil,
+             dayTRIMP: Double? = nil,
+             muscularTRIMP: Double = 0) {
             self.recoveryPercent = recoveryPercent
             self.recoveryDetail = recoveryDetail
             self.restingHeartRateText = restingHeartRateText
@@ -246,6 +251,8 @@ enum AtriaHealthMetricAuthority {
             self.wearCoverageFraction = wearCoverageFraction
             self.cycleStart = cycleStart
             self.projectedAt = projectedAt
+            self.dayTRIMP = dayTRIMP
+            self.muscularTRIMP = muscularTRIMP
         }
     }
 
@@ -265,6 +272,11 @@ enum AtriaHealthMetricAuthority {
         let wearCoverageFraction: Double?
         let cycleStart: Date?
         let projectedAt: Date?
+        // §13.4 display split: the fused day TRIMP and its logged-lifting
+        // component. Dated history persists only the fused total, so past
+        // days carry muscularTRIMP 0 — fail closed, no split claim.
+        let dayTRIMP: Double?
+        let muscularTRIMP: Double
 
         var hasEvidence: Bool {
             recoveryPercent != nil
@@ -311,7 +323,9 @@ enum AtriaHealthMetricAuthority {
                 strainIsPartial: current.strainIsPartial,
                 wearCoverageFraction: current.wearCoverageFraction,
                 cycleStart: current.cycleStart,
-                projectedAt: current.projectedAt
+                projectedAt: current.projectedAt,
+                dayTRIMP: current.dayTRIMP,
+                muscularTRIMP: current.muscularTRIMP
             )
         case .datedHistory(let rollup):
             let hrvMS = rollup.lnRMSSD.map { Int(exp($0).rounded()) }
@@ -349,7 +363,11 @@ enum AtriaHealthMetricAuthority {
                 strainIsPartial: strainPresentation.quality == .partial,
                 wearCoverageFraction: strainPresentation.coverageFraction,
                 cycleStart: rollup.day,
-                projectedAt: nil
+                projectedAt: nil,
+                // P1.7 persists only the fused dayTRIMP; the lifting split is
+                // not persisted, so dated days fail closed — no split claim.
+                dayTRIMP: rollup.trimp,
+                muscularTRIMP: 0
             )
         }
     }
@@ -385,7 +403,9 @@ enum AtriaHealthMetricAuthority {
             // unchanged metric evidence does not invalidate that cache on
             // every SwiftUI body evaluation. It still advances at midnight,
             // which is exactly when D/W/M period membership can change.
-            projectedAt: calendar.startOfDay(for: now)
+            projectedAt: calendar.startOfDay(for: now),
+            dayTRIMP: hero.dayTRIMP > 0 ? hero.dayTRIMP : nil,
+            muscularTRIMP: hero.muscularTRIMP
         )))
     }
 
@@ -636,6 +656,11 @@ struct AtriaHealthScreen: View {
     /// reading, keeping 30-second stress updates from rebuilding all of Vitals.
     @State private var breathworkStressStore = AtriaHealthBreathworkStressStore()
     @State private var showHealthspanDetail = false
+    // Assessment §13.5 (2026-08-14): both provisional composites open
+    // collapsed on every mount — default-off placement, not a remembered
+    // preference, so neither card can lead Health.
+    @State private var showsProvisionalSleepScore = false
+    @State private var showsLabSection = false
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
     @AtriaDefault(DetectionEventLog.revisionKey) private var detectionsRevision: Int = 0
@@ -761,14 +786,17 @@ struct AtriaHealthScreen: View {
                         // compact local approximation ("not a medical
                         // measurement") and must not sit in hero position —
                         // measured trends and real detected activity lead.
+                        // Migrated §13.5 (2026-08-14): last position alone was
+                        // not enough — Fitness Age now mounts collapsed inside
+                        // the trailing Lab disclosure.
                         if Self.debugOpensTrendsScope(arguments: ProcessInfo.processInfo.arguments) {
                             detectedActivitiesAndHistory(historyProjection: historyProjection)
                             trendsCard
-                            fitnessAgeCard
+                            labSection
                         } else {
                             trendsCard
                             detectedActivitiesAndHistory(historyProjection: historyProjection)
-                            fitnessAgeCard
+                            labSection
                         }
                     }
                 }
@@ -1019,8 +1047,22 @@ struct AtriaHealthScreen: View {
             // the measured components it is built from — Sufficiency,
             // Efficiency, the night's evidence, and Consistency lead; an
             // invented 50/25/15/10 blend must not be the hero of Sleep.
+            // Migrated §13.5 (2026-08-14): trailing position alone was not
+            // enough — the card now mounts collapsed behind an explicit
+            // "Provisional" disclosure. Its "Early estimate" label and
+            // unvalidated-weights caption are unchanged inside, and a
+            // withheld score still mounts nothing at all.
             if let provisionalSleepScore {
-                AtriaSleepScoreCard(score: provisionalSleepScore)
+                DisclosureGroup(isExpanded: $showsProvisionalSleepScore) {
+                    AtriaSleepScoreCard(score: provisionalSleepScore)
+                        .padding(.top, 8)
+                } label: {
+                    Label("Provisional — Sleep Score", systemImage: "testtube.2")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .tint(.secondary)
+                .accessibilityHint("Shows the provisional Sleep Score composite.")
             }
         }
         // The screen already provides its own horizontal rhythm. Keeping an
@@ -1108,9 +1150,27 @@ struct AtriaHealthScreen: View {
         )
     }
 
-    /// Mounts the multi-metric trend chart (resting HR / strain / HRV, with
-    /// its own range picker) that previously rendered nowhere in the live
-    /// app -- the single highest-leverage fix in the visibility audit.
+    /// Assessment §13.5 (2026-08-14): Fitness Age is a lab-grade local
+    /// approximation ("Estimate from heart data — not a medical measurement")
+    /// and no longer mounts as an open Health card. It stays reachable —
+    /// collapsed behind this Lab disclosure at the end of Trends — and still
+    /// routes to Healthspan detail. Leaf-host observation is unchanged.
+    private var labSection: some View {
+        DisclosureGroup(isExpanded: $showsLabSection) {
+            fitnessAgeCard
+                .padding(.top, 8)
+        } label: {
+            Label("Lab — experimental estimates", systemImage: "flask")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .tint(.secondary)
+        .accessibilityHint("Shows the experimental Fitness age estimate.")
+    }
+
+    /// Opens Healthspan detail from the Lab group's Fitness Age card.
+    /// (Comment repaired 2026-08-14: the previous text described the trend
+    /// chart, a copy/paste artifact from the 2026-07-05 visibility audit.)
     private var fitnessAgeCard: some View {
         Button {
             showHealthspanDetail = true

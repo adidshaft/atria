@@ -318,6 +318,97 @@ enum Coach {
     }
 }
 
+/// Assessment §13.3 (2026-08-14): the daily coach SENTENCE now speaks the
+/// whiteboard's language (personal HRV/RHR bands vs yesterday's measured
+/// TRIMP). The recovery→9–17 kernel, the frozen daily target, and every
+/// numeric target skin are unchanged; this rewrites only the words — and,
+/// while the bands are still calibrating, hides the number (no target).
+struct AtriaWhiteboardCoachSentence {
+    struct DayContext: Equatable {
+        let hrvMS: Int?
+        let restingHR: Int?
+        let baseline: AtriaBaselineTargetSnapshot
+        let yesterdayTRIMP: Double?
+        let yesterdayStrainDisplay: Double?
+    }
+
+    static func rewrite(kernel: Coach.Guidance,
+                        context: DayContext) -> Coach.Guidance {
+        guard context.baseline.hrvTrusted, context.baseline.restingTrusted else {
+            return Coach.Guidance(
+                headline: "Calibrating your baseline",
+                detail: "\(min(context.baseline.hrvSampleCount, 14)) of 14 nights of HRV and resting heart rate build your personal bands.",
+                color: .secondary,
+                target: nil,
+                state: kernel.state,
+                reason: "whiteboard_calibrating")
+        }
+        guard let hrvZ = context.baseline.hrvBandZ(hrvMS: context.hrvMS),
+              let rhrZ = context.baseline.restingBandZ(restingHR: context.restingHR) else {
+            return Coach.Guidance(
+                headline: "Waiting for this morning's numbers",
+                detail: "Guidance starts after today's HRV and resting heart rate are measured.",
+                color: .secondary,
+                target: kernel.target,
+                state: kernel.state,
+                reason: "whiteboard_awaiting")
+        }
+
+        let yesterdayTRIMP = context.yesterdayTRIMP
+            .flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        let yesterdayStrain = context.yesterdayStrainDisplay
+            .flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+
+        let hrvLow = hrvZ < -1
+        let rhrHigh = rhrZ > 1
+        if hrvLow || rhrHigh {
+            let cause: String
+            if hrvLow, rhrHigh {
+                cause = "HRV and resting HR are outside your typical bands"
+            } else if hrvLow {
+                cause = "HRV is below your typical band"
+            } else {
+                cause = "Resting HR is above your typical band"
+            }
+            let clause: String
+            if let yesterdayTRIMP {
+                clause = String(format: " — go easier than yesterday's %.0f TRIMP.", yesterdayTRIMP)
+            } else if let yesterdayStrain {
+                clause = String(format: " — go easier than yesterday's Strain %.1f.", yesterdayStrain)
+            } else {
+                clause = " — keep today easy."
+            }
+            return Coach.Guidance(
+                headline: "Take today lighter than yesterday",
+                detail: cause + clause,
+                color: .orange,
+                target: kernel.target,
+                state: kernel.state,
+                reason: "whiteboard_lighter")
+        }
+
+        let clause: String
+        let headline: String
+        if let yesterdayTRIMP {
+            headline = "Room to match yesterday"
+            clause = String(format: " — room to repeat yesterday's %.0f TRIMP.", yesterdayTRIMP)
+        } else if let yesterdayStrain {
+            headline = "Room to match yesterday"
+            clause = String(format: " — room to repeat yesterday's Strain %.1f.", yesterdayStrain)
+        } else {
+            headline = "Inside your typical bands"
+            clause = " — no strain recorded yesterday, go by feel."
+        }
+        return Coach.Guidance(
+            headline: headline,
+            detail: "HRV and resting HR are inside your typical bands" + clause,
+            color: .green,
+            target: kernel.target,
+            state: kernel.state,
+            reason: "whiteboard_match")
+    }
+}
+
 struct DailyGuidanceCard: View {
     let guidance: Coach.Guidance
     let strain: Double

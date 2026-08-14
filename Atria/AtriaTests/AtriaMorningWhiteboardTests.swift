@@ -26,6 +26,7 @@ final class AtriaMorningWhiteboardTests: XCTestCase {
                                                           sleepDurationText: "7h 10m",
                                                           nightConfirmed: true,
                                                           needHours: 7.7,
+                                                          yesterdayTRIMP: 188.4,
                                                           yesterdayStrain: 12.4,
                                                           yesterdayStrainIsPartial: true)
         XCTAssertEqual(model.rows.map(\.id), ["hrv", "rhr", "sleep", "yesterday"])
@@ -45,6 +46,8 @@ final class AtriaMorningWhiteboardTests: XCTestCase {
         let yesterday = try XCTUnwrap(model.rows.first { $0.id == "yesterday" })
         XCTAssertTrue(yesterday.sentence.contains("partial"),
                       "partial strain coverage is disclosed on the whiteboard")
+        XCTAssertEqual(yesterday.valuePhrase, "TRIMP 188 (12.4)",
+                       "yesterday leads with persisted TRIMP truth; 0–21 stays a parenthetical skin (§13.2)")
     }
 
     func testUntrustedBaselineCalibratesInsteadOfInventingABand() throws {
@@ -54,6 +57,7 @@ final class AtriaMorningWhiteboardTests: XCTestCase {
                                                           sleepDurationText: nil,
                                                           nightConfirmed: nil,
                                                           needHours: nil,
+                                                          yesterdayTRIMP: nil,
                                                           yesterdayStrain: nil,
                                                           yesterdayStrainIsPartial: false)
         let hrv = try XCTUnwrap(model.rows.first { $0.id == "hrv" })
@@ -65,6 +69,7 @@ final class AtriaMorningWhiteboardTests: XCTestCase {
 
         let yesterday = try XCTUnwrap(model.rows.first { $0.id == "yesterday" })
         XCTAssertEqual(yesterday.sentence, "no strain recorded yesterday")
+        XCTAssertEqual(yesterday.valuePhrase, "Strain —")
     }
 
     func testLegacyConfirmedNightDisclosesMissingNeedInsteadOfInventingOne() throws {
@@ -74,9 +79,29 @@ final class AtriaMorningWhiteboardTests: XCTestCase {
                                                           sleepDurationText: "6h 40m",
                                                           nightConfirmed: true,
                                                           needHours: nil,
+                                                          yesterdayTRIMP: nil,
                                                           yesterdayStrain: 8.0,
                                                           yesterdayStrainIsPartial: false)
         let sleep = try XCTUnwrap(model.rows.first { $0.id == "sleep" })
         XCTAssertEqual(sleep.sentence, "need unavailable for this legacy night")
+        let yesterday = try XCTUnwrap(model.rows.first { $0.id == "yesterday" })
+        XCTAssertEqual(yesterday.valuePhrase, "Strain 8.0",
+                       "legacy rollup rows keep the display score — TRIMP is never rebuilt by inverting the curve")
+    }
+
+    func testYesterdayTRIMPWithoutStrainStandsAloneAndReadsAsRecorded() throws {
+        let model = AtriaTodayMorningWhiteboardModel.make(hrvMS: nil,
+                                                          restingHR: nil,
+                                                          baseline: AtriaBaselineTargetSnapshot(PersonalBaseline()),
+                                                          sleepDurationText: nil,
+                                                          nightConfirmed: nil,
+                                                          needHours: nil,
+                                                          yesterdayTRIMP: 92.6,
+                                                          yesterdayStrain: nil,
+                                                          yesterdayStrainIsPartial: false)
+        let yesterday = try XCTUnwrap(model.rows.first { $0.id == "yesterday" })
+        XCTAssertEqual(yesterday.valuePhrase, "TRIMP 93")
+        XCTAssertEqual(yesterday.sentence, "yesterday",
+                       "a recorded TRIMP must not read as 'no strain recorded'")
     }
 }

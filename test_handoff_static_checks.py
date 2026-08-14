@@ -12257,10 +12257,13 @@ class HandoffStaticChecks(unittest.TestCase):
             "evidenceNote: String?",
             "private func widgetMetricLink(_ metric: AtriaWidgetMetric) -> some View",
             "private struct AtriaWidgetRecoveryGauge: View",
-            "AtriaWidgetRecoveryGauge(percent: entry.snapshot?.recoveryPercent)",
+            # 2026-08-14 (§13.6): whiteboard mirror leads the aggregate
+            # families; Recovery demoted to an index. Call-site + large-frame
+            # needles migrated to the whiteboard list mount.
+            "AtriaWidgetWhiteboardList(rows: entry.snapshot?.whiteboardRows",
             ".frame(width: 72, height: 72)",
             ".frame(width: 92, height: 92)",
-            ".frame(width: 118, height: 118)",
+            "private struct AtriaWidgetWhiteboardList: View",
             "private var largeBatteryText: String",
             "controlButtons",
             "private var largeFooterText: String",

@@ -352,10 +352,11 @@ final class AtriaHeartRateWindowIndexTests: XCTestCase {
                           resourceIdentifier: resource)
                 ]
             )
+            // 2026-08-14: mirrors production — the key hashes the fingerprint
+            // FIELDS, not its JSON encoding (a Data hash covers only a byte
+            // prefix, so late-encoded field changes could collide).
             var hasher = Hasher()
-            if let encoded = try? JSONEncoder().encode(fingerprint) {
-                hasher.combine(encoded)
-            }
+            hasher.combine(fingerprint)
             return hasher.finalize()
         }
         let baseline = hash(generation: 5, size: 100,

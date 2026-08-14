@@ -170,6 +170,23 @@ struct AtriaBaselineTargetSnapshot: Equatable {
     }
 }
 
+extension AtriaBaselineTargetSnapshot {
+    /// §13.3 (2026-08-14): the single personal-band z authority. Exactly the
+    /// morning-whiteboard math; nil means the band is untrusted or the
+    /// morning value is unmeasured/degenerate — never a neutral zero.
+    func hrvBandZ(hrvMS: Int?) -> Double? {
+        guard let hrvMS, hrvMS > 0, hrvTrusted,
+              let mean = hrvLnMean, let sd = hrvLnSD, sd > 0.01 else { return nil }
+        return (log(Double(hrvMS)) - mean) / max(sd, 0.05)
+    }
+
+    func restingBandZ(restingHR: Int?) -> Double? {
+        guard let restingHR, restingHR > 0, restingTrusted,
+              let mean = restingMean, let sd = restingSD, sd > 0.1 else { return nil }
+        return (Double(restingHR) - mean) / max(sd, 1)
+    }
+}
+
 extension AtriaMetricZone {
     static func zone(for value: Double, target: AtriaMetricTarget) -> AtriaMetricZoneLevel {
         if let optimalRange = target.optimalRange,

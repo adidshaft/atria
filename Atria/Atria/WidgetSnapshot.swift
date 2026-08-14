@@ -119,6 +119,24 @@ struct WidgetSnapshot: Codable {
     let appGroupEnabled: Bool
     let widgetTargetPresent: Bool
     let complicationTargetPresent: Bool
+    // 2026-08-14 (§13.6): additive whiteboard mirror — trailing so every
+    // existing memberwise call site keeps compiling unchanged.
+    var whiteboardRows: [WidgetWhiteboardRow]? = nil
+    var whiteboardExpiresAt: Date? = nil
+    /// Frozen need denominator for an honest sleep-vs-need gauge; nil = no
+    /// truthful denominator.
+    var sleepNeedHours: Double? = nil
+}
+
+/// 2026-08-14 (§13.6): pre-rendered morning-whiteboard rows. Display truth is
+/// serialized from AtriaTodayMorningWhiteboardModel.make — the extension never
+/// recomputes personal bands.
+struct WidgetWhiteboardRow: Codable, Equatable {
+    let id: String
+    let symbol: String
+    let value: String
+    let sentence: String
+    let tone: String
 }
 
 @MainActor
@@ -963,7 +981,7 @@ enum WidgetSnapshotPublisher {
         let patchedStepsAuthorityVersion = acceptsIncomingSteps
             ? (steps == nil ? nil : stepsAuthorityVersion)
             : current.stepsAuthorityVersion
-        return WidgetSnapshot(
+        var patched = WidgetSnapshot(
             schema: current.schema,
             createdAt: max(current.createdAt, createdAt),
             recoveryPercent: current.recoveryPercent,
@@ -1043,6 +1061,13 @@ enum WidgetSnapshotPublisher {
             widgetTargetPresent: current.widgetTargetPresent,
             complicationTargetPresent: current.complicationTargetPresent
         )
+        // 2026-08-14 (§13.6): a live patch updates only live fields; the
+        // whiteboard mirror and its expiry ride along unchanged from the
+        // delivered snapshot.
+        patched.whiteboardRows = current.whiteboardRows
+        patched.whiteboardExpiresAt = current.whiteboardExpiresAt
+        patched.sleepNeedHours = current.sleepNeedHours
+        return patched
     }
 
     /// A pulse-time patch may make an already-qualified cumulative value more
@@ -1091,7 +1116,7 @@ enum WidgetSnapshotPublisher {
             : .standard)
         guard let data = defaults.data(forKey: key),
               let snapshot = try? JSONDecoder.widgetSnapshotDecoder.decode(WidgetSnapshot.self, from: data) else { return }
-        let sanitized = WidgetSnapshot(schema: snapshot.schema,
+        var sanitized = WidgetSnapshot(schema: snapshot.schema,
                                        createdAt: Date(),
                                        recoveryPercent: snapshot.recoveryPercent,
                                        recoveryConfidence: snapshot.recoveryConfidence,
@@ -1152,6 +1177,10 @@ enum WidgetSnapshotPublisher {
                                        appGroupEnabled: snapshot.appGroupEnabled,
                                        widgetTargetPresent: snapshot.widgetTargetPresent,
                                        complicationTargetPresent: snapshot.complicationTargetPresent)
+        // 2026-08-14 (§13.6): battery sanitation must not erase the mirror.
+        sanitized.whiteboardRows = snapshot.whiteboardRows
+        sanitized.whiteboardExpiresAt = snapshot.whiteboardExpiresAt
+        sanitized.sleepNeedHours = snapshot.sleepNeedHours
         guard let sanitizedData = try? JSONEncoder.widgetSnapshotEncoder.encode(sanitized) else { return }
         defaults.set(sanitizedData, forKey: key)
         #if canImport(WidgetKit)
@@ -1593,6 +1622,56 @@ enum WidgetSnapshotPublisher {
         snapshot.recoveryValueState = widgetDayResolution.identity.valueState.rawValue
         snapshot.recoveryExpiresAt = displayDayEnd
         snapshot.sleepExpiresAt = displayDayEnd
+        // 2026-08-14 (§13.6): mirror the Today morning whiteboard. Rows are
+        // built by the same pure model the Today card uses; the extension
+        // renders strings only and never recomputes personal bands.
+        let whiteboardNight = AtriaOverviewCurrentSleep.resolve(
+            from: store.sleepHistorySnapshot, now: now, calendar: calendar)
+        let whiteboardYesterdayRollup = whiteboardNight.flatMap { night -> DailyRollupStoreEntry? in
+            guard let prior = calendar.date(byAdding: .day,
+                                            value: -1,
+                                            to: calendar.startOfDay(for: night.day)) else { return nil }
+            return store.dailyRollupHistory.first { calendar.isDate($0.day, inSameDayAs: prior) }
+        }
+        let whiteboardNeedHours: Double?
+        if whiteboardNight == nil, latestDisplaySleep != nil {
+            // Review-only candidate: never attach an old need (mirrors Today's
+            // sleepNeedSnapshot gate).
+            whiteboardNeedHours = nil
+        } else if let night = whiteboardNight {
+            whiteboardNeedHours = store.sleepHistorySnapshot.sleepNeedHours(
+                for: night,
+                baseNeedHours: SessionStore.configuredSleepBaseNeedHours(),
+                yesterdayStrain: whiteboardYesterdayRollup?.strain,
+                calendar: calendar)
+        } else {
+            whiteboardNeedHours = nil
+        }
+        // Whiteboard HRV drops the recovery usesHRV gate (Today shows measured
+        // HRV even when Recovery excludes it) but keeps frozen-rollup-first +
+        // display-eligibility.
+        let whiteboardHRVMS = frozenTodayRollup?.lnRMSSD.map { Int(exp($0).rounded()) }
+            ?? ble.hrvSnapshot.flatMap { $0.isDisplayEligible(on: now) ? Int($0.rmssd.rounded()) : nil }
+            ?? fallbackHRV
+        let whiteboardModel = AtriaTodayMorningWhiteboardModel.make(
+            hrvMS: whiteboardHRVMS,
+            restingHR: presentationRestingHeartRate,
+            baseline: AtriaBaselineTargetSnapshot(store.baseline),
+            sleepDurationText: widgetSleepIsCurrentDay ? whiteboardNight?.durationText : nil,
+            nightConfirmed: widgetSleepIsCurrentDay ? whiteboardNight?.confirmed : nil,
+            needHours: widgetSleepIsCurrentDay ? whiteboardNeedHours : nil,
+            yesterdayTRIMP: whiteboardYesterdayRollup?.trimp,
+            yesterdayStrain: whiteboardYesterdayRollup?.strain,
+            yesterdayStrainIsPartial: whiteboardYesterdayRollup?.strainEvidenceQuality == .partial)
+        snapshot.whiteboardRows = whiteboardModel.rows.map {
+            WidgetWhiteboardRow(id: $0.id,
+                                symbol: $0.systemImage,
+                                value: $0.valuePhrase,
+                                sentence: $0.sentence,
+                                tone: whiteboardToneIdentifier($0.tone))
+        }
+        snapshot.whiteboardExpiresAt = displayDayEnd
+        snapshot.sleepNeedHours = widgetSleepIsCurrentDay ? whiteboardNeedHours : nil
         // Cold-start + card-settlement guard: landing sessions makes the UI
         // interactive before the async confirmed-sleep -> metric -> rollup chain
         // is complete. Preserve the last durable widget until both authorities
@@ -1676,6 +1755,19 @@ enum WidgetSnapshotPublisher {
             AtriaDebugLog("ATRIADBG widget_snapshot status=error reason=encode_failed")
         }
         return snapshot
+    }
+
+    /// 2026-08-14 (§13.6): stable string identifiers for the whiteboard tones
+    /// crossing the app→extension boundary.
+    nonisolated static func whiteboardToneIdentifier(
+        _ tone: AtriaTodayMorningWhiteboardModel.Tone
+    ) -> String {
+        switch tone {
+        case .supportive: return "supportive"
+        case .caution: return "caution"
+        case .strained: return "strained"
+        case .neutral: return "neutral"
+        }
     }
 
     nonisolated static func shouldPersistSnapshot(
@@ -1828,6 +1920,11 @@ enum WidgetSnapshotPublisher {
         parts.append(snapshot.layoutRingCenterMetric ?? "-")
         parts.append(snapshot.layoutLegendStatStyle ?? "-")
         parts.append(snapshot.layoutAccent ?? "-")
+        // 2026-08-14 (§13.6): band/sentence changes must reload the mirror
+        // promptly.
+        parts.append(snapshot.whiteboardRows.map { rows in
+            rows.map { "\($0.value)#\($0.sentence)#\($0.tone)" }.joined(separator: ";")
+        } ?? "whiteboard_absent")
         return parts.joined(separator: "|")
     }
 

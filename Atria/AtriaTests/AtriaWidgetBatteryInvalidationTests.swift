@@ -1815,9 +1815,21 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(widgetSource.contains(
             "\"Strain \\(AtriaWidgetMetric.strain.value(entry.snapshot, now: entry.date))\""
         ), "accessory rectangular strain must use the same gate")
+        // Migrated 2026-08-14 (§13.6): accessory inline no longer surfaces
+        // strain — it speaks the whiteboard's HRV/RHR strings. The invariant
+        // ("no ungated strain") holds vacuously there; pin the replacement so
+        // a future strain re-introduction must come back through the gate.
         XCTAssertTrue(widgetSource.contains(
-            "let strain = AtriaWidgetMetric.strain.value(snapshot, now: entry.date)"
-        ), "accessory inline strain must use the same gate")
+            "private var inlineText: String"
+        ))
+        let inlineStart = try XCTUnwrap(widgetSource.range(of: "private var inlineText: String"))
+        let inlineEnd = try XCTUnwrap(widgetSource.range(of: "private var largeFooterText: String",
+                                                          range: inlineStart.upperBound..<widgetSource.endIndex))
+        let inlineBody = String(widgetSource[inlineStart.lowerBound..<inlineEnd.lowerBound])
+        XCTAssertTrue(inlineBody.contains("whiteboardRowValue(\"hrv\")"),
+                      "inline leads with the whiteboard's measured numbers")
+        XCTAssertFalse(inlineBody.contains(".strain"),
+                       "inline must not surface strain without the cycle/evidence gate")
         XCTAssertFalse(widgetSource.contains(
             "entry.snapshot.map { String(format: \"%.1f\", $0.strain) }"
         ))

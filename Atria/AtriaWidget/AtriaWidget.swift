@@ -164,6 +164,16 @@ private func atriaCaptureTimeText(_ capturedAt: Date) -> String {
     atriaTimeOfDayFormatter.string(from: capturedAt)
 }
 
+/// 2026-08-14 (§13.6): decode-side mirror of the app target's
+/// WidgetWhiteboardRow. Strings only — the extension never recomputes bands.
+struct AtriaWidgetWhiteboardRow: Codable, Equatable {
+    let id: String
+    let symbol: String
+    let value: String
+    let sentence: String
+    let tone: String
+}
+
 struct AtriaWidgetSnapshot: Codable {
     let schema: Int
     let createdAt: Date
@@ -193,6 +203,11 @@ struct AtriaWidgetSnapshot: Codable {
     var recoveryExpiresAt: Date? = nil
     var sleepExpiresAt: Date? = nil
 
+    // 2026-08-14 (§13.6): additive pre-rendered whiteboard mirror.
+    var whiteboardRows: [AtriaWidgetWhiteboardRow]? = nil
+    var whiteboardExpiresAt: Date? = nil
+    var sleepNeedHours: Double? = nil
+
     /// Fail-closed identity enforcement (handoff-10 CP1). Legacy snapshots
     /// without the identity keys keep their existing behavior.
     mutating func atriaEnforceCurrentDayIdentity(now: Date = Date()) {
@@ -203,6 +218,11 @@ struct AtriaWidgetSnapshot: Codable {
         if let expires = sleepExpiresAt, now >= expires {
             sleepHours = nil
             sleepDetail = "Awaiting current sleep"
+        }
+        // 2026-08-14 (§13.6): the mirror expires with the display civil day.
+        if let expires = whiteboardExpiresAt, now >= expires {
+            whiteboardRows = nil
+            sleepNeedHours = nil
         }
     }
     let steps: Int?
@@ -305,7 +325,9 @@ struct AtriaWidgetProvider: TimelineProvider {
         }
         // Handoff-10 CP1: reload exactly when the display-day identity expires
         // so a retained snapshot blanks recovery/sleep on its own.
-        for identityExpiry in [snapshot?.recoveryExpiresAt, snapshot?.sleepExpiresAt] {
+        for identityExpiry in [snapshot?.recoveryExpiresAt,
+                               snapshot?.sleepExpiresAt,
+                               snapshot?.whiteboardExpiresAt] {
             if let identityExpiry, identityExpiry > now, identityExpiry < refreshAt {
                 entryDates.append(identityExpiry)
             }
@@ -422,23 +444,15 @@ struct AtriaWidgetEntryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
+    // 2026-08-14 (§13.6): the small aggregate face leads with the morning
+    // whiteboard mirror; the Recovery gauge is demoted to an index elsewhere.
+    // recoveryOnlyWidget stays the pin-anchored extreme-constraint terminal.
     private var standardSmallWidget: some View {
         VStack(alignment: .leading, spacing: 6) {
             widgetHeader
 
-            HStack(alignment: .center, spacing: 10) {
-                AtriaWidgetRecoveryGauge(percent: entry.snapshot?.recoveryPercent)
-                    .frame(width: 66, height: 66)
-
-                if let metric = smallWidgetMetric {
-                    smallMetricSummary(metric)
-                } else {
-                    Text("Metrics learning")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
+            AtriaWidgetWhiteboardList(rows: entry.snapshot?.whiteboardRows,
+                                      compact: true)
 
             Text(widgetStatusFooter)
                 .font(.caption2.weight(.medium))
@@ -453,10 +467,8 @@ struct AtriaWidgetEntryView: View {
     private var accessibleSmallWidget: some View {
         VStack(alignment: .leading, spacing: 4) {
             widgetHeader
-            recoverySummaryRow
-            if let metric = smallWidgetMetric {
-                flatMetricRow(metric)
-            }
+            AtriaWidgetWhiteboardList(rows: entry.snapshot?.whiteboardRows,
+                                      compact: true)
             Text(widgetStatusFooter)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(widgetStatusTint)
@@ -768,31 +780,12 @@ struct AtriaWidgetEntryView: View {
         VStack(alignment: .leading, spacing: 14) {
             widgetHeader
 
-            HStack(alignment: .center, spacing: 16) {
-                AtriaWidgetRecoveryGauge(percent: entry.snapshot?.recoveryPercent)
-                    .frame(width: 118, height: 118)
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(secondaryText)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.72)
-                    Text(footerText)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.72)
-                    if entry.snapshot?.batteryLevel != nil {
-                        Label(largeBatteryText, systemImage: batterySymbol)
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(batteryTint)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.72)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            // 2026-08-14 (§13.6): the whiteboard mirror leads the large face;
+            // Recovery stays visible below as a one-line index ("keep as
+            // index"), reusing the pin-anchored recoverySummaryRow.
+            AtriaWidgetWhiteboardList(rows: entry.snapshot?.whiteboardRows,
+                                      compact: false)
+            recoverySummaryRow
 
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                 ForEach(widgetMetrics) { metric in
@@ -1092,68 +1085,89 @@ struct AtriaWidgetEntryView: View {
     /// A stale snapshot keeps its real number (matching the medium widget) but
     /// loses the zone color and gains an age disclosure, so an old score can
     /// never pass for a live one.
+    // 2026-08-14 (§13.6): the circular complication shows sleep-vs-need — the
+    // one whiteboard fact with an honest 0–1 denominator (the frozen need).
+    // Missing sleep or need renders a gray zero gauge: no verdict, never an
+    // invented denominator. A stale snapshot keeps the gray-out rule.
     private var accessoryCircular: some View {
         let stale = entry.snapshot.map { atriaSnapshotIsStale($0, now: entry.date) } == true
         return Gauge(value: accessoryCircularProgress) {
-            Text("REC")
+            Text("SLP")
         } currentValueLabel: {
-            Text(entry.snapshot?.recoveryPercent.map { "\($0)" } ?? "--")
+            Text(accessoryCircularCenterText)
         }
         .gaugeStyle(.accessoryCircularCapacity)
-        .tint(stale ? Color.secondary : atriaRecoveryZoneColor(entry.snapshot?.recoveryPercent))
+        .tint(stale || accessoryCircularProgress == 0 ? Color.secondary : .cyan)
         .containerBackground(.background, for: .widget)
         .accessibilityLabel(accessoryCircularAccessibilityLabel(stale: stale))
     }
 
+    private var accessoryCircularCenterText: String {
+        guard let hours = entry.snapshot?.sleepHours else { return "--" }
+        return String(format: "%.1f", hours)
+    }
+
     private func accessoryCircularAccessibilityLabel(stale: Bool) -> String {
         guard let snapshot = entry.snapshot,
-              let percent = snapshot.recoveryPercent else { return "Recovery learning" }
-        guard stale else { return "Recovery \(percent) percent" }
-        let hours = atriaSnapshotAgeMinutes(snapshot, now: entry.date) / 60
-        return "Recovery \(percent) percent, stale, from \(hours) hours ago"
+              let hours = snapshot.sleepHours,
+              let need = snapshot.sleepNeedHours else { return "Sleep learning" }
+        let base = String(format: "Sleep %.1f hours of %.1f needed", hours, need)
+        guard stale else { return base }
+        let age = atriaSnapshotAgeMinutes(snapshot, now: entry.date) / 60
+        return "\(base), stale, from \(age) hours ago"
     }
 
     private var accessoryCircularProgress: Double {
-        guard let percent = entry.snapshot?.recoveryPercent else { return 0 }
-        return min(1, max(0, Double(percent) / 100))
+        guard let hours = entry.snapshot?.sleepHours,
+              let need = entry.snapshot?.sleepNeedHours,
+              need > 0 else { return 0 }
+        return min(1, max(0, hours / need))
     }
 
-    /// Recovery / Strain / HR three-line summary for the Lock Screen.
+    /// 2026-08-14 (§13.6): whiteboard three-line summary for the Lock Screen —
+    /// HRV·RHR, sleep vs need, then staleness disclosure or yesterday's load.
+    /// The Recovery-gauge lead is gone; accessoryRecoveryLine/accessoryStrainLine
+    /// stay as retained vocabulary.
     private var accessoryRectangular: some View {
-        HStack(spacing: 8) {
-            // Leading recovery gauge (design 2026-08-05): a richer lock-screen
-            // glance. Shown only for a FRESH recovery reading so a stale value
-            // never renders as a live gauge (mirrors the honesty rule below).
-            if let recovery = entry.snapshot?.recoveryPercent,
-               entry.snapshot.map({ atriaSnapshotIsStale($0, now: entry.date) }) == false {
-                Gauge(value: Double(recovery), in: 0...100) {
-                    EmptyView()
-                } currentValueLabel: {
-                    Text("\(recovery)")
-                        .font(.system(size: 12, weight: .bold))
-                        .minimumScaleFactor(0.6)
-                }
-                .gaugeStyle(.accessoryCircularCapacity)
-                .tint(atriaRecoveryZoneColor(recovery))
-            }
-            VStack(alignment: .leading, spacing: 1) {
-                Text(accessoryRecoveryLine)
-                    .font(.caption.monospacedDigit().weight(.bold))
-                    .lineLimit(1)
-                Text(accessoryStrainLine)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                // At 6h+ the HR line is "HR --" anyway (its own capture clock);
-                // spend that line on the staleness disclosure the larger families
-                // already show, so old recovery/strain never read as live.
-                Text(accessoryStaleLine ?? accessoryHRLine)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+        VStack(alignment: .leading, spacing: 1) {
+            Text(accessoryWhiteboardLine1)
+                .font(.caption.monospacedDigit().weight(.bold))
+                .lineLimit(1)
+            Text(accessoryWhiteboardLine2)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            // At 6h+ old, the staleness disclosure outranks the third row so
+            // old numbers never read as live (same rule the larger families
+            // follow).
+            Text(accessoryStaleLine ?? accessoryWhiteboardLine3)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
         .containerBackground(.background, for: .widget)
+    }
+
+    private func whiteboardRowValue(_ id: String) -> String? {
+        entry.snapshot?.whiteboardRows?.first { $0.id == id }?.value
+    }
+
+    private var accessoryWhiteboardLine1: String {
+        "\(whiteboardRowValue("hrv") ?? "HRV --") · \(whiteboardRowValue("rhr") ?? "RHR --")"
+    }
+
+    private var accessoryWhiteboardLine2: String {
+        guard let row = entry.snapshot?.whiteboardRows?.first(where: { $0.id == "sleep" }) else {
+            return "Sleep --"
+        }
+        return "\(row.value) \(row.sentence)"
+    }
+
+    private var accessoryWhiteboardLine3: String {
+        guard let row = entry.snapshot?.whiteboardRows?.first(where: { $0.id == "yesterday" }) else {
+            return accessoryHRLine
+        }
+        return "\(row.value) · \(row.sentence)"
     }
 
     private var accessoryStaleLine: String? {
@@ -1261,14 +1275,14 @@ struct AtriaWidgetEntryView: View {
     /// "Rec 64% · 12.3 strain" — honestly falls back to "--" while recovery
     /// is still learning rather than fabricating a percent, and discloses the
     /// snapshot age once it crosses the stale threshold.
+    // 2026-08-14 (§13.6): inline speaks the whiteboard's measured numbers.
     private var inlineText: String {
         guard let snapshot = entry.snapshot else { return "Atria learning" }
-        let recovery = snapshot.recoveryPercent.map { "\($0)%" } ?? "--"
-        let strain = AtriaWidgetMetric.strain.value(snapshot, now: entry.date)
+        let hrv = whiteboardRowValue("hrv") ?? "HRV --"
         if atriaSnapshotIsStale(snapshot, now: entry.date) {
-            return "Rec \(recovery) · \(atriaSnapshotAgeMinutes(snapshot, now: entry.date) / 60)h old"
+            return "\(hrv) · \(atriaSnapshotAgeMinutes(snapshot, now: entry.date) / 60)h old"
         }
-        return "Rec \(recovery) · \(strain) strain"
+        return "\(hrv) · \(whiteboardRowValue("rhr") ?? "RHR --")"
     }
 
     private var largeFooterText: String {
@@ -1373,6 +1387,10 @@ private struct AtriaWidgetDailyConcentricRings: View {
     }
 }
 
+/// 2026-08-14 (§13.6): no aggregate face leads with this gauge anymore — the
+/// whiteboard mirror does. The struct is retained (a) as the terminal
+/// extreme-constraint fallback vocabulary and (b) because three green source
+/// range-anchors end on this declaration; remove only with a pin migration.
 private struct AtriaWidgetRecoveryGauge: View {
     let percent: Int?
 
@@ -1406,6 +1424,64 @@ private struct AtriaWidgetRecoveryGauge: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(percent.map { "Recovery \($0) percent" } ?? "Recovery learning")
+    }
+}
+
+/// 2026-08-14 (§13.6): whiteboard tone → tint, mirroring the Today card.
+private func atriaWhiteboardToneColor(_ tone: String) -> Color {
+    switch tone {
+    case "supportive": return .green
+    case "caution": return .orange
+    case "strained": return .red
+    default: return .secondary
+    }
+}
+
+/// 2026-08-14 (§13.6): the widget face of the morning whiteboard. Renders the
+/// pre-serialized rows verbatim; nil/empty rows show one honest placeholder
+/// instead of resurrecting a Recovery lead.
+private struct AtriaWidgetWhiteboardList: View {
+    let rows: [AtriaWidgetWhiteboardRow]?
+    let compact: Bool
+
+    var body: some View {
+        if let rows, !rows.isEmpty {
+            VStack(alignment: .leading, spacing: compact ? 4 : 7) {
+                ForEach(rows, id: \.id) { row in
+                    HStack(spacing: 6) {
+                        if compact {
+                            Circle()
+                                .fill(atriaWhiteboardToneColor(row.tone))
+                                .frame(width: 5, height: 5)
+                        } else {
+                            Image(systemName: row.symbol)
+                                .font(.caption2)
+                                .foregroundStyle(atriaWhiteboardToneColor(row.tone))
+                                .frame(width: 14)
+                        }
+                        Text(row.value)
+                            .font(compact ? .caption2.weight(.bold) : .caption.weight(.bold))
+                            .foregroundStyle(atriaWhiteboardToneColor(row.tone))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        if !compact {
+                            Text(row.sentence)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(row.value), \(row.sentence)")
+                }
+            }
+        } else {
+            Text("Whiteboard awaiting data · Open Atria")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -1455,6 +1531,23 @@ private enum AtriaDailyOverviewPreviewFixture {
             maxHR: 190,
             sleepHours: 7.4,
             sleepDetail: "Review sleep",
+            // 2026-08-14 (§13.6): sample whiteboard mirror for previews.
+            whiteboardRows: [
+                .init(id: "hrv", symbol: "waveform.path.ecg",
+                      value: "HRV 52 ms", sentence: "typical 48–61 ms",
+                      tone: "supportive"),
+                .init(id: "rhr", symbol: "heart",
+                      value: "RHR 55 bpm", sentence: "typical 53–61 bpm",
+                      tone: "supportive"),
+                .init(id: "sleep", symbol: "moon.zzz.fill",
+                      value: "Slept 7h 24m", sentence: "of 8h 20m need",
+                      tone: "supportive"),
+                .init(id: "yesterday", symbol: "flame",
+                      value: "TRIMP 188 (15.0)", sentence: "yesterday",
+                      tone: "neutral"),
+            ],
+            whiteboardExpiresAt: Date().addingTimeInterval(12 * 3_600),
+            sleepNeedHours: 8.3,
             steps: nil,
             stepsAreEstimated: nil,
             stepsCapturedAt: nil,
