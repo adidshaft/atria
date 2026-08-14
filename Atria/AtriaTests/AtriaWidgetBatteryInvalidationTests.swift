@@ -7,7 +7,7 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         let suite = "AtriaWidgetBatteryInvalidationTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let snapshot = WidgetSnapshot(schema: 4,
+        var snapshot = WidgetSnapshot(schema: 4,
                                       createdAt: Date(),
                                       recoveryPercent: 61,
                                       recoveryConfidence: "personal_baseline",
@@ -42,6 +42,24 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
                                       appGroupEnabled: false,
                                       widgetTargetPresent: true,
                                       complicationTargetPresent: true)
+        snapshot.displayCivilDay = Date(timeIntervalSince1970: 1_000)
+        snapshot.displayCivilDayKey = "1970-01-01"
+        snapshot.displayTimeZoneIdentifier = "Etc/UTC"
+        snapshot.recoveryValueState = "currentCycle"
+        snapshot.recoveryExpiresAt = Date(timeIntervalSince1970: 87_400)
+        snapshot.sleepExpiresAt = Date(timeIntervalSince1970: 87_400)
+        snapshot.whiteboardRows = [
+            WidgetWhiteboardRow(id: "hrv", symbol: "waveform.path.ecg",
+                                value: "48 ms", sentence: "Personal baseline",
+                                tone: "supportive")
+        ]
+        snapshot.whiteboardExpiresAt = Date(timeIntervalSince1970: 87_400)
+        snapshot.sleepNeedHours = 8.25
+        snapshot.sleepFillFraction = 0.91
+        snapshot.sleepFillAuthority = "nightlyNeed"
+        snapshot.recoveryZone = "yellow"
+        snapshot.hrvCapturedAt = Date(timeIntervalSince1970: 1_350)
+        snapshot.biomarkerExpiresAt = Date(timeIntervalSince1970: 87_400)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         defaults.set(try encoder.encode(snapshot), forKey: "atria.widgetSnapshot.v1")
@@ -67,11 +85,26 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(sanitized.heartRateCapturedAt, snapshot.heartRateCapturedAt)
         XCTAssertEqual(sanitized.heartRateZoneIndex, 1)
         XCTAssertEqual(sanitized.dailyStepGoal, 8_000)
+        XCTAssertEqual(sanitized.displayCivilDay, snapshot.displayCivilDay)
+        XCTAssertEqual(sanitized.displayCivilDayKey, snapshot.displayCivilDayKey)
+        XCTAssertEqual(sanitized.displayTimeZoneIdentifier,
+                       snapshot.displayTimeZoneIdentifier)
+        XCTAssertEqual(sanitized.recoveryValueState, snapshot.recoveryValueState)
+        XCTAssertEqual(sanitized.recoveryExpiresAt, snapshot.recoveryExpiresAt)
+        XCTAssertEqual(sanitized.sleepExpiresAt, snapshot.sleepExpiresAt)
+        XCTAssertEqual(sanitized.whiteboardRows, snapshot.whiteboardRows)
+        XCTAssertEqual(sanitized.whiteboardExpiresAt, snapshot.whiteboardExpiresAt)
+        XCTAssertEqual(sanitized.sleepNeedHours, snapshot.sleepNeedHours)
+        XCTAssertEqual(sanitized.sleepFillFraction, snapshot.sleepFillFraction)
+        XCTAssertEqual(sanitized.sleepFillAuthority, snapshot.sleepFillAuthority)
+        XCTAssertEqual(sanitized.recoveryZone, snapshot.recoveryZone)
+        XCTAssertEqual(sanitized.hrvCapturedAt, snapshot.hrvCapturedAt)
+        XCTAssertEqual(sanitized.biomarkerExpiresAt, snapshot.biomarkerExpiresAt)
     }
 
     func testLiveWorkoutPatchChangesOnlyLiveWidgetFields() {
         let createdAt = Date(timeIntervalSince1970: 2_000)
-        let current = WidgetSnapshot(schema: 4,
+        var current = WidgetSnapshot(schema: 4,
                                      createdAt: Date(timeIntervalSince1970: 1_000),
                                      recoveryPercent: 61,
                                      recoveryConfidence: "personal_baseline",
@@ -110,12 +143,32 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
                                      appGroupEnabled: false,
                                      widgetTargetPresent: true,
                                      complicationTargetPresent: true)
+        current.displayCivilDay = Date(timeIntervalSince1970: 500)
+        current.displayCivilDayKey = "1970-01-01"
+        current.displayTimeZoneIdentifier = "Etc/UTC"
+        current.recoveryValueState = "currentCycle"
+        current.recoveryExpiresAt = Date(timeIntervalSince1970: 86_900)
+        current.sleepExpiresAt = Date(timeIntervalSince1970: 86_900)
+        current.whiteboardRows = [
+            WidgetWhiteboardRow(id: "hrv", symbol: "waveform.path.ecg",
+                                value: "48 ms", sentence: "Personal baseline",
+                                tone: "supportive")
+        ]
+        current.whiteboardExpiresAt = Date(timeIntervalSince1970: 86_900)
+        current.sleepNeedHours = 8
+        current.sleepFillFraction = 0.94
+        current.sleepFillAuthority = "nightlyNeed"
+        current.recoveryZone = "yellow"
+        current.hrvCapturedAt = Date(timeIntervalSince1970: 800)
+        current.biomarkerExpiresAt = Date(timeIntervalSince1970: 86_900)
 
         let patched = WidgetSnapshotPublisher.liveWorkoutPatchedSnapshot(
             current: current,
             createdAt: createdAt,
             heartRate: 151,
             heartRateCapturedAt: Date(timeIntervalSince1970: 1_999),
+            heartRateZoneIndex: 3,
+            heartRateZoneName: "Aerobic",
             steps: 1_120,
             stepsAreEstimated: true,
             stepsCapturedAt: Date(timeIntervalSince1970: 1_998),
@@ -167,6 +220,21 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(patched.hrvRMSSD, current.hrvRMSSD)
         XCTAssertEqual(patched.sleepHours, current.sleepHours)
         XCTAssertEqual(patched.layoutGlanceMetrics, current.layoutGlanceMetrics)
+        XCTAssertEqual(patched.displayCivilDay, current.displayCivilDay)
+        XCTAssertEqual(patched.displayCivilDayKey, current.displayCivilDayKey)
+        XCTAssertEqual(patched.displayTimeZoneIdentifier,
+                       current.displayTimeZoneIdentifier)
+        XCTAssertEqual(patched.recoveryValueState, current.recoveryValueState)
+        XCTAssertEqual(patched.recoveryExpiresAt, current.recoveryExpiresAt)
+        XCTAssertEqual(patched.sleepExpiresAt, current.sleepExpiresAt)
+        XCTAssertEqual(patched.whiteboardRows, current.whiteboardRows)
+        XCTAssertEqual(patched.whiteboardExpiresAt, current.whiteboardExpiresAt)
+        XCTAssertEqual(patched.sleepNeedHours, current.sleepNeedHours)
+        XCTAssertEqual(patched.sleepFillFraction, current.sleepFillFraction)
+        XCTAssertEqual(patched.sleepFillAuthority, current.sleepFillAuthority)
+        XCTAssertEqual(patched.recoveryZone, current.recoveryZone)
+        XCTAssertEqual(patched.hrvCapturedAt, current.hrvCapturedAt)
+        XCTAssertEqual(patched.biomarkerExpiresAt, current.biomarkerExpiresAt)
     }
 
     func testDurableStepPatchAdvancesSameCountReceiptWithoutTouchingOtherMetrics()
@@ -1727,7 +1795,7 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
 
-        XCTAssertTrue(widgetSource.contains("let stepsCapturedAt: Date?"))
+        XCTAssertTrue(widgetSource.contains("var stepsCapturedAt: Date?"))
         XCTAssertTrue(widgetSource.contains("var stepsAreEstimated: Bool? = nil"))
         XCTAssertTrue(widgetSource.contains(
             "var stepsAuthorityVersion: String? = nil"
@@ -1749,7 +1817,10 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
                        "A generic 90-second cap must not shorten 10-minute battery truth")
         XCTAssertTrue(widgetSource.contains("private let atriaBatteryFreshness: TimeInterval = 10 * 60"))
         XCTAssertTrue(widgetSource.contains("private let atriaBatteryChargeFreshness: TimeInterval = 90"))
-        XCTAssertTrue(widgetSource.contains("private let atriaHeartRateFreshness: TimeInterval = 90"))
+        XCTAssertTrue(widgetSource.contains("private let atriaStaticHeartRateFreshness: TimeInterval = 65"),
+                      "Static Last HR must cover the bounded one-minute WidgetKit delivery cadence")
+        XCTAssertTrue(widgetSource.contains("private let atriaLiveHeartRateFreshness: TimeInterval = 6"),
+                      "Live Activity must retain the app's six-second HR authority")
         XCTAssertTrue(widgetSource.contains("private let atriaStaticStepFreshness: TimeInterval = 90"))
         XCTAssertTrue(widgetSource.contains("private let atriaLiveActivityStepFreshness: TimeInterval = 15"))
         XCTAssertTrue(widgetSource.contains("age <= freshness"))
@@ -1757,8 +1828,8 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(widgetSource.contains("snapshot.stepsSource == \"verifiedCanonical\""))
         XCTAssertTrue(widgetSource.contains("freshness: atriaStaticStepFreshness"))
         XCTAssertTrue(widgetSource.contains("capturedAt: s.heartRateCapturedAt"))
-        XCTAssertTrue(widgetSource.contains("freshness: atriaHeartRateFreshness"))
-        XCTAssertTrue(widgetSource.contains("(snapshot?.heartRateCapturedAt, atriaHeartRateFreshness)"))
+        XCTAssertTrue(widgetSource.contains("freshness: atriaStaticHeartRateFreshness"))
+        XCTAssertTrue(widgetSource.contains("(snapshot?.heartRateCapturedAt, atriaStaticHeartRateFreshness)"))
         XCTAssertTrue(widgetSource.contains(
             "expirySources.append((snapshot?.stepsCapturedAt, atriaStaticStepFreshness))"
         ))
@@ -1767,7 +1838,7 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
                       "The timeline must clear each sensor at its exact expiry boundary")
         XCTAssertFalse(widgetSource.contains("case .bpm:\n            return s.heartRate.map(String.init)"))
         XCTAssertTrue(widgetSource.contains("return \"HR stale · last \\(atriaCaptureTimeText(capturedAt))\""))
-        XCTAssertTrue(widgetSource.contains("return \"\\(zone) · \\(atriaCaptureTimeText(capturedAt))\""))
+        XCTAssertTrue(widgetSource.contains("return \"Last reading · \\(zone) · \\(atriaCaptureTimeText(capturedAt))\""))
     }
 
     func testStaticCumulativeDayStrainDoesNotExpireWithLiveHeartRate() throws {
@@ -2664,6 +2735,284 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(source.contains("Widget stale"))
         XCTAssertFalse(source.contains("Recovery updated"))
         XCTAssertFalse(source.contains("Recovery stale"))
+    }
+
+    func testCurrentCycleHRVDisplayAuthorityWithholdsRecoveryOnlyCandidate() throws {
+        let now = Date(timeIntervalSince1970: 100_000)
+
+        XCTAssertNil(AtriaCurrentCycleHRVDisplayProjection.resolve(
+            validated: nil,
+            live: nil,
+            local: nil,
+            now: now
+        ), "a Recovery-only nightly candidate is not a display source")
+
+        let local = SessionStore.LatestSessionMetricSource(
+            sessionID: UUID(),
+            start: now.addingTimeInterval(-600),
+            end: now.addingTimeInterval(-300),
+            value: 48,
+            priority: 1
+        )
+        let validated = SessionStore.LatestSessionMetricSource(
+            sessionID: UUID(),
+            start: now.addingTimeInterval(-500),
+            end: now.addingTimeInterval(-200),
+            value: 52,
+            priority: 2
+        )
+        XCTAssertEqual(
+            AtriaCurrentCycleHRVDisplayProjection.resolve(
+                validated: nil,
+                live: nil,
+                local: local,
+                now: now
+            ),
+            .init(value: 48, measuredAt: local.end, source: .localDisplay)
+        )
+        XCTAssertEqual(
+            AtriaCurrentCycleHRVDisplayProjection.resolve(
+                validated: validated,
+                live: nil,
+                local: local,
+                now: now
+            ),
+            .init(value: 52,
+                  measuredAt: validated.end,
+                  source: .referenceValidated)
+        )
+        let stale = SessionStore.LatestSessionMetricSource(
+            sessionID: UUID(),
+            start: now.addingTimeInterval(-90_000),
+            end: now.addingTimeInterval(-86_401),
+            value: 57,
+            priority: 3
+        )
+        XCTAssertNil(AtriaCurrentCycleHRVDisplayProjection.resolve(
+            validated: stale,
+            live: nil,
+            local: stale,
+            now: now
+        ), "neither Today nor widgets may revive an expired nightly HRV")
+
+        let producerURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/WidgetSnapshot.swift")
+        let producer = try String(contentsOf: producerURL, encoding: .utf8)
+        XCTAssertTrue(producer.contains(
+            "AtriaCurrentCycleHRVDisplayProjection.resolve("
+        ))
+        XCTAssertFalse(producer.contains("latestLocalRecoveryHRV(on:"),
+                       "the widget must not resurrect Recovery-only HRV")
+        XCTAssertFalse(producer.contains("frozenTodayRollup?.lnRMSSD"),
+                       "a rollup HRV is not automatically a current display HRV")
+
+        let homeURL = producerURL.deletingLastPathComponent()
+            .appendingPathComponent("AtriaHomeView.swift")
+        let home = try String(contentsOf: homeURL, encoding: .utf8)
+        XCTAssertFalse(home.contains("else if rrPackage.ready, let rmssd"),
+                       "Today must not retain a second independent HRV display authority")
+    }
+
+    func testRecoveryZoneUsesSerializedCustomThresholds() {
+        XCTAssertEqual(WidgetSnapshotPublisher.recoveryZoneIdentifier(
+            percent: 75,
+            greenLower: 80,
+            yellowLower: 50
+        ), "yellow")
+        XCTAssertEqual(WidgetSnapshotPublisher.recoveryZoneIdentifier(
+            percent: 80,
+            greenLower: 80,
+            yellowLower: 50
+        ), "green")
+        XCTAssertEqual(WidgetSnapshotPublisher.recoveryZoneIdentifier(
+            percent: 49,
+            greenLower: 80,
+            yellowLower: 50
+        ), "red")
+        XCTAssertNil(WidgetSnapshotPublisher.recoveryZoneIdentifier(
+            percent: nil,
+            greenLower: 80,
+            yellowLower: 50
+        ))
+    }
+
+    func testEveryStableIdentitySemanticForcesImmediateTimelineReload() {
+        let now = Date(timeIntervalSince1970: 200_000)
+        var base = deliverySnapshot(
+            steps: 1_000,
+            stepsCapturedAt: now,
+            heartRate: 72,
+            heartRateCapturedAt: now
+        )
+        base.displayCivilDay = now
+        base.displayCivilDayKey = "1970-01-03"
+        base.displayTimeZoneIdentifier = "Etc/UTC"
+        base.recoveryValueState = "currentCycle"
+        base.recoveryExpiresAt = now.addingTimeInterval(1_000)
+        base.sleepExpiresAt = now.addingTimeInterval(1_000)
+        base.whiteboardRows = [
+            WidgetWhiteboardRow(id: "hrv",
+                                symbol: "waveform.path.ecg",
+                                value: "48 ms",
+                                sentence: "Personal baseline",
+                                tone: "supportive")
+        ]
+        base.whiteboardExpiresAt = now.addingTimeInterval(1_000)
+        base.sleepNeedHours = 8
+        base.sleepFillFraction = 0.75
+        base.sleepFillAuthority = "nightlyNeed"
+        base.recoveryZone = "yellow"
+        base.hrvCapturedAt = now.addingTimeInterval(-300)
+        base.biomarkerExpiresAt = now.addingTimeInterval(1_000)
+
+        func assertImmediate(
+            _ snapshot: WidgetSnapshot,
+            file: StaticString = #filePath,
+            line: UInt = #line
+        ) {
+            XCTAssertEqual(WidgetSnapshotPublisher.timelineReloadDelay(
+                previous: base,
+                lastReloadAt: now,
+                snapshot: snapshot,
+                now: now.addingTimeInterval(1)
+            ), 0, file: file, line: line)
+        }
+
+        var changed = base
+        changed.recoveryZone = "green"
+        assertImmediate(changed)
+        changed = base
+        changed.recoveryValueState = "partialCurrentDay"
+        assertImmediate(changed)
+        changed = base
+        changed.biomarkerExpiresAt = now.addingTimeInterval(2_000)
+        assertImmediate(changed)
+        changed = base
+        changed.hrvCapturedAt = now.addingTimeInterval(-100)
+        assertImmediate(changed)
+        changed = base
+        changed.sleepNeedHours = 9
+        assertImmediate(changed)
+        changed = base
+        changed.sleepFillFraction = 0.82
+        assertImmediate(changed)
+        changed = base
+        changed.sleepFillAuthority = "configuredGoal"
+        assertImmediate(changed)
+        changed = base
+        changed.displayCivilDayKey = "1970-01-04"
+        assertImmediate(changed)
+        changed = base
+        changed.whiteboardExpiresAt = now.addingTimeInterval(2_000)
+        assertImmediate(changed)
+        changed = base
+        changed.whiteboardRows = [
+            WidgetWhiteboardRow(id: "new-hrv",
+                                symbol: "heart.text.square.fill",
+                                value: base.whiteboardRows?.first?.value ?? "48 ms",
+                                sentence: base.whiteboardRows?.first?.sentence ?? "Personal baseline",
+                                tone: base.whiteboardRows?.first?.tone ?? "supportive")
+        ]
+        assertImmediate(changed)
+        changed = base
+        changed.stepsPriorCycleSteps = 4_200
+        assertImmediate(changed)
+    }
+
+    func testWidgetExtensionUsesAppAuthorityAndFailsClosedAtExpiry() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let widget = try String(
+            contentsOf: root.appendingPathComponent("AtriaWidget/AtriaWidget.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(widget.contains(
+            "private let atriaStaticHeartRateFreshness: TimeInterval = 65"
+        ))
+        XCTAssertTrue(widget.contains(
+            "private let atriaLiveHeartRateFreshness: TimeInterval = 6"
+        ))
+        XCTAssertTrue(widget.contains("zone: entry.snapshot?.recoveryZone"))
+        XCTAssertTrue(widget.contains("snapshot.sleepFillFraction"),
+                      "every sleep ring must prefer Today's serialized fill")
+        XCTAssertTrue(widget.contains("snapshot?.biomarkerExpiresAt"))
+        XCTAssertTrue(widget.contains("restingHR = nil"))
+        XCTAssertTrue(widget.contains("hrvRMSSD = nil"))
+        XCTAssertTrue(widget.contains(
+            "forSecurityApplicationGroupIdentifier: appGroupID"
+        ))
+
+        let intents = try String(
+            contentsOf: root.appendingPathComponent("Atria/AtriaAppIntents.swift"),
+            encoding: .utf8
+        )
+        let storeStart = try XCTUnwrap(intents.range(
+            of: "enum AtriaIntentSnapshotStore"
+        ))
+        let store = String(intents[storeStart.lowerBound...])
+        XCTAssertFalse(store.contains("?? .standard"))
+        XCTAssertFalse(store.contains("UserDefaults.standard.data(forKey: key)"))
+    }
+
+    func testActiveWorkoutRoutesStableDashboardChangesThroughFullPublisher() throws {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHomeView.swift")
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let start = try XCTUnwrap(source.range(
+            of: "private func scheduleWidgetSnapshot(reason: String)"
+        ))
+        let end = try XCTUnwrap(source.range(
+            of: "private func scheduleLiveSensorWidgetPatch",
+            range: start.upperBound..<source.endIndex
+        ))
+        let router = String(source[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(router.contains("isLiveOnlyReason"))
+        XCTAssertTrue(router.contains("dashboard authority"))
+        XCTAssertTrue(router.contains("WidgetSnapshotPublisher.schedulePublish"))
+        XCTAssertTrue(router.contains("scheduleLiveSensorWidgetPatch"))
+    }
+
+    func testStableAndLivePublishGenerationsCannotCancelEachOther() {
+        var authority = WidgetSnapshotPublisher.PublishLaneAuthority()
+        let stable = authority.mint(.stable)
+        let live = authority.mint(.live)
+        XCTAssertTrue(authority.isCurrent(stable),
+                      "a pulse must not invalidate a pending stable rebuild")
+        XCTAssertTrue(authority.isCurrent(live))
+
+        let newerLive = authority.mint(.live)
+        XCTAssertTrue(authority.isCurrent(stable))
+        XCTAssertFalse(authority.isCurrent(live))
+        XCTAssertTrue(authority.isCurrent(newerLive))
+
+        let newerStable = authority.mint(.stable)
+        XCTAssertFalse(authority.isCurrent(stable))
+        XCTAssertTrue(authority.isCurrent(newerStable))
+        XCTAssertTrue(authority.isCurrent(newerLive))
+    }
+
+    func testSiriPreservesRecoveryAndStrainQualifiers() {
+        XCTAssertEqual(AtriaIntentMetricPresentation.recoverySpoken(
+            percent: 54,
+            confidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue
+        ), "54 percent, early estimate")
+        XCTAssertEqual(AtriaIntentMetricPresentation.recoveryCompact(
+            percent: 54,
+            confidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue
+        ), "~54%")
+        XCTAssertEqual(AtriaIntentMetricPresentation.strainSpoken(
+            value: 3.42,
+            detail: "Partial · sparse HR"
+        ), "at least 3.4")
+        XCTAssertEqual(AtriaIntentMetricPresentation.strainCompact(
+            value: 3.42,
+            detail: "Partial · sparse HR"
+        ), "≥ 3.4")
     }
 
 }

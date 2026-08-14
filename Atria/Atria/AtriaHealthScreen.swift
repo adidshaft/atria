@@ -2,6 +2,97 @@ import SwiftUI
 import Charts
 import Combine
 
+/// One display authority for the current-cycle HRV shown by Today, Vitals, and
+/// every widget family. Recovery may retain a stricter overnight HRV candidate
+/// for its own score, but that candidate cannot silently become a displayed
+/// HRV value unless it also passes this presentation policy.
+struct AtriaCurrentCycleHRVDisplayProjection: Equatable {
+    enum Source: String, Equatable {
+        case referenceValidated = "reference_validated"
+        case liveRRWindow = "live_rr_window"
+        case localDisplay = "local_display"
+    }
+
+    let value: Int
+    let measuredAt: Date
+    let source: Source
+
+    static func resolve(
+        validated: SessionStore.LatestSessionMetricSource?,
+        live: HRVSnapshot?,
+        local: SessionStore.LatestSessionMetricSource?,
+        now: Date = Date()
+    ) -> Self? {
+        if let validated = SessionStore.displayEligibleHRVSource(
+            validated,
+            on: now,
+            maximumAge: SessionStore.hrvDisplayMaximumAge
+        ) {
+            return Self(value: validated.value,
+                        measuredAt: validated.end,
+                        source: .referenceValidated)
+        }
+        if let live,
+           live.isDisplayEligible(
+            on: now,
+            maximumAge: SessionStore.hrvDisplayMaximumAge
+           ) {
+            return Self(value: Int(live.rmssd.rounded()),
+                        measuredAt: live.measurementEnd,
+                        source: .liveRRWindow)
+        }
+        if let local = SessionStore.displayEligibleHRVSource(
+            local,
+            on: now,
+            maximumAge: SessionStore.hrvDisplayMaximumAge
+        ) {
+            return Self(value: local.value,
+                        measuredAt: local.end,
+                        source: .localDisplay)
+        }
+        return nil
+    }
+}
+
+/// Exact sleep-ring presentation shared by Today and every WidgetKit family.
+/// A measured duration can fill against either a qualified nightly need or the
+/// user's configured goal, but the authority remains explicit so a widget never
+/// invents a dotted/zero ring for the same sleep Today renders proportionally.
+struct AtriaCurrentCycleSleepFillProjection: Equatable {
+    enum Authority: String, Equatable {
+        case nightlyNeed
+        case configuredGoal
+    }
+
+    let fraction: Double?
+    let authority: Authority?
+
+    nonisolated static func resolve(
+        sleptHours: Double?,
+        nightlyNeedHours: Double?,
+        configuredGoalHours: Double
+    ) -> Self {
+        guard let sleptHours, sleptHours > 0 else {
+            return Self(fraction: nil, authority: nil)
+        }
+        if let nightlyNeedHours, nightlyNeedHours > 0 {
+            let percent = AtriaSleepBudget.performancePercent(
+                slept: sleptHours,
+                needed: nightlyNeedHours
+            )
+            return Self(
+                fraction: min(max(Double(percent) / 100, 0), 1),
+                authority: .nightlyNeed
+            )
+        }
+        let denominator = max(configuredGoalHours, 1)
+        return Self(
+            fraction: min(max(sleptHours / denominator, 0), 1),
+            authority: .configuredGoal
+        )
+    }
+}
+
 /// The Health tab intentionally does not observe the fast Home stores at its
 /// root: doing so would rebuild its chart-heavy hierarchy for every live pulse.
 /// This projection keeps only values the Health Monitor actually renders and

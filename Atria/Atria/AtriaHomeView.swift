@@ -3237,10 +3237,12 @@ struct AtriaHomeView: View {
 
     private func updateLiveActivity(forceActivityWrite: Bool = false) {
         let now = Date()
-        let heartRate = model.pulseLiveStore.state.heartRate
-        let zone = HRZone.zone(for: heartRate,
-                               maxHR: store.profile.maxHR,
-                               restingHR: store.baseline.restingInt ?? 60)
+        let pulse = model.pulseLiveStore.state
+        let heartRate = pulse.heartRate
+        // The pulse projection already resolved the best available resting-HR
+        // authority. Reusing it prevents a baseline-nil Live Activity from
+        // silently falling back to 60 bpm and disagreeing with Vitals.
+        let zone = pulse.heartRateZone
         let session = workoutSession
         let activityType = session?.activityType ?? .other
         let loadExclusions = AtriaLiveWorkoutTRIMPAccumulator.effectiveExcludedIntervals(
@@ -3278,7 +3280,7 @@ struct AtriaHomeView: View {
             isRecording: session != nil,
             heartRate: heartRate,
             heartRateCapturedAt: ble.lastAcceptedHeartRateAt,
-            sensorHasContact: model.pulseLiveStore.state.sensorHasContact,
+            sensorHasContact: pulse.sensorHasContact,
             heartRateAvailability: heartRateAvailability,
             strain: model.heroStore.state.strain,
             batteryLevel: displayableBatteryLevel ?? -1,
@@ -3290,8 +3292,8 @@ struct AtriaHomeView: View {
             startedAt: session?.start ?? Date(),
             activityName: activityType == .other ? "Workout" : activityType.rawValue,
             activitySystemImage: activityType.icon,
-            heartRateZoneIndex: zone.rawValue,
-            heartRateZoneName: zone.name,
+            heartRateZoneIndex: zone?.index,
+            heartRateZoneName: zone?.name,
             // Preserve the last source value and source clock in ActivityKit;
             // availability controls whether it is rendered. Clearing both on
             // staleness would erase the useful "last at" provenance.
@@ -3457,7 +3459,15 @@ struct AtriaHomeView: View {
     }
 
     private func scheduleWidgetSnapshot(reason: String) {
-        guard workoutSession != nil else {
+        let isLiveOnlyReason = reason == "live_signal_cleared"
+            || reason == "live_throttled"
+            || reason == "live_bpm_delta"
+            || reason == "strap_battery_update"
+            || reason == "durable_strap_steps"
+        guard workoutSession != nil, isLiveOnlyReason else {
+            // Stable dashboard authority (sleep, Recovery, RHR, HRV, layout)
+            // must still rebuild during a workout. Laundering it through the
+            // live-only patch leaves those fields stale until the workout ends.
             WidgetSnapshotPublisher.schedulePublish(store: store,
                                                      ble: ble,
                                                      reason: reason)
@@ -3468,6 +3478,7 @@ struct AtriaHomeView: View {
 
     private func scheduleLiveSensorWidgetPatch(
         reason: String,
+        forceImmediateTimelineReload: Bool = false,
         delay: Duration = .milliseconds(60)
     ) {
         let core = model.coreLiveStore.state
@@ -3481,6 +3492,10 @@ struct AtriaHomeView: View {
         WidgetSnapshotPublisher.scheduleLiveWorkoutPatch(
             heartRate: liveHeartRate,
             heartRateCapturedAt: liveHeartRate == nil ? nil : ble.lastAcceptedHeartRateAt,
+            heartRateZoneIndex: liveHeartRate == nil
+                ? nil : pulse.heartRateZone?.index,
+            heartRateZoneName: liveHeartRate == nil
+                ? nil : pulse.heartRateZone?.name,
             steps: steps,
             stepsAreEstimated: steps != nil
                 && (!dailySteps.isValidated
@@ -3512,6 +3527,7 @@ struct AtriaHomeView: View {
                 ? AtriaBLEManager.BatteryChargeStatus.levelOnly.label
                 : core.batteryChargeStatus.label,
             reason: reason,
+            forceImmediateTimelineReload: forceImmediateTimelineReload,
             delay: delay
         )
     }
@@ -4332,6 +4348,7 @@ struct AtriaHomeView: View {
                     // preserving every workout checkpoint above.
                     scheduleLiveSensorWidgetPatch(
                         reason: "scene_background_live_workout",
+                        forceImmediateTimelineReload: true,
                         delay: .zero
                     )
                 } else {
@@ -4340,6 +4357,7 @@ struct AtriaHomeView: View {
                     WidgetSnapshotPublisher.schedulePublish(store: store,
                                                              ble: ble,
                                                              reason: "scene_background",
+                                                             forceImmediateTimelineReload: true,
                                                              delay: .zero)
                 }
                 if AtriaSceneResumePolicy.shouldStopMotionMonitor(isBackground: true) {
@@ -12432,53 +12450,42 @@ final class AtriaHomeModel {
         let now = Date()
         let validatedSource = store.latestReferenceValidatedHRVForDisplay
         let localSource = store.latestLocalRMSSDForDisplay
-        let readySnapshot = ble.hrvSnapshot.flatMap { snapshot -> HRVSnapshot? in
-            guard snapshot.isReady else { return nil }
-            let age = now.timeIntervalSince(snapshot.measurementEnd)
-            return age >= -5 * 60 && age <= SessionStore.hrvDisplayMaximumAge ? snapshot : nil
-        }
+        let projection = AtriaCurrentCycleHRVDisplayProjection.resolve(
+            validated: validatedSource,
+            live: ble.hrvSnapshot,
+            local: localSource,
+            now: now
+        )
 
-        let value: String
-        if let validatedSource {
-            value = "\(validatedSource.value)"
-        } else if let snapshot = readySnapshot {
-            value = "\(Int(snapshot.rmssd.rounded()))"
-        } else if let localSource {
-            value = "\(localSource.value)"
-        } else {
-            // Deterministic no-value token, matching every other metric value.
-            value = AtriaCompactMetricPresentation.noValue
-        }
+        // Deterministic no-value token, matching every other metric value.
+        let value = projection.map { String($0.value) }
+            ?? AtriaCompactMetricPresentation.noValue
 
         let detail: String
-        if let validatedSource {
-            detail = "validated · \(hrvMeasurementAgeText(validatedSource.end, now: now))"
-        } else if let snapshot = readySnapshot {
-            detail = "personal · \(hrvMeasurementAgeText(snapshot.measurementEnd, now: now))"
-        } else if let localSource {
-            detail = "personal · \(hrvMeasurementAgeText(localSource.end, now: now))"
+        if let projection {
+            let tier = projection.source == .referenceValidated
+                ? "validated" : "personal"
+            detail = "\(tier) · \(hrvMeasurementAgeText(projection.measuredAt, now: now))"
         } else {
             detail = hrvSettlingText(quality: ble.hrvQuality,
                                      liveHeartRate: liveHeartRate(ble: ble))
         }
 
         let narrative: String
-        if let validatedSource {
-            narrative = "Checked HRV was measured \(hrvMeasurementAgeText(validatedSource.end, now: now))."
-        } else if let snapshot = readySnapshot {
-            narrative = "Personal HRV was measured \(hrvMeasurementAgeText(snapshot.measurementEnd, now: now))."
-        } else if let localSource {
-            narrative = "Personal HRV was measured \(hrvMeasurementAgeText(localSource.end, now: now))."
+        if let projection {
+            let label = projection.source == .referenceValidated
+                ? "Checked" : "Personal"
+            narrative = "\(label) HRV was measured \(hrvMeasurementAgeText(projection.measuredAt, now: now))."
         } else {
             narrative = "Atria is waiting for a fresh beat-to-beat HRV window."
         }
 
         let packageText: String
-        if validatedSource != nil {
+        if projection?.source == .referenceValidated {
             packageText = "Validated"
-        } else if readySnapshot != nil {
+        } else if projection?.source == .liveRRWindow {
             packageText = "Unverified"
-        } else if localSource != nil {
+        } else if projection?.source == .localDisplay {
             packageText = "Personal"
         } else {
             packageText = "Learning"
@@ -12714,9 +12721,12 @@ final class AtriaHomeModel {
                                             recoveryIsLearning: Bool) -> DeferredDetails {
         let diagnostics = store.homeDashboardDiagnostics()
         let now = Date()
-        let validatedDisplayHRV = store.latestReferenceValidatedHRVForDisplay
-        let localDisplayHRV = store.latestLocalRMSSDForDisplay
-        let readySnapshot = ble.hrvSnapshot.flatMap { $0.isDisplayEligible(on: now) ? $0 : nil }
+        let displayHRV = AtriaCurrentCycleHRVDisplayProjection.resolve(
+            validated: store.latestReferenceValidatedHRVForDisplay,
+            live: ble.hrvSnapshot,
+            local: store.latestLocalRMSSDForDisplay,
+            now: now
+        )
         let rrPackage = diagnostics.rrPackage
         let sleep = diagnostics.sleep
         let workout = diagnostics.workout
@@ -12725,24 +12735,16 @@ final class AtriaHomeModel {
         let trend90 = diagnostics.trend90
 
         let hrvValue: String
-        if let validatedDisplayHRV {
-            hrvValue = "\(validatedDisplayHRV.value)"
-        } else if rrPackage.ready, let rmssd = rrPackage.rmssd {
-            hrvValue = "\(Int(rmssd.rounded()))"
-        } else if let snapshot = readySnapshot {
-            hrvValue = "\(Int(snapshot.rmssd.rounded()))"
-        } else if let localDisplayHRV {
-            hrvValue = "\(localDisplayHRV.value)"
+        if let displayHRV {
+            hrvValue = "\(displayHRV.value)"
         } else {
             hrvValue = "Learning"
         }
 
         let hrvDetail: String
-        if validatedDisplayHRV != nil {
+        if displayHRV?.source == .referenceValidated {
             hrvDetail = "validated"
-        } else if rrPackage.ready {
-            hrvDetail = "\(rrPackage.confidencePercent)% kept"
-        } else if readySnapshot != nil || localDisplayHRV != nil {
+        } else if displayHRV != nil {
             hrvDetail = "personal baseline"
         } else {
             hrvDetail = hrvSettlingText(quality: ble.hrvQuality,
@@ -12750,11 +12752,9 @@ final class AtriaHomeModel {
         }
 
         let hrvNarrative: String
-        if validatedDisplayHRV != nil {
+        if displayHRV?.source == .referenceValidated {
             hrvNarrative = "Checked HRV is ready."
-        } else if rrPackage.ready {
-            hrvNarrative = "HRV-grade beat-to-beat data is ready as personal-baseline HRV."
-        } else if readySnapshot != nil || localDisplayHRV != nil {
+        } else if displayHRV != nil {
             hrvNarrative = "Beat-to-beat data is ready as personal-baseline HRV."
         } else {
             hrvNarrative = hrvSettlingText(quality: ble.hrvQuality,
@@ -12812,7 +12812,7 @@ final class AtriaHomeModel {
         }
 
         let rrPackageText: String
-        if validatedDisplayHRV != nil {
+        if displayHRV?.source == .referenceValidated {
             rrPackageText = "Validated"
         } else if rrPackage.ready {
             rrPackageText = "Ready"

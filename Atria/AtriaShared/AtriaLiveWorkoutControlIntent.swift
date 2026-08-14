@@ -160,7 +160,7 @@ struct AtriaLiveWorkoutControlIntent: LiveActivityIntent {
 
         // Preserve independent source freshness. A control tap must never make
         // stale pulse or motion evidence look newly sampled.
-        let heartRateExpiry = state.heartRateCapturedAt?.addingTimeInterval(90)
+        let heartRateExpiry = state.heartRateCapturedAt?.addingTimeInterval(6)
         let stepsExpiry = state.stepsCapturedAt?.addingTimeInterval(15)
         let batteryExpiry = state.batteryCapturedAt?.addingTimeInterval(10 * 60)
         let sourceExpiries = [

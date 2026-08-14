@@ -152,15 +152,109 @@ final class AtriaCurrentDayPresentationTests: XCTestCase {
     /// extension enforces the same expiry via its own decode-time sanitizer.
     func testIntentSnapshotFailsClosedPastDisplayDayExpiry() {
         let now = incidentNow
+        let dayKey = WidgetSnapshotPublisher.civilDayKey(for: now, calendar: calendar)
         XCTAssertFalse(AtriaIntentSnapshotStore.snapshotAnswersForCurrentDay(
+            createdAt: now, displayCivilDayKey: dayKey,
             recoveryExpiresAt: now.addingTimeInterval(-60), now: now
         ), "An expired display-day snapshot may not answer for today")
         XCTAssertTrue(AtriaIntentSnapshotStore.snapshotAnswersForCurrentDay(
+            createdAt: now, displayCivilDayKey: dayKey,
             recoveryExpiresAt: now.addingTimeInterval(3_600), now: now
         ))
-        // Legacy payloads without identity keys keep their existing behavior.
+        XCTAssertFalse(AtriaIntentSnapshotStore.snapshotAnswersForCurrentDay(
+            createdAt: now, displayCivilDayKey: dayKey,
+            recoveryExpiresAt: now.addingTimeInterval(3_600),
+            biomarkerExpiresAt: now.addingTimeInterval(-1),
+            now: now
+        ), "Siri may not revive an expired current-cycle RHR/HRV")
+        XCTAssertFalse(AtriaIntentSnapshotStore.snapshotAnswersForCurrentDay(
+            createdAt: now, displayCivilDayKey: dayKey,
+            recoveryExpiresAt: now.addingTimeInterval(3_600),
+            biomarkerExpiresAt: now.addingTimeInterval(3_600),
+            strainExpiresAt: now.addingTimeInterval(-1),
+            now: now
+        ), "Siri may not describe an expired cumulative-strain cycle as current")
+        // Same-day legacy payloads remain usable; an older one decodes but may
+        // not answer indefinitely after the local day changes.
         XCTAssertTrue(AtriaIntentSnapshotStore.snapshotAnswersForCurrentDay(
+            createdAt: now.addingTimeInterval(-60), displayCivilDayKey: nil,
             recoveryExpiresAt: nil, now: now
         ))
+        XCTAssertFalse(AtriaIntentSnapshotStore.snapshotAnswersForCurrentDay(
+            createdAt: day(0), displayCivilDayKey: nil,
+            recoveryExpiresAt: nil, now: now
+        ))
+    }
+
+    func testIntentSnapshotRejectsAKeyFromAnotherLocalDayAfterTravel() {
+        var india = Calendar(identifier: .gregorian)
+        india.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        var california = Calendar(identifier: .gregorian)
+        california.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        let instant = Date(timeIntervalSince1970: 1_786_386_600)
+        let indiaKey = WidgetSnapshotPublisher.civilDayKey(for: instant, calendar: india)
+        let californiaKey = WidgetSnapshotPublisher.civilDayKey(for: instant, calendar: california)
+        guard indiaKey != californiaKey else { return XCTFail("fixture must cross a civil day") }
+        XCTAssertFalse(AtriaIntentSnapshotStore.snapshotAnswersForCurrentDay(
+            createdAt: instant,
+            displayCivilDayKey: indiaKey,
+            recoveryExpiresAt: instant.addingTimeInterval(86_400),
+            now: instant,
+            calendar: california
+        ))
+    }
+
+    func testIntentAndWidgetIdentityRejectAnOldZoneEvenWhenDateKeyMatches() {
+        var india = Calendar(identifier: .gregorian)
+        india.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        var california = Calendar(identifier: .gregorian)
+        california.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        let instant = ISO8601DateFormatter().date(from: "2026-08-14T12:00:00Z")!
+        let indiaKey = WidgetSnapshotPublisher.civilDayKey(for: instant, calendar: india)
+        let californiaKey = WidgetSnapshotPublisher.civilDayKey(for: instant, calendar: california)
+        XCTAssertEqual(indiaKey, californiaKey,
+                       "The fixture must isolate timezone identity from date identity")
+        XCTAssertFalse(AtriaIntentSnapshotStore.snapshotAnswersForCurrentDay(
+            createdAt: instant,
+            displayCivilDayKey: indiaKey,
+            displayTimeZoneIdentifier: india.timeZone.identifier,
+            recoveryExpiresAt: instant.addingTimeInterval(86_400),
+            now: instant,
+            calendar: california
+        ))
+        XCTAssertTrue(AtriaIntentSnapshotStore.snapshotAnswersForCurrentDay(
+            createdAt: instant,
+            displayCivilDayKey: californiaKey,
+            displayTimeZoneIdentifier: california.timeZone.identifier,
+            recoveryExpiresAt: instant.addingTimeInterval(86_400),
+            now: instant,
+            calendar: california
+        ))
+    }
+
+    func testSleepRingFillUsesTheSameRoundedNeedAndGoalFallbackAsToday() {
+        let qualified = AtriaCurrentCycleSleepFillProjection.resolve(
+            sleptHours: 6.73,
+            nightlyNeedHours: 8.21,
+            configuredGoalHours: 8
+        )
+        let expectedPercent = AtriaSleepBudget.performancePercent(
+            slept: 6.73, needed: 8.21
+        )
+        XCTAssertEqual(qualified.authority, .nightlyNeed)
+        XCTAssertEqual(qualified.fraction, Double(expectedPercent) / 100)
+
+        let reviewOnly = AtriaCurrentCycleSleepFillProjection.resolve(
+            sleptHours: 3.5,
+            nightlyNeedHours: nil,
+            configuredGoalHours: 7
+        )
+        XCTAssertEqual(reviewOnly.authority, .configuredGoal)
+        XCTAssertEqual(try? XCTUnwrap(reviewOnly.fraction), 0.5)
+        XCTAssertNil(AtriaCurrentCycleSleepFillProjection.resolve(
+            sleptHours: nil,
+            nightlyNeedHours: 8,
+            configuredGoalHours: 8
+        ).fraction)
     }
 }

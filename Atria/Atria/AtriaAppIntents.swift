@@ -88,9 +88,15 @@ struct AtriaMetricsIntent: AppIntent {
                            view: AtriaMetricsSnippetView(snapshot: nil))
         }
 
-        let recovery = snapshot.recoveryPercent.map { "\($0) percent" } ?? "learning"
+        let recovery = AtriaIntentMetricPresentation.recoverySpoken(
+            percent: snapshot.recoveryPercent,
+            confidence: snapshot.recoveryConfidence
+        )
         let hrv = snapshot.hrvRMSSD.map { "\($0) milliseconds" } ?? snapshot.hrvState
-        let strain = String(format: "%.1f", snapshot.strain)
+        let strain = AtriaIntentMetricPresentation.strainSpoken(
+            value: snapshot.strain,
+            detail: snapshot.strainDetail
+        )
         let summary = "Recovery is \(recovery), strain is \(strain), and HRV is \(hrv)."
         return .result(value: summary,
                        dialog: IntentDialog(stringLiteral: summary),
@@ -106,10 +112,20 @@ private struct AtriaMetricsSnippetView: View {
     var body: some View {
         HStack(spacing: 14) {
             stat(label: "Recovery",
-                 value: snapshot?.recoveryPercent.map { "\($0)%" } ?? "--",
+                 value: snapshot.map {
+                    AtriaIntentMetricPresentation.recoveryCompact(
+                        percent: $0.recoveryPercent,
+                        confidence: $0.recoveryConfidence
+                    )
+                 } ?? "--",
                  tint: .cyan)
             stat(label: "Strain",
-                 value: snapshot.map { String(format: "%.1f", $0.strain) } ?? "--",
+                 value: snapshot.map {
+                    AtriaIntentMetricPresentation.strainCompact(
+                        value: $0.strain,
+                        detail: $0.strainDetail
+                    )
+                 } ?? "--",
                  tint: .orange)
             stat(label: "HRV",
                  value: snapshot?.hrvRMSSD.map { "\($0)ms" } ?? "--",
@@ -327,8 +343,11 @@ enum AtriaIntentSnapshotStore {
     private static let appGroupID = "group.com.adidshaft.atria"
 
     static func loadLatestSnapshot() -> WidgetSnapshot? {
-        let defaults = UserDefaults(suiteName: appGroupID) ?? .standard
-        guard let data = defaults.data(forKey: key) ?? UserDefaults.standard.data(forKey: key) else {
+        guard FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID
+        ) != nil,
+              let defaults = UserDefaults(suiteName: appGroupID),
+              let data = defaults.data(forKey: key) else {
             return nil
         }
         let decoder = JSONDecoder()
@@ -340,18 +359,80 @@ enum AtriaIntentSnapshotStore {
         // may no longer answer for "today" — fail closed to the learning
         // dialog instead of re-wearing a prior day's values after relaunch.
         guard snapshotAnswersForCurrentDay(
-            recoveryExpiresAt: snapshot.recoveryExpiresAt
+            createdAt: snapshot.createdAt,
+            displayCivilDayKey: snapshot.displayCivilDayKey,
+            displayTimeZoneIdentifier: snapshot.displayTimeZoneIdentifier,
+            recoveryExpiresAt: snapshot.recoveryExpiresAt,
+            biomarkerExpiresAt: snapshot.biomarkerExpiresAt,
+            strainExpiresAt: snapshot.strainCycleExpiresAt
         ) else { return nil }
         return snapshot
     }
 
-    /// Pure display-day identity check (handoff-10 CP1). Legacy snapshots
-    /// without the expiry key keep their existing behavior.
+    /// Pure display-day identity check. Legacy payloads remain decodable but
+    /// only answer while their own creation clock is on the current local day.
     static func snapshotAnswersForCurrentDay(
+        createdAt: Date,
+        displayCivilDayKey: String?,
+        displayTimeZoneIdentifier: String? = nil,
         recoveryExpiresAt: Date?,
-        now: Date = Date()
+        biomarkerExpiresAt: Date? = nil,
+        strainExpiresAt: Date? = nil,
+        now: Date = Date(),
+        calendar: Calendar = .current
     ) -> Bool {
-        recoveryExpiresAt.map { now < $0 } ?? true
+        let currentDayKey = WidgetSnapshotPublisher.civilDayKey(
+            for: now,
+            calendar: calendar
+        )
+        let timeZoneMatches = displayTimeZoneIdentifier.map {
+            $0 == calendar.timeZone.identifier
+        } ?? true
+        let dayMatches = (displayCivilDayKey.map { $0 == currentDayKey }
+            ?? calendar.isDate(createdAt, inSameDayAs: now)) && timeZoneMatches
+        guard dayMatches else { return false }
+        return [recoveryExpiresAt, biomarkerExpiresAt, strainExpiresAt]
+            .compactMap { $0 }
+            .allSatisfy { now < $0 }
+    }
+}
+
+enum AtriaIntentMetricPresentation {
+    nonisolated static func recoverySpoken(
+        percent: Int?,
+        confidence: String
+    ) -> String {
+        guard let percent else { return "learning" }
+        return confidence == Metrics.RecoveryEstimate.Confidence.unverified.rawValue
+            ? "\(percent) percent, early estimate"
+            : "\(percent) percent"
+    }
+
+    nonisolated static func recoveryCompact(
+        percent: Int?,
+        confidence: String
+    ) -> String {
+        guard let percent else { return "--" }
+        return confidence == Metrics.RecoveryEstimate.Confidence.unverified.rawValue
+            ? "~\(percent)%" : "\(percent)%"
+    }
+
+    nonisolated static func strainSpoken(
+        value: Double,
+        detail: String?
+    ) -> String {
+        let numeric = String(format: "%.1f", value)
+        return detail?.localizedCaseInsensitiveContains("partial") == true
+            ? "at least \(numeric)" : numeric
+    }
+
+    nonisolated static func strainCompact(
+        value: Double,
+        detail: String?
+    ) -> String {
+        let numeric = String(format: "%.1f", value)
+        return detail?.localizedCaseInsensitiveContains("partial") == true
+            ? "≥ \(numeric)" : numeric
     }
 }
 

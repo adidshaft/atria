@@ -892,7 +892,12 @@ struct AtriaApp: App {
                     }
                 }
             }
-            WidgetSnapshotPublisher.publish(store: store, ble: ble, reason: reason)
+            WidgetSnapshotPublisher.publish(
+                store: store,
+                ble: ble,
+                reason: reason,
+                forceImmediateTimelineReload: true
+            )
             completion.complete(task,
                                 success: backupSucceeded
                                     && historicalRecoverySucceeded

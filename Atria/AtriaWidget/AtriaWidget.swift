@@ -16,8 +16,14 @@ private let atriaWidgetStrainIdentityColor = Color(red: 0,
 // Single source of truth for the recovery zone tint used by the ring gauges,
 // the header percent, and the Lock Screen accessory gauge. Gray/secondary
 // means "learning" — never a fabricated color for an unknown percent.
-private func atriaRecoveryZoneColor(_ percent: Int?) -> Color {
+private func atriaRecoveryZoneColor(_ percent: Int?, zone: String? = nil) -> Color {
     guard let percent else { return .secondary }
+    switch zone {
+    case "green": return .green
+    case "yellow": return .yellow
+    case "red": return .red
+    default: break
+    }
     if percent >= 67 { return .green }
     if percent >= 34 { return .yellow }
     return .red
@@ -36,7 +42,12 @@ private func atriaSnapshotIsStale(_ snapshot: AtriaWidgetSnapshot, now: Date = D
 
 /// Static WidgetKit snapshots may be rewritten by unrelated fields. Sensor
 /// values therefore age from their own capture clock, never `createdAt`.
-private let atriaHeartRateFreshness: TimeInterval = 90
+// Home-screen widgets are not a continuous telemetry surface: WidgetKit may
+// coalesce reload requests to the app's bounded one-minute delivery cadence.
+// Keep the exact capture clock and label this as a last reading. Live Activity
+// uses the stricter six-second source window below.
+private let atriaStaticHeartRateFreshness: TimeInterval = 65
+private let atriaLiveHeartRateFreshness: TimeInterval = 6
 // R10 motion arrives at roughly one accepted frame per second. Fifteen seconds
 // tolerates a short radio hiccup without leaving a frozen step count looking
 // live for the full HR freshness window.
@@ -61,6 +72,16 @@ private let atriaLiveActivityStepFreshness: TimeInterval = 15
 // Live Activity transport window.
 private let atriaStepFreshness = atriaLiveActivityStepFreshness
 private let atriaStaticSensorFutureTolerance: TimeInterval = 5
+
+private func atriaCivilDayKey(_ date: Date, calendar: Calendar) -> String {
+    let components = calendar.dateComponents([.year, .month, .day], from: date)
+    return String(
+        format: "%04d-%02d-%02d",
+        components.year ?? 0,
+        components.month ?? 0,
+        components.day ?? 0
+    )
+}
 
 private func atriaCumulativeDayStrainIsCurrent(_ snapshot: AtriaWidgetSnapshot,
                                                now: Date) -> Bool {
@@ -180,16 +201,16 @@ struct AtriaWidgetSnapshot: Codable {
     var recoveryPercent: Int?
     let recoveryConfidence: String
     var recoveryDetail: String
-    let strain: Double
+    var strain: Double
     /// Additive optional evidence qualifier in the schema-4 payload.
     var strainDetail: String? = nil
     /// Cumulative day-strain computation time, not the live-HR packet clock.
     var strainCapturedAt: Date? = nil
     var strainCycleStart: Date? = nil
     var strainCycleExpiresAt: Date? = nil
-    let restingHR: Int?
-    let hrvRMSSD: Int?
-    let hrvState: String
+    var restingHR: Int?
+    var hrvRMSSD: Int?
+    var hrvState: String
     let maxHR: Int
     // Optional so schema-1 payloads still decode (missing keys -> nil).
     var sleepHours: Double?
@@ -199,6 +220,8 @@ struct AtriaWidgetSnapshot: Codable {
     /// expiry (end of the display civil day) the extension blanks these
     /// values instead of wearing a prior day's numbers under today's label.
     var displayCivilDay: Date? = nil
+    var displayCivilDayKey: String? = nil
+    var displayTimeZoneIdentifier: String? = nil
     var recoveryValueState: String? = nil
     var recoveryExpiresAt: Date? = nil
     var sleepExpiresAt: Date? = nil
@@ -207,10 +230,58 @@ struct AtriaWidgetSnapshot: Codable {
     var whiteboardRows: [AtriaWidgetWhiteboardRow]? = nil
     var whiteboardExpiresAt: Date? = nil
     var sleepNeedHours: Double? = nil
+    var sleepFillFraction: Double? = nil
+    var sleepFillAuthority: String? = nil
+    var recoveryZone: String? = nil
+    var hrvCapturedAt: Date? = nil
+    var biomarkerExpiresAt: Date? = nil
 
-    /// Fail-closed identity enforcement (handoff-10 CP1). Legacy snapshots
-    /// without the identity keys keep their existing behavior.
-    mutating func atriaEnforceCurrentDayIdentity(now: Date = Date()) {
+    /// Fail closed at the local civil-day boundary. New payloads compare the
+    /// explicit publisher day key; legacy payloads remain decodable but only
+    /// survive while `createdAt` is still on the reader's current local day.
+    mutating func atriaEnforceCurrentDayIdentity(
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) {
+        let currentDayKey = atriaCivilDayKey(now, calendar: calendar)
+        let belongsToCurrentDay: Bool
+        if let displayCivilDayKey {
+            let belongsToCurrentTimeZone = displayTimeZoneIdentifier.map {
+                $0 == calendar.timeZone.identifier
+            } ?? true
+            belongsToCurrentDay = displayCivilDayKey == currentDayKey
+                && belongsToCurrentTimeZone
+        } else {
+            belongsToCurrentDay = calendar.isDate(createdAt, inSameDayAs: now)
+        }
+        if !belongsToCurrentDay {
+            recoveryPercent = nil
+            recoveryDetail = "Awaiting today's data"
+            sleepHours = nil
+            sleepDetail = "Awaiting current sleep"
+            whiteboardRows = nil
+            sleepNeedHours = nil
+            sleepFillFraction = nil
+            sleepFillAuthority = nil
+            restingHR = nil
+            hrvRMSSD = nil
+            hrvState = "learning"
+            hrvCapturedAt = nil
+            strain = 0
+            strainDetail = "Awaiting today's data"
+            strainCapturedAt = nil
+            strainCycleStart = nil
+            strainCycleExpiresAt = nil
+            steps = nil
+            stepsCapturedAt = nil
+            stepsSource = nil
+            stepsCompleteness = nil
+            stepsCoverageFraction = nil
+            stepsCycleStart = nil
+            stepsCycleExpiresAt = nil
+            stepsPriorCycleSteps = nil
+            stepsPriorCycleEndedAt = nil
+        }
         if let expires = recoveryExpiresAt, now >= expires {
             recoveryPercent = nil
             recoveryDetail = "Awaiting today's data"
@@ -218,18 +289,26 @@ struct AtriaWidgetSnapshot: Codable {
         if let expires = sleepExpiresAt, now >= expires {
             sleepHours = nil
             sleepDetail = "Awaiting current sleep"
+            sleepFillFraction = nil
+            sleepFillAuthority = nil
         }
         // 2026-08-14 (§13.6): the mirror expires with the display civil day.
         if let expires = whiteboardExpiresAt, now >= expires {
             whiteboardRows = nil
             sleepNeedHours = nil
         }
+        if let expires = biomarkerExpiresAt, now >= expires {
+            restingHR = nil
+            hrvRMSSD = nil
+            hrvState = "learning"
+            hrvCapturedAt = nil
+        }
     }
-    let steps: Int?
+    var steps: Int?
     /// Optional for snapshots written before preliminary strap steps were
     /// exposed honestly in widgets.
     var stepsAreEstimated: Bool? = nil
-    let stepsCapturedAt: Date?
+    var stepsCapturedAt: Date?
     var stepsSource: String? = nil
     var stepsCompleteness: String? = nil
     var stepsCoverageFraction: Double? = nil
@@ -298,7 +377,7 @@ struct AtriaWidgetProvider: TimelineProvider {
         // it, an on-screen widget can retain a value until the normal 15-minute
         // provider refresh even though its source became stale first.
         var expirySources: [(Date?, TimeInterval)] = [
-            (snapshot?.heartRateCapturedAt, atriaHeartRateFreshness),
+            (snapshot?.heartRateCapturedAt, atriaStaticHeartRateFreshness),
             (batteryEvidenceAt, atriaBatteryFreshness),
             (snapshot?.batteryChargeCapturedAt, atriaBatteryChargeFreshness),
             (snapshot?.strainCapturedAt, atriaCumulativeDayStrainFreshness)
@@ -327,6 +406,7 @@ struct AtriaWidgetProvider: TimelineProvider {
         // so a retained snapshot blanks recovery/sleep on its own.
         for identityExpiry in [snapshot?.recoveryExpiresAt,
                                snapshot?.sleepExpiresAt,
+                               snapshot?.biomarkerExpiresAt,
                                snapshot?.whiteboardExpiresAt] {
             if let identityExpiry, identityExpiry > now, identityExpiry < refreshAt {
                 entryDates.append(identityExpiry)
@@ -341,7 +421,12 @@ struct AtriaWidgetProvider: TimelineProvider {
     }
 
     private static func loadSnapshot() -> AtriaWidgetSnapshot? {
-        guard let data = UserDefaults(suiteName: appGroupID)?.data(forKey: snapshotKey) else {
+        guard FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupID
+        ) != nil,
+              let data = UserDefaults(suiteName: appGroupID)?.data(
+                forKey: snapshotKey
+              ) else {
             return nil
         }
         let decoder = JSONDecoder()
@@ -709,7 +794,11 @@ struct AtriaWidgetEntryView: View {
 
     private func dailyTint(_ metric: AtriaDailyOverviewMetric) -> Color {
         switch metric {
-        case .recovery: return atriaRecoveryZoneColor(entry.snapshot?.recoveryPercent)
+        case .recovery:
+            return atriaRecoveryZoneColor(
+                entry.snapshot?.recoveryPercent,
+                zone: entry.snapshot?.recoveryZone
+            )
         case .strain: return atriaWidgetStrainIdentityColor
         case .sleep: return .indigo
         }
@@ -734,11 +823,18 @@ struct AtriaWidgetEntryView: View {
             }
             return .progress(min(1, max(0, snapshot.strain / 21)))
         case .sleep:
-            // The widget payload carries duration but no personal sleep need.
-            // A dotted presence ring names recorded sleep without inventing an
-            // 8-hour denominator or implying completion.
-            guard snapshot.sleepHours.map({ $0 > 0 }) == true else { return .unavailable }
-            return .presence
+            guard let hours = snapshot.sleepHours, hours > 0 else {
+                return .unavailable
+            }
+            if let fill = snapshot.sleepFillFraction {
+                return .progress(min(1, max(0, fill)))
+            }
+            // Backward-only fallback for payloads written before the exact
+            // Today presentation was serialized.
+            guard let need = snapshot.sleepNeedHours, need > 0 else {
+                return .presence
+            }
+            return .progress(min(1, max(0, hours / need)))
         }
     }
 
@@ -830,7 +926,10 @@ struct AtriaWidgetEntryView: View {
             Spacer(minLength: 4)
             Text(entry.snapshot?.recoveryPercent.map { "\($0)%" } ?? "Learning")
                 .font(.headline.monospacedDigit().weight(.bold))
-                .foregroundStyle(atriaRecoveryZoneColor(entry.snapshot?.recoveryPercent))
+                .foregroundStyle(atriaRecoveryZoneColor(
+                    entry.snapshot?.recoveryPercent,
+                    zone: entry.snapshot?.recoveryZone
+                ))
                 .lineLimit(1)
                 .minimumScaleFactor(0.82)
                 .atriaLiveActivityValueTransition(entry.snapshot?.recoveryPercent ?? -1)
@@ -1059,7 +1158,7 @@ struct AtriaWidgetEntryView: View {
     }
 
     private func recoveryColor(_ percent: Int) -> Color {
-        atriaRecoveryZoneColor(percent)
+        atriaRecoveryZoneColor(percent, zone: entry.snapshot?.recoveryZone)
     }
 
     private var controlButtons: some View {
@@ -1109,17 +1208,34 @@ struct AtriaWidgetEntryView: View {
 
     private func accessoryCircularAccessibilityLabel(stale: Bool) -> String {
         guard let snapshot = entry.snapshot,
-              let hours = snapshot.sleepHours,
-              let need = snapshot.sleepNeedHours else { return "Sleep learning" }
-        let base = String(format: "Sleep %.1f hours of %.1f needed", hours, need)
+              let hours = snapshot.sleepHours else { return "Sleep learning" }
+        let base: String
+        if snapshot.sleepFillAuthority == "nightlyNeed",
+           let need = snapshot.sleepNeedHours {
+            base = String(format: "Sleep %.1f hours of %.1f needed", hours, need)
+        } else if snapshot.sleepFillAuthority == "nightlyNeed",
+                  let fill = snapshot.sleepFillFraction {
+            base = String(format: "Sleep %.1f hours, %.0f percent of nightly need",
+                          hours, fill * 100)
+        } else if let fill = snapshot.sleepFillFraction {
+            base = String(format: "Sleep %.1f hours, %.0f percent of goal",
+                          hours, fill * 100)
+        } else {
+            base = String(format: "Sleep %.1f hours", hours)
+        }
         guard stale else { return base }
         let age = atriaSnapshotAgeMinutes(snapshot, now: entry.date) / 60
         return "\(base), stale, from \(age) hours ago"
     }
 
     private var accessoryCircularProgress: Double {
-        guard let hours = entry.snapshot?.sleepHours,
-              let need = entry.snapshot?.sleepNeedHours,
+        guard let snapshot = entry.snapshot,
+              snapshot.sleepHours != nil else { return 0 }
+        if let fill = snapshot.sleepFillFraction {
+            return min(1, max(0, fill))
+        }
+        guard let hours = snapshot.sleepHours,
+              let need = snapshot.sleepNeedHours,
               need > 0 else { return 0 }
         return min(1, max(0, hours / need))
     }
@@ -1189,7 +1305,7 @@ struct AtriaWidgetEntryView: View {
         guard let snapshot = entry.snapshot else { return "HR --" }
         let heartRate = atriaFreshStaticSensorValue(snapshot.heartRate,
                                                     capturedAt: snapshot.heartRateCapturedAt,
-                                                    freshness: atriaHeartRateFreshness,
+                                                    freshness: atriaStaticHeartRateFreshness,
                                                     now: entry.date)
         return "HR " + (heartRate.map { "\($0) bpm" } ?? "--")
     }
@@ -2066,7 +2182,7 @@ private func liveActivityHeartRateAvailability(
     let isFresh = state.heartRate > 0
         && state.sensorHasContact != false
         && capturedAt <= now.addingTimeInterval(5)
-        && now.timeIntervalSince(capturedAt) <= atriaHeartRateFreshness
+        && now.timeIntervalSince(capturedAt) <= atriaLiveHeartRateFreshness
     if isFresh, state.heartRateAvailability != .stale { return .live }
     if state.heartRateCapturedAt != nil || state.heartRate > 0
         || state.heartRateAvailability == .stale {
@@ -3000,7 +3116,7 @@ enum AtriaWidgetMetric: String, Identifiable {
         case .steps: return "Strap steps"
         case .strain: return "Strain"
         case .hrv: return "HRV"
-        case .bpm: return "BPM"
+        case .bpm: return "Last HR"
         case .sleep: return "Sleep"
         case .rhr: return "RHR"
         }
@@ -3033,7 +3149,7 @@ enum AtriaWidgetMetric: String, Identifiable {
         case .steps: return "strap"
         case .strain: return "day load"
         case .hrv: return "ms"
-        case .bpm: return "live"
+        case .bpm: return "last reading"
         case .sleep: return "hrs"
         case .rhr: return "resting"
         }
@@ -3058,7 +3174,7 @@ enum AtriaWidgetMetric: String, Identifiable {
         case .bpm:
             return atriaFreshStaticSensorValue(s.heartRate,
                                                capturedAt: s.heartRateCapturedAt,
-                                               freshness: atriaHeartRateFreshness,
+                                               freshness: atriaStaticHeartRateFreshness,
                                                now: now).map(String.init) ?? "--"
         case .sleep:
             return atriaFormattedSleepHours(s.sleepHours)
@@ -3138,7 +3254,7 @@ enum AtriaWidgetMetric: String, Identifiable {
             }
             guard atriaFreshStaticSensorValue(snapshot.heartRate,
                                                capturedAt: capturedAt,
-                                               freshness: atriaHeartRateFreshness,
+                                               freshness: atriaStaticHeartRateFreshness,
                                                now: now) != nil else {
                 return "HR stale · last \(atriaCaptureTimeText(capturedAt))"
             }
@@ -3148,9 +3264,9 @@ enum AtriaWidgetMetric: String, Identifiable {
                     ? "Below Z1"
                     : "Z\(index) \(snapshot.heartRateZoneName ?? "Zone")"
             } else {
-                zone = "Live"
+                zone = "Zone unavailable"
             }
-            return "\(zone) · \(atriaCaptureTimeText(capturedAt))"
+            return "Last reading · \(zone) · \(atriaCaptureTimeText(capturedAt))"
         case .strain:
             guard let capturedAt = snapshot.strainCapturedAt,
                   snapshot.strainCycleStart != nil,
@@ -3167,15 +3283,15 @@ enum AtriaWidgetMetric: String, Identifiable {
                detail.localizedCaseInsensitiveContains("review") {
                 return detail
             }
-            fallthrough
-        case .hrv, .rhr:
-            let age = atriaSnapshotAgeMinutes(snapshot, now: now)
-            if age < 1 { return "Updated now" }
-            if age < 60 { return "Updated \(age)m ago" }
-            if atriaSnapshotIsStale(snapshot, now: now) {
-                return "Stale · \(age / 60)h ago"
+            return snapshot.sleepHours == nil ? "Awaiting current sleep" : "Current cycle"
+        case .hrv:
+            guard snapshot.hrvRMSSD != nil else { return "Calibrating" }
+            if let capturedAt = snapshot.hrvCapturedAt {
+                return "Measured \(atriaCaptureTimeText(capturedAt))"
             }
-            return "Updated \(age / 60)h ago"
+            return "Current cycle"
+        case .rhr:
+            return snapshot.restingHR == nil ? "Awaiting current sleep" : "Current cycle"
         }
     }
 
