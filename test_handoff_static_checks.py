@@ -3954,7 +3954,10 @@ class HandoffStaticChecks(unittest.TestCase):
             "private struct SessionDetailSummary",
             "let zoneRows: [TimeInZoneRow]",
             "let zoneTotal: Double",
-            "TimeInZoneView(rows: summary.zoneRows, total: summary.zoneTotal)",
+            # 2026-08-14 (GAP-03): the session detail passes the HRR
+            # boundaries so every zone row shows its real BPM range.
+            "TimeInZoneView(rows: summary.zoneRows,",
+            "boundaries: summary.zoneBoundaries)",
         ]:
             assert_contains(self, sessions, needle)
 
@@ -7733,20 +7736,25 @@ class HandoffStaticChecks(unittest.TestCase):
         home = source(ROOT / "Atria" / "Atria" / "AtriaHomeView.swift")
         hero = source(ROOT / "Atria" / "Atria" / "AtriaHeroConnectionSections.swift")
 
+        # 2026-08-14 (GAP-03): the glance zone model is HRR-based, delegating
+        # to the same HRZone bands the live workout screen, Live Activity,
+        # widget, and haptics use — one BPM can never display different zones
+        # on different surfaces. The old %HRmax switch is forbidden below.
         for needle in [
             "struct HeartRateZone: Equatable, Identifiable",
             "static func heartRateZone(bpm: Int, rest: Int, max: Int) -> HeartRateZone?",
             "let rawReserveFraction = Double(bpm - rest) / Double(max - rest)",
-            "let maxFraction = Double(bpm) / Double(max)",
-            "case ..<0.50: index = 0",
-            "case ..<0.60: index = 1",
-            "case ..<0.70: index = 2",
-            "case ..<0.80: index = 3",
-            "case ..<0.90: index = 4",
-            'let names = ["Rest", "Warm-up", "Fat burn", "Aerobic", "Anaerobic", "Max"]',
+            "let zone = HRZone.zone(for: bpm, maxHR: max, restingHR: rest)",
+            "let index = zone.rawValue",
             "static func heartRateZoneTint(_ index: Int) -> Color",
         ]:
             assert_contains(self, metrics, needle)
+
+        for forbidden in [
+            "let maxFraction = Double(bpm) / Double(max)",
+            "case ..<0.50: index = 0",
+        ]:
+            assert_not_contains(self, metrics, forbidden)
 
         for needle in [
             "rest: initialLiveSessionDerived.rest",

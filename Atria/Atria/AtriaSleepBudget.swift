@@ -247,4 +247,18 @@ struct AtriaSleepScore: Equatable, Codable {
         }
         return AtriaSleepScore(components: values, score: score, isProvisional: true)
     }
+
+    /// The ONLY production entry point (GAP-06). The overnight-load slot is
+    /// pinned nil at the API level: until the GAP-10 validation program
+    /// passes, no call site can even offer the unvalidated HR-only projection
+    /// to the composite. `make(validatedOvernightLoadPercent:)` remains for
+    /// the future validated model and for tests.
+    static func provisional(sufficiencyPercent: Double?,
+                            consistencyPercent: Double?,
+                            efficiencyPercent: Double?) -> AtriaSleepScore {
+        make(sufficiencyPercent: sufficiencyPercent,
+             consistencyPercent: consistencyPercent,
+             efficiencyPercent: efficiencyPercent,
+             validatedOvernightLoadPercent: nil)
+    }
 }

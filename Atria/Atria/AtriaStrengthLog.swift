@@ -71,10 +71,12 @@ enum AtriaStrengthLog {
         let externalVolumeKg: Double
         let effectiveVolumeKg: Double
         let densityBonusFraction: Double
-        /// A relative, logged muscular-input index (0...100). It is not
-        /// Strain and is intentionally nil until every load-qualified set has
-        /// an explicit RPE. It must not be fused with cardiovascular Strain
-        /// until that model is calibrated.
+        /// A relative, logged muscular-input index (0...100), intentionally
+        /// nil until every load-qualified set has an explicit RPE. When
+        /// present it fuses into the day's Strain via the documented
+        /// provisional mapping `AtriaStrainLoadModel.muscularTRIMPEquivalent`
+        /// (see docs/17-muscular-load-and-fusion.md); when nil the session
+        /// contributes exactly zero muscular load.
         let muscularInputScore: Double?
         let movementClasses: Set<MovementClass>
 
@@ -105,6 +107,46 @@ enum AtriaStrengthLog {
             default: return "Measured external load"
             }
         }
+    }
+
+    /// One ordered-superset receipt for a set being saved. Nil fields mean the
+    /// set is an ordinary set.
+    struct SupersetReceipt: Equatable {
+        let groupID: String?
+        let order: Int?
+        let transitionSeconds: TimeInterval?
+
+        static let none = SupersetReceipt(groupID: nil, order: nil, transitionSeconds: nil)
+    }
+
+    /// GAP-08: the single place a set's superset receipt is derived, so the
+    /// live logger and the edit path can never disagree. `excludingSetID`
+    /// keeps an edited set from resolving *itself* as the previous group
+    /// member (which would fabricate its own transition time); membership is
+    /// case-insensitive, matching the logger's exercise comparison. The
+    /// transition is measured to the newest group member logged at or before
+    /// `now`, so re-deriving at an edited set's original timestamp stays
+    /// order-correct.
+    static func supersetReceipt(exercise: String,
+                                group: StrengthSuperset?,
+                                priorSets: [LoggedSet],
+                                excludingSetID: UUID? = nil,
+                                now: Date) -> SupersetReceipt {
+        guard let group,
+              group.exercises.contains(where: {
+                  $0.localizedCaseInsensitiveCompare(exercise) == .orderedSame
+              }) else {
+            return .none
+        }
+        let order = group.exercises.firstIndex {
+            $0.localizedCaseInsensitiveCompare(exercise) == .orderedSame
+        }
+        let prior = priorSets
+            .filter { $0.supersetGroupID == group.id && $0.id != excludingSetID && $0.t <= now }
+            .max { $0.t < $1.t }
+        return SupersetReceipt(groupID: group.id,
+                               order: order,
+                               transitionSeconds: prior.map { max(0, now.timeIntervalSince($0.t)) })
     }
 
     /// Returns a per-set effective resistance. External resistance is already

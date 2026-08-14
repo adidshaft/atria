@@ -2428,9 +2428,10 @@ struct AtriaTodayScreen: View {
                                         tint: Metrics.electricStress,
                                         layoutSize: layoutSize(for: metric))
         case .sleepHistory:
-            // Honest learning state (2026-07-09): sleepConsistencyText is "--" until
-            // 2+ sleep nights, so surface the threshold instead of a bare category
-            // word — mirrors the sibling sleepEfficiency empty state.
+            // Honest learning state: sleepConsistencyText is "--" until the
+            // canonical engine's qualified-night minimum is met, so surface
+            // that exact threshold — mirrors the sibling sleepEfficiency
+            // empty state.
             let consistency = sessionProjectionStore.state.sleepHistorySnapshot.sleepConsistencyText
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2439,7 +2440,7 @@ struct AtriaTodayScreen: View {
                                         // review): "Routine" beside a bare
                                         // percentage did not say what the
                                         // number measures.
-                                        detail: legendDetail(consistency == "--" ? "Needs 2 nights" : "Routine consistency"),
+                                        detail: legendDetail(consistency == "--" ? "Needs \(AtriaSleepConsistency.minimumQualifiedNights) nights" : "Routine consistency"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
                                         layoutSize: layoutSize(for: metric))

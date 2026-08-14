@@ -3039,29 +3039,46 @@ struct AtriaLiveWorkoutView: View {
     }
 
     private func saveLoggedSet() {
-        let superset = activeSuperset.flatMap { group in
-            group.exercises.contains(where: { $0.localizedCaseInsensitiveCompare(selectedExercise) == .orderedSame }) ? group : nil
+        let editingOriginal = editingSetID.flatMap { id in
+            loggedSets.first(where: { $0.id == id })
         }
-        let order = superset.flatMap { group in
-            group.exercises.firstIndex(where: { $0.localizedCaseInsensitiveCompare(selectedExercise) == .orderedSame })
+        // GAP-08: an edit keeps the original set's identity and timestamp —
+        // changing a weight or rep count must never re-stamp when the set
+        // happened. It also keeps the original superset receipt unless the
+        // movement itself changed; only then is the receipt re-derived (at the
+        // original time, excluding the set being edited so it can never be its
+        // own "previous member").
+        let setTime = editingOriginal?.t ?? Date()
+        let receipt: AtriaStrengthLog.SupersetReceipt
+        if let editingOriginal,
+           editingOriginal.exercise.localizedCaseInsensitiveCompare(selectedExercise) == .orderedSame {
+            receipt = AtriaStrengthLog.SupersetReceipt(
+                groupID: editingOriginal.supersetGroupID,
+                order: editingOriginal.supersetOrder,
+                transitionSeconds: editingOriginal.supersetTransitionSeconds)
+        } else {
+            receipt = AtriaStrengthLog.supersetReceipt(exercise: selectedExercise,
+                                                       group: activeSuperset,
+                                                       priorSets: loggedSets,
+                                                       excludingSetID: editingOriginal?.id,
+                                                       now: setTime)
         }
-        let prior = superset.flatMap { group in
-            loggedSets.last(where: { $0.supersetGroupID == group.id })
-        }
-        let now = Date()
-        let set = LoggedSet(exercise: selectedExercise,
+        var set = LoggedSet(exercise: selectedExercise,
                             weightKg: loggerWeightKg > 0 ? loggerWeightKg : nil,
                             reps: loggerReps,
                             rpe: loggerRPE,
-                            t: now,
+                            t: setTime,
                             effectiveLoadKg: AtriaStrengthLog.effectiveLoadKg(
                                 exercise: selectedExercise,
                                 externalWeightKg: loggerWeightKg > 0 ? loggerWeightKg : nil,
                                 bodyMassKg: strengthBodyMassKg
                             )?.loadKg,
-                            supersetGroupID: superset?.id,
-                            supersetOrder: order,
-                            supersetTransitionSeconds: prior.map { max(0, now.timeIntervalSince($0.t)) })
+                            supersetGroupID: receipt.groupID,
+                            supersetOrder: receipt.order,
+                            supersetTransitionSeconds: receipt.transitionSeconds)
+        if let editingOriginal {
+            set.id = editingOriginal.id
+        }
         let isNewPR = AtriaStrengthLog.isPR(set, against: personalRecordsIncludingCurrentWorkout(for: selectedExercise))
         if let editingSetID,
            let index = loggedSets.firstIndex(where: { $0.id == editingSetID }) {
@@ -3103,7 +3120,12 @@ struct AtriaLiveWorkoutView: View {
                 Spacer()
                 Button("Save group") {
                     guard supersetMembers.count >= 2 else { return }
-                    activeSuperset = StrengthSuperset(exercises: supersetMembers)
+                    // GAP-08: reordering or re-editing the members keeps the
+                    // SAME group id — minting a new id would silently break
+                    // transition-chain continuity with rounds already logged
+                    // under the old id.
+                    activeSuperset = StrengthSuperset(id: activeSuperset?.id ?? UUID().uuidString,
+                                                      exercises: supersetMembers)
                     showsSupersetEditor = false
                 }
                 .disabled(supersetMembers.count < 2)

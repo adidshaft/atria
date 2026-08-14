@@ -322,6 +322,160 @@ final class AtriaStrengthProgressPresentationTests: XCTestCase {
         XCTAssertTrue(restored.hasCompleteEffortEvidence)
     }
 
+    // MARK: - GAP-08: superset receipts survive edits, reorders, and round trips
+
+    func testSupersetReceiptDerivesMembershipOrderAndTransition() {
+        let group = StrengthSuperset(id: "grp", exercises: ["Back squat", "bench press"])
+        let earlier = LoggedSet(exercise: "Back squat", weightKg: 100, reps: 5, rpe: 8,
+                                t: day(0), supersetGroupID: "grp", supersetOrder: 0)
+
+        let receipt = AtriaStrengthLog.supersetReceipt(exercise: "Bench Press",
+                                                       group: group,
+                                                       priorSets: [earlier],
+                                                       now: day(0).addingTimeInterval(40))
+        XCTAssertEqual(receipt.groupID, "grp")
+        XCTAssertEqual(receipt.order, 1, "membership and order are case-insensitive")
+        XCTAssertEqual(receipt.transitionSeconds ?? -1, 40, accuracy: 0.001)
+
+        XCTAssertEqual(AtriaStrengthLog.supersetReceipt(exercise: "Deadlift",
+                                                        group: group,
+                                                        priorSets: [earlier],
+                                                        now: day(0)),
+                       .none,
+                       "a non-member logs an ordinary set")
+        XCTAssertEqual(AtriaStrengthLog.supersetReceipt(exercise: "Back squat",
+                                                        group: nil,
+                                                        priorSets: [earlier],
+                                                        now: day(0)),
+                       .none)
+    }
+
+    func testSupersetReceiptNeverResolvesTheEditedSetAsItsOwnPriorMember() {
+        let group = StrengthSuperset(id: "grp", exercises: ["Back squat", "Bench press"])
+        let first = LoggedSet(exercise: "Back squat", weightKg: 100, reps: 5, rpe: 8,
+                              t: day(0), supersetGroupID: "grp", supersetOrder: 0)
+        let edited = LoggedSet(exercise: "Bench press", weightKg: 80, reps: 6, rpe: 8,
+                               t: day(0).addingTimeInterval(35),
+                               supersetGroupID: "grp", supersetOrder: 1,
+                               supersetTransitionSeconds: 35)
+        // A later member logged after the set being edited must not become the
+        // "previous" set either — the receipt re-derives at the ORIGINAL time.
+        let later = LoggedSet(exercise: "Back squat", weightKg: 100, reps: 5, rpe: 8,
+                              t: day(0).addingTimeInterval(200),
+                              supersetGroupID: "grp", supersetOrder: 0,
+                              supersetTransitionSeconds: 165)
+
+        let receipt = AtriaStrengthLog.supersetReceipt(exercise: "Bench press",
+                                                       group: group,
+                                                       priorSets: [first, edited, later],
+                                                       excludingSetID: edited.id,
+                                                       now: edited.t)
+        XCTAssertEqual(receipt.transitionSeconds ?? -1, 35, accuracy: 0.001,
+                       "the transition must re-derive from the set BEFORE the edited one")
+    }
+
+    func testLoggedSetSupersetFieldsSurviveJSONRoundTrip() throws {
+        let set = LoggedSet(exercise: "Bench press", weightKg: 80, reps: 6, rpe: 8.5,
+                            t: day(0), effectiveLoadKg: 80,
+                            supersetGroupID: "grp", supersetOrder: 1,
+                            supersetTransitionSeconds: 42)
+        let restored = try JSONDecoder().decode(LoggedSet.self,
+                                                from: JSONEncoder().encode(set))
+        XCTAssertEqual(restored, set)
+        XCTAssertEqual(restored.supersetGroupID, "grp")
+        XCTAssertEqual(restored.supersetOrder, 1)
+        XCTAssertEqual(restored.supersetTransitionSeconds ?? -1, 42, accuracy: 0.001)
+    }
+
+    /// The live-logger behaviors that cannot run headless stay pinned: an edit
+    /// preserves identity/timestamp/receipt, regrouping reuses the group id,
+    /// and Ungroup never touches logged sets.
+    func testLiveLoggerSupersetPathsStayReceiptPreserving() throws {
+        let source = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaLiveWorkoutView.swift"),
+            encoding: .utf8)
+        XCTAssertTrue(source.contains("let setTime = editingOriginal?.t ?? Date()"),
+                      "an edit must keep the original timestamp")
+        XCTAssertTrue(source.contains("set.id = editingOriginal.id"),
+                      "an edit must keep the original set identity")
+        XCTAssertTrue(source.contains("transitionSeconds: editingOriginal.supersetTransitionSeconds"),
+                      "an unchanged-movement edit must keep the original receipt")
+        XCTAssertTrue(source.contains("excludingSetID: editingOriginal?.id"),
+                      "a re-derived receipt must exclude the edited set itself")
+        XCTAssertTrue(source.contains("StrengthSuperset(id: activeSuperset?.id ?? UUID().uuidString,"),
+                      "regrouping must reuse the existing group id")
+        XCTAssertTrue(source.contains("Button(\"Ungroup\") { activeSuperset = nil; supersetMembers.removeAll(); showsSupersetEditor = false }"),
+                      "Ungroup must only clear the active group, never logged sets")
+    }
+
+    func testDensityCountsOnlyQuickTransitionsAndCapsAtFifteenPercent() throws {
+        func supersetSet(_ index: Int, transition: TimeInterval?) -> LoggedSet {
+            LoggedSet(exercise: "Back squat", weightKg: 100, reps: 5, rpe: 8,
+                      t: day(0).addingTimeInterval(Double(index) * 120),
+                      supersetGroupID: "grp", supersetOrder: index % 2,
+                      supersetTransitionSeconds: transition)
+        }
+        let boundary = [supersetSet(0, transition: 90), supersetSet(1, transition: 91)]
+        let boundaryReceipt = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: boundary))
+        XCTAssertEqual(boundaryReceipt.densityBonusFraction, 0.03, accuracy: 0.0001,
+                       "exactly 90 s counts as a quick handoff; 91 s is between-round rest")
+
+        let six = (0..<6).map { supersetSet($0, transition: 30) }
+        let capped = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: six))
+        XCTAssertEqual(capped.densityBonusFraction, 0.15, accuracy: 0.0001,
+                       "the density bonus saturates at 15%")
+    }
+
+    // MARK: - GAP-09: muscular input is deterministic, monotonic, and bounded
+
+    func testMuscularInputIsDeterministicForIdenticalSavedSets() throws {
+        let sets = [
+            LoggedSet(exercise: "Back squat", weightKg: 100, reps: 5, rpe: 8, t: day(0)),
+            LoggedSet(exercise: "Bench press", weightKg: 80, reps: 6, rpe: 7.5, t: day(0),
+                      supersetGroupID: "grp", supersetOrder: 1, supersetTransitionSeconds: 45)
+        ]
+        let first = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: sets))
+        let second = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: sets))
+        XCTAssertEqual(first, second, "identical saved sets must produce identical receipts")
+    }
+
+    func testMuscularInputRisesMonotonicallyWithWeightRepsAndAddedSets() throws {
+        func score(weight: Double, reps: Int, extraSet: Bool = false) throws -> Double {
+            var sets = [LoggedSet(exercise: "Back squat", weightKg: weight, reps: reps, rpe: 8, t: day(0))]
+            if extraSet {
+                sets.append(LoggedSet(exercise: "Back squat", weightKg: weight, reps: reps, rpe: 8,
+                                      t: day(0).addingTimeInterval(180)))
+            }
+            return try XCTUnwrap(try XCTUnwrap(
+                AtriaStrengthLog.muscularLoadReceipt(for: sets)
+            ).muscularInputScore)
+        }
+
+        try XCTAssertGreaterThan(score(weight: 110, reps: 5), score(weight: 100, reps: 5),
+                                 "more weight must raise the muscular input")
+        try XCTAssertGreaterThan(score(weight: 100, reps: 6), score(weight: 100, reps: 5),
+                                 "more reps must raise the muscular input")
+        try XCTAssertGreaterThan(score(weight: 100, reps: 5, extraSet: true),
+                                 score(weight: 100, reps: 5),
+                                 "an added qualified set must raise the muscular input")
+    }
+
+    func testMuscularInputSaturatesAtOneHundred() throws {
+        let extreme = (0..<60).map { index in
+            LoggedSet(exercise: "Back squat", weightKg: 250, reps: 10, rpe: 10,
+                      t: day(0).addingTimeInterval(Double(index) * 60),
+                      supersetGroupID: "grp", supersetOrder: index % 2,
+                      supersetTransitionSeconds: 30)
+        }
+        let receipt = try XCTUnwrap(AtriaStrengthLog.muscularLoadReceipt(for: extreme))
+        let score = try XCTUnwrap(receipt.muscularInputScore)
+        XCTAssertLessThanOrEqual(score, 100)
+        XCTAssertGreaterThan(score, 99, "an extreme session should approach the bound, not exceed it")
+    }
+
     // MARK: - Set table
 
     func testSetTableRowsBadgeOnlyRealRecordsAndKeepRPEBlankWhenUnset() {

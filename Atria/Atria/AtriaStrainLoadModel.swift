@@ -306,4 +306,39 @@ enum AtriaStrainLoadModel {
     static func displayScore(fromLoad load: Double) -> Double {
         displayCalibration.score(fromLoad: load)
     }
+
+    // MARK: GAP-09 — muscular ⊕ cardiovascular fusion (provisional calibration)
+
+    /// TRIMP-equivalent ceiling for a single maximal logged strength session
+    /// (muscular input score 100 — every set load-qualified at RPE 10 with
+    /// high volume). 45 sits deliberately below the file's own observed
+    /// reference of TRIMP ≈ 65 for a hard 64-minute strength hour's *cardio*
+    /// component, because the muscular term only represents load the HR
+    /// integral does not already count. ENGINEERING-PROVISIONAL: transparent,
+    /// bounded, and awaiting calibration against the local research export —
+    /// not a physiological claim.
+    static let muscularEquivalentCeiling: Double = 45
+    /// Power-law exponent (> 1): light accessory work adds little, genuinely
+    /// heavy logged sessions add real load. Chosen for explainability, not
+    /// fitted — see docs/17-muscular-load-and-fusion.md.
+    static let muscularEquivalentExponent: Double = 1.6
+
+    /// GAP-09 fusion, muscular side: one logged strength session's muscular
+    /// input score (0–100, from `AtriaStrengthLog.muscularLoadReceipt`, only
+    /// present when every load-qualified set carries an explicit RPE) mapped
+    /// into TRIMP-equivalent load:
+    ///
+    ///     equivalent = 45 × (score / 100)^1.6
+    ///
+    /// The result is added to the day's cardiovascular TRIMP *before* the
+    /// existing monotonic, saturating 0–21 display map, so there is exactly
+    /// one Strain number and the display scale's non-linearity bounds the
+    /// fused total. Deterministic and strictly monotone in the input score;
+    /// zero for unlogged or effort-unqualified work — an unlogged "Strength"
+    /// session never receives muscular load from duration or HR alone.
+    static func muscularTRIMPEquivalent(inputScore: Double?) -> Double {
+        guard let inputScore, inputScore.isFinite, inputScore > 0 else { return 0 }
+        let normalized = min(max(inputScore / 100, 0), 1)
+        return muscularEquivalentCeiling * pow(normalized, muscularEquivalentExponent)
+    }
 }

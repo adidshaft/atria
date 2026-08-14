@@ -368,6 +368,28 @@ enum AtriaSleepDebtChartPresentation {
         slots.filter { $0.sleptHours != nil }.count
     }
 
+    /// GAP-01 gap grammar: contiguous runs of slots that actually carry a
+    /// value. The chart draws each run as its own line series, so a night
+    /// without a frozen need (or without a confirmed sleep) breaks the line
+    /// into a real gap instead of interpolating an invented segment across
+    /// the missing night. Slots are consecutive mornings by construction, so
+    /// index adjacency is day adjacency.
+    static func valueRuns(_ slots: [NightSlot],
+                          value: (NightSlot) -> Double?) -> [[(day: Date, hours: Double)]] {
+        var runs: [[(day: Date, hours: Double)]] = []
+        var current: [(day: Date, hours: Double)] = []
+        for slot in slots {
+            if let hours = value(slot) {
+                current.append((day: slot.day, hours: hours))
+            } else if !current.isEmpty {
+                runs.append(current)
+                current = []
+            }
+        }
+        if !current.isEmpty { runs.append(current) }
+        return runs
+    }
+
     static func dayLetter(for day: Date, calendar: Calendar) -> String {
         let index = calendar.component(.weekday, from: day) - 1
         let symbols = calendar.veryShortWeekdaySymbols
@@ -550,34 +572,44 @@ struct AtriaSleepDebtChartCard: View {
         let lowerBound = max(0, floor(lowest - 0.75))
         let upperBound = ceil(highest + 0.75)
 
+        // GAP-01 gap grammar: one line series per contiguous run, so a night
+        // missing its frozen need (or missing a confirmed sleep) renders as a
+        // real break — never an interpolated segment across the gap.
+        let neededRuns = AtriaSleepDebtChartPresentation.valueRuns(slots, value: \.needHours)
+        let sleptRuns = AtriaSleepDebtChartPresentation.valueRuns(slots, value: \.sleptHours)
+
         return Chart {
-            ForEach(needed, id: \.day) { point in
-                LineMark(x: .value("Morning", point.day), y: .value("Sleep needed", point.hours), series: .value("Series", "Sleep needed"))
-                    .interpolationMethod(.monotone)
-                    .lineStyle(StrokeStyle(lineWidth: 2,
-                                           lineCap: .round,
-                                           lineJoin: .round,
-                                           dash: [4, 3]))
-                    .foregroundStyle(Metrics.electricGreen)
-                PointMark(x: .value("Morning", point.day), y: .value("Sleep needed", point.hours))
-                    .symbol(Circle())
-                    .symbolSize(44)
-                    .foregroundStyle(Metrics.electricGreen)
+            ForEach(Array(neededRuns.enumerated()), id: \.offset) { runIndex, run in
+                ForEach(run, id: \.day) { point in
+                    LineMark(x: .value("Morning", point.day), y: .value("Sleep needed", point.hours), series: .value("Series", "Sleep needed \(runIndex)"))
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 2,
+                                               lineCap: .round,
+                                               lineJoin: .round,
+                                               dash: [4, 3]))
+                        .foregroundStyle(Metrics.electricGreen)
+                    PointMark(x: .value("Morning", point.day), y: .value("Sleep needed", point.hours))
+                        .symbol(Circle())
+                        .symbolSize(44)
+                        .foregroundStyle(Metrics.electricGreen)
+                }
             }
-            ForEach(slept, id: \.day) { point in
-                LineMark(x: .value("Morning", point.day), y: .value("Hours slept", point.hours), series: .value("Series", "Hours slept"))
-                    .interpolationMethod(.monotone)
-                    .lineStyle(AtriaChartVisualGrammar.trendLine)
-                    .foregroundStyle(AtriaSleepLedgerPalette.slept)
-                PointMark(x: .value("Morning", point.day), y: .value("Hours slept", point.hours))
-                    .symbol(Circle())
-                    .symbolSize(58)
-                    .foregroundStyle(AtriaSleepLedgerPalette.slept)
-                    .annotation(position: point.hours >= (needed.first(where: { $0.day == point.day })?.hours ?? point.hours) ? .top : .bottom, overflowResolution: .init(x: .fit, y: .disabled)) {
-                        Text(AtriaMetricFormat.sleepHours(point.hours))
-                            .font(.system(size: 9, weight: .bold, design: .rounded).monospacedDigit())
-                            .foregroundStyle(AtriaSleepLedgerPalette.slept)
-                    }
+            ForEach(Array(sleptRuns.enumerated()), id: \.offset) { runIndex, run in
+                ForEach(run, id: \.day) { point in
+                    LineMark(x: .value("Morning", point.day), y: .value("Hours slept", point.hours), series: .value("Series", "Hours slept \(runIndex)"))
+                        .interpolationMethod(.monotone)
+                        .lineStyle(AtriaChartVisualGrammar.trendLine)
+                        .foregroundStyle(AtriaSleepLedgerPalette.slept)
+                    PointMark(x: .value("Morning", point.day), y: .value("Hours slept", point.hours))
+                        .symbol(Circle())
+                        .symbolSize(58)
+                        .foregroundStyle(AtriaSleepLedgerPalette.slept)
+                        .annotation(position: point.hours >= (needed.first(where: { $0.day == point.day })?.hours ?? point.hours) ? .top : .bottom, overflowResolution: .init(x: .fit, y: .disabled)) {
+                            Text(AtriaMetricFormat.sleepHours(point.hours))
+                                .font(.system(size: 9, weight: .bold, design: .rounded).monospacedDigit())
+                                .foregroundStyle(AtriaSleepLedgerPalette.slept)
+                        }
+                }
             }
         }
         .atriaGraphPlotSurface()
