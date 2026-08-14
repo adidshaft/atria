@@ -1425,7 +1425,9 @@ enum WidgetSnapshotPublisher {
         if hrvRMSSD == nil {
             hrvState = "learning"
         } else {
-            hrvState = widgetRecovery.confidence == .validated ? "validated" : "personal_baseline"
+            // 2026-08-14 (assessment P0.3): the reserved tier is unreachable
+            // in production, so the widget always advertises the honest claim.
+            hrvState = "personal_baseline"
         }
         let layout = currentHomeLayoutConfig()
         let widgetDiagnostics = Self.diagnostics

@@ -1437,7 +1437,15 @@ enum AtriaAnalytics {
             if hasTrustedHRVBaseline, let hrvStats {
                 hrvZ = zScore(log(rmssdNow), mean: hrvStats.mean, sd: hrvStats.sd, minSD: 0.05)
                 if hasTrustedRestingBaseline {
-                    confidence = hrvReferenceValidated ? .validated : .personalBaseline
+                    // 2026-08-14 (assessment P0.3): `.validated` is RESERVED
+                    // for a held-out outcome study of the Recovery model.
+                    // RR reference validation proves the HRV *measurement*
+                    // against a reference device — it does not prove this
+                    // score predicts readiness, so it must not upgrade the
+                    // tier. The strongest production claim is a personal
+                    // baseline. (`hrvReferenceValidated` still gates HealthKit
+                    // HRV writes and measurement copy elsewhere.)
+                    confidence = .personalBaseline
                 } else {
                     confidence = .unverified
                 }

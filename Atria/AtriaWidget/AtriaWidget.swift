@@ -1183,9 +1183,9 @@ struct AtriaWidgetEntryView: View {
     private var secondaryText: String {
         guard let snapshot = entry.snapshot else { return "Open app for live strap status" }
         if let recovery = snapshot.recoveryPercent {
-            return "Recovery \(recovery)% · \(recoveryEvidenceText(snapshot))"
+            return "Recovery \(recovery)% · \(displayRecoveryEvidence(snapshot))"
         }
-        return "Recovery learning · \(recoveryEvidenceText(snapshot))"
+        return "Recovery learning · \(displayRecoveryEvidence(snapshot))"
     }
 
     /// One bounded footer replaces the two stacked captions that overflowed the
@@ -1221,7 +1221,9 @@ struct AtriaWidgetEntryView: View {
         case "learning": return "Recovery learning"
         case "unverified": return "Early estimate"
         case "personal_baseline", "personal baseline": return "Personal baseline"
-        case "validated": return "Checked"
+        // 2026-08-14 (assessment P0.3): a stale snapshot minted while the
+        // reserved tier was reachable renders the strongest honest claim.
+        case "validated": return "Personal baseline"
         default: return evidence
         }
     }

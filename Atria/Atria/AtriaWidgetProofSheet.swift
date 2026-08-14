@@ -311,7 +311,7 @@ struct AtriaWidgetProofSheet: View {
 
     private var recoveryLine: String {
         if let recovery = snapshot?.recoveryPercent {
-            return "Recovery \(recovery)% · \(snapshot?.recoveryConfidence ?? "learning")"
+            return "Recovery \(recovery)% · \((snapshot?.recoveryConfidence ?? "learning").replacingOccurrences(of: "validated", with: "personal baseline"))"
         }
         return "Recovery learning"
     }

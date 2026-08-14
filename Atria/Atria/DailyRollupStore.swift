@@ -381,7 +381,14 @@ struct FrozenRecoverySummary: Codable, Equatable {
         case Metrics.RecoveryEstimate.Confidence.personalBaseline.rawValue:
             return .personalBaseline
         case Metrics.RecoveryEstimate.Confidence.validated.rawValue:
-            return .validated
+            // 2026-08-14 (assessment P0.3): historical receipts minted while
+            // RR reference validation upgraded the tier said "validated", but
+            // that only ever meant the HRV measurement was cross-checked and a
+            // personal baseline existed — not that the score predicts
+            // readiness. `.validated` is reserved for a held-out outcome
+            // study; replay the strongest honest claim instead. The stored
+            // string is untouched.
+            return .personalBaseline
         default:
             // Unknown historical labels stay conservative. They must never be
             // upgraded using whatever baseline happens to be current today.

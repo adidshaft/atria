@@ -2316,8 +2316,12 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(source.contains(
             "return \"HRV unavailable\""
         ))
+        // 2026-08-14 pin migration (assessment P0.3): the footer routes
+        // through displayRecoveryEvidence so legacy "validated" snapshots
+        // render as personal baseline; the missing-HRV disclosure survives
+        // via its default branch.
         XCTAssertTrue(source.contains(
-            "return \"Recovery \\(recovery)% · \\(recoveryEvidenceText(snapshot))\""
+            "return \"Recovery \\(recovery)% · \\(displayRecoveryEvidence(snapshot))\""
         ), "a numeric day-one score and its missing-HRV disclosure must travel together")
     }
 
@@ -2568,7 +2572,9 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(aggregate.contains("return \"Widget updated \\(atriaTimeOfDayFormatter.string(from: snapshot.createdAt))\""),
                       "the delivery clock must explicitly qualify the widget, not Recovery")
         XCTAssertTrue(aggregate.contains("case \"unverified\": return \"Early estimate\""))
-        XCTAssertTrue(aggregate.contains("case \"validated\": return \"Checked\""))
+        // 2026-08-14 (assessment P0.3): the reserved tier renders as the
+        // strongest honest claim on every surface.
+        XCTAssertTrue(aggregate.contains("case \"validated\": return \"Personal baseline\""))
         XCTAssertFalse(aggregate.contains("return \"Validated\""),
                        "internal evidence states must not leak lab vocabulary into end-user copy")
         XCTAssertTrue(aggregate.contains("Text(recoveryEvidenceFooter)"))
