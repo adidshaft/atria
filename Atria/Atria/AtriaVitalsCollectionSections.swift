@@ -1191,9 +1191,11 @@ private struct AtriaHealthMonitorSparkline: View, Equatable {
             Chart(points) { point in
                 LineMark(x: .value("Day", point.day),
                          y: .value("Value", point.value))
-                    .interpolationMethod(.linear)
+                    .interpolationMethod(.monotone)
+                    .lineStyle(AtriaChartVisualGrammar.trendLine)
                     .foregroundStyle(tint)
             }
+            .atriaGraphPlotSurface()
             .chartXAxis {
                 AxisMarks(values: compactAxisDates) { value in
                     AxisTick().foregroundStyle(.secondary.opacity(0.45))
@@ -5701,6 +5703,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         .chartPlotStyle { plotArea in
             plotArea
                 .contentShape(Rectangle())
+                .background(Color.primary.opacity(0.035))
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .clipped()
         }

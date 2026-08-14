@@ -92,13 +92,27 @@ struct HRChart: View {
         Chart(samples) { s in
             LineMark(x: .value("Time", s.t), y: .value("BPM", s.bpm))
                 .interpolationMethod(.linear)
+                .lineStyle(AtriaChartVisualGrammar.traceLine)
                 .foregroundStyle(.red.gradient)
             AreaMark(x: .value("Time", s.t), y: .value("BPM", s.bpm))
                 .interpolationMethod(.linear)
                 .foregroundStyle(.red.opacity(0.12).gradient)
         }
         .chartYScale(domain: yDomain)
-        .chartXAxis(.hidden)
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) { _ in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisValueLabel().font(.caption2.monospacedDigit())
+            }
+        }
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
+                AxisValueLabel(format: .dateTime.hour().minute())
+                    .font(.caption2.monospacedDigit())
+            }
+        }
+        .atriaGraphPlotSurface()
         .frame(height: 160)
     }
 

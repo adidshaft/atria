@@ -562,8 +562,8 @@ struct AtriaHealthspanDetailView: View {
             Chart(model.trendPoints) { point in
                 LineMark(x: .value("Date", point.day),
                          y: .value("Fitness age", point.value))
-                    .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    .interpolationMethod(.monotone)
+                    .lineStyle(AtriaChartVisualGrammar.trendLine)
                     .foregroundStyle(Metrics.electricStrain)
 
                 PointMark(x: .value("Date", point.day),
@@ -571,6 +571,7 @@ struct AtriaHealthspanDetailView: View {
                     .symbolSize(point.id == model.trendPoints.last?.id ? 22 : 0)
                     .foregroundStyle(Metrics.electricStrain)
             }
+            .atriaGraphPlotSurface()
             .chartXAxis(.hidden)
             .chartYAxis(.hidden)
             .frame(height: 82)

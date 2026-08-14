@@ -351,7 +351,7 @@ struct AtriaAboutMetricTrend {
     }
 }
 
-/// Shared mini-trend card: gap-broken linear line + a dot per real reading,
+/// Shared mini-trend card: gap-broken shape-preserving line + a dot per real reading,
 /// framed on the trend's full window. Axes are hidden — the caption carries the
 /// real observed count and range instead, so nothing on the plot is fabricated
 /// (honesty-first chart rules, 2026-08-03). Used by the About sheets and the
@@ -375,8 +375,8 @@ struct AtriaMiniTrendCard: View {
                              y: .value(subject, entry.point.value),
                              series: .value("Run", "r\(entry.runID)"))
                         .foregroundStyle(tint)
-                        .interpolationMethod(.linear)
-                        .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                        .interpolationMethod(.monotone)
+                        .lineStyle(AtriaChartVisualGrammar.trendLine)
                 }
                 // A dot per real reading so single-day runs (no line segment)
                 // are still visible instead of silently disappearing.
@@ -387,6 +387,7 @@ struct AtriaMiniTrendCard: View {
                         .symbolSize(18)
                 }
             }
+            .atriaGraphPlotSurface()
             .chartXScale(domain: trend.window)
             .chartYScale(domain: trend.yDomain)
             .chartXAxis(.hidden)

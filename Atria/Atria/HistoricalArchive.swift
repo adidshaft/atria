@@ -2006,29 +2006,9 @@ enum HistoricalArchive {
         guard let catalog = try? catalogStoreLocked().snapshot() else {
             return nil
         }
-        let sealedIdentity = catalog.chunks
-            .filter { $0.state == .sealed }
-            .sorted { $0.id < $1.id }
-            .map { chunk in
-                [
-                    chunk.id,
-                    chunk.contentSHA256 ?? "missing",
-                    String(chunk.byteCount),
-                    chunk.rowCount.map(String.init) ?? "unknown",
-                    chunk.firstTimestamp.map {
-                        String(Int64((
-                            $0.timeIntervalSince1970 * 1_000
-                        ).rounded()))
-                    } ?? "unknown",
-                    chunk.lastTimestamp.map {
-                        String(Int64((
-                            $0.timeIntervalSince1970 * 1_000
-                        ).rounded()))
-                    } ?? "unknown",
-                    chunk.compressedStorage?.storedSHA256 ?? "plain",
-                ].joined(separator: ":")
-            }
-            .joined(separator: "|")
+        let sealedIdentity = terminalConsumerRetrySealedIdentity(
+            from: catalog.chunks
+        )
         let digest = AtriaHistoricalDrainCompletionGenerationStore.sha256(
             Data(sealedIdentity.utf8)
         )
@@ -2038,6 +2018,57 @@ enum HistoricalArchive {
             catalog.activeChunkID,
             digest,
         ].joined(separator: "|")
+    }
+
+    /// Canonical, lightweight identity for the immutable portion of a catalog.
+    /// Keep this deliberately imperative: the equivalent chained collection
+    /// expression grows enough generic/closure inference that the release
+    /// compiler can time out while type-checking it.
+    private static func terminalConsumerRetrySealedIdentity(
+        from chunks: [AtriaHistoricalArchiveCatalog.RawChunk]
+    ) -> String {
+        var sealedChunks = chunks.filter { $0.state == .sealed }
+        sealedChunks.sort { lhs, rhs in
+            lhs.id < rhs.id
+        }
+
+        var identities: [String] = []
+        identities.reserveCapacity(sealedChunks.count)
+        for chunk in sealedChunks {
+            identities.append(terminalConsumerRetryChunkIdentity(chunk))
+        }
+        return identities.joined(separator: "|")
+    }
+
+    private static func terminalConsumerRetryChunkIdentity(
+        _ chunk: AtriaHistoricalArchiveCatalog.RawChunk
+    ) -> String {
+        let firstTimestamp = terminalConsumerRetryTimestampIdentity(
+            chunk.firstTimestamp
+        )
+        let lastTimestamp = terminalConsumerRetryTimestampIdentity(
+            chunk.lastTimestamp
+        )
+        let rowCount = chunk.rowCount.map(String.init) ?? "unknown"
+
+        return [
+            chunk.id,
+            chunk.contentSHA256 ?? "missing",
+            String(chunk.byteCount),
+            rowCount,
+            firstTimestamp,
+            lastTimestamp,
+            chunk.compressedStorage?.storedSHA256 ?? "plain",
+        ].joined(separator: ":")
+    }
+
+    private static func terminalConsumerRetryTimestampIdentity(
+        _ timestamp: Date?
+    ) -> String {
+        guard let timestamp else { return "unknown" }
+        return String(Int64((
+            timestamp.timeIntervalSince1970 * 1_000
+        ).rounded()))
     }
 
     private static func currentFullScanSnapshotEvidence(

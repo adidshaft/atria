@@ -71,6 +71,7 @@ struct AtriaStepsWeekChart: View {
                             }
                     }
                 }
+                .atriaGraphPlotSurface()
                 .chartXScale(domain: axisLo...axisHi)
                 .chartXAxis {
                     AxisMarks(values: days) { _ in

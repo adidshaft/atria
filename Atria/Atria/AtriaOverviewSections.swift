@@ -11464,7 +11464,7 @@ private struct AtriaPreparedMetricChart: View {
             }
             ForEach(points) { point in
                 AreaMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value))
-                    .interpolationMethod(.linear)
+                    .interpolationMethod(.monotone)
                     .foregroundStyle(LinearGradient(colors: [tint.opacity(0.20), tint.opacity(0)],
                                                     startPoint: .top, endPoint: .bottom))
             }
@@ -11477,19 +11477,19 @@ private struct AtriaPreparedMetricChart: View {
                         Text("prior avg \(comparison.priorText)").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
                     }
             }
-            // The per-day prior-period ghost line was removed (2026-08-03): a
-            // `.monotone` spline through the prior window's sparse points invents
-            // a swooping shape (dipping/peaking on days that had no such value),
-            // which reads as "a random line that has nothing to do with the real
-            // figure." The honest previous-period comparison is the FLAT
-            // prior-average RuleMark above; the fabricated curve is not kept.
+            // The per-day prior-period ghost line remains intentionally absent:
+            // comparison is a real prior average, not an invented historical
+            // series. Current runs use a monotone curve through every real
+            // anchor; PointMarks preserve the exact daily observations.
             // Line split into contiguous day-runs so it BREAKS at gaps instead of
             // drawing a straight segment across days with no reading (2026-08-03
             // chart-honesty rule). Points still render on every real day.
             ForEach(points.contiguousDayRuns(), id: \.point.day) { entry in
                 LineMark(x: .value("Day", entry.point.day, unit: .day), y: .value(title, entry.point.value),
                          series: .value("Series", "current-\(entry.runID)"))
-                    .interpolationMethod(.linear).foregroundStyle(lineStyle)
+                    .interpolationMethod(.monotone)
+                    .lineStyle(AtriaChartVisualGrammar.trendLine)
+                    .foregroundStyle(lineStyle)
                     // Without plot-area alignment Swift Charts resolves the
                     // gradient against each run's own bounding box, so the same
                     // value renders different colors on different runs and none
@@ -11542,6 +11542,7 @@ private struct AtriaPreparedMetricChart: View {
                     .foregroundStyle(tint).symbolSize(130)
             }
         }
+        .atriaGraphPlotSurface()
         .chartXSelection(value: $scrubbedDay)
         .chartYScale(domain: prepared.domain)
         .chartXScale(domain: prepared.xDomain ?? fallbackXDomain)
