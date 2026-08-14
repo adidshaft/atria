@@ -65,8 +65,15 @@ in the independent instrument's export. The CSV begins with the four replay
 columns above and appends this auditable context:
 
 ```csv
-event_kind,reference_device,input_value,input_unit,measurement_site,contact_state,notes,local_only,research_only,decoder_validated,metric_promotions
+event_kind,reference_device,input_value,input_unit,measurement_site,contact_state,notes,local_only,research_only,decoder_validated,metric_promotions,strap_model,strap_firmware_revision,strap_hardware_revision
 ```
+
+The three trailing strap-provenance columns (2026-08-14) are stamped
+automatically at capture time from the standard Device Information service —
+model, firmware revision, hardware revision. They are generation identifiers,
+never serial numbers, and they export blank when the strap is disconnected at
+the tap rather than guessing. Both replay tools read the CSV by column name,
+so the trailing additions are transparent to them.
 
 Temperature input may be °C or °F; `reference_skin_temp_c` is always canonical
 °C while `input_value` and `input_unit` preserve the operator's original entry.
@@ -89,8 +96,12 @@ artifact with zero production promotions; it cannot unlock a sensor decoder.
 ## Minimal return-to-device capture
 
 Record the hardware model/generation, firmware revision, hardware revision,
-record version, and payload length before each session. Do not include serial
-numbers or other identifiers in shared artifacts.
+record version, and payload length before each session. The in-app capture
+card stamps model/firmware/hardware into every exported row automatically
+(2026-08-14) while the strap is connected; the record version and payload
+length still come from the historical frames themselves and are preserved by
+the pairing tool's provenance fields. Do not include serial numbers or other
+identifiers in shared artifacts.
 
 Use a timestamped fingertip pulse oximeter for oxygen reference and a calibrated
 contact skin-temperature probe positioned next to, but not over, the strap
@@ -152,3 +163,28 @@ A decoder can be considered only when all of the following are present:
 These are conservative product engineering gates, not medical-device
 certification. Passing them can justify further decoder review; it does not make
 Atria or the reference instrument a diagnostic device.
+
+## Evaluating a candidate against these gates
+
+`tools/evaluate_sensor_decoder.py` (2026-08-14: previously unlisted here)
+measures a locally supplied candidate against an admitted research corpus and
+reports every gate above — held-out reference span, absolute bias, MAE,
+95th-percentile absolute error, correlation, session count, and false metric
+promotions in negative-control windows — using whole-session held-out splits:
+
+```sh
+python3 tools/evaluate_sensor_decoder.py corpus.json predictions.json \
+  --signal spo2 --output review.json
+```
+
+Both inputs are JSON: the corpus is the research-only artifact admitted by
+`tools/validate_research_corpus.py`, and the predictions document must declare
+`research_only=true`, `model_validated=false`, and zero
+`production_promotions`, or it is rejected before any statistic is computed.
+
+The reporter is intentionally incapable of enabling a decoder: its artifact
+always carries zero promotions, and a passing review is an argument for human
+decoder review, not a switch. `--signal skin_temperature` applies the
+temperature gates (span ≥ 2 °C, bias ≤ 0.2 °C, MAE ≤ 0.3 °C, r ≥ 0.9);
+`--signal spo2` applies the oxygen gates (span ≥ 4 points, bias ≤ 1, MAE ≤ 2,
+p95 ≤ 4, r ≥ 0.8, ≥ 3 sessions).

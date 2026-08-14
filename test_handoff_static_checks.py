@@ -8408,13 +8408,14 @@ class HandoffStaticChecks(unittest.TestCase):
             "state: summary.sleepWakeText == \"--\" ? .learning : .research",
             "state: summary.probeFrameCount > 0 ? .research : .learning",
             "AtriaExperimentalSensorCopy.bloodOxygenFootnote(",
-            # SpO2 copy consolidation (2026-08-01): the strap-4+ decoder-not-shipped
-            # branch is genuinely time-based, so it keeps its transient wording; only
-            # the strap-3 hardware branch (not pinned here) moved to AtriaSpO2Copy.
-            "return \"Not available yet. Atria does not estimate a percentage.\"",
+            # 2026-08-14 (docs/14): the 976a06b7 copy pass consolidated all
+            # unavailable-SpO2 wording into AtriaSpO2Copy behind fail-closed
+            # decoderAvailable guards; the pins follow the guards, not the
+            # retired transient sentences.
+            "guard decoderAvailable else { return AtriaSpO2Copy.notAvailableOnThisStrap }",
             "value: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable",
             "AtriaExperimentalSensorCopy.skinTemperatureFootnote(",
-            "return \"Not available yet. Atria does not show raw sensor data as wrist temperature.\"",
+            "return \"Decoder not verified. Atria does not show raw sensor data as wrist temperature.\"",
             "@State private var showResearchInfo = false",
             ".accessibilityLabel(\"Experimental sensor info\")",
             "AtriaResearchSignalInfoSheet(spo2CandidateFrames: summary.spo2CandidateFrames,",
@@ -8501,8 +8502,12 @@ class HandoffStaticChecks(unittest.TestCase):
             "enum AtriaResearchProbe",
             "static var validatedSkinTemperatureDecoderAvailable: Bool {",
             "productionSkinTemperatureDecoder != nil",
-            "version: \"whoop4-v24-relative-adc-v1\"",
-            "calibrationProvenance: .sameDeviceRelativeValidated",
+            # 2026-08-14 (docs/14): f276068c locked the unvalidated decoder by
+            # removing the whoop4-v24-relative-adc-v1 identity; the pin now
+            # asserts the LOCK itself (nil identity) and the provenance case
+            # declaration instead of the removed construction site.
+            "static let productionSkinTemperatureDecoder: SkinTemperatureDecoderIdentity? = nil",
+            "case sameDeviceRelativeValidated = \"same_device_relative_validated\"",
             "static let whoop4SkinTemperatureRawOffset = 68",
             "static let whoop4SkinTemperatureMinimumAnchorSamples = 100",
             "static func whoop4SkinTemperatureAnchorRaw(_ rawValues: [Int]) -> Double?",

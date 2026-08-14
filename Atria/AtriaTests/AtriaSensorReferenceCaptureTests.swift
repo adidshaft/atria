@@ -63,7 +63,10 @@ final class AtriaSensorReferenceCaptureTests: XCTestCase {
         XCTAssertTrue(csv.contains("\"33\""))
         XCTAssertTrue(csv.contains("\"91.4\",\"degF\""))
         XCTAssertTrue(csv.contains("\"decoder_validated\",\"metric_promotions\""))
-        XCTAssertTrue(csv.hasSuffix("\"0\",\"0\"\n"))
+        // Migrated 2026-08-14 (docs/14): three strap-provenance columns now
+        // trail the row; with no strap connected they export blank, and the
+        // promotion zeros stay immediately before them.
+        XCTAssertTrue(csv.hasSuffix("\"0\",\"0\",\"\",\"\",\"\"\n"))
     }
 
     func testCSVMatchesReplayColumnsAndEscapesContext() throws {
@@ -81,7 +84,46 @@ final class AtriaSensorReferenceCaptureTests: XCTestCase {
         XCTAssertTrue(header.contains("\"timestamp\",\"reference_spo2_percent\",\"reference_skin_temp_c\",\"label\""))
         XCTAssertTrue(csv.contains("\"recovery, seated\""))
         XCTAssertTrue(csv.contains("\"Model \"\"A\"\"\""))
-        XCTAssertTrue(csv.contains("\"local_only\",\"research_only\",\"decoder_validated\",\"metric_promotions\""))
+        // docs/14 (2026-08-14): strap provenance trails the audited columns so
+        // csv.DictReader consumers keep working.
+        XCTAssertTrue(header.hasSuffix("\"local_only\",\"research_only\",\"decoder_validated\",\"metric_promotions\",\"strap_model\",\"strap_firmware_revision\",\"strap_hardware_revision\""))
+    }
+
+    func testCaptureStampsStrapProvenanceIntoTrailingCSVColumns() throws {
+        let store = AtriaSensorReferenceStore(defaults: defaults,
+                                              now: { Date(timeIntervalSince1970: 1_720_000_005) })
+        _ = try store.capture(kind: .oxygenReference,
+                              value: 96,
+                              label: "baseline",
+                              referenceDevice: "Independent Oximeter",
+                              measurementSite: "fingertip",
+                              contactState: "stable-contact",
+                              notes: "",
+                              strapModel: "  WHOOP 4.0 ",
+                              strapFirmwareRevision: "50.34.0",
+                              strapHardwareRevision: "Harvard")
+        let csv = AtriaSensorReferenceStore.csv(entries: store.entries)
+        let row = try XCTUnwrap(csv.split(separator: "\n").dropFirst().first.map(String.init))
+        XCTAssertTrue(row.hasSuffix("\"WHOOP 4.0\",\"50.34.0\",\"Harvard\""),
+                      "provenance is trimmed and trails the row, got: \(row)")
+
+        // A disconnected strap exports blank provenance — never a guess.
+        let bare = try AtriaSensorReferenceEntry(capturedAt: Date(timeIntervalSince1970: 1_720_000_006),
+                                                 kind: .oxygenReference,
+                                                 value: 97,
+                                                 label: "baseline",
+                                                 referenceDevice: "Independent Oximeter",
+                                                 measurementSite: "fingertip",
+                                                 contactState: "stable-contact",
+                                                 notes: "",
+                                                 strapModel: "   ",
+                                                 strapFirmwareRevision: nil,
+                                                 strapHardwareRevision: nil)
+        XCTAssertNil(bare.strapModel, "whitespace-only provenance must clean to nil")
+        let bareRow = try XCTUnwrap(AtriaSensorReferenceStore.csv(entries: [bare])
+            .split(separator: "\n").dropFirst().first.map(String.init))
+        XCTAssertTrue(bareRow.hasSuffix("\"0\",\"\",\"\",\"\""),
+                      "blank provenance exports empty trailing fields, got: \(bareRow)")
     }
 
     func testClockMarkerContainsNoInventedMeasurement() throws {

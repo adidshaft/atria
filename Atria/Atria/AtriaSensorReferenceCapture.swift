@@ -49,6 +49,15 @@ struct AtriaSensorReferenceEntry: Codable, Equatable, Identifiable {
     let measurementSite: String
     let contactState: String
     let notes: String
+    /// docs/14 session provenance (2026-08-14): the strap identity the
+    /// protocol tells the operator to record before each session — model,
+    /// firmware revision, hardware revision from the standard Device
+    /// Information service. Generation identifiers only; never a serial
+    /// number or unit identifier. nil/empty when the strap is disconnected
+    /// at capture time — the columns export blank rather than guessing.
+    var strapModel: String? = nil
+    var strapFirmwareRevision: String? = nil
+    var strapHardwareRevision: String? = nil
 
     init(id: UUID = UUID(),
          capturedAt: Date,
@@ -59,7 +68,10 @@ struct AtriaSensorReferenceEntry: Codable, Equatable, Identifiable {
          referenceDevice: String,
          measurementSite: String,
          contactState: String,
-         notes: String) throws {
+         notes: String,
+         strapModel: String? = nil,
+         strapFirmwareRevision: String? = nil,
+         strapHardwareRevision: String? = nil) throws {
         let cleanedDevice = Self.cleaned(referenceDevice, maximumLength: 80)
         let cleanedSite = Self.cleaned(measurementSite, maximumLength: 80)
         if kind != .clockMarker {
@@ -102,6 +114,18 @@ struct AtriaSensorReferenceEntry: Codable, Equatable, Identifiable {
         self.measurementSite = cleanedSite
         self.contactState = Self.cleaned(contactState, maximumLength: 80)
         self.notes = Self.cleaned(notes, maximumLength: 240)
+        self.strapModel = strapModel.flatMap {
+            let cleaned = Self.cleaned($0, maximumLength: 80)
+            return cleaned.isEmpty ? nil : cleaned
+        }
+        self.strapFirmwareRevision = strapFirmwareRevision.flatMap {
+            let cleaned = Self.cleaned($0, maximumLength: 80)
+            return cleaned.isEmpty ? nil : cleaned
+        }
+        self.strapHardwareRevision = strapHardwareRevision.flatMap {
+            let cleaned = Self.cleaned($0, maximumLength: 80)
+            return cleaned.isEmpty ? nil : cleaned
+        }
     }
 
     enum ValidationError: LocalizedError, Equatable {
@@ -166,7 +190,10 @@ final class AtriaSensorReferenceStore: ObservableObject {
                  referenceDevice: String,
                  measurementSite: String,
                  contactState: String,
-                 notes: String) throws -> AtriaSensorReferenceEntry {
+                 notes: String,
+                 strapModel: String? = nil,
+                 strapFirmwareRevision: String? = nil,
+                 strapHardwareRevision: String? = nil) throws -> AtriaSensorReferenceEntry {
         let entry = try AtriaSensorReferenceEntry(capturedAt: now(),
                                                   kind: kind,
                                                   value: value,
@@ -175,7 +202,10 @@ final class AtriaSensorReferenceStore: ObservableObject {
                                                   referenceDevice: referenceDevice,
                                                   measurementSite: measurementSite,
                                                   contactState: contactState,
-                                                  notes: notes)
+                                                  notes: notes,
+                                                  strapModel: strapModel,
+                                                  strapFirmwareRevision: strapFirmwareRevision,
+                                                  strapHardwareRevision: strapHardwareRevision)
         entries = Array(([entry] + entries).prefix(Self.maximumEntries))
         persist()
         AtriaDebugLog("ATRIADBG sensor_reference status=captured kind=%@ timestamp_ms=%lld local_only=1 research_only=1 decoder_validated=0 metric_promotions=0 healthkit_write=0",
@@ -205,11 +235,16 @@ final class AtriaSensorReferenceStore: ObservableObject {
     }
 
     static func csv(entries: [AtriaSensorReferenceEntry]) -> String {
+        // docs/14 (2026-08-14): the three trailing strap-provenance columns
+        // automate the protocol's "record model/firmware/hardware before each
+        // session" step. Trailing so csv.DictReader consumers (replay/pair
+        // tools) keep working; blank when the strap was disconnected.
         let header = [
             "timestamp", "reference_spo2_percent", "reference_skin_temp_c", "label",
             "event_kind", "reference_device", "input_value", "input_unit",
             "measurement_site", "contact_state", "notes", "local_only",
             "research_only", "decoder_validated", "metric_promotions",
+            "strap_model", "strap_firmware_revision", "strap_hardware_revision",
         ]
         var rows = [header.map(csvField).joined(separator: ",")]
         let formatter = ISO8601DateFormatter()
@@ -228,6 +263,9 @@ final class AtriaSensorReferenceStore: ObservableObject {
                 entry.contactState,
                 entry.notes,
                 "1", "1", "0", "0",
+                entry.strapModel ?? "",
+                entry.strapFirmwareRevision ?? "",
+                entry.strapHardwareRevision ?? "",
             ].map(csvField).joined(separator: ","))
         }
         return rows.joined(separator: "\n") + "\n"
@@ -264,6 +302,20 @@ struct AtriaSensorReferenceCaptureCard: View {
     @State private var draft: Draft?
     @State private var exportURL: URL?
     @State private var showsClearConfirmation = false
+    /// docs/14 (2026-08-14): read-only strap identity source. Deliberately not
+    /// observed — provenance is read once at capture time, never rendered.
+    var ble: AtriaBLEManager? = nil
+
+    private func captureProvenance() -> (model: String?, firmware: String?, hardware: String?) {
+        guard let ble else { return (nil, nil, nil) }
+        let clean: (String) -> String? = { value in
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return (clean(ble.modelNumber),
+                clean(ble.firmwareRevision),
+                clean(ble.hardwareRevision))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -310,6 +362,7 @@ struct AtriaSensorReferenceCaptureCard: View {
         .atriaCard(emphasis: .soft)
         .sheet(item: $draft) { draft in
             AtriaSensorReferenceCaptureSheet(draft: draft) { completed in
+                let provenance = captureProvenance()
                 try store.capture(kind: completed.kind,
                                   value: completed.numericValue,
                                   temperatureUnit: completed.temperatureUnit,
@@ -317,7 +370,10 @@ struct AtriaSensorReferenceCaptureCard: View {
                                   referenceDevice: completed.referenceDevice,
                                   measurementSite: completed.measurementSite,
                                   contactState: completed.contactState,
-                                  notes: completed.notes)
+                                  notes: completed.notes,
+                                  strapModel: provenance.model,
+                                  strapFirmwareRevision: provenance.firmware,
+                                  strapHardwareRevision: provenance.hardware)
                 exportURL = nil
             }
         }
@@ -418,13 +474,17 @@ struct AtriaSensorReferenceCaptureCard: View {
     private func referenceButton(_ kind: AtriaSensorReferenceEntry.Kind) -> some View {
         Button {
             if kind == .clockMarker {
+                let provenance = captureProvenance()
                 _ = try? store.capture(kind: kind,
                                        value: nil,
                                        label: "clock-sync",
                                        referenceDevice: "",
                                        measurementSite: "",
                                        contactState: "",
-                                       notes: "")
+                                       notes: "",
+                                       strapModel: provenance.model,
+                                       strapFirmwareRevision: provenance.firmware,
+                                       strapHardwareRevision: provenance.hardware)
                 exportURL = nil
             } else {
                 draft = Draft(kind: kind)
