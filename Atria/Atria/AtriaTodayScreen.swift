@@ -349,6 +349,13 @@ struct AtriaTodayScreen: View {
             // the night the ring is already showing.
             sleepSettlementRow
 
+            // Assessment P0.4: the morning whiteboard — HRV vs band, RHR vs
+            // band, hours vs frozen need, yesterday's strain. Measured
+            // numbers lead; the Recovery ring above stays a secondary index.
+            AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
+                morningWhiteboardCard
+            }
+
             // Shown only when the system route could not deliver this morning's
             // nudge. A notification the user switched off deliberately does NOT
             // reach here -- honouring that toggle is the point of it.
@@ -1535,6 +1542,38 @@ struct AtriaTodayScreen: View {
     /// several times per body pass. The underlying math scans recent sleep
     /// nights for debt and rollups for yesterday's strain, so cache it behind
     /// the existing source revisions instead of rebuilding it on live ticks.
+    /// Assessment P0.4: builds the whiteboard from values already computed by
+    /// the existing authorities — the cycle projection's displayed numbers,
+    /// the same baseline snapshot the detail sheets use, the frozen need via
+    /// sleepNeedSnapshot, and yesterday's persisted rollup row. Non-numeric
+    /// display strings ("Learning") fail safe to a neutral, band-less row.
+    private var morningWhiteboardCard: some View {
+        let cycle = AtriaHealthMetricAuthority.currentCycleProjection(
+            hero: displayHero,
+            sleepHistory: sessionProjectionStore.state.sleepHistorySnapshot)
+        let baseline = AtriaBaselineTargetSnapshot(sessionProjectionStore.state.baseline)
+        let night = latestSleep
+        let calendar = Calendar.current
+        let yesterdayRollup = night.flatMap { current -> DailyRollupStoreEntry? in
+            guard let prior = calendar.date(byAdding: .day,
+                                            value: -1,
+                                            to: calendar.startOfDay(for: current.day)) else { return nil }
+            return dayDescendingRollups.first { calendar.isDate($0.day, inSameDayAs: prior) }
+        }
+        let model = AtriaTodayMorningWhiteboardModel.make(
+            hrvMS: Int(cycle.hrvValue),
+            restingHR: Int(cycle.restingHeartRateText),
+            baseline: baseline,
+            sleepDurationText: night?.durationText,
+            nightConfirmed: night?.confirmed,
+            needHours: sleepNeedSnapshot.needHours,
+            yesterdayStrain: yesterdayRollup?.strain,
+            yesterdayStrainIsPartial: yesterdayRollup?.strainEvidenceQuality == .partial)
+        return AtriaTodayMorningWhiteboardCard(model: model) { kind in
+            metricDetail = kind
+        }
+    }
+
     private var sleepNeedSnapshot: AtriaTodaySleepNeedSnapshot {
         let sleepHistory = sessionProjectionStore.state.sleepHistorySnapshot
         let latest = latestSleep
@@ -4019,6 +4058,168 @@ private struct AtriaTodayShortcutStrip: View, Equatable {
         .buttonBorderShape(.roundedRectangle(radius: AtriaDesignTokens.Radius.chip))
         .tint(.blue)
         .accessibilityLabel("Start activity")
+    }
+}
+
+/// Assessment P0.4 (2026-08-14): the morning whiteboard — measured numbers
+/// lead the day. Pure model, unit-testable without SwiftUI; every band comes
+/// from the SAME displayed baseline authority (AtriaBaselineTargetSnapshot),
+/// the sleep row reads only the frozen need, and nothing here recomputes.
+struct AtriaTodayMorningWhiteboardModel: Equatable {
+    enum Tone: Equatable { case supportive, caution, strained, neutral }
+
+    struct Row: Equatable, Identifiable {
+        let id: String
+        let systemImage: String
+        let valuePhrase: String
+        let sentence: String
+        let tone: Tone
+        let route: AtriaMetricDetailKind
+    }
+
+    let rows: [Row]
+
+    static func make(hrvMS: Int?,
+                     restingHR: Int?,
+                     baseline: AtriaBaselineTargetSnapshot,
+                     sleepDurationText: String?,
+                     nightConfirmed: Bool?,
+                     needHours: Double?,
+                     yesterdayStrain: Double?,
+                     yesterdayStrainIsPartial: Bool) -> AtriaTodayMorningWhiteboardModel {
+        var rows: [Row] = []
+
+        // HRV vs the 14–30 night personal band.
+        let hrvSentence: String
+        let hrvTone: Tone
+        if let hrvMS, hrvMS > 0,
+           baseline.hrvTrusted,
+           let mean = baseline.hrvLnMean,
+           let sd = baseline.hrvLnSD, sd > 0.01 {
+            let lower = Int(exp(mean - sd).rounded())
+            let upper = Int(exp(mean + sd).rounded())
+            hrvSentence = "typical \(lower)–\(upper) ms"
+            let z = (log(Double(hrvMS)) - mean) / max(sd, 0.05)
+            hrvTone = z >= -1 ? .supportive : (z >= -2 ? .caution : .strained)
+        } else {
+            hrvSentence = "calibrating · \(min(baseline.hrvSampleCount, 14)) of 14 nights"
+            hrvTone = .neutral
+        }
+        rows.append(Row(id: "hrv",
+                        systemImage: "waveform.path.ecg",
+                        valuePhrase: hrvMS.map { "HRV \($0) ms" } ?? "HRV —",
+                        sentence: hrvSentence,
+                        tone: hrvTone,
+                        route: .hrv))
+
+        // RHR vs the personal band (lower is supportive).
+        let rhrSentence: String
+        let rhrTone: Tone
+        if let restingHR, restingHR > 0,
+           baseline.restingTrusted,
+           let mean = baseline.restingMean,
+           let sd = baseline.restingSD, sd > 0.1 {
+            rhrSentence = "typical \(Int((mean - sd).rounded()))–\(Int((mean + sd).rounded())) bpm"
+            let z = (Double(restingHR) - mean) / max(sd, 1)
+            rhrTone = z <= 1 ? .supportive : (z <= 2 ? .caution : .strained)
+        } else {
+            rhrSentence = "calibrating · \(min(baseline.restingSampleCount, 14)) of 14 days"
+            rhrTone = .neutral
+        }
+        rows.append(Row(id: "rhr",
+                        systemImage: "heart",
+                        valuePhrase: restingHR.map { "RHR \($0) bpm" } ?? "RHR —",
+                        sentence: rhrSentence,
+                        tone: rhrTone,
+                        route: .restingHeartRate))
+
+        // Sleep hours vs THAT night's frozen need — never a recomputation.
+        let sleepSentence: String
+        if let needHours {
+            sleepSentence = "of \(AtriaMetricFormat.sleepHours(needHours)) need"
+        } else if nightConfirmed == true {
+            sleepSentence = "need unavailable for this legacy night"
+        } else {
+            sleepSentence = "awaiting tonight's sleep"
+        }
+        rows.append(Row(id: "sleep",
+                        systemImage: "moon.zzz",
+                        valuePhrase: sleepDurationText.map { "Slept \($0)" } ?? "Sleep —",
+                        sentence: sleepSentence,
+                        tone: .neutral,
+                        route: .sleep))
+
+        // Yesterday's strain (display skin; raw TRIMP is P1-7 persistence).
+        rows.append(Row(id: "yesterday",
+                        systemImage: "flame",
+                        valuePhrase: yesterdayStrain.map { String(format: "Strain %.1f", $0) } ?? "Strain —",
+                        sentence: yesterdayStrain == nil
+                            ? "no strain recorded yesterday"
+                            : (yesterdayStrainIsPartial ? "yesterday · partial coverage" : "yesterday"),
+                        tone: .neutral,
+                        route: .strain))
+        return AtriaTodayMorningWhiteboardModel(rows: rows)
+    }
+}
+
+private struct AtriaTodayMorningWhiteboardCard: View, Equatable {
+    static func == (lhs: AtriaTodayMorningWhiteboardCard, rhs: AtriaTodayMorningWhiteboardCard) -> Bool {
+        lhs.model == rhs.model
+    }
+
+    let model: AtriaTodayMorningWhiteboardModel
+    let onOpen: (AtriaMetricDetailKind) -> Void
+
+    private func tint(_ tone: AtriaTodayMorningWhiteboardModel.Tone) -> Color {
+        switch tone {
+        case .supportive: return Metrics.electricGreen
+        case .caution: return .orange
+        case .strained: return Metrics.electricRed
+        case .neutral: return .secondary
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ForEach(model.rows) { row in
+                Button {
+                    onOpen(row.route)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: row.systemImage)
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(tint(row.tone))
+                            .frame(width: 24, height: 24)
+                        Text(row.valuePhrase)
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(row.tone == .neutral ? Color.primary : tint(row.tone))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                            .layoutPriority(2)
+                        Text(row.sentence)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.75)
+                            .layoutPriority(1)
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .frame(minHeight: 44)
+                    .padding(.horizontal, 12)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(row.valuePhrase), \(row.sentence)")
+            }
+        }
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
+                .fill(Color(uiColor: .secondarySystemGroupedBackground))
+        )
     }
 }
 
