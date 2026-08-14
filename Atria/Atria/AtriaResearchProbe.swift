@@ -6,10 +6,14 @@ enum AtriaResearchProbe {
     static let validatedSpO2DecoderAvailable = false
     /// Neither sensor decoder is a production measurement until a
     /// generation/firmware-specific external-reference validation artifact has
-    /// been reviewed. Keeping this explicit (rather than deriving it from a
-    /// candidate conversion helper) prevents a raw field hypothesis from
-    /// silently becoming a displayed vital.
-    static let validatedSkinTemperatureDecoderAvailable = false
+    /// been reviewed. docs/14 pin repair (2026-08-14): availability DERIVES
+    /// from the single production decoder identity below — flipping this flag
+    /// requires actually installing a reviewed decoder identity, so a raw
+    /// field hypothesis can never become a displayed vital via a lone
+    /// boolean edit. Today that identity is nil, so this is false.
+    static var validatedSkinTemperatureDecoderAvailable: Bool {
+        productionSkinTemperatureDecoder != nil
+    }
 
     enum Source: String, Codable, Sendable {
         case metadata = "0x31"

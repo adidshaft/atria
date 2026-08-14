@@ -1053,4 +1053,116 @@ You already have the daily loop’s **measurements**. What official WHOOP still 
 6. **You will not replace MG ECG / BP / Healthspan on a 4.0.** Do not try.
 
 “Nothing provisional” now means: **stop adding composites.** Ship reliability, show TRIMP, split lifting from cardio, demote the remaining Health/widget heroes, then wear the strap for `docs/14` and a Recovery outcome log. Anything else is another invented percent.
+
+---
+
+## 14. Promoting provisional → high confidence (post §13)
+
+Reviewed: 2026-08-14, after `619917b5`. Software leftovers 2–6 are closed. This section answers: *which current “provisional / limited / missing” numbers can become actual high-confidence readings, and which must never be relabeled.*
+
+There are two different words being used as if they were one:
+
+| Kind | Meaning | How it becomes high |
+|---|---|---|
+| **A. Evidence-provisional** | The sensor or log exists; nights, coverage, or HRmax are incomplete | Wear, confirm sleep, accept a measured HRmax, log RPE. No new formula. |
+| **B. Model-provisional** | The number is an invented mix or an uncalibrated map | Outcome data or a reference device. Relabeling it “checked” is a lie. |
+
+Promoting B is how you become WHOOP. Do not do it.
+
+Motion / steps / IMU stay **do not touch** (§0). None of the promotions below retune Gate 4.
+
+### 14.1 Already actual — stop calling them weak
+
+These are measurements (or exact arithmetic on measurements) once their existing gates pass. The remaining work is **presentation**, not a new model.
+
+| Reading | When it is already high | Do not |
+|---|---|---|
+| HR (live + v24 archive) | Decoded BPM, worn-on | Smooth or invent across >15 s gaps |
+| RR / RMSSD / lnRMSSD | `HRVSnapshot.isReady` (300 s, gap ≤3 s, confidence ≥0.75, successive diffs) | Estimate from BPM |
+| Overnight RHR | Confirmed sleep, 10th/5th percentile rule | Deep-weight until stages are reference-validated |
+| Sleep duration | Confirmed window | Let HR-only stages shrink hours |
+| Sufficiency | `slept / FrozenNeed` | Rename it Sleep Score |
+| Frozen Sleep Need *receipt* | Settled night | Recompute with today’s debt |
+| Consistency | ≥5 TZ-qualified nights (raise to 10–14 before calling it high) | Treat as sleep *quality* |
+| Efficiency | Motion-qualified nights only | Invent efficiency for manual/HR-only |
+| Cardio TRIMP | Coverage ≥95%, measured HRmax | Invert 0–21 back to TRIMP |
+| Strain 0–21 *skin* | Same, and not age-estimated HRmax | Claim WHOOP equality |
+| Time-in-zone (HRR) | Frozen workout boundaries | Rewrite after profile edits |
+| Logged lifting *volume* | Every qualified set has weight + reps + RPE | Call the 45×^1.6 fuse “measured” |
+| Journal Δ HRV / RHR | Welch/rank gates already in code | Phrase as causal |
+
+**HRmax is the single biggest free promotion.** Strain is marked `estimate` whenever max HR is age-predicted (`AtriaHomeView` / `AtriaCompactMetricPresentation.strain`). You already suggest a 95th-percentile session peak. One explicit “use this as measured HRmax” accept, after a hard effort, flips Strain, zones, and the HRR kernel from provisional to high. No decoder, no motion work.
+
+### 14.2 Becomes high by wearing — no new code required
+
+| Missing / limited today | What fills it | High-confidence result |
+|---|---|---|
+| Recovery `learning` / `HRV pending` | One confirmed night with a ready RR window, 04:00–11:00 end | Recovery can score; HRV contributes |
+| Recovery `unverified` / personal sleep fallback | 14 overnight lnRMSSD nights + 14 RHR days + 14 personal sleep nights | v4 personal-baseline index (reproducible, still not a readiness *prediction*) |
+| Strain `lower bound` / `≥` | Wear through the civil/physiological day; coverage ≥95% | Exact day TRIMP |
+| Respiratory `--` | Qualified sleep RR windows, RSA peak/band ≥0.18 | Nightly breaths/min as an Atria RSA estimate |
+| Respiratory not in Recovery | 14-night resp baseline, `sd > 0.1` | 5% contributor, already gated |
+| Sleep Need “legacy night” | New nights mint `FrozenNeed` | Sufficiency is exact |
+| Whiteboard “calibrating · N of 14” | Keep sleeping with the strap on | HRV/RHR bands |
+| Muscular lane absent | Log weight + reps + **RPE on every set** | Lifting volume exists; TRIMP-eq stays labeled |
+| Typical overnight HR band | 14 qualified night RHRs | Mean ± 1 SD overlay (already coded) |
+
+Do not write a “boost confidence” feature. These gates are the feature.
+
+Recovery **personal baseline** after v4 (trusted MAD HRV + trusted RHR + *personal* sleep) is as trustworthy as that *index* will get without an outcome study. Presentation already maps it to `.moderate` and hides the marker. Do **not** map it to `.validated` / “checked readiness.” You may call the *inputs* checked. The 60/20/15/5 mix stays an index.
+
+### 14.3 Can become high with a bounded campaign (still no WHOOP API)
+
+| Today | Campaign | Then you may show | Still forbidden |
+|---|---|---|---|
+| Skin tile `--` / relative row “Experimental” | Wear 14+ drained nights; keep the existing relative-raw pipeline | **Skin signal vs your nights** (z of nightly raw median). High as a *personal deviation*. | °C, core temp, Recovery fill-in |
+| SpO2 `--` | `docs/14`: fingertip oximeter, same clock, negative controls, firmware lock | Nightly % only after bias/MAE gates pass | Medical oximeter, Recovery fill-in on day one |
+| Absolute skin °C | `docs/14`: adjacent skin probe | Deviation from personal nightly baseline | Core temperature |
+| Recovery as predictor | 30–90 days: next-day HRV, RHR, session RPE, subjective readiness | New model version, or keep the index | Rewriting history |
+| Sleep Need strain adder | Fit hours extra sleep per TRIMP from *your* sufficient nights | Personal slope, labeled | Fitting without a corpus |
+| REM/Deep as measured | Participant-separated PSG or PSG-validated headband | Stage timeline with reported accuracy | HR-only hypnogram as EEG |
+
+**Relative skin is the only Health Monitor gap you can close without a new instrument.** The ADC is not temperature. After 14+ coverage-qualified nights the *deviation from your own raw baseline* is a real statistic. Promote that row off “Experimental” only when the existing producer reports a trusted baseline; keep units as “vs your nights,” never °C. That is a labeling + gate change, not a decoder.
+
+SpO2 cannot be promoted from u16@64/@66. That is still fabrication.
+
+### 14.4 Must stay provisional / missing forever (or until the campaign in 14.3)
+
+Relabeling these as high-confidence is the actual bullshit.
+
+| Thing | Why it cannot be “checked” |
+|---|---|
+| Sleep Score 50/25/15/10 | Invented weights. Components can be high; the blend cannot. |
+| Fitness Age / Healthspan | Lifestyle smoothie. Lab only. |
+| VO₂max `15.3 × HRmax/RHR` | Classroom estimate. Stay “rough.” |
+| Coach 9–17 kernel | Untouched on purpose. Sentence already uses the whiteboard. |
+| Muscular `45 × (score/100)^1.6` | Engineering fuse. Volume is high; equivalent TRIMP is not. |
+| `15.0 strain ≈ 37 min` need | WHOOP blog number. Labeled heuristic until a personal fit. |
+| HR-only REM/Deep | PPG ≠ EEG. Keep `Estimated stages · HR-only`. |
+| Overnight HR-load 0–3 in Recovery or Sleep Score | Visualization only (GAP-10). |
+| SpO2 % / skin °C from raw words | No transfer function. |
+| All-day strap steps as exact | Gate 4 not sealed. **Do not touch.** |
+| Automatic named sport | GAP-11. IMU. Blocked. |
+| Smart wake | Hard alarm until live validated stages. |
+| Cycle phase in Recovery | Calendar diary, not physiology. |
+| Recovery as “you will perform” | No outcome calibration. |
+
+### 14.5 One new *statistic* worth adding (not a score)
+
+**HRV-CV** = 7-day SD(lnRMSSD) / 7-day mean(lnRMSSD), nights that already qualify for the Recovery HRV sample.
+
+WHOOP published this as a simple, named statistic (not their Recovery formula). You already store nightly lnRMSSD. After 7 qualified nights it is exact arithmetic on your own data — same confidence as the HRV series. Show it on HRV detail, not as a home hero. Do not fold it into Recovery until it independently predicts leftover variance.
+
+Sleep Regularity Index (Phillips 2017) is the same class of upgrade for Consistency: published definition, your confirmed nights, no invention. Optional; the current engine is already honest.
+
+### 14.6 What replacing WHOOP still is, after §13
+
+Software leadership work is done. Remaining replacement value:
+
+1. **Reliability** — never-lose-the-night. Standing item 1.
+2. **Mature the evidence you already record** — 14 nights, measured HRmax, full-day wear, complete RPE, confirmed RR sleep. That is how provisional *A* becomes high.
+3. **Health Monitor** — HRV, RHR, respiration are local. Promote relative skin *deviation* when the 14-night raw baseline exists. SpO2 % and °C wait on `docs/14`.
+4. **Do not promote composites.** Sufficiency, consistency, efficiency, TRIMP, RMSSD, RHR are the replacement. Sleep Score and Fitness Age stay collapsed.
+
+Highest-quality path: fewer numbers, each one either a measurement or a labeled index, with a receipt.
 )

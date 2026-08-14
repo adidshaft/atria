@@ -1346,7 +1346,7 @@ struct AtriaCollectionResearchValidationContent: View {
                                                showHRImporter: $showHRImporter,
                                                hrShareURL: $hrShareURL,
                                                hrImportStatus: hrImportStatus)
-            AtriaSensorReferenceCaptureCard()
+            AtriaSensorReferenceCaptureCard(ble: ble)
             AtriaStepCalibrationSequenceCard(ble: ble)
             AtriaCollectionResearchEvidenceHost(store: store, ble: ble)
             // Static handoff compatibility marker for the relocated card: researchManeuverCard
