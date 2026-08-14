@@ -977,6 +977,30 @@ Reviewed: 2026-08-14, on `codex/whoop-remaining-product-gaps` after:
 
 These are the only remaining **code** items this document is willing to call net-positive without new labeled captures.
 
+> **Status 2026-08-14 (same day, later pass)** — items 2–6 landed in `619917b5`
+> (device-accepted, static gate byte-identical, full suite at exactly the known
+> baseline failures):
+> **2** whiteboard yesterday row reads `TRIMP 188 (12.4)`; nights whose rollup
+> predates TRIMP persistence keep the display score — the curve is never
+> inverted. **3** `AtriaWhiteboardCoachSentence.rewrite` speaks bands-vs-
+> yesterday's-TRIMP through a shared `hrvBandZ`/`restingBandZ` authority (the
+> whiteboard consumes the same z); calibrating bands hide the number; the
+> 9–17 kernel and frozen targets untouched. **4** cardio/lifting render as two
+> labeled TRIMP lanes in the strain detail sheet, fused values carry a
+> `cardio+lifting` marker, dated history makes no split claim (only the fused
+> total was persisted). **5** Sleep Score and Fitness Age mount only behind
+> default-collapsed Provisional/Lab disclosures on Health. **6** the widget
+> ships pre-rendered whiteboard rows in the snapshot (day-end expiry, patch
+> lanes carry them); small/large faces lead with the mirror, lock-screen
+> families speak HRV/RHR/sleep-vs-need, the circular complication gauges sleep
+> against the frozen need and stays gray without a truthful denominator.
+> **1** also advanced concretely: the HR-window result cache hashed a
+> prefix-hashed JSON `Data`, so an mtime-only archive change could serve a
+> stale window — the fingerprint is now field-wise `Hashable`
+> (`HistoricalArchive.swift`), and the time-of-day-dependent Handoff-12
+> fixture was re-anchored to an explicit past civil day. Item 1 otherwise
+> remains standing work, as it should.
+
 1. **Reliability (standing item 1).** Never-lose-the-night is still the moat. Drain, locked reconnect, freeze, cycle boundary. This is how you replace WHOOP, not another score. Do not trade it for features.
 
 2. **Whiteboard still prints 0–21 Strain, not TRIMP.** P1.7 stored TRIMP as truth; the card still says `Strain %.1f`. Show yesterday’s TRIMP (and keep 0–21 as a parenthetical skin), or the “TRIMP is truth” work is invisible.
@@ -1007,11 +1031,11 @@ These are measurement campaigns. Writing more Swift without data would create th
 
 | Thing | Status now | Action |
 |---|---|---|
-| Recovery % as the day’s decision | Secondary on Today; still ring center + widget + coach target | Keep as index. Lead with whiteboard everywhere. |
-| Sleep Score 50/25/15/10 | Persisted, labeled provisional, still on Health | Demote off Health hero. |
-| Fitness Age / Healthspan | Off default Home; still a Health card | Hide or lab-only. |
-| Coach 9–17 | Unchanged | Replace the sentence, not the kernel. |
-| Muscular fuse into one 0–21 | Shipped provisional | Split the display. |
+| Recovery % as the day’s decision | **2026-08-14: whiteboard leads Today, the coach sentence, and every widget family; Recovery is a one-line index (ring stays as tri-ring member)** | Done — keep it demoted. |
+| Sleep Score 50/25/15/10 | **2026-08-14: collapsed behind a "Provisional" disclosure on Health, label unchanged inside** | Done — never re-promote without outcome data. |
+| Fitness Age / Healthspan | **2026-08-14: collapsed behind the "Lab — experimental estimates" disclosure at the end of Trends** | Done — lab-only until validated. |
+| Coach 9–17 | **2026-08-14: sentence replaced with whiteboard vocabulary; kernel + frozen targets untouched** | Done — never retune 9–17 without outcomes. |
+| Muscular fuse into one 0–21 | **2026-08-14: display split into cardio/lifting lanes; fused number explicitly labeled `cardio+lifting`** | Done — fusion math stays provisional and labeled. |
 | 12.4 Atria = 12.4 WHOOP | Never claimed in code; users will still compare | Never chase. |
 | All-day steps “just fix it” | Gate 4 open | **Do not touch.** |
 | Stages as EEG | Honesty gates exist | Do not promote. |
