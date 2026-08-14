@@ -587,6 +587,7 @@ struct TachogramChart: View {
             ForEach(correctedSamples) { s in
                 LineMark(x: .value("Time", s.t), y: .value("RR", s.ms))
                     .interpolationMethod(.linear)
+                    .lineStyle(AtriaChartVisualGrammar.traceLine)
                     .foregroundStyle(.purple.gradient)
             }
             ForEach(uncorrectedSamples) { s in
@@ -595,7 +596,20 @@ struct TachogramChart: View {
                     .foregroundStyle(.orange)
             }
         }
-        .chartXAxis(.hidden)
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 3)) { _ in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.10))
+                AxisValueLabel(format: .dateTime.hour().minute())
+                    .font(.caption2.monospacedDigit())
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { _ in
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
+                AxisValueLabel().font(.caption2.monospacedDigit())
+            }
+        }
+        .atriaGraphPlotSurface()
         .chartYScale(domain: yDomain)
         .frame(height: 120)
         .atriaInspectableGraph(

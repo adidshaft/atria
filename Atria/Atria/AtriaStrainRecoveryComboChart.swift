@@ -105,8 +105,8 @@ struct AtriaStrainRecoveryComboChart: View {
                          y: .value("Strain", min(entry.point.value, strainAxisMax)),
                          series: .value("Strain run", "s\(entry.runID)"))
                     .foregroundStyle(Metrics.electricStrain)
-                    .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 2))
+                    .interpolationMethod(.monotone)
+                    .lineStyle(AtriaChartVisualGrammar.trendLine)
             }
             // A dot on each real strain day so an isolated day (a length-1 run
             // that a LineMark cannot draw) still renders — mirrors the recovery
@@ -122,8 +122,8 @@ struct AtriaStrainRecoveryComboChart: View {
                          y: .value("Recovery", entry.point.value / 100.0 * strainAxisMax),
                          series: .value("Recovery run", "r\(entry.runID)"))
                     .foregroundStyle(Metrics.electricGreen)
-                    .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 2))
+                    .interpolationMethod(.monotone)
+                    .lineStyle(AtriaChartVisualGrammar.trendLine)
             }
             // A dot on each real recovery day, colored by its band, so the
             // recovery line's points read green/yellow/red at a glance.
@@ -134,6 +134,7 @@ struct AtriaStrainRecoveryComboChart: View {
                     .symbolSize(50)
             }
         }
+        .atriaGraphPlotSurface()
         .chartXScale(domain: xDomain ?? Date()...Date())
         .chartXAxis {
             AxisMarks(values: weekDays) { value in

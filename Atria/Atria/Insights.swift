@@ -722,13 +722,15 @@ struct RestingTrendChart: View {
                         LineMark(x: .value("Date", sample.date),
                                  y: .value("Resting", sample.value),
                                  series: .value("Observed run", "resting-\(sample.segment)"))
-                            .interpolationMethod(.linear)
+                            .interpolationMethod(.monotone)
+                            .lineStyle(AtriaChartVisualGrammar.trendLine)
                             .foregroundStyle(.teal)
                         PointMark(x: .value("Date", sample.date),
                                   y: .value("Resting", sample.value))
                             .foregroundStyle(.teal)
                     }
                 }
+                .atriaGraphPlotSurface()
                 .frame(height: 160)
                 .atriaInspectableGraph(
                     AtriaInspectableGraph(

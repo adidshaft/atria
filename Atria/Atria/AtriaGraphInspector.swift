@@ -300,6 +300,7 @@ private struct AtriaGraphInspectorView: View {
                              y: .value(item.title, point.value),
                              series: .value("Observed segment", "\(item.id)-\(point.segment)"))
                         .interpolationMethod(.linear)
+                        .lineStyle(AtriaChartVisualGrammar.traceLine)
                         .foregroundStyle(item.tint)
                     PointMark(x: .value("Time", point.date), y: .value(item.title, point.value))
                         .foregroundStyle(item.tint.opacity(0.8))
@@ -311,6 +312,7 @@ private struct AtriaGraphInspectorView: View {
                     .foregroundStyle(.secondary.opacity(0.7))
             }
         }
+        .atriaGraphPlotSurface()
         .chartScrollableAxes(.horizontal)
         .chartXVisibleDomain(length: visibleDuration ?? defaultVisibleDuration(series))
         .chartXSelection(value: $selectedDate)
@@ -340,6 +342,7 @@ private struct AtriaGraphInspectorView: View {
                         .foregroundStyle(.secondary)
                 }
         }
+        .atriaGraphPlotSurface()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -363,6 +366,7 @@ private struct AtriaGraphInspectorView: View {
                     }
                 }
         }
+        .atriaGraphPlotSurface()
         .chartXScale(domain: domain)
         .chartScrollableAxes(.horizontal)
         .chartXVisibleDomain(length: visibleDuration ?? defaultIntervalVisibleDuration(domain: domain))

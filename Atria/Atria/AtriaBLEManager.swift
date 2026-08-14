@@ -421,6 +421,10 @@ struct AtriaBLEWorkoutHistoryPreemptionSuccessorGate: Sendable {
 /// proprietary stream for later protocol decoding.
 @MainActor
 final class AtriaBLEManager: NSObject, ObservableObject {
+    /// App Review demo mode is explicitly local-only. Keeping this gate in the
+    /// transport owner prevents background reconnect paths from making a radio
+    /// attempt after the reviewer intentionally chose the no-strap experience.
+    private var appReviewDemoMode = false
     /// Diagnostics-only accounting for the existing historical drain.  This is
     /// deliberately kept on the main actor with the orchestrator: it observes
     /// callback/order/persistence outcomes, but never participates in protocol
@@ -5559,7 +5563,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         applyEarlyHistoricalLaunchConfiguration(arguments: arguments)
         guard startsBluetooth else {
             bluetoothStartupSuspended = true
-            AtriaDebugLog("ATRIADBG ble_manager_init status=suspended reason=restore_marker_retained")
+            // Several read-only foreground diagnostics query `central.state`.
+            // Retain an inert manager solely for those queries; it has no
+            // delegate or restoration identity and therefore cannot scan,
+            // reconnect, or receive a strap callback.
+            appReviewDemoMode = true
+            central = CBCentralManager(delegate: nil,
+                                       queue: nil,
+                                       options: [CBCentralManagerOptionShowPowerAlertKey: false])
+            AtriaDebugLog("ATRIADBG ble_manager_init status=suspended reason=no_transport_start")
             return
         }
         motionCompactStoreObserver =
@@ -7388,6 +7400,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     func handleInteractiveForeground(rest: Int, maxHR: Int) {
+        // App Review demo launches intentionally do not construct a
+        // CBCentralManager. Scene activation still reaches this public hook,
+        // so return before any recovery path touches the unavailable radio.
+        guard !bluetoothStartupSuspended, !appReviewDemoMode else { return }
         let now = Date()
         // CoreBluetooth can remain in an impossible settled state even after
         // the system radio is available. A scene activation is a fresh chance
@@ -22062,6 +22078,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     func startScan(reason: String = "manual") {
+        guard !appReviewDemoMode else {
+            AtriaDebugLog("ATRIADBG ble_scan status=suppressed reason=%@ mode=app_review_demo", reason)
+            return
+        }
         guard central.state == .poweredOn else {
             pendingScanReason = reason
             AtriaDebugLog("ATRIADBG ble_scan status=skipped reason=%@ central_state=%d",
@@ -22421,6 +22441,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if let p = peripheral {
             cancelPeripheralConnection(p, reason: "explicit_disconnect")
         }
+    }
+
+    func enterAppReviewDemoMode() {
+        appReviewDemoMode = true
+        scanRetryTask?.cancel()
+        scanWideningTask?.cancel()
+        reconnectWatchdogTask?.cancel()
+        central.stopScan()
+        isActivelyScanning = false
+        if let peripheral {
+            cancelPeripheralConnection(peripheral, reason: "app_review_demo")
+        }
+        recomputeConnectionStatus(reason: "app_review_demo")
+    }
+
+    func exitAppReviewDemoMode() {
+        appReviewDemoMode = false
     }
 
     /// A retained multi-file restore marker means canonical persistence is not

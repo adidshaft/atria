@@ -622,6 +622,7 @@ struct AtriaTrendChartCard: View {
                 }
             }
         }
+        .atriaGraphPlotSurface()
         .chartXSelection(value: $scrubDate)
         // Keep the first and last observed dates inside the plot instead of
         // pinning their labels to its clipped edges. Swift Charts otherwise

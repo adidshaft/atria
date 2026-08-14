@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var showOnboarding = false
     @State private var onboardingStage: OnboardingStage = .flow
     @State private var showOnboardingConsentSheet = false
+    @State private var appReviewDemoActive = AtriaAppReviewDemo.isActive
     @StateObject private var onboardingHistoryBootstrap: AtriaOnboardingHistoryBootstrap
 
     /// The active flow owns the eight compact setup and personalization pages;
@@ -53,6 +54,29 @@ struct ContentView: View {
                            store: store,
                            workoutRouteRecorder: workoutRouteRecorder)
             .equatable()
+            .overlay(alignment: .top) {
+                if appReviewDemoActive {
+                    HStack(spacing: 10) {
+                        Label("App Review demo · local sample data", systemImage: "checkmark.shield.fill")
+                            .font(.footnote.weight(.semibold))
+                        Spacer(minLength: 8)
+                        Button("Exit") {
+                            Task { @MainActor in
+                                await store.clearAppReviewDemo()
+                                ble.exitAppReviewDemoMode()
+                                appReviewDemoActive = false
+                            }
+                        }
+                        .font(.footnote.weight(.bold))
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .accessibilityElement(children: .combine)
+                }
+            }
             .fullScreenCover(isPresented: $showOnboarding) {
                 switch onboardingStage {
                 case .flow:
@@ -69,6 +93,14 @@ struct ContentView: View {
                                             showOnboarding = !store.profile.hasCompletedOnboarding
                                                 || !onboardingHistoryBootstrap.isCompleteForCurrentStrap
                                             return true
+                                        },
+                                        onAppReviewDemo: { nickname in
+                                            Task { @MainActor in
+                                                guard await store.activateAppReviewDemo(nickname: nickname) else { return }
+                                                ble.enterAppReviewDemoMode()
+                                                appReviewDemoActive = true
+                                                showOnboarding = false
+                                            }
                                         }) { profile in
                         onboardingStage = .sharingChoice(
                             store.profile.hasCompletedOnboarding ? store.profile : profile

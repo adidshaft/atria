@@ -1,0 +1,213 @@
+From 18181f46786dbd64b7461cf342c0e30b2dc39bca Mon Sep 17 00:00:00 2001
+From: adidshaft <adidshaft@gmail.com>
+Date: Mon, 10 Aug 2026 21:19:42 +0530
+Subject: [PATCH] Smooth brief telemetry hiccups in live HR and stress traces
+
+The live Heart-rate and Stress traces broke into separate runs at the
+strict fact-continuity gap (2 min HR / 90 s stress), so a few dropped
+samples read as a jagged break instead of a continuous line.
+
+Add a display-only continuity window
+(AtriaChartVisualGrammar.traceDisplayContinuityGap = 5 min): samples
+closer than this stay one shape-preserving (.monotone) run, while a real
+dropout longer than five minutes still ends the run, opens a new Charts
+series, and leaves the interval blank -- never bridged. The strict
+data/coverage thresholds (heartRateGapThreshold, maximumFactContinuityGap)
+are untouched, so telemetry-integrity and coverage accounting keep their
+exact meaning.
+
+Applies to the Vitals HR chart (smoothed + raw paths), the stress
+timeline traces, and the HR-under-stress trace. Adds a regression test
+pinning "3-minute hiccup connects, dropout beyond five minutes breaks".
+---
+ Atria/Atria/AtriaGraphGrammar.swift           | 21 ++++++++++--
+ Atria/Atria/AtriaHealthScreen.swift           | 18 ++++++----
+ Atria/Atria/AtriaStressDetailView.swift       | 15 ++++++--
+ .../Atria/AtriaVitalsCollectionSections.swift |  9 +++--
+ .../AtriaStressDetailViewTests.swift          | 34 +++++++++++++++++++
+ 5 files changed, 83 insertions(+), 14 deletions(-)
+
+diff --git a/Atria/Atria/AtriaGraphGrammar.swift b/Atria/Atria/AtriaGraphGrammar.swift
+index ca0f52aa..aa09a8f1 100644
+--- a/Atria/Atria/AtriaGraphGrammar.swift
++++ b/Atria/Atria/AtriaGraphGrammar.swift
+@@ -4,10 +4,25 @@ import Charts
+ /// Shared rendering grammar for every chart surface.
+ ///
+ /// Atria deliberately distinguishes visual smoothness from data smoothing:
+-/// trend charts may use a shape-preserving curve between their real anchors,
+-/// while high-frequency physiological traces keep their exact linear segments.
+-/// Neither mode drops, averages, nor manufactures a recorded sample.
++/// trend charts curve between their real anchors, and high-frequency
++/// physiological traces (live Heart-rate, Stress) join samples inside a short
++/// continuity window with a shape-preserving curve while breaking hard across a
++/// genuine dropout (see `traceDisplayContinuityGap`). Neither mode drops,
++/// averages, nor manufactures a recorded sample.
+ enum AtriaChartVisualGrammar {
++    /// Display-only continuity window for high-frequency physiological traces
++    /// (live Heart-rate, Stress). Consecutive real samples closer than this are
++    /// treated as one continuous run and joined with a shape-preserving
++    /// `.monotone` curve, so a couple of dropped samples read as a smooth line
++    /// instead of a jagged break. A gap LONGER than this is a real dropout: the
++    /// run ends, the next sample opens a new Charts `series`, and the interval
++    /// is left blank — never bridged. Deliberately tight (five minutes, not a
++    /// multi-hour bridge) so it smooths only brief signal hiccups, and the
++    /// strict data/coverage thresholds (`heartRateGapThreshold`,
++    /// `maximumFactContinuityGap`) are left untouched, so telemetry-integrity
++    /// and coverage accounting keep their exact meaning.
++    static let traceDisplayContinuityGap: TimeInterval = 5 * 60
++
+     static let trendLine = StrokeStyle(
+         lineWidth: 2.25,
+         lineCap: .round,
+diff --git a/Atria/Atria/AtriaHealthScreen.swift b/Atria/Atria/AtriaHealthScreen.swift
+index c2937d89..c8da021d 100644
+--- a/Atria/Atria/AtriaHealthScreen.swift
++++ b/Atria/Atria/AtriaHealthScreen.swift
+@@ -2489,9 +2489,12 @@ struct AtriaSleepStressCard: View {
+     }
+ 
+     private var points: [AtriaStressTimelinePoint] {
++        // Ambient stress trace: brief hiccups (≤5 min) stay one smooth run; a
++        // genuine dropout still breaks and stays blank. Strict fact-continuity
++        // is kept for workouts and coverage accounting.
+         AtriaStressTimelinePoint.segment(projection.samples.map {
+             AtriaStressDetailReading(date: $0.date, score: $0.score)
+-        })
++        }, gapThreshold: AtriaChartVisualGrammar.traceDisplayContinuityGap)
+     }
+ 
+     private struct HRTracePoint: Identifiable {
+@@ -2501,16 +2504,19 @@ struct AtriaSleepStressCard: View {
+         var id: TimeInterval { date.timeIntervalSinceReferenceDate }
+     }
+ 
+-    /// Raw overnight BPM, segmented around real gaps (the same 5-minute rule the
+-    /// load trace uses). It must NOT go through AtriaStressDetailReading, whose
+-    /// initializer clamps score to 0...3 — that silently collapsed every bpm to
+-    /// 3 and rendered the heart-rate line far below the axis (invisible).
++    /// Raw overnight BPM, segmented around real gaps (the same display-continuity
++    /// rule the load trace now uses — `AtriaChartVisualGrammar.traceDisplayContinuityGap`).
++    /// It must NOT go through AtriaStressDetailReading, whose initializer clamps
++    /// score to 0...3 — that silently collapsed every bpm to 3 and rendered the
++    /// heart-rate line far below the axis (invisible).
+     private var heartRatePoints: [HRTracePoint] {
+         let sorted = projection.heartRateSamples.sorted { $0.date < $1.date }
+         var segment = 0
+         var previousDate: Date?
+         return sorted.map { sample in
+-            if let previousDate, sample.date.timeIntervalSince(previousDate) > 5 * 60 {
++            if let previousDate,
++               sample.date.timeIntervalSince(previousDate)
++                > AtriaChartVisualGrammar.traceDisplayContinuityGap {
+                 segment += 1
+             }
+             previousDate = sample.date
+diff --git a/Atria/Atria/AtriaStressDetailView.swift b/Atria/Atria/AtriaStressDetailView.swift
+index 99135fd1..c631877e 100644
+--- a/Atria/Atria/AtriaStressDetailView.swift
++++ b/Atria/Atria/AtriaStressDetailView.swift
+@@ -1268,8 +1268,17 @@ struct AtriaStressTimelineEvidenceProjection: Equatable {
+     let cardiacArousalPoints: [AtriaCardiacArousalTimelinePoint]
+ 
+     static func make(readings: [AtriaStressDetailReading]) -> Self {
+-        Self(stressPoints: AtriaStressTimelinePoint.segment(readings),
+-             cardiacArousalPoints: AtriaCardiacArousalTimelinePoint.segment(readings))
++        // Ambient / live stress card (Health + Vitals): brief signal hiccups
++        // (≤5 min) read as one smooth run, while a genuine dropout still breaks
++        // and stays blank. Focused workout traces keep the stricter
++        // fact-continuity gap (the `segment` default), where a short hole is
++        // meaningful.
++        Self(stressPoints: AtriaStressTimelinePoint.segment(
++                readings,
++                gapThreshold: AtriaChartVisualGrammar.traceDisplayContinuityGap),
++             cardiacArousalPoints: AtriaCardiacArousalTimelinePoint.segment(
++                readings,
++                gapThreshold: AtriaChartVisualGrammar.traceDisplayContinuityGap))
+     }
+ 
+     var presentation: AtriaStressTimelineEvidencePresentation {
+@@ -1527,7 +1536,7 @@ private struct AtriaStressHeartRateTimelineChart: View {
+         return points.sorted { $0.t < $1.t }.map { point in
+             if let previous,
+                point.t.timeIntervalSince(previous)
+-                > AtriaPhysiologicalStressModel.maximumFactContinuityGap {
++                > AtriaChartVisualGrammar.traceDisplayContinuityGap {
+                 segment += 1
+             }
+             previous = point.t
+diff --git a/Atria/Atria/AtriaVitalsCollectionSections.swift b/Atria/Atria/AtriaVitalsCollectionSections.swift
+index 17afa7e7..fea3a632 100644
+--- a/Atria/Atria/AtriaVitalsCollectionSections.swift
++++ b/Atria/Atria/AtriaVitalsCollectionSections.swift
+@@ -4491,7 +4491,10 @@ struct AtriaHeartRateChartSeries: Equatable {
+         guard points.count > 150, targetBuckets > 0 else { return nil }
+         let runs = segmentedRuns(
+             points,
+-            gapThreshold: AtriaActivityTimelineSignalProjection.heartRateGapThreshold
++            // Display-only continuity: brief sample dropouts (≤5 min) stay one
++            // smooth run; a real gap still breaks into its own segment. The
++            // stricter data/coverage `heartRateGapThreshold` is unchanged.
++            gapThreshold: AtriaChartVisualGrammar.traceDisplayContinuityGap
+         )
+         guard !runs.isEmpty else { return nil }
+         let total = points.count
+@@ -5428,7 +5431,9 @@ struct AtriaHeartRateAxisChart: View, Equatable {
+     /// threshold as the smoothed path and the Activity timeline.
+     private var segmentedPoints: [SegmentedRawEntry] {
+         guard !points.isEmpty else { return [] }
+-        let threshold = AtriaActivityTimelineSignalProjection.heartRateGapThreshold
++        // Display-only continuity (matches the smoothed path): short dropouts
++        // read continuous, real gaps still break. Strict data threshold intact.
++        let threshold = AtriaChartVisualGrammar.traceDisplayContinuityGap
+         var assigned: [(AtriaHomeModel.HeartRateChartPoint, Int)] = []
+         var counts: [Int: Int] = [:]
+         var segment = 0
+diff --git a/Atria/AtriaTests/AtriaStressDetailViewTests.swift b/Atria/AtriaTests/AtriaStressDetailViewTests.swift
+index e0d9a7e1..e419fe46 100644
+--- a/Atria/AtriaTests/AtriaStressDetailViewTests.swift
++++ b/Atria/AtriaTests/AtriaStressDetailViewTests.swift
+@@ -116,6 +116,40 @@ final class AtriaStressDetailViewTests: XCTestCase {
+         XCTAssertEqual(AtriaStressTimelinePoint.segment(readings).map(\.segment), [0, 0])
+     }
+ 
++    /// Two-tier display continuity for the ambient / live stress card: under
++    /// `AtriaChartVisualGrammar.traceDisplayContinuityGap` a short signal hiccup
++    /// (a few dropped samples, ≤5 min) reads as one smooth run, while a genuine
++    /// dropout still breaks into its own segment so Charts never bridges it.
++    /// Guards the display policy against a silent regression, and confirms the
++    /// stricter fact-continuity default still breaks the same short hiccup (so
++    /// workout traces, which use the default, keep their exact behavior).
++    func testAmbientStressTraceConnectsAShortHiccupButBreaksARealDropout() {
++        let displayGap = AtriaChartVisualGrammar.traceDisplayContinuityGap
++
++        let connected = AtriaStressTimelinePoint.segment([
++            AtriaStressDetailReading(date: now, score: 0.4),
++            AtriaStressDetailReading(date: now.addingTimeInterval(3 * 60), score: 0.9)
++        ], gapThreshold: displayGap)
++        XCTAssertEqual(connected.map(\.segment), [0, 0],
++                       "A 3-minute hiccup should stay one continuous ambient run.")
++
++        let broken = AtriaStressTimelinePoint.segment([
++            AtriaStressDetailReading(date: now, score: 0.4),
++            AtriaStressDetailReading(date: now.addingTimeInterval(5 * 60 + 1), score: 0.9)
++        ], gapThreshold: displayGap)
++        XCTAssertEqual(broken.map(\.segment), [0, 1],
++                       "A dropout longer than five minutes must break the run.")
++
++        // The default (fact-continuity) threshold is stricter: the same
++        // 3-minute hiccup breaks, so workout traces are unaffected.
++        let strictDefault = AtriaStressTimelinePoint.segment([
++            AtriaStressDetailReading(date: now, score: 0.4),
++            AtriaStressDetailReading(date: now.addingTimeInterval(3 * 60), score: 0.9)
++        ])
++        XCTAssertEqual(strictDefault.map(\.segment), [0, 1],
++                       "The strict default must still break a 3-minute gap.")
++    }
++
+     func testTimelineKeepsHROnlyEstimateOnTheContinuousScale() {
+         let readings = [
+             AtriaStressDetailReading(date: now, score: 0.7),
+-- 
+2.54.0 (Apple Git-157)
+

@@ -115,7 +115,9 @@ private final class AtriaAppDependencies {
             // starts; later BLE policy reads remain lock-only.
             AtriaPendingWorkoutIntentStore.shared.beginPreparing()
         }
-        let ble = AtriaBLEManager(startsBluetooth: !store.restoreInitializationBlocked)
+        let ble = AtriaBLEManager(
+            startsBluetooth: !store.restoreInitializationBlocked && !AtriaAppReviewDemo.isActive
+        )
         store.installRecoveredDataRecomputationDeferralProvider {
             [weak ble] isExactRecoveryPublication in
             guard let ble else { return false }

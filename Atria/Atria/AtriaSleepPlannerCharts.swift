@@ -553,8 +553,11 @@ struct AtriaSleepDebtChartCard: View {
         return Chart {
             ForEach(needed, id: \.day) { point in
                 LineMark(x: .value("Morning", point.day), y: .value("Sleep needed", point.hours), series: .value("Series", "Sleep needed"))
-                    .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                    .interpolationMethod(.monotone)
+                    .lineStyle(StrokeStyle(lineWidth: 2,
+                                           lineCap: .round,
+                                           lineJoin: .round,
+                                           dash: [4, 3]))
                     .foregroundStyle(Metrics.electricGreen)
                 PointMark(x: .value("Morning", point.day), y: .value("Sleep needed", point.hours))
                     .symbol(Circle())
@@ -563,8 +566,8 @@ struct AtriaSleepDebtChartCard: View {
             }
             ForEach(slept, id: \.day) { point in
                 LineMark(x: .value("Morning", point.day), y: .value("Hours slept", point.hours), series: .value("Series", "Hours slept"))
-                    .interpolationMethod(.linear)
-                    .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                    .interpolationMethod(.monotone)
+                    .lineStyle(AtriaChartVisualGrammar.trendLine)
                     .foregroundStyle(AtriaSleepLedgerPalette.slept)
                 PointMark(x: .value("Morning", point.day), y: .value("Hours slept", point.hours))
                     .symbol(Circle())
@@ -577,6 +580,7 @@ struct AtriaSleepDebtChartCard: View {
                     }
             }
         }
+        .atriaGraphPlotSurface()
         .chartYScale(domain: lowerBound...upperBound)
         .chartYAxis {
             AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in

@@ -295,9 +295,9 @@ struct AtriaExpandedChartView: View {
                     LineMark(x: .value("Day", point.day, unit: .day),
                              y: .value(title, point.value),
                              series: .value("Series", "prior-\(point.segment)"))
-                        .interpolationMethod(.linear)
+                        .interpolationMethod(.monotone)
                         .foregroundStyle(.secondary.opacity(0.4))
-                        .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 5]))
+                        .lineStyle(AtriaChartVisualGrammar.comparisonLine)
                 }
             }
 
@@ -306,9 +306,12 @@ struct AtriaExpandedChartView: View {
                     LineMark(x: .value("Day", point.day, unit: .day),
                              y: .value(title, point.value),
                              series: .value("Series", "overlay-\(point.segment)"))
-                        .interpolationMethod(.linear)
+                        .interpolationMethod(.monotone)
                         .foregroundStyle(overlay.tint.opacity(0.7))
-                        .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [6, 3]))
+                        .lineStyle(StrokeStyle(lineWidth: 1.5,
+                                               lineCap: .round,
+                                               lineJoin: .round,
+                                               dash: [6, 3]))
                 }
             }
 
@@ -335,6 +338,7 @@ struct AtriaExpandedChartView: View {
                     .foregroundStyle(tint.opacity(0.14))
             }
         }
+        .atriaGraphPlotSurface()
         .chartScrollableAxes(.horizontal)
         .chartXVisibleDomain(length: max(1, visibleDays) * 86_400)
         .chartXScale(domain: prepared.xDomain)
@@ -448,7 +452,7 @@ struct AtriaExpandedChartView: View {
                 AreaMark(x: .value("Day", point.day, unit: .day),
                          y: .value(title, point.value),
                          series: .value("Series", "current-fill-\(point.segment)"))
-                    .interpolationMethod(.linear)
+                    .interpolationMethod(.monotone)
                     .foregroundStyle(
                         LinearGradient(colors: [tint.opacity(0.24), tint.opacity(0.02)],
                                        startPoint: .top, endPoint: .bottom)
@@ -456,7 +460,8 @@ struct AtriaExpandedChartView: View {
                 LineMark(x: .value("Day", point.day, unit: .day),
                          y: .value(title, point.value),
                          series: .value("Series", "current-\(point.segment)"))
-                    .interpolationMethod(.linear)
+                    .interpolationMethod(.monotone)
+                    .lineStyle(AtriaChartVisualGrammar.trendLine)
                     .foregroundStyle(tint)
                 PointMark(x: .value("Day", point.day, unit: .day),
                           y: .value(title, point.value))

@@ -1045,17 +1045,13 @@ struct AtriaHomeView: View {
     }
 
     var body: some View {
+        homePresentationModifiers
+    }
+
+    private var homeLifecycleModifiers: some View {
         homeShellWithWorkoutPersistence
         .onAppear {
-            // Run appear work AFTER the first frame commits. onAppear fires
-            // mid-first-commit; mutating state here (content unlock, broadcast
-            // setup) re-invalidates the graph before anything is on screen,
-            // which under live BLE churn blew the 10-20s scene-create watchdog
-            // (0x8BADF00D crash loop, 2026-07-03).
-            Task { @MainActor in
-                await Task.yield()
-                handleHomeAppear()
-            }
+            scheduleHomeAppearAfterFirstFrame()
         }
         .onChange(of: selectedTab) { _, tab in
             handleSelectedTabChange(tab)
@@ -1065,8 +1061,7 @@ struct AtriaHomeView: View {
             notice == nil ? nil : .success
         }
         .onChange(of: hasUnlockedSecondarySections) { _, unlocked in
-            guard unlocked else { return }
-            logSecondaryContentReadyIfNeeded()
+            handleSecondarySectionUnlockChange(unlocked)
         }
         .onChange(of: scenePhase) { _, phase in
             handleHomeScenePhaseChange(phase)
@@ -1083,8 +1078,7 @@ struct AtriaHomeView: View {
             scheduleForegroundResumeIfNeeded()
         }
         .onChange(of: hapticSettings) { _, settings in
-            settings.save()
-            updateHapticCoordinator()
+            handleHapticSettingsChange(settings)
         }
         .onChange(of: persistentHeartRateBroadcastEnabled) { _, _ in
             updateHeartRateBroadcastState(reason: "settings")
@@ -1093,18 +1087,15 @@ struct AtriaHomeView: View {
             updateHeartRateBroadcastState(reason: "workout_toggle")
         }
         .onChange(of: workoutSession == nil) { _, ended in
-            if ended {
-                workoutHeartRateBroadcastEnabled = false
-                liveWorkoutTRIMPAccumulator.clear()
-            }
-            updateHeartRateBroadcastState(reason: ended ? "workout_end" : "workout_start")
-            updateLiveActivity()
-            updateLiveWorkoutFreshnessLoop()
+            handleWorkoutSessionPresenceChange(ended)
         }
         .onChange(of: aiCoachSettings) { _, settings in
-            settings.save()
-            refreshAICoachKeyState()
+            handleAICoachSettingsChange(settings)
         }
+    }
+
+    private var homePublisherObservers: some View {
+        homeLifecycleModifiers
         .onReceive(model.heroPulseStore.$state) { state in
             heartRateBroadcaster.publish(heartRate: state.heartRate)
         }
@@ -1112,13 +1103,10 @@ struct AtriaHomeView: View {
             model.setHeartRateBroadcastActive(active)
         }
         .onReceive(motionActivityMonitor.$context.removeDuplicates()) { _ in
-            // Clear a visible prompt immediately if the phone identifies a car,
-            // and apply only sustained native type suggestions to new prompts.
-            updateWorkoutDetectionPrompt()
+            handleMotionActivityContextUpdate()
         }
         .onReceive(liveActivityUpdates) { _ in
-            guard workoutSession != nil else { return }
-            updateLiveActivity()
+            handleLiveActivityUpdate()
         }
         .onReceive(Self.strainTargetGuidanceTimer) { _ in
             model.refreshDailyGuidanceClock()
@@ -1136,8 +1124,7 @@ struct AtriaHomeView: View {
             scheduleLiveSensorWidgetPatch(reason: "live_steps")
         }
         .onReceive(workoutDetectionUpdates) { _ in
-            guard workoutSession == nil else { return }
-            updateWorkoutDetectionPrompt()
+            handleWorkoutDetectionUpdate()
         }
         .onReceive(batteryWidgetUpdates) { _ in
             // A fresh strap battery read commonly lands after the scene has
@@ -1149,21 +1136,10 @@ struct AtriaHomeView: View {
         .onReceive(NotificationCenter.default.publisher(
             for: AtriaWhoop4MotionTickDailyStore.didSaveNotification
         )) { _ in
-            // The durable receipt can land before the async HistorySnapshot
-            // rebuild. Refresh both app and widget directly from that receipt
-            // so a verified strap subtotal never temporarily disappears.
-            model.refreshDurableStepReceipt()
-            scheduleWidgetSnapshot(reason: "durable_strap_steps")
+            handleDurableStrapStepReceipt()
         }
         .onReceive(store.$dashboardRevision.throttle(for: .seconds(3), scheduler: RunLoop.main, latest: true)) { _ in
-            refreshSavedWorkoutReviewCandidate(reason: "dashboard_revision")
-            if let candidate = savedWorkoutReviewCandidate {
-                LocalNotificationScheduler.scheduleWorkoutReviewAfterCachePublicationIfNeeded(
-                    candidate,
-                    ble: ble
-                )
-            }
-            scheduleWidgetSnapshot(reason: "dashboard_revision")
+            handleDashboardRevisionUpdate()
         }
         .onReceive(NotificationCenter.default.publisher(for: SessionStore.historicalRecoveryNeededNotification)) { _ in
             ble.schedulePendingHistoricalRecovery(reason: "confirmed_workout_archive_gap")
@@ -1175,14 +1151,7 @@ struct AtriaHomeView: View {
             synchronizeWorkoutUIWithCanonicalIntent()
         }
         .onReceive(NotificationCenter.default.publisher(for: SessionStore.workoutReviewCandidateReviewRequestedNotification)) { note in
-            // History's "Detected activities" rows route into the SAME guided
-            // review flow the Home banner uses (2026-07-17): confirm-type or
-            // dismiss, never a parallel save path. Fail closed during a live
-            // workout — the review sheet must not stack over an active session.
-            guard workoutSession == nil,
-                  workoutReviewDraft == nil,
-                  let candidate = note.userInfo?[SessionStore.workoutReviewCandidateUserInfoKey] as? WorkoutReviewCandidate else { return }
-            presentWorkoutReview(candidate: candidate)
+            handleWorkoutReviewCandidateNotification(note)
         }
         .onReceive(NotificationCenter.default.publisher(for: UIDevice.batteryStateDidChangeNotification)) { _ in
             batteryState = UIDevice.current.batteryState
@@ -1196,76 +1165,173 @@ struct AtriaHomeView: View {
         .onReceive(store.$pendingSameDayMainSleepChoiceForUI) { choice in
             sameDayMainSleepRoute = choice
         }
+    }
+
+    private var homePresentationModifiers: some View {
+        homePublisherObservers
         .onOpenURL(perform: handleDeepLink)
         .sheet(item: $sameDayMainSleepRoute) { choice in
             AtriaSameDayMainSleepSheet(choice: choice) { primaryID in
                 store.resolveSameDayMainSleepChoice(choice, primaryID: primaryID)
             }
         }
-        .sheet(item: $sleepReviewSheetRoute) { route in
-            AtriaManualSleepSheet(initialStart: route.night?.start,
-                                  initialEnd: route.night?.end,
-                                  initialIsNap: route.night?.isNapEvidence,
-                                  // A review/edit keeps the strap-derived stage
-                                  // model. A new manual item has no sensor stage
-                                  // lineage to preserve.
-                                  preservesSensorStages: route.night != nil,
-                                  evidenceNight: route.night,
-                                  evidencePerformancePercent: route.night.flatMap {
-                                      adaptiveSleepProjection(for: $0)?.performancePercent
-                                  },
-                                  mode: route.night.map { $0.confirmed ? .edit : .review } ?? .add,
-                                  onRemove: route.night.map { night in
-                                      {
-                                          let removed = night.confirmed
-                                              ? await store.deleteConfirmedSleep(id: night.id)
-                                              : store.dismissSleepCandidate(night)
-                                          if removed { sleepReviewSheetRoute = nil }
-                                          return removed
-                                      }
-                                  }) { start, end, isNap in
-                let rest = store.baseline.restingInt ?? 60
-                let saved: Bool
-                if let night = route.night {
-                    saved = await store.saveSleepReviewNightForUI(
-                        night,
-                        start: start,
-                        end: end,
-                        isNap: isNap,
-                        rest: rest,
-                        source: "notification_sleep_review"
-                    ) != nil
-                } else {
-                    saved = await store.addManualSleep(start: start,
-                                                 end: end,
-                                                 isNap: isNap,
-                                                 rest: rest,
-                                                 source: "activity_add") != nil
-                }
-                if saved { sleepReviewSheetRoute = nil }
-                return saved
-            }
-        }
+        .sheet(item: $sleepReviewSheetRoute, content: sleepReviewSheet(for:))
         .onDisappear {
+            // H-series teardown that postdates the refactor into
+            // stopHomeRefreshServices(): live-presentation gate + resume
+            // authority must still stop with the screen.
             model.setLivePresentationActive(false)
-            foregroundResumeTask?.cancel()
-            foregroundResumeTask = nil
             foregroundResumeAuthority.cancel()
-            connectionGuidePresentationTask?.cancel()
-            connectionGuidePresentationTask = nil
-            secondaryUnlockTask?.cancel()
-            secondaryUnlockTask = nil
-            overviewDiagnosticsKickoffTask?.cancel()
-            overviewDiagnosticsKickoffTask = nil
-            automaticConnectionSetupTask?.cancel()
-            automaticConnectionSetupTask = nil
-            pendingWorkoutRecoveryTask?.cancel()
-            pendingWorkoutRecoveryTask = nil
-            connectionDiagnosisPromotionTask?.cancel()
-            connectionDiagnosisPromotionTask = nil
-            mediaController.setRefreshLoopActive(false)
-            motionActivityMonitor.stop()
+            stopHomeRefreshServices()
         }
+    }
+
+    private func stopHomeRefreshServices() {
+        connectionGuidePresentationTask?.cancel()
+        connectionGuidePresentationTask = nil
+        secondaryUnlockTask?.cancel()
+        secondaryUnlockTask = nil
+        overviewDiagnosticsKickoffTask?.cancel()
+        overviewDiagnosticsKickoffTask = nil
+        automaticConnectionSetupTask?.cancel()
+        automaticConnectionSetupTask = nil
+        foregroundResumeTask?.cancel()
+        foregroundResumeTask = nil
+        pendingWorkoutRecoveryTask?.cancel()
+        pendingWorkoutRecoveryTask = nil
+        connectionDiagnosisPromotionTask?.cancel()
+        connectionDiagnosisPromotionTask = nil
+        mediaController.setRefreshLoopActive(false)
+        motionActivityMonitor.stop()
+    }
+
+    private func scheduleHomeAppearAfterFirstFrame() {
+        // Run appear work AFTER the first frame commits. onAppear fires
+        // mid-first-commit; mutating state here (content unlock, broadcast
+        // setup) re-invalidates the graph before anything is on screen, which
+        // under live BLE churn blew the 10-20s scene-create watchdog.
+        Task { @MainActor in
+            await Task.yield()
+            handleHomeAppear()
+        }
+    }
+
+    private func handleSecondarySectionUnlockChange(_ unlocked: Bool) {
+        guard unlocked else { return }
+        logSecondaryContentReadyIfNeeded()
+    }
+
+    private func handleHapticSettingsChange(_ settings: AtriaHapticAlertSettings) {
+        settings.save()
+        updateHapticCoordinator()
+    }
+
+    private func handleWorkoutSessionPresenceChange(_ ended: Bool) {
+        if ended {
+            workoutHeartRateBroadcastEnabled = false
+            liveWorkoutTRIMPAccumulator.clear()
+        }
+        updateHeartRateBroadcastState(reason: ended ? "workout_end" : "workout_start")
+        updateLiveActivity()
+        updateLiveWorkoutFreshnessLoop()
+    }
+
+    private func handleAICoachSettingsChange(_ settings: AtriaAICoachSettings) {
+        settings.save()
+        refreshAICoachKeyState()
+    }
+
+    private func sleepReviewSheet(
+        for route: AtriaSleepReviewSheetRoute
+    ) -> some View {
+        AtriaManualSleepSheet(initialStart: route.night?.start,
+                              initialEnd: route.night?.end,
+                              initialIsNap: route.night?.isNapEvidence,
+                              // A review/edit keeps the strap-derived stage
+                              // model. A new manual item has no sensor stage
+                              // lineage to preserve.
+                              preservesSensorStages: route.night != nil,
+                              evidenceNight: route.night,
+                              evidencePerformancePercent: route.night.flatMap {
+                                  adaptiveSleepProjection(for: $0)?.performancePercent
+                              },
+                              mode: route.night.map { $0.confirmed ? .edit : .review } ?? .add,
+                              onRemove: route.night.map { night in
+                                  {
+                                      let removed = night.confirmed
+                                          ? await store.deleteConfirmedSleep(id: night.id)
+                                          : store.dismissSleepCandidate(night)
+                                      if removed { sleepReviewSheetRoute = nil }
+                                      return removed
+                                  }
+                              }) { start, end, isNap in
+            let rest = store.baseline.restingInt ?? 60
+            let saved: Bool
+            if let night = route.night {
+                saved = await store.saveSleepReviewNightForUI(
+                    night,
+                    start: start,
+                    end: end,
+                    isNap: isNap,
+                    rest: rest,
+                    source: "notification_sleep_review"
+                ) != nil
+            } else {
+                saved = await store.addManualSleep(start: start,
+                                             end: end,
+                                             isNap: isNap,
+                                             rest: rest,
+                                             source: "activity_add") != nil
+            }
+            if saved { sleepReviewSheetRoute = nil }
+            return saved
+        }
+    }
+
+    private func handleDashboardRevisionUpdate() {
+        refreshSavedWorkoutReviewCandidate(reason: "dashboard_revision")
+        if let candidate = savedWorkoutReviewCandidate {
+            LocalNotificationScheduler.scheduleWorkoutReviewAfterCachePublicationIfNeeded(
+                candidate,
+                ble: ble
+            )
+        }
+        scheduleWidgetSnapshot(reason: "dashboard_revision")
+    }
+
+    private func handleMotionActivityContextUpdate() {
+        // Clear a visible prompt immediately if the phone identifies a car,
+        // and apply only sustained native type suggestions to new prompts.
+        updateWorkoutDetectionPrompt()
+    }
+
+    private func handleLiveActivityUpdate() {
+        guard workoutSession != nil else { return }
+        updateLiveActivity()
+    }
+
+    private func handleWorkoutDetectionUpdate() {
+        guard workoutSession == nil else { return }
+        updateWorkoutDetectionPrompt()
+    }
+
+    private func handleDurableStrapStepReceipt() {
+        // The durable receipt can land before the async HistorySnapshot
+        // rebuild. Refresh both app and widget directly from that receipt so a
+        // verified strap subtotal never temporarily disappears.
+        model.refreshDurableStepReceipt()
+        scheduleWidgetSnapshot(reason: "durable_strap_steps")
+    }
+
+    private func handleWorkoutReviewCandidateNotification(_ note: Notification) {
+        // History's "Detected activities" rows route into the SAME guided
+        // review flow the Home banner uses (2026-07-17): confirm-type or
+        // dismiss, never a parallel save path. Fail closed during a live
+        // workout — the review sheet must not stack over an active session.
+        guard workoutSession == nil,
+              workoutReviewDraft == nil,
+              let candidate = note.userInfo?[SessionStore.workoutReviewCandidateUserInfoKey] as? WorkoutReviewCandidate else { return }
+        presentWorkoutReview(candidate: candidate)
     }
 
     private var homeShellWithWorkoutPersistence: some View {
@@ -10307,7 +10373,7 @@ final class AtriaHomeModel {
             }
             .store(in: &cancellables)
 
-        let throttledCoreLiveChanges = Publishers.MergeMany([
+        let coreLiveChanges: [AnyPublisher<Void, Never>] = [
             ble.$status.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$bluetoothPermissionDenied.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$isBluetoothReady.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
@@ -10330,11 +10396,16 @@ final class AtriaHomeModel {
             ble.$pendingKnownReconnectStartedAt.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$pendingKnownReconnectReason.removeDuplicates().map { _ in () }.eraseToAnyPublisher(),
             ble.$rangeLossBackfillPending.removeDuplicates().map { _ in () }.eraseToAnyPublisher()
-        ])
-        .throttle(for: .milliseconds(400), scheduler: RunLoop.main, latest: true)
+            // historicalRecoveryPresentation stays OFF this broad merge on
+            // purpose — it has its own foreground-gated subscription below so
+            // history churn cannot fan out through unrelated BLE events.
+        ]
+        let throttledCoreLiveChanges: AnyPublisher<Void, Never> = Publishers.MergeMany(coreLiveChanges)
+            .throttle(for: .milliseconds(400), scheduler: RunLoop.main, latest: true)
+            .eraseToAnyPublisher()
 
         throttledCoreLiveChanges
-            .sink { [weak self] _ in
+            .sink { [weak self] (_: Void) in
                 self?.publishCoreLive()
             }
             .store(in: &cancellables)

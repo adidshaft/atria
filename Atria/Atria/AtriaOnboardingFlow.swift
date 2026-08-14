@@ -303,6 +303,7 @@ struct AtriaOnboardingFlow: View {
     let ble: AtriaBLEManager
     @ObservedObject var historyBootstrap: AtriaOnboardingHistoryBootstrap
     let onComplete: (AthleteProfile) -> Void
+    let onAppReviewDemo: (String) -> Void
     let onRestoreBackup: ((URL) async -> Bool)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -499,12 +500,14 @@ struct AtriaOnboardingFlow: View {
          historyBootstrap: AtriaOnboardingHistoryBootstrap,
          debugInitialStep: String? = nil,
          onRestoreBackup: ((URL) async -> Bool)? = nil,
+         onAppReviewDemo: @escaping (String) -> Void = { _ in },
          onComplete: @escaping (AthleteProfile) -> Void) {
         _draft = State(initialValue: profile)
         _step = State(initialValue: Step(debugName: debugInitialStep) ?? .whatThisIs)
         self.ble = ble
         self.historyBootstrap = historyBootstrap
         self.onRestoreBackup = onRestoreBackup
+        self.onAppReviewDemo = onAppReviewDemo
         self.onComplete = onComplete
     }
 
@@ -578,6 +581,11 @@ struct AtriaOnboardingFlow: View {
                                 move(to: .strap)
                             }
                         } else {
+                            if step == .nickname,
+                               AtriaAppReviewDemo.isRequested(nickname: nicknameDraft) {
+                                onAppReviewDemo(nicknameDraft)
+                                return
+                            }
                             move(to: Step(rawValue: step.rawValue + 1) ?? .expectations)
                         }
                     }
@@ -734,6 +742,10 @@ struct AtriaOnboardingFlow: View {
             .atriaCard(emphasis: .soft)
 
             Text("Optional — used only for a friendlier greeting on this phone.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("For App Review, enter \"App Review\" to explore local demo data without connecting a strap.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

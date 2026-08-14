@@ -27840,6 +27840,116 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// Installs a clearly labelled, local-only fixture for App Review. This is
+    /// deliberately available only to a fresh store so it cannot overwrite a
+    /// person's real local history. The normal deferred loader merges primary
+    /// in-memory values, so activation is also safe while launch hydration is
+    /// still in flight.
+    @discardableResult
+    func activateAppReviewDemo(nickname: String, now: Date = Date()) async -> Bool {
+        guard canonicalMutationAllowed,
+              AtriaAppReviewDemo.isRequested(nickname: nickname),
+              !profile.hasCompletedOnboarding,
+              sessions.isEmpty,
+              cachedConfirmedSleeps.isEmpty,
+              cachedConfirmedWorkouts.isEmpty else { return false }
+
+        var reviewProfile = AthleteProfile(age: 32,
+                                           measuredMaxHR: 188,
+                                           maxHRSource: .ageEstimate,
+                                           biologicalSex: .unspecified,
+                                           weightKg: 0,
+                                           heightCm: 0,
+                                           updated: now,
+                                           hasCompletedOnboarding: true)
+        reviewProfile.clamp()
+        profile = reviewProfile
+        profile.save()
+        AtriaOnboardingPersonalization.persistNickname(nickname)
+        let fixture = AtriaAppReviewDemo.sessions(now: now)
+        dailyMetricHistory = AtriaAppReviewDemo.dailyMetrics(now: now)
+        dailyRollupStore.replaceAll(AtriaAppReviewDemo.rollups(now: now))
+        dailyRollupHistory = dailyRollupStore.rollups(last: 400)
+        guard await saveConfirmedSleeps(AtriaAppReviewDemo.confirmedSleeps(now: now),
+                                        deferDerivedPublication: true),
+              await saveConfirmedWorkouts(AtriaAppReviewDemo.confirmedWorkouts(now: now),
+                                          deferDerivedPublication: true) else {
+            AtriaDebugLog("ATRIADBG app_review_demo status=failed reason=fixture_persistence")
+            return false
+        }
+        sessions = fixture
+        refreshSessionDerivedCaches()
+        markSessionPersistenceDirty(affectedSessions: fixture)
+        rebuildBaselineFromEligibleSessions(reason: "app_review_demo",
+                                            refreshDiagnosticsCache: false,
+                                            refreshDerivedCaches: false)
+        // Demo sessions intentionally carry only compact heart-rate samples,
+        // so seed the same rolling baseline from the labelled local daily
+        // records. This keeps the reviewer experience representative without
+        // treating fixture rows as a live strap connection.
+        var demoBaseline = PersonalBaseline()
+        for metric in dailyMetricHistory.sorted(by: { $0.day < $1.day }) {
+            demoBaseline.learn(fromResting: metric.restingHR ?? 55,
+                               hrv: metric.hrv ?? 60,
+                               at: metric.day,
+                               overnight: true)
+        }
+        baseline = demoBaseline
+        baseline.save()
+        invalidateHomeDashboardDiagnosticsCache()
+        refreshHistorySnapshotCache(deferred: true)
+        refreshOverviewTrendPointsCache(deferred: true)
+        refreshTrainingLoadSummaryCache(deferred: true)
+        refreshTodayHRZoneMinutesCache(deferred: true)
+        scheduleDailyMetricPersist(reason: "app_review_demo", delay: 0)
+        AtriaAppReviewDemo.activate()
+        recomputeBehaviorInsights()
+        publishDashboardRevision()
+        scheduleSessionFilePersist(reason: "app_review_demo", delay: 0)
+        writeAutomaticSessionBackup(reason: "app_review_demo")
+        AtriaDebugLog("ATRIADBG app_review_demo status=activated sessions=%d local_only=1", fixture.count)
+        return true
+    }
+
+    /// The entry flow only permits demo activation on a fresh installation.
+    /// Exit therefore returns that install to first-run state without touching
+    /// any pre-existing user data.
+    func clearAppReviewDemo() async {
+        guard AtriaAppReviewDemo.isActive else { return }
+        guard await saveConfirmedSleeps([], deferDerivedPublication: true),
+              await saveConfirmedWorkouts([], deferDerivedPublication: true) else {
+            AtriaDebugLog("ATRIADBG app_review_demo status=exit_failed reason=fixture_persistence")
+            return
+        }
+        AtriaAppReviewDemo.deactivate()
+        AtriaOnboardingPersonalization.persistNickname("")
+        sessions = []
+        dailyMetricHistory = []
+        dailyRollupStore.replaceAll([])
+        dailyRollupHistory = []
+        baseline = PersonalBaseline()
+        profile = AthleteProfile(age: AthleteProfile.defaultAge,
+                                 measuredMaxHR: AthleteProfile.defaultMeasuredMaxHR,
+                                 maxHRSource: .ageEstimate,
+                                 biologicalSex: .unspecified,
+                                 weightKg: 0,
+                                 heightCm: 0,
+                                 updated: nil,
+                                 hasCompletedOnboarding: false)
+        profile.save()
+        baseline.save()
+        refreshSessionDerivedCaches()
+        markSessionPersistenceDirty()
+        scheduleDailyMetricPersist(reason: "app_review_demo_exit", delay: 0)
+        invalidateHomeDashboardDiagnosticsCache()
+        refreshHistorySnapshotCache(deferred: true)
+        refreshOverviewTrendPointsCache(deferred: true)
+        refreshTrainingLoadSummaryCache(deferred: true)
+        refreshTodayHRZoneMinutesCache(deferred: true)
+        scheduleSessionFilePersist(reason: "app_review_demo_exit", delay: 0)
+        publishDashboardRevision()
+    }
+
     func completeOnboardingFromLaunchIfRequested(arguments: [String] = ProcessInfo.processInfo.arguments) {
         guard AtriaDeveloperMode.isEnabled else { return }
         guard arguments.contains("--atria-complete-onboarding") else { return }
