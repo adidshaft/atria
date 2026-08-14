@@ -5074,6 +5074,9 @@ struct AggregateSleepCandidate {
     /// battery died), so Atria never fabricates it.
     static let briefSleepGapCreditMax: TimeInterval = 20 * 60
     static let minimumAutoConfirmHRCoverageFraction = 0.80
+    /// Assessment P1.10: the same 0.60 qualified-RR bar the dense HR-only
+    /// review tiers use — auto-confirm demands qualified RR agreement.
+    static let minimumAutoConfirmQualifiedRRCoverageFraction = 0.60
     /// A later morning sleep after an already substantial main episode is kept
     /// as a separate, user-reviewed segment. These bounds deliberately stop
     /// short of the ordinary main-sleep gate: HR without validated motion may
@@ -5159,6 +5162,12 @@ struct AggregateSleepCandidate {
     /// seam. It is review-only: no motion evidence means it can never update
     /// recovery until the wearer confirms it, regardless of clock time.
     let denseLongHROnlyReviewQualified: Bool
+    /// Assessment P1.10 (2026-08-14): fraction of the credited window covered
+    /// by provenance-qualified RR (standard 2A37 / verified historical). The
+    /// auto-confirm gate requires this alongside HR density, already-qualified
+    /// stillness, and clock position. Defaults to 0 — unknown fails closed
+    /// into the review card, never into a silent save.
+    var qualifiedRRCoverageFraction: Double = 0
 }
 
 struct SleepEvidenceStatus {
@@ -38361,6 +38370,12 @@ final class SessionStore: ObservableObject {
               candidate.confidence != .low,
               candidate.duration >= AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration,
               candidate.hrObservedCoverageFraction >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction,
+              // Assessment P1.10: silent confirmation needs the full
+              // high-agreement stack — qualified RR must corroborate the HR
+              // density and already-qualified stillness; anything less stays
+              // a review card.
+              candidate.qualifiedRRCoverageFraction
+                  >= AggregateSleepCandidate.minimumAutoConfirmQualifiedRRCoverageFraction,
               candidate.maximumHRSampleGap <= 60 * 60,
               mainSleepAutoConfirmWindowReady(candidate, calendar: .current) else {
             return false
@@ -44940,16 +44955,24 @@ final class SessionStore: ObservableObject {
                 let napPhysiologyReady = daytimeNapCandidateReady || shortLowHRNapCandidateReady
                 let hrSampleCoverageFraction = min(1, Double(allHR.count) / max(1, totalDuration))
                 var rrSampleCount = 0
+                var qualifiedRRSampleCount = 0
                 var maximumAcceptedHRGap = 0.0
                 for session in cluster {
                     try cooperativeDeadline?.checkpoint()
                     rrSampleCount += session.rrPoints?.count ?? 0
+                    // Assessment P1.10: the auto-confirm gate needs the
+                    // provenance-QUALIFIED subset, mirroring the RR rules the
+                    // dense review tiers already apply.
+                    if session.hasQualifiedRRProvenance {
+                        qualifiedRRSampleCount += session.rrPoints?.count ?? 0
+                    }
                     maximumAcceptedHRGap = max(
                         maximumAcceptedHRGap,
                         session.hrMaxAcceptedGapValue
                     )
                 }
                 let rrSampleCoverageFraction = min(1, Double(rrSampleCount) / max(1, totalDuration))
+                let qualifiedRRCoverageFraction = min(1, Double(qualifiedRRSampleCount) / max(1, totalDuration))
                 // Dense independent HR + RR can support a truthful sleep
                 // review prompt before the stricter five-hour HR-only automatic
                 // confirmation floor. Previously this exception stopped at the
@@ -45317,7 +45340,8 @@ final class SessionStore: ObservableObject {
                                                historicalMotionNearestSeparationSeconds: historicalMotion.nearestSeparationSeconds,
                                                historicalMotionValidated: historicalMotion.lowMotionReady,
                                                denseMorningHROnlyReviewQualified: denseMorningHROnlyReviewReady,
-                                               denseLongHROnlyReviewQualified: denseLongHROnlyReviewReady)
+                                               denseLongHROnlyReviewQualified: denseLongHROnlyReviewReady,
+                                               qualifiedRRCoverageFraction: qualifiedRRCoverageFraction)
             }()
             try cooperativeDeadline?.checkpoint()
             if let candidate {

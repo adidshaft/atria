@@ -851,6 +851,17 @@ private struct AtriaAutoSleepLoggedBanner: View {
 
                 Spacer(minLength: 8)
 
+                // Assessment P1.10: one-tap undo for the auto-confirmed
+                // night. deleteConfirmedSleep tombstones the window, so the
+                // detector cannot silently re-confirm the same evidence.
+                Button("Undo") {
+                    Task { _ = await store.deleteConfirmedSleep(id: banner.sleepID) }
+                }
+                .font(.caption.weight(.bold))
+                .atriaCardAction(prominent: false, tint: .green)
+                .controlSize(.small)
+                .accessibilityLabel("Undo logged sleep")
+
                 Button("Edit") {
                     adjustment = banner
                 }
