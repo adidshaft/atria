@@ -15186,9 +15186,9 @@ struct AtriaOverviewBehaviorJournalSection: View {
         }
 
         return [
-            BehaviorCorrelationSummary(tag: .sleep, days: 9, recoveryDelta: nil, hrvDelta: 6),
-            BehaviorCorrelationSummary(tag: .training, days: 7, recoveryDelta: nil, hrvDelta: 3),
-            BehaviorCorrelationSummary(tag: .caffeine, days: 6, recoveryDelta: nil, hrvDelta: -4)
+            BehaviorCorrelationSummary(tag: .sleep, days: 9, recoveryDelta: nil, hrvDelta: 6, rhrDelta: -2),
+            BehaviorCorrelationSummary(tag: .training, days: 7, recoveryDelta: nil, hrvDelta: nil, rhrDelta: 3),
+            BehaviorCorrelationSummary(tag: .caffeine, days: 6, recoveryDelta: nil, hrvDelta: -4, rhrDelta: nil)
         ]
     }
 

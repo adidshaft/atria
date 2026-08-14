@@ -4013,6 +4013,9 @@ struct BehaviorCorrelationSummary: Equatable {
     let days: Int
     let recoveryDelta: Double?
     let hrvDelta: Double?
+    /// Assessment P1.9 (2026-08-14): tags pair to measured signals first.
+    /// Raw-signed Δ mean overnight RHR (bpm) on tagged vs untagged days.
+    let rhrDelta: Double?
 
     var recoveryText: String {
         recoveryDelta.map { String(format: "%+.0f%%", $0) } ?? "Learning"
@@ -4022,31 +4025,43 @@ struct BehaviorCorrelationSummary: Equatable {
         hrvDelta.map { String(format: "%+.0f ms", $0) } ?? "Learning"
     }
 
+    var rhrText: String {
+        rhrDelta.map { String(format: "%+.0f bpm", $0) } ?? "Learning"
+    }
+
     var detail: String {
-        guard recoveryDelta != nil || hrvDelta != nil else {
+        guard recoveryDelta != nil || hrvDelta != nil || rhrDelta != nil else {
             return "\(days) tagged days"
         }
         return "\(days) tagged days · local correlation"
     }
 
+    // Assessment P1.9: measured signals (HRV, then RHR) lead the copy so an
+    // insight survives a Recovery model bump; the composite is secondary.
     var impactMetricText: String {
-        if recoveryDelta != nil { return "Recovery" }
         if hrvDelta != nil { return "HRV" }
+        if rhrDelta != nil { return "RHR" }
+        if recoveryDelta != nil { return "Recovery" }
         return "Logs"
     }
 
     var impactValueText: String {
-        if let recoveryDelta {
-            return String(format: "%+.0f%%", recoveryDelta)
-        }
         if let hrvDelta {
             return String(format: "%+.0f ms", hrvDelta)
+        }
+        if let rhrDelta {
+            return String(format: "%+.0f bpm", rhrDelta)
+        }
+        if let recoveryDelta {
+            return String(format: "%+.0f%%", recoveryDelta)
         }
         return "\(days)d"
     }
 
+    /// GOODNESS-signed for direction consumers: a lower RHR is supportive, so
+    /// the RHR lane inverts its raw sign here while display text stays raw.
     var impactDelta: Double? {
-        recoveryDelta ?? hrvDelta
+        hrvDelta ?? rhrDelta.map { -$0 } ?? recoveryDelta
     }
 
     var impactMagnitude: Double {
@@ -4071,17 +4086,19 @@ struct BehaviorCorrelationSummary: Equatable {
 /// A plain-language, effect-size-ranked finding derived from behavior tags vs
 /// recovery/HRV. Confidence-gated (needs enough tagged days); never medical.
 struct AtriaInsight: Identifiable, Equatable {
-    enum Metric { case recovery, hrv }
+    enum Metric { case recovery, hrv, rhr }
     let id: String
     let tagLabel: String
     let metric: Metric
-    let delta: Double        // recovery: % points; hrv: ms
+    let delta: Double        // recovery: % points; hrv: ms; rhr: bpm (raw sign)
     let days: Int
 
     /// Rank key: bigger absolute effect first.
     var magnitude: Double { abs(delta) }
 
-    var isPositive: Bool { delta >= 0 }
+    /// Assessment P1.9: goodness is metric-aware — a LOWER resting HR on
+    /// tagged days is the supportive direction.
+    var isPositive: Bool { metric == .rhr ? delta <= 0 : delta >= 0 }
 
     var headline: String {
         let dir = delta < 0 ? "lower" : "higher"
@@ -4089,6 +4106,7 @@ struct AtriaInsight: Identifiable, Equatable {
         switch metric {
         case .recovery: return "Recovery \(n)% \(dir)"
         case .hrv: return "HRV \(n) ms \(dir)"
+        case .rhr: return "RHR \(n) bpm \(dir)"
         }
     }
 
@@ -22796,6 +22814,11 @@ final class SessionStore: ObservableObject {
         let metricDays = dailyMetricHistory.map {
             AtriaBehaviorImpact.Day(day: $0.day, recoveryPercent: $0.recoveryPercent)
         }
+        // Assessment P1.9: measured RHR days ride along so tags pair to
+        // signals that survive Recovery model bumps.
+        let vitalDays = dailyMetricHistory.map {
+            (day: $0.day, restingHR: $0.restingHR)
+        }
         let sourceDailyMetricRevision = dailyMetricHistoryRevision
         behaviorInsightsLastStartedDailyMetricRevision = sourceDailyMetricRevision
         if pendingDailyMetricInsightRevision == sourceDailyMetricRevision {
@@ -22807,7 +22830,7 @@ final class SessionStore: ObservableObject {
         let typedAnswers = journalAnswers.answers
         behaviorInsightsGeneration &+= 1
         let generation = behaviorInsightsGeneration
-        DispatchQueue.global(qos: .utility).async { [weak self, sourceSessions, journalEntries, rest, maxHR, metricDays, typedAnswers, generation, executionShouldContinue] in
+        DispatchQueue.global(qos: .utility).async { [weak self, sourceSessions, journalEntries, rest, maxHR, metricDays, vitalDays, typedAnswers, generation, executionShouldContinue] in
             guard executionShouldContinue() else {
                 DispatchQueue.main.async { completion?(false) }
                 return
@@ -22818,6 +22841,7 @@ final class SessionStore: ObservableObject {
                     journalEntries: journalEntries,
                     rest: rest,
                     maxHR: maxHR,
+                    dailyVitals: vitalDays,
                     shouldContinue: executionShouldContinue
                 ), let impacts = AtriaBehaviorImpact.summariesCancellable(
                     days: metricDays,
@@ -22959,11 +22983,27 @@ final class SessionStore: ObservableObject {
                                              delta: hd,
                                              days: s.days))
             }
+            if let rd = s.rhrDelta, abs(rd) >= 2 {
+                insights.append(AtriaInsight(id: "\(s.tag.rawValue)-rhr",
+                                             tagLabel: s.tag.label,
+                                             metric: .rhr,
+                                             delta: rd,
+                                             days: s.days))
+            }
         }
         guard shouldContinue() else { return nil }
+        // Assessment P1.9: measured signals lead — HRV, then RHR — so the
+        // ranked list survives a Recovery model bump; the composite trails.
+        func rank(_ metric: AtriaInsight.Metric) -> Int {
+            switch metric {
+            case .hrv: return 0
+            case .rhr: return 1
+            case .recovery: return 2
+            }
+        }
         return insights.sorted { lhs, rhs in
-            if (lhs.metric == .recovery) != (rhs.metric == .recovery) {
-                return lhs.metric == .recovery
+            if rank(lhs.metric) != rank(rhs.metric) {
+                return rank(lhs.metric) < rank(rhs.metric)
             }
             return lhs.magnitude > rhs.magnitude
         }
@@ -42091,7 +42131,7 @@ final class SessionStore: ObservableObject {
         UserDefaults.standard.set(raw, forKey: BehaviorJournalDefaults.autoTagRemovalsKey)
     }
 
-    private struct InsightDayMetrics { let recovery: Double?; let hrv: Double? }
+    private struct InsightDayMetrics { let recovery: Double?; let hrv: Double?; let rhr: Double? }
 
     func behaviorCorrelationSummaries(rest: Int,
                                       maxHR: Int,
@@ -42101,6 +42141,9 @@ final class SessionStore: ObservableObject {
                                                   journalEntries: cachedBehaviorJournalEntries,
                                                   rest: rest,
                                                   maxHR: maxHR,
+                                                  dailyVitals: dailyMetricHistory.map {
+                                                      (day: $0.day, restingHR: $0.restingHR)
+                                                  },
                                                   calendar: calendar)
         )
     }
@@ -42109,6 +42152,7 @@ final class SessionStore: ObservableObject {
                                                                      journalEntries: [BehaviorJournalEntry],
                                                                      rest: Int,
                                                                      maxHR: Int,
+                                                                     dailyVitals: [(day: Date, restingHR: Int?)] = [],
                                                                      calendar: Calendar = .current) -> [BehaviorCorrelationSummary] {
         // LIGHT per-day rollup: only externally validated recovery + avg HRV. This
         // deliberately does NOT call dailyRollups(), which runs workout/sleep
@@ -42132,13 +42176,23 @@ final class SessionStore: ObservableObject {
         }
         guard !grouped.isEmpty else {
             return BehaviorJournalEntry.Tag.allCases.map {
-                BehaviorCorrelationSummary(tag: $0, days: 0, recoveryDelta: nil, hrvDelta: nil)
+                BehaviorCorrelationSummary(tag: $0, days: 0, recoveryDelta: nil, hrvDelta: nil, rhrDelta: nil)
             }
         }
-        let metricsByDay: [Date: InsightDayMetrics] = grouped.mapValues { daySessions in
-            let hrvs = daySessions.compactMap(\.localRMSSD).filter { $0 > 0 }
+        // Assessment P1.9: RHR comes from the frozen daily metrics — a
+        // measured signal that survives Recovery model bumps.
+        var rhrByDay: [Date: Double] = [:]
+        for vital in dailyVitals where vital.day >= windowStart {
+            if let restingHR = vital.restingHR, restingHR > 0 {
+                rhrByDay[calendar.startOfDay(for: vital.day)] = Double(restingHR)
+            }
+        }
+        let metricsByDay: [Date: InsightDayMetrics] = grouped.reduce(into: [:]) { result, pair in
+            let hrvs = pair.value.compactMap(\.localRMSSD).filter { $0 > 0 }
             let hrv = hrvs.isEmpty ? nil : Double(hrvs.reduce(0, +)) / Double(hrvs.count)
-            return InsightDayMetrics(recovery: nil, hrv: hrv)
+            result[pair.key] = InsightDayMetrics(recovery: nil,
+                                                 hrv: hrv,
+                                                 rhr: rhrByDay[calendar.startOfDay(for: pair.key)])
         }
 
         return BehaviorJournalEntry.Tag.allCases.map { tag in
@@ -42167,10 +42221,19 @@ final class SessionStore: ObservableObject {
             } else {
                 hrvDelta = nil
             }
+            let taggedRHR = averageDoubleSnapshot(tagged.compactMap(\.rhr))
+            let untaggedRHR = averageDoubleSnapshot(untagged.compactMap(\.rhr))
+            let rhrDelta: Double?
+            if tagged.count >= 3, let taggedRHR, let untaggedRHR {
+                rhrDelta = taggedRHR - untaggedRHR
+            } else {
+                rhrDelta = nil
+            }
             return BehaviorCorrelationSummary(tag: tag,
                                               days: tagged.count,
                                               recoveryDelta: recoveryDelta,
-                                              hrvDelta: hrvDelta)
+                                              hrvDelta: hrvDelta,
+                                              rhrDelta: rhrDelta)
         }
     }
 
@@ -42179,6 +42242,7 @@ final class SessionStore: ObservableObject {
         journalEntries: [BehaviorJournalEntry],
         rest: Int,
         maxHR: Int,
+        dailyVitals: [(day: Date, restingHR: Int?)] = [],
         calendar: Calendar = .current,
         shouldContinue: () -> Bool
     ) -> [BehaviorCorrelationSummary]? {
@@ -42223,10 +42287,21 @@ final class SessionStore: ObservableObject {
                         tag: $0,
                         days: 0,
                         recoveryDelta: nil,
-                        hrvDelta: nil
+                        hrvDelta: nil,
+                        rhrDelta: nil
                     )
                 }
                 : nil
+        }
+        // Assessment P1.9: RHR comes from the frozen daily metrics — a
+        // measured signal that survives Recovery model bumps.
+        var rhrByDay: [Date: Double] = [:]
+        for (index, vital) in dailyVitals.enumerated() {
+            if index.isMultiple(of: 64), !shouldContinue() { return nil }
+            guard vital.day >= windowStart,
+                  let restingHR = vital.restingHR,
+                  restingHR > 0 else { continue }
+            rhrByDay[calendar.startOfDay(for: vital.day)] = Double(restingHR)
         }
         var metricsByDay: [Date: InsightDayMetrics] = [:]
         for (day, daySessions) in grouped {
@@ -42243,7 +42318,8 @@ final class SessionStore: ObservableObject {
             }
             metricsByDay[day] = .init(
                 recovery: nil,
-                hrv: count > 0 ? sum / Double(count) : nil
+                hrv: count > 0 ? sum / Double(count) : nil,
+                rhr: rhrByDay[calendar.startOfDay(for: day)]
             )
         }
         var result: [BehaviorCorrelationSummary] = []
@@ -42274,6 +42350,8 @@ final class SessionStore: ObservableObject {
             )
             let taggedHRV = averageDoubleSnapshot(tagged.compactMap(\.hrv))
             let untaggedHRV = averageDoubleSnapshot(untagged.compactMap(\.hrv))
+            let taggedRHR = averageDoubleSnapshot(tagged.compactMap(\.rhr))
+            let untaggedRHR = averageDoubleSnapshot(untagged.compactMap(\.rhr))
             result.append(.init(
                 tag: tag,
                 days: tagged.count,
@@ -42284,6 +42362,10 @@ final class SessionStore: ObservableObject {
                 hrvDelta: tagged.count >= 3
                     ? taggedHRV.flatMap { taggedValue in
                         untaggedHRV.map { taggedValue - $0 }
+                    } : nil,
+                rhrDelta: tagged.count >= 3
+                    ? taggedRHR.flatMap { taggedValue in
+                        untaggedRHR.map { taggedValue - $0 }
                     } : nil
             ))
         }
