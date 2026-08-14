@@ -35,7 +35,8 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
                          end: Date,
                          bpm: Int = 52,
                          eventTimeZoneIdentifier: String? = "UTC",
-                         motionValidated: Bool = false) -> SavedSession {
+                         motionValidated: Bool = false,
+                         qualifiedRR: Bool = false) -> SavedSession {
         let duration = end.timeIntervalSince(start)
         let points = stride(from: 0.0, to: duration, by: 60.0).map {
             SavedSession.Point(t: $0, bpm: bpm)
@@ -48,6 +49,16 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
                                  eventTimeZoneIdentifier: eventTimeZoneIdentifier)
         value.motionEvidenceValidated = motionValidated
         value.motionEvidenceSource = motionValidated ? "validated_strap_stillness" : nil
+        // 2026-08-14 assessment P1.10: silent auto-confirmation now also
+        // demands provenance-qualified RR coverage, so fixtures exercising
+        // that gate opt into a dense 2A37 stream (~1 sample/second).
+        if qualifiedRR {
+            value.rrPoints = (0..<Int(duration)).map {
+                SavedSession.RRPoint(t: Double($0),
+                                     ms: Int((60_000.0 / Double(bpm)).rounded()),
+                                     source: .standardHeartRateMeasurement2A37)
+            }
+        }
         return value
     }
 
@@ -1532,10 +1543,12 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
     func testResumedOvernightSupersedesOverlappingAutoNapButNotUserSleep() throws {
         let first = session(start: date(2032, 1, 1, 23, 0),
                             end: date(2032, 1, 2, 1, 0),
-                            motionValidated: true)
+                            motionValidated: true,
+                            qualifiedRR: true)
         let resumed = session(start: date(2032, 1, 2, 1, 30),
                               end: date(2032, 1, 2, 7, 0),
-                              motionValidated: true)
+                              motionValidated: true,
+                              qualifiedRR: true)
         let candidate = try XCTUnwrap(candidates([first, resumed]).first)
         XCTAssertTrue(SessionStore.isStrongAutoConfirmableSleepCandidate(candidate))
 
@@ -1980,11 +1993,13 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         let first = session(start: date(2032, 7, 8, 3, 50),
                             end: date(2032, 7, 8, 8, 34),
                             bpm: 52,
-                            motionValidated: true)
+                            motionValidated: true,
+                            qualifiedRR: true)
         let resumed = session(start: date(2032, 7, 8, 8, 44),
                               end: date(2032, 7, 8, 11, 38),
                               bpm: 53,
-                              motionValidated: true)
+                              motionValidated: true,
+                              qualifiedRR: true)
 
         let sleepCandidates = candidates([first, resumed])
         let candidate = try XCTUnwrap(sleepCandidates.first)

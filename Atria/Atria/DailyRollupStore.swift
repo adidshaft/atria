@@ -164,7 +164,12 @@ struct FrozenRecoverySummary: Codable, Equatable {
     /// presentation adjustment.
     // v3 makes the scoring input authority match the Sleep UI: HR-only
     // capture/span coverage can no longer masquerade as sleep efficiency.
-    static let recoveryV2ModelVersion = 3
+    // v4 (2026-08-14, assessment P0.5 + P1.6): the sleep term compares to the
+    // wearer's own 14-night robust baseline (population 7h/85% only while
+    // calibrating, tier-capped), and the lnRMSSD comparator prefers the
+    // 30-day median + scaled-MAD receipt over the EMA mean/sd. Frozen v3
+    // receipts replay untouched.
+    static let recoveryV2ModelVersion = 4
     static let savedDailyMetricSource = "saved_daily_metric"
     static let legacyRollupSource = "legacy_rollup"
     static let legacyWidgetSource = "legacy_widget_snapshot"

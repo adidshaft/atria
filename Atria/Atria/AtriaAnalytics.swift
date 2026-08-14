@@ -1356,10 +1356,13 @@ enum AtriaAnalytics {
                              hrvReferenceValidated: Bool = false,
                              sleepEfficiency: Double? = nil,
                              sleepDurationHours: Double? = nil,
+                             sleepBaseline: SleepBaselineStats? = nil,
                              respiratoryRate: Double? = nil,
-                             respiratoryBaseline: (mean: Double, sd: Double, count: Int)? = nil) -> Estimate {
-            guard let sleepZ = sleepRecoveryZ(efficiency: sleepEfficiency,
-                                              durationHours: sleepDurationHours) else {
+                             respiratoryBaseline: (mean: Double, sd: Double, count: Int)? = nil,
+                             now: Date = Date()) -> Estimate {
+            guard let (sleepZ, sleepIsPersonal) = sleepRecoveryZ(efficiency: sleepEfficiency,
+                                                                 durationHours: sleepDurationHours,
+                                                                 sleepBaseline: sleepBaseline) else {
                 // Sleep missing but HRV/RHR baselines trusted: renormalize the
                 // weights and score at reduced confidence instead of refusing —
                 // one night of missed sleep capture must not blank recovery.
@@ -1369,7 +1372,8 @@ enum AtriaAnalytics {
                                                            restingNow: restingNow,
                                                            baseline: baseline,
                                                            respiratoryRate: respiratoryRate,
-                                                           respiratoryBaseline: respiratoryBaseline) {
+                                                           respiratoryBaseline: respiratoryBaseline,
+                                                           now: now) {
                     return renormalized
                 }
                 if let restingNow,
@@ -1397,6 +1401,7 @@ enum AtriaAnalytics {
             guard let rmssdNow, rmssdNow > 0 else {
                 return limitedEvidenceEstimateWithoutHRV(
                     sleepZ: sleepZ,
+                    sleepIsPersonal: sleepIsPersonal,
                     sleepDurationHours: sleepDurationHours,
                     restingNow: restingNow,
                     baseline: baseline,
@@ -1431,10 +1436,23 @@ enum AtriaAnalytics {
             let hrvStats = baseline.lnRMSSDStats
             let hasTrustedHRVBaseline = baseline.hasTrustedHRVBaseline()
                 && (hrvStats?.count ?? 0) >= PersonalBaseline.trustedMinimumSamples
+            // Recovery model v4 (assessment P1.6): prefer the robust 30-day
+            // median + scaled-MAD receipt as the lnRMSSD comparator — one
+            // alcohol night must not explode the band. The EMA mean/sd stays
+            // as the fallback while the receipt is untrusted.
+            let robustComparison = baseline.recoveryComparison(now: now)
             let hrvZ: Double
-            let confidence: Estimate.Confidence
+            var confidence: Estimate.Confidence
             let hrvDetail: String
-            if hasTrustedHRVBaseline, let hrvStats {
+            if hasTrustedHRVBaseline, robustComparison.hrvTrusted,
+               let robustHRV = robustComparison.hrv {
+                hrvZ = zScore(log(rmssdNow),
+                              mean: robustHRV.location,
+                              sd: robustHRV.scale,
+                              minSD: 0.05)
+                confidence = hasTrustedRestingBaseline ? .personalBaseline : .unverified
+                hrvDetail = String(format: "HRV %.1fσ vs 30-day median", hrvZ)
+            } else if hasTrustedHRVBaseline, let hrvStats {
                 hrvZ = zScore(log(rmssdNow), mean: hrvStats.mean, sd: hrvStats.sd, minSD: 0.05)
                 if hasTrustedRestingBaseline {
                     // 2026-08-14 (assessment P0.3): `.validated` is RESERVED
@@ -1459,6 +1477,7 @@ enum AtriaAnalytics {
                 // calibration, not a neutral 60%-weight recovery signal.
                 return limitedEvidenceEstimateWithoutHRV(
                     sleepZ: sleepZ,
+                    sleepIsPersonal: sleepIsPersonal,
                     sleepDurationHours: sleepDurationHours,
                     restingNow: restingNow,
                     baseline: baseline,
@@ -1467,6 +1486,13 @@ enum AtriaAnalytics {
                 )
             }
 
+            // Recovery model v4 (assessment P0.5): a population-normed sleep
+            // term can never sit inside a personal-baseline-tier score. Until
+            // the wearer's own 14-night sleep baseline exists, the tier caps
+            // at unverified while the score itself stays useful.
+            if !sleepIsPersonal, confidence == .personalBaseline {
+                confidence = .unverified
+            }
             let respirationZ = respiratoryRecoveryZ(rate: respiratoryRate,
                                                     baseline: respiratoryBaseline)
             let respirationQualified = hasQualifiedRespiratoryEvidence(
@@ -1492,10 +1518,12 @@ enum AtriaAnalytics {
                 Estimate.Contributor(kind: .sleep,
                                      zScore: sleepZ,
                                      weight: sleepWeight,
-                                     // Unlike HRV/RHR, the sleep z is anchored
-                                     // to population norms (7 h, 85% eff), not
-                                     // a personal baseline — disclose that.
-                                     detail: String(format: "Sleep %.1fσ vs 7h·85%% norm", sleepZ),
+                                     // v4: personal median when trusted; the
+                                     // population anchor stays disclosed (and
+                                     // tier-capped) while calibrating.
+                                     detail: sleepIsPersonal
+                                        ? String(format: "Sleep %.1fσ vs your median", sleepZ)
+                                        : String(format: "Sleep %.1fσ vs 7h·85%% norm · calibrating", sleepZ),
                                      displayValue: sleepDurationHours.map { "\(AtriaMetricFormat.sleepHours($0)) ✓" } ?? String(format: "Sleep %+.1fσ", sleepZ)),
                 Estimate.Contributor(kind: .respiration,
                                      zScore: respirationZ,
@@ -1591,6 +1619,7 @@ enum AtriaAnalytics {
         /// absent signals cannot silently act as neutral measurements.
         private static func limitedEvidenceEstimateWithoutHRV(
             sleepZ: Double,
+            sleepIsPersonal: Bool = false,
             sleepDurationHours: Double?,
             restingNow: Int?,
             baseline: PersonalBaseline,
@@ -1612,7 +1641,9 @@ enum AtriaAnalytics {
                     kind: .sleep,
                     zScore: sleepZ,
                     weight: 0.75,
-                    detail: String(format: "Sleep %.1fσ vs 7h·85%% norm", sleepZ),
+                    detail: sleepIsPersonal
+                        ? String(format: "Sleep %.1fσ vs your median", sleepZ)
+                        : String(format: "Sleep %.1fσ vs 7h·85%% norm · calibrating", sleepZ),
                     displayValue: sleepDurationHours.map {
                         "\(AtriaMetricFormat.sleepHours($0)) · measured"
                     } ?? String(format: "Sleep %+.1fσ", sleepZ)
@@ -1675,7 +1706,8 @@ enum AtriaAnalytics {
                                                  restingNow: Int,
                                                  baseline: PersonalBaseline,
                                                  respiratoryRate: Double?,
-                                                 respiratoryBaseline: (mean: Double, sd: Double, count: Int)?) -> Estimate? {
+                                                 respiratoryBaseline: (mean: Double, sd: Double, count: Int)?,
+                                                 now: Date = Date()) -> Estimate? {
             guard baseline.hasTrustedRestingBaseline(),
                   baseline.hasTrustedHRVBaseline(),
                   let restingStats = baseline.restingStats,
@@ -1687,7 +1719,15 @@ enum AtriaAnalytics {
             guard let rmssdNow, rmssdNow > 0 else { return nil }
 
             let restingZ = zScore(Double(restingNow), mean: restingStats.mean, sd: restingStats.sd, minSD: 1.0)
-            let hrvZ = zScore(log(rmssdNow), mean: hrvStats.mean, sd: hrvStats.sd, minSD: 0.05)
+            // v4 (assessment P1.6): same robust-comparator preference as the
+            // full model path.
+            let robustComparison = baseline.recoveryComparison(now: now)
+            let hrvZ: Double
+            if robustComparison.hrvTrusted, let robustHRV = robustComparison.hrv {
+                hrvZ = zScore(log(rmssdNow), mean: robustHRV.location, sd: robustHRV.scale, minSD: 0.05)
+            } else {
+                hrvZ = zScore(log(rmssdNow), mean: hrvStats.mean, sd: hrvStats.sd, minSD: 0.05)
+            }
             let respirationZ = respiratoryRecoveryZ(rate: respiratoryRate,
                                                     baseline: respiratoryBaseline)
             let respirationQualified = hasQualifiedRespiratoryEvidence(
@@ -1761,7 +1801,38 @@ enum AtriaAnalytics {
             return Int(min(max(raw, 1), 99).rounded())
         }
 
-        private static func sleepRecoveryZ(efficiency: Double?, durationHours: Double?) -> Double? {
+        typealias SleepBaselineStats = (hours: (location: Double, scale: Double, count: Int)?,
+                                        efficiency: (location: Double, scale: Double, count: Int)?)
+
+        /// Recovery model v4 (assessment P0.5): the sleep term compares the
+        /// night to the wearer's OWN robust baseline (median + scaled MAD,
+        /// 14-night trust) when one exists. Below trust it falls back to the
+        /// population 7 h / 85% anchors, and the caller must then cap the
+        /// tier at `.unverified` — a population constant can never sit inside
+        /// a "personal baseline"-tier score.
+        private static func sleepRecoveryZ(efficiency: Double?,
+                                           durationHours: Double?,
+                                           sleepBaseline: SleepBaselineStats?) -> (z: Double, personal: Bool)? {
+            if let sleepBaseline {
+                var components: [Double] = []
+                if let durationHours, durationHours > 0, let hours = sleepBaseline.hours {
+                    // MinSD floors mirror the HRV/RHR rules: a genuinely
+                    // regular sleeper still gets a real z, not a pinned zero.
+                    components.append((durationHours - hours.location) / max(hours.scale, 0.75))
+                }
+                if let efficiency, let eff = sleepBaseline.efficiency {
+                    components.append((min(max(efficiency, 0), 1) - eff.location) / max(eff.scale, 0.05))
+                }
+                if !components.isEmpty {
+                    let average = components.reduce(0, +) / Double(components.count)
+                    return (min(max(average, -2), 2), true)
+                }
+            }
+            return populationSleepRecoveryZ(efficiency: efficiency,
+                                            durationHours: durationHours).map { ($0, false) }
+        }
+
+        private static func populationSleepRecoveryZ(efficiency: Double?, durationHours: Double?) -> Double? {
             var components: [Double] = []
             if let efficiency {
                 components.append((min(max(efficiency, 0), 1) - 0.85) / 0.10)

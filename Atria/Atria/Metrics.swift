@@ -198,8 +198,10 @@ enum Metrics {
                            hrvReferenceValidated: Bool = false,
                            sleepEfficiency: Double? = nil,
                            sleepDurationHours: Double? = nil,
+                           sleepBaseline: AtriaAnalytics.Recovery.SleepBaselineStats? = nil,
                            respiratoryRate: Double? = nil,
-                           respiratoryBaseline: (mean: Double, sd: Double, count: Int)? = nil) -> RecoveryEstimate {
+                           respiratoryBaseline: (mean: Double, sd: Double, count: Int)? = nil,
+                           now: Date = Date()) -> RecoveryEstimate {
         AtriaAnalytics.Recovery.estimate(hrvSnapshot: hrvSnapshot,
                                          fallbackRMSSD: fallbackRMSSD,
                                          restingNow: restingNow,
@@ -207,8 +209,10 @@ enum Metrics {
                                          hrvReferenceValidated: hrvReferenceValidated,
                                          sleepEfficiency: sleepEfficiency,
                                          sleepDurationHours: sleepDurationHours,
+                                         sleepBaseline: sleepBaseline,
                                          respiratoryRate: respiratoryRate,
-                                         respiratoryBaseline: respiratoryBaseline)
+                                         respiratoryBaseline: respiratoryBaseline,
+                                         now: now)
     }
 
     /// One authority for deciding whether cumulative strain may be presented as

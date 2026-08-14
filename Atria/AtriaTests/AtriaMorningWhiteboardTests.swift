@@ -7,7 +7,9 @@ import XCTest
 final class AtriaMorningWhiteboardTests: XCTestCase {
     private func trustedBaseline() -> AtriaBaselineTargetSnapshot {
         var baseline = PersonalBaseline()
-        let start = Date(timeIntervalSince1970: 1_780_000_000)
+        // Anchor at the present: the snapshot judges trust against the
+        // 14-day freshness window, so a fixed historical epoch reads stale.
+        let start = Date().addingTimeInterval(-15 * 86_400)
         for day in 0..<16 {
             baseline.learn(fromResting: 50 + day % 2,
                            hrv: 60 + day % 3,

@@ -1109,7 +1109,10 @@ final class AtriaCompactLatestNightSettlementTests: XCTestCase {
                 .init(t: Double($0), bpm: 60 + (($0 / 3) % 2))
             }
         )
-        session.rrPoints = (0..<1_200).map {
+        // 2026-08-14 assessment P1.10: auto-confirm now requires qualified RR
+        // to cover >=60% of the accepted window, so the stream spans the whole
+        // five hours instead of the first twenty minutes.
+        session.rrPoints = (0..<(5 * 60 * 60)).map {
             .init(
                 t: Double($0),
                 ms: 1_000 + Int((45 * sin(

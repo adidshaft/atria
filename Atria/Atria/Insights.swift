@@ -369,11 +369,11 @@ struct PersonalBaseline: Codable {
         return (mean, sqrt(variance), allStats.count)
     }
 
-    /// Produces a 30-civil-day robust comparison receipt for Recovery research.
-    /// This is intentionally not wired into `recoveryV2`: changing a displayed
-    /// health score requires held-out outcome validation, not a convenient
-    /// statistical substitution.  The normal 14 recent-day/night qualification
-    /// rule remains the authority for whether either comparator is mature.
+    /// Produces a 30-civil-day robust comparison receipt.  Recovery model v4
+    /// prefers this median/MAD receipt as its HRV comparator when
+    /// `hrvTrusted` (the same 14 recent-night qualification rule that governs
+    /// the EMA path); untrusted receipts leave the legacy EMA stats in
+    /// charge, so maturity is never invented by the statistic swap.
     func recoveryComparison(
         now: Date,
         calendar: Calendar = .current
