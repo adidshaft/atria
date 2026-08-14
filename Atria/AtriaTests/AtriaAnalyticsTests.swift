@@ -1546,19 +1546,37 @@ final class AtriaAnalyticsTests: XCTestCase {
                                         samples: baselineSamples(count: PersonalBaseline.trustedMinimumSamples,
                                                                  now: now))
 
+        // 2026-08-14 recovery v4: a personal-tier score now also requires the
+        // wearer's own sleep baseline (population sleep norms cap the tier),
+        // and a trusted history reads the robust 30-day median comparator.
         let estimate = AtriaAnalytics.Recovery.estimate(hrvSnapshot: nil,
                                                         fallbackRMSSD: 56,
                                                         restingNow: 58,
                                                         baseline: baseline,
                                                         hrvReferenceValidated: false,
                                                         sleepEfficiency: 0.91,
-                                                        sleepDurationHours: 7.6)
+                                                        sleepDurationHours: 7.6,
+                                                        sleepBaseline: (hours: (location: 7.3, scale: 0.7, count: 20),
+                                                                        efficiency: (location: 0.90, scale: 0.04, count: 20)),
+                                                        now: now)
 
         XCTAssertNotNil(estimate.percent)
         XCTAssertEqual(estimate.confidence, .personalBaseline)
         XCTAssertTrue(estimate.usesHRV)
         XCTAssertTrue((1...99).contains(estimate.percent ?? 0))
-        XCTAssertTrue(estimate.detail.contains("lnRMSSD z"))
+        XCTAssertTrue(estimate.detail.contains("HRV") || estimate.detail.contains("lnRMSSD z"),
+                      "detail names the HRV comparator, got: \(estimate.detail)")
+
+        let withoutPersonalSleep = AtriaAnalytics.Recovery.estimate(hrvSnapshot: nil,
+                                                                    fallbackRMSSD: 56,
+                                                                    restingNow: 58,
+                                                                    baseline: baseline,
+                                                                    hrvReferenceValidated: false,
+                                                                    sleepEfficiency: 0.91,
+                                                                    sleepDurationHours: 7.6,
+                                                                    now: now)
+        XCTAssertEqual(withoutPersonalSleep.confidence, .unverified,
+                       "cohort-norm sleep keeps the score below the personal tier")
     }
 
     func testRecoveryWithoutCurrentHRVUsesLimitedEvidenceAndNeverBaselineHRVAsMeasurement() {
@@ -5358,11 +5376,23 @@ final class AtriaAnalyticsTests: XCTestCase {
                       minute: minute).date!
     }
 
-    private func flatHRSession(start: Date, end: Date, bpm: Int, stepSeconds: Double = 60) -> SavedSession {
+    private func flatHRSession(start: Date, end: Date, bpm: Int, stepSeconds: Double = 60,
+                               qualifiedRR: Bool = false) -> SavedSession {
         let duration = end.timeIntervalSince(start)
         let count = max(2, Int(duration / stepSeconds))
         let points = (0..<count).map { SavedSession.Point(t: Double($0) * stepSeconds, bpm: bpm) }
-        return SavedSession(id: UUID(), start: start, end: end, label: "Test", points: points)
+        // 2026-08-14 assessment P1.10: auto-confirm now demands qualified RR
+        // corroboration, so fixtures exercising that gate opt into a dense
+        // 2A37-provenance RR stream (~1 sample/second, plausible for the bpm).
+        let rrPoints: [SavedSession.RRPoint]? = qualifiedRR
+            ? (0..<Int(duration)).map {
+                SavedSession.RRPoint(t: Double($0),
+                                     ms: Int((60_000.0 / Double(bpm)).rounded()),
+                                     source: .standardHeartRateMeasurement2A37)
+            }
+            : nil
+        return SavedSession(id: UUID(), start: start, end: end, label: "Test",
+                            points: points, rrPoints: rrPoints)
     }
 
     /// A fragmented overnight artifact night can remain reviewable from robust HR
@@ -5503,13 +5533,13 @@ final class AtriaAnalyticsTests: XCTestCase {
             let rest = 50
             let frag1Start = self.utcDate(2027, 3, 2, 0, 10)
             let frag1End = self.utcDate(2027, 3, 2, 2, 0)
-            let frag1 = self.flatHRSession(start: frag1Start, end: frag1End, bpm: 52)
+            let frag1 = self.flatHRSession(start: frag1Start, end: frag1End, bpm: 52, qualifiedRR: true)
             let frag2Start = self.utcDate(2027, 3, 2, 2, 30)
             let frag2End = self.utcDate(2027, 3, 2, 4, 30)
-            let frag2 = self.flatHRSession(start: frag2Start, end: frag2End, bpm: 52)
+            let frag2 = self.flatHRSession(start: frag2Start, end: frag2End, bpm: 52, qualifiedRR: true)
             let frag3Start = self.utcDate(2027, 3, 2, 5, 0)
             let frag3End = self.utcDate(2027, 3, 2, 7, 0)
-            let frag3 = self.flatHRSession(start: frag3Start, end: frag3End, bpm: 52)
+            let frag3 = self.flatHRSession(start: frag3Start, end: frag3End, bpm: 52, qualifiedRR: true)
 
             // Constant, validated, still gravity samples spanning the whole night
             // (60s cadence) so HistoricalArchive.boundedMotionWindowDiagnostics finds

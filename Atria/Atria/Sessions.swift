@@ -21456,6 +21456,7 @@ final class SessionStore: ObservableObject {
                                                   // tile can still silently boost the score as 100%.
                                                   sleepEfficiency: recoverySleepEfficiency(from: night),
                                                   sleepDurationHours: canonicalSleepDuration.map { $0 / 3_600 },
+                                                  sleepBaseline: sleep.sleepBaselineStats,
                                                   respiratoryRate: respiratoryRate,
                                                   respiratoryBaseline: sleep.respiratoryBaselineStats)
                 return SavedDailyMetric(day: day,
@@ -21565,6 +21566,7 @@ final class SessionStore: ObservableObject {
                 hrvReferenceValidated: false,
                 sleepEfficiency: recoverySleepEfficiency(from: night),
                 sleepDurationHours: sleepDuration.map { $0 / 3_600 },
+                sleepBaseline: sleep.sleepBaselineStats,
                 respiratoryRate: respiratoryRate,
                 respiratoryBaseline: sleep.respiratoryBaselineStats
             )
@@ -22659,8 +22661,13 @@ final class SessionStore: ObservableObject {
                                           hrvReferenceValidated: false,
                                           sleepEfficiency: recoverySleepEfficiency(from: confirmedMainSleep),
                                           sleepDurationHours: sleepDuration.map { $0 / 3_600 },
+                                          // Recovery v4: the wearer's own
+                                          // robust sleep baseline; nil while
+                                          // calibrating (tier caps itself).
+                                          sleepBaseline: sleep.sleepBaselineStats,
                                           respiratoryRate: respiratoryRate,
-                                          respiratoryBaseline: sleep.respiratoryBaselineStats)
+                                          respiratoryBaseline: sleep.respiratoryBaselineStats,
+                                          now: now)
 
         return SavedDailyMetric(day: day,
                                 recoveryPercent: recovery.percent,
@@ -23827,8 +23834,13 @@ final class SessionStore: ObservableObject {
                 hrvReferenceValidated: validatedHRV != nil,
                 sleepEfficiency: Self.recoverySleepEfficiency(from: latestSleep),
                 sleepDurationHours: latestSleep?.durationHours,
+                // Recovery v4: cache invalidation is already covered — the
+                // sleep baseline derives from confirmedSleepsRevision and the
+                // robust comparator from the fingerprinted baseline stats.
+                sleepBaseline: sleepHistorySnapshot.sleepBaselineStats,
                 respiratoryRate: latestSleep?.respiratoryRate,
-                respiratoryBaseline: respiratoryBaseline
+                respiratoryBaseline: respiratoryBaseline,
+                now: now
             )
         )
     }
@@ -54654,6 +54666,39 @@ struct SleepHistorySnapshot: Equatable {
         guard values.count > 1 else { return (mean, 0, values.count) }
         let variance = values.reduce(0) { $0 + pow($1 - mean, 2) } / Double(values.count - 1)
         return (mean, sqrt(variance), values.count)
+    }
+
+    /// Assessment P0.5 (2026-08-14, Recovery model v4): the wearer's OWN sleep
+    /// baseline — robust median + scaled MAD over recent confirmed main
+    /// nights, excluding the current night (`dropFirst`). Hours come from
+    /// every confirmed night; efficiency only from motion-validated
+    /// `displaySleepEfficiency` (HR-only span coverage must never enter).
+    /// Each component is nil below the same 14-night trust bar the HRV/RHR
+    /// baselines use — fail closed, never a population substitute.
+    var sleepBaselineStats: (hours: (location: Double, scale: Double, count: Int)?,
+                             efficiency: (location: Double, scale: Double, count: Int)?)? {
+        let recent = nights
+            .dropFirst()
+            .filter { $0.confirmed && !$0.isNapEvidence }
+            .prefix(30)
+        func robust(_ values: [Double]) -> (location: Double, scale: Double, count: Int)? {
+            guard values.count >= PersonalBaseline.trustedMinimumSamples else { return nil }
+            let sorted = values.sorted()
+            let mid = sorted.count / 2
+            let median = sorted.count.isMultiple(of: 2)
+                ? (sorted[mid - 1] + sorted[mid]) / 2
+                : sorted[mid]
+            let deviations = values.map { abs($0 - median) }.sorted()
+            let devMid = deviations.count / 2
+            let mad = deviations.count.isMultiple(of: 2)
+                ? (deviations[devMid - 1] + deviations[devMid]) / 2
+                : deviations[devMid]
+            return (location: median, scale: 1.4826 * mad, count: values.count)
+        }
+        let hours = robust(recent.map { $0.duration / 3_600 }.filter { $0 > 0 })
+        let efficiency = robust(recent.compactMap(\.displaySleepEfficiency))
+        guard hours != nil || efficiency != nil else { return nil }
+        return (hours: hours, efficiency: efficiency)
     }
 
     private static func makeAverageDurationText(_ nights: [Night]) -> String {

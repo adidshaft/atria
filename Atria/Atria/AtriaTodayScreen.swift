@@ -1561,8 +1561,8 @@ struct AtriaTodayScreen: View {
             return dayDescendingRollups.first { calendar.isDate($0.day, inSameDayAs: prior) }
         }
         let model = AtriaTodayMorningWhiteboardModel.make(
-            hrvMS: Int(cycle.hrvValue),
-            restingHR: Int(cycle.restingHeartRateText),
+            hrvMS: cycle.hrvMS,
+            restingHR: cycle.restingHeartRate,
             baseline: baseline,
             sleepDurationText: night?.durationText,
             nightConfirmed: night?.confirmed,
