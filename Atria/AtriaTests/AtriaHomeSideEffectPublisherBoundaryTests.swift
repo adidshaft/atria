@@ -11,8 +11,20 @@ final class AtriaHomeSideEffectPublisherBoundaryTests: XCTestCase {
             XCTAssertTrue(source.contains("private var \(publisher): AnyPublisher<Void, Never>"))
             XCTAssertTrue(source.contains(".onReceive(\(publisher))"))
         }
-        XCTAssertTrue(source.contains(".onReceive(workoutDetectionUpdates) { _ in\n            guard workoutSession == nil else { return }"))
-        XCTAssertTrue(source.contains(".onReceive(liveActivityUpdates) { _ in\n            guard workoutSession != nil else { return }"))
+        // 2026-08-14 pin migration: the App Review restructure moved the
+        // ownership guards into named handlers. The invariants are unchanged:
+        // detection stays silent during an explicit live workout, and
+        // Live Activity updates flow only while one exists.
+        XCTAssertTrue(source.contains(".onReceive(workoutDetectionUpdates) { _ in\n            handleWorkoutDetectionUpdate()"))
+        XCTAssertTrue(source.contains(".onReceive(liveActivityUpdates) { _ in\n            handleLiveActivityUpdate()"))
+        let detectionHandler = try XCTUnwrap(source.range(of: "private func handleWorkoutDetectionUpdate()"))
+        XCTAssertTrue(String(source[detectionHandler.lowerBound...].prefix(200))
+            .contains("guard workoutSession == nil else { return }"),
+                      "detection must fail closed during an explicit live workout")
+        let liveActivityHandler = try XCTUnwrap(source.range(of: "private func handleLiveActivityUpdate()"))
+        XCTAssertTrue(String(source[liveActivityHandler.lowerBound...].prefix(200))
+            .contains("guard workoutSession != nil else { return }"),
+                      "Live Activity updates require an owning workout session")
     }
 
     func testWidgetAndDetectionPublishersExcludeMediaAndGuidanceTimer() throws {

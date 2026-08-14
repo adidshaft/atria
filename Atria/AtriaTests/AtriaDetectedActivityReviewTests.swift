@@ -1495,8 +1495,15 @@ final class AtriaDetectedActivityReviewTests: XCTestCase {
         let homeSource = try projectSource("Atria/AtriaHomeView.swift")
         XCTAssertTrue(homeSource.contains("SessionStore.workoutReviewCandidateReviewRequestedNotification"),
                       "the Home shell must listen for history review requests")
+        // 2026-08-14 pin migration: the App Review restructure routed the
+        // notification into handleWorkoutReviewCandidateNotification. The
+        // invariants are unchanged and now scanned in that handler.
         let receiveStart = try XCTUnwrap(homeSource.range(of: "for: SessionStore.workoutReviewCandidateReviewRequestedNotification"))
-        let handler = String(homeSource[receiveStart.upperBound...].prefix(700))
+        XCTAssertTrue(String(homeSource[receiveStart.upperBound...].prefix(200))
+            .contains("handleWorkoutReviewCandidateNotification(note)"),
+                      "the Home shell must route history review requests into the shared handler")
+        let handlerStart = try XCTUnwrap(homeSource.range(of: "private func handleWorkoutReviewCandidateNotification"))
+        let handler = String(homeSource[handlerStart.lowerBound...].prefix(900))
         XCTAssertTrue(handler.contains("guard workoutSession == nil"),
                       "review presentation must fail closed during a live workout")
         XCTAssertTrue(handler.contains("presentWorkoutReview(candidate: candidate)"),

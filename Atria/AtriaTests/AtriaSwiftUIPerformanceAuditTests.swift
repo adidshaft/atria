@@ -667,16 +667,21 @@ final class AtriaSwiftUIPerformanceAuditTests: XCTestCase {
 
     func testHomeCoreLiveCadenceNeverRefreshesSavedArchiveAggregate() throws {
         let source = try appSource("AtriaHomeView.swift")
+        // 2026-08-14 pin migration: the App Review restructure named the
+        // publisher list (coreLiveChanges) and built the throttled merge from
+        // it. The cadence invariants below are unchanged.
         let cadenceStart = try XCTUnwrap(source.range(
-            of: "let throttledCoreLiveChanges = Publishers.MergeMany(["
+            of: "let coreLiveChanges: [AnyPublisher<Void, Never>] = ["
         ))
         let cadenceEnd = try XCTUnwrap(source.range(
             of: "let pulseRateChanges = ble.$heartRate",
             range: cadenceStart.upperBound..<source.endIndex
         ))
         let cadence = String(source[cadenceStart.lowerBound..<cadenceEnd.lowerBound])
+        // 2026-08-14 pin migration: the merged-input list now closes into the
+        // named throttled publisher; the exclusion invariant is unchanged.
         let mergedInputsEnd = try XCTUnwrap(source.range(
-            of: "])\n        .throttle(for: .milliseconds(400)",
+            of: "]\n        let throttledCoreLiveChanges",
             range: cadenceStart.upperBound..<cadenceEnd.lowerBound
         ))
         let mergedInputs = String(
