@@ -4454,7 +4454,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         // WHOOP's published band vocabulary gives the number a name
         // (2026-08-05 parity): "Moderate · of 13.9" reads the effort level
         // without opening the detail.
-        return "\(Metrics.strainBandName(hero.strain)) · \(targetValueText)"
+        // §13.4: a fused value names itself as the labeled combined total.
+        let base = "\(Metrics.strainBandName(hero.strain)) · \(targetValueText)"
+        return hero.muscularTRIMP > 0
+            ? "\(base) · \(AtriaCompactMetricPresentation.combinedCardioLiftingMarker)"
+            : base
     }
 
     private var hrvDetailText: String {
@@ -8105,15 +8109,17 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
         guard hero.recoveryEstimate.percent != nil else {
             return "Keep wearing today"
         }
+        // §13.3 2026-08-14: reason vocabulary moved from strain-vs-target to
+        // whiteboard bands.
         switch hero.guidance.reason {
-        case "low_recovery":
-            return "Recover first"
-        case "strain_above_target":
-            return "Enough load"
-        case "strain_below_target":
-            return "Room to push"
-        case "strain_on_target":
-            return "Hold steady"
+        case "whiteboard_lighter":
+            return "Go lighter"
+        case "whiteboard_match":
+            return "Match yesterday"
+        case "whiteboard_calibrating":
+            return "Calibrating"
+        case "whiteboard_awaiting":
+            return "Waiting on today"
         default:
             return hero.guidance.headline.isEmpty ? "Check in" : hero.guidance.headline
         }
@@ -8123,18 +8129,9 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
         guard hero.recoveryEstimate.percent != nil else {
             return "Wear a few mornings to unlock targets."
         }
-        switch hero.guidance.reason {
-        case "low_recovery":
-            return "Keep strain light and protect sleep."
-        case "strain_above_target":
-            return "Let today consolidate instead of chasing more."
-        case "strain_below_target":
-            return "Add effort if your body agrees."
-        case "strain_on_target":
-            return "You are inside today's lane."
-        default:
-            return hero.guidance.detail
-        }
+        // §13.3 2026-08-14: the whiteboard sentence's own detail is the hint —
+        // one voice, no second strain-vs-target paraphrase.
+        return hero.guidance.detail
     }
 
     private var targetText: String {
@@ -8296,11 +8293,12 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
 
     private var dayLanePosition: Double {
         guard hero.recoveryEstimate.percent != nil else { return 0.50 }
+        // §13.3 2026-08-14: reason vocabulary moved from strain-vs-target to
+        // whiteboard bands.
         switch hero.guidance.reason {
-        case "low_recovery": return 0.12
-        case "strain_above_target": return 0.30
-        case "strain_on_target": return 0.52
-        case "strain_below_target": return 0.82
+        case "whiteboard_lighter": return 0.25
+        case "whiteboard_match": return 0.70
+        case "whiteboard_calibrating", "whiteboard_awaiting": return 0.50
         default: return 0.50
         }
     }
@@ -8308,10 +8306,10 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
     private var dayLaneDetailText: String {
         guard hero.recoveryEstimate.percent != nil else { return "Baseline forming" }
         switch hero.guidance.reason {
-        case "low_recovery": return "Recover"
-        case "strain_above_target": return "Ease"
-        case "strain_on_target": return "Hold"
-        case "strain_below_target": return "Push"
+        case "whiteboard_lighter": return "Lighter"
+        case "whiteboard_match": return "Match"
+        case "whiteboard_calibrating": return "Calibrating"
+        case "whiteboard_awaiting": return "Waiting"
         default: return "Check"
         }
     }
@@ -9562,6 +9560,7 @@ struct AtriaMetricDetailSheet: View {
                     strainWorkoutSection
                     strainZoneHistogramCard
                     strainActivityMixCard
+                    strainCardioLiftingSplitCard
                 }
             } contributors: {
                 if showsCurrentPhysiologicalCycleContext {
@@ -10736,6 +10735,52 @@ struct AtriaMetricDetailSheet: View {
             .atriaInsetCard(tint: Metrics.electricStrain)
             .accessibilityElement(children: .combine)
             .accessibilityLabel(String(format: "Today's strain mix. Cardio %.1f, strength-type %.1f, split by activity type.", mix.cardio, mix.strength))
+        }
+    }
+
+    /// §13.4 display un-fuse: cardio TRIMP and the logged-lifting
+    /// TRIMP-equivalent as two separate bars in TRIMP space. The single day
+    /// Strain above remains the combined total and is named as such here.
+    /// Fusion math is untouched; a day with no scored lifting receipt renders
+    /// nothing (zero-neutral, matching the fusion).
+    @ViewBuilder
+    private var strainCardioLiftingSplitCard: some View {
+        if showsCurrentPhysiologicalCycleContext,
+           let authority = currentCycleAuthority,
+           let dayTRIMP = authority.dayTRIMP,
+           authority.muscularTRIMP > 0 {
+            let lifting = min(authority.muscularTRIMP, dayTRIMP)
+            let cardio = max(0, dayTRIMP - lifting)
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Cardio vs logged lifting")
+                    .font(.subheadline.weight(.semibold))
+                GeometryReader { proxy in
+                    HStack(spacing: 3) {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Metrics.electricStrain.opacity(0.85))
+                            .frame(width: max(10, proxy.size.width * cardio / max(dayTRIMP, 0.1)))
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.purple.opacity(0.8))
+                    }
+                }
+                .frame(height: 14)
+                HStack(spacing: 14) {
+                    Label(String(format: "Cardio · TRIMP %.0f", cardio), systemImage: "figure.walk")
+                        .foregroundStyle(Metrics.electricStrain)
+                    Label(String(format: "Lifting · %.0f TRIMP-eq", lifting), systemImage: "dumbbell.fill")
+                        .foregroundStyle(.purple)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption.weight(.bold).monospacedDigit())
+                Text("Day Strain above is the combined total of both lanes. The lifting lane uses the labeled provisional set-log mapping (docs/17); sessions without complete RPE add exactly zero.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+            .atriaInsetCard(tint: Metrics.electricStrain)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(String(format: "Cardio versus logged lifting. Cardio TRIMP %.0f, lifting equivalent %.0f. Day strain is the labeled combined total.", cardio, lifting))
         }
     }
 

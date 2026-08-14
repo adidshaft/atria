@@ -548,8 +548,13 @@ enum HistoricalArchive {
     /// It deliberately uses filesystem identity/size/mtime plus the catalog
     /// generation; hashing sealed archives here would recreate the very
     /// lifetime read this token is intended to suppress.
-    struct ConsumerSourceFingerprint: Codable, Equatable, Sendable {
-        struct Source: Codable, Equatable, Sendable {
+    // Hashable so cache keys combine every field directly. Hashing the
+    // JSON-encoded Data was unsound: Data's bridged hash covers only a
+    // byte prefix and encoder key order varies per process, so a changed
+    // mtime or resource id landing late in the encoding could keep the
+    // same key and serve a stale window (2026-08-14).
+    struct ConsumerSourceFingerprint: Codable, Equatable, Hashable, Sendable {
+        struct Source: Codable, Equatable, Hashable, Sendable {
             let path: String
             let size: UInt64
             let modificationTimeMilliseconds: Int64
@@ -7168,9 +7173,7 @@ enum HistoricalArchive {
             descriptors: AtriaHistoricalJSONLRecentScanner.descriptors(for: candidates)
         )
         var fingerprintHasher = Hasher()
-        if let encoded = try? JSONEncoder().encode(fingerprint) {
-            fingerprintHasher.combine(encoded)
-        }
+        fingerprintHasher.combine(fingerprint)
         let cacheKey = HeartRateWindowResultCache.Key(
             startUnix: start.timeIntervalSince1970,
             endUnix: end.timeIntervalSince1970,

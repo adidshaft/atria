@@ -9439,6 +9439,12 @@ final class AtriaHomeModel {
         let loadSignalSummaryText: String
         let loadNarrative: String
         let hrZoneMinutes: TodayHRZoneMinutes
+        /// §13.4 display metadata only — the fused day TRIMP and its
+        /// logged-lifting component. Zero (fail-closed) when the date-honest
+        /// identity overrides today's strain or on the disconnected fallback;
+        /// consumers must then make no combined/split claim.
+        var dayTRIMP: Double = 0
+        var muscularTRIMP: Double = 0
 
         /// Home and Today render a compact projection of the canonical stress
         /// state, but a scored enum alone does not prove the reading is still
@@ -9541,7 +9547,12 @@ final class AtriaHomeModel {
         }
 
         var strainDetail: String {
-            strainConfidence
+            // §13.4: the fused number is only shown as an explicitly labeled
+            // combined total. strainConfidence itself must stay untouched —
+            // "partial" sniffing keys on it.
+            muscularTRIMP > 0
+                ? "\(strainConfidence) · \(AtriaCompactMetricPresentation.combinedCardioLiftingMarker)"
+                : strainConfidence
         }
 
         static func == (lhs: HeroSnapshot, rhs: HeroSnapshot) -> Bool {
@@ -9586,11 +9597,19 @@ final class AtriaHomeModel {
                 && lhs.loadSignalSummaryText == rhs.loadSignalSummaryText
                 && lhs.loadNarrative == rhs.loadNarrative
                 && lhs.hrZoneMinutes == rhs.hrZoneMinutes
+                && lhs.muscularTRIMP == rhs.muscularTRIMP
+                && Self.displayTRIMPBucket(lhs.dayTRIMP) == Self.displayTRIMPBucket(rhs.dayTRIMP)
                 && Self.displayStrainBucket(lhs.strain) == Self.displayStrainBucket(rhs.strain)
         }
 
         private static func displayStrainBucket(_ value: Double) -> Int {
             Int((value * 10).rounded())
+        }
+
+        /// Whole-TRIMP bucket: dayTRIMP moves with live TRIMP each tick; raw
+        /// equality would republish the hero at ~1 Hz.
+        private static func displayTRIMPBucket(_ value: Double) -> Int {
+            Int(value.rounded())
         }
     }
 
@@ -9811,6 +9830,7 @@ final class AtriaHomeModel {
         let restingContext: RestingMetricContext
         let savedTodayTRIMP: Double
         let savedActiveSessionTRIMP: Double
+        let savedTodayMuscularTRIMP: Double
         let savedTodayActiveCalories: Double?
         let savedActiveSessionActiveCalories: Double?
         let savedTodayStrapSteps: Int
@@ -11212,6 +11232,7 @@ final class AtriaHomeModel {
             restingContext: restingContext,
             savedTodayTRIMP: aggregate.savedTodayTRIMP,
             savedActiveSessionTRIMP: aggregate.savedActiveSessionTRIMP,
+            savedTodayMuscularTRIMP: aggregate.savedTodayMuscularTRIMP,
             savedTodayActiveCalories: aggregate.savedTodayActiveCalories,
             savedActiveSessionActiveCalories:
                 aggregate.savedActiveSessionActiveCalories,
@@ -12201,11 +12222,28 @@ final class AtriaHomeModel {
                                                                cycleStart: physiologicalCycle.start,
                                                                now: now,
                                                                calendar: calendar)
-        let guidance = Coach.guide(recovery: recovery,
-                                   strain: strain,
-                                   load: load,
-                                   frozenTarget: frozenTarget?.target,
-                                   frozenRecovery: frozenTarget?.recovery)
+        let kernelGuidance = Coach.guide(recovery: recovery,
+                                         strain: strain,
+                                         load: load,
+                                         frozenTarget: frozenTarget?.target,
+                                         frozenRecovery: frozenTarget?.recovery)
+        // Assessment §13.3 (2026-08-14): the kernel still mints the frozen
+        // 9–17 target; only the SENTENCE the user reads is rewritten in the
+        // whiteboard's vocabulary (personal bands vs yesterday's TRIMP).
+        // Mirrors the Today whiteboard's yesterday derivation.
+        let whiteboardYesterday = latestSleep.flatMap { night -> DailyRollupStoreEntry? in
+            guard let prior = calendar.date(byAdding: .day,
+                                            value: -1,
+                                            to: calendar.startOfDay(for: night.day)) else { return nil }
+            return store.dailyRollupHistory.first { calendar.isDate($0.day, inSameDayAs: prior) }
+        }
+        let guidance = AtriaWhiteboardCoachSentence.rewrite(
+            kernel: kernelGuidance,
+            context: .init(hrvMS: Int(deferredDetails?.hrvValue ?? fallbackHrv.value),
+                           restingHR: presentationRestingHeartRate,
+                           baseline: AtriaBaselineTargetSnapshot(store.baseline),
+                           yesterdayTRIMP: whiteboardYesterday?.trimp,
+                           yesterdayStrainDisplay: whiteboardYesterday?.strain))
         // Handoff-10 CP1: present the identity-resolved values. Cycle math
         // (guidance, strain target) above intentionally still uses the
         // wake-to-wake projection; only what the Today surface DISPLAYS as
@@ -12246,7 +12284,7 @@ final class AtriaHomeModel {
                             backupDetail: deferredDetails?.backupDetail ?? "saved history",
                             restingHeartRate: presentationRestingHeartRate ?? rest,
                             restingHeartRateText: restText,
-                            strainNarrative: String(format: "TRIMP %.1f after active-checkpoint reconciliation (saved %.1f, saved active %.1f, live %.1f)", totalTRIMP, savedAggregate.savedTodayTRIMP, savedAggregate.savedActiveSessionTRIMP, liveTRIMP),
+                            strainNarrative: String(format: "TRIMP %.1f after active-checkpoint reconciliation (saved %.1f, saved active %.1f, live %.1f, logged lifting %.1f)", totalTRIMP, savedAggregate.savedTodayTRIMP, savedAggregate.savedActiveSessionTRIMP, liveTRIMP, savedAggregate.savedTodayMuscularTRIMP),
                             loadRatioText: load.ratioText,
                             loadTargetText: load.targetBandText,
                             loadConfidence: load.confidence,
@@ -12258,7 +12296,12 @@ final class AtriaHomeModel {
                             loadMonotonyDetailText: load.monotonyDetailText,
                             loadSignalSummaryText: load.signalSummaryText,
                             loadNarrative: load.detail,
-                            hrZoneMinutes: store.todayHRZoneMinutesSnapshot)
+                            hrZoneMinutes: store.todayHRZoneMinutesSnapshot,
+                            // §13.4: display split only — zero under the
+                            // date-honest identity override (no split claim).
+                            dayTRIMP: dayResolution.strainOverride == nil ? totalTRIMP : 0,
+                            muscularTRIMP: dayResolution.strainOverride == nil
+                                ? savedAggregate.savedTodayMuscularTRIMP : 0)
     }
 
     #if DEBUG
@@ -12320,6 +12363,17 @@ final class AtriaHomeModel {
         )
         let strain = 4.2
         let guidance = Coach.guide(recovery: recovery, strain: strain, load: .learning)
+        // §13.3 (2026-08-14): the fixture surfaces the production whiteboard
+        // sentence built from the same trusted fixture baseline and the
+        // night's measured HRV/RHR; the kernel line above stays for its
+        // pinned target math.
+        let displayGuidance = AtriaWhiteboardCoachSentence.rewrite(
+            kernel: guidance,
+            context: .init(hrvMS: night.hrv,
+                           restingHR: night.restingHR,
+                           baseline: AtriaBaselineTargetSnapshot(baseline),
+                           yesterdayTRIMP: nil,
+                           yesterdayStrainDisplay: nil))
         return HeroSnapshot(recoveryEstimate: recovery,
                             recoveryIsProvisional: !night.confirmed,
                             recoveryIsFromPreviousSleep: false,
@@ -12331,7 +12385,7 @@ final class AtriaHomeModel {
                             // evaluated here, and nil means "not measured"
                             // rather than "zero coverage".
                             dayWearCoverageFraction: nil,
-                            guidance: guidance,
+                            guidance: displayGuidance,
                             hrvValue: night.hrvText,
                             hrvDetail: "personal baseline",
                             hrvNarrative: "Debug fixture: pending sleep uses the normal recovery model before confirmation.",
@@ -12637,6 +12691,7 @@ final class AtriaHomeModel {
                               restingContext: restingContext,
                               savedTodayTRIMP: aggregate.savedTodayTRIMP,
                               savedActiveSessionTRIMP: aggregate.savedActiveSessionTRIMP,
+                              savedTodayMuscularTRIMP: aggregate.savedTodayMuscularTRIMP,
                               savedTodayActiveCalories: aggregate.savedTodayActiveCalories,
                               savedActiveSessionActiveCalories: aggregate.savedActiveSessionActiveCalories,
                               savedTodayStrapSteps: aggregate.savedTodayStrapSteps,

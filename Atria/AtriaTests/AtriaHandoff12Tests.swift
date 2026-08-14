@@ -468,7 +468,20 @@ final class AtriaHandoff12Tests: XCTestCase {
         seamSeconds: TimeInterval
     ) -> ([SavedSession], Date) {
         let calendar = Calendar.current
-        let dayStart = calendar.startOfDay(for: Date())
+        // 2026-08-14: anchor on an explicit far-past civil day. The bounded
+        // projection consults the persisted device-use journal for sleep-
+        // onset clamping, and this host's journal carries scene events at
+        // real run times — an unclosed span truncated at the last observed
+        // entry can cover any TODAY/YESTERDAY-anchored 09:56–13:39 window,
+        // clamping the candidate to exactly the 3 h floor (the flake that
+        // looked time-of-day dependent). The journal cannot hold entries
+        // from before it shipped, so a 2025 anchor is deterministic; every
+        // admission gate below is hour-of-day or fixture-relative.
+        let dayStart = calendar.date(
+            from: DateComponents(year: 2025, month: 8, day: 13)
+        ) ?? calendar.startOfDay(
+            for: Date(timeIntervalSince1970: 1_755_043_200)
+        )
         let firstStart = dayStart.addingTimeInterval(
             9 * 3_600 + 56 * 60 + 3
         )

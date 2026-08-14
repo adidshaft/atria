@@ -75,6 +75,11 @@ struct AtriaCompactMetricPresentation: Equatable {
     /// "Learning" to this cannot silently break pending detection downstream.
     static let noValue = "--"
 
+    /// §13.4: the single owner of the combined-total label shown beside a
+    /// fused day-Strain value whenever logged lifting contributed. Must never
+    /// contain "partial" (confidence sniffing) or "≥" (lower-bound grammar).
+    static let combinedCardioLiftingMarker = "cardio+lifting"
+
     /// Numeric (or `noValue`). Never prose, never a warning.
     let value: String
     /// Short fixed-vocabulary marker, or nil when confidence is high enough that

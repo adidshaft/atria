@@ -1416,6 +1416,24 @@ struct AtriaTodayScreen: View {
                                                 detail: "debug_strain_target",
                                                 contributors: [])
         let guidance = Coach.guide(recovery: recovery, strain: strain, load: .learning)
+        // §13.3 (2026-08-14): production shows the whiteboard sentence; the
+        // fixture mirrors it with a trusted 16-day baseline so the visual
+        // proof photographs the real copy. Kernel target/tint stay live.
+        var fixtureBaseline = PersonalBaseline()
+        let fixtureStart = Date().addingTimeInterval(-15 * 86_400)
+        for day in 0..<16 {
+            fixtureBaseline.learn(fromResting: 54 + day % 2,
+                                  hrv: 58 + day % 3,
+                                  at: fixtureStart.addingTimeInterval(Double(day) * 86_400),
+                                  overnight: true)
+        }
+        let displayGuidance = AtriaWhiteboardCoachSentence.rewrite(
+            kernel: guidance,
+            context: .init(hrvMS: 58,
+                           restingHR: 56,
+                           baseline: AtriaBaselineTargetSnapshot(fixtureBaseline),
+                           yesterdayTRIMP: 84,
+                           yesterdayStrainDisplay: 12.4))
         return AtriaHomeModel.HeroSnapshot(recoveryEstimate: recovery,
                                            recoveryIsProvisional: false,
                                            recoveryIsFromPreviousSleep: false,
@@ -1427,7 +1445,7 @@ struct AtriaTodayScreen: View {
                                            // state only; coverage is not part of
                                            // what it proves, so it stays unmeasured.
                                            dayWearCoverageFraction: nil,
-                                           guidance: guidance,
+                                           guidance: displayGuidance,
                                            hrvValue: "58",
                                            hrvDetail: "personal baseline",
                                            hrvNarrative: "Debug fixture: strain target state is fixed for visual proof.",
@@ -1438,8 +1456,8 @@ struct AtriaTodayScreen: View {
                                            stressEvidenceMode: .physiologicalStress,
                                            stressMetricTitle: "Physiological stress",
                                            rrPackageText: "Personal",
-                                           nextAction: guidance.detail,
-                                           headline: guidance.headline,
+                                           nextAction: displayGuidance.detail,
+                                           headline: displayGuidance.headline,
                                            sessionsCount: PersonalBaseline.trustedMinimumSamples,
                                            baselineSamples: PersonalBaseline.trustedMinimumSamples,
                                            backupValue: "Ready",
@@ -1567,6 +1585,7 @@ struct AtriaTodayScreen: View {
             sleepDurationText: night?.durationText,
             nightConfirmed: night?.confirmed,
             needHours: sleepNeedSnapshot.needHours,
+            yesterdayTRIMP: yesterdayRollup?.trimp,
             yesterdayStrain: yesterdayRollup?.strain,
             yesterdayStrainIsPartial: yesterdayRollup?.strainEvidenceQuality == .partial)
         return AtriaTodayMorningWhiteboardCard(model: model) { kind in
@@ -1974,8 +1993,13 @@ struct AtriaTodayScreen: View {
                                     : (incomplete
                                         ? (currentStrainLimitation?.compactState
                                             ?? "Strain data incomplete")
-                                        : (target.map { String(format: "of %.1f", $0) }
-                                            ?? "Strain")),
+                                        // §13.4: a fused value names itself as
+                                        // the labeled combined total.
+                                        : ((target.map { String(format: "of %.1f", $0) }
+                                            ?? "Strain")
+                                            + (displayHero.muscularTRIMP > 0
+                                                ? " · \(AtriaCompactMetricPresentation.combinedCardioLiftingMarker)"
+                                                : ""))),
                                   systemImage: "flame.fill",
                                   // Without a Recovery-derived target, measured
                                   // strain keeps its identity blue instead of
@@ -4085,6 +4109,7 @@ struct AtriaTodayMorningWhiteboardModel: Equatable {
                      sleepDurationText: String?,
                      nightConfirmed: Bool?,
                      needHours: Double?,
+                     yesterdayTRIMP: Double?,
                      yesterdayStrain: Double?,
                      yesterdayStrainIsPartial: Bool) -> AtriaTodayMorningWhiteboardModel {
         var rows: [Row] = []
@@ -4092,14 +4117,14 @@ struct AtriaTodayMorningWhiteboardModel: Equatable {
         // HRV vs the 14–30 night personal band.
         let hrvSentence: String
         let hrvTone: Tone
-        if let hrvMS, hrvMS > 0,
-           baseline.hrvTrusted,
+        // §13.3 (2026-08-14): z comes from the shared band authority so the
+        // coach sentence and this row can never disagree.
+        if let z = baseline.hrvBandZ(hrvMS: hrvMS),
            let mean = baseline.hrvLnMean,
-           let sd = baseline.hrvLnSD, sd > 0.01 {
+           let sd = baseline.hrvLnSD {
             let lower = Int(exp(mean - sd).rounded())
             let upper = Int(exp(mean + sd).rounded())
             hrvSentence = "typical \(lower)–\(upper) ms"
-            let z = (log(Double(hrvMS)) - mean) / max(sd, 0.05)
             hrvTone = z >= -1 ? .supportive : (z >= -2 ? .caution : .strained)
         } else {
             hrvSentence = "calibrating · \(min(baseline.hrvSampleCount, 14)) of 14 nights"
@@ -4115,12 +4140,10 @@ struct AtriaTodayMorningWhiteboardModel: Equatable {
         // RHR vs the personal band (lower is supportive).
         let rhrSentence: String
         let rhrTone: Tone
-        if let restingHR, restingHR > 0,
-           baseline.restingTrusted,
+        if let z = baseline.restingBandZ(restingHR: restingHR),
            let mean = baseline.restingMean,
-           let sd = baseline.restingSD, sd > 0.1 {
+           let sd = baseline.restingSD {
             rhrSentence = "typical \(Int((mean - sd).rounded()))–\(Int((mean + sd).rounded())) bpm"
-            let z = (Double(restingHR) - mean) / max(sd, 1)
             rhrTone = z <= 1 ? .supportive : (z <= 2 ? .caution : .strained)
         } else {
             rhrSentence = "calibrating · \(min(baseline.restingSampleCount, 14)) of 14 days"
@@ -4149,11 +4172,24 @@ struct AtriaTodayMorningWhiteboardModel: Equatable {
                         tone: .neutral,
                         route: .sleep))
 
-        // Yesterday's strain (display skin; raw TRIMP is P1-7 persistence).
+        // Assessment §13.2 (2026-08-14): yesterday leads with the persisted
+        // TRIMP truth (P1.7 rollup field); the 0–21 display score stays as a
+        // parenthetical skin, "TRIMP 188 (15.0)". Legacy rows without stored
+        // TRIMP keep the display score alone — TRIMP is never reconstructed
+        // by inverting the display curve.
+        let yesterdayHasTRIMP = yesterdayTRIMP.map { $0.isFinite && $0 > 0 } ?? false
+        let yesterdayValue: String
+        if let yesterdayTRIMP, yesterdayHasTRIMP {
+            yesterdayValue = yesterdayStrain.map {
+                String(format: "TRIMP %.0f (%.1f)", yesterdayTRIMP, $0)
+            } ?? String(format: "TRIMP %.0f", yesterdayTRIMP)
+        } else {
+            yesterdayValue = yesterdayStrain.map { String(format: "Strain %.1f", $0) } ?? "Strain —"
+        }
         rows.append(Row(id: "yesterday",
                         systemImage: "flame",
-                        valuePhrase: yesterdayStrain.map { String(format: "Strain %.1f", $0) } ?? "Strain —",
-                        sentence: yesterdayStrain == nil
+                        valuePhrase: yesterdayValue,
+                        sentence: (yesterdayStrain == nil && !yesterdayHasTRIMP)
                             ? "no strain recorded yesterday"
                             : (yesterdayStrainIsPartial ? "yesterday · partial coverage" : "yesterday"),
                         tone: .neutral,

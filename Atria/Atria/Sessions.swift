@@ -9107,6 +9107,10 @@ final class SessionStore: ObservableObject {
         let biologicalSex: AthleteProfile.BiologicalSex
         let savedTodayTRIMP: Double
         let savedActiveSessionTRIMP: Double
+        /// §13.4 display metadata: the logged-lifting TRIMP-equivalent already
+        /// fused into savedTodayTRIMP (GAP-09). Carried so day surfaces can
+        /// split cardio vs lifting; never re-added anywhere.
+        let savedTodayMuscularTRIMP: Double
         let savedTodayActiveCalories: Double?
         let savedActiveSessionActiveCalories: Double?
         let savedTodayStrapSteps: Int
@@ -24761,6 +24765,7 @@ final class SessionStore: ObservableObject {
                                   biologicalSex: biologicalSex,
                                   savedTodayTRIMP: savedTodayTRIMP,
                                   savedActiveSessionTRIMP: savedActiveSessionTRIMP,
+                                  savedTodayMuscularTRIMP: muscularTRIMP,
                                   savedTodayActiveCalories: savedTodayActiveCalories,
                                   savedActiveSessionActiveCalories: savedActiveSessionActiveCalories,
                                   savedTodayStrapSteps: savedTodayStrapSteps,
@@ -24868,6 +24873,7 @@ final class SessionStore: ObservableObject {
             biologicalSex: biologicalSex,
             savedTodayTRIMP: savedTodayTRIMP,
             savedActiveSessionTRIMP: activeTRIMP,
+            savedTodayMuscularTRIMP: muscularTRIMP,
             savedTodayActiveCalories: nil,
             savedActiveSessionActiveCalories: nil,
             savedTodayStrapSteps: savedTodayStrapSteps,

@@ -5026,8 +5026,10 @@ struct AtriaWorkoutStressTraceChart: View {
 /// and absent vitals show the canonical "--" token.
 /// Logged muscular input for a completed strength workout. Extracted from the
 /// workout summary so it is independently renderable/testable (GAP-09): it
-/// distinguishes measured external load from a body-mass estimate and states
-/// outright that it is separate from cardiovascular Strain.
+/// distinguishes measured external load from a body-mass estimate and names
+/// its role honestly — since the GAP-09 fusion it is the lifting lane inside
+/// the combined Day Strain (§13.4 splits the display), never a change to
+/// measured heart-rate strain itself.
 struct AtriaMuscularLoadSummary: View {
     let receipt: AtriaStrengthLog.MuscularLoadReceipt
     let isFrozen: Bool
@@ -5066,8 +5068,10 @@ struct AtriaMuscularLoadSummary: View {
                 }
             }
             Text(receipt.hasCompleteEffortEvidence
-                 ? "\(isFrozen ? "Frozen with this workout" : "Legacy recomputation") · separate from cardiovascular Strain"
-                 : "Add RPE to every loaded set for a relative input estimate. It never changes cardiovascular Strain.")
+                 // §13.4 (2026-08-14): the old "separate from cardiovascular
+                 // Strain" claim went stale when GAP-09 fused the lanes.
+                 ? "\(isFrozen ? "Frozen with this workout" : "Legacy recomputation") · shown as the lifting lane beside cardio in Day Strain"
+                 : "Add RPE to every loaded set for a relative input estimate. It never changes measured heart-rate strain.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }
