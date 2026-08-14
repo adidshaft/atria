@@ -296,7 +296,9 @@ struct AtriaRecoveryMeter: View, Equatable {
         case .personalBaseline:
             return "Personal baseline"
         case .validated:
-            return "Checked"
+            // 2026-08-14 (assessment P0.3): reserved tier; any legacy arrival
+            // renders as the strongest honest claim.
+            return "Personal baseline"
         }
     }
 }

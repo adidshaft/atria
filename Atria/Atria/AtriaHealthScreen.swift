@@ -757,14 +757,18 @@ struct AtriaHealthScreen: View {
                         // section above the fold: simctl cannot scroll, and the
                         // verification target is the section's own layout.
                         // Production order is unchanged (fixture is DEBUG-only).
+                        // Assessment P0.2 (2026-08-14): Fitness Age is a
+                        // compact local approximation ("not a medical
+                        // measurement") and must not sit in hero position —
+                        // measured trends and real detected activity lead.
                         if Self.debugOpensTrendsScope(arguments: ProcessInfo.processInfo.arguments) {
                             detectedActivitiesAndHistory(historyProjection: historyProjection)
                             trendsCard
                             fitnessAgeCard
                         } else {
                             trendsCard
-                            fitnessAgeCard
                             detectedActivitiesAndHistory(historyProjection: historyProjection)
+                            fitnessAgeCard
                         }
                     }
                 }
@@ -964,10 +968,6 @@ struct AtriaHealthScreen: View {
                 .accessibilityHint("Opens sleep efficiency detail")
             }
 
-            if let provisionalSleepScore {
-                AtriaSleepScoreCard(score: provisionalSleepScore)
-            }
-
             if currentSleep == nil {
                 HStack(spacing: AtriaDesignTokens.Spacing.md) {
                     Image(systemName: "moon.zzz")
@@ -1014,6 +1014,14 @@ struct AtriaHealthScreen: View {
             // typical schedule and spread instead of a decorative bar stack.
             AtriaSleepConsistencyStrip(nights: vitalsStore.state.sleepHistorySnapshot.nights,
                                        targetSleepHours: sleepGoalHours)
+
+            // Assessment P0.2 (2026-08-14): the provisional composite trails
+            // the measured components it is built from — Sufficiency,
+            // Efficiency, the night's evidence, and Consistency lead; an
+            // invented 50/25/15/10 blend must not be the hero of Sleep.
+            if let provisionalSleepScore {
+                AtriaSleepScoreCard(score: provisionalSleepScore)
+            }
         }
         // The screen already provides its own horizontal rhythm. Keeping an
         // additional container here made the metric tiles, stage evidence and

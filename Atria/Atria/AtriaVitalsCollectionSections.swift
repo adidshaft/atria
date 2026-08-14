@@ -5965,7 +5965,9 @@ private struct AtriaRecoveryStrainCard: View, Equatable {
     private var recoveryState: AtriaMetricState {
         switch hero.recoveryEstimate.confidence {
         case .validated:
-            return .validated
+            // 2026-08-14 (assessment P0.3): the reserved tier never earns the
+            // checked badge — strongest honest claim is personal baseline.
+            return .personalBaseline
         case .personalBaseline:
             return .personalBaseline
         case .unverified:

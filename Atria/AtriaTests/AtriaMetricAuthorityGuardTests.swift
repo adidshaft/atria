@@ -52,6 +52,49 @@ final class AtriaMetricAuthorityGuardTests: XCTestCase {
         }
     }
 
+    /// Assessment P0.3 (2026-08-14): `.validated` is reserved for a held-out
+    /// outcome study of the Recovery model. Production may never emit it —
+    /// RR reference validation proves the HRV measurement, not readiness —
+    /// and replayed historical receipts that say "validated" render as the
+    /// strongest honest claim, personal baseline.
+    func testValidatedRecoveryTierStaysReserved() throws {
+        let analytics = try String(contentsOf: appDirectory.appendingPathComponent("AtriaAnalytics.swift"),
+                                   encoding: .utf8)
+        XCTAssertFalse(analytics.contains("hrvReferenceValidated ? .validated"),
+                       "reference validation must not upgrade the Recovery tier")
+        for emission in ["confidence = .validated", "confidence: .validated"] {
+            XCTAssertFalse(analytics.contains(emission),
+                           "production must never emit the reserved tier via `\(emission)`")
+        }
+
+        let rollupStore = try String(contentsOf: appDirectory.appendingPathComponent("DailyRollupStore.swift"),
+                                     encoding: .utf8)
+        XCTAssertTrue(rollupStore.contains("case Metrics.RecoveryEstimate.Confidence.validated.rawValue:"),
+                      "legacy receipts must still decode")
+        XCTAssertFalse(rollupStore.contains("return .validated"),
+                       "a replayed 'validated' receipt renders as personal baseline")
+
+        // Behavioral: even a reference-validated measurement with fully
+        // trusted baselines caps at personal baseline.
+        var baseline = PersonalBaseline()
+        let start = Date(timeIntervalSince1970: 1_780_000_000)
+        for day in 0..<16 {
+            baseline.learn(fromResting: 50 + day % 2,
+                           hrv: 60 + day % 3,
+                           at: start.addingTimeInterval(Double(day) * 86_400),
+                           overnight: true)
+        }
+        let estimate = Metrics.recoveryV2(hrvSnapshot: nil,
+                                          fallbackRMSSD: 62,
+                                          restingNow: 50,
+                                          baseline: baseline,
+                                          hrvReferenceValidated: true,
+                                          sleepEfficiency: 0.9,
+                                          sleepDurationHours: 7.5)
+        XCTAssertNotEqual(estimate.confidence, .validated,
+                          "the reserved tier must be unreachable in production")
+    }
+
     /// The forward-looking policy doc (confidence tier + provenance declaration
     /// for every new metric) must exist and keep its binding language.
     func testConfidencePolicyDocumentAnchorsHonestyRule() throws {

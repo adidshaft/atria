@@ -122,14 +122,18 @@ final class AtriaLayoutModelTests: XCTestCase {
 
     // MARK: - Visibility/IA fix (2026-07-05)
 
-    /// The default deck used to ship only 12 of the 14-card cap, hiding two
-    /// metrics (sleep efficiency, fitness age) that are fully computed today.
-    func testDefaultHomeLayoutConfigHas14TilesIncludingSleepEfficiencyAndBioAge() {
+    /// 2026-08-14 pin migration (assessment P0.2): measured metrics lead the
+    /// default deck. Fitness age is a local approximation — available from
+    /// Customize, never a default hero tile.
+    func testDefaultHomeLayoutConfigLeadsWithMeasuredMetricsOnly() {
         let config = AtriaHomeLayoutConfig.default.validated()
 
-        XCTAssertEqual(config.glanceMetrics.count, 8)
+        XCTAssertEqual(config.glanceMetrics.count, 7)
         XCTAssertTrue(config.glanceMetrics.contains("sleepEfficiency"))
-        XCTAssertTrue(config.glanceMetrics.contains("bioAge"))
+        XCTAssertFalse(config.glanceMetrics.contains("bioAge"),
+                       "the default morning deck must not lead with an invented age")
+        XCTAssertTrue(AtriaHomeLayoutCatalog.metricKeys.contains("bioAge"),
+                      "the tile stays available for users who opt in")
     }
 
     /// `AtriaHomeLayoutCatalog.metricKeys` and `AtriaTodayMetric` must stay

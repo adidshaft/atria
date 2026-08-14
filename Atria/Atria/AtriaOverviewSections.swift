@@ -4484,7 +4484,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         let base: String
         switch hero.recoveryEstimate.confidence {
         case .validated:
-            base = "Checked"
+            // 2026-08-14 (assessment P0.3): reserved tier renders honestly.
+            base = "Personal baseline"
         case .personalBaseline:
             base = "Personal baseline"
         case .unverified:

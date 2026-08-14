@@ -36,7 +36,11 @@ struct AtriaHomeLayoutConfig: Codable, Equatable {
     var accent: Accent
 
     static var `default`: AtriaHomeLayoutConfig {
-        AtriaHomeLayoutConfig(glanceMetrics: ["hrv", "rhr", "stress", "steps", "hrZones", "workouts", "sleepEfficiency", "bioAge"],
+        // Assessment P0.2 (2026-08-14): Fitness age is a compact local
+        // approximation and must not ship in the DEFAULT glance deck —
+        // measured metrics lead the morning. Users can still add the tile
+        // from Customize; existing saved layouts are untouched.
+        AtriaHomeLayoutConfig(glanceMetrics: ["hrv", "rhr", "stress", "steps", "hrZones", "workouts", "sleepEfficiency"],
                               sizeOverrides: [:],
                               showLiveStrip: true,
                               showHighlights: true,
