@@ -632,12 +632,23 @@ final class AtriaWorkoutRuntimeTests: XCTestCase {
             .deletingLastPathComponent()
         let home = try String(contentsOf: root
             .appendingPathComponent("Atria/AtriaHomeView.swift"), encoding: .utf8)
+        // 2026-08-14 pin migration: the App Review restructure moved the
+        // yield-then-work sequence into scheduleHomeAppearAfterFirstFrame().
+        // The invariant is unchanged: appear work runs only after the first
+        // frame commits.
         let appearStart = try XCTUnwrap(home.range(of: ".onAppear {"))
         let appearEnd = try XCTUnwrap(home.range(of: ".onChange(of: selectedTab)",
                                                range: appearStart.upperBound..<home.endIndex))
         let appearBody = String(home[appearStart.lowerBound..<appearEnd.lowerBound])
-        let yieldOffset = try XCTUnwrap(appearBody.range(of: "await Task.yield()"))
-        let workOffset = try XCTUnwrap(appearBody.range(of: "handleHomeAppear()"))
+        XCTAssertTrue(appearBody.contains("scheduleHomeAppearAfterFirstFrame()"),
+                      "onAppear must defer its work through the first-frame scheduler")
+
+        let schedulerStart = try XCTUnwrap(home.range(
+            of: "private func scheduleHomeAppearAfterFirstFrame()"
+        ))
+        let schedulerBody = String(home[schedulerStart.lowerBound...].prefix(600))
+        let yieldOffset = try XCTUnwrap(schedulerBody.range(of: "await Task.yield()"))
+        let workOffset = try XCTUnwrap(schedulerBody.range(of: "handleHomeAppear()"))
 
         XCTAssertLessThan(yieldOffset.lowerBound, workOffset.lowerBound)
     }

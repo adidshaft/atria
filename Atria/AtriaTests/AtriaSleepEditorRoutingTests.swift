@@ -15,7 +15,11 @@ final class AtriaSleepEditorRoutingTests: XCTestCase {
 
         XCTAssertTrue(source.contains("private struct AtriaSleepReviewSheetRoute: Identifiable"))
         XCTAssertTrue(source.contains("@State private var sleepReviewSheetRoute: AtriaSleepReviewSheetRoute?"))
-        XCTAssertTrue(source.contains(".sheet(item: $sleepReviewSheetRoute) { route in"))
+        // 2026-08-14 pin migration: the App Review restructure moved the sheet
+        // body into sleepReviewSheet(for:). Still one item-bound route — no
+        // boolean/selection race can return.
+        XCTAssertTrue(source.contains(".sheet(item: $sleepReviewSheetRoute, content: sleepReviewSheet(for:))"))
+        XCTAssertTrue(source.contains("private func sleepReviewSheet(\n        for route: AtriaSleepReviewSheetRoute\n    ) -> some View {"))
         XCTAssertTrue(source.contains("initialStart: route.night?.start"))
         XCTAssertTrue(source.contains("evidenceNight: route.night"),
                       "The single route must carry the exact reviewed sleep into edit/delete actions")
