@@ -839,6 +839,16 @@ That sentence is more useful than a 41% ring, and you can generate it from data 
 
 These are the only items this assessment is willing to call product-positive **without** touching Gate 4.
 
+> **Status 2026-08-14** — items 2–10 landed on `codex/whoop-remaining-product-gaps`:
+> 2+3 in `280c7a88` (heroes demoted; `validated` tier reserved, replay/display read "Personal baseline"),
+> 4 in `1e50cdb3` (`AtriaTodayMorningWhiteboardModel`), 5+6 in `563b59a2` (Recovery v4:
+> personal sleep baseline w/ population fallback tier-capped to `unverified`; robust 30-day
+> median/MAD HRV comparator preferred when trusted; `recoveryV2ModelVersion = 4`, frozen v3
+> receipts untouched), 7+8 in `cc50038b` (`dayTRIMP`/`trimp` stored truth; need adder consumes
+> TRIMP through the display authority — per-user slope fit still open, 37-min-at-15 stays a
+> labeled heuristic), 9 in `5751f6d8`, 10 in `2b6031de` (qualified-RR conjunct + banner Undo).
+> Item 1 is standing work; P2 campaigns remain open.
+
 ### P0 — truth and leadership (no new sensors)
 
 1. **Never-lose-the-night reliability** — drain, reconnect, freeze, cycle boundary. This is already the project’s real moat. Protect it.
