@@ -63,6 +63,30 @@ enum AtriaSleepBudget {
         }
     }
 
+    /// Assessment P1.8 (2026-08-14): raw daily TRIMP is the stored truth; the
+    /// 0–21 number is a versioned display skin. The strain adder therefore
+    /// consumes yesterday's TRIMP through the ONE display authority
+    /// (AtriaStrainLoadModel.displayScore, calibration v3: S = 21(1−e^(−T/150)))
+    /// and then the existing published anchor — 15.0 display strain ≈ +37 min
+    /// (equivalent TRIMP anchor T₁₅ = −150·ln(1−15/21) ≈ 187.9, floor
+    /// T₈ ≈ 71.9 → +0). The labeled 37-min-at-15 mapping is unchanged; only
+    /// the input becomes truth-first. `yesterdayStrainFallback` exists solely
+    /// for legacy rows whose dayTRIMP was never persisted — never reconstruct
+    /// a missing TRIMP (same rule as a missing frozen need).
+    static func sleepNeedComponents(baseHours: Double,
+                                    yesterdayTRIMP: Double?,
+                                    yesterdayStrainFallback: Double?,
+                                    debtHours: Double,
+                                    sameDayNapHours: Double) -> NeedComponents {
+        let effectiveStrain = yesterdayTRIMP
+            .flatMap { $0.isFinite && $0 > 0 ? AtriaStrainLoadModel.displayScore(fromLoad: $0) : nil }
+            ?? yesterdayStrainFallback
+        return sleepNeedComponents(baseHours: baseHours,
+                                   yesterdayStrain: effectiveStrain,
+                                   debtHours: debtHours,
+                                   sameDayNapHours: sameDayNapHours)
+    }
+
     static func sleepNeedComponents(baseHours: Double,
                                     yesterdayStrain: Double?,
                                     debtHours: Double,

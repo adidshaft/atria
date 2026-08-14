@@ -170,6 +170,68 @@ final class AtriaFrozenSleepNeedTests: XCTestCase {
         XCTAssertGreaterThan(expected.strainAdderHours, 0)
     }
 
+    // MARK: assessment P1.7+8 — TRIMP is truth; the need adder consumes it
+
+    func testNeedAdderConsumesYesterdayTRIMPThroughTheDisplayAuthority() {
+        // Equivalent TRIMP anchor for the published 15.0-display-strain point.
+        let t15 = -150.0 * log(1.0 - 15.0 / 21.0)
+        let fromTRIMP = AtriaSleepBudget.sleepNeedComponents(baseHours: 8,
+                                                             yesterdayTRIMP: t15,
+                                                             yesterdayStrainFallback: nil,
+                                                             debtHours: 0,
+                                                             sameDayNapHours: 0)
+        let fromSkin = AtriaSleepBudget.sleepNeedComponents(baseHours: 8,
+                                                            yesterdayStrain: 15,
+                                                            debtHours: 0,
+                                                            sameDayNapHours: 0)
+        XCTAssertEqual(fromTRIMP.strainAdderHours, fromSkin.strainAdderHours, accuracy: 0.0001,
+                       "TRIMP passes through the one display authority — the 37-min-at-15 anchor is unchanged")
+        XCTAssertEqual(fromTRIMP.strainAdderHours, 0.62, accuracy: 0.0001)
+
+        // Truth wins over the skin when both exist; the skin is only a legacy fallback.
+        let truthWins = AtriaSleepBudget.sleepNeedComponents(baseHours: 8,
+                                                             yesterdayTRIMP: t15,
+                                                             yesterdayStrainFallback: 5,
+                                                             debtHours: 0,
+                                                             sameDayNapHours: 0)
+        XCTAssertEqual(truthWins.strainAdderHours, 0.62, accuracy: 0.0001)
+        let fallback = AtriaSleepBudget.sleepNeedComponents(baseHours: 8,
+                                                            yesterdayTRIMP: nil,
+                                                            yesterdayStrainFallback: 15,
+                                                            debtHours: 0,
+                                                            sameDayNapHours: 0)
+        XCTAssertEqual(fallback.strainAdderHours, 0.62, accuracy: 0.0001)
+    }
+
+    func testDayTRIMPTruthSurvivesMetricAndRollupRoundTrips() throws {
+        let metric = SavedDailyMetric(day: day(2026, 8, 10),
+                                      recoveryPercent: 60,
+                                      recoveryConfidence: "personal baseline",
+                                      hrv: 60,
+                                      restingHR: 50,
+                                      respiratoryRate: nil,
+                                      sleepDuration: 7 * 3_600,
+                                      sleepSpan: 7 * 3_600,
+                                      sleepStart: nil,
+                                      sleepEnd: nil,
+                                      sleepSource: "manual_sleep",
+                                      sleepStageSegments: [],
+                                      sleepConsistencyPercent: 80,
+                                      strain: 12.4,
+                                      dayTRIMP: 132.5)
+        let restoredMetric = try JSONDecoder().decode(SavedDailyMetric.self,
+                                                      from: JSONEncoder().encode(metric))
+        XCTAssertEqual(restoredMetric.dayTRIMP ?? 0, 132.5, accuracy: 0.001)
+
+        let entry = DailyRollupStoreEntry(day: day(2026, 8, 10),
+                                          strain: 12.4,
+                                          trimp: 132.5,
+                                          calendar: calendar)
+        let restoredEntry = try JSONDecoder().decode(DailyRollupStoreEntry.self,
+                                                     from: JSONEncoder().encode(entry))
+        XCTAssertEqual(restoredEntry.trimp ?? 0, 132.5, accuracy: 0.001)
+    }
+
     // MARK: edit-path receipt preservation (source-pinned)
 
     /// A bound edit mints a new record id, so only the confirmSleepWindow carry

@@ -692,6 +692,10 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
     var strain: Double?
     var strainCoverageFraction: Double?
     var strainEvidenceQuality: Metrics.StrainEvidenceQuality?
+    /// Assessment P1.7 (2026-08-14): raw day TRIMP truth beside its 0–21
+    /// display skin. Additive/optional — legacy rows decode nil and are never
+    /// reconstructed by inverting the display curve.
+    var trimp: Double?
     var respiratoryRate: Double?
     /// Relative sleep skin-temperature deviation in Celsius, finalized into the
     /// morning/day rollup so product surfaces do not drift with live sessions.
@@ -730,6 +734,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         case strain
         case strainCoverageFraction
         case strainEvidenceQuality
+        case trimp
         case respiratoryRate
         case skinTemperatureDeviationCelsius
         case vitals
@@ -751,6 +756,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
          strain: Double? = nil,
          strainCoverageFraction: Double? = nil,
          strainEvidenceQuality: Metrics.StrainEvidenceQuality? = nil,
+         trimp: Double? = nil,
          respiratoryRate: Double? = nil,
          skinTemperatureDeviationCelsius: Double? = nil,
          vitals: DailyRollupVitals? = nil,
@@ -773,6 +779,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         self.strain = strain
         self.strainCoverageFraction = strainCoverageFraction.map { min(1, max(0, $0)) }
         self.strainEvidenceQuality = strainEvidenceQuality
+        self.trimp = trimp.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         self.respiratoryRate = respiratoryRate
         self.skinTemperatureDeviationCelsius = skinTemperatureDeviationCelsius
         self.vitals = vitals
@@ -814,6 +821,8 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
             Metrics.StrainEvidenceQuality.self,
             forKey: .strainEvidenceQuality
         )
+        trimp = try container.decodeIfPresent(Double.self, forKey: .trimp)
+            .flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         respiratoryRate = try container.decodeIfPresent(Double.self, forKey: .respiratoryRate)
         skinTemperatureDeviationCelsius = try container.decodeIfPresent(Double.self, forKey: .skinTemperatureDeviationCelsius)
         vitals = try container.decodeIfPresent(DailyRollupVitals.self, forKey: .vitals)
@@ -843,6 +852,7 @@ struct DailyRollupStoreEntry: Codable, Equatable, Identifiable {
         try container.encodeIfPresent(strain, forKey: .strain)
         try container.encodeIfPresent(strainCoverageFraction, forKey: .strainCoverageFraction)
         try container.encodeIfPresent(strainEvidenceQuality, forKey: .strainEvidenceQuality)
+        try container.encodeIfPresent(trimp, forKey: .trimp)
         try container.encodeIfPresent(respiratoryRate, forKey: .respiratoryRate)
         try container.encodeIfPresent(skinTemperatureDeviationCelsius, forKey: .skinTemperatureDeviationCelsius)
         try container.encodeIfPresent(vitals, forKey: .vitals)
