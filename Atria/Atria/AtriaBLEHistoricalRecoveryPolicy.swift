@@ -924,6 +924,29 @@ extension AtriaBLEManager {
         }
     }
 
+    /// ITEM-4 2026-08-15 (strap 50%→11% field report): STRAP-battery-aware
+    /// duty shaping for the connected raw catch-up lane. Mirrors the motion
+    /// bank's battery floor pattern — floor with resume hysteresis, charging
+    /// exempt, unknown level permissive. Scheduling-only: no backlog flag is
+    /// touched and the lane still converges; a constrained strap simply
+    /// spends its radio in smaller, spaced slices so capture outlives the
+    /// backfill. Flash history is durable on the strap; live capture is the
+    /// thing a dead battery loses.
+    nonisolated static func strapPowerConstrainedForRawCatchUp(
+        batteryLevel: Int,
+        isCharging: Bool,
+        previouslyConstrained: Bool,
+        floor: Int = 20,
+        resumeMargin: Int = 5
+    ) -> Bool {
+        guard batteryLevel >= 0 else { return false }
+        guard !isCharging else { return false }
+        if previouslyConstrained {
+            return batteryLevel < floor + resumeMargin
+        }
+        return batteryLevel <= floor
+    }
+
     nonisolated static func shouldParkConnectedRawHistoryCatchUpForPowerPressure(
         thermalState: ProcessInfo.ThermalState
     ) -> Bool {
@@ -1010,14 +1033,17 @@ extension AtriaBLEManager {
     /// it and the user explicitly has the app available.
     nonisolated static func connectedRawHistoryCatchUpTargetAcknowledgedPages(
         thermalState: ProcessInfo.ThermalState,
-        backgroundSlice: Bool = false
+        backgroundSlice: Bool = false,
+        strapPowerConstrained: Bool = false
     ) -> Int {
         if backgroundSlice { return 1 }
         switch connectedRawHistoryCatchUpThermalDisposition(
             thermalState: thermalState
         ) {
         case .fullRate:
-            return 16
+            // ITEM-4 2026-08-15: a low-battery discharging strap trades burst
+            // size for capture longevity (16 → 4 pages per handshake).
+            return strapPowerConstrained ? 4 : 16
         case .boundedSeriousDuty:
             return 4
         case .parkCritical:
@@ -1173,8 +1199,22 @@ extension AtriaBLEManager {
         dutyPause: TimeInterval = 8,
         zeroProgressDelay: TimeInterval = 120,
         publicationYieldBudget: TimeInterval = 120,
-        publicationYieldAfterSlices: Int = 1
+        publicationYieldAfterSlices: Int = 1,
+        strapPowerConstrained: Bool = false,
+        constrainedProductiveDelay: TimeInterval = 30,
+        constrainedDutyPauseAfterSlices: Int = 2,
+        constrainedDutyPause: TimeInterval = 60
     ) -> ConnectedRawHistoryCatchUpContinuationDisposition {
+        // ITEM-4 2026-08-15: on a low-battery discharging strap the cadence
+        // stretches (2s→30s between slices, long pause every 2 instead of
+        // every 8) so history radio duty drops from ~99% to well under half
+        // while the backlog still converges.
+        let effectiveProductiveDelay = strapPowerConstrained
+            ? constrainedProductiveDelay : productiveDelay
+        let effectiveDutyPauseAfterSlices = strapPowerConstrained
+            ? constrainedDutyPauseAfterSlices : dutyPauseAfterSlices
+        let effectiveDutyPause = strapPowerConstrained
+            ? constrainedDutyPause : dutyPause
         guard !cursorCaughtUp, backlogPending else { return .complete }
         let thermalDisposition = connectedRawHistoryCatchUpThermalDisposition(
             thermalState: thermalState
@@ -1197,10 +1237,10 @@ extension AtriaBLEManager {
            nextProductiveCount >= max(1, publicationYieldAfterSlices) {
             return .yieldForPublication(max(1, publicationYieldBudget))
         }
-        if nextProductiveCount >= max(1, dutyPauseAfterSlices) {
-            return .resumeAfter(max(1, dutyPause))
+        if nextProductiveCount >= max(1, effectiveDutyPauseAfterSlices) {
+            return .resumeAfter(max(1, effectiveDutyPause))
         }
-        return .resumeAfter(max(1, productiveDelay))
+        return .resumeAfter(max(1, effectiveProductiveDelay))
     }
 
     /// The raw continuation is still pending during an app-facing yield, but

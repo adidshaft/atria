@@ -944,7 +944,8 @@ struct AtriaHealthScreen: View {
                                    hrZoneMinutes: heroStore.state.hrZoneMinutes,
                                    maxHeartRate: vitals.maxHeartRate,
                                    vo2MaxEstimate: profileMetricsStore.state.vo2MaxEstimate,
-                                   skinTemperatureDeviation: vitals.skinTemperatureDeviationSummary)
+                                   skinTemperatureDeviation: vitals.skinTemperatureDeviationSummary,
+                                   strapMotionAvailability: ble.strapMotionAvailability)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }

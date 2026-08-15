@@ -1856,6 +1856,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// can never authorize a BLE command or survive a callback epoch change.
     private var connectedRawHistoryCatchUpContinuationPending = false
     private var connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+    /// ITEM-4 2026-08-15: hysteresis memory for the strap-battery duty
+    /// shaping — once constrained, stays constrained until level clears
+    /// floor + margin (or the strap charges). Process-local by design.
+    private var connectedRawCatchUpStrapPowerConstrained = false
+    /// ITEM-4 2026-08-15: consecutive zero-progress slices for exponential
+    /// backoff — each unproductive retry doubles the wait (cap 15 min)
+    /// instead of paying the history handshake every fixed 120 s.
+    private var connectedRawCatchUpConsecutiveZeroProgressSlices = 0
     private var connectedRawHistoryCatchUpPublicationYield:
         ConnectedRawHistoryCatchUpPublicationYield?
     private var connectedRawHistoryCatchUpPublicationYieldOfferTask:
@@ -15721,9 +15729,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 productiveDelay:
                     connectedRawHistoryCatchUpProductiveRetryInterval,
                 zeroProgressDelay:
-                    connectedRawHistoryCatchUpZeroProgressRetryInterval,
+                    connectedRawHistoryCatchUpScaledZeroProgressDelay(),
                 publicationYieldBudget:
-                    connectedRawHistoryCatchUpPublicationYieldBudget
+                    connectedRawHistoryCatchUpPublicationYieldBudget,
+                // ITEM-4 2026-08-15: strap-battery-aware cadence stretch.
+                strapPowerConstrained: evaluateConnectedRawCatchUpStrapPowerConstraint()
             )
         let action: String
         switch disposition {
@@ -15782,7 +15792,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             connectedRawHistoryCatchUpEvaluationNotBefore =
                 now.addingTimeInterval(delay)
             connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+            // ITEM-4 2026-08-15: count the dry slice for exponential backoff.
+            connectedRawCatchUpConsecutiveZeroProgressSlices += 1
             action = String(format: "retry_after_%.0fs", delay)
+        }
+        if progress.durableRows > 0 || progress.frontierAdvanceSeconds > 0 {
+            connectedRawCatchUpConsecutiveZeroProgressSlices = 0
         }
         AtriaDebugLog(
             "ATRIADBG offline_sync status=connected_raw_catch_up_slice generation=%llu reason=%@ durable_rows=%d duration_s=%.3f rows_per_s=%.3f frontier_advance_s=%.3f backlog=%d thermal=%ld action=%@ next_authority=fresh_2a37_exact_object_epoch",
@@ -15796,6 +15811,35 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             thermalState.rawValue,
             action
         )
+    }
+
+    /// ITEM-4 2026-08-15: evaluates and remembers the strap-battery duty
+    /// constraint (floor 20%, resume 25%, charging exempt, unknown level
+    /// permissive — the motion bank's floor pattern applied to raw catch-up).
+    private func evaluateConnectedRawCatchUpStrapPowerConstraint() -> Bool {
+        let constrained = Self.strapPowerConstrainedForRawCatchUp(
+            batteryLevel: batteryLevel,
+            isCharging: batteryIsCharging,
+            previouslyConstrained: connectedRawCatchUpStrapPowerConstrained
+        )
+        if constrained != connectedRawCatchUpStrapPowerConstrained {
+            AtriaDebugLog(
+                "ATRIADBG offline_sync status=strap_power_duty_%@ battery=%d charging=%d floor=20 resume=25",
+                constrained ? "constrained" : "cleared",
+                batteryLevel,
+                batteryIsCharging ? 1 : 0
+            )
+        }
+        connectedRawCatchUpStrapPowerConstrained = constrained
+        return constrained
+    }
+
+    /// ITEM-4 2026-08-15: zero-progress delay with exponential backoff —
+    /// 120s, 240s, 480s, 900s cap; reset by any productive slice.
+    private func connectedRawHistoryCatchUpScaledZeroProgressDelay() -> TimeInterval {
+        let base = connectedRawHistoryCatchUpZeroProgressRetryInterval
+        let exponent = min(3, max(0, connectedRawCatchUpConsecutiveZeroProgressSlices))
+        return min(900, base * pow(2, Double(exponent)))
     }
 
     /// Installs only a process-local fairness lease after the exact raw
@@ -40569,7 +40613,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                             // its larger foreground target after suspension.
                             return UIApplication.shared.applicationState
                                 != .active
-                        }()
+                        }(),
+                        // ITEM-4 2026-08-15: strap-battery-aware burst cap.
+                        strapPowerConstrained: evaluateConnectedRawCatchUpStrapPowerConstraint()
                     )
            ) {
             if let historicalIngressSpool {

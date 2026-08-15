@@ -85,6 +85,24 @@ enum AtriaSleepNeedLedgerPresentation {
         guard minutes > 0 else { return "0m" }
         return "\(sign)\(minutes)m"
     }
+
+    /// ITEM-2 2026-08-15: one-line receipt itemization for the plan card —
+    /// "8 h base +37m strain +86m debt −45m naps" (zero adders dropped,
+    /// base always shown; the clamp is disclosed by the caller via
+    /// isClamped).
+    static func componentsSummaryText(for components: AtriaSleepBudget.NeedComponents) -> String {
+        var parts = ["\(AtriaMetricFormat.sleepHours(components.baseHours)) base"]
+        if components.strainAdderHours >= minimumSegmentHours {
+            parts.append("\(minutesText(hours: components.strainAdderHours, sign: "+")) strain")
+        }
+        if components.debtAdderHours >= minimumSegmentHours {
+            parts.append("\(minutesText(hours: components.debtAdderHours, sign: "+")) debt")
+        }
+        if components.napCreditHours >= minimumSegmentHours {
+            parts.append("\(minutesText(hours: components.napCreditHours, sign: "\u{2212}")) naps")
+        }
+        return parts.joined(separator: " ")
+    }
 }
 
 /// Section-6 hues from the design file (dark-first, same exact-hex idiom as
@@ -135,6 +153,9 @@ struct AtriaSleepNeedLedgerCard: View {
     let components: AtriaSleepBudget.NeedComponents
     /// Real strain of the prior day when known — names the strain row.
     let yesterdayStrain: Double?
+    /// ITEM-2 2026-08-15: this card shows the SHOWN night's need — for a
+    /// settled night that is the frozen receipt, not tonight's target.
+    var isFrozenReceipt: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
@@ -142,7 +163,9 @@ struct AtriaSleepNeedLedgerCard: View {
             // looked hardcoded/broken (2026-08-08 field report). This is the
             // sleep-NEED ledger (baseline + strain + debt − nap credit), all
             // computed — name it so it can't be mistaken for stages.
-            Text("Tonight's sleep need · \(AtriaMetricFormat.sleepHours(components.totalHours))")
+            // ITEM-2 2026-08-15: "Tonight's" was dishonest for a settled
+            // night — these are that night's frozen components.
+            Text("This night's sleep need · \(AtriaMetricFormat.sleepHours(components.totalHours))")
                 .font(.headline.weight(.semibold))
 
             stackedBar
@@ -172,7 +195,7 @@ struct AtriaSleepNeedLedgerCard: View {
             Divider()
 
             HStack {
-                Text("Tonight's need")
+                Text("This night's need")
                     .font(.subheadline.weight(.bold))
                 Spacer(minLength: AtriaDesignTokens.Spacing.sm)
                 Text(AtriaMetricFormat.sleepHours(components.totalHours))
@@ -185,6 +208,12 @@ struct AtriaSleepNeedLedgerCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Text(isFrozenReceipt
+                 ? "Frozen when this night was saved. Tonight's projection is on the Sleep plan card."
+                 : "Provisional until this night is saved.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(14)
         .atriaInsetCard(tint: Metrics.electricSleep)
@@ -286,7 +315,7 @@ struct AtriaSleepNeedLedgerCard: View {
         parts.append("Recent strain adds \(AtriaSleepNeedLedgerPresentation.minutesText(hours: components.strainAdderHours, sign: "")).")
         parts.append("Sleep debt adds \(AtriaSleepNeedLedgerPresentation.minutesText(hours: components.debtAdderHours, sign: "")).")
         parts.append("Nap credit removes \(AtriaSleepNeedLedgerPresentation.minutesText(hours: components.napCreditHours, sign: "")).")
-        parts.append("Tonight's need \(AtriaMetricFormat.sleepHours(components.totalHours)).")
+        parts.append("This night's need \(AtriaMetricFormat.sleepHours(components.totalHours)).")
         return parts.joined(separator: " ")
     }
 }
