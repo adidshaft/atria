@@ -39258,14 +39258,21 @@ final class SessionStore: ObservableObject {
             return already
         }
         let confidence = best.motionEvidenceValidated ? "user_confirmed_motion_validated" : "user_confirmed_hr_only"
-        let stageSegments = best.motionEvidenceValidated
-            ? Self.sleepStageResearchSegments(from: canonicalSessions(),
-                                              start: best.start,
-                                              end: best.end,
-                                              restingHR: best.restingHR,
-                                              isNap: best.kind == "nap_candidate",
-                                              motionValidated: best.motionEvidenceValidated)
-            : []
+        // ITEM-3 2026-08-15: a user-tapped confirm is a "deliberate lane"
+        // that may pay for HR-only staging (the AtriaSleepWakeResearch
+        // opt-in doctrine — symmetric with confirmSleepWindow). The engine
+        // stays fail-closed on sparse HR, and estimate-provenance segments
+        // can never add duration credit (effectiveSleepDuration's
+        // allHREstimateProvenance bypass). Previously an HR-only confirm
+        // stored no segments at all, so the hypnogram stayed blank until
+        // the next launch backfill.
+        let stageSegments = Self.sleepStageResearchSegments(from: canonicalSessions(),
+                                                            start: best.start,
+                                                            end: best.end,
+                                                            restingHR: best.restingHR,
+                                                            isNap: best.kind == "nap_candidate",
+                                                            motionValidated: best.motionEvidenceValidated,
+                                                            allowHROnlyEstimate: true)
         let metrics = confirmedSleepWindowMetrics(start: best.start,
                                                   end: best.end,
                                                   rest: best.restingHR)
@@ -54829,6 +54836,32 @@ struct SleepHistorySnapshot: Equatable {
                                                     debtHours: sleepBudgetDebtHours(baseNeedHours: baseNeedHours,
                                                                                     excluding: night.id),
                                                     sameDayNapHours: sameDayNapHours(for: night, calendar: calendar))
+    }
+
+    /// ITEM-2 2026-08-15: tonight's PROVISIONAL projected need. Unlike a
+    /// night's frozen receipt this is a live projection for the sleep that
+    /// has not happened yet: debt includes the just-finished night's
+    /// shortfall, the strain input is TODAY's accruing TRIMP (tonight's
+    /// "yesterday"), and nap credit counts confirmed naps since the last
+    /// main wake. Display-only — never persisted, never fed to
+    /// performance %.
+    func tonightProjectedNeedComponents(baseNeedHours: Double,
+                                        todayTRIMP: Double?,
+                                        todayStrainFallback: Double?) -> AtriaSleepBudget.NeedComponents {
+        let napHours: Double
+        if let lastWake = latestMainSleep?.end {
+            napHours = napNights
+                .filter { $0.confirmed && ($0.end.map { $0 > lastWake } ?? false) }
+                .reduce(0) { $0 + $1.durationHours }
+        } else {
+            napHours = 0
+        }
+        return AtriaSleepBudget.sleepNeedComponents(
+            baseHours: baseNeedHours,
+            yesterdayTRIMP: todayTRIMP,
+            yesterdayStrainFallback: todayStrainFallback,
+            debtHours: sleepBudgetDebtHours(baseNeedHours: baseNeedHours),
+            sameDayNapHours: napHours)
     }
 
     func sleepPerformancePercent(for night: Night,

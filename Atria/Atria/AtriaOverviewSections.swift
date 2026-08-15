@@ -9035,6 +9035,9 @@ struct AtriaMetricDetailSheet: View {
     let currentCycleAuthority: AtriaHealthMetricAuthority.Projection?
     let sleepGoalHours: Double
     let sleepBaseNeedHours: Double
+    /// ITEM-3 2026-08-15: strap motion transport state for the hypnogram
+    /// card's unlock-aware empty states. nil = generic honest copy.
+    let strapMotionAvailability: AtriaStrapMotionAvailability?
     // Visibility/IA route audit (2026-07-05): live data for the new honest-
     // partial detail kinds (VO2max, HR zones, skin temperature). All default
     // to an honest "still building" value so the two pre-existing call sites
@@ -9129,6 +9132,7 @@ struct AtriaMetricDetailSheet: View {
          maxHeartRate: Int? = nil,
          vo2MaxEstimate: VO2MaxEstimateSummary? = nil,
          skinTemperatureDeviation: IMUAuditSummary.SkinTemperatureDeviationSummary? = nil,
+         strapMotionAvailability: AtriaStrapMotionAvailability? = nil,
          provenance: AtriaMetricProvenance? = nil,
          initialRange: AtriaTrendRange = .day,
          initialScrubbedDay: Date? = nil,
@@ -9165,6 +9169,7 @@ struct AtriaMetricDetailSheet: View {
         self.maxHeartRate = maxHeartRate
         self.vo2MaxEstimate = vo2MaxEstimate
         self.skinTemperatureDeviation = skinTemperatureDeviation
+        self.strapMotionAvailability = strapMotionAvailability
         self.rollups = rollups
         self.behaviorImpacts = behaviorImpacts
         self.latestNutrition = rollups.first(where: { $0.nutrition != nil })?.nutrition
@@ -9514,11 +9519,14 @@ struct AtriaMetricDetailSheet: View {
                     // Shared stage-timeline hypnogram (design "STAGES ·
                     // HYPNOGRAM" card); renders the honest needs-motion /
                     // building states itself for unvalidated nights.
-                    AtriaSleepHypnogramCard(night: latest)
+                    AtriaSleepHypnogramCard(night: latest,
+                                            motionAvailability: strapMotionAvailability)
                     AtriaSleepPlanCard(night: latest,
                                        neededHours: sleepHistory.sleepNeedHours(for: latest,
                                                                                 baseNeedHours: sleepBaseNeedHours,
                                                                                 yesterdayStrain: yesterdayStrainForLatestNight),
+                                       frozenReceipt: latest.frozenSleepNeed?.components,
+                                       tonightProjection: tonightProjectedNeed,
                                        nightEfficiencies: confirmedNightEfficiencies)
                     sleepNeedLedgerCard(for: latest)
                     sleepDebtTrendCard
@@ -10398,6 +10406,17 @@ struct AtriaMetricDetailSheet: View {
             .value
     }
 
+    /// ITEM-2 2026-08-15: today's accruing strain input for tonight's
+    /// provisional need — live cycle authority first, today's rollup row as
+    /// fallback when the sheet was built without one.
+    private var tonightProjectedNeed: AtriaSleepBudget.NeedComponents {
+        let todayRollup = rollups.first { Calendar.current.isDateInToday($0.day) }
+        return sleepHistory.tonightProjectedNeedComponents(
+            baseNeedHours: sleepBaseNeedHours,
+            todayTRIMP: currentCycleAuthority?.dayTRIMP ?? todayRollup?.trimp,
+            todayStrainFallback: currentCycleAuthority?.strain ?? todayRollup?.strain)
+    }
+
     /// Seven-night hours-vs-need chart. It uses the exact same sleep-need
     /// target as the ledger and supports adjacent observed weeks; no missing
     /// sleep is invented to keep a line visually continuous.
@@ -10419,7 +10438,8 @@ struct AtriaMetricDetailSheet: View {
             yesterdayStrain: yesterdayStrainForLatestNight
         ) {
             AtriaSleepNeedLedgerCard(components: components,
-                                     yesterdayStrain: yesterdayStrainForLatestNight)
+                                     yesterdayStrain: yesterdayStrainForLatestNight,
+                                     isFrozenReceipt: night.frozenSleepNeed != nil)
         } else {
             AtriaSleepNeedUnavailableCard()
         }
@@ -11446,7 +11466,10 @@ private struct AtriaPreparedMetricChart: View {
             HStack {
                 Text(title).font(.subheadline.weight(.semibold))
                 Spacer()
-                if let latest = latestVisiblePoint {
+                // 2026-08-15 dedup: a single-observation window shows its value
+                // in the dated row below; the header caption repeated it
+                // verbatim (hero + header + Latest + Avg + row = 5 renders).
+                if let latest = latestVisiblePoint, points.count >= 2 {
                     Text(valueText(latest.value)).font(.caption.monospacedDigit()).foregroundStyle(tint)
                 }
                 if let onExpand, points.count >= 2 {
@@ -11462,7 +11485,14 @@ private struct AtriaPreparedMetricChart: View {
             if points.count >= 2, summary == nil {
                 AtriaDetailRangeDotStrip(points: points, fallbackTint: tint)
             }
-            if let summary { AtriaDetailPeriodSummaryStrip(summary: summary, tint: tint) }
+            // 2026-08-15 dedup: with one rendered observation and zero spread,
+            // Latest == Avg == the observation and change == 0 — nothing the
+            // dated row doesn't already say. `summary.hasSpread` keeps the
+            // strip when a bucket override collapses a real multi-day window
+            // into one displayed point (Latest vs Avg still differ there).
+            if let summary, points.count >= 2 || summary.hasSpread {
+                AtriaDetailPeriodSummaryStrip(summary: summary, tint: tint)
+            }
 
             if points.isEmpty {
                 VStack(spacing: 6) {
@@ -14113,6 +14143,12 @@ struct AtriaDetailBaselineBand {
 private struct AtriaSleepPlanCard: View {
     let night: SleepHistorySnapshot.Night
     let neededHours: Double?
+    /// ITEM-2 2026-08-15: the FROZEN receipt's itemization only — nil hides
+    /// the breakdown (legacy receiptless night); never live-recomputed here.
+    var frozenReceipt: AtriaSleepBudget.NeedComponents? = nil
+    /// Tonight's provisional projection; drives the planner and moves as
+    /// today's strain accrues, freezing only when tonight is saved.
+    var tonightProjection: AtriaSleepBudget.NeedComponents? = nil
     @AtriaDefault(AtriaWakeAlarmStore.enabledKey) private var wakeAlarmEnabled: Bool = false
     @AtriaDefault(AtriaWakeAlarmStore.modeKey) private var wakeAlarmMode: String = AtriaWakeAlarmPlan.Mode.smartWindow.rawValue
     @AtriaDefault(AtriaWakeAlarmStore.wakeByMinutesKey) private var wakeByMinutes: Int = AtriaWakeAlarmPlan.defaultPlan.wakeByMinutes
@@ -14147,6 +14183,16 @@ private struct AtriaSleepPlanCard: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
 
+            // ITEM-2 2026-08-15: the "why" behind the number — the frozen
+            // receipt's own itemization, never a recomputation.
+            if let receipt = frozenReceipt {
+                Text(AtriaSleepNeedLedgerPresentation.componentsSummaryText(for: receipt)
+                     + " · frozen when this night was saved")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             wakeAlarmCard
 
             sleepPlannerCard
@@ -14159,9 +14205,15 @@ private struct AtriaSleepPlanCard: View {
     /// Sleep Planner (2026-07-07, WHOOP-research adaptation): pick a goal,
     /// get an in-bed-by time worked back from the wake alarm using tonight's
     /// need and the user's own typical efficiency.
+    /// ITEM-2 2026-08-15: "tonight's need" is now actually tonight's
+    /// provisional projection (was silently re-serving last night's frozen
+    /// need, so the plan never moved with today's strain).
     private var sleepPlannerCard: some View {
         let goal = AtriaSleepPlannerGoal(rawValue: plannerGoalRaw) ?? .peak
-        let plan = AtriaSleepPlanner.plan(needHours: neededHours ?? SessionStore.configuredSleepBaseNeedHours(),
+        let tonightNeed = tonightProjection?.totalHours
+            ?? neededHours
+            ?? SessionStore.configuredSleepBaseNeedHours()
+        let plan = AtriaSleepPlanner.plan(needHours: tonightNeed,
                                           goal: goal,
                                           wakeByMinutes: wakeByMinutes,
                                           nightEfficiencies: nightEfficiencies)
@@ -14179,6 +14231,14 @@ private struct AtriaSleepPlanCard: View {
                 Spacer(minLength: 0)
             }
 
+            if let projection = tonightProjection {
+                Text("Tonight's need so far: \(AtriaMetricFormat.sleepHours(projection.totalHours)) projected — moves as today's strain accrues; frozen only when tonight is saved"
+                     + (projection.isClamped ? " · capped to the 6\u{2013}10h range" : ""))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             AtriaTextSelector(items: AtriaSleepPlannerGoal.allCases,
                               title: { $0.title },
                               selection: Binding(
@@ -14193,7 +14253,7 @@ private struct AtriaSleepPlanCard: View {
         .padding(12)
         .background(Metrics.electricSleep.opacity(0.07), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Tonight's plan. \(goal.title): in bed by \(plan.inBedByText) for \(AtriaMetricFormat.sleepHours(plan.targetSleepHours)) of sleep.")
+        .accessibilityLabel("Tonight's plan. \(goal.title): in bed by \(plan.inBedByText) for \(AtriaMetricFormat.sleepHours(plan.targetSleepHours)) of sleep. Projected need \(AtriaMetricFormat.sleepHours(tonightNeed)).")
     }
 
     private var wakeAlarmCard: some View {

@@ -298,6 +298,10 @@ struct AtriaSleepHypnogramCard: View, Equatable {
     let eventTimeZoneIdentifier: String?
     let isManualEntry: Bool
     let measuredHeartRate: Int?
+    /// ITEM-3 2026-08-15: optional strap motion state so the honest empty
+    /// states can say what will unlock stages instead of only what is
+    /// missing. nil keeps the generic (still honest) copy.
+    let motionAvailability: AtriaStrapMotionAvailability?
 
     init(segments: [SleepStageSegment],
          start: Date?,
@@ -306,7 +310,8 @@ struct AtriaSleepHypnogramCard: View, Equatable {
          provenanceText: String,
          eventTimeZoneIdentifier: String? = nil,
          isManualEntry: Bool = false,
-         measuredHeartRate: Int? = nil) {
+         measuredHeartRate: Int? = nil,
+         motionAvailability: AtriaStrapMotionAvailability? = nil) {
         // Truth boundary (updated 2026-08-12): `.hrOnlyEstimate` segments may
         // render, but only as the labeled estimate timeline — the body pairs
         // any bars for that evidence with `AtriaSleepStageEstimateLabel`.
@@ -320,12 +325,14 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         self.eventTimeZoneIdentifier = eventTimeZoneIdentifier
         self.isManualEntry = isManualEntry
         self.measuredHeartRate = measuredHeartRate
+        self.motionAvailability = motionAvailability
     }
 
     /// The canonical feed: `displayStageSegments` is already honesty-gated
     /// (empty for `.hrOnlyEstimate`/`.none`), so this card can never render a
     /// stage lane that motion evidence does not back.
-    init(night: SleepHistorySnapshot.Night) {
+    init(night: SleepHistorySnapshot.Night,
+         motionAvailability: AtriaStrapMotionAvailability? = nil) {
         // For withheld-stage states the honest body already names the state,
         // so the provenance line carries confirmation provenance only.
         let provenance: String
@@ -352,7 +359,8 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                   provenanceText: provenance,
                   eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
                   isManualEntry: night.isManualEntry,
-                  measuredHeartRate: night.restingHR)
+                  measuredHeartRate: night.restingHR,
+                  motionAvailability: motionAvailability)
     }
 
     static func displayState(segments: [SleepStageSegment],
@@ -446,19 +454,39 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                 }
             case .needsMotion:
                 honestState(title: "Stage analysis unavailable for this night",
-                            detail: "Your sleep duration is saved. Heart rate alone cannot separate stages; this night needs continuous motion evidence before Atria can show a timeline.")
+                            detail: Self.unavailableStagesDetail(
+                                base: "Your sleep duration is saved. Heart rate alone cannot separate stages.",
+                                motionAvailability: motionAvailability))
             case .manualEntry:
                 honestState(title: "No stages — manual entry",
                             detail: "You entered this window by hand. Atria draws stage timelines only from sensor data. Duration and any overnight vitals for this window are kept.")
             case .building:
                 honestState(title: "Stage analysis unavailable for this night",
-                            detail: "Your sleep duration is saved. Stages require enough qualified motion evidence — hours asleep alone do not create a hypnogram.")
+                            detail: Self.unavailableStagesDetail(
+                                base: "Your sleep duration is saved. Hours asleep alone do not create a hypnogram.",
+                                motionAvailability: motionAvailability))
             }
         }
         .padding(14)
         .atriaInsetCard(tint: Metrics.electricSleep)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
+    }
+
+    /// ITEM-3 2026-08-15: the unlock story for the honest empty states. Maps
+    /// the strap motion transport to what will actually happen next — and
+    /// never promises motion on a link that cannot deliver it (same doctrine
+    /// as the truthful step copy).
+    static func unavailableStagesDetail(base: String,
+                                        motionAvailability: AtriaStrapMotionAvailability?) -> String {
+        switch motionAvailability {
+        case .catchingUp:
+            return base + " Stages validate after the strap syncs motion for this night — motion sync is catching up now."
+        case .unavailableInCurrentTransport:
+            return base + " This strap link is heart-rate-only right now, so motion cannot sync; Atria may show a labeled HR-only estimate after its next stage pass instead."
+        default:
+            return base + " Stages validate after the strap syncs motion evidence for this night; if motion isn't available, Atria may show a labeled HR-only estimate after its next stage pass."
+        }
     }
 
     // MARK: - Estimate + timeline
@@ -597,11 +625,19 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                 .map { ". \($0)" } ?? ""
             return "Estimated asleep window. \(provenanceText)\(heartRate). Awake, REM, Light, and Deep are not shown because heart rate alone cannot distinguish sleep stages."
         case .needsMotion:
-            return "\(provenanceText). Stage analysis unavailable for this night. Your sleep duration is saved; heart rate alone cannot separate stages, so continuous motion evidence is required."
+            // ITEM-3 2026-08-15: VoiceOver reads the same unlock story as the
+            // visual copy so the two can never diverge.
+            return "\(provenanceText). Stage analysis unavailable for this night. "
+                + Self.unavailableStagesDetail(
+                    base: "Your sleep duration is saved. Heart rate alone cannot separate stages.",
+                    motionAvailability: motionAvailability)
         case .manualEntry:
             return "\(provenanceText). No stages — this window was entered by hand; stage timelines come only from sensor data."
         case .building:
-            return "\(provenanceText). Stage analysis unavailable for this night. Sleep duration is saved; stages require enough qualified motion evidence."
+            return "\(provenanceText). Stage analysis unavailable for this night. "
+                + Self.unavailableStagesDetail(
+                    base: "Your sleep duration is saved. Hours asleep alone do not create a hypnogram.",
+                    motionAvailability: motionAvailability)
         }
     }
 
