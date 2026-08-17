@@ -16,6 +16,7 @@ enum AtriaResearchSharing {
     static let pseudonymKey = "atria.dataSharing.pseudonymUUID"
     static let consentDateKey = "atria.dataSharing.consentDate"
     static let receiptsKey = "atria.dataSharing.receipts.v1"
+    static let dailyUploadMinutesKey = AtriaAnonymousDailyUploadSchedule.preferredLocalMinutesKey
     // v3 puts every temporal field on one day-zero-relative axis. v2 mixed
     // session-relative HR/RR offsets with day-zero motion and labels, which
     // made a future validation set impossible to align without guessing.
@@ -472,12 +473,17 @@ enum AtriaResearchBundleBuilder {
                      fusedWithCardiovascularStrain: false)
     }
 
+    /// The exact JSON bytes that are then gzipped for upload / share.
+    nonisolated static func encodedJSON(_ payload: AtriaResearchBundlePayload) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(payload)
+    }
+
     private nonisolated static func finishBuild(payload: AtriaResearchBundlePayload,
                                                 pseudonym: String,
                                                 bundleDays: [AtriaResearchBundlePayload.Day]) -> Built? {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let json = try? encoder.encode(payload),
+        guard let json = try? encodedJSON(payload),
               let compressed = try? AtriaBackupCompression.compressedArchiveData(from: json) else {
             return nil
         }
@@ -525,7 +531,7 @@ enum AtriaResearchBundleBuilder {
 /// background gift, not a task they need to babysit.
 enum AtriaResearchUploadQueue {
     static let endpointURLKey = "atria.research.endpointURL"
-    private static let lastRunDayKey = "atria.research.upload.lastRunDay"
+    private static let lastRunDayKey = AtriaAnonymousDailyUploadSchedule.lastRunCivilDayKey
     private static let retentionDays = 7
 
     struct OutboxStats: Sendable {
@@ -651,8 +657,7 @@ enum AtriaResearchUploadQueue {
     }
 
     private static func dayKey(for date: Date, calendar: Calendar) -> String {
-        let components = calendar.dateComponents([.year, .month, .day], from: date)
-        return "\(components.year ?? 0)-\(components.month ?? 0)-\(components.day ?? 0)"
+        AtriaAnonymousDailyUploadSchedule.lastRunCivilDay(for: date, calendar: calendar)
     }
 
     static func hasRunToday(now: Date = Date(), calendar: Calendar = .current) -> Bool {
@@ -663,9 +668,23 @@ enum AtriaResearchUploadQueue {
         UserDefaults.standard.set(dayKey(for: now, calendar: calendar), forKey: lastRunDayKey)
     }
 
+    /// Shared nightly / foreground gate: opted in, at or after the Settings
+    /// clock (default 03:00 local), and not already run this local civil day.
+    static func isDailyUploadDue(now: Date = Date(),
+                                 calendar: Calendar = .current,
+                                 defaults: UserDefaults = .standard) -> Bool {
+        AtriaAnonymousDailyUploadSchedule.isDue(
+            optedIn: defaults.bool(forKey: AtriaResearchSharing.optInKey),
+            preferredLocalMinutes: AtriaAnonymousDailyUploadSchedule.preferredLocalMinutes(defaults: defaults),
+            now: now,
+            lastRunCivilDay: defaults.string(forKey: lastRunDayKey),
+            calendar: calendar
+        )
+    }
+
     /// Entry point piggybacked on the existing BGProcessingTask
-    /// (`AtriaApp.handleBackgroundTask`). Gated to the learned sleep window and
-    /// at most once per calendar day.
+    /// (`AtriaApp.handleBackgroundTask`). Gated to the user-configured daily
+    /// upload time (default 03:00 local) and at most once per local civil day.
     @MainActor
     static func runNightlyIfDue(store: SessionStore, now: Date = Date(), calendar: Calendar = .current, reason: String) async {
         guard AtriaResearchSharing.isOptedIn else {
@@ -674,12 +693,8 @@ enum AtriaResearchUploadQueue {
             await pruneOutbox(now: now, calendar: calendar)
             return
         }
-        guard isWithinSleepWindow(now: now, calendar: calendar) else {
-            AtriaDebugLog("ATRIADBG research_upload status=skipped reason=%@ why=outside_sleep_window", reason)
-            return
-        }
-        guard !hasRunToday(now: now, calendar: calendar) else {
-            AtriaDebugLog("ATRIADBG research_upload status=skipped reason=%@ why=already_ran_today", reason)
+        guard isDailyUploadDue(now: now, calendar: calendar) else {
+            AtriaDebugLog("ATRIADBG research_upload status=skipped reason=%@ why=not_due", reason)
             return
         }
         markRanToday(now: now, calendar: calendar)
@@ -693,14 +708,12 @@ enum AtriaResearchUploadQueue {
     }
 
     /// Foreground catch-up: iOS grants BGProcessingTask windows opportunistically
-    /// and can starve a freshly-reinstalled app for days. If the nightly window
-    /// was missed (we are past the sleep window, nothing ran today), build the
-    /// day's bundle on foreground instead — same gates, same once-per-day mark,
-    /// so the two paths can never double-build.
+    /// and can starve a freshly-reinstalled app for days. If the configured
+    /// daily time has passed and nothing ran today, build the day's bundle on
+    /// foreground — same due function and once-per-day mark as the nightly path.
     static func runForegroundCatchUpIfMissed(store: SessionStore, now: Date = Date(), calendar: Calendar = .current) async {
         guard AtriaResearchSharing.isOptedIn else { return }
-        guard !isWithinSleepWindow(now: now, calendar: calendar) else { return }
-        guard !hasRunToday(now: now, calendar: calendar) else { return }
+        guard isDailyUploadDue(now: now, calendar: calendar) else { return }
         markRanToday(now: now, calendar: calendar)
         AtriaDebugLog("ATRIADBG research_upload status=catchup reason=foreground_missed_nightly")
         if let built = await AtriaResearchBundleBuilder.build(store: store, now: now) {
@@ -1015,6 +1028,8 @@ struct AtriaResearchSharingSection: View {
     /// The consent-gated bundle used only by manual / queued sharing actions.
     let buildBundle: () async -> AtriaResearchBundleBuilder.Built?
     @AtriaDefault(AtriaResearchSharing.optInKey) private var optedIn = false
+    @AtriaDefault(AtriaResearchSharing.dailyUploadMinutesKey)
+    private var dailyUploadMinutes = AtriaAnonymousDailyUploadSchedule.defaultPreferredLocalMinutes
     @State private var showConsent = false
     @State private var shareURL: URL?
     @State private var isSendingNow = false
@@ -1038,6 +1053,14 @@ struct AtriaResearchSharingSection: View {
             .accessibilityHint(researchSharingAccessibilityHint)
 
             if optedIn {
+                DatePicker(
+                    "Daily upload time",
+                    selection: dailyUploadTimeBinding,
+                    displayedComponents: .hourAndMinute
+                )
+                .font(.subheadline)
+                .accessibilityHint("Hour and minute when the anonymous daily bundle is prepared for upload. Default is 3:00 AM.")
+
                 Button {
                     Task {
                         if let built = await buildBundle() {
@@ -1102,9 +1125,20 @@ struct AtriaResearchSharingSection: View {
             : "No server yet · bundles stay on this phone."
     }
 
+    private var dailyUploadTimeBinding: Binding<Date> {
+        Binding(
+            get: {
+                AtriaAnonymousDailyUploadSchedule.dateRepresenting(minutes: dailyUploadMinutes)
+            },
+            set: { date in
+                dailyUploadMinutes = AtriaAnonymousDailyUploadSchedule.minutes(from: date)
+            }
+        )
+    }
+
     private var researchSharingAccessibilityHint: String {
         optedIn
-            ? "Uploads nightly during your sleep window using a random code. Turning sharing off destroys that code."
+            ? "Uploads once a day at your chosen time using a random code. Turning sharing off destroys that code."
             : "Shares anonymized, date-scrambled recordings only after you inspect and consent."
     }
 

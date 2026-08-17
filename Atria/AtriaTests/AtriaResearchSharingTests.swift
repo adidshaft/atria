@@ -101,9 +101,7 @@ final class AtriaResearchSharingTests: XCTestCase {
 
     func testEncodedPayloadContainsNoAbsoluteDatesOrIdentifiers() throws {
         let payload = fixturePayload()
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let data = try encoder.encode(payload)
+        let data = try AtriaResearchBundleBuilder.encodedJSON(payload)
         let json = try XCTUnwrap(String(data: data, encoding: .utf8))
 
         // No ISO-8601 absolute date anywhere in the bundle.
@@ -117,6 +115,76 @@ final class AtriaResearchSharingTests: XCTestCase {
         XCTAssertFalse(json.contains("\"label\":"),
                        "payload must not encode the legacy raw workout label field")
         XCTAssertTrue(json.contains("\"activityType\":\"Running\""))
+    }
+
+    func testUploadedBytesOmitNameDeviceIdAndAbsoluteDates() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let absoluteStart = calendar.date(from: DateComponents(year: 2026, month: 8, day: 17,
+                                                               hour: 7, minute: 30))!
+        let sessionEnd = absoluteStart.addingTimeInterval(60)
+        let identifyingName = "Jane Doe"
+        let deviceIdentifier = "iPhone-UDID-A1B2C3D4E5F67890"
+        let pseudonym = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+
+        var session = SavedSession(id: UUID(),
+                                   start: absoluteStart,
+                                   end: sessionEnd,
+                                   label: "\(identifyingName) \(deviceIdentifier)",
+                                   points: [.init(t: 10, bpm: 71), .init(t: 60, bpm: 73)])
+        session.rrPoints = [.init(t: 20, ms: 900)]
+        let workout = UserConfirmedWorkout(id: "named-workout",
+                                           createdAt: absoluteStart,
+                                           start: absoluteStart,
+                                           end: absoluteStart.addingTimeInterval(30 * 60),
+                                           label: "\(identifyingName) private notes",
+                                           source: "manual",
+                                           confidence: "user_confirmed",
+                                           sessions: 0,
+                                           samples: 0,
+                                           avgHR: 0,
+                                           peakHR: 0,
+                                           p95HR: 0,
+                                           p99HR: 0,
+                                           thresholdHR: 0,
+                                           streamCoveragePercent: 0,
+                                           observedDuration: 0,
+                                           reason: "manual",
+                                           activityType: "Running")
+        let input = AtriaResearchBundleBuilder.BuildInput(
+            manifest: .init(schema: AtriaResearchSharing.schemaVersion,
+                            pseudonym: pseudonym,
+                            appVersion: "test",
+                            ageBand: "30-34",
+                            weightBandKg: "75-80 kg",
+                            heightBandCm: "180-185 cm",
+                            biologicalSex: "male"),
+            sessions: [session],
+            sleeps: [],
+            workouts: [workout],
+            days: [],
+            journalAnswers: [],
+            calendar: calendar
+        )
+
+        let payload = try XCTUnwrap(AtriaResearchBundleBuilder.makePayload(input: input))
+        let uploaded = try AtriaResearchBundleBuilder.encodedJSON(payload)
+        let json = try XCTUnwrap(String(data: uploaded, encoding: .utf8))
+
+        XCTAssertFalse(json.contains(identifyingName), "uploaded bytes must omit the free-text name")
+        XCTAssertFalse(json.contains(deviceIdentifier), "uploaded bytes must omit the device identifier")
+        XCTAssertNil(json.range(of: "[0-9]{4}-[0-9]{2}-[0-9]{2}T", options: .regularExpression),
+                     "uploaded bytes must omit ISO-8601 calendar dates")
+        XCTAssertFalse(json.contains("2026-08-17"))
+        XCTAssertTrue(json.contains(pseudonym), "uploaded bytes must still include the pseudonym")
+        XCTAssertTrue(json.contains("\"startRel\""))
+        XCTAssertTrue(json.contains("\"hrPoints\""))
+        let expectedStart = 7 * 3_600.0 + 30 * 60.0
+        let exportedSession = try XCTUnwrap(payload.sessions.first)
+        XCTAssertEqual(exportedSession.startRel, expectedStart, accuracy: 0.001)
+        XCTAssertEqual(exportedSession.hrPoints, [[expectedStart + 10, 71],
+                                                   [expectedStart + 60, 73]])
+        XCTAssertEqual(payload.workouts.first?.activityType, "Running")
     }
 
     // MARK: - Receipts
