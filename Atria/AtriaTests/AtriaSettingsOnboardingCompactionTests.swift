@@ -314,5 +314,12 @@ final class AtriaSettingsOnboardingCompactionTests: XCTestCase {
         XCTAssertTrue(section.contains("Optional · date-scrambled · inspect before sharing."))
         XCTAssertTrue(section.contains(".accessibilityHint(researchSharingAccessibilityHint)"))
         XCTAssertFalse(section.contains("Sharing is a gift:"))
+        XCTAssertTrue(section.contains("if optedIn"))
+        XCTAssertTrue(section.contains("DatePicker("))
+        XCTAssertTrue(section.contains("\"Daily upload time\""))
+        XCTAssertTrue(section.contains("displayedComponents: .hourAndMinute"),
+                      "Opted-in Settings must expose an hour+minute daily upload control")
+        XCTAssertTrue(section.contains("dailyUploadTimeBinding"))
+        XCTAssertTrue(section.contains("AtriaResearchSharing.dailyUploadMinutesKey"))
     }
 }

@@ -479,7 +479,23 @@ Example: `atria-research-550e8400-day42.json.gz`
 The first 8 characters of the pseudonym UUID are shown in the filename (not the full
 UUID, for brevity). The maximum day index in the Days array is appended as `dayN`.
 
-Transport is manual via ShareLink (Phase 1, zero-infra model). Each share is
+A daily opted-in upload uses the same gzip JSON bytes under this anonymous
+object key (pseudonym prefix + civil day of the upload, no name, email, or
+device identifier):
+
+```
+anonymous/<pseudonym-prefix8>/<YYYY-MM-DD>.json.gz
+```
+
+Example: `anonymous/550e8400/2026-08-17.json.gz`
+
+The default local clock is 03:00; Settings persists a custom hour:minute as
+`atria.dataSharing.dailyUploadMinutes`. The iOS app stays local-first and only
+enqueues the bundle; `tools/upload_anonymous_daily.py` is the AWS CLI put/head
+entry (`aws s3 cp` / `aws s3api head-object`) against the configured bucket
+(`ATRIA_ANONYMOUS_RESEARCH_BUCKET` or the shipped default).
+
+Transport is also available manually via ShareLink. Each share is
 recorded in a 20-entry local ledger with:
 
 ```
@@ -496,6 +512,11 @@ This ledger is shown in Settings under "Last bundle" and persisted locally for t
 user to review.
 
 ## Validation and Testing
+
+The `AtriaAnonymousDailyUploadScheduleTests.swift` suite drives the shipped
+due/not-due function from a clean defaults start: unset time is 03:00 local, a
+stored custom time is the one used, 02:59 is not due, 03:00 is due once, a
+second call the same local day is not due, and opted-out is never due.
 
 The `AtriaResearchSharingTests.swift` suite validates:
 
