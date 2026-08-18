@@ -38,6 +38,152 @@ final class AtriaHistoricalArchiveDurableStoreTests: XCTestCase {
         temporaryDirectories.removeAll()
     }
 
+    /// 2026-08-19 field pull: `historical-archive.identity.jsonl` was a single
+    /// 1.29 GB file — 161x the 8 MiB eager threshold — holding 38 days of
+    /// history under a 14-day retention policy. It could never shrink:
+    /// `rebuildDerivedIndex` is the only path that rewrites the canonical JSONL
+    /// and it requires full materialization, which the store refuses for a file
+    /// that large. Too big to load, therefore too big to compact, therefore
+    /// bigger still. Streaming compaction is the escape.
+    func testOversizedIdentityIndexCompactsWithoutMaterialization() throws {
+        let directory = try temporaryDirectory()
+        let index = directory.appendingPathComponent("historical.index.jsonl")
+        let retention: TimeInterval = 14 * 24 * 60 * 60
+        let nowUnix: TimeInterval = 1_800_000_000
+        let cutoff = nowUnix - retention
+
+        // Hand-build the canonical JSONL the way `decoratedLine` writes it, so
+        // the byte scanner is exercised on real shapes.
+        var contents = Data()
+        var expiredKeys: [String] = []
+        var retainedKeys: [String] = []
+        for index in 0..<600 {
+            let expired = index % 3 != 0
+            let key = "key-\(index)"
+            let observedAt = expired ? cutoff - 3_600 : cutoff + 3_600
+            if expired { expiredKeys.append(key) } else { retainedKeys.append(key) }
+            let line = "{\"_atriaHistoryKey\":\"\(key)\",\"_atriaHistoryIdentityVersion\":2,\"_atriaHistoryObservedAtUnix\":\(observedAt),\"sequence\":\(index)}"
+            contents.append(Data(line.utf8))
+            contents.append(0x0a)
+        }
+        // An unreadable line must be RETAINED, never silently deleted.
+        contents.append(Data("{not valid json at all\n".utf8))
+        try contents.write(to: index)
+        let originalBytes = try XCTUnwrap(
+            (try FileManager.default.attributesOfItem(atPath: index.path)[.size]) as? NSNumber
+        ).uint64Value
+
+        // Force the bounded-cold-lookup state by declaring the eager ceiling
+        // below this file's size — the exact condition the field device was in.
+        let store = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [],
+            identityRetention: retention,
+            now: { Date(timeIntervalSince1970: nowUnix) },
+            maximumEagerIdentityIndexBytes: 1
+        )
+
+        let dropped = try store.pruneExpiredIdentities(
+            now: Date(timeIntervalSince1970: nowUnix)
+        )
+        XCTAssertEqual(dropped, expiredKeys.count,
+                       "every line outside the retention horizon must be dropped")
+
+        let compacted = try String(contentsOf: index, encoding: .utf8)
+        for key in retainedKeys {
+            XCTAssertTrue(compacted.contains("\"\(key)\""),
+                          "a within-horizon identity must survive compaction")
+        }
+        for key in expiredKeys {
+            XCTAssertFalse(compacted.contains("\"\(key)\""),
+                           "an expired identity must not survive compaction")
+        }
+        XCTAssertTrue(compacted.contains("not valid json at all"),
+                      "an unparseable line must be retained, never silently deleted")
+        XCTAssertTrue(compacted.hasSuffix("\n"), "compaction must leave a clean JSONL tail")
+
+        let newBytes = try XCTUnwrap(
+            (try FileManager.default.attributesOfItem(atPath: index.path)[.size]) as? NSNumber
+        ).uint64Value
+        XCTAssertLessThan(newBytes, originalBytes)
+    }
+
+    /// The 6 h maintenance interval was measured from a process-local field
+    /// seeded with `now()` at construction, so it only came due after six
+    /// unbroken hours of uptime. iOS restarts apps far more often than that, so
+    /// on a real phone retention simply never ran — which is how the field
+    /// device reached 1.29 GB of identity index. Third instance of this defect
+    /// class found on 2026-08-19.
+    func testRetentionIntervalIsWallClockNotProcessUptime() throws {
+        let directory = try temporaryDirectory()
+        let index = directory.appendingPathComponent("historical.index.jsonl")
+        let retention: TimeInterval = 14 * 24 * 60 * 60
+        let start: TimeInterval = 1_800_000_000
+
+        try Data("{\"_atriaHistoryKey\":\"k\",\"_atriaHistoryIdentityVersion\":2,\"_atriaHistoryObservedAtUnix\":\(start),\"s\":1}\n".utf8)
+            .write(to: index)
+
+        // First process: prunes, and must leave a durable marker behind.
+        let first = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [],
+            identityRetention: retention,
+            now: { Date(timeIntervalSince1970: start) },
+            maximumEagerIdentityIndexBytes: 1
+        )
+        _ = try first.pruneExpiredIdentities(now: Date(timeIntervalSince1970: start))
+
+        let marker = index.deletingPathExtension().appendingPathExtension("prune.json")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path),
+                      "the prune time must survive process death")
+
+        // Second process, launched five hours later: the marker is inherited, so
+        // the interval keeps counting instead of restarting from zero.
+        let later = start + 5 * 3_600
+        let second = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [],
+            identityRetention: retention,
+            now: { Date(timeIntervalSince1970: later) },
+            maximumEagerIdentityIndexBytes: 1
+        )
+        XCTAssertEqual(second.lastPruneAtUnixForTesting, start, accuracy: 0.001,
+                       "a relaunch must not reset the retention clock to now()")
+
+        // A forward-dated marker (clock correction, restore onto another device)
+        // must not park retention forever.
+        try Data("{\"lastPruneAtUnix\":\(later + 10 * 86_400)}".utf8).write(to: marker)
+        let third = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [],
+            identityRetention: retention,
+            now: { Date(timeIntervalSince1970: later) },
+            maximumEagerIdentityIndexBytes: 1
+        )
+        XCTAssertEqual(third.lastPruneAtUnixForTesting, later, accuracy: 0.001,
+                       "a future marker must fall back to the caller's clock")
+    }
+
+    /// The retention decision itself, isolated from any file work.
+    func testIdentityLineRetentionScannerMatchesTheParser() {
+        let cutoff: TimeInterval = 1_800_000_000
+        func retained(_ line: String, protected: Set<String> = []) -> Bool {
+            AtriaHistoricalArchiveDurableStore.identityLineIsRetained(
+                Data(line.utf8), cutoff: cutoff, protectedKeys: protected
+            )
+        }
+        XCTAssertTrue(retained("{\"_atriaHistoryKey\":\"a\",\"_atriaHistoryIdentityVersion\":2,\"_atriaHistoryObservedAtUnix\":\(cutoff),\"s\":1}"),
+                      "exactly at the cutoff is inside the horizon")
+        XCTAssertFalse(retained("{\"_atriaHistoryKey\":\"a\",\"_atriaHistoryIdentityVersion\":2,\"_atriaHistoryObservedAtUnix\":\(cutoff - 1),\"s\":1}"))
+        // An open drain batch protects its keys regardless of age.
+        XCTAssertTrue(retained("{\"_atriaHistoryKey\":\"held\",\"_atriaHistoryIdentityVersion\":2,\"_atriaHistoryObservedAtUnix\":\(cutoff - 99_999),\"s\":1}",
+                               protected: ["held"]))
+        // Unresolvable lines fail SAFE (retained), in both scan and parse paths.
+        XCTAssertTrue(retained("{}"))
+        XCTAssertTrue(retained("garbage"))
+        XCTAssertTrue(retained(""), "an empty line is not a deletion decision")
+    }
+
     func testDuplicateReplayIsRejectedInProcessAndAfterRestart() throws {
         let directory = try temporaryDirectory()
         let archive = directory.appendingPathComponent("historical.jsonl")

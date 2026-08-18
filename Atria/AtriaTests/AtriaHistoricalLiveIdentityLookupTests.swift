@@ -11,6 +11,69 @@ final class AtriaHistoricalLiveIdentityLookupTests: XCTestCase {
         temporaryDirectories.removeAll()
     }
 
+    /// 2026-08-19 field pull: this database was 840 MB while holding only
+    /// 14 days of retained hints. `prune` issued a DELETE and stopped there —
+    /// SQLite frees the pages inside the file but never returns them to the
+    /// filesystem without a vacuum. Both sibling stores
+    /// (`AtriaWhoop4HistoryAdmissionLedger`, `AtriaHistoricalRetiredReplayIndex`)
+    /// already handled this; this one did not.
+    func testPruneActuallyReturnsBytesToTheFilesystem() throws {
+        let databaseURL = try temporaryDatabaseURL()
+        let lookup = try AtriaHistoricalLiveIdentityLookup(
+            databaseURL: databaseURL,
+            unsafeDisableDurabilityForTests: true
+        )
+
+        // Enough rows that the free-page fraction after pruning is unambiguous.
+        let old: TimeInterval = 1_800_000_000
+        let fresh: TimeInterval = 1_800_000_000 + 60 * 86_400
+        for index in 0..<4_000 {
+            try lookup.upsert(entry(
+                stableKey: identity(payload: Data([
+                    UInt8(index & 0xff), UInt8((index >> 8) & 0xff), 0x11
+                ])).stableKey,
+                observedAtUnix: old,
+                archivePath: "/archive/raw-20260712-\(index).jsonl",
+                lineOffset: UInt64(index) * 512,
+                lineLength: 700,
+                lineCRC32: 0x1234abcd
+            ))
+        }
+        try lookup.upsert(entry(
+            stableKey: identity(payload: Data([0xff, 0xfe, 0xfd])).stableKey,
+            observedAtUnix: fresh,
+            archivePath: "/archive/raw-20260819.jsonl",
+            lineOffset: 0,
+            lineLength: 700,
+            lineCRC32: 0x1234abcd
+        ))
+        try lookup.compact()
+        let bytesBefore = try databaseBytes(at: databaseURL)
+        XCTAssertGreaterThan(bytesBefore, 0)
+
+        let removed = try lookup.prune(
+            observedBefore: Date(timeIntervalSince1970: old + 86_400)
+        )
+        XCTAssertEqual(removed, 4_000)
+        XCTAssertEqual(try lookup.count(), 1, "the fresh hint must survive")
+
+        let bytesAfter = try databaseBytes(at: databaseURL)
+        XCTAssertLessThan(bytesAfter, bytesBefore,
+                          "pruning 4,000 of 4,001 rows must shrink the file on disk")
+    }
+
+    private func databaseBytes(at url: URL) throws -> UInt64 {
+        var total: UInt64 = 0
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate = URL(fileURLWithPath: url.path + suffix)
+            guard let size = (try? FileManager.default.attributesOfItem(
+                atPath: candidate.path
+            )[.size]) as? NSNumber else { continue }
+            total += size.uint64Value
+        }
+        return total
+    }
+
     func testExactEntryPersistsAcrossRestartInWALMode() throws {
         let databaseURL = try temporaryDatabaseURL()
         let stableKey = identity(payload: Data([0x2f, 0x18, 0xaa])).stableKey

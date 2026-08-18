@@ -281,6 +281,69 @@ an uninstrumented lift is BGTask expiry / CPU-overrun termination, not data loss
 **Sequencing for the user's "full tiering" choice:** J1 + J2 first (2.13 GB, no fence involvement),
 then raw compression, then thread the cooperative deadline, then lift the fence and prune raw > 30 d.
 
+## L. Item 12 part 1 IMPLEMENTED — the 2.13 GB dedupe tier (no fence involvement)
+
+Three defects, all fixed. The third was not in the workflow's findings; it fell out of reading the
+prune path directly and is the reason retention never ran even BEFORE the file got too big.
+
+**L1 — `identity.jsonl` could never shrink (1.29 GB).** `pruneExpiredIdentitiesLocked` bailed to an
+in-memory-only removal whenever `!fullyMaterializedIdentityIndex`, and `rebuildDerivedIndex` — the only
+path that rewrites the canonical JSONL — requires full materialization. Too big to load, therefore too
+big to compact, therefore bigger still. Added
+`compactIdentityIndexOutsideHorizonLocked(cutoff:protectedKeys:)`: single-pass, 64 KiB buffered,
+constant memory, so it is legal in exactly the state that used to be terminal. Keeps every line at/after
+the cutoff plus every key held by an open drain batch; **an unparseable line is RETAINED**, never
+silently deleted by a maintenance pass. Same crash-safety contract as `rebuildDerivedIndex`
+(temp -> fsync -> atomic replace -> fsync dir). No per-key dedupe on purpose: readers already resolve
+duplicates by newest `observedAtUnix`, and once the file drops under the 8 MiB eager threshold the next
+launch materializes and dedupes for free.
+
+**L2 — the SQLite lookup never gave bytes back (840 MB).** `prune` issued a `DELETE` and stopped.
+SQLite frees pages inside the file; without a vacuum the file never shrinks. Both siblings
+(`AtriaWhoop4HistoryAdmissionLedger`, `AtriaHistoricalRetiredReplayIndex`) already handled this — this
+one was missed. Added `PRAGMA auto_vacuum=INCREMENTAL` at open, plus `compact()`:
+`wal_checkpoint(TRUNCATE)` + a bounded `incremental_vacuum(128)`, escalating to a one-time full `VACUUM`
+when `auto_vacuum` is off and >= 25 % of pages are on the free list — the exact 840 MB case, since
+`incremental_vacuum` is a no-op on a database that predates the pragma. VACUUM is a crash-safe SQLite
+transaction, and this store is rebuildable and never authorizes ACK, so the worst case is wasted work.
+
+**L3 — the retention clock measured process UPTIME, not wall clock.** `lastPruneAtUnix` was a
+process-local var seeded with `now()` at construction, and the maintenance hook fires at
+`now - lastPruneAtUnix >= 6 h`. iOS restarts apps far more often than every six hours, so the prune
+never came due at all. **Third instance of this exact defect class today** — after the silent-stream
+rebuild latch (C) and the pure-HR requalification gate (I). Now persisted to a `prune.json` sidecar and
+re-seeded at init; a forward-dated marker falls back to the caller's clock so a clock correction or a
+device restore cannot park retention forever.
+
+Files: `AtriaHistoricalArchiveDurableStore.swift`, `AtriaHistoricalLiveIdentityLookup.swift`,
+tests in `AtriaHistoricalArchiveDurableStoreTests.swift` + `AtriaHistoricalLiveIdentityLookupTests.swift`.
+
+## M. Item 12 part 2 — the "compressed cutover" has NO production caller at all
+
+`AtriaHistoricalSealedJSONLCompression` is complete and well-tested: bounded-memory deflate,
+byte-preserving, with a manifest that keeps the original byte identity (used by replay and aggregate
+receipts) separate from the physical compressed identity, plus catalog publication and
+`verifyCompressed`. The prior work is real.
+
+It is also entirely unreachable in production. Its single entry point is
+`commit(chunkID:)` (AtriaHistoricalSealedJSONLCompression.swift:90), and across the whole repo:
+
+```
+commit(chunkID:)                          1 decl in the type itself, 3 calls — ALL in tests
+AtriaHistoricalSealedJSONLCompression(…)  17 instantiations — ALL in AtriaTests/
+```
+
+Zero production files construct it or call it. That is exactly why the device holds 686 plain
+`raw-*.jsonl` files totalling 2.99 GB while `compressed-raw-v1/` does not exist on the device at all
+(it is absent from the 3,248-file container listing). The compression is a finished component that was
+never wired to the archive lifecycle.
+
+Wiring it is the part-2 work: seal -> compress -> publish the manifest into the catalog -> only then
+remove the plain file, which is the ordering the type's own doc comment mandates
+("Production callers must publish that mapping in the archive catalog before authorizing removal of
+the plain file"). Note this is storage substitution, NOT retirement — it needs no retention horizon and
+no release-fence lift, so it is independent of part 3.
+
 ## Done this loop
 - **C**: silent-stream central-rebuild latch → interval-bounded permit (items 1/2/3). Test added.
 - **D**: compact tri-ring stroke inset (item 14).
@@ -291,8 +354,11 @@ then raw compression, then thread the cooperative deadline, then lift the fence 
   with two independent adversarial verifiers per finding.
 
 ## NEXT
-1. Item 12 full tiering (user chose the aggressive option): bound identity ledger (2.13 GB),
-   compress raw segments (2.99 GB), lift `shouldExecuteArchiveWideMaintenance`, prune raw > 30 d.
+1. Item 12 part 2: compress raw segments (2.99 GB) — the "compressed cutover" never took effect on
+   device; 686 plain `.jsonl` files.
+2. Item 12 part 3: thread a cooperative deadline through `HistoricalArchive.compactArchiveConverging`
+   (zero instrumentation today, see K), then lift `shouldExecuteArchiveWideMaintenance` and prune
+   raw > 30 d.
 2. Items 4, 5, 11 — all three have verified root causes in `.claude/field-report-root-causes.md`.
 3. Item 8 (stress ceiling) and item 13 (insight engine).
 4. Old item 12 retention tiers — raw `segments/raw-*.jsonl` are uncompressed and never pruned (2.99 GB),

@@ -58,6 +58,15 @@ final class AtriaHistoricalLiveIdentityLookup: @unchecked Sendable {
     }
 
     private static let table = "live_history_identity_lookup_v1"
+    /// Bounded, but far larger than `AtriaWhoop4HistoryAdmissionLedger`'s 128:
+    /// that ledger holds a handful of in-flight attempts, while this index
+    /// accumulates one hint per archived frame and reached 840 MB in the field.
+    /// 2048 pages is ~8 MiB per pass at the default page size, and the pass runs
+    /// at most once per prune.
+    private static let maximumIncrementalVacuumPagesPerPass = 2_048
+    /// A quarter of the file sitting on the free list means the database will
+    /// not recover on its own; pay the one-time rewrite.
+    private static let fullVacuumFreePageFraction = 0.25
     private let lock = NSLock()
     private let maximumBatchEntries: Int
     private var database: OpaquePointer?
@@ -103,6 +112,16 @@ final class AtriaHistoricalLiveIdentityLookup: @unchecked Sendable {
             try execute("PRAGMA busy_timeout=5000")
             try execute("PRAGMA wal_autocheckpoint=256")
             try execute("PRAGMA cache_size=-\(max(256, pageCacheKiB))")
+            // Without this, `prune` frees pages inside the file and the file
+            // itself never shrinks. The 2026-08-19 field pull found this
+            // database at 840 MB under a 14-day retention policy — the exact
+            // signature of delete-without-vacuum. Both sibling stores
+            // (`AtriaWhoop4HistoryAdmissionLedger`,
+            // `AtriaHistoricalRetiredReplayIndex`) already do this; this one
+            // was missed. Takes effect for databases created from here on; an
+            // existing database is migrated by the one-time full VACUUM in
+            // `compact()`.
+            try execute("PRAGMA auto_vacuum=INCREMENTAL")
             try execute("""
                 CREATE TABLE IF NOT EXISTS \(Self.table) (
                     stable_key BLOB PRIMARY KEY NOT NULL,
@@ -285,7 +304,56 @@ final class AtriaHistoricalLiveIdentityLookup: @unchecked Sendable {
             "DELETE FROM \(Self.table) WHERE observed_unix < ?",
             bindings: [.double(cutoff.timeIntervalSince1970)]
         )
-        return changesLocked()
+        let removed = changesLocked()
+        if removed > 0 {
+            // Deleting rows is not the same as giving the bytes back. Reclaim
+            // inside the same lock so a caller can never observe a pruned
+            // database that is still at its pre-prune size.
+            try? compactLocked()
+        }
+        return removed
+    }
+
+    /// Returns freed pages to the filesystem after a prune.
+    ///
+    /// Bounded by default: a WAL truncate plus one `incremental_vacuum` pass,
+    /// mirroring `AtriaWhoop4HistoryAdmissionLedger`. `incremental_vacuum` is a
+    /// no-op on a database that predates the `auto_vacuum=INCREMENTAL` pragma,
+    /// which is precisely the 840 MB field case — so when the free-page
+    /// fraction shows a database that will never shrink on its own, take the
+    /// one-time full `VACUUM` that rewrites it under the new mode. SQLite runs
+    /// VACUUM as a crash-safe transaction against its own temporary database:
+    /// a process death mid-vacuum leaves the original intact, so the worst case
+    /// is wasted work, never a lost index. This store is rebuildable and never
+    /// authorizes ACK, so even total loss would be recoverable.
+    @discardableResult
+    func compact() throws -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return try compactLocked()
+    }
+
+    private func compactLocked() throws -> Bool {
+        try execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        let autoVacuumMode = (try? scalarInt("PRAGMA auto_vacuum")) ?? 0
+        let pageCount = (try? scalarInt("PRAGMA page_count")) ?? 0
+        let freeList = (try? scalarInt("PRAGMA freelist_count")) ?? 0
+        let freeFraction = pageCount > 0 ? Double(freeList) / Double(pageCount) : 0
+        var fullVacuum = false
+        if autoVacuumMode == 0, freeFraction >= Self.fullVacuumFreePageFraction {
+            try execute("VACUUM")
+            AtriaDebugLog("ATRIADBG live_identity_lookup status=full_vacuum pages=%d free=%d fraction=%.2f action=migrate_to_incremental_auto_vacuum",
+                          pageCount, freeList, freeFraction)
+            fullVacuum = true
+        } else {
+            try execute("PRAGMA incremental_vacuum(\(Self.maximumIncrementalVacuumPagesPerPass))")
+        }
+        // The reclaim is itself written through the WAL. Checkpointing only
+        // BEFORE it leaves those frames in the sidecar, so the bytes move out of
+        // the database file and into the -wal file and the caller observes no
+        // saving at all. Truncate again on the way out.
+        try execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        return fullVacuum
     }
 
     func count() throws -> Int {
