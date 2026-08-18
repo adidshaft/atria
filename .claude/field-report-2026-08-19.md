@@ -72,7 +72,7 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 2 | Stuck "waiting", last sync 9:22pm | **FIX WRITTEN** (C) | needs device soak to prove |
 | 3 | Workout HR not syncing | **FIX WRITTEN** (C) | journal closed at `workout_start_boundary` 21:42, stall began 21:56 |
 | 4 | Rings vanish at midnight | **FIXED** (N) | `7bd0dabd`; 18 h waking hold, incident fixture still refused |
-| 5 | Duplicate sleep recommendation after stop/save | TODO | |
+| 5 | Duplicate sleep recommendation after stop/save | **HALF FIXED** (R) | notification cap per episode; in-app card re-mint still open |
 | 6 | Nap detection dead (2–3 h evening nap missed) | **ROOT FIXED** (I) | motion dead since 08-13; nap gate needs validated motion |
 | 7 | Steps distrust | **FIXED** | app dropped the `≥` the widget still showed; restored |
 | 8 | Stress reads low | ANALYSED, not yet changed | HRV term weight ~0 at low HR; see root-causes doc |
@@ -475,6 +475,42 @@ artifact is byte-identical after a refused repair and that plain-JSONL repair is
 
 The remaining 54 sites are documented but NOT fixed; they only matter if compression is ever wired, and
 the current recommendation is that it should not be.
+
+## R. Item 5 (notification half) FIXED — device ledger proved it exactly
+
+The user: "if you leave it from saving, or even if you save it, there's another sleep recommendation
+that keeps on going after it has been stopped."
+
+The device's own `atria.notification.sleepReview.scheduleCount.*` ledger is the proof. The id is
+`sleep-review-<start>-<end>-<source>`, and the SAME start appears repeatedly with a growing end:
+
+| window start | deliveries | growth steps |
+|---|---|---|
+| 1785780221 | **5** | 32.0, 35.6, 31.2, 30.6 min |
+| 1786906198 | 4 | 33.0, 63.5, 83.5 min |
+| 1786810526 | 3 | 247.5, 30.2 min |
+| 1785631538 | 3 | 55.0, 70.8 min |
+| 1787007477 (08-18) | 2 | 30.2 min |
+
+A window-start debounce already exists (`AtriaSleepReviewNotificationDebounce`, 2026-08-01) and it is
+NOT broken — it was built for sub-30-minute detector jitter (the documented 04:50/04:56/04:57 triple)
+and it still does that job. The problem is that it bounds how FAR a window may grow before re-firing,
+never how MANY times one episode may fire. An oldest-first drain fills a night in incremental batches,
+and **every one of those growth steps cleared the 30-minute bar honestly.**
+
+`sleepReviewMaximumSchedulesPerCandidate = 2` could not catch it either: that counter is keyed on the
+candidate id, which embeds the END, so each growth step minted a fresh id and reset the count to zero.
+
+**Fix:** a companion bounded ledger `sleepReviewNotifiedCountByStartKey` ([startKey: deliveries]) capping
+total deliveries per physical episode at the same 2, keyed on the START where the debounce already keys.
+Pruned by exactly the starts the end-ledger retains so the two cannot drift and a pruned start cannot
+resurrect a spent budget. A genuinely different night keeps its own budget.
+
+**Still open — the other half of item 5.** The in-app review CARD (not the notification) re-mints after a
+Confirm, because `reviewedSleepSource` persists the detector's own source string, which never carries the
+`manual_`/`user_adjusted_` prefix `isUserAuthoredSleepSource` tests for, so `isExtendableAutoNight` still
+classifies an explicitly confirmed night as auto. See item 5 finding (A) in
+`.claude/field-report-root-causes.md`. Not yet fixed.
 
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.

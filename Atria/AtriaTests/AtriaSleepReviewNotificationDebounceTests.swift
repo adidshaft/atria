@@ -12,6 +12,84 @@ import XCTest
 ///   - end jitter below that stays silent;
 ///   - a separate later episode (different start) is fully independent.
 final class AtriaSleepReviewNotificationDebounceTests: XCTestCase {
+
+    /// Field report 2026-08-19, item 5: "if you leave it from saving, or even if
+    /// you save it, there's another sleep recommendation that keeps on going
+    /// after it has been stopped."
+    ///
+    /// Replays the exact device ledger. Window start 1785780221 delivered FIVE
+    /// notifications because an oldest-first drain extended the night in steps
+    /// of 32.0, 35.6, 31.2 and 30.6 minutes — every one clearing the 30-minute
+    /// growth gate honestly. The gate bounds how FAR a window may grow before
+    /// re-firing; nothing bounded how MANY times one episode could fire.
+    func testOneEpisodeCannotNotifyForeverByGrowingPastTheGate() {
+        let start = Date(timeIntervalSince1970: 1_785_780_221)
+        let ends: [TimeInterval] = [
+            1_785_804_601, 1_785_806_521, 1_785_808_658, 1_785_810_533, 1_785_812_369,
+        ]
+
+        var endLedger: [String: Double] = [:]
+        var countLedger: [String: Int] = [:]
+        var delivered = 0
+
+        for endUnix in ends {
+            let end = Date(timeIntervalSince1970: endUnix)
+            guard AtriaSleepReviewNotificationDebounce.shouldNotify(
+                start: start,
+                end: end,
+                lastNotifiedEndByStart: endLedger,
+                notifiedCountByStart: countLedger,
+                maximumPerStart: 2
+            ) else { continue }
+            delivered += 1
+            let nextEnds = AtriaSleepReviewNotificationDebounce.recordingNotifiedEnd(
+                start: start, end: end, in: endLedger
+            )
+            countLedger = AtriaSleepReviewNotificationDebounce.recordingNotifiedCount(
+                start: start, in: countLedger, retainingStarts: nextEnds
+            )
+            endLedger = nextEnds
+        }
+
+        XCTAssertEqual(delivered, 2,
+                       "one physical sleep episode may notify at most twice, however far its end travels")
+    }
+
+    /// The per-start cap must not leak across episodes: a genuinely different
+    /// night still gets its own budget.
+    func testASeparateEpisodeKeepsItsOwnBudget() {
+        let firstStart = Date(timeIntervalSince1970: 1_785_780_221)
+        let secondStart = Date(timeIntervalSince1970: 1_785_880_522)
+        let countLedger = [
+            AtriaSleepReviewNotificationDebounce.startKey(for: firstStart): 2,
+        ]
+        XCTAssertFalse(AtriaSleepReviewNotificationDebounce.shouldNotify(
+            start: firstStart,
+            end: firstStart.addingTimeInterval(9 * 3_600),
+            lastNotifiedEndByStart: [:],
+            notifiedCountByStart: countLedger,
+            maximumPerStart: 2
+        ))
+        XCTAssertTrue(AtriaSleepReviewNotificationDebounce.shouldNotify(
+            start: secondStart,
+            end: secondStart.addingTimeInterval(8 * 3_600),
+            lastNotifiedEndByStart: [:],
+            notifiedCountByStart: countLedger,
+            maximumPerStart: 2
+        ), "a different night is a separate episode with a fresh budget")
+    }
+
+    /// The count ledger is pruned by exactly the starts the end ledger keeps, so
+    /// the two cannot drift and a pruned start cannot resurrect a spent budget.
+    func testCountLedgerIsPrunedWithTheEndLedger() {
+        let start = Date(timeIntervalSince1970: 1_785_780_221)
+        let key = AtriaSleepReviewNotificationDebounce.startKey(for: start)
+        let retained: [String: Double] = ["999999": 1]   // start pruned out
+        let counts = AtriaSleepReviewNotificationDebounce.recordingNotifiedCount(
+            start: start, in: [key: 1], retainingStarts: retained
+        )
+        XCTAssertNil(counts[key], "a start dropped from the end ledger must not keep a stale count")
+    }
     private let start = Date(timeIntervalSince1970: 1_806_000_000)
 
     private func ledger(_ entries: [(start: Date, end: Date)]) -> [String: Double] {

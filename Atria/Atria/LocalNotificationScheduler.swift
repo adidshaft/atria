@@ -48,6 +48,13 @@ enum LocalNotificationScheduler {
     /// `AtriaSleepReviewNotificationDebounce`.
     static let sleepReviewNotifiedEndByStartKey =
         "atria.notification.sleepReview.notifiedEndByStart.v1"
+    /// Companion to the ledger above: [startKey: deliveries]. The end-growth
+    /// gate alone bounds how FAR a window may grow before re-firing, but not
+    /// how MANY times one episode may fire — and `sleepReviewMaximumSchedulesPerCandidate`
+    /// cannot cover that gap because it is keyed on the candidate id, which
+    /// contains the end and therefore resets to zero on every growth step.
+    static let sleepReviewNotifiedCountByStartKey =
+        "atria.notification.sleepReview.notifiedCountByStart.v1"
     private static let workoutReviewLastCandidateIDKey = "atria.notification.workoutReview.lastCandidateID"
     private static let workoutReviewDismissedIDKey = "atria.workoutReview.dismissedID"
     /// One process-wide reservation covers both launch maintenance and the
@@ -1581,10 +1588,15 @@ enum LocalNotificationScheduler {
             let notifiedEnds = (defaults.dictionary(
                 forKey: sleepReviewNotifiedEndByStartKey
             ) as? [String: Double]) ?? [:]
+            let notifiedCounts = (defaults.dictionary(
+                forKey: sleepReviewNotifiedCountByStartKey
+            ) as? [String: Int]) ?? [:]
             guard AtriaSleepReviewNotificationDebounce.shouldNotify(
                 start: candidateStart,
                 end: candidateEnd,
-                lastNotifiedEndByStart: notifiedEnds
+                lastNotifiedEndByStart: notifiedEnds,
+                notifiedCountByStart: notifiedCounts,
+                maximumPerStart: sleepReviewMaximumSchedulesPerCandidate
             ) else {
                 return NotificationDecision(
                     kind: "sleep_review",
@@ -2124,6 +2136,18 @@ enum LocalNotificationScheduler {
                     ),
                     forKey: sleepReviewNotifiedEndByStartKey
                 )
+                let storedCounts = (defaults.dictionary(
+                    forKey: sleepReviewNotifiedCountByStartKey
+                ) as? [String: Int]) ?? [:]
+                defaults.set(
+                    AtriaSleepReviewNotificationDebounce.recordingNotifiedCount(
+                        start: windowStart,
+                        in: storedCounts,
+                        retainingStarts: AtriaSleepReviewNotificationDebounce
+                            .recordingNotifiedEnd(start: windowStart, end: windowEnd, in: stored)
+                    ),
+                    forKey: sleepReviewNotifiedCountByStartKey
+                )
             }
         }
         if decision.kind == "workout_review",
@@ -2272,14 +2296,50 @@ enum AtriaSleepReviewNotificationDebounce {
         String(Int((start.timeIntervalSince1970 / 60).rounded(.down)))
     }
 
+    /// Total deliveries permitted for one physical sleep episode, regardless of
+    /// how far its end travels. Matches the same-id reminder cap.
+    static let defaultMaximumPerStart = 2
+
     static func shouldNotify(start: Date,
                              end: Date,
                              lastNotifiedEndByStart: [String: Double],
+                             notifiedCountByStart: [String: Int] = [:],
+                             maximumPerStart: Int = defaultMaximumPerStart,
                              minimumGrowth: TimeInterval = minimumEndGrowth) -> Bool {
-        guard let lastNotifiedEnd = lastNotifiedEndByStart[startKey(for: start)] else {
+        let key = startKey(for: start)
+        // Field report 2026-08-19, item 5: "there's another sleep recommendation
+        // that keeps on going after it has been stopped."
+        //
+        // The growth gate below was built for sub-30-minute detector jitter (the
+        // 04:50/04:56/04:57 triple) and it does that job. What it cannot do is
+        // bound how many times ONE episode fires, because an oldest-first drain
+        // fills a night in incremental batches and each batch legitimately moves
+        // the end well past the bar. The device ledger on 2026-08-19 showed a
+        // single window (start 1785780221) delivering FIVE notifications, with
+        // growth steps of 32.0, 35.6, 31.2 and 30.6 minutes — every one of them
+        // clearing the 30-minute gate honestly.
+        //
+        // `sleepReviewMaximumSchedulesPerCandidate` could not catch it either:
+        // that counter is keyed on the candidate id, which embeds the end, so
+        // every growth step minted a fresh id and reset the count to zero. The
+        // cap has to live on the START, exactly where this debounce already keys.
+        if (notifiedCountByStart[key] ?? 0) >= maximumPerStart { return false }
+        guard let lastNotifiedEnd = lastNotifiedEndByStart[key] else {
             return true
         }
         return end.timeIntervalSince1970 - lastNotifiedEnd >= minimumGrowth
+    }
+
+    /// Bounded delivery counter per window start. Retains exactly the starts the
+    /// end-ledger retains, so the two cannot drift and a pruned start cannot
+    /// resurrect a spent budget.
+    static func recordingNotifiedCount(start: Date,
+                                       in notifiedCountByStart: [String: Int],
+                                       retainingStarts: [String: Double]) -> [String: Int] {
+        var updated = notifiedCountByStart
+        let key = startKey(for: start)
+        updated[key] = (updated[key] ?? 0) + 1
+        return updated.filter { retainingStarts.keys.contains($0.key) }
     }
 
     /// Bounded ledger update after a real delivery: keeps the newest
