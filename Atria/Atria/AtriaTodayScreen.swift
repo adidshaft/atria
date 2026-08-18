@@ -1703,10 +1703,23 @@ struct AtriaTodayScreen: View {
         // day-agnostic newest-rollup fallback, which leaked yesterday's hours
         // whenever today's row was absent) renders only as the dated
         // disclosure in the detail line — never as the primary value or fill.
+        // Field report item 4: the civil rollover alone used to blank this ring
+        // mid-evening. Pass the live cycle so it holds across midnight on the
+        // same terms `resolve` uses — otherwise hours would go blank beside a
+        // recovery and strain that were still showing the cycle.
+        let sleepRingNow = Date()
         let displaySleepIsCurrentDay = AtriaCurrentDayPresentation
             .sleepIsCurrentDayPrimary(
                 sleepEnd: latestDisplaySleep?.end,
-                now: Date()
+                now: sleepRingNow,
+                cycleStart: AtriaPhysiologicalCycle.current(
+                    now: sleepRingNow,
+                    confirmedSleeps: store.confirmedSleeps
+                ).start,
+                cycleEnd: AtriaPhysiologicalCycle.nextNoSleepRollover(
+                    now: sleepRingNow,
+                    confirmedSleeps: store.confirmedSleeps
+                )
             )
         let currentDaySleep = displaySleepIsCurrentDay ? latestDisplaySleep : nil
         let performance = displaySleepIsCurrentDay ? sleepPerformancePercent : nil

@@ -79,7 +79,7 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 9 | Sleep-view stress vs general stress disagree (pinned 3/high) | **FIXED** | full scale was rest+14 vs a SLEEPING baseline; rebanded |
 | 10 | Sleep stages not working | **PARTLY FIXED** (I + gate B) | motion root fixed; HR gap gate 15s→90s to match its own documented invariant |
 | 11 | Notifications never fire at the right moment | TODO | `notification.sleepEvent.lastKind=morning_summary`, `lastDay=2026-08-18` |
-| 12 | 5 GB+ data size, need raw/insight retention tiers | **DIAGNOSED** (B) | |
+| 12 | 5 GB+ data size, need raw/insight retention tiers | **PART 1/3 FIXED** (L) | 2.13 GB dedupe tier reclaimed (`32f4e598`); part 2 = wire compression (M); part 3 = fence + raw prune (K) |
 | 13 | Insight→suggestion engine | TODO | |
 | 14 | Rings cropped in scroll-up floating overlay | **FIXED** (D) | |
 | 15 | Anything else | ongoing | |
@@ -344,14 +344,79 @@ remove the plain file, which is the ordering the type's own doc comment mandates
 the plain file"). Note this is storage substitution, NOT retirement — it needs no retention horizon and
 no release-fence lift, so it is independent of part 3.
 
+## N. Item 4 FIXED — and the workflow's proposed fix would have reintroduced the incident
+
+The verified root cause was right: `AtriaCurrentDayPresentation.resolve` gates on CIVIL-day equality and
+never consults the `cycleEnd` it is handed (it appears only in the two identity constructors). At 00:00
+the displayed civil day advances, the anchoring wake's day does not, `sourceIsToday` flips false, and
+the fall-through returns terminal awaiting states — blank rings, mid-evening, with no new evidence.
+
+**But the proposed fix — `let cycleIsLive = cycleEnd.map { now < $0 } ?? false; if cycleIsLive … return
+primary` — is wrong and I did not ship it.** The Aug-12/13 incident fixture this file exists to prevent
+is `now` = 14:43 the NEXT day against `cycleEnd` = wake + 24 h + 30 min, i.e. **`now < cycleEnd` is TRUE
+in the incident**. That fix would have restored the exact lie (yesterday's 92 / 9h12 / 3.3 worn as
+today's) that Handoff-10 CP1 was built to stop.
+
+What actually separates the two cases is **elapsed waking time, not the rollover**:
+- 00:30 after an 08:00 wake = 16.5 h awake → the night simply has not happened yet. Hold.
+- 14:43 after a 15:27 wake = 23.3 h awake → the night has been and gone. Do not hold.
+
+Shipped: new `.currentCycleAcrossMidnight` value state + `maximumWakingDayHeldAcrossMidnight = 18 h`.
+The live cycle stays PRIMARY across civil midnight while `anchorSleepID != nil`, the clock runs forward,
+`now < cycleEnd`, and the wearer has been awake under 18 h. Past that it falls through to exactly the
+previous behaviour. The identity keeps `sourceCivilDay` on the CYCLE's day and `priorCycle` populated,
+so the surface can date what it shows — the module's "never silently wear today's label" doctrine holds.
+`sleepIsCurrentDayPrimary` gained the same hold (default-nil cycle params, so any unwired caller keeps
+the old behaviour exactly), and both real call sites are wired: `AtriaTodayScreen.sleepMetric` and
+`WidgetSnapshot`, so app and widget cannot disagree.
+
+Tests pin the boundary from both sides and re-assert the incident fixture is still refused.
+
+## O. Live drain stall — a SECOND mechanism that freezes "last sync", distinct from item 2's root cause
+
+Sampled 03:19 → 03:21: `drainedThroughUnix` frozen at 08-18 22:32:39 for 25+ min while
+`flushDebtPendingRecords` climbed 154 → **1688** and `lastDurableFlushBoundaryOKAt` kept advancing.
+So rows ARE arriving; it is the frontier that is parked:
+
+```
+offlineSync.lastStatus            = deferred_terminal_materialization
+persistedDrainRearmDiagnostic     = link=1 fresh=1 workout=0 sync=0 materializing=1
+                                    authority=gapResolvedConsumersPending
+terminalArchiveFailureAt.v1       = 2026-08-14 16:45:38
+terminalArchiveFailureDiagnostic  = …TerminalMaterializationError.publicationCheckpointMissing
+```
+
+This matters because `drainedThroughUnix` is what the UI shows as "last sync". Item 2's root cause (the
+silent-stream latch) is fixed and proven, but this is a **second, independent way the same user-visible
+symptom appears** — and it is live on the device right now. Not yet investigated; lead (b) of the item-15
+sweep in `.claude/field-report-root-causes.md` covers `publicationCheckpointMissing`.
+
 ## Done this loop
-- **C**: silent-stream central-rebuild latch → interval-bounded permit (items 1/2/3). Test added.
+- `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
+- `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
+  lower bound + item 10 gate B. 80/80 green.
+- `47538c32` **C**: silent-stream central-rebuild latch → interval-bounded permit (items 1/2/3). Test added.
 - **D**: compact tri-ring stroke inset (item 14).
 - Ledger + full device evidence capture.
 - AtriaBLERecoveryCadenceTests **60/60 green, 0 errors**.
 - Committed as `47538c32`.
 - Launched workflow `wf_d58bdc20-521` to root-cause items 4,5,6,7,8+9,10,11,12,13,15 in parallel
   with two independent adversarial verifiers per finding.
+
+## RECURRING DEFECT CLASS — worth a lint rule, not three more fixes
+
+Three separate items in this one report reduced to the same shape: **state that gates recovery is
+process-local, and the only thing that can advance it cannot happen in the state it gates.**
+
+| item | field | could only be cleared by | why that never happened |
+|---|---|---|---|
+| 1/2/3 | `silentStreamCentralRebuildIssued` | a fresh accepted HR sample | a wedged session cannot produce one |
+| 6/10 | `allowFallbackRequalification` | a manual workout intent live AT LAUNCH | passive wear never sets it |
+| 12 | `lastPruneAtUnix` | 6 h of unbroken process uptime | iOS restarts apps far sooner |
+
+All three were individually reasonable and all three were unreachable. Candidate rule: any field whose
+purpose is to bound a RECOVERY action must be either persisted or interval-bounded, never cleared only
+by the success it is blocking. Not acted on — flagged for the user.
 
 ## NEXT
 1. Item 12 part 2: compress raw segments (2.99 GB) — the "compressed cutover" never took effect on

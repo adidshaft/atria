@@ -13,6 +13,10 @@ enum AtriaMetricPresentationValueState: String, Codable, Equatable, Sendable {
     case currentPartial
     /// A prior cycle's value, permitted ONLY as a dated secondary line.
     case priorCycleDisclosure
+    /// The civil date turned over but the wearer has not slept yet, so the live
+    /// cycle's values are still the ones they are living in. Primary, but the
+    /// surface MUST date them to the cycle rather than call them "today".
+    case currentCycleAcrossMidnight
     /// No current-day value exists yet.
     case awaitingCurrentSleep
 }
@@ -42,6 +46,13 @@ struct AtriaPriorCycleDisclosure: Equatable, Sendable {
 
 enum AtriaCurrentDayPresentation {
     static let awaitingCurrentSleepDetail = "Awaiting current sleep"
+
+    /// How long past the anchoring wake the live cycle may still be the primary
+    /// value once the civil date has turned over. A normal waking day is 16-18 h;
+    /// 18 h covers "it is 00:30 and I have not gone to bed yet" for any wake
+    /// before 06:30, while the Aug-12/13 incident (23 h 16 min awake) falls
+    /// safely outside it.
+    static let maximumWakingDayHeldAcrossMidnight: TimeInterval = 18 * 60 * 60
 
     struct Resolution: Equatable, Sendable {
         let identity: AtriaMetricPresentationIdentity
@@ -77,6 +88,30 @@ enum AtriaCurrentDayPresentation {
             calendar.isDate($0, inSameDayAs: displayCivilDay)
         } ?? false
 
+        // Midnight is a calendar event, not a physiological one. Before this,
+        // the civil rollover alone demoted the live cycle: at 00:01 the rings
+        // the wearer had been looking at all evening went blank mid-evening,
+        // with no new sleep and no new evidence — the whole complaint in field
+        // report item 4.
+        //
+        // The obvious fix ("keep it primary while `now < cycleEnd`") is WRONG
+        // and would reintroduce the Aug-12/13 incident this file exists to
+        // prevent: that fixture is 14:43 on the following day, still inside
+        // wake + 24 h + 30 min, and showing the previous cycle's 92 / 9h12 / 3.3
+        // there is exactly the lie the module was built to stop.
+        //
+        // What separates the two is elapsed WAKING time, not the rollover.
+        // 00:30 after an 08:00 wake is 16.5 h — still the same evening, and the
+        // night simply has not happened yet. 14:43 after a 15:27 wake is 23 h —
+        // the night has been and gone. Hold the live cycle across midnight only
+        // for a plausible waking day; past that, fall through to today's own
+        // partial evidence or a terminal awaiting state exactly as before.
+        let wakingAge = now.timeIntervalSince(cycleStart)
+        let holdsAcrossMidnight = anchorSleepID != nil
+            && wakingAge >= 0
+            && wakingAge < maximumWakingDayHeldAcrossMidnight
+            && (cycleEnd.map { now < $0 } ?? false)
+
         if sourceIsToday {
             return Resolution(
                 identity: .init(
@@ -92,6 +127,27 @@ enum AtriaCurrentDayPresentation {
                 strainOverride: nil,
                 sleepIsAwaitingCurrentSleep: false,
                 priorCycle: nil
+            )
+        }
+
+        if holdsAcrossMidnight {
+            // Primary values, but NOT wearing today's label: `sourceCivilDay`
+            // stays the cycle's own day and `priorCycle` remains populated so
+            // the surface can date what it is showing.
+            return Resolution(
+                identity: .init(
+                    displayCivilDay: displayCivilDay,
+                    cycleStart: cycleStart,
+                    cycleEnd: cycleEnd,
+                    sourceSleepID: anchorSleepID,
+                    sourceCivilDay: cycleValueSourceDay,
+                    valueState: .currentCycleAcrossMidnight,
+                    calculatedAt: now
+                ),
+                recoveryOverride: nil,
+                strainOverride: nil,
+                sleepIsAwaitingCurrentSleep: false,
+                priorCycle: priorCycle
             )
         }
 
@@ -129,10 +185,22 @@ enum AtriaCurrentDayPresentation {
     static func sleepIsCurrentDayPrimary(
         sleepEnd: Date?,
         now: Date,
+        cycleStart: Date? = nil,
+        cycleEnd: Date? = nil,
         calendar: Calendar = .current
     ) -> Bool {
         guard let sleepEnd else { return false }
-        return calendar.isDate(sleepEnd, inSameDayAs: calendar.startOfDay(for: now))
+        if calendar.isDate(sleepEnd, inSameDayAs: calendar.startOfDay(for: now)) {
+            return true
+        }
+        // Same cross-midnight hold as `resolve`, so the sleep ring cannot blank
+        // on its own while recovery and strain are still showing the cycle.
+        guard let cycleStart, let cycleEnd, now < cycleEnd else { return false }
+        let wakingAge = now.timeIntervalSince(cycleStart)
+        guard wakingAge >= 0, wakingAge < maximumWakingDayHeldAcrossMidnight else {
+            return false
+        }
+        return sleepEnd <= now && sleepEnd >= cycleStart.addingTimeInterval(-24 * 60 * 60)
     }
 
     /// Today's own limited partial recovery row, admitted only with its real
