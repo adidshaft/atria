@@ -134,7 +134,16 @@ enum AtriaSleepWakeResearch {
     /// whole-window HR fallback.
     private static let maximumEvidenceGap: TimeInterval = 90
     private static let minimumTimelineCoverageFraction = 0.85
-    private static let maximumHeartRateGap: TimeInterval = 15
+    /// Was 15, which contradicted the invariant the comment above states. The
+    /// rest of the stack tolerates 90 s holes — `maximumEvidenceGap` here,
+    /// `activeJournalSegmentGapLimit`, `AtriaRecoveredMotionAnalytics`
+    /// sufficiency, `AtriaSleepStageIntegrity.validates` — so 15 was the lone
+    /// outlier, and it is applied to the WHOLE window: one 16 s hole anywhere
+    /// in eight hours failed the entire night's HR support and the hypnogram
+    /// came back empty. A strap that drops a couple of seconds of notifications
+    /// is the normal case, not a degraded one, so in practice this rejected
+    /// nights that had perfectly usable HR. Field report 2026-08-19, item 10.
+    private static let maximumHeartRateGap: TimeInterval = 90
     private static let minimumHeartRateSamplesPerMinute = 6.0
 
     private struct EpochFeature: Equatable {

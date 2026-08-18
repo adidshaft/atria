@@ -163,16 +163,26 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     }
 
     var valueText: String {
-        // Strap steps are ~2% accurate, so the card shows a clean number rather
-        // than a "≥"/"~" qualifier. The partial/live/estimate nuance lives in
-        // `detailText` (shown when the user taps the metric) and in
-        // `accessibilityText`.
+        // A verified-but-partial count is a LOWER BOUND over the fraction of
+        // the day the motion bank was armed and the cadence model qualified —
+        // not a day total. Dropping the qualifier here (2026-08-12) left the
+        // partial/complete distinction visible only in `detailText`, behind a
+        // tap, and in `accessibilityText`, which is VoiceOver-only. The widget
+        // fed by the very same snapshot kept rendering "≥N"
+        // (AtriaWidget.swift:142-145), so the app and its own widget disagreed
+        // about the same number — and the app was the dishonest one. A user
+        // reading a bare "176" reasonably concludes the step counter is broken
+        // (field report 2026-08-19, item 7) rather than that it is reporting a
+        // floor over partial coverage. Say what the number is.
         guard let count else { return "--" }
         // A zero observed inside a small archive fragment is not a zero for
         // the day. Showing it as one makes an absence of evidence look like a
         // completed step total (for example "0 · 3% covered").
         guard completeness != .partial || count > 0 else { return "--" }
-        return "\(count)"
+        guard source == .verifiedCanonical, completeness == .partial else {
+            return "\(count)"
+        }
+        return "≥\(count)"
     }
 
     var detailText: String {

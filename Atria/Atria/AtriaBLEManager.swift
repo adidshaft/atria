@@ -3965,6 +3965,61 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return true
     }
 
+    /// A pure-HR fallback is meant to be a *recoverable* degradation — the
+    /// v10 branch of `prepareProtectedR10CleanOwnerAtLaunch` says so in as many
+    /// words. In practice it was terminal for every passive user, and this is
+    /// the gate that made it so.
+    ///
+    /// The sole production caller passes `allowFallbackRequalification:
+    /// explicitWorkoutNeedsMotion` (see the launch path), which in a Release
+    /// build reduces to `explicitWorkoutIntentActive` — an explicit manual
+    /// workout intent that must already be active *at process launch*. Ordinary
+    /// all-day wear never sets it, so no number of days and no number of
+    /// launches could ever retry the qualification.
+    ///
+    /// The 2026-08-19 field pull is the proof. Motion fell back at
+    /// 2026-08-13 07:10:09 (`clean_owner_proof_disconnect`); 5.8 days later
+    /// `protocol.imuFrames` was still 0, `cleanOwnerState` still
+    /// `fallback_active`, and `requalifyAttemptAt` still read 2026-08-13
+    /// 06:22 — 48 minutes BEFORE the fallback, i.e. not one attempt in the
+    /// entire window, despite 548 `workoutMotion.activationAttempts`. The one
+    /// workout the user did start in that window could not rescue it either:
+    /// `workoutMotion.status` was `r10_step_lease_revoked_history_owner`,
+    /// because the single shared BLE transport was held by the chronically
+    /// backlogged history drain. Nap detection and sleep staging are both
+    /// hard-gated on validated motion, so both were structurally unreachable
+    /// for the whole period (field report items 6 and 10).
+    ///
+    /// Allow a bounded passive retry that keeps every safety property the
+    /// workout path relies on: it is still launch-only (never mutates stream-5
+    /// CCCDs on a live pure-HR link), and it still demands the same prior
+    /// physical qualification credential, so an unknown strap is never turned
+    /// into a live R10 experiment. It only removes the requirement that a
+    /// human happen to start a workout.
+    nonisolated static let protectedR10PassiveRequalifyInterval: TimeInterval = 12 * 60 * 60
+
+    nonisolated static func protectedR10FallbackShouldPassivelyRequalify(
+        priorQualifiedAt: Double?,
+        fallbackAt: Double?,
+        lastAttemptAt: Double?,
+        interval: TimeInterval = protectedR10PassiveRequalifyInterval,
+        now: Double
+    ) -> Bool {
+        // Same credential the workout cutover demands. Without a prior physical
+        // qualification this strap has never proven it can carry the dense
+        // stream, and a passive retry must not be the thing that finds out.
+        guard priorQualifiedAt != nil, let fallbackAt else { return false }
+        let fallbackAge = now - fallbackAt
+        // A backwards clock must not strand the retry in the future; fail open
+        // once, exactly as the HRV cadence gate and the silent-stream central
+        // rebuild permit do. The interval itself bounds any churn.
+        if fallbackAge >= 0, fallbackAge < interval { return false }
+        guard let lastAttemptAt else { return true }
+        let attemptAge = now - lastAttemptAt
+        if attemptAge < 0 { return true }
+        return attemptAge >= interval
+    }
+
     /// The only in-process escalation allowed from a pure-HR fallback owner.
     /// It is intentionally more restrictive than normal launch preparation:
     /// a user must have a durable, active manual workout and a previous dense
@@ -5779,9 +5834,27 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           explicitWorkoutNeedsMotion ? 1 : 0,
                           protectedR10CleanOwner.rawValue,
                           protectedR10CleanOwnerState.rawValue)
+            // Without this, a pure-HR fallback is terminal for anyone who does
+            // not happen to start a manual workout — see
+            // `protectedR10FallbackShouldPassivelyRequalify`.
+            let passiveRequalifyDue = Self.protectedR10FallbackShouldPassivelyRequalify(
+                priorQualifiedAt: defaults.object(
+                    forKey: Self.protectedR10StableTransportQualifiedAtKey) as? Double,
+                fallbackAt: defaults.object(
+                    forKey: Self.protectedR10FallbackAtKey) as? Double,
+                lastAttemptAt: defaults.object(
+                    forKey: Self.protectedR10RequalifyAttemptAtKey) as? Double,
+                now: launchNow.timeIntervalSince1970
+            )
+            if passiveRequalifyDue {
+                AtriaDebugLog("ATRIADBG protected_r10 status=passive_requalify_due owner=%@ state=%@ action=retry_prior_qualified_fallback_without_workout",
+                              protectedR10CleanOwner.rawValue,
+                              protectedR10CleanOwnerState.rawValue)
+            }
             let cleanOwnerPreparation = Self.prepareProtectedR10CleanOwnerAtLaunch(
                 defaults: defaults,
-                allowFallbackRequalification: explicitWorkoutNeedsMotion,
+                allowFallbackRequalification: explicitWorkoutNeedsMotion
+                    || passiveRequalifyDue,
                 bypassCooldownForNewWorkoutLease: isNewWorkoutRequalifyLease,
                 now: launchNow
             )

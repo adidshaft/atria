@@ -53,10 +53,20 @@ final class AtriaSleepStressProjectionTests: XCTestCase {
         XCTAssertEqual(projection.heartRateSamples.last?.bpm ?? 0, 60, accuracy: 0.01)
     }
 
-    func testConservativeActivationNeedsRealElevationAboveRestingHR() {
+    /// Baseline migrated 2026-08-19 (field report item 9). The previous
+    /// expectations pinned the miscalibration as intended behaviour: with
+    /// rest 50 they asserted 63 bpm -> 3.0 ("resting + 3 + threshold saturates
+    /// the 0-3 scale") and 58 bpm -> 1.5. But `PersonalBaseline.restingHR` is
+    /// an EMA of the per-day SLEEPING near-minimum, not an awake resting rate,
+    /// and ordinary REM sits 15-25 bpm above a sleeping minimum. Saturating at
+    /// rest + 13 meant a physiologically unremarkable night pinned at the top
+    /// of the scale for hours. The scale now spans something real.
+    func testOvernightLoadIsCalibratedAgainstASleepingBaseline() {
         let sleepEnd = sleepStart.addingTimeInterval(8 * 3_600)
         let rest = 50
-        // threshold = max(10, 50 * 0.20) = 10; score = ((avg − 50 − 3) / 10) * 3.
+        // deadZone = max(6, 50 * 0.12) = 6; fullScale = max(24, 50 * 0.45) = 24.
+        // score = clamp((mean - 50 - 6) / 24, 0, 1) * 3.
+
         let calm = AtriaSleepStressProjection.make(points: points(bpm: 52, from: 0, to: 8 * 3_600),
                                                    sleepStart: sleepStart,
                                                    sleepEnd: sleepEnd,
@@ -65,18 +75,51 @@ final class AtriaSleepStressProjectionTests: XCTestCase {
         XCTAssertTrue(calm.samples.allSatisfy { $0.score == 0 },
                       "at/near resting HR must not register load")
 
-        let elevated = AtriaSleepStressProjection.make(points: points(bpm: 63, from: 0, to: 8 * 3_600),
-                                                       sleepStart: sleepStart,
-                                                       sleepEnd: sleepEnd,
-                                                       restingHeartRate: rest)
-        XCTAssertEqual(elevated.samples.first?.score ?? 0, 3.0, accuracy: 0.001,
-                       "resting + 3 + threshold saturates the 0–3 scale")
+        // THE REGRESSION THIS TEST EXISTS FOR: an ordinary REM excursion, ~13 bpm
+        // above the sleeping minimum, used to saturate the scale at 3.0 and be
+        // reported to the user as a "high period" in alarm orange.
+        let ordinaryREM = AtriaSleepStressProjection.make(points: points(bpm: 63, from: 0, to: 8 * 3_600),
+                                                          sleepStart: sleepStart,
+                                                          sleepEnd: sleepEnd,
+                                                          restingHeartRate: rest)
+        let remScore = ordinaryREM.samples.first?.score ?? 0
+        XCTAssertEqual(remScore, 0.875, accuracy: 0.001)
+        XCTAssertLessThan(remScore, 2.0,
+                          "an ordinary REM excursion must not enter the elevated band")
+        XCTAssertTrue(AtriaSleepStressProjection.highPeriods(samples: ordinaryREM.samples).isEmpty,
+                      "a physiologically unremarkable night reports no elevated periods")
 
-        let moderate = AtriaSleepStressProjection.make(points: points(bpm: 58, from: 0, to: 8 * 3_600),
+        // A genuinely unusual elevation still registers, and still saturates.
+        let elevated = AtriaSleepStressProjection.make(points: points(bpm: 74, from: 0, to: 8 * 3_600),
                                                        sleepStart: sleepStart,
                                                        sleepEnd: sleepEnd,
                                                        restingHeartRate: rest)
-        XCTAssertEqual(moderate.samples.first?.score ?? 0, 1.5, accuracy: 0.001)
+        XCTAssertEqual(elevated.samples.first?.score ?? 0, 2.25, accuracy: 0.001)
+        XCTAssertFalse(AtriaSleepStressProjection.highPeriods(samples: elevated.samples).isEmpty,
+                       "resting + 24 is a real elevation and must be reported")
+
+        let saturated = AtriaSleepStressProjection.make(points: points(bpm: 80, from: 0, to: 8 * 3_600),
+                                                        sleepStart: sleepStart,
+                                                        sleepEnd: sleepEnd,
+                                                        restingHeartRate: rest)
+        XCTAssertEqual(saturated.samples.first?.score ?? 0, 3.0, accuracy: 0.001,
+                       "full scale is reached at resting + deadZone + fullScale")
+    }
+
+    /// The band scales with the wearer, because absolute nocturnal excursions
+    /// grow with resting rate. A 13 bpm rise must not mean the same thing to a
+    /// 45 bpm athlete and a 75 bpm baseline.
+    func testOvernightLoadBandScalesWithTheWearersBaseline() {
+        XCTAssertEqual(AtriaSleepStressProjection.load(forBucketMeanBPM: 45 + 13, restingHeartRate: 45),
+                       AtriaSleepStressProjection.load(forBucketMeanBPM: 45 + 13, restingHeartRate: 45),
+                       accuracy: 0.001)
+        // Same absolute rise, higher baseline -> lower normalized load.
+        let athlete = AtriaSleepStressProjection.load(forBucketMeanBPM: 45 + 20, restingHeartRate: 45)
+        let higher = AtriaSleepStressProjection.load(forBucketMeanBPM: 75 + 20, restingHeartRate: 75)
+        XCTAssertGreaterThan(athlete, higher)
+        // Never negative, never above 3.
+        XCTAssertEqual(AtriaSleepStressProjection.load(forBucketMeanBPM: 40, restingHeartRate: 55), 0, accuracy: 0.001)
+        XCTAssertEqual(AtriaSleepStressProjection.load(forBucketMeanBPM: 220, restingHeartRate: 55), 3, accuracy: 0.001)
     }
 
     func testCoverageRuleRequiresTwelveBucketsAndRealSpan() {
@@ -124,9 +167,14 @@ final class AtriaSleepStressProjectionTests: XCTestCase {
 
     func testHighMarksShareTimestampsAcrossBothChartModes() {
         let sleepEnd = sleepStart.addingTimeInterval(8 * 3_600)
-        // Calm night with one elevated hour in the middle.
+        // Calm night with one elevated hour in the middle. The elevated hour is
+        // 76 bpm rather than the old 62: this test is about the two chart modes
+        // marking the SAME timestamps, so the middle hour just has to clear the
+        // elevated band, and after the 2026-08-19 recalibration 62 bpm against a
+        // resting-50 sleeping baseline is an ordinary REM excursion, not an
+        // elevated period.
         let wear = points(bpm: 52, from: 0, to: 3 * 3_600)
-            + points(bpm: 62, from: 3 * 3_600 + 60, to: 4 * 3_600)
+            + points(bpm: 76, from: 3 * 3_600 + 60, to: 4 * 3_600)
             + points(bpm: 52, from: 4 * 3_600 + 60, to: 8 * 3_600)
         let projection = AtriaSleepStressProjection.make(points: wear,
                                                          sleepStart: sleepStart,
