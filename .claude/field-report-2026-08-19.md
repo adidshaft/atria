@@ -73,11 +73,11 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 3 | Workout HR not syncing | **FIX WRITTEN** (C) | journal closed at `workout_start_boundary` 21:42, stall began 21:56 |
 | 4 | Rings vanish at midnight | TODO | want: hold prior physiological day until night sleep completes |
 | 5 | Duplicate sleep recommendation after stop/save | TODO | |
-| 6 | Nap detection dead (2–3 h evening nap missed) | TODO | starved by A? verify independently |
-| 7 | Steps distrust | TODO | |
-| 8 | Stress reads low | TODO | |
-| 9 | Sleep-view stress vs general stress disagree (pinned 3/high) | TODO | |
-| 10 | Sleep stages not working | TODO | |
+| 6 | Nap detection dead (2–3 h evening nap missed) | **ROOT FIXED** (I) | motion dead since 08-13; nap gate needs validated motion |
+| 7 | Steps distrust | **FIXED** | app dropped the `≥` the widget still showed; restored |
+| 8 | Stress reads low | ANALYSED, not yet changed | HRV term weight ~0 at low HR; see root-causes doc |
+| 9 | Sleep-view stress vs general stress disagree (pinned 3/high) | **FIXED** | full scale was rest+14 vs a SLEEPING baseline; rebanded |
+| 10 | Sleep stages not working | **PARTLY FIXED** (I + gate B) | motion root fixed; HR gap gate 15s→90s to match its own documented invariant |
 | 11 | Notifications never fire at the right moment | TODO | `notification.sleepEvent.lastKind=morning_summary`, `lastDay=2026-08-18` |
 | 12 | 5 GB+ data size, need raw/insight retention tiers | **DIAGNOSED** (B) | |
 | 13 | Insight→suggestion engine | TODO | |
@@ -126,15 +126,176 @@ insetting every ring by half the line width.
 
 ---
 
+## E. LIVE RE-CHECK 02:06 IST — stall still running, and it confirms C exactly
+
+Re-pulled the defaults 9 minutes after the first capture. `lastRawNotificationAt` is **unchanged**
+(08-18 21:56:32, now 4.17 h), `watchdog.lastRawGap` grew 14474 → **15006 s**, `stallReconnects` 323 →
+**328**, `lastRawNotificationDelta` still **0**. Crucially:
+
+- `link.lastStatus = connected` — the peripheral really is `.connected`
+- `watchdog.lastAction = rebuild_all_gatt_silent` — the watchdog **is** requesting the replacement
+
+So `replaceWedgedSession = immediateConnectedRebuild && target.state == .connected` evaluates **true**
+on every tick, the request reaches the latch, and the latch swallows it. That is the C mechanism
+observed live rather than inferred. The shipped build cannot escape this state on its own.
+
+## F. Installed 47538c32 to the phone at 02:11 — and an honesty caveat about what that proves
+
+Device Release built clean (0 errors) and installed. Binary proof the fix is really in it (guards
+against the known stale-incremental-build trap): the mangled symbol
+`_$s5Atria0A10BLEManagerC34silentStreamCentralRebuildIssuedAt…10Foundation4DateVSgvp` is present, and
+`strings` finds the new `ATRIADBG ble_link status=central_rebuild_coalesced reason=%@ issued_age_s=%.0f`
+log line. The old boolean is gone.
+
+**Caveat — the relaunch is NOT proof of the fix.** `silentStreamCentralRebuildIssuedAt` (like the
+boolean before it) is a process-local `var`, not persisted. So *any* process death clears it, and the
+install necessarily killed the stuck process. Tonight's recovery would therefore have happened on the
+old build too. What the 4 h stall actually proves is that the app survived 4 h *without* dying — which
+is the normal case — and could not self-heal in that whole window.
+
+The real acceptance evidence is a **future** connected-and-silent episode that self-recovers within
+~10 min with no relaunch: look for `central_rebuild_coalesced … issued_age_s=` followed by a
+`post_connect_repair=action_central_rebuild` at age >= 600, and `sample.lastRawNotificationAt`
+advancing afterwards. Do not mark items 1/2/3 accepted before that trace appears.
+
+## G. Recovery confirmed 02:14 — plus two measurements that matter for other items
+
+After the install+launch, HR resumed immediately and `stallReconnects` froze at 331 (no more thrash):
+
+```
+02:14:00  lastHR=02:13:44  keepalive=history_transport_owned  drainedThrough=08-18 21:22
+02:19:04  lastHR=02:18:28  keepalive=history_transport_owned  drainedThrough=08-18 21:34
+```
+
+**G1 — measured drain rate. CORRECTED at 02:57: the sustained rate is 1.53x, not 2.37x.** The first
+5 min after relaunch advanced 12 min of history (2.37x) — a transient burst. Over the following
+38 min the frontier moved 21:34 -> 22:32, i.e. 58 min of history in 38 min of wall clock = **1.53x**,
+which matches the prior CP2 convergence figure (1.148x). Net closure is therefore only
+**0.55 min/min**, and the 4.4 h backlog converges around **10:54**, not 05:47.  is the hard consequence of the WHOOP 4 having no seek: at 1.53x, **every hour of outage costs
+~1.9 h of catch-up.** That is the real, measurable content of item 1 ("catches up eventually") and it is also
+why items 6/7/10 look dead during and after any outage — their inputs are simply behind the frontier.
+Any retention or drain work should treat 2.37x as the budget.
+
+**G2 — RR IS present. Do not chase an "RR absent" theory.** The poll printed
+`watchdog.lastAction = observe_active_2a37_rr_absent`, but that is the *shared* watchdog-recovery key,
+last written by the rr-presence lane during the reconnect. The RR-specific record, stamped 02:18:34
+once the link was healthy, says the opposite:
+
+```
+rrPresence.status               = rr_present
+rrPresence.action               = observe_real_rr_0x2A37
+rrPresence.lastPacketRRFlagPresent = True
+rrPresence.rrValues             = 211      rrGap = 5.98 s
+rrPresence.lastPacketContactSupported = False
+```
+
+So the strap does deliver RR on a healthy link. Items 8/9/10 must be explained by something
+downstream of RR capture, **not** by missing RR. Worth reconciling against `hrv.lastReadyAnalysisAt`
+being stuck at 2026-08-11 (8 days) while RR is flowing — that gap is itself a lead, and it now points
+at the HRV *analysis* gate rather than at the sensor.
+
+## H. USER DECISIONS (asked 2026-08-19, answered)
+
+1. **HR-only estimates for naps/stages: NO — "investigate why motion is dead first."**
+   Do not flip `allowHROnlyEstimate` on by default. Treat pure-HR mode as the bug. (Done — see I.)
+2. **Retention: "Full tiering — prune raw past 30 days."** Lift the release fence, bound the dedupe
+   ledger, compress raw, retire raw older than 30 days once aggregates/hr-index are sealed.
+
+## I. WHY MOTION IS DEAD — the real cause of items 6 and 10
+
+Motion died **2026-08-13 07:10:09** and never came back. 5.8 days later `protocol.imuFrames = 0`,
+`protectedR10.cleanOwnerState = fallback_active`, `cleanOwner = pure_hr_v8`, `streamSuppressed = true`,
+`cleanOwnerFailureReason = clean_owner_proof_disconnect`.
+
+The chain:
+
+1. 08-13 06:22:16 `requalifyAttemptAt` -> 06:22:45 `activationSentAt` -> **07:10:09 `fallbackAt`**.
+   The clean-owner proof disconnected, so R10 fell back to pure-HR. That part is by design.
+2. The ONLY escape is `prepareProtectedR10CleanOwnerAtLaunch(allowFallbackRequalification:)`, and the
+   sole production caller (AtriaBLEManager.swift:5784) passes `explicitWorkoutNeedsMotion`. In Release
+   `gate4StationaryQualificationRequested` is hard-`false` (`#else` branch), so that reduces to
+   `explicitWorkoutIntentActive` — **an explicit manual workout intent that must already be active at
+   process launch.**
+3. Ordinary all-day wear never sets it. So a pure-HR fallback is **terminal for passive use**, despite
+   the v10 branch's own comment calling it "a recoverable degradation".
+4. `requalifyAttemptAt` still read **2026-08-13 06:22 — 48 minutes BEFORE the fallback**. Not one
+   requalification attempt in 5.8 days, against 548 `workoutMotion.activationAttempts`.
+5. The one workout the user did start (08-18 Strength) could not rescue it either:
+   `workoutMotion.status = r10_step_lease_revoked_history_owner` — the single shared BLE transport was
+   held by the chronically backlogged history drain.
+
+Naps and sleep stages are both hard-gated on validated motion, so **both were structurally unreachable
+for the entire usage window**. Items 6 and 10 are one upstream defect, exactly as the user suspected.
+
+**Fix (applied):** `protectedR10FallbackShouldPassivelyRequalify(...)` +
+`protectedR10PassiveRequalifyInterval = 12 h`, OR-ed into the launch gate. Keeps every safety property
+the workout path relies on — still launch-only (never mutates stream-5 CCCDs on a live pure-HR link),
+still demands the same prior physical-qualification credential — and only removes the requirement that
+a human happen to start a workout. Bounded to one attempt per 12 h so an incapable strap never churns
+the radio. Fails open on a backwards clock.
+
+## J. Item 12 — precise mechanism for the 2.13 GB dedupe ledger (scoped, not yet fixed)
+
+A 14-day identity retention policy already exists
+(`AtriaHistoricalArchiveDurableStore.productionIdentityRetention = 14 * 24 * 60 * 60`) and
+`pruneExpiredIdentitiesLocked` computes the expired set correctly. It cannot act on it:
+
+```swift
+guard fullyMaterializedIdentityIndex else {
+    for key in expired { statesByKey.removeValue(forKey: key) }   // in-memory ONLY
+    return max(lookupRemoved, expired.count)
+}
+... try rebuildDerivedIndex(with: retained.values.map(\.entry))   // the only file rewrite
+```
+(AtriaHistoricalArchiveDurableStore.swift:760-772)
+
+`rebuildDerivedIndex` is the ONLY path that rewrites `identity.jsonl`, and it needs the whole index in
+memory — which is precisely what the store refuses once the file is too large to materialize.
+**Chicken-and-egg: the file is too big to load, so it can never be shrunk.** That is the 1.29 GB.
+
+The 840 MB sqlite is a separate mechanism: `liveIdentityLookup.prune(observedBefore:)` IS called, but
+SQLite `DELETE` only frees pages inside the file — without a `VACUUM` the file never shrinks. 840 MB
+under a 14-day policy is the signature of delete-without-vacuum.
+
+**Both fixes are independent of the archive-wide release fence:**
+1. Streaming compaction of `identity.jsonl` — read line-by-line with the existing 64 KiB reader, keep
+   `observedAtUnix >= cutoff`, write temp, atomic `replaceItemAt` (the same move `rebuildDerivedIndex`
+   already makes). Bounded memory, so it is legal in the bounded-cold-lookup state.
+2. Periodic `VACUUM` after a prune that actually removed rows.
+
+## K. Item 12 — the release fence is NOT stale; its stated reason still holds
+
+`shouldExecuteArchiveWideMaintenance` is `{ explicitDebugOverride }` (Sessions.swift:25645-25648) and
+its comment says the graph "still contains composite readers/publishers whose individual inner loops
+cannot all be revoked atomically". **Verified: `HistoricalArchive.swift` contains ZERO occurrences of
+`checkpoint()`, `isCancelled`, `CooperativeDeadline` or `workCounter`** — the instrumentation exists
+elsewhere in the codebase (Sessions.swift has 453 uses) but not in the retention graph. So the fence
+is honest, and lifting it is gated on real work: threading a cooperative deadline through
+`HistoricalArchive.compactArchiveConverging` (HistoricalArchive.swift:9835) and its inner scans.
+
+Mitigating: interruption is not a corruption risk. `AtriaHistoricalRawRetirementExecutor` is
+intent-logged with `recoverFirstPendingIntent` (HistoricalArchive.swift:9380) and a committed
+`AtriaHistoricalRetentionTransaction` manifest is the only proof a raw file may be retired. The risk of
+an uninstrumented lift is BGTask expiry / CPU-overrun termination, not data loss.
+
+**Sequencing for the user's "full tiering" choice:** J1 + J2 first (2.13 GB, no fence involvement),
+then raw compression, then thread the cooperative deadline, then lift the fence and prune raw > 30 d.
+
 ## Done this loop
 - **C**: silent-stream central-rebuild latch → interval-bounded permit (items 1/2/3). Test added.
 - **D**: compact tri-ring stroke inset (item 14).
 - Ledger + full device evidence capture.
-- *(uncommitted; focused test run in flight)*
+- AtriaBLERecoveryCadenceTests **60/60 green, 0 errors**.
+- Committed as `47538c32`.
+- Launched workflow `wf_d58bdc20-521` to root-cause items 4,5,6,7,8+9,10,11,12,13,15 in parallel
+  with two independent adversarial verifiers per finding.
 
 ## NEXT
-1. Confirm the focused test run is green, then commit C + D.
-2. Item 12 retention tiers — raw `segments/raw-*.jsonl` are uncompressed and never pruned (2.99 GB),
+1. Item 12 full tiering (user chose the aggressive option): bound identity ledger (2.13 GB),
+   compress raw segments (2.99 GB), lift `shouldExecuteArchiveWideMaintenance`, prune raw > 30 d.
+2. Items 4, 5, 11 — all three have verified root causes in `.claude/field-report-root-causes.md`.
+3. Item 8 (stress ceiling) and item 13 (insight engine).
+4. Old item 12 retention tiers — raw `segments/raw-*.jsonl` are uncompressed and never pruned (2.99 GB),
    and `identity.jsonl` + its sqlite are 2.13 GB of unbounded dedupe bookkeeping. Insight tier is only
    ~93 MB, so a raw-retention window + compaction is safe. Also: `atria-memprobe*.log` (17 MB) and
    `tmp/*.png|html` share leftovers are never cleaned.

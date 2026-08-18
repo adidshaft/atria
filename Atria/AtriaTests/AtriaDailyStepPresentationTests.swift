@@ -92,7 +92,9 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        XCTAssertEqual(value.valueText, "3210")
+        // The test's own name says "lower bound label"; between 2026-08-12 and
+        // 2026-08-19 it asserted the opposite. Restored.
+        XCTAssertEqual(value.valueText, "≥3210")
         XCTAssertEqual(value.completeness, .partial)
         // 2026-08-12: the glance line leads with the capture frontier, never a
         // coverage percent — "50% tracked" read as "the strap detects steps
@@ -126,15 +128,20 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         )
     }
 
+    /// Baseline migrated 2026-08-19 (field report item 7). A verified-but-
+    /// partial count is a lower bound, and the app now says so in the value
+    /// line — matching the widget fed by the same snapshot, which never stopped
+    /// rendering "≥N". The bare "176" this test used to pin is what made the
+    /// user conclude steps were broken.
     func testTerminalPureHRMotionRetainsLowerBoundAndShowsBlocker() {
         var value = partialVerified176()
-        XCTAssertEqual(value.valueText, "176")
+        XCTAssertEqual(value.valueText, "≥176")
         XCTAssertEqual(value.completeness, .partial)
         let coverageDetail = value.detailText
 
         value.motionAvailability = .unavailableInCurrentTransport
         // The verified count and coverage are untouched by the classification.
-        XCTAssertEqual(value.valueText, "176")
+        XCTAssertEqual(value.valueText, "≥176")
         XCTAssertEqual(value.detailText, coverageDetail)
         // The forward-looking promise becomes the terminal blocker.
         XCTAssertEqual(value.motionAvailabilityFootnote,
@@ -358,7 +365,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertTrue(value.isValidated)
         XCTAssertEqual(value.source, .verifiedCanonical)
         XCTAssertEqual(value.completeness, .partial)
-        XCTAssertEqual(value.valueText, "1234")
+        XCTAssertEqual(value.valueText, "≥1234")
     }
 
     func testPhysicalAug11VerifiedCoverageStaysSeparateFromPreliminaryLedger()
@@ -462,7 +469,8 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.count, 3_210)
         XCTAssertEqual(value.source, .verifiedCanonical)
         XCTAssertEqual(value.completeness, .partial)
-        XCTAssertEqual(value.valueText, "3210")
+        // Verified + partial is a lower bound, and says so (2026-08-19, item 7).
+        XCTAssertEqual(value.valueText, "≥3210")
     }
 
     // 2026-07-31: after a no-sleep rollover the fresh cycle has no receipt

@@ -2566,6 +2566,37 @@ struct AtriaSleepStressProjection: Equatable {
         return heartRateSamples.filter { highDates.contains($0.date) }
     }
 
+    /// Maps a five-minute bucket mean onto the 0–3 overnight-load scale.
+    ///
+    /// The old activation was `(mean - rest - 3) / max(10, rest * 0.20)`, which
+    /// on a resting HR of 55 put FULL SCALE only 14 bpm above baseline and the
+    /// top band 10.3 bpm above it. That is miscalibrated by roughly a factor of
+    /// three, for a reason that is easy to miss: `PersonalBaseline.restingHR`
+    /// is not an awake resting rate. `canonicalDailySamples`
+    /// (Insights.swift:239-259) keeps one sample per day, prefers confirmed
+    /// overnight samples, and within a class keeps the LOWEST value — so the
+    /// reference is an EMA of the per-day *sleeping near-minimum*.
+    ///
+    /// Ordinary REM and normal arousals sit 15–25 bpm above a sleeping minimum.
+    /// Scaled against an 11 bpm span, a physiologically unremarkable night
+    /// pinned at 3.0 for hours and the card reported "N high periods" in alarm
+    /// orange — exactly the field report (2026-08-19, item 9: "a lot of the
+    /// time it is at 3"). The metric had almost no discriminative power; it was
+    /// effectively a binary "mean > sleeping minimum + 14" indicator drawn on a
+    /// calm→high axis.
+    ///
+    /// Re-anchor on spans that mean something above a sleeping baseline:
+    /// nothing registers inside normal deep-sleep drift, the top band needs a
+    /// genuinely unusual elevation, and full scale needs more still. Both spans
+    /// scale with the wearer's own baseline, because absolute bpm excursions
+    /// grow with resting rate.
+    static func load(forBucketMeanBPM mean: Double, restingHeartRate: Int) -> Double {
+        let rest = Double(restingHeartRate)
+        let deadZone = max(6, rest * 0.12)      // rest 55 -> 6.6 bpm: normal deep-sleep drift
+        let fullScale = max(24, rest * 0.45)    // rest 55 -> 24.8 bpm: 3.0 at rest + ~31
+        return min(max((mean - rest - deadZone) / fullScale, 0), 1) * 3
+    }
+
     static func make(points: [HistoricalArchive.HeartRatePoint],
                      sleepStart: Date,
                      sleepEnd: Date,
@@ -2592,11 +2623,8 @@ struct AtriaSleepStressProjection: Equatable {
         let pairs = valuesByBucket.keys.sorted().compactMap { bucket -> (Sample, HeartRateSample)? in
             guard let values = valuesByBucket[bucket], !values.isEmpty else { return nil }
             let average = Double(values.reduce(0, +)) / Double(values.count)
-            // A deliberately conservative HR-only activation. It takes a
-            // meaningful elevation above the wearer's own resting rate to
-            // enter the high zone; HRV is not silently inferred from HR.
-            let threshold = max(10, Double(restingHeartRate) * 0.20)
-            let score = min(max((average - Double(restingHeartRate) - 3) / threshold, 0), 1) * 3
+            let score = Self.load(forBucketMeanBPM: average,
+                                  restingHeartRate: restingHeartRate)
             let date = sleepStart.addingTimeInterval((Double(bucket) + 0.5) * bucketSeconds)
             return (Sample(date: date, score: score), HeartRateSample(date: date, bpm: average))
         }
@@ -2757,9 +2785,9 @@ struct AtriaSleepStressCard: View {
     }
 
     private var highSummary: String {
-        guard !highPeriods.isEmpty else { return "No high periods" }
+        guard !highPeriods.isEmpty else { return "No elevated periods" }
         let periodLabel = highPeriods.count == 1 ? "period" : "periods"
-        return "\(highPeriods.count) high \(periodLabel) · \(Int((highDuration / 60).rounded()))m"
+        return "\(highPeriods.count) elevated \(periodLabel) · \(Int((highDuration / 60).rounded()))m"
     }
 
     private var highTimingSummary: String? {
@@ -2769,7 +2797,7 @@ struct AtriaSleepStressCard: View {
             return "\(range) (\(Int((period.duration / 60).rounded()))m)"
         }
         let remainder = highPeriods.count > 2 ? " +\(highPeriods.count - 2) more" : ""
-        return "High periods: \(periods.joined(separator: " · "))\(remainder)"
+        return "Elevated: \(periods.joined(separator: " · "))\(remainder)"
     }
 
     var body: some View {
@@ -2873,7 +2901,12 @@ struct AtriaSleepStressCard: View {
                         AxisTick().foregroundStyle(.clear)
                         AxisValueLabel {
                             if mode == .load, let value = value.as(Int.self) {
-                                Text(value == 3 ? "High" : "\(value)")
+                                // Not "High": this axis is overnight HR load,
+                                // which the card explicitly disclaims as not
+                                // being stress. Borrowing the stress surface's
+                                // top-zone word made an ordinary night read as
+                                // an alarm.
+                                Text("\(value)")
                                     .font(.caption2.monospacedDigit())
                                     .foregroundStyle(value >= 2 ? .orange : (value == 1 ? .green : .blue))
                             } else if let value = value.as(Double.self) { Text("\(Int(value.rounded()))") }

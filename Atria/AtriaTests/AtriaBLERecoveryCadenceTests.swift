@@ -1498,13 +1498,31 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             of: "let cleanOwnerPreparation = Self.prepareProtectedR10CleanOwnerAtLaunch"
         ))
         let launchBody = String(source[launchCall.lowerBound...].prefix(900))
+        let beforeCall = String(source[..<launchCall.lowerBound])
         XCTAssertTrue(launchBody.contains(
             "allowFallbackRequalification: explicitWorkoutNeedsMotion"
         ))
-        XCTAssertTrue(String(source[..<launchCall.lowerBound].suffix(1_500)).contains(
+        XCTAssertTrue(beforeCall.contains(
             "let explicitWorkoutNeedsMotion = explicitWorkoutIntentActive"
-        ), "ordinary process launch must gate motion requalification on an explicit workout lease")
-        XCTAssertFalse(String(source[..<launchCall.lowerBound].suffix(1_500)).contains(
+        ), "an explicit workout lease must remain one authorization for requalification")
+
+        // 2026-08-19 (field report items 6 and 10): the explicit workout lease is
+        // no longer the ONLY authorization. Requiring it made a pure-HR fallback
+        // terminal for every passive user — the field device sat at imuFrames=0
+        // for 5.8 days with cleanOwnerState=fallback_active because no workout
+        // happened to be active at a launch. A bounded passive retry now also
+        // authorizes it. The invariants that must still hold:
+        XCTAssertTrue(launchBody.contains("|| passiveRequalifyDue"),
+                      "a physically qualified fallback must be recoverable without a workout")
+        XCTAssertTrue(beforeCall.contains(
+            "Self.protectedR10FallbackShouldPassivelyRequalify("
+        ), "the passive retry must go through the bounded predicate, not an ad-hoc check")
+        XCTAssertTrue(beforeCall.contains("forKey: Self.protectedR10StableTransportQualifiedAtKey"),
+                      "the passive retry must demand the same prior physical qualification credential")
+        // UNCHANGED SAFETY PROPERTY: the all-day 0x69 bank lease still may not
+        // authorize a realtime-R10 requalification. The passive retry is gated on
+        // a 12 h timer plus prior qualification, never on the bank lease.
+        XCTAssertFalse(beforeCall.suffix(2_500).contains(
             "explicitWorkoutIntentActive\n                || persistedMotionLeaseIsCurrent"
         ), "the all-day 0x69 bank lease must not authorize realtime-R10 requalification")
     }
@@ -10613,6 +10631,72 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
     /// the old boolean latch — cleared only by a fresh accepted HR sample that
     /// a wedged session cannot produce — coalesced every later replacement into
     /// a no-op forever.
+    /// 2026-08-19 field pull: motion fell back to pure-HR on 2026-08-13
+    /// 07:10:09 and was still dead 5.8 days later — `imuFrames = 0`,
+    /// `cleanOwnerState = fallback_active`, and `requalifyAttemptAt` still
+    /// reading 2026-08-13 06:22, i.e. 48 minutes BEFORE the fallback. The only
+    /// escape required an explicit manual workout intent to be active at
+    /// process launch, so passive all-day wear could never retry. Nap detection
+    /// and sleep staging are both hard-gated on validated motion, so both were
+    /// structurally unreachable for the whole period.
+    func testPureHRFallbackRequalifiesPassivelyInsteadOfStayingTerminal() {
+        let interval: TimeInterval = 12 * 60 * 60
+        let fallbackAt = Date(timeIntervalSince1970: 1_786_585_209)   // 2026-08-13 07:10:09
+        let qualifiedAt = 1_785_099_179.0                             // 2026-07-27 02:22:59
+        func due(now: Date, lastAttemptAt: Double?) -> Bool {
+            AtriaBLEManager.protectedR10FallbackShouldPassivelyRequalify(
+                priorQualifiedAt: qualifiedAt,
+                fallbackAt: fallbackAt.timeIntervalSince1970,
+                lastAttemptAt: lastAttemptAt,
+                interval: interval,
+                now: now.timeIntervalSince1970
+            )
+        }
+
+        // THE FIELD CASE: 5.8 days of pure-HR wear with no workout must retry.
+        XCTAssertTrue(due(now: fallbackAt.addingTimeInterval(5.8 * 86_400),
+                          lastAttemptAt: 1_786_582_336),   // the pre-fallback attempt
+                      "a days-old fallback must not stay terminal just because no workout was started")
+
+        // A flapping link is not a fallback worth re-probing: hold for the interval.
+        XCTAssertFalse(due(now: fallbackAt.addingTimeInterval(interval - 1), lastAttemptAt: nil),
+                       "a fresh fallback must settle before any passive retry")
+        XCTAssertTrue(due(now: fallbackAt.addingTimeInterval(interval), lastAttemptAt: nil))
+
+        // At most one passive attempt per interval, so a strap that genuinely
+        // cannot carry the dense stream does not churn the radio every launch.
+        let firstAttempt = fallbackAt.addingTimeInterval(interval)
+        XCTAssertFalse(due(now: firstAttempt.addingTimeInterval(interval - 1),
+                           lastAttemptAt: firstAttempt.timeIntervalSince1970))
+        XCTAssertTrue(due(now: firstAttempt.addingTimeInterval(interval),
+                          lastAttemptAt: firstAttempt.timeIntervalSince1970))
+
+        // The credential the workout cutover demands is still required: an
+        // unqualified strap is never turned into a live R10 experiment.
+        XCTAssertFalse(
+            AtriaBLEManager.protectedR10FallbackShouldPassivelyRequalify(
+                priorQualifiedAt: nil,
+                fallbackAt: fallbackAt.timeIntervalSince1970,
+                lastAttemptAt: nil,
+                interval: interval,
+                now: fallbackAt.addingTimeInterval(30 * 86_400).timeIntervalSince1970
+            ),
+            "no prior physical qualification means no passive retry, ever"
+        )
+        // No fallback recorded at all is not an invitation to probe.
+        XCTAssertFalse(
+            AtriaBLEManager.protectedR10FallbackShouldPassivelyRequalify(
+                priorQualifiedAt: qualifiedAt,
+                fallbackAt: nil,
+                lastAttemptAt: nil,
+                interval: interval,
+                now: fallbackAt.timeIntervalSince1970
+            )
+        )
+        // A backwards clock fails open once rather than stranding motion forever.
+        XCTAssertTrue(due(now: fallbackAt.addingTimeInterval(-86_400), lastAttemptAt: nil))
+    }
+
     func testSilentStreamCentralRebuildPermitReArmsAfterAQuietInterval() {
         let interval: TimeInterval = 10 * 60
         let issuedAt = Date(timeIntervalSince1970: 1_787_070_393)
