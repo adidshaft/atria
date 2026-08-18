@@ -78,7 +78,7 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 8 | Stress reads low | ANALYSED, not yet changed | HRV term weight ~0 at low HR; see root-causes doc |
 | 9 | Sleep-view stress vs general stress disagree (pinned 3/high) | **FIXED** | full scale was rest+14 vs a SLEEPING baseline; rebanded |
 | 10 | Sleep stages not working | **PARTLY FIXED** (I + gate B) | motion root fixed; HR gap gate 15s→90s to match its own documented invariant |
-| 11 | Notifications never fire at the right moment | TODO | `notification.sleepEvent.lastKind=morning_summary`, `lastDay=2026-08-18` |
+| 11 | Notifications never fire at the right moment | **1 of 5 FIXED** (T) | workout class un-silenced; (1)(2)(3)(5) open — see T |
 | 12 | 5 GB+ data size, need raw/insight retention tiers | **PART 1/3 FIXED** (L) | 2.13 GB dedupe tier reclaimed (`32f4e598`); part 2 = wire compression (M); part 3 = fence + raw prune (K) |
 | 13 | Insight→suggestion engine | TODO | |
 | 14 | Rings cropped in scroll-up floating overlay | **FIXED** (D) | |
@@ -544,6 +544,45 @@ it for nap/display classification, so rewriting it would be a migration with no 
 
 Tests cover the four device shapes that were re-offered, assert the two genuinely-automatic records stay
 extendable (the fix must not freeze the auto path it was built for), and cover the replacement guard.
+
+## T. Item 11 defect (4) FIXED — a 13-day-stale ticket was silencing every workout notification
+
+Item 11 decomposes into five independent defects (full detail in `.claude/field-report-root-causes.md`;
+note the catch-up-marker theory I first floated was REFUTED — `catchUpMarkerFrontierKey` is read at
+exactly one site and feeds only the "Catch-up complete" banner). This pass fixes (4), the one that is
+device-proven, bounded, and pure loss with no tradeoff.
+
+`reviewNotificationsProtectedByLiveCapture` returned
+`status == .connected && rangeLossBackfillPending && sessionSampleCount > 0`.
+`rangeLossBackfillPending` is a **durable ticket that only new rows can acknowledge** — not a statement
+that anything is filling right now. On the field device it has been `true` since **2026-08-06, thirteen
+days**, and the strap is worn/connected/streaming almost continuously, so the guard returned true
+essentially always and **every** workout notification was dropped with
+`reason: "live_capture_protected_range_loss_backfill"` — including around the 21:42:50
+`workout_start_boundary` journal close for the Strength workout the user reported. That is item 11's
+"workout detected — never shows", completely.
+
+**Fix:** extracted a pure `reviewIsProtectedByLiveCapture(...)` that bounds the ticket's authority by its
+own age (`liveCaptureProtectionTicketFreshness = 6 h`). A backfill requested six hours ago is not
+evidence about the window in front of the user now. A missing or forward-dated timestamp is treated as
+stale on the same principle: an unprovable claim must not win. The protection itself is unchanged for
+its real purpose — a connected, streaming link with a genuinely fresh ticket still suppresses.
+
+Also stopped the suppression path wiping `workoutReviewLastCandidateIDKey`. A suppressed decision means
+"not now", not "the user has never seen this"; wiping the dedup receipt made every suppression pass
+re-arm an already-delivered candidate, so the notification the user eventually got could be one already
+dismissed.
+
+**Item 11 defects still open:**
+- (1) pass-bound not event-bound: `sleep_review`/`workout_review` fire `delay: 6` s after a launch/
+  scene-active/BGTask PASS, never at the physiological moment.
+- (2) discovery is foreground-only: `shouldEnqueueSleepReviewProjection` hard-requires
+  `applicationIsActive`, so a new nap/night cannot notify until the app is opened.
+- (3) fires while the user is already in the app: `schedule(...)` has no application-state guard, so the
+  banner lands ~6 s AFTER foregrounding. **Deliberately not fixed yet** — suppressing it without first
+  building event-time delivery would remove a badly-timed signal and replace it with nothing.
+- (5) there is no "Nap detected" push at all (`scheduleSleepLogged` excludes `nap_candidate`), and the
+  journal nudge is a clock alarm at median-wake + 15 min, not wake-anchored.
 
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
