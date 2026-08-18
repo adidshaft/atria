@@ -75,7 +75,7 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 5 | Duplicate sleep recommendation after stop/save | **FIXED** (R + S) | notification cap per episode; confirmed nights no longer extendable |
 | 6 | Nap detection dead (2–3 h evening nap missed) | **STRUCTURAL FIX PROVEN, STILL BLOCKED** (I + U) | passive requalify now fires (proven 04:04); strap fails `clean_owner_proof_disconnect` in 5 s, imu still 0 |
 | 7 | Steps distrust | **FIXED** | app dropped the `≥` the widget still showed; restored |
-| 8 | Stress reads low | **QUANTIFIED** (W), awaiting a calibration decision | High needs >=100.1 bpm vs observed awake max 97 — unreachable; reserve is 17x too wide |
+| 8 | Stress reads low | **FIXED** (W) | `6bb48d8b`; scoring v4 anchors on the learned awake reference; simulated 65.6/29.6/4.9 over 130k real samples |
 | 9 | Sleep-view stress vs general stress disagree (pinned 3/high) | **FIXED** | full scale was rest+14 vs a SLEEPING baseline; rebanded |
 | 10 | Sleep stages not working | **PARTLY FIXED, STILL BLOCKED** (I + gate B + U) | gate B fixed; motion retry now fires but proof still disconnects — stages stay fail-closed |
 | 11 | Notifications never fire at the right moment | **1 of 5 FIXED** (T) | workout class un-silenced; (1)(2)(3)(5) open — see T |
@@ -718,6 +718,21 @@ Simulated over the same 130,480-sample histogram, `center 85 / halfWidth 6` give
 **65.6 % calm, 29.6 % moderate, 4.9 % high** — inside the requested band. Note 85 is exactly the
 learned awake center already on the device, so this is anchored, not tuned. Both discard sites
 (`_ = awakeReference`) are gone.
+
+## X. Item 8 shipped as scoring **v4**, not as an edit to v3 — a failing test found the right design
+
+First attempt edited the v3 kernel in place. `AtriaStressMonitorTests.testLegacyAwakeReferenceCannotAlterV3Kernel`
+went red, and it was RIGHT: a versioned kernel must not be silently reinterpreted or persisted facts
+stop meaning what they meant when written. So v3 is untouched and the recalibration ships as v4; EMA
+continuity already refuses to blend across a version boundary
+(`previous.scoringVersion == scoringVersion`).
+
+Baseline discipline: ran `AtriaStressMonitorTests` at the pre-change commit and got **83/83 green**, so
+both red tests were mine to migrate rather than pre-existing. Final: **86/86 green** across Monitor,
+PhysiologicalModel, DailyTrend, ReadingFreshness and SessionStressContextPublication.
+
+Also note `AtriaStressState.rawActivation` is `fact.score / 3` — a 0...1 value. Zone edges are at
+**1/3 and 2/3**, not 1 and 2. My first test asserted the wrong scale.
 
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
