@@ -71,7 +71,7 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 1 | HR lags, catches up on foreground | **FIX WRITTEN** (C) | silent-GATT rebuild loop |
 | 2 | Stuck "waiting", last sync 9:22pm | **FIX WRITTEN** (C) | needs device soak to prove |
 | 3 | Workout HR not syncing | **FIX WRITTEN** (C) | journal closed at `workout_start_boundary` 21:42, stall began 21:56 |
-| 4 | Rings vanish at midnight | TODO | want: hold prior physiological day until night sleep completes |
+| 4 | Rings vanish at midnight | **FIXED** (N) | `7bd0dabd`; 18 h waking hold, incident fixture still refused |
 | 5 | Duplicate sleep recommendation after stop/save | TODO | |
 | 6 | Nap detection dead (2–3 h evening nap missed) | **ROOT FIXED** (I) | motion dead since 08-13; nap gate needs validated motion |
 | 7 | Steps distrust | **FIXED** | app dropped the `≥` the widget still showed; restored |
@@ -391,6 +391,80 @@ silent-stream latch) is fixed and proven, but this is a **second, independent wa
 symptom appears** — and it is live on the device right now. Not yet investigated; lead (b) of the item-15
 sweep in `.claude/field-report-root-causes.md` covers `publicationCheckpointMissing`.
 
+## P. Item 12 part 2 — DO NOT COMPRESS. Audit found ~15 blocking sites, one destructive.
+
+Five independent audits, each adversarially re-checked: **all five returned `blockers-found`.** The
+transparent read layer (`AtriaHistoricalJSONLInput`) is real but **not universal**. The trigger is
+`AtriaHistoricalArchiveCatalog.recordCompressedStorage` rewriting `chunk.relativePath` to the artifact
+(AtriaHistoricalArchiveCatalog.swift:467); that path then flows through
+`HistoricalArchive.catalogRawFileURLs()` (:7602) into `recentReadableFileURLs()` (:7612) and
+`AtriaHistoricalArchiveDurableStore(existingArchiveURLs:)` (:2812), handing `.atria-deflate` files
+verbatim to code that assumes plain JSONL.
+
+**DESTRUCTIVE — `AtriaHistoricalArchiveDurableStore.repairTornJSONLTail` (:1019).** Opens every
+registered archive `forUpdating`; if the last byte is not `0x0A` it truncates back to the last `0x0A`,
+and **truncates to 0 if there is none**. DEFLATE bytes rarely end in `0x0A`, so this would irreversibly
+destroy compressed chunks after their plain sources were unlinked.
+(My own L1 streaming compaction calls this too, but only on `identity.jsonl`, which is never a catalog
+chunk and never compressed — safe.)
+
+**Silent data loss:** `tailContent` (:9089) does a byte-tail `seek` — meaningless in a deflate stream;
+`loadGravitySamples` (:8701) `String(contentsOf:encoding:.utf8)` on DEFLATE returns `[]` per file while
+still reporting `.complete`.
+
+**Offset addressing dies:** `indexEntryMatchesRawArchive` (:1696) seeks a stored `lineOffset`; `scanArchive`
+(:2049) mints physical offsets. Every `IndexEntry` and every SQLite lookup row is offset-addressed, so the
+dedupe accelerator degrades permanently.
+
+**Fails OPEN into the known memory problem:** the three sealed-bound prune predicates
+(HistoricalArchive.swift:8197, :8231, :7752) compare PHYSICAL `[.size]` against LOGICAL `chunk.byteCount`
+plus an mtime-vs-`sealedAt` check. Both fail for every compressed chunk, the exclusions fail open, and all
+686 chunks become unconditional scan candidates for every window — re-opening the already-proven 3.4 GB
+foreground memory blowup.
+
+**Sidecars orphaned:** `heartRateSidecarURL(forChunkRelativePath:)` (:7851) derives the sidecar filename
+FROM the chunk path, and `validHeartRateSidecarBinding` (:7884) requires `binding.relativePath ==
+chunk.relativePath`. The rename orphans all 351 sidecars, and `backfillHeartRateSidecars` (:7977) — no byte
+budget, no chunk cap, no thermal guard — fires from Sessions.swift:51310 on every deferred session load.
+
+### THE DECIDING ONE: compression and retirement are mutually exclusive as built
+
+`AtriaHistoricalRawRetirementExecutor.retire()` (:87) throws `compressedSourceUnsupported` whenever
+`chunk.compressedStorage != nil`. So **a compressed chunk can never be retired.** Worse,
+`recoverFirstPendingIntent` is the FIRST statement of every compaction pass (HistoricalArchive.swift:9380),
+so a chunk compressed while holding a durable retirement intent wedges the whole pass.
+
+Part 2 would therefore have made part 3 — the "raw kept a week or a month" the user actually asked for —
+**impossible**. Doing it first was exactly the wrong order.
+
+### Revised plan for item 12
+
+- ~~part 2 compress raw~~ **DROPPED.** Not a quick win: ~15 blocking sites, one destructive, and it blocks
+  retention. Revisit only if retention alone proves insufficient.
+- **part 3 is now the whole remaining job**, and it is the better one anyway: pruning raw beyond a horizon
+  DELETES the 2.99 GB outright rather than shrinking it, which is literally what the user asked for.
+  Retirement is intent-logged, transaction-gated, and (per the audit) fail-closed and safe in isolation.
+  Still needs the cooperative-deadline work from K before the fence can be lifted.
+
+## Q. Defensive guard shipped for the destructive path (item 15)
+
+Full audit persisted to `.claude/compression-readiness-audit.md` — **55 blocking / needs-change sites**,
+`safeToCompress: false`.
+
+Even though nothing compresses raw chunks today, the destructive one is worth closing now, because it is
+reachable the instant anyone wires compression: `recordCompressedStorage` rewrites `chunk.relativePath`
+to the artifact -> `HistoricalArchive.catalogRawFileURLs()` -> `durableStoreLocked()`'s
+`existingArchiveURLs` -> `repairTornJSONLTail` runs over every one at init (:372), on the cold rebuild
+(:407), in `registerArchiveIfNeeded` (:1054), and on the snapshot delta (:1160).
+
+`repairTornJSONLTail` now refuses any `.atria-deflate` path with a new
+`StoreError.compressedArtifactIsImmutable`. The guard lives at the WRITE, not only in the callers —
+losing user history to a future wiring mistake is not an acceptable failure mode. Test asserts the
+artifact is byte-identical after a refused repair and that plain-JSONL repair is unchanged.
+
+The remaining 54 sites are documented but NOT fixed; they only matter if compression is ever wired, and
+the current recommendation is that it should not be.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
@@ -419,9 +493,7 @@ purpose is to bound a RECOVERY action must be either persisted or interval-bound
 by the success it is blocking. Not acted on — flagged for the user.
 
 ## NEXT
-1. Item 12 part 2: compress raw segments (2.99 GB) — the "compressed cutover" never took effect on
-   device; 686 plain `.jsonl` files.
-2. Item 12 part 3: thread a cooperative deadline through `HistoricalArchive.compactArchiveConverging`
+1. Item 12 part 3 (compression DROPPED — see P): thread a cooperative deadline through `HistoricalArchive.compactArchiveConverging`
    (zero instrumentation today, see K), then lift `shouldExecuteArchiveWideMaintenance` and prune
    raw > 30 d.
 2. Items 4, 5, 11 — all three have verified root causes in `.claude/field-report-root-causes.md`.
