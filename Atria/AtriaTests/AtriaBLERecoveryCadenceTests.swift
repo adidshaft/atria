@@ -10595,8 +10595,69 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
                       "the replacement must retrieve/connect the known peripheral instead of entering an open scan")
         XCTAssertTrue(body.contains("pendingRecoveryReconnectReason = nil"))
         XCTAssertTrue(body.contains("freshScanFallbackTask?.cancel()"))
-        XCTAssertTrue(body.contains("silentStreamCentralRebuildIssued = true"),
-                      "a silent epoch receives only one central replacement")
+        XCTAssertTrue(body.contains("silentStreamCentralRebuildIssuedAt = now"),
+                      "the replacement must stamp when it was issued")
+        XCTAssertTrue(
+            body.contains("shouldReissueSilentStreamCentralRebuild("),
+            "coalescing must be interval-bounded, not a latch only fresh HR can clear"
+        )
+        XCTAssertFalse(
+            body.contains("silentStreamCentralRebuildIssued = true"),
+            "the self-locking boolean latch must not come back"
+        )
+    }
+
+    /// 2026-08-18 field stall: the phone sat 4.0 h with `raw_gap=14474 s`,
+    /// keepalive `silent`, `link.lastStatus=connecting` and 323 stall
+    /// reconnects. The first central replacement did not revive the stream, so
+    /// the old boolean latch — cleared only by a fresh accepted HR sample that
+    /// a wedged session cannot produce — coalesced every later replacement into
+    /// a no-op forever.
+    func testSilentStreamCentralRebuildPermitReArmsAfterAQuietInterval() {
+        let interval: TimeInterval = 10 * 60
+        let issuedAt = Date(timeIntervalSince1970: 1_787_070_393)
+
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReissueSilentStreamCentralRebuild(
+                lastIssuedAt: nil,
+                now: issuedAt,
+                retryInterval: interval
+            ),
+            "the first replacement of an outage is always permitted"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReissueSilentStreamCentralRebuild(
+                lastIssuedAt: issuedAt,
+                now: issuedAt.addingTimeInterval(interval - 1),
+                retryInterval: interval
+            ),
+            "the burst of watchdog ticks that follows one replacement still coalesces"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReissueSilentStreamCentralRebuild(
+                lastIssuedAt: issuedAt,
+                now: issuedAt.addingTimeInterval(interval),
+                retryInterval: interval
+            ),
+            "a quiet interval proves the replacement failed and must re-arm the permit"
+        )
+        // The exact field stall: 4.02 h of silence must not be a no-op.
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReissueSilentStreamCentralRebuild(
+                lastIssuedAt: issuedAt,
+                now: issuedAt.addingTimeInterval(14_474.9),
+                retryInterval: interval
+            ),
+            "a 4 h connected-and-silent link must keep receiving escape attempts"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReissueSilentStreamCentralRebuild(
+                lastIssuedAt: issuedAt,
+                now: issuedAt.addingTimeInterval(-3_600),
+                retryInterval: interval
+            ),
+            "a backwards clock must fail open, never strand the permit in the future"
+        )
     }
 
     func testDiagnosticClockParserBindsWHOOPRequestSequenceEcho() throws {

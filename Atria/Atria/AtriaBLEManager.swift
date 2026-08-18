@@ -4894,8 +4894,43 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var pendingRecoveryIntent: AutomaticRecoveryIntent = .repairPipeline
     private var lastStalledStreamRepairAt: Date?
     /// One fresh CoreBluetooth client session per unresolved HR outage. A real
-    /// accepted sample is the only success evidence that re-arms this permit.
-    private var silentStreamCentralRebuildIssued = false
+    /// accepted sample is the success evidence that re-arms this permit — but
+    /// it must not be the ONLY one. A wedged bluetoothd session is precisely
+    /// the state in which no accepted sample can arrive, so a boolean latch
+    /// cleared only by fresh HR self-locks exactly like the repair budget did
+    /// (see `shouldRestoreSilentStreamRepairBudget`): the first replacement
+    /// that fails to revive the stream permanently coalesces every later
+    /// request into a no-op and the link sits connected-and-silent forever.
+    /// The 2026-08-18 field stall proved it — 4.0 h of `raw_gap`, keepalive
+    /// `silent`, 323 stall reconnects, and not one further central rebuild.
+    /// Record WHEN the replacement was issued instead, and let a genuinely
+    /// quiet interval re-arm the permit. Coalescing still absorbs the burst of
+    /// watchdog ticks that immediately follow one replacement, which is the
+    /// only thing it was ever needed for.
+    private var silentStreamCentralRebuildIssuedAt: Date?
+    /// A central replacement retires the whole CoreBluetooth session, so it is
+    /// far heavier than a cancel/reissue and must stay rarer than the 5-minute
+    /// repair-budget refill. The guard only applies while the peripheral reads
+    /// `.connected` — a connected-but-silent link is pathological, not merely
+    /// out of range — so retrying on this cadence cannot spin against ordinary
+    /// absence.
+    private static let silentStreamCentralRebuildRetryInterval: TimeInterval = 10 * 60
+
+    /// Mirrors `shouldRestoreSilentStreamRepairBudget`: the permit is spent
+    /// while a replacement is still plausibly in flight, and restored once a
+    /// quiet interval proves it did not revive the stream.
+    nonisolated static func shouldReissueSilentStreamCentralRebuild(
+        lastIssuedAt: Date?,
+        now: Date,
+        retryInterval: TimeInterval = silentStreamCentralRebuildRetryInterval
+    ) -> Bool {
+        guard let lastIssuedAt else { return true }
+        let age = now.timeIntervalSince(lastIssuedAt)
+        // A backwards clock (travel, manual correction) must fail open once
+        // rather than strand the permit in the future.
+        guard age >= 0 else { return true }
+        return age >= retryInterval
+    }
     /// Timers do not reliably run while the phone is locked. Dense R10
     /// callbacks are therefore also a low-cost clock for repairing a silent
     /// standard heart-rate subscription.
@@ -19059,9 +19094,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let now = Date()
         let replaceWedgedSession = immediateConnectedRebuild
             && target.state == .connected
-        if replaceWedgedSession, silentStreamCentralRebuildIssued {
-            AtriaDebugLog("ATRIADBG ble_link status=central_rebuild_coalesced reason=%@ action=await_fresh_hr",
-                          reason)
+        if replaceWedgedSession,
+           !Self.shouldReissueSilentStreamCentralRebuild(
+               lastIssuedAt: silentStreamCentralRebuildIssuedAt,
+               now: now
+           ) {
+            AtriaDebugLog("ATRIADBG ble_link status=central_rebuild_coalesced reason=%@ issued_age_s=%.0f action=await_fresh_hr",
+                          reason,
+                          silentStreamCentralRebuildIssuedAt
+                              .map { now.timeIntervalSince($0) } ?? 0)
             return
         }
         if !replaceWedgedSession,
@@ -19082,7 +19123,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // granted execution slice. The replacement's powered-on callback
             // installs the saved-peripheral standing connect; no delayed Task,
             // scan, Bluetooth toggle, or user foregrounding is required.
-            silentStreamCentralRebuildIssued = true
+            silentStreamCentralRebuildIssuedAt = now
             freshScanFallbackTask?.cancel()
             freshScanFallbackTask = nil
             pendingRecoveryReconnectReason = nil
@@ -24213,7 +24254,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func completePostReconnectStreamRecoveryIfNeeded() {
         backgroundSoftHRRepairEscalationTask?.cancel()
         backgroundSoftHRRepairEscalationTask = nil
-        silentStreamCentralRebuildIssued = false
+        silentStreamCentralRebuildIssuedAt = nil
         if postReconnectSilentStreamRepairsSpent > 0 || backgroundReconnectLeaseReissueUsed {
             postReconnectSilentStreamRepairsSpent = 0
             backgroundReconnectLeaseReissueUsed = false

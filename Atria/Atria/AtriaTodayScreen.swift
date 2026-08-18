@@ -3230,13 +3230,25 @@ struct AtriaTodayCompactRingRail: View {
 private struct AtriaTodayCompactTriRing: View {
     let slots: [AtriaTriRingSlotContent]
 
+    /// `Circle()` inscribes itself in the frame, and `.stroke` straddles that
+    /// path — half the line width falls OUTSIDE the frame. The full-size hero
+    /// ring gets away with it because SwiftUI does not clip to bounds, but this
+    /// rail rasterizes through `.drawingGroup()`, whose offscreen buffer is
+    /// exactly the view's bounds. The outermost ring therefore lost its outer
+    /// 2.5 pt to the buffer edge and read as visibly cropped inside the
+    /// floating overlay (field report 2026-08-19, item 14). Inset every ring by
+    /// half its line width so the stroke lands wholly inside the frame.
+    private static let lineWidth: CGFloat = 5
+    private static let slotInset: CGFloat = 8
+    private static var strokeInset: CGFloat { lineWidth / 2 }
+
     var body: some View {
         ZStack {
             ForEach(slots, id: \.metric.title) { slot in
                 let index = slots.firstIndex(where: { $0.metric.title == slot.metric.title }) ?? 0
-                let inset = CGFloat(index) * 8
+                let inset = Self.strokeInset + CGFloat(index) * Self.slotInset
                 Circle()
-                    .stroke(slot.metric.tint.opacity(0.18), lineWidth: 5)
+                    .stroke(slot.metric.tint.opacity(0.18), lineWidth: Self.lineWidth)
                     .padding(inset)
                 // `fill == nil` is the deliberate learning sentinel; the full
                 // ring renders a dashed band for it. At this compact scale a
@@ -3246,7 +3258,7 @@ private struct AtriaTodayCompactTriRing: View {
                     Circle()
                         .trim(from: 0, to: min(max(fill, 0.025), 1))
                         .stroke(slot.metric.tint,
-                                style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                                style: StrokeStyle(lineWidth: Self.lineWidth, lineCap: .round))
                         .rotationEffect(.degrees(-90))
                         .padding(inset)
                 }
