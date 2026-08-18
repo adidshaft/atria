@@ -38738,7 +38738,7 @@ final class SessionStore: ObservableObject {
             $0.start < candidateEnd && $0.end > candidateStart
         }
         guard !overlapping.isEmpty,
-              !overlapping.contains(where: { isUserAuthoredSleepSource($0.source) }),
+              !overlapping.contains(where: { sleepRecordIsUserAuthored($0) }),
               overlapping.allSatisfy({ isExtendableAutoNight($0) }),
               let target = overlapping.max(by: { $0.duration < $1.duration }) else {
             return nil
@@ -38794,6 +38794,36 @@ final class SessionStore: ObservableObject {
         source.hasPrefix("manual_") || source.hasPrefix("user_adjusted_")
     }
 
+    /// The full authorship test: SOURCE alone is not sufficient evidence that
+    /// the user left a night alone.
+    ///
+    /// The plain Confirm button does not rewrite the source. `reviewedSleepSource`
+    /// returns the detector's own string verbatim whenever it is in
+    /// `explicitSleepSources` — `overnight_sleep`, `aggregate_sleep`,
+    /// `resumed_sleep`, `nap_candidate`, … — none of which carry a `manual_` or
+    /// `user_adjusted_` prefix. Only the Adjust -> Save path mints those. So a
+    /// night the user explicitly confirmed still looked like an untouched auto
+    /// night to `isExtendableAutoNight`, and the auto-extend path kept growing
+    /// it and re-offering it for review. That is field report 2026-08-19 item 5:
+    /// "even if you save it, there's another sleep recommendation that keeps on
+    /// going after it has been stopped."
+    ///
+    /// The 2026-08-19 device ledger measures it: of 38 confirmed sleeps, 21 had
+    /// a non-authored SOURCE, but 19 of those 21 carried
+    /// `confidence == user_confirmed_hr_only`. Only two were genuinely automatic
+    /// (`sleep_review_hr_only`/`low` and `auto_confirmed_sleep`/`medium`), and
+    /// those two must stay extendable.
+    ///
+    /// `confidence` already carries the missing signal, and the codebase already
+    /// reads it this way in `explicitUserSleepCorrection` and the sleep-stress
+    /// context authority. Reuse that idiom rather than rewriting the persisted
+    /// source string, which other code parses for nap/display classification.
+    nonisolated static func sleepRecordIsUserAuthored(_ sleep: UserConfirmedSleep) -> Bool {
+        isUserAuthoredSleepSource(sleep.source)
+            || sleep.confidence.hasPrefix("user_confirmed_")
+            || sleep.confidence.hasPrefix("manual_")
+    }
+
     /// Strict record atomicity (2026-08-12 user decision): two saved sleep
     /// activities can never overlap. A user save whose window intersects an
     /// existing confirmed record — other than the one it explicitly replaces —
@@ -38818,7 +38848,7 @@ final class SessionStore: ObservableObject {
     /// (not a nap) that the user did not author/edit.
     nonisolated static func isExtendableAutoNight(_ sleep: UserConfirmedSleep) -> Bool {
         !confirmedSleepSourceIsNap(source: sleep.source, duration: sleep.duration)
-            && !isUserAuthoredSleepSource(sleep.source)
+            && !sleepRecordIsUserAuthored(sleep)
     }
 
     /// Whether `candidate` should EXTEND the confirmed overnight night(s) it
@@ -38836,7 +38866,7 @@ final class SessionStore: ObservableObject {
                                                    candidate: AggregateSleepCandidate,
                                                    minGain: TimeInterval = 5 * 60) -> Bool {
         guard candidate.kind != "nap_candidate" else { return false }
-        if existing.contains(where: { isUserAuthoredSleepSource($0.source) && sleepWindowsOverlap($0, candidate: candidate) }) {
+        if existing.contains(where: { sleepRecordIsUserAuthored($0) && sleepWindowsOverlap($0, candidate: candidate) }) {
             return false
         }
         let overlappingNights = existing.filter { isExtendableAutoNight($0) && sleepWindowsOverlap($0, candidate: candidate) }

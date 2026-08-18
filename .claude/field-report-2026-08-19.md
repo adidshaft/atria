@@ -72,7 +72,7 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 2 | Stuck "waiting", last sync 9:22pm | **FIX WRITTEN** (C) | needs device soak to prove |
 | 3 | Workout HR not syncing | **FIX WRITTEN** (C) | journal closed at `workout_start_boundary` 21:42, stall began 21:56 |
 | 4 | Rings vanish at midnight | **FIXED** (N) | `7bd0dabd`; 18 h waking hold, incident fixture still refused |
-| 5 | Duplicate sleep recommendation after stop/save | **HALF FIXED** (R) | notification cap per episode; in-app card re-mint still open |
+| 5 | Duplicate sleep recommendation after stop/save | **FIXED** (R + S) | notification cap per episode; confirmed nights no longer extendable |
 | 6 | Nap detection dead (2–3 h evening nap missed) | **ROOT FIXED** (I) | motion dead since 08-13; nap gate needs validated motion |
 | 7 | Steps distrust | **FIXED** | app dropped the `≥` the widget still showed; restored |
 | 8 | Stress reads low | ANALYSED, not yet changed | HRV term weight ~0 at low HR; see root-causes doc |
@@ -511,6 +511,39 @@ Confirm, because `reviewedSleepSource` persists the detector's own source string
 `manual_`/`user_adjusted_` prefix `isUserAuthoredSleepSource` tests for, so `isExtendableAutoNight` still
 classifies an explicitly confirmed night as auto. See item 5 finding (A) in
 `.claude/field-report-root-causes.md`. Not yet fixed.
+
+## S. Item 5 (card half) FIXED — authorship was recorded in `confidence`, not `source`
+
+The user's other half: "even if you save it, there's another sleep recommendation that keeps on going."
+
+The plain **Confirm** button does not rewrite the source. `reviewedSleepSource` (Sessions.swift:35127)
+returns the detector's own string verbatim whenever it is in `explicitSleepSources` — `overnight_sleep`,
+`aggregate_sleep`, `resumed_sleep`, `nap_candidate`, `auto_confirmed_sleep`, … — and **none of those
+carry the `manual_` / `user_adjusted_` prefixes** that `isUserAuthoredSleepSource` tests for. Only the
+Adjust -> Save path mints those. So `isExtendableAutoNight` classified an explicitly user-confirmed night
+as an untouched auto night, the extend path kept growing it, and the review card kept coming back.
+
+**The device quantifies it.** Of 38 records in `atria.confirmedSleeps.v1`:
+
+| | count |
+|---|---|
+| user-authored SOURCE (`manual_*`, `user_adjusted_*`) | 17 |
+| non-authored source **but** `confidence == user_confirmed_hr_only` | **19** |
+| genuinely automatic (`sleep_review_hr_only`/`low`, `auto_confirmed_sleep`/`medium`) | 2 |
+
+So 19 of 38 saved nights were being treated as extendable auto nights. The authorship signal was
+present the whole time — in `confidence`, not `source`.
+
+**Fix:** new `sleepRecordIsUserAuthored(_:)` combining source prefixes with
+`confidence.hasPrefix("user_confirmed_")` / `"manual_"`. This is not a new idea — it is exactly the
+three-clause test `explicitUserSleepCorrection` (Sessions.swift:311) and the sleep-stress context
+authority (:8275) already use. `isExtendableAutoNight` and **both** companion guards
+(`sleepReviewExtensionTarget` :38741, `sleepExtendReplacement` :38869) now use it; all three shared the
+same source-only blind spot. The persisted source string is deliberately left alone — other code parses
+it for nap/display classification, so rewriting it would be a migration with no upside.
+
+Tests cover the four device shapes that were re-offered, assert the two genuinely-automatic records stay
+extendable (the fix must not freeze the auto path it was built for), and cover the replacement guard.
 
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
