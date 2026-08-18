@@ -9,6 +9,68 @@ import XCTest
 final class AtriaSleepExtendTests: XCTestCase {
     private func at(_ h: Double) -> Date { Date(timeIntervalSince1970: 1_800_000_000 + h * 3600) }
 
+    /// Field report 2026-08-19, item 5: "even if you save it, there's another
+    /// sleep recommendation that keeps on going after it has been stopped."
+    ///
+    /// The plain Confirm button does NOT rewrite the source — `reviewedSleepSource`
+    /// returns the detector's own string (`overnight_sleep`, `aggregate_sleep`,
+    /// `resumed_sleep`, …) verbatim. Only Adjust -> Save mints `user_adjusted_*`.
+    /// So an explicitly confirmed night still read as an untouched auto night and
+    /// the extend path kept growing it and re-offering it.
+    ///
+    /// The device ledger measures it: of 38 confirmed sleeps, 21 had a
+    /// non-authored source but 19 of those carried `confidence ==
+    /// user_confirmed_hr_only`. Authorship lives in the CONFIDENCE for that path.
+    func testPlainConfirmMakesANightNonExtendable() {
+        let night = sleep(source: "overnight_sleep",
+                          confidence: "user_confirmed_hr_only",
+                          start: at(0), end: at(7))
+        XCTAssertTrue(SessionStore.sleepRecordIsUserAuthored(night))
+        XCTAssertFalse(SessionStore.isExtendableAutoNight(night),
+                       "a night the user explicitly confirmed must never be auto-extended")
+
+        // The exact device shapes that were being re-offered.
+        for source in ["overnight_sleep", "aggregate_sleep", "resumed_sleep", "nap_candidate"] {
+            XCTAssertFalse(
+                SessionStore.isExtendableAutoNight(
+                    sleep(source: source, confidence: "user_confirmed_hr_only",
+                          start: at(0), end: at(7))
+                ),
+                "\(source) + user_confirmed_hr_only must not be extendable"
+            )
+        }
+    }
+
+    /// The two records on the device that were GENUINELY automatic must stay
+    /// extendable — this fix must not freeze the auto path it was built for.
+    func testGenuinelyAutomaticNightsRemainExtendable() {
+        XCTAssertTrue(SessionStore.isExtendableAutoNight(
+            sleep(source: "auto_confirmed_sleep", confidence: "medium",
+                  start: at(0), end: at(7))
+        ))
+        XCTAssertTrue(SessionStore.isExtendableAutoNight(
+            sleep(source: "overnight_sleep", confidence: "high",
+                  start: at(0), end: at(7))
+        ))
+        XCTAssertFalse(SessionStore.sleepRecordIsUserAuthored(
+            sleep(source: "auto_confirmed_sleep", confidence: "medium",
+                  start: at(0), end: at(7))
+        ))
+    }
+
+    /// A confirmed night must also be immune to the two companion guards, not
+    /// just `isExtendableAutoNight` — they shared the same source-only blind spot.
+    func testConfirmedNightBlocksTheExtendReplacementPath() {
+        let confirmed = sleep(source: "overnight_sleep",
+                              confidence: "user_confirmed_hr_only",
+                              start: at(0), end: at(7))
+        XCTAssertFalse(SessionStore.sleepExtendReplacement(
+            existing: [confirmed],
+            candidate: candidate(start: at(0), end: at(9))
+        ), "a longer re-mint must not replace a night the user confirmed")
+    }
+
+
     private func candidate(kind: String = "unambiguous_hr",
                            start: Date,
                            end: Date,
@@ -33,10 +95,13 @@ final class AtriaSleepExtendTests: XCTestCase {
             denseLongHROnlyReviewQualified: false)
     }
 
-    private func sleep(source: String = "auto_sleep", start: Date, end: Date) -> UserConfirmedSleep {
+    private func sleep(source: String = "auto_sleep",
+                       confidence: String = "high",
+                       start: Date,
+                       end: Date) -> UserConfirmedSleep {
         UserConfirmedSleep(
             id: "\(source)-\(Int(start.timeIntervalSince1970))", createdAt: start,
-            start: start, end: end, source: source, confidence: "high", sessions: 1,
+            start: start, end: end, source: source, confidence: confidence, sessions: 1,
             samples: 100, avgHR: 55, peakHR: 70, restingHR: 52, hrv: 40, hrvWindowCount: 10,
             duration: end.timeIntervalSince(start), span: end.timeIntervalSince(start),
             reason: "test", motionSource: "none", motionValidated: false, stageSegments: nil)
