@@ -294,6 +294,7 @@ final class AtriaHistoricalArchiveDurableStore {
     private let indexURL: URL
     private let indexSnapshotURL: URL
     private let receiptStateURL: URL
+    private let pruneStateURL: URL
     private let encoder: JSONEncoder
     private let fileSynchronizer: (URL) throws -> Void
     private let receiptFileSynchronizer: (URL) throws -> Void
@@ -328,13 +329,29 @@ final class AtriaHistoricalArchiveDurableStore {
         self.receiptStateURL = indexURL.deletingPathExtension()
             .appendingPathExtension("durability.json")
             .standardizedFileURL
+        self.pruneStateURL = indexURL.deletingPathExtension()
+            .appendingPathExtension("prune.json")
+            .standardizedFileURL
         self.fileManager = fileManager
         self.fileSynchronizer = fileSynchronizer ?? Self.synchronizeFile
         self.receiptFileSynchronizer = receiptFileSynchronizer ?? Self.synchronizeFile
         self.identityRetention = identityRetention
         self.maximumReceiptBatchIdentities = maximumReceiptBatchIdentities
         self.now = now
-        self.lastPruneAtUnix = now().timeIntervalSince1970
+        // Seeding this from `now()` made retention unreachable on any phone that
+        // does not keep one process alive for six unbroken hours — i.e. on
+        // essentially every real phone. The 6 h maintenance interval below is
+        // measured from this value, so a relaunch reset it and the prune never
+        // came due. Same defect class as the silent-stream rebuild latch and the
+        // pure-HR requalification gate (2026-08-19): process-local state that
+        // only a long-lived process can advance. Persist it so the interval is
+        // wall-clock, not uptime.
+        self.lastPruneAtUnix = Self.loadLastPruneAtUnix(
+            from: indexURL.deletingPathExtension()
+                .appendingPathExtension("prune.json")
+                .standardizedFileURL,
+            fallback: now().timeIntervalSince1970
+        )
         self.encoder = JSONEncoder()
         self.encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         self.liveIdentityLookup = Self.openLiveIdentityLookup(
@@ -757,11 +774,30 @@ final class AtriaHistoricalArchiveDurableStore {
             return key
         }
         lastPruneAtUnix = pruningDate.timeIntervalSince1970
+        persistLastPruneAtUnixBestEffort()
         guard fullyMaterializedIdentityIndex else {
             for key in expired {
                 statesByKey.removeValue(forKey: key)
             }
-            return max(lookupRemoved, expired.count)
+            // `rebuildDerivedIndex` is the only path that rewrites the canonical
+            // JSONL, and it needs the whole index in memory — exactly what this
+            // branch has already refused. So before this, an index that grew
+            // past `maximumEagerIdentityIndexBytes` could NEVER shrink again:
+            // too big to load, therefore too big to compact, therefore bigger
+            // still. The 2026-08-19 field pull caught it at 1.29 GB in a single
+            // file, 161x the 8 MiB eager threshold, holding 38 days of history
+            // under a 14-day retention policy.
+            //
+            // Compact by streaming instead. This needs no materialization, so
+            // it is legal in exactly the state that used to be terminal, and
+            // once the file drops back under the eager threshold the next
+            // launch materializes normally and `rebuildDerivedIndex` performs
+            // the per-key dedupe this pass deliberately does not attempt.
+            let compacted = (try? compactIdentityIndexOutsideHorizonLocked(
+                cutoff: cutoff,
+                protectedKeys: protectedKeys
+            )) ?? 0
+            return max(max(lookupRemoved, expired.count), compacted)
         }
         guard !expired.isEmpty else { return 0 }
         var retained = statesByKey
@@ -770,6 +806,211 @@ final class AtriaHistoricalArchiveDurableStore {
         statesByKey = retained
         persistDerivedIndexSnapshotBestEffort()
         return expired.count
+    }
+
+    /// Streaming, bounded-memory compaction of the canonical identity JSONL.
+    ///
+    /// Keeps every line whose `_atriaHistoryObservedAtUnix` is at or after
+    /// `cutoff`, plus every line belonging to an open drain batch regardless of
+    /// age. Deliberately does NOT dedupe by key: readers already resolve
+    /// duplicates by taking the newest `observedAtUnix` (see the startup rescan
+    /// and `loadValidatedDerivedIndex`), so dropping only by age is sufficient
+    /// to break the size deadlock while keeping this pass single-pass and
+    /// constant-memory. Per-key dedupe happens for free on the next launch,
+    /// once the file is small enough to materialize again.
+    ///
+    /// Crash safety is the same contract `rebuildDerivedIndex` uses: build a
+    /// temp file, fsync it, atomically replace, fsync the directory. A death at
+    /// any point leaves either the old complete file or the new complete file.
+    private func compactIdentityIndexOutsideHorizonLocked(
+        cutoff: TimeInterval,
+        protectedKeys: Set<String>
+    ) throws -> Int {
+        guard fileManager.fileExists(atPath: indexURL.path) else { return 0 }
+        let originalBytes = ((try? fileManager.attributesOfItem(
+            atPath: indexURL.path
+        )[.size]) as? NSNumber)?.uint64Value ?? 0
+        guard originalBytes > 0 else { return 0 }
+
+        // A torn tail would otherwise be copied forward as a permanent bad line.
+        _ = try Self.repairTornJSONLTail(at: indexURL)
+
+        let reader = try FileHandle(forReadingFrom: indexURL)
+        defer { try? reader.close() }
+        let temporaryURL = indexURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(indexURL.lastPathComponent).compact.\(UUID().uuidString).tmp")
+        guard fileManager.createFile(atPath: temporaryURL.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let writer = try FileHandle(forWritingTo: temporaryURL)
+
+        var dropped = 0
+        var kept = 0
+        var pending = Data()
+        var outputBuffer = Data()
+        outputBuffer.reserveCapacity(Self.identityCompactionBufferBytes)
+
+        func flushOutput(force: Bool) throws {
+            guard !outputBuffer.isEmpty,
+                  force || outputBuffer.count >= Self.identityCompactionBufferBytes else { return }
+            try writer.write(contentsOf: outputBuffer)
+            outputBuffer.removeAll(keepingCapacity: true)
+        }
+
+        func consider(line: Data) throws {
+            guard !line.isEmpty else { return }
+            if Self.identityLineIsRetained(line,
+                                           cutoff: cutoff,
+                                           protectedKeys: protectedKeys) {
+                kept += 1
+                outputBuffer.append(line)
+                outputBuffer.append(0x0a)
+                try flushOutput(force: false)
+            } else {
+                dropped += 1
+            }
+        }
+
+        do {
+            while let chunk = try reader.read(upToCount: Self.identityCompactionBufferBytes),
+                  !chunk.isEmpty {
+                pending.append(chunk)
+                while let newline = pending.firstIndex(of: 0x0a) {
+                    let line = pending[pending.startIndex..<newline]
+                    try consider(line: Data(line))
+                    pending = Data(pending[pending.index(after: newline)...])
+                }
+            }
+            // `repairTornJSONLTail` guarantees a trailing newline, so `pending`
+            // is normally empty here; keep the residue honest if it is not.
+            try consider(line: pending)
+            try flushOutput(force: true)
+            try writer.synchronize()
+            try writer.close()
+        } catch {
+            try? writer.close()
+            try? fileManager.removeItem(at: temporaryURL)
+            throw error
+        }
+
+        guard dropped > 0 else {
+            try? fileManager.removeItem(at: temporaryURL)
+            return 0
+        }
+
+        _ = try fileManager.replaceItemAt(indexURL, withItemAt: temporaryURL)
+        try Self.synchronizeDirectory(indexURL.deletingLastPathComponent())
+        let newBytes = ((try? fileManager.attributesOfItem(
+            atPath: indexURL.path
+        )[.size]) as? NSNumber)?.uint64Value ?? 0
+        AtriaDebugLog("ATRIADBG historical_identity_index status=stream_compacted kept=%d dropped=%d bytes=%llu->%llu action=%@",
+                      kept,
+                      dropped,
+                      originalBytes,
+                      newBytes,
+                      newBytes <= Self.productionMaximumEagerIdentityIndexBytes
+                        ? "eager_materialization_restored_next_launch"
+                        : "still_bounded_cold_lookup")
+        return dropped
+    }
+
+    /// Retention clock, exposed for the relaunch-survival test.
+    var lastPruneAtUnixForTesting: TimeInterval {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastPruneAtUnix
+    }
+
+    private static let identityCompactionBufferBytes = 64 * 1024
+
+    /// A forward-dated marker (clock correction, restore to a different device)
+    /// must not park retention indefinitely, so anything in the future is
+    /// discarded in favour of the caller's clock.
+    private static func loadLastPruneAtUnix(from url: URL,
+                                            fallback: TimeInterval) -> TimeInterval {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any],
+              let stored = dictionary["lastPruneAtUnix"] as? Double,
+              stored.isFinite,
+              stored <= fallback else { return fallback }
+        return stored
+    }
+
+    private func persistLastPruneAtUnixBestEffort() {
+        guard let data = try? JSONSerialization.data(
+            withJSONObject: ["lastPruneAtUnix": lastPruneAtUnix],
+            options: [.sortedKeys]
+        ) else { return }
+        // Retention bookkeeping must never invalidate a raw+index fsync that
+        // already made a BLE drain ACK-safe, so every failure here is silent.
+        try? data.write(to: pruneStateURL, options: .atomic)
+    }
+
+    /// True when a raw JSONL line must survive compaction.
+    ///
+    /// The decorated prefix written by `decoratedLine` puts the key and the
+    /// observation stamp at fixed leading positions, so a byte scan resolves
+    /// almost every line without building a dictionary — which matters at
+    /// millions of lines. Anything the scan cannot resolve falls back to a
+    /// real parse, and anything that still cannot be resolved is RETAINED:
+    /// an unreadable line must never be silently deleted by a maintenance pass.
+    nonisolated static func identityLineIsRetained(
+        _ line: Data,
+        cutoff: TimeInterval,
+        protectedKeys: Set<String>
+    ) -> Bool {
+        guard let observedAt = scanDecoratedObservedAt(line) else {
+            guard let object = try? JSONSerialization.jsonObject(with: line),
+                  let dictionary = object as? [String: Any],
+                  let parsed = dictionary[identityObservedAtProperty] as? Double else {
+                return true
+            }
+            if let key = dictionary[identityProperty] as? String,
+               protectedKeys.contains(key) {
+                return true
+            }
+            return parsed >= cutoff
+        }
+        if !protectedKeys.isEmpty,
+           let key = scanDecoratedKey(line),
+           protectedKeys.contains(key) {
+            return true
+        }
+        return observedAt >= cutoff
+    }
+
+    private static func scanDecoratedObservedAt(_ line: Data) -> Double? {
+        guard let range = line.range(of: Data(
+            "\"\(identityObservedAtProperty)\":".utf8
+        )) else { return nil }
+        var index = range.upperBound
+        var digits = [UInt8]()
+        while index < line.endIndex {
+            let byte = line[index]
+            if byte == 0x2c || byte == 0x7d { break }
+            digits.append(byte)
+            index = line.index(after: index)
+        }
+        guard !digits.isEmpty,
+              let text = String(bytes: digits, encoding: .utf8) else { return nil }
+        return Double(text)
+    }
+
+    private static func scanDecoratedKey(_ line: Data) -> String? {
+        guard let range = line.range(of: Data(
+            "\"\(identityProperty)\":\"".utf8
+        )) else { return nil }
+        var index = range.upperBound
+        var bytes = [UInt8]()
+        while index < line.endIndex {
+            let byte = line[index]
+            if byte == 0x22 { break }
+            if byte == 0x5c { return nil }   // escaped: let the parser handle it
+            bytes.append(byte)
+            index = line.index(after: index)
+        }
+        return String(bytes: bytes, encoding: .utf8)
     }
 
     /// Removes bytes after the final newline. A complete JSONL line is never
