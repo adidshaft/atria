@@ -73,11 +73,11 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 3 | Workout HR not syncing | **FIX WRITTEN** (C) | journal closed at `workout_start_boundary` 21:42, stall began 21:56 |
 | 4 | Rings vanish at midnight | **FIXED** (N) | `7bd0dabd`; 18 h waking hold, incident fixture still refused |
 | 5 | Duplicate sleep recommendation after stop/save | **FIXED** (R + S) | notification cap per episode; confirmed nights no longer extendable |
-| 6 | Nap detection dead (2–3 h evening nap missed) | **ROOT FIXED** (I) | motion dead since 08-13; nap gate needs validated motion |
+| 6 | Nap detection dead (2–3 h evening nap missed) | **STRUCTURAL FIX PROVEN, STILL BLOCKED** (I + U) | passive requalify now fires (proven 04:04); strap fails `clean_owner_proof_disconnect` in 5 s, imu still 0 |
 | 7 | Steps distrust | **FIXED** | app dropped the `≥` the widget still showed; restored |
 | 8 | Stress reads low | ANALYSED, not yet changed | HRV term weight ~0 at low HR; see root-causes doc |
 | 9 | Sleep-view stress vs general stress disagree (pinned 3/high) | **FIXED** | full scale was rest+14 vs a SLEEPING baseline; rebanded |
-| 10 | Sleep stages not working | **PARTLY FIXED** (I + gate B) | motion root fixed; HR gap gate 15s→90s to match its own documented invariant |
+| 10 | Sleep stages not working | **PARTLY FIXED, STILL BLOCKED** (I + gate B + U) | gate B fixed; motion retry now fires but proof still disconnects — stages stay fail-closed |
 | 11 | Notifications never fire at the right moment | **1 of 5 FIXED** (T) | workout class un-silenced; (1)(2)(3)(5) open — see T |
 | 12 | 5 GB+ data size, need raw/insight retention tiers | **PART 1/3 FIXED** (L) | 2.13 GB dedupe tier reclaimed (`32f4e598`); part 2 = wire compression (M); part 3 = fence + raw prune (K) |
 | 13 | Insight→suggestion engine | TODO | |
@@ -584,6 +584,40 @@ dismissed.
 - (5) there is no "Nap detected" push at all (`scheduleSleepLogged` excludes `nap_candidate`), and the
   journal nudge is a clock alarm at median-wake + 15 min, not wake-anchored.
 
+## U. Installed the full fix set 04:05 — the motion fix WORKS mechanically, and exposes a second, physical failure
+
+Built clean at `4ec5096e`; binary verified to carry every fix by string literal
+(`atria.notification.sleepReview.notifiedCountByStart.v1`, `issued_age_s`, `passive_requalify_due`,
+`stream_compacted`, `Awaiting current sleep`, `elevated period` — all present).
+
+**The passive requalification fired, for the first time in 5.8 days.** Proof:
+
+| key | before | after launch |
+|---|---|---|
+| `protectedR10.requalifyAttemptAt` | 08-13 06:22 (stuck 5.8 d) | **08-19 04:04:48** |
+| `protectedR10.activationSentAt` | 08-13 06:22 | **08-19 04:04:56** |
+| `protectedR10.cleanOwner` | `pure_hr_v8` | **`pure_hr_v10`** |
+| `protectedR10.passiveReprobeFailureCount` | 10 | **11** |
+| `protectedR10.workoutRequalifyLeaseStartedAt` | 08-13 05:45 | **08-13 05:45 (unchanged)** |
+
+The owner moving v8 -> v10 is the mechanical proof: `fallbackOwner` is `.pureHRV10` only when the
+failing owner was `.protectedV9`, so `promoteFallbackToProtectedV9ForLaunch` genuinely ran. And the
+workout lease timestamp is UNCHANGED, so this was not a workout-triggered attempt — it was the new
+passive path.
+
+**But the attempt failed, and that is a different problem.** `fallbackAt = 04:05:01`, five seconds after
+the activation, with `cleanOwnerFailureReason = clean_owner_proof_disconnect`. `protocol.imuFrames` is
+still 0.
+
+So the structural defect (a fallback that could never retry) is fixed and proven, and behind it sits a
+**physical** one: the strap disconnects during the clean-owner proof. That failure was invisible before
+because the retry could never happen. **Items 6 and 10 are therefore NOT resolved by this fix alone** —
+the passive path will now retry every 12 h, but until the proof itself succeeds there is still no motion,
+so naps stay undetected and stages stay fail-closed. The ledger must not claim otherwise.
+
+Also observed after relaunch: the drain frontier is MOVING again (22:32 -> 22:33 -> 22:35) after 47 min
+parked, and `stallReconnects` held at 331 — no recurrence of the original item-1/2/3 stall.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
@@ -612,7 +646,9 @@ purpose is to bound a RECOVERY action must be either persisted or interval-bound
 by the success it is blocking. Not acted on — flagged for the user.
 
 ## NEXT
-1. Item 12 part 3 (compression DROPPED — see P): thread a cooperative deadline through `HistoricalArchive.compactArchiveConverging`
+1. Items 6/10: investigate `clean_owner_proof_disconnect` — the strap drops ~5 s after the R10
+   activation command. This is now the ONLY thing between the user and working naps/stages.
+2. Item 12 part 3 (compression DROPPED — see P): thread a cooperative deadline through `HistoricalArchive.compactArchiveConverging`
    (zero instrumentation today, see K), then lift `shouldExecuteArchiveWideMaintenance` and prune
    raw > 30 d.
 2. Items 4, 5, 11 — all three have verified root causes in `.claude/field-report-root-causes.md`.
