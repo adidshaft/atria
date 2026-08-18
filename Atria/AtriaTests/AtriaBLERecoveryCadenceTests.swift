@@ -10697,6 +10697,37 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(due(now: fallbackAt.addingTimeInterval(-86_400), lastAttemptAt: nil))
     }
 
+    /// 2026-08-19: the passive requalification now fires (proven on device at
+    /// 04:04:48), but the proof still fails with `clean_owner_proof_disconnect`
+    /// and the single-slot forensic key is overwritten by each retry. At a 12 h
+    /// retry cadence that makes an intermittent failure undiagnosable — the one
+    /// record we have says `ambient_or_unattributed`, which cannot separate "the
+    /// activation killed the link" from "this link was dying anyway". Keep a
+    /// bounded history so the comparison becomes possible.
+    func testProofDisconnectHistoryKeepsTheNewestBoundedRun() {
+        func entry(_ n: Int) -> Data { Data("proof-\(n)".utf8) }
+
+        var history: [Data] = []
+        for index in 0..<20 {
+            history = AtriaBLEManager.appendingProofDisconnectHistory(
+                entry(index), to: history, limit: 8
+            )
+        }
+        XCTAssertEqual(history.count, 8, "the ring must stay bounded")
+        XCTAssertEqual(history.first, entry(19), "newest first")
+        XCTAssertEqual(history.last, entry(12), "oldest retained is limit-1 back")
+
+        // A fresh device starts empty and keeps the first record.
+        XCTAssertEqual(
+            AtriaBLEManager.appendingProofDisconnectHistory(entry(0), to: [], limit: 8),
+            [entry(0)]
+        )
+        // A zero/negative limit stores nothing rather than growing without bound.
+        XCTAssertTrue(
+            AtriaBLEManager.appendingProofDisconnectHistory(entry(0), to: [entry(1)], limit: 0).isEmpty
+        )
+    }
+
     func testSilentStreamCentralRebuildPermitReArmsAfterAQuietInterval() {
         let interval: TimeInterval = 10 * 60
         let issuedAt = Date(timeIntervalSince1970: 1_787_070_393)
