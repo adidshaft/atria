@@ -369,14 +369,20 @@ enum AtriaStressMonitor {
             hrvBaseline: AtriaPhysiologicalStressModel.robustHRVBaseline(
                 lnRMSSDValues: qualifiedLnRMSSD,
                 qualifiedDayCount: baseline.freshHRVSampleCount(now: now)
-            )
+            ),
+            // Field report 2026-08-19 item 8: this was computed, persisted and
+            // then discarded (`_ = awakeReference`). Without it the HR term is
+            // scored against the whole heart-rate reserve, which on the field
+            // device was 17x wider than the wearer's real quiet-awake spread.
+            awakeReference: awakeReference.map {
+                .init(center: $0.center, spread: $0.spread)
+            }
         )
         let motion: AtriaPhysiologicalStressModel.MotionContext = workoutActive
             ? .qualifiedActivity(intensity: 0.7)
             : .unavailable
         _ = zoneIndex
         _ = hrvFallbackRMSSD
-        _ = awakeReference
         guard let fact = AtriaPhysiologicalStressModel.evaluate(
             .init(end: now,
                   heartRates: samples,
@@ -3919,7 +3925,6 @@ final class AtriaStressMonitorStore: ObservableObject {
         } else {
             awakeReference = nil
         }
-        _ = awakeReference
 
         guard hasContact, heartRate > 0 else {
             previousMinuteFact = nil
@@ -3962,7 +3967,13 @@ final class AtriaStressMonitorStore: ObservableObject {
             restingHeartRate: baseline.restingHR ?? Double(restingMaxHR.rest),
             maximumHeartRate: Double(restingMaxHR.max),
             restingBaselineDayCount: baseline.freshRestingSampleCount(now: minute),
-            hrvBaseline: hrvBaseline
+            hrvBaseline: hrvBaseline,
+            // The live consumer of the learner above. Before this it was
+            // discarded, so every minute was scored against the heart-rate
+            // reserve instead of against this wearer (field report item 8).
+            awakeReference: awakeReference.map {
+                .init(center: $0.center, spread: $0.spread)
+            }
         )
 
         let motionContext: AtriaPhysiologicalStressModel.MotionContext

@@ -8,7 +8,19 @@ import Foundation
 /// equations below are Atria-owned and intentionally kept explicit so live and
 /// historical scoring can be reproduced without proprietary code.
 enum AtriaPhysiologicalStressModel {
-    static let scoringVersion = 3
+    /// v4 (2026-08-19, field report item 8): the HR term is anchored on the
+    /// wearer's learned quiet-awake reference when one exists, instead of on the
+    /// heart-rate reserve. See `hrStressCoordinate`.
+    ///
+    /// This is a version bump rather than an in-place edit of v3 precisely
+    /// because `AtriaStressMonitorTests` locked in "legacy awake-reference state
+    /// cannot fork v3 scoring". That invariant is right: a versioned kernel must
+    /// not be silently reinterpreted, or persisted facts stop meaning what they
+    /// meant when written. So v3 is left exactly as it was, EMA continuity
+    /// already refuses to blend across a version boundary
+    /// (`previous.scoringVersion == scoringVersion`), and the new calibration
+    /// ships as v4.
+    static let scoringVersion = 4
     static let windowDuration: TimeInterval = 5 * 60
     static let evaluationCadence: TimeInterval = 60
     static let emaHalfLife: TimeInterval = 3 * 60
@@ -73,20 +85,47 @@ enum AtriaPhysiologicalStressModel {
         }
     }
 
+    /// A learned quiet-awake heart-rate reference, when one exists.
+    ///
+    /// `AtriaStressMonitor` has always computed this (45-minute window of
+    /// admitted quiet-awake samples, persisted and seeded across launches for up
+    /// to 14 days) and then thrown it away — `_ = awakeReference` at two sites.
+    /// Wiring it in is what makes the HR term mean anything for a specific
+    /// person; see `hrStressCoordinate`.
+    struct AwakeReference: Equatable, Sendable {
+        let center: Double
+        let spread: Double
+
+        /// Half-width from the midpoint to a zone edge, in bpm.
+        ///
+        /// The learned `spread` comes from a 45-minute window, so it can be far
+        /// tighter than the wearer's real day-to-day variability — the
+        /// 2026-08-19 field device reported 2.97 bpm against a robust 12-day
+        /// spread of 7.6. Using it raw would make the scale hypersensitive, so
+        /// floor it; cap it so a noisy window cannot widen the scale back toward
+        /// the useless HR-reserve coordinate.
+        var zoneHalfWidth: Double {
+            min(12, max(6, spread * 2))
+        }
+    }
+
     struct Personalization: Equatable, Sendable {
         let restingHeartRate: Double
         let maximumHeartRate: Double
         let restingBaselineDayCount: Int
         let hrvBaseline: HRVBaseline?
+        let awakeReference: AwakeReference?
 
         init(restingHeartRate: Double,
              maximumHeartRate: Double,
              restingBaselineDayCount: Int,
-             hrvBaseline: HRVBaseline?) {
+             hrvBaseline: HRVBaseline?,
+             awakeReference: AwakeReference? = nil) {
             self.restingHeartRate = restingHeartRate
             self.maximumHeartRate = maximumHeartRate
             self.restingBaselineDayCount = max(0, restingBaselineDayCount)
             self.hrvBaseline = hrvBaseline
+            self.awakeReference = awakeReference
         }
 
         var isRestingBaselineLearning: Bool {
@@ -361,7 +400,10 @@ enum AtriaPhysiologicalStressModel {
         }
 
         let h = clamp01((meanHR - rest) / max(1, maximum - rest))
-        let hrStress = sigmoid(8 * (h - 0.25))
+        let hrStress = hrStressCoordinate(meanHR: meanHR,
+                                          restingHeartRate: rest,
+                                          maximumHeartRate: maximum,
+                                          awakeReference: input.personalization.awakeReference)
         let weightHR = 0.5 + 0.5 * (1 - smoothstep(edge0: 0.05,
                                                    edge1: 0.35,
                                                    value: h))
@@ -528,6 +570,51 @@ enum AtriaPhysiologicalStressModel {
                 >= minimumQualifiedRRSpan,
               differenceCount > 0 else { return nil }
         return sqrt(squaredDifferenceSum / Double(differenceCount))
+    }
+
+    /// The HR term of the stress score, in 0...1.
+    ///
+    /// Without a learned reference this is the original heart-rate-RESERVE
+    /// coordinate, unchanged: `sigmoid(8 * (h - 0.25))` over
+    /// `h = (mean - rest)/(max - rest)`. That is kept for anyone who has not
+    /// accumulated a reference yet, so nothing regresses for a new wearer.
+    ///
+    /// With a reference, anchor on the person instead. The reserve coordinate is
+    /// the wrong scale for this signal: on the 2026-08-19 field device the
+    /// reserve was 131 bpm while the wearer's entire quiet-awake spread was
+    /// 7.6 bpm robust — **17x wider**. Measured over their own 130,480
+    /// quiet-awake samples, their whole observed awake range (65-97 bpm) mapped
+    /// to scores 0.60-1.87, and reaching High (>= 2.0) required >= 100.1 bpm,
+    /// *above their observed maximum*. High was therefore unreachable from awake
+    /// HR by construction, and the sigmoid midpoint sat at their p90-p95, so
+    /// ~90 % of waking life scored below the midpoint. That is field report
+    /// item 8: "stress reads lesser than it is generally shown."
+    ///
+    /// The zone edges land at `center +/- zoneHalfWidth` because
+    /// `3 * sigmoid(+/-ln2) = 1` and `2` respectively. Simulated over that same
+    /// 130k-sample histogram, `center 85 / halfWidth 6` yields
+    /// **65.6 % calm, 29.6 % moderate, 4.9 % high** — a normal day stays
+    /// calm-dominant, moderate becomes a real signal rather than the ceiling,
+    /// and a genuine excursion can finally reach high.
+    ///
+    /// Note a median-centred scale was rejected: simulating it gave 38-43 %
+    /// high, which is the old 95 %-Medium miscalibration in new clothes. The
+    /// learned awake center is NOT the median — it is the center of admitted
+    /// quiet-awake-but-elevated samples, which is why anchoring on it keeps the
+    /// distribution calm-dominant.
+    static func hrStressCoordinate(meanHR: Double,
+                                   restingHeartRate rest: Double,
+                                   maximumHeartRate maximum: Double,
+                                   awakeReference: AwakeReference?) -> Double {
+        guard let awakeReference,
+              awakeReference.center.isFinite,
+              awakeReference.spread.isFinite,
+              awakeReference.center > rest else {
+            let h = clamp01((meanHR - rest) / max(1, maximum - rest))
+            return sigmoid(8 * (h - 0.25))
+        }
+        let halfWidth = awakeReference.zoneHalfWidth
+        return sigmoid(log(2) * (meanHR - awakeReference.center) / halfWidth)
     }
 
     static func sigmoid(_ value: Double) -> Double {
