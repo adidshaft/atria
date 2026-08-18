@@ -1688,7 +1688,11 @@ enum LocalNotificationScheduler {
     private static func makeWorkoutReviewDecision(store: SessionStore, ble: AtriaBLEManager) -> NotificationDecision {
         let defaults = UserDefaults.standard
         guard !reviewNotificationsProtectedByLiveCapture(ble: ble) else {
-            defaults.removeObject(forKey: workoutReviewLastCandidateIDKey)
+            // Deliberately NOT clearing `workoutReviewLastCandidateIDKey` here.
+            // A suppressed decision means "not now", not "the user has never
+            // seen this"; wiping the dedup receipt made every suppression pass
+            // re-arm an already-delivered candidate, so the notification the
+            // user did eventually get could be one they had already dismissed.
             return NotificationDecision(
                 kind: "workout_review",
                 identifier: Identifier.workoutReview,
@@ -1792,10 +1796,52 @@ enum LocalNotificationScheduler {
         candidate.isReviewPromptWorthy
     }
 
+    /// How long a range-loss backfill ticket may still be treated as evidence
+    /// that live capture is actively filling the window under review.
+    static let liveCaptureProtectionTicketFreshness: TimeInterval = 6 * 60 * 60
+
+    /// True while live capture is plausibly still filling the window a review
+    /// would describe, so offering the review now would describe a partial one.
+    ///
+    /// `rangeLossBackfillPending` is a DURABLE ticket that only new rows can
+    /// acknowledge — it is not a statement that anything is filling right now.
+    /// On the 2026-08-19 field device it had been `true` since **2026-08-06**,
+    /// thirteen days, and because the strap is worn/connected/streaming for
+    /// essentially all of that time, `reviewNotificationsProtectedByLiveCapture`
+    /// returned true continuously and EVERY workout notification was dropped with
+    /// `reason: "live_capture_protected_range_loss_backfill"`. That is field
+    /// report item 11's "workout detected — never shows", in full.
+    ///
+    /// Bound the ticket's authority by its own age. A backfill requested six
+    /// hours ago is not evidence about the window in front of the user now, and
+    /// a stale ticket must never be able to silence a whole notification class
+    /// indefinitely. A missing timestamp is treated as stale for the same reason:
+    /// an unprovable claim must not win.
+    nonisolated static func reviewIsProtectedByLiveCapture(
+        linkConnected: Bool,
+        backfillPending: Bool,
+        backfillRequestedAt: Double?,
+        sessionSampleCount: Int,
+        now: Date = Date(),
+        freshness: TimeInterval = liveCaptureProtectionTicketFreshness
+    ) -> Bool {
+        guard linkConnected, backfillPending, sessionSampleCount > 0 else { return false }
+        guard let backfillRequestedAt, backfillRequestedAt > 0 else { return false }
+        let age = now.timeIntervalSince1970 - backfillRequestedAt
+        // A forward-dated ticket (clock correction) is not fresh evidence either.
+        guard age >= 0 else { return false }
+        return age < freshness
+    }
+
     private static func reviewNotificationsProtectedByLiveCapture(ble: AtriaBLEManager) -> Bool {
-        ble.status == .connected
-            && ble.rangeLossBackfillPending
-            && ble.sessionSampleCount > 0
+        reviewIsProtectedByLiveCapture(
+            linkConnected: ble.status == .connected,
+            backfillPending: ble.rangeLossBackfillPending,
+            backfillRequestedAt: UserDefaults.standard.object(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt
+            ) as? Double,
+            sessionSampleCount: ble.sessionSampleCount
+        )
     }
 
     nonisolated static func sleepReviewUnavailableReason(

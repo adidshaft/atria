@@ -5,6 +5,66 @@ import XCTest
 /// durable event-key dedup ledger, the bedtime wind-down timing derivation,
 /// and the catch-up-completion observation policy.
 final class AtriaEventNotificationPolicyTests: XCTestCase {
+    /// Field report 2026-08-19, item 11: "workout detected — never shows".
+    ///
+    /// `reviewNotificationsProtectedByLiveCapture` gated on
+    /// `rangeLossBackfillPending`, a DURABLE ticket that only new rows can
+    /// acknowledge. On the field device it had been true since 2026-08-06 —
+    /// THIRTEEN DAYS — and because the strap is worn, connected and streaming
+    /// almost continuously, every workout notification was dropped with
+    /// `reason: "live_capture_protected_range_loss_backfill"` for the entire
+    /// period. A sticky ticket must not be able to silence a whole notification
+    /// class indefinitely.
+    func testStaleRangeLossTicketStopsSuppressingWorkoutReviews() {
+        let now = Date(timeIntervalSince1970: 1_787_090_000)
+        func protectedWith(requestedAt: Double?) -> Bool {
+            LocalNotificationScheduler.reviewIsProtectedByLiveCapture(
+                linkConnected: true,
+                backfillPending: true,
+                backfillRequestedAt: requestedAt,
+                sessionSampleCount: 500,
+                now: now,
+                freshness: 6 * 60 * 60
+            )
+        }
+
+        // A backfill requested minutes ago genuinely may still be filling the
+        // window a review would describe. Keep suppressing.
+        XCTAssertTrue(protectedWith(requestedAt: now.timeIntervalSince1970 - 600))
+        XCTAssertTrue(protectedWith(requestedAt: now.timeIntervalSince1970 - (6 * 3_600 - 60)))
+
+        // THE FIELD CASE: the ticket was requested 2026-08-06, thirteen days
+        // before this pass. It says nothing about the window in front of the user.
+        XCTAssertFalse(protectedWith(requestedAt: 1_786_189_119),
+                       "a 13-day-old backfill ticket must not suppress workout notifications")
+        XCTAssertFalse(protectedWith(requestedAt: now.timeIntervalSince1970 - 6 * 3_600))
+
+        // An unprovable claim must not win: no timestamp, or a forward-dated one
+        // from a clock correction, is not fresh evidence.
+        XCTAssertFalse(protectedWith(requestedAt: nil))
+        XCTAssertFalse(protectedWith(requestedAt: 0))
+        XCTAssertFalse(protectedWith(requestedAt: now.timeIntervalSince1970 + 3_600))
+    }
+
+    /// The protection still exists for its real purpose; this fix only bounds
+    /// how long one ticket may claim it.
+    func testLiveCaptureProtectionStillRequiresAConnectedStreamingLink() {
+        let now = Date(timeIntervalSince1970: 1_787_090_000)
+        let fresh = now.timeIntervalSince1970 - 600
+        XCTAssertFalse(LocalNotificationScheduler.reviewIsProtectedByLiveCapture(
+            linkConnected: false, backfillPending: true,
+            backfillRequestedAt: fresh, sessionSampleCount: 500, now: now))
+        XCTAssertFalse(LocalNotificationScheduler.reviewIsProtectedByLiveCapture(
+            linkConnected: true, backfillPending: false,
+            backfillRequestedAt: fresh, sessionSampleCount: 500, now: now))
+        XCTAssertFalse(LocalNotificationScheduler.reviewIsProtectedByLiveCapture(
+            linkConnected: true, backfillPending: true,
+            backfillRequestedAt: fresh, sessionSampleCount: 0, now: now))
+        XCTAssertTrue(LocalNotificationScheduler.reviewIsProtectedByLiveCapture(
+            linkConnected: true, backfillPending: true,
+            backfillRequestedAt: fresh, sessionSampleCount: 1, now: now))
+    }
+
     private var defaults: UserDefaults!
     private let suiteName = "AtriaEventNotificationPolicyTests"
 
