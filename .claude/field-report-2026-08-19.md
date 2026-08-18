@@ -75,7 +75,7 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 5 | Duplicate sleep recommendation after stop/save | **FIXED** (R + S) | notification cap per episode; confirmed nights no longer extendable |
 | 6 | Nap detection dead (2–3 h evening nap missed) | **STRUCTURAL FIX PROVEN, STILL BLOCKED** (I + U) | passive requalify now fires (proven 04:04); strap fails `clean_owner_proof_disconnect` in 5 s, imu still 0 |
 | 7 | Steps distrust | **FIXED** | app dropped the `≥` the widget still showed; restored |
-| 8 | Stress reads low | ANALYSED, not yet changed | HRV term weight ~0 at low HR; see root-causes doc |
+| 8 | Stress reads low | **QUANTIFIED** (W), awaiting a calibration decision | High needs >=100.1 bpm vs observed awake max 97 — unreachable; reserve is 17x too wide |
 | 9 | Sleep-view stress vs general stress disagree (pinned 3/high) | **FIXED** | full scale was rest+14 vs a SLEEPING baseline; rebanded |
 | 10 | Sleep stages not working | **PARTLY FIXED, STILL BLOCKED** (I + gate B + U) | gate B fixed; motion retry now fires but proof still disconnects — stages stay fail-closed |
 | 11 | Notifications never fire at the right moment | **1 of 5 FIXED** (T) | workout class un-silenced; (1)(2)(3)(5) open — see T |
@@ -662,6 +662,49 @@ evidence of the last. Diagnostics only; nothing reads it to make a decision.
 Next retry is due ~16:05 today. With two or three records the comparison
 (`activationAgeSeconds` vs `connectedDurationSeconds` vs `ambientDisconnectIntervalSeconds`) becomes
 decidable.
+
+## W. Item 8 QUANTIFIED against 130,480 real samples — High is structurally unreachable
+
+Device evidence: `stress.awakeBaseline.v1` holds **130,480 quiet-awake HR samples over 12 days**, and
+`personalBaseline.restingHR = 56.0`.
+
+User's own quiet-awake HR distribution:
+`p5=66  p25=70  p50=75  p75=81  p90=88  p95=91  p99=96  max=97`
+
+The scorer's HR term is `h = (mean - rest)/(max - rest)`, `hrStress = sigmoid(8*(h - 0.25))`, score
+`= 3 * mult * base` with `mult <= 1` always. So with rest 56 and an age-estimated max of 187:
+
+| the user's own percentile | bpm | score |
+|---|---|---|
+| p5 | 66 | 0.60 |
+| p50 | 75 | 0.91 |
+| p90 | 88 | 1.47 |
+| p95 | 91 | 1.60 |
+| p99 | 96 | 1.83 |
+| **observed max** | **97** | **1.87** |
+
+**High (>= 2.0) requires >= 100.1 bpm — above this user's observed awake maximum of 97.** High is
+therefore *structurally unreachable* from awake HR. The sigmoid midpoint sits at 88.7 bpm, i.e. their
+**p90-p95**, so ~90 % of waking life scores below the midpoint. That is item 8 exactly: "stress reads
+lesser than it is generally shown."
+
+Root cause in one number: **the HR reserve (131 bpm) is 17x wider than this user's actual quiet-awake
+spread (7.6 bpm robust).** The coordinate is simply the wrong scale for the signal.
+
+Simulation validated against the device's own outcome: my model of the code predicts 61.7 % calm /
+38.3 % medium / 0 % high over the real histogram, against the observed `stress.distribution.v3` of
+73.0 / 25.2 / 1.8 (the residual is EMA smoothing, HRV when present, sleep windows and workout multipliers
+— my histogram is quiet-awake only). Close enough to trust the model.
+
+**The dead learner is the intended fix, and a naive wire-in is WRONG.** `AtriaStressMonitor` fully
+computes an awake reference (device: `center 85, spread 2.97`), persists it with throttled I/O, seeds it
+across launches for up to 14 days — then discards it at BOTH consumers (`_ = awakeReference` at
+AtriaStressMonitor.swift:379 and :3922). But simulating the obvious swap (tanh centred on the learned
+center) gives **38-43 % High**, which is the old 95 %-Medium failure in new clothes. A median-centred
+scale puts half the day above the midpoint by construction.
+
+So the remaining question is a product decision, not a derivable fact: what fraction of a normal day
+should read Moderate/High? Asked the user rather than guessing. Nothing shipped for item 8 this pass.
 
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
