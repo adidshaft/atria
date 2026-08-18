@@ -372,24 +372,35 @@ the old behaviour exactly), and both real call sites are wired: `AtriaTodayScree
 
 Tests pin the boundary from both sides and re-assert the incident fixture is still refused.
 
-## O. Live drain stall — a SECOND mechanism that freezes "last sync", distinct from item 2's root cause
+## O. Live drain frontier parked — CORRECTED: not a wedge, the archive queue is genuinely working
 
-Sampled 03:19 → 03:21: `drainedThroughUnix` frozen at 08-18 22:32:39 for 25+ min while
-`flushDebtPendingRecords` climbed 154 → **1688** and `lastDurableFlushBoundaryOKAt` kept advancing.
-So rows ARE arriving; it is the frontier that is parked:
+Sampled 02:56 -> 03:43: `drainedThroughUnix` frozen at 08-18 22:32:39 for **47 minutes** while
+`flushDebtPendingRecords` climbed 154 -> 1688, with
+`offlineSync.lastStatus = deferred_terminal_materialization` and `materializing=1` throughout.
+I initially flagged this as a probable FOURTH instance of the process-local-recovery-state defect class
+(a leaked `historicalConsumerMaterializationInFlight` with no timeout). **The device evidence says that
+is wrong, and I am recording the correction rather than the guess.**
 
-```
-offlineSync.lastStatus            = deferred_terminal_materialization
-persistedDrainRearmDiagnostic     = link=1 fresh=1 workout=0 sync=0 materializing=1
-                                    authority=gapResolvedConsumersPending
-terminalArchiveFailureAt.v1       = 2026-08-14 16:45:38
-terminalArchiveFailureDiagnostic  = …TerminalMaterializationError.publicationCheckpointMissing
-```
+Container listing diffed 01:57 -> 03:44 (107 min):
 
-This matters because `drainedThroughUnix` is what the UI shows as "last sync". Item 2's root cause (the
-silent-stream latch) is fixed and proven, but this is a **second, independent way the same user-visible
-symptom appears** — and it is live on the device right now. Not yet investigated; lead (b) of the item-15
-sweep in `.claude/field-report-root-causes.md` covers `publicationCheckpointMissing`.
+| new files | directory |
+|---|---|
+| 126 | `atria-historical/aggregates-v2` |
+| 126 | `atria-historical/retention-manifests-v2` |
+| 29 | `atria-full-fidelity-cold-sessions-v1/chunks` |
+| 26 | `atria-historical/consumer-receipts-v1` |
+| 2 | `atria-historical/hr-index-v1` |
+
+Plus `historical-archive.catalog-v2.json` rewritten and 12 segment files changed. The materialization is
+doing real, productive, receipted work at ~1.2 aggregates/min. `materializing=1` is HONEST — the drain is
+deferring to it by design (AtriaBLEManager.swift:10988), which is why the frontier is parked.
+
+So the user-visible symptom ("last sync stuck") has a third cause distinct from both item 2's latch and a
+leak: **the archive is simply too large for materialization to keep up.** That is item 12 restated, and it
+is a direct argument for raw retention over any cleverness in the drain.
+
+Note the container GREW 5.45 -> 5.47 GB in those 107 minutes. The identity-retention fix (`32f4e598`) is
+NOT on the phone yet — only `47538c32` is installed.
 
 ## P. Item 12 part 2 — DO NOT COMPRESS. Audit found ~15 blocking sites, one destructive.
 
