@@ -164,6 +164,40 @@ final class AtriaHistoricalArchiveDurableStoreTests: XCTestCase {
                        "a future marker must fall back to the caller's clock")
     }
 
+    /// Compression readiness audit, 2026-08-19. `repairTornJSONLTail` opens a
+    /// file for WRITING and truncates it back to the last 0x0A — or to zero if
+    /// there is none. A raw-DEFLATE stream ends in 0x0A about one time in 256,
+    /// so if a compressed artifact ever reaches this function the chunk is
+    /// destroyed, and by then the plain .jsonl it replaced has been unlinked.
+    /// Nothing compresses raw chunks today; this guard exists so that a future
+    /// wiring mistake cannot cost the user their history.
+    func testTornTailRepairRefusesToOpenACompressedArtifact() throws {
+        let directory = try temporaryDirectory()
+        let artifact = directory
+            .appendingPathComponent("chunk")
+            .appendingPathExtension(AtriaHistoricalSealedJSONLCompression.artifactExtension)
+        // Deliberately not newline-terminated: the exact shape that would make
+        // the unguarded implementation truncate.
+        let payload = Data([0x78, 0x9c, 0x00, 0xff, 0x13, 0x37])
+        try payload.write(to: artifact)
+
+        XCTAssertThrowsError(
+            try AtriaHistoricalArchiveDurableStore.repairTornJSONLTail(at: artifact)
+        ) { error in
+            XCTAssertEqual(error as? AtriaHistoricalArchiveDurableStore.StoreError,
+                           .compressedArtifactIsImmutable)
+        }
+        XCTAssertEqual(try Data(contentsOf: artifact), payload,
+                       "the artifact must be byte-identical after a refused repair")
+
+        // A plain JSONL file is still repaired exactly as before.
+        let plain = directory.appendingPathComponent("chunk.jsonl")
+        try Data("{\"a\":1}\n{\"b\":2".utf8).write(to: plain)
+        let repair = try AtriaHistoricalArchiveDurableStore.repairTornJSONLTail(at: plain)
+        XCTAssertLessThan(repair.repairedBytes, repair.originalBytes)
+        XCTAssertEqual(try Data(contentsOf: plain), Data("{\"a\":1}\n".utf8))
+    }
+
     /// The retention decision itself, isolated from any file work.
     func testIdentityLineRetentionScannerMatchesTheParser() {
         let cutoff: TimeInterval = 1_800_000_000

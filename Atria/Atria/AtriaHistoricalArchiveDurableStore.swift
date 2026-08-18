@@ -197,6 +197,9 @@ final class AtriaHistoricalArchiveDurableStore {
         case missingExistingIdentity
         case durabilitySequenceOverflow
         case receiptBatchCapacityExceeded(maximum: Int)
+        /// A sealed compressed artifact is immutable; opening one for writing
+        /// can only destroy it. See `repairTornJSONLTail`.
+        case compressedArtifactIsImmutable
 
         var errorDescription: String? {
             switch self {
@@ -214,6 +217,8 @@ final class AtriaHistoricalArchiveDurableStore {
                 return "Historical archive durability sequence exhausted."
             case .receiptBatchCapacityExceeded(let maximum):
                 return "Historical archive receipt batch exceeded its bounded identity capacity of \(maximum)."
+            case .compressedArtifactIsImmutable:
+                return "A sealed compressed historical artifact cannot be opened for writing."
             }
         }
     }
@@ -1015,8 +1020,30 @@ final class AtriaHistoricalArchiveDurableStore {
 
     /// Removes bytes after the final newline. A complete JSONL line is never
     /// removed, while a power-loss write fragment can never become a new row.
+    ///
+    /// Refuses immutable compressed artifacts outright. This function opens the
+    /// file `forUpdating` and truncates it back to the last `0x0A` — or, when
+    /// there is no `0x0A` at all, **to zero**. A raw-DEFLATE stream ends in
+    /// `0x0A` roughly one time in 256, so pointing this at an `.atria-deflate`
+    /// artifact truncates it at an arbitrary interior byte and the chunk is
+    /// gone; by then the plain `.jsonl` it replaced has already been unlinked.
+    ///
+    /// Nothing compresses raw chunks today, so this is a latent path rather
+    /// than a live bug. But it is reachable the moment anything wires
+    /// `AtriaHistoricalSealedJSONLCompression` in: `recordCompressedStorage`
+    /// rewrites `chunk.relativePath` to the artifact, that path flows through
+    /// `HistoricalArchive.catalogRawFileURLs()` into `durableStoreLocked()`'s
+    /// `existingArchiveURLs`, and this runs over every one of them at init.
+    /// The guard belongs here, at the write, not only in the callers — losing
+    /// user history to a future wiring mistake is not an acceptable failure
+    /// mode. (Compression readiness audit, 2026-08-19; see
+    /// `.claude/compression-readiness-audit.md`.)
     @discardableResult
     static func repairTornJSONLTail(at url: URL) throws -> TailRepair {
+        guard url.pathExtension
+                != AtriaHistoricalSealedJSONLCompression.artifactExtension else {
+            throw StoreError.compressedArtifactIsImmutable
+        }
         let handle = try FileHandle(forUpdating: url)
         defer { try? handle.close() }
         let size = try handle.seekToEnd()
