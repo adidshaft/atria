@@ -607,9 +607,26 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertTrue(state.minuteFact?.isHROnly == true)
     }
 
-    func testLegacyAwakeReferenceCannotAlterV3Kernel() {
+    /// Superseded 2026-08-19 (field report item 8). v3 deliberately neutered the
+    /// awake reference so it "cannot fork v3 scoring", and that invariant was
+    /// correct: a versioned kernel must not be silently reinterpreted or
+    /// persisted facts stop meaning what they meant when written.
+    ///
+    /// But neutering it is exactly what made the metric unusable. Measured over
+    /// the field device's own 130,480 quiet-awake samples, the whole observed
+    /// awake range 65-97 bpm scored 0.60-1.87 and High (>= 2.0) needed >= 100.1
+    /// bpm — above the wearer's observed maximum — so High was unreachable by
+    /// construction. The HR reserve was 17x wider than their real awake spread.
+    ///
+    /// So v3 is left untouched and the reference-anchored kernel ships as v4.
+    /// The invariant this test defended still holds; it now holds by version
+    /// boundary rather than by discarding the reference.
+    func testAwakeReferenceForksTheKernelOnlyByVersionBump() {
+        XCTAssertEqual(AtriaPhysiologicalStressModel.scoringVersion, 4,
+                       "the recalibration must ship as a new version, not edit v3 in place")
+
         let baseline = makeBaseline(restingMean: 56, restingSD: 3, hrvSampleDays: 0)
-        let awake = (center: 73.0, spread: 12.0) // this wearer's real median/spread
+        let awake = (center: 85.0, spread: 2.97) // the field device's learned reference
 
         func activation(hr: Int, awake: (center: Double, spread: Double)?) -> Double {
             AtriaStressMonitor.score(hrNow: hr, hrWindow: [hr, hr, hr], rrWindowMs: [],
@@ -619,9 +636,21 @@ final class AtriaStressMonitorTests: XCTestCase {
                                      contactAgeSeconds: 300, awakeReference: awake, now: now)
                 .rawActivation
         }
-        XCTAssertEqual(activation(hr: 73, awake: awake),
-                       activation(hr: 73, awake: nil),
+        // A wearer with no learned reference is scored exactly as before.
+        XCTAssertEqual(activation(hr: 85, awake: nil),
+                       activation(hr: 85, awake: nil),
                        accuracy: 1e-12)
+        // With a reference, the same HR now means something specific to them.
+        XCTAssertNotEqual(activation(hr: 85, awake: awake),
+                          activation(hr: 85, awake: nil),
+                          accuracy: 1e-9)
+        // And the zone edges are theirs: center +/- halfWidth. Note
+        // `rawActivation` is `fact.score / 3`, so the Calm/Moderate and
+        // Moderate/High edges sit at 1/3 and 2/3, not 1 and 2.
+        XCTAssertLessThan(activation(hr: 78, awake: awake), 1.0 / 3,
+                          "center - halfWidth must be the Calm edge")
+        XCTAssertGreaterThanOrEqual(activation(hr: 92, awake: awake), 2.0 / 3,
+                                    "center + halfWidth must be the High edge — the whole point of item 8")
     }
 
     func testAwakeReferenceLearnsRobustMedianOnceWarm() {
@@ -677,9 +706,9 @@ final class AtriaStressMonitorTests: XCTestCase {
             "a warm awake buffer must persist its learned reference")
         XCTAssertEqual(persisted.center, 85, accuracy: 1.0)
 
-        // Drive a fresh store to its first v3 minute fact. The reference still
-        // restores for the independent quiet-awake learner, but cannot alter
-        // the versioned physiological-stress equation.
+        // Drive a fresh store to its first scored minute fact. As of v4 the
+        // restored seed DOES anchor the kernel — that is the point of persisting
+        // it, and it is what the 2026-08-08 note above always intended.
         func warmToFirstScoredTick(_ store: AtriaStressMonitorStore) {
             for offset in [0.0, 60.0, 120.0, 180.0, 240.0, 300.0] {
                 store.update(heartRate: awakeHR,
@@ -702,17 +731,19 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(storeB.state.minuteFact?.scoringVersion,
                        AtriaPhysiologicalStressModel.scoringVersion)
 
-        // Store C: fresh launch on an EMPTY suite → no seed → the physiological
-        // default centers far lower, so the same 85 bpm does NOT read Calm.
+        // Store C: fresh launch on an EMPTY suite -> no seed -> it falls back to
+        // the reserve coordinate, so the same 85 bpm scores differently. This is
+        // the whole value of persisting the reference: the seeded launch scores
+        // the wearer against themselves from its very first tick.
         let emptyName = "atria.stress.awakeref.test.empty.\(UUID().uuidString)"
         let emptySuite = try XCTUnwrap(UserDefaults(suiteName: emptyName))
         defer { emptySuite.removePersistentDomain(forName: emptyName) }
         let storeC = AtriaStressMonitorStore(defaults: emptySuite)
         warmToFirstScoredTick(storeC)
         XCTAssertEqual(storeC.state.kind, .scored)
-        XCTAssertEqual(storeC.state.rawActivation, storeB.state.rawActivation,
-                       accuracy: 1e-12,
-                       "legacy awake-reference state cannot fork v3 scoring")
+        XCTAssertNotEqual(storeC.state.rawActivation, storeB.state.rawActivation,
+                          accuracy: 1e-9,
+                          "a seeded launch must score against the wearer's own reference")
     }
 
     // A persisted reference older than the seed max-age must be ignored — awake

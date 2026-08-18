@@ -2,6 +2,80 @@ import XCTest
 @testable import Atria
 
 final class AtriaPhysiologicalStressModelTests: XCTestCase {
+    /// Field report 2026-08-19, item 8: "the stress calculations may be a little
+    /// bit off, lesser than it is generally shown."
+    ///
+    /// Measured over the field device's own 130,480 quiet-awake samples
+    /// (resting 56, age-estimated max 187, so a 131 bpm reserve): the wearer's
+    /// entire observed awake range 65-97 bpm mapped to 0.60-1.87, and High
+    /// (>= 2.0) required >= 100.1 bpm — ABOVE their observed maximum. High was
+    /// unreachable from awake HR by construction.
+    func testHighIsUnreachableOnTheReserveCoordinateAndReachableOnTheReference() {
+        let rest = 56.0, maximum = 187.0
+        func reserveScore(_ bpm: Double) -> Double {
+            3 * AtriaPhysiologicalStressModel.hrStressCoordinate(
+                meanHR: bpm, restingHeartRate: rest,
+                maximumHeartRate: maximum, awakeReference: nil
+            )
+        }
+        // The wearer's observed awake maximum still cannot reach High.
+        XCTAssertLessThan(reserveScore(97), 2.0)
+        XCTAssertEqual(reserveScore(97), 1.87, accuracy: 0.02)
+        // Their median day sits below even the Calm/Moderate edge.
+        XCTAssertLessThan(reserveScore(75), 1.0)
+
+        // With the learned reference the same wearer gets a usable scale.
+        let reference = AtriaPhysiologicalStressModel.AwakeReference(center: 85, spread: 2.97)
+        func referenceScore(_ bpm: Double) -> Double {
+            3 * AtriaPhysiologicalStressModel.hrStressCoordinate(
+                meanHR: bpm, restingHeartRate: rest,
+                maximumHeartRate: maximum, awakeReference: reference
+            )
+        }
+        // Zone edges land at center +/- zoneHalfWidth, because 3*sigmoid(-ln2)=1
+        // and 3*sigmoid(+ln2)=2.
+        XCTAssertEqual(reference.zoneHalfWidth, 6.0, accuracy: 0.001,
+                       "a 45-min spread of 2.97 must be floored, not used raw")
+        XCTAssertEqual(referenceScore(85 - 6), 1.0, accuracy: 0.001)
+        XCTAssertEqual(referenceScore(85 + 6), 2.0, accuracy: 0.001)
+        // A typical day is still calm-dominant...
+        XCTAssertLessThan(referenceScore(75), 1.0)
+        // ...and a genuine excursion can finally reach High.
+        XCTAssertGreaterThanOrEqual(referenceScore(92), 2.0)
+    }
+
+    /// The floor and cap keep a momentary window from making the scale either
+    /// hypersensitive or as useless as the reserve it replaces.
+    func testAwakeReferenceHalfWidthIsBounded() {
+        func halfWidth(_ spread: Double) -> Double {
+            AtriaPhysiologicalStressModel.AwakeReference(center: 85, spread: spread).zoneHalfWidth
+        }
+        XCTAssertEqual(halfWidth(0), 6.0, accuracy: 0.001, "floored")
+        XCTAssertEqual(halfWidth(2.97), 6.0, accuracy: 0.001, "the field value floors")
+        XCTAssertEqual(halfWidth(4), 8.0, accuracy: 0.001, "a real spread widens it")
+        XCTAssertEqual(halfWidth(40), 12.0, accuracy: 0.001, "capped")
+    }
+
+    /// No reference means no change: a wearer who has not accumulated one is
+    /// scored exactly as before.
+    func testMissingOrInvalidReferenceFallsBackToTheReserveCoordinate() {
+        let rest = 56.0, maximum = 187.0
+        for reference in [nil,
+                          AtriaPhysiologicalStressModel.AwakeReference(center: 50, spread: 5),
+                          AtriaPhysiologicalStressModel.AwakeReference(center: .nan, spread: 5)] {
+            XCTAssertEqual(
+                AtriaPhysiologicalStressModel.hrStressCoordinate(
+                    meanHR: 80, restingHeartRate: rest,
+                    maximumHeartRate: maximum, awakeReference: reference),
+                AtriaPhysiologicalStressModel.hrStressCoordinate(
+                    meanHR: 80, restingHeartRate: rest,
+                    maximumHeartRate: maximum, awakeReference: nil),
+                accuracy: 0.0001,
+                "a missing, sub-resting or non-finite reference must not change scoring"
+            )
+        }
+    }
+
     private let end = Date(timeIntervalSince1970: 1_800_000_000)
 
     func testRestingAndElevatedHeartRateFollowTransparentReserveEquation() throws {

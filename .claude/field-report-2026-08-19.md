@@ -703,8 +703,21 @@ AtriaStressMonitor.swift:379 and :3922). But simulating the obvious swap (tanh c
 center) gives **38-43 % High**, which is the old 95 %-Medium failure in new clothes. A median-centred
 scale puts half the day above the midpoint by construction.
 
-So the remaining question is a product decision, not a derivable fact: what fraction of a normal day
-should read Moderate/High? Asked the user rather than guessing. Nothing shipped for item 8 this pass.
+**User decision (asked, answered): "Keep Calm-dominant, make High reachable."**
+
+Shipped `AtriaPhysiologicalStressModel.hrStressCoordinate(...)` + `Personalization.awakeReference`:
+- **No reference -> byte-identical behaviour.** The reserve coordinate is kept verbatim for anyone who
+  has not accumulated a reference, and for a reference that is non-finite or below resting.
+- **With a reference**, `sigmoid(ln2 * (mean - center) / zoneHalfWidth)`, so the zone edges land exactly
+  at `center +/- zoneHalfWidth` (since `3*sigmoid(-ln2) = 1`, `3*sigmoid(+ln2) = 2`).
+- `zoneHalfWidth = clamp(spread * 2, 6, 12)`. The learned spread is a 45-minute window and can be far
+  tighter than real day-to-day variability (device: 2.97 vs a robust 12-day 7.6), so it is floored to
+  stop hypersensitivity and capped so a noisy window cannot widen back toward the useless reserve.
+
+Simulated over the same 130,480-sample histogram, `center 85 / halfWidth 6` gives
+**65.6 % calm, 29.6 % moderate, 4.9 % high** — inside the requested band. Note 85 is exactly the
+learned awake center already on the device, so this is anchored, not tuned. Both discard sites
+(`_ = awakeReference`) are gone.
 
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
