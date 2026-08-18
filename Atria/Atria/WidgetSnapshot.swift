@@ -1632,8 +1632,21 @@ enum WidgetSnapshotPublisher {
         )
         let presentedWidgetRecovery = widgetDayResolution.recoveryOverride ?? widgetRecovery
         let presentedWidgetStrain = widgetDayResolution.strainOverride ?? strain
+        // Same cross-midnight hold as the app (field report item 4), so the
+        // widget and the Today ring cannot disagree about whether last night's
+        // hours are still the current value.
         let widgetSleepIsCurrentDay = AtriaCurrentDayPresentation
-            .sleepIsCurrentDayPrimary(sleepEnd: latestDisplaySleep?.end, now: now)
+            .sleepIsCurrentDayPrimary(
+                sleepEnd: latestDisplaySleep?.end,
+                now: now,
+                cycleStart: physiologicalCycle.start,
+                cycleEnd: AtriaPhysiologicalCycle.nextNoSleepRollover(
+                    now: now,
+                    confirmedSleeps: store.confirmedSleeps,
+                    calendar: calendar
+                ),
+                calendar: calendar
+            )
         let displayDayEnd = calendar.date(
             byAdding: .day, value: 1, to: calendar.startOfDay(for: now)
         )
