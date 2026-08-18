@@ -3409,6 +3409,38 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated static let protectedR10ProofDisconnectContextKey =
         "atria.protectedR10.proofDisconnectContext.v1"
 
+    /// Bounded history of the most recent proof disconnects, newest first.
+    ///
+    /// The single-slot key above is the right shape for "what went wrong just
+    /// now", and the wrong shape for THIS failure. Once a pure-HR fallback can
+    /// only retry on a bounded cadence (12 h, see
+    /// `protectedR10FallbackShouldPassivelyRequalify`), each retry overwrites the
+    /// only evidence of the previous one — so an intermittent proof failure can
+    /// never accumulate a comparable set. The 2026-08-19 field retry produced
+    /// exactly one record, `decision = ambient_or_unattributed`, which is not
+    /// enough to separate "the activation kills the link" from "this link was
+    /// dying anyway": the record showed `connectedDurationSeconds = 12.5` against
+    /// an `ambientDisconnectIntervalSeconds` of 1778, and `framesAfterActivation`
+    /// and `crcRejectedFrames` both 0.
+    ///
+    /// Keep the last few so the comparison becomes possible without asking the
+    /// user to sit through days of single samples. Diagnostics only — nothing
+    /// reads this to make a decision.
+    nonisolated static let protectedR10ProofDisconnectHistoryKey =
+        "atria.protectedR10.proofDisconnectHistory.v1"
+    nonisolated static let protectedR10ProofDisconnectHistoryLimit = 8
+
+    /// Newest-first, bounded. Pure so the retention rule is testable without a
+    /// BLE stack.
+    nonisolated static func appendingProofDisconnectHistory(
+        _ entry: Data,
+        to existing: [Data],
+        limit: Int = protectedR10ProofDisconnectHistoryLimit
+    ) -> [Data] {
+        guard limit > 0 else { return [] }
+        return Array(([entry] + existing).prefix(limit))
+    }
+
     /// A short, CRC-valid burst proves only that the command profile reached
     /// the strap. Physical captures repeatedly show that replaying that profile
     /// on a fresh link after a CBError 6 creates a disconnect storm. Fail closed
@@ -45215,6 +45247,16 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                         defaults.set(
                             contextData,
                             forKey: Self.protectedR10ProofDisconnectContextKey
+                        )
+                        let priorHistory = (defaults.array(
+                            forKey: Self.protectedR10ProofDisconnectHistoryKey
+                        ) as? [Data]) ?? []
+                        defaults.set(
+                            Self.appendingProofDisconnectHistory(
+                                contextData,
+                                to: priorHistory
+                            ),
+                            forKey: Self.protectedR10ProofDisconnectHistoryKey
                         )
                     }
                     if proofDisconnectDecision == .fallbackToPureHR {

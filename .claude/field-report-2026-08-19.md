@@ -618,6 +618,51 @@ so naps stay undetected and stages stay fail-closed. The ledger must not claim o
 Also observed after relaunch: the drain frontier is MOVING again (22:32 -> 22:33 -> 22:35) after 47 min
 parked, and `stallReconnects` held at 331 — no recurrence of the original item-1/2/3 stall.
 
+## V. R10 proof disconnect — forensics decoded; deliberately NOT changing BLE timing on one sample
+
+Decoded `atria.protectedR10.proofDisconnectContext.v1` from the 04:05 attempt:
+
+```
+decision                          ambient_or_unattributed
+owner / ownerState                protected_redp_v9 / proving
+connectedDurationSeconds          12.52        <- link was 12.5 s old
+activationAgeSeconds              4.38         <- died 4.4 s after the activation
+proofStartedAgeSeconds            12.34
+framesAfterActivation             0
+crcRejectedFrames                 0            <- not corruption; NOTHING arrived
+ambientDisconnectIntervalSeconds  1777.9       <- baseline drop interval ~29.6 min
+confirmedNotifyUUIDs              61080003/4/5 (all three confirmed notifying)
+centralState                      5 (poweredOn)
+```
+`radio.passiveR10Status = subscribed_no_crc_valid_frames`,
+`radio.mode = protected_r10_minimal`, `protectedR10.activationCount` 359 -> 360.
+
+**Leading hypothesis (code-provable, not sample-dependent).** The v7 activation path
+`sendProtectedR10ActivationIfReady` (AtriaBLEManager.swift:12425) deliberately waits
+`protectedR10PassiveGraceDuration = 20 s` of PASSIVE observation before writing the activation, with an
+explicit comment that "repeatedly writing that command was physically correlated with early
+disconnects". The v9 clean-owner proof instead starts at subscription time —
+`markPassiveR10SubscriptionConfirmed` calls `beginProtectedR10CleanOwnerProofIfNeeded(at: subscribedAt)`
+directly (AtriaBLEManager.swift:35993) — and the device shows `activationSentAt` and
+`passiveR10SubscribedAt` in the SAME millisecond (1787092496.675 / .676), on a link ~7.5 s old.
+
+**Why I did not act on it.** One forensic sample, and the recorder's own verdict is
+`ambient_or_unattributed` — it explicitly declines to blame the activation. The link's baseline drop
+interval is ~30 min, so a 12.5-s-old link dying is not obviously ambient either. Changing activation
+timing in a physically-coupled BLE proof on a single sample is exactly the kind of speculative fix this
+report has already punished twice (the item-4 `cycleEnd` patch would have restored the August incident;
+the item-9 producer swap would have emptied every historical night). The honest move is to get a second
+and third sample first.
+
+**What I shipped instead:** `protectedR10ProofDisconnectHistoryKey` — a bounded, newest-first ring of
+the last 8 proof-disconnect contexts. The single-slot key is the right shape for "what just went wrong"
+and the wrong shape for a failure that now retries only every 12 h, because each retry destroys the
+evidence of the last. Diagnostics only; nothing reads it to make a decision.
+
+Next retry is due ~16:05 today. With two or three records the comparison
+(`activationAgeSeconds` vs `connectedDurationSeconds` vs `ambientDisconnectIntervalSeconds`) becomes
+decidable.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
