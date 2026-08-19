@@ -1817,6 +1817,41 @@ Drain meanwhile is deferring under a THIRD distinct reason today, `deferred_live
 rotated all morning and one 20-minute window cannot separate healthy live-capture priority from
 another park wearing different clothes.
 
+## CHECKPOINT REPORTED — the first identity-retention prune fired at 11:58:46
+
+`prune.json` → `{"lastPruneAtUnix": 1787120926.156039}` = **08-19 11:58:46**, six hours and forty-six
+seconds after the 05:58 bootstrap stamp. Item 12's retention tiering has now executed on the device
+for the first time.
+
+This closes the loop on the bug I shipped and had to fix: `32f4e598` wrote the marker only from
+inside a *completed* prune, so it needed six hours of unbroken process uptime that iOS never grants.
+`476ffed8` moved the stamp to init. The marker then survived five installs, and today it did the
+thing it exists to do — fire on a wall clock rather than on process luck. Persisting through
+relaunches was necessary evidence; **firing** is the sufficient evidence, and only now do I have it.
+
+### The streaming compaction is running right now
+
+    .historical-archive.identity.jsonl.compact.0CC8F9A4-….tmp   565.6 MB   12:00   (hidden)
+    historical-archive.identity.jsonl                           1.28 GB    11:58
+    historical-archive.identity.lookup-v1.sqlite                839.7 MB   11:59
+    …sqlite-wal                                                 Zero KB    11:59   (checkpointed)
+
+That temp file is `compactIdentityIndexOutsideHorizonLocked` streaming in 64 KiB chunks — the design
+that broke the "too big to load, therefore too big to compact" deadlock. It is the first proof the
+streaming path runs against a real 1.28 GB ledger instead of a fixture.
+
+**No reclaim figure yet, deliberately.** The temp is still being written; 565.6 MB is a partial, not
+a result. Dividing it against 1.28 GB right now would produce exactly the kind of number I have had
+to retract four times today from spot rates. The figure to report is the *final* temp size at the
+moment it replaces the source.
+
+One thing already worth flagging: during compaction the source and the temp **coexist**, so peak disk
+is source + temp — up to ~1.85 GB of the container committed to one artifact mid-prune. On a device
+the user already considers over-full at 5 GB, a retention pass that transiently grows the footprint is
+worth stating plainly rather than discovering later.
+
+The WAL going to Zero KB at 11:59 says the sqlite side checkpointed as part of the same pass.
+
 **Install deferred deliberately.** The receipt from `3d4a6f3a` is committed but NOT on the device, so
 the next park is still unmeasurable. Installing now would relaunch the process ~30 min before the
 first retention prune and disturb the checkpoint this loop has been waiting on since 05:58. The
