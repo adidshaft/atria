@@ -239,6 +239,22 @@ enum AtriaManagedStorageInventory {
             }
         }
 
+        // Compaction temporaries orphaned by a process death live in the
+        // archive directory, not in `temporaryDirectory`, and they are
+        // dot-prefixed — so the `.skipsHiddenFiles` walk below cannot see them.
+        // The store also sweeps them at init; routing them through here as well
+        // is what makes their bytes show up in `reclaimedBytes` instead of the
+        // 565.6 MB reclaimed on 2026-08-19 being reported to the user as 0.
+        // The sweep is idempotent, so running from both places is harmless.
+        if let documents {
+            reclaimed += AtriaHistoricalArchiveDurableStore
+                .sweepStaleIdentityCompactionTemporaries(
+                    in: documents.appendingPathComponent("atria-historical"),
+                    now: now,
+                    fileManager: fileManager
+                )
+        }
+
         let temporary = temporaryURL ?? fileManager.temporaryDirectory
         let contents = (try? fileManager.contentsOfDirectory(
             at: temporary,

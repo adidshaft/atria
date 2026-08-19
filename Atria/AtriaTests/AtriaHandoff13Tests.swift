@@ -544,4 +544,43 @@ final class AtriaHandoff13Tests: XCTestCase {
         }
         return session
     }
+    /// A 565.6 MB reclaim reported to the user as 0 is the same class of
+    /// problem as the under-counted total: the storage screen has to agree with
+    /// the disk. Compaction temporaries are dot-prefixed and live in the
+    /// archive directory, so the `.skipsHiddenFiles` walk over
+    /// `temporaryDirectory` can never see them.
+    func testOrphanSweepCountsCompactionTemporariesInReclaimedBytes() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-inv-sweep-\(UUID().uuidString)")
+        let archive = root.appendingPathComponent("atria-historical")
+        let scratch = root.appendingPathComponent("scratch")
+        for url in [archive, scratch] {
+            try FileManager.default.createDirectory(
+                at: url, withIntermediateDirectories: true)
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let now = Date(timeIntervalSince1970: 1_787_120_000)
+        let orphan = archive.appendingPathComponent(
+            ".historical-archive.identity.jsonl.compact.\(UUID().uuidString).tmp")
+        let payload = Data(repeating: 0x42, count: 8_192)
+        try payload.write(to: orphan)
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-7_200)],
+            ofItemAtPath: orphan.path)
+
+        let index = archive.appendingPathComponent(
+            "historical-archive.identity.jsonl")
+        try Data("{}\n".utf8).write(to: index)
+
+        let reclaimed = AtriaManagedStorageInventory.sweepOrphanedArtifacts(
+            documentsURL: root, temporaryURL: scratch, now: now)
+
+        XCTAssertEqual(reclaimed, Int64(payload.count),
+                       "the compaction temporary's bytes must be counted")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: index.path),
+                      "the real index must survive")
+    }
+
 }

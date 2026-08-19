@@ -1936,6 +1936,49 @@ replaced that is acceptable, but it is a deliberate trade, not a free one.
 Container unchanged at 6.321 GB across 3603 files (down from 3641 — unrelated sidecar churn, not the
 orphan).
 
+## VERIFIED on device 12:32 — the sweep reclaimed 565.6 MB
+
+Relaunched at 12:32:45, with the orphan 32.5 minutes old and therefore past the 30-minute gate.
+The pre-registered pass condition was "the file is gone after a post-12:30 store init":
+
+    12:32:33  .historical-archive.identity.jsonl.compact.0CC8F9A4-….tmp   565.6 MB   PRESENT
+    12:32:45  relaunch
+    12:32:56  (no compaction temporaries)                                            GONE
+
+| measure | before | after |
+|---|---|---|
+| container (summed file listing) | 6.321 GB | **5.760 GB** |
+| delta | | **−561 MB**, matching the 565.6 MB file inside rounding |
+
+File *count* rose 3603 → 3679 over the same window, so this was not a general cleanup — one large
+file went away while ordinary sidecar churn continued.
+
+### The inventory fix landed too
+
+`archive_identity_and_manifest` went **1508.7 MB across 2 files → 2409.3 MB across 5 files**: the
+lookup database plus its `-wal` and `-shm`, exactly the +900.6 MB and +3 files predicted. Reported
+total 4.977 GB → 5.884 GB.
+
+The residual against my 5.760 GB container sum now runs the *other* way (inventory higher by
+0.124 GB), which is what binary-vs-decimal unit conventions predict: devicectl prints "1.28 GB" for a
+file I counted as 1.28e9 bytes but which is 1.374e9 if the unit is GiB — a ~94 MB undercount on that
+file alone. So the earlier 1.34 GB gap was far outside unit noise and real; this residual is inside it
+and is not a defect.
+
+### One more honesty gap, closed
+
+`reclaimedBytes` still read **0** at 12:32:46 despite 565.6 MB having just been reclaimed, because
+the store's init sweep does not feed the inventory's counter — only
+`AtriaManagedStorageInventory.sweepOrphanedArtifacts` does. A user checking the storage screen after
+this morning's leak would have been told nothing was recovered.
+
+`sweepOrphanedArtifacts` now also sweeps the archive directory's compaction temporaries, so their
+bytes land in `reclaimedBytes`. The sweep is idempotent, so running from both the store init and the
+inventory pass is harmless. **Not yet installed** — it needs another orphan to exercise it, and there
+is none on the device now.
+
+51/51 across `AtriaHandoff13Tests` + `AtriaHistoricalArchiveDurableStoreTests`.
+
 **Install deferral, resolved.** The receipt from `3d4a6f3a` was committed but not on the device, so
 the next park was unmeasurable. Installing before the prune would have relaunched the process ~30 min
 ahead of the checkpoint this loop had waited on since 05:58. The receipt only pays off on a *future*
