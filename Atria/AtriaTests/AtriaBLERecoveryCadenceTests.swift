@@ -10728,6 +10728,45 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         )
     }
 
+    /// 2026-08-19: the terminal-materialization lane had no watchdog and no
+    /// timeout. All eleven clear sites for
+    /// `historicalConsumerMaterializationInFlight` sit on a completion or failure
+    /// path, and the one bounded rescue arms only from the terminal-archive-
+    /// FAILURE catch — so a materialization that neither completes nor fails held
+    /// the drain lane until the process died.
+    ///
+    /// Observed on device: lane held from 08:38 past 10:24 (106 min and climbing)
+    /// with `terminalArchiveFailureAt` unchanged at 01:07, so no failure ever
+    /// armed the retry, while `drainedThroughUnix` stayed frozen at 06:29 and the
+    /// backlog grew 1.98 h -> 3.92 h. Since the frontier commit guards on an
+    /// in-progress sync, the user's "last sync" could not advance at all.
+    func testMaterializationLaneIsReleasedPastItsCeiling() {
+        let ceiling: TimeInterval = 20 * 60
+        let claimed = Date(timeIntervalSince1970: 1_787_120_000)
+
+        // An idle lane is never "held too long".
+        XCTAssertFalse(AtriaBLEManager.materializationLaneHeldTooLong(
+            startedAt: nil, now: claimed.addingTimeInterval(9_999), ceiling: ceiling))
+
+        // A healthy materialization runs well inside the ceiling — the longest
+        // productive run measured this session was ~47 min of REAL work, but that
+        // one completed; this ceiling only catches a lane that never finishes.
+        XCTAssertFalse(AtriaBLEManager.materializationLaneHeldTooLong(
+            startedAt: claimed, now: claimed.addingTimeInterval(ceiling - 60), ceiling: ceiling))
+
+        XCTAssertTrue(AtriaBLEManager.materializationLaneHeldTooLong(
+            startedAt: claimed, now: claimed.addingTimeInterval(ceiling), ceiling: ceiling))
+
+        // THE FIELD CASE: 106 minutes held must release.
+        XCTAssertTrue(AtriaBLEManager.materializationLaneHeldTooLong(
+            startedAt: claimed, now: claimed.addingTimeInterval(106 * 60), ceiling: ceiling),
+            "a lane held for 106 minutes must be reclaimed")
+
+        // A backwards clock must not release a lane that just claimed it.
+        XCTAssertFalse(AtriaBLEManager.materializationLaneHeldTooLong(
+            startedAt: claimed, now: claimed.addingTimeInterval(-3_600), ceiling: ceiling))
+    }
+
     func testSilentStreamCentralRebuildPermitReArmsAfterAQuietInterval() {
         let interval: TimeInterval = 10 * 60
         let issuedAt = Date(timeIntervalSince1970: 1_787_070_393)
