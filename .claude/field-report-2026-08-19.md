@@ -1143,6 +1143,53 @@ in two places in this ledger and in commit `4ec5096e`'s message. Unix `178618911
 ticket stuck for over ten days silencing an entire notification class — but the number was wrong and is
 now fixed above.
 
+## AL. Item 15 lead (a) ROOT-CAUSED — the range-loss ticket requires resolving a window that no longer exists
+
+My original lead was **wrong about the mechanism**. I wrote that
+`scheduleStaleArmedRangeLossBackfillReconciliation` blocks the clear because the live status is not in
+its `clearableStatuses` list. That function only LOGS — it sets `staleRangeLossReconciliationInFlight`
+true and immediately false, and clears nothing. Here is the real chain, traced end to end.
+
+The only non-user clear path is `AtriaBLEManager.swift:16391`, gated by:
+
+```swift
+// AtriaBLEHistoricalRecoveryPolicy.swift:1610
+return ledgerCoverageResolved && !hasRequestedWindow
+```
+
+**Device state right now:**
+
+| | |
+|---|---|
+| `rangeLossBackfillPending` | **true**, requested 08-08 17:08 (10.6 days) |
+| `recoveryWindowStart` / `End` | **absent** -> `hasRequestedWindow = false` |
+| `atria.offlineSync.missingWindows.v1` | **absent** -> zero pending gap windows |
+
+So the clear reduces to `ledgerCoverageResolved` alone. And that flag is set in exactly one shape
+(AtriaBLEManager.swift:37341):
+
+```swift
+if gapResult.resolvedWindows > 0, activeFullDrainEventIdentity == nil {
+    offlineHistoricalSyncResolvedGapCoverage = true
+}
+```
+
+**`resolvedWindows > 0` cannot happen when the ledger holds zero windows.** Nothing is left to recover,
+and precisely because nothing is left to recover, the ticket can never be acknowledged. The only other
+clear site is `startFreshAcceptingMissedDataLoss` — the user manually tapping "Start fresh" and
+accepting data loss.
+
+**Sixth instance of this report's defect class:** a clear/recovery condition satisfiable only by an event
+that cannot occur in the state it governs. (Siblings: silent-stream latch, pure-HR requalification,
+`lastPruneAtUnix`, the backfill ticket's notification authority, the foreground-only nap catcher.)
+
+**Deliberately NOT fixed here.** The conservative design is explicit — "Only rows appended by this sync
+can acknowledge it" — because clearing on general readiness once silently discarded a real recovery
+request (the documented gym failure). A wrong change drops genuine unrecovered data. The shape of the
+right fix is clear: a completed sync that finds NO pending ledger windows and NO requested window has no
+recoverable target, and should clear under its own distinct auditable status rather than requiring
+`resolvedWindows > 0`. That deserves a fresh session and its own verification, not the tail of this one.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
