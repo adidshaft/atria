@@ -1699,6 +1699,16 @@ own entry if something changes materially.
 | 09:34 | 06:29 | 3.08 h | deferred | park **56 min** — EXCEEDS the 47-min precedent; flushDebt frozen at 767 |
 | 09:44 | 06:29 | 3.25 h | deferred | park 66 min; flushDebt still 767; no change from 09:34 |
 | 09:54 | 06:29 | 3.42 h | deferred | park 76 min; flushDebt still 767; unchanged |
+| 10:04 | 06:29 | 3.59 h | deferred | park **86 min** — now nearly 2x the 47-min precedent; scene last active 08:04 |
+
+**Diagnostic available but NOT taken.** `historicalConsumerMaterializationInFlight` is a process-local
+`var`, so a relaunch clears it unconditionally — which is what ended the 02:11 park. That makes a
+relaunch a clean discriminator: if the frontier resumes immediately afterwards, this is a process-local
+wedge and the **fourth** instance of the recovery-state defect class; if it re-parks straight away, the
+queued materialization work is real.
+
+Not doing it unasked. A relaunch is a device action, it destroys the evidence that would let anyone
+diagnose this properly, and the user may be using the phone (scene last active 08:04). Offered instead.
 
 **Correcting my previous read.** At 09:24 I wrote that the park matching entry O's 47 minutes "looks
 like a characteristic duration rather than a hang". It has now run 56 minutes and `flushDebt` has
