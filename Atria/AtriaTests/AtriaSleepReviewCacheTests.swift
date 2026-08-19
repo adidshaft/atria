@@ -2,6 +2,81 @@ import XCTest
 @testable import Atria
 
 final class AtriaSleepReviewCacheTests: XCTestCase {
+    /// Field report 2026-08-19, item 11 defect (2). `runResidentSleepReviewRefreshIfUseful`
+    /// exists specifically to catch a daytime nap while the app stays
+    /// backgrounded — its own comment cites the on-device 2026-08-01 case of a
+    /// 14:05-16:40 nap that "produced no detection at all while the app stayed
+    /// backgrounded". It then routed into a gate requiring BOTH the store-owned
+    /// foreground authority and UIKit `.active`, so it was a no-op in exactly the
+    /// scenario it was written for, and the notification could not fire until the
+    /// user opened the app.
+    func testResidentCheckpointMayProjectWhileBackgrounded() {
+        func enqueue(reason: String,
+                     foregroundAuthority: Bool,
+                     active: Bool,
+                     restoreBlocked: Bool = false) -> Bool {
+            SessionStore.shouldEnqueueSleepReviewProjection(
+                hasForegroundAuthority: foregroundAuthority,
+                applicationIsActive: active,
+                restoreInitializationBlocked: restoreBlocked,
+                cacheMatchesInput: false,
+                pendingMatchesInput: false,
+                backgroundResidentAdmission:
+                    SessionStore.sleepReviewProjectionBackgroundAdmission(
+                        reason: reason,
+                        restoreInitializationBlocked: restoreBlocked
+                    )
+            )
+        }
+
+        // THE FIELD CASE: backgrounded, no foreground authority, resident lane.
+        XCTAssertTrue(enqueue(reason: SessionStore.residentSleepReviewRefreshReason,
+                              foregroundAuthority: false, active: false),
+                      "the resident nap-catcher must be able to run unattended")
+
+        // Every other reason still requires BOTH foreground gates, so the
+        // SwiftUI-scene/UIKit ABA race the authority closes stays closed.
+        XCTAssertFalse(enqueue(reason: "ui_request", foregroundAuthority: false, active: false))
+        XCTAssertFalse(enqueue(reason: "ui_request", foregroundAuthority: true, active: false))
+        XCTAssertFalse(enqueue(reason: "ui_request", foregroundAuthority: false, active: true))
+        XCTAssertTrue(enqueue(reason: "ui_request", foregroundAuthority: true, active: true))
+
+        // A blocked restore refuses every lane, resident included.
+        XCTAssertFalse(enqueue(reason: SessionStore.residentSleepReviewRefreshReason,
+                               foregroundAuthority: false, active: false,
+                               restoreBlocked: true))
+    }
+
+    /// The input-key dedupe is still the final authority, so an admitted
+    /// background lane cannot spend CPU when nothing changed.
+    func testBackgroundAdmissionStillRespectsTheInputKeyDedupe() {
+        func enqueue(cacheMatches: Bool, pendingMatches: Bool) -> Bool {
+            SessionStore.shouldEnqueueSleepReviewProjection(
+                hasForegroundAuthority: false,
+                applicationIsActive: false,
+                restoreInitializationBlocked: false,
+                cacheMatchesInput: cacheMatches,
+                pendingMatchesInput: pendingMatches,
+                backgroundResidentAdmission: true
+            )
+        }
+        XCTAssertTrue(enqueue(cacheMatches: false, pendingMatches: false))
+        XCTAssertFalse(enqueue(cacheMatches: true, pendingMatches: false))
+        XCTAssertFalse(enqueue(cacheMatches: false, pendingMatches: true))
+    }
+
+    /// Only the resident reason earns unattended admission.
+    func testOnlyTheResidentReasonEarnsBackgroundAdmission() {
+        XCTAssertTrue(SessionStore.sleepReviewProjectionBackgroundAdmission(
+            reason: SessionStore.residentSleepReviewRefreshReason,
+            restoreInitializationBlocked: false))
+        for reason in ["ui_request", "notification", "scene_active", "launch", ""] {
+            XCTAssertFalse(SessionStore.sleepReviewProjectionBackgroundAdmission(
+                reason: reason, restoreInitializationBlocked: false),
+                "\(reason) must not run the projection unattended")
+        }
+    }
+
     private final class StepClock: @unchecked Sendable {
         private let lock = NSLock()
         private var value: UInt64 = 0

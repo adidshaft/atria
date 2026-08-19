@@ -27954,7 +27954,7 @@ final class SessionStore: ObservableObject {
         lastResidentSleepReviewRefreshAt = now
         scheduleSleepReviewCacheRefresh(rest: baseline.restingInt ?? 60,
                                         calendar: .current,
-                                        reason: "resident_review_checkpoint")
+                                        reason: Self.residentSleepReviewRefreshReason)
     }
 
     nonisolated static func shouldAttemptResidentSleepReviewRefresh(
@@ -33527,18 +33527,52 @@ final class SessionStore: ObservableObject {
     /// Pure admission rule used by both production scheduling and exact tests.
     /// A matching published or pending input coalesces duplicate UI requests;
     /// an inactive process never starts this user-initiated projection.
+    /// `backgroundResidentAdmission` is the throttled resident checkpoint's own
+    /// authority, and the ONLY way this pipeline runs unattended.
+    ///
+    /// `runResidentSleepReviewRefreshIfUseful` was written specifically to catch
+    /// a daytime nap while the app stays backgrounded — its own comment cites the
+    /// on-device 2026-08-01 case of a 14:05-16:40 nap that "produced no detection
+    /// at all while the app stayed backgrounded". It then routed into this gate,
+    /// which requires BOTH the store-owned foreground authority and UIKit
+    /// `.active`, neither of which a background checkpoint can satisfy. So the
+    /// nap-catcher was a no-op in exactly the scenario it exists for, and the
+    /// notification could not fire until the user opened the app (field report
+    /// 2026-08-19, item 11 defect 2).
+    ///
+    /// The two foreground gates are kept for every UI-driven path: they close a
+    /// real SwiftUI-scene/UIKit-state ABA race between an active UI request and a
+    /// lifecycle callback. A throttled resident checkpoint is not a participant in
+    /// that race — it has no UI request to interleave with — so admitting it does
+    /// not reopen the race the authority was built to close.
+    ///
+    /// Unattended CPU stays bounded by the caller: the resident lane runs at most
+    /// once per 15 minutes (`shouldAttemptResidentSleepReviewRefresh`), and the
+    /// input-key dedupe below still refuses work when nothing changed.
     nonisolated static func shouldEnqueueSleepReviewProjection(
         hasForegroundAuthority: Bool,
         applicationIsActive: Bool,
         restoreInitializationBlocked: Bool,
         cacheMatchesInput: Bool,
-        pendingMatchesInput: Bool
+        pendingMatchesInput: Bool,
+        backgroundResidentAdmission: Bool = false
     ) -> Bool {
-        hasForegroundAuthority
-            && applicationIsActive
+        let admitted = (hasForegroundAuthority && applicationIsActive)
+            || backgroundResidentAdmission
+        return admitted
             && !restoreInitializationBlocked
             && !cacheMatchesInput
             && !pendingMatchesInput
+    }
+
+    /// Only the throttled resident checkpoint may run this pipeline unattended.
+    nonisolated static let residentSleepReviewRefreshReason = "resident_review_checkpoint"
+
+    nonisolated static func sleepReviewProjectionBackgroundAdmission(
+        reason: String,
+        restoreInitializationBlocked: Bool
+    ) -> Bool {
+        reason == residentSleepReviewRefreshReason && !restoreInitializationBlocked
     }
 
     private static func sleepReviewApplicationStateLabel(
@@ -33665,6 +33699,10 @@ final class SessionStore: ObservableObject {
         let applicationStateLabel = Self.sleepReviewApplicationStateLabel(
             applicationState
         )
+        let backgroundResidentAdmission = Self.sleepReviewProjectionBackgroundAdmission(
+            reason: reason,
+            restoreInitializationBlocked: restoreInitializationBlocked
+        )
         guard Self.shouldEnqueueSleepReviewProjection(
             hasForegroundAuthority:
                 sleepReviewProjectionForegroundAuthority,
@@ -33672,11 +33710,13 @@ final class SessionStore: ObservableObject {
             restoreInitializationBlocked: restoreInitializationBlocked,
             cacheMatchesInput: sleepReviewCacheInputKey == requestedInputKey,
             pendingMatchesInput:
-                pendingSleepReviewCacheInputKey == requestedInputKey
+                pendingSleepReviewCacheInputKey == requestedInputKey,
+            backgroundResidentAdmission: backgroundResidentAdmission
         ) else {
             if (!sleepReviewProjectionForegroundAuthority
                 || !applicationIsActive
                 || restoreInitializationBlocked),
+               !backgroundResidentAdmission,
                sleepReviewCacheInputKey != requestedInputKey {
                 sleepReviewRefreshDeferredUntilForeground = true
                 AtriaDebugLog(
