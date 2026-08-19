@@ -2116,6 +2116,29 @@ attempt undecidable, and I would otherwise be free to read a bare release as suc
 
 Frontier ran 1.2x in the ten minutes before the park (08:49 → 09:01).
 
+### 14:14 — park ended in under 20 min, in the SAME process. Outcome 3.
+
+    13:43  proc 5E20778F   gap_retained_transaction_unverified
+    13:54  proc 5E20778F   armed
+    14:04  proc 5E20778F   deferred_terminal_materialization   <- park
+    14:14  proc 5E20778F   armed                               <- released, NO receipt
+
+`processInstanceID` is unchanged across the whole window, so this was **not** a relaunch — the thing
+that made 11:04 unreadable is ruled out here by evidence rather than by assumption. And the ceiling
+did not fire: no receipt, and the park was shorter than the 20-minute eligibility anyway.
+
+That is pre-registered outcome 3: it completed normally. **Not evidence for the ceiling.**
+
+It is, however, the first useful evidence about the *healthy* case, which is the gap I admitted when
+correcting the ceiling's justification: no healthy materialization had ever been timed on device. The
+slice receipt moved 13:58:01 → 14:13:17 within one process, and the status was `armed` again by
+14:14, so this materialization ran **under ~16 minutes** start to finish.
+
+One observation at 10-minute sampling granularity is not a distribution, and I am not turning it into
+one. But it is the first datum on the side of the question that mattered: a 20-minute ceiling sitting
+*above* healthy duration rather than cutting into it. If the next several healthy runs also land under
+20 minutes, the constant is defensible on measurement instead of on the failure side alone.
+
 ### What 17:58:46 tests
 
 The whole retention chain end to end, in one shot: does the compaction survive to completion this
