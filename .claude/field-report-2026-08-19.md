@@ -78,7 +78,7 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 8 | Stress reads low | **FIXED** (W) | `6bb48d8b`; scoring v4 anchors on the learned awake reference; simulated 65.6/29.6/4.9 over 130k real samples |
 | 9 | Sleep-view stress vs general stress disagree (pinned 3/high) | **FIXED** | full scale was rest+14 vs a SLEEPING baseline; rebanded |
 | 10 | Sleep stages not working | **PARTLY FIXED, STILL BLOCKED** (I + gate B + U) | gate B fixed; motion retry now fires but proof still disconnects — stages stay fail-closed |
-| 11 | Notifications never fire at the right moment | **3 of 5 FIXED** (T + Z + AF) | workout un-silenced, background discovery, redundant-banner suppression; (1) event-bound + (5) nap push open |
+| 11 | Notifications never fire at the right moment | **4 of 5 FIXED** (T+Z+AF+AG) | workout un-silenced, background discovery, redundant-banner suppression, event-bound review delivery; only (5) nap push open (blocked on motion) |
 | 12 | 5 GB+ data size, need raw/insight retention tiers | **PARTS 1 + 3 FIXED** (L + Y) | 2.13 GB dedupe tier (`32f4e598`); fence lifted + 30-day raw horizon; part 2 (compression) DROPPED on evidence (P) |
 | 13 | Insight→suggestion engine | **INPUT DEFECT FIXED** (AB) | rebuild no longer erases measured restingHR (63%→ should approach 100%); engine-design half still open |
 | 14 | Rings cropped in scroll-up floating overlay | **FIXED** (D) | |
@@ -1006,6 +1006,38 @@ actor-safe here). `AtriaEventNotificationPolicyTests`: **18/18 green**.
 **Item 11 now 3 of 5.** Remaining: (1) pass-bound rather than event-bound scheduling — the architectural
 one, which subsumes the journal-nudge half of (5) measured in AE; and (5)'s "Nap detected" push, which
 stays inert until motion recovers.
+
+## AG. Item 11 defect (1) FIXED — a physiological event now schedules its own notification
+
+The finding's headline was "no physiological event in Atria schedules its own notification". That was
+half right: `scheduleSleepLogged` already fires at save time for an AUTO-CONFIRMED night
+(Sessions.swift:37590, :38456). What had no equivalent was the case the user actually hits — a night or
+nap that needs REVIEW. Those waited for the next launch / scene-active / BGTask pass.
+
+The event-time hook already existed and was unused: `Sessions.swift:36987`, where an admitted candidate
+is persisted via `AtriaPendingSleepReviewStore.save(night)` and `persisted == true`. That is the moment
+the app KNOWS there is something to review.
+
+Added `LocalNotificationScheduler.scheduleAdmittedSleepReview(store:)` and called it there. Design notes:
+
+- **It adds a trigger, not a policy.** It runs the SAME `makeSleepReviewDecision` gate stack, so the
+  per-episode delivery cap (entry R), the window-start end-growth debounce, the per-candidate cooldown,
+  local dismissal and the settings toggle all still apply unchanged. It also honours the
+  redundant-while-active suppression from AF.
+- **No `AtriaBLEManager` needed.** `makeSleepReviewDecision` takes only `store` — the live-capture
+  protection is workout-only. That matters because `SessionStore` holds no BLE handle, and every other
+  notification call it makes is store-only.
+- **Reachable while backgrounded only because of defect (2).** Before entry Z the admission path could
+  not run unattended, so this hook would have fired only when the user opened the app — i.e. exactly the
+  useless timing AF just removed. The dependency chain is strictly (2) -> (3) -> (1).
+
+`AtriaEventNotificationPolicyTests` + `AtriaSleepReviewNotificationDebounceTests` +
+`AtriaSleepReviewCacheTests`: **85/85 green**.
+
+**Item 11 now 4 of 5.** Only (5)'s "Nap detected" push remains, and it stays inert until motion recovers
+— so it correctly waits on the R10 proof work rather than being built now. The journal-nudge half of (5),
+measured in AE, is materially improved by this change for the review prompt, though the nudge itself is
+still median-anchored.
 
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
