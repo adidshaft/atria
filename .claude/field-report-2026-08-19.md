@@ -80,7 +80,7 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 10 | Sleep stages not working | **PARTLY FIXED, STILL BLOCKED** (I + gate B + U) | gate B fixed; motion retry now fires but proof still disconnects — stages stay fail-closed |
 | 11 | Notifications never fire at the right moment | **2 of 5 FIXED** (T + Z) | workout class un-silenced; background nap-catcher now runs; (1)(3)(5) open |
 | 12 | 5 GB+ data size, need raw/insight retention tiers | **PARTS 1 + 3 FIXED** (L + Y) | 2.13 GB dedupe tier (`32f4e598`); fence lifted + 30-day raw horizon; part 2 (compression) DROPPED on evidence (P) |
-| 13 | Insight→suggestion engine | TODO | |
+| 13 | Insight→suggestion engine | **INPUT DEFECT FIXED** (AB) | rebuild no longer erases measured restingHR (63%→ should approach 100%); engine-design half still open |
 | 14 | Rings cropped in scroll-up floating overlay | **FIXED** (D) | |
 | 15 | Anything else | ongoing | |
 
@@ -827,6 +827,40 @@ a relaunch three hours later inherits the ORIGINAL stamp rather than overwriting
 
 Lesson worth keeping: a fix that only ever runs after the condition it fixes is not a fix. This is the
 same shape as the four recovery-state defects in this report — I reproduced it while fixing them.
+
+## AB. Item 13 — both challengers were right to refute; the real defect DESTROYS the input
+
+The original item-13 finding ("no engine turns measurement into a suggestion") was **refuted 2/2**, and
+correctly. Their corrections converge on something concrete:
+
+- **Challenger 1:** the measured-HR -> statement pipeline already ships end to end and needs no journal
+  and no recovery — `wearRestingHR` -> `SavedDailyMetric.restingHR` -> `DailyRollupVitals.rhr`
+  (trailing-28-day Welford mean/sd/n) -> `AtriaHighlights.lowerRestingHeartRate` +
+  `healthDeviationDecision` (|z| >= 2 for two days) -> the already-honest `.healthDeviation` category.
+  **"The defect is that its input is destroyed after it is correctly produced."**
+- **Challenger 2:** "Atria has an OUTCOME and no MEASURED PREDICTORS" — every statistical predictor is
+  hand-typed; and the gates are BINARY (hide everything until N) where the codebase already documents the
+  better "Early estimate · day N of M" pattern at Insights.swift:302-317.
+
+**Verified the destruction in code.** `preparedDailyMetricHistory` derives `restingHR` from
+`night?.restingHR` (Sessions.swift:21553) — the confirmed main-sleep night ONLY — but appends a row for
+every day carrying any session rollup. `mergeDailyMetricHistoryCancellable` then seeds `merged` from
+`computed` first (21804-21808) and only lets `existing` fill days `computed` did not produce. So a
+recompute that could not observe resting HR discards the existing row that held a real `wearRestingHR`.
+
+**Measured on device:** `restingHR` present on only **27 of 43 days (63 %)**. The nil days line up
+exactly with days having no confirmed sleep — and **08-19 currently carries `rhr = 68` with no sleep**,
+a wear-derived value the next bulk rebuild would have erased. (`hrv` is present on just 1/43 days, a
+separate and larger gap.)
+
+**Fix:** `dailyMetricPreservingMeasuredFacts` — a rebuild that cannot OBSERVE a measured fact must not
+assert its absence. It only ever fills a nil, never overwrites a value the rebuild derived, never invents
+one neither row holds, and never applies to a day the caller declared authoritative.
+`AtriaRecoveryFreezeTests` + `SavedDailyMetricCodableTests`: **40/40 green**.
+
+This does not "build an insight engine" — it stops starving the one that already exists. The engine-design
+half of item 13 (measured predictors, graduated rather than binary gates) remains open and is a genuine
+feature, not a bug.
 
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.

@@ -2863,7 +2863,11 @@ struct SavedDailyMetric: Codable, Identifiable, Equatable {
     let recoveryPercent: Int?
     let recoveryConfidence: String
     let hrv: Int?
-    let restingHR: Int?
+    /// `var` only so a rebuild that could not observe this day's resting HR can
+    /// carry forward the measured one instead of asserting nil — see
+    /// `dailyMetricPreservingMeasuredFacts`. Writing a 20-field copy
+    /// constructor for that would drift the moment a field is added.
+    var restingHR: Int?
     let respiratoryRate: Double?
     let sleepDuration: TimeInterval?
     /// Exact adaptive need used when this completed physiological night was
@@ -21606,6 +21610,22 @@ final class SessionStore: ObservableObject {
         return shouldContinue() ? metrics : nil
     }
 
+    /// Restores measured facts a recompute could not observe.
+    ///
+    /// Only ever fills a nil — it can never overwrite a value the rebuild
+    /// derived, and it can never invent one neither row holds.
+    nonisolated static func dailyMetricPreservingMeasuredFacts(
+        rebuilt: SavedDailyMetric,
+        existing: SavedDailyMetric
+    ) -> SavedDailyMetric {
+        guard rebuilt.restingHR == nil, existing.restingHR != nil else {
+            return rebuilt
+        }
+        var preserved = rebuilt
+        preserved.restingHR = existing.restingHR
+        return preserved
+    }
+
     /// Whether the scored night's recovery inputs differ between the preserved
     /// frozen daily row and a fresh recompute — i.e. a sleep confirm / EXTEND /
     /// adjust re-derived today's overnight readiness, so the preserved recovery
@@ -21814,6 +21834,37 @@ final class SessionStore: ObservableObject {
             if merged[day] == nil,
                !normalizedAuthoritativeDays.contains(day) {
                 merged[day] = metric
+            } else if let rebuilt = merged[day],
+                      !normalizedAuthoritativeDays.contains(day) {
+                // A rebuild that cannot OBSERVE a measured fact must not assert
+                // its absence.
+                //
+                // `preparedDailyMetricHistory` derives `restingHR` from the
+                // confirmed main-sleep night alone (`night?.restingHR`), but it
+                // emits a row for every day carrying any session rollup. So on a
+                // day with wear but no confirmed night — an HR-only night, or a
+                // night still behind the drain frontier — the recompute produces
+                // a row whose `restingHR` is nil, and seeding `merged` from
+                // `computed` first then discarded the existing row that held a
+                // real `wearRestingHR` measurement.
+                //
+                // Measured on device 2026-08-19: restingHR was present on only
+                // 27 of 43 days (63 %), and 08-19 still carried `rhr = 68` with
+                // no confirmed sleep — a wear-derived value the next rebuild
+                // would have erased. That starves the whole measured-HR insight
+                // chain (`DailyRollupVitals.rhr` trailing-28-day Welford ->
+                // `AtriaHighlights.lowerRestingHeartRate` and
+                // `healthDeviationDecision`, both of which need a minimum n),
+                // which is the real mechanism behind field report item 13.
+                //
+                // Carry forward only facts the recompute left nil, and only for
+                // non-authoritative days. A day the caller declared
+                // authoritative still replaces wholesale, and any value the
+                // rebuild DID derive still wins.
+                merged[day] = Self.dailyMetricPreservingMeasuredFacts(
+                    rebuilt: rebuilt,
+                    existing: metric
+                )
             }
             if frozenToday == nil,
                calendar.isDate(metric.day, inSameDayAs: today) {
