@@ -1271,6 +1271,45 @@ content that is not a generated share/export artifact (e.g. two 5.5 MB UUID-name
 sweep deliberately does not touch. So 39.9 MB reclaimed matches the designed scope exactly — the earlier
 number measured the wrong set.
 
+## AP. Item 15 lead (b) CLOSED as not-a-defect — and my characterisation of it was wrong
+
+I recorded lead (b) as "`terminalArchiveFailureDiagnostic = publicationCheckpointMissing`, **stuck since
+2026-08-14** (5 days)". That reading was wrong in kind: the key holds only the **latest** failure, so
+08-14 meant "the most recent failure was on 08-14", never "wedged since". The device now reads
+`terminalArchiveFailureAt = 2026-08-19 01:07:33` — it moved, so it recurs and recovers.
+
+Followed the site tag to the exact throw. `terminalFailureSite` advanced `site38023` -> **`site38213`**,
+and that `#line` is:
+
+```swift
+if fullScanSnapshotChanged {
+    guard previousFullScan.generation < UInt64.max,
+          refreshedSnapshot.catalogGeneration > previousFullScan.catalogGeneration else {
+        throw Self.terminalCheckpointMissing("site\(#line)")
+    }
+```
+
+The archive content changed (SHA/timestamps differ) while the catalog generation had not yet advanced —
+precisely the race the Handoff-12 comment names: *"a transient publicationCheckpointMissing (catalog
+snapshot changed before its generation advanced)"*. That lane already self-heals:
+`scheduleTerminalConsumerDependencyRetry()` re-arms `resumePendingFullDrainPublicationIfNeeded` on a
+bounded interval, added specifically because this was once "the one failure lane with no self re-arm".
+
+**Conclusion: known, handled, transient. No change shipped.** The site-tag mechanism did exactly its
+job — its own comment says a five-day wedge was previously "diagnosed only through repeated on-device
+passes", and here it resolved the question in one lookup.
+
+**Worth noting as a pattern**, not acted on: several of these diagnostics are single-slot and therefore
+cannot show FREQUENCY — the same limitation I hit on the R10 proof context and fixed there with a
+bounded ring. `terminalArchiveFailureAt` has the identical shape. If this failure ever needs real
+triage, it will need the same treatment.
+
+## AQ. Retention clock has now survived THREE relaunches
+
+`historical-archive.identity.prune.json` still reads **05:58** after relaunches at 06:26, 07:19 and
+07:26. Each relaunch is an independent test of the AA bootstrap fix, and the marker has not been
+re-seeded once. The six-hour interval is genuinely wall-clock now; prune due ~11:58.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
