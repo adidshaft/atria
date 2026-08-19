@@ -5,6 +5,33 @@ import XCTest
 /// durable event-key dedup ledger, the bedtime wind-down timing derivation,
 /// and the catch-up-completion observation policy.
 final class AtriaEventNotificationPolicyTests: XCTestCase {
+    /// Field report 2026-08-19, item 11 defect (3): "the push notification lies
+    /// there, but never shows up at right time."
+    ///
+    /// `sleep_review` / `workout_review` decisions are produced only by a launch /
+    /// scene-active / BGTask PASS and carry `delay: 6`, so a foreground pass lands
+    /// the banner ~6 s AFTER the user opens Atria — while the in-app review card
+    /// is already on screen showing the same candidate.
+    func testReviewBannersAreSuppressedWhileTheUserIsInTheApp() {
+        for kind in ["sleep_review", "workout_review"] {
+            XCTAssertTrue(LocalNotificationScheduler.reviewBannerIsRedundantWhileActive(
+                kind: kind, applicationIsActive: true), "\(kind) duplicates a visible card")
+            XCTAssertFalse(LocalNotificationScheduler.reviewBannerIsRedundantWhileActive(
+                kind: kind, applicationIsActive: false), "backgrounded delivery is the whole point")
+        }
+    }
+
+    /// Scoped deliberately: kinds that report state the user CANNOT otherwise see
+    /// must still fire while the app is open.
+    func testNonReviewNotificationsStillFireWhileActive() {
+        for kind in ["battery", "morning_summary", "morning_checkin",
+                     "health_deviation", "catch_up_complete", "fit_check", "sleep_logged"] {
+            XCTAssertFalse(LocalNotificationScheduler.reviewBannerIsRedundantWhileActive(
+                kind: kind, applicationIsActive: true),
+                "\(kind) reports state no card is already showing")
+        }
+    }
+
     /// Field report 2026-08-19, item 11: "workout detected — never shows".
     ///
     /// `reviewNotificationsProtectedByLiveCapture` gated on

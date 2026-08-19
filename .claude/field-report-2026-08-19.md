@@ -78,7 +78,7 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 8 | Stress reads low | **FIXED** (W) | `6bb48d8b`; scoring v4 anchors on the learned awake reference; simulated 65.6/29.6/4.9 over 130k real samples |
 | 9 | Sleep-view stress vs general stress disagree (pinned 3/high) | **FIXED** | full scale was rest+14 vs a SLEEPING baseline; rebanded |
 | 10 | Sleep stages not working | **PARTLY FIXED, STILL BLOCKED** (I + gate B + U) | gate B fixed; motion retry now fires but proof still disconnects — stages stay fail-closed |
-| 11 | Notifications never fire at the right moment | **2 of 5 FIXED** (T + Z) | (5) journal half MEASURED (AE): nudge = learned wake − 45 min = 10:09, not a hard-coded 08:00; (1)(3)(5) open |
+| 11 | Notifications never fire at the right moment | **3 of 5 FIXED** (T + Z + AF) | workout un-silenced, background discovery, redundant-banner suppression; (1) event-bound + (5) nap push open |
 | 12 | 5 GB+ data size, need raw/insight retention tiers | **PARTS 1 + 3 FIXED** (L + Y) | 2.13 GB dedupe tier (`32f4e598`); fence lifted + 30-day raw horizon; part 2 (compression) DROPPED on evidence (P) |
 | 13 | Insight→suggestion engine | **INPUT DEFECT FIXED** (AB) | rebuild no longer erases measured restingHR (63%→ should approach 100%); engine-design half still open |
 | 14 | Rings cropped in scroll-up floating overlay | **FIXED** (D) | |
@@ -976,6 +976,36 @@ unconfirmed night still gets a nudge — see the comment at LocalNotificationSch
 That is really item 11 defect (1), event-bound rather than pass-bound scheduling, and it is notification
 surgery that deserves a fresh session rather than the tail of a long one — especially having just made a
 lookup error on this very item.
+
+## AF. Item 11 defect (3) FIXED — review banners no longer land 6 s after you open the app
+
+`sleep_review` and `workout_review` decisions are produced only by a launch / scene-active / BGTask PASS
+and carry `delay: 6`, and `schedule(...)` had no application-state guard (unlike
+`AtriaEventNotificationScheduler`, which uses `guard !applicationIsActive` at :76, :156, :171). So on a
+foreground pass the banner lands about six seconds AFTER the user opens Atria — while the in-app review
+card is already on screen showing the same candidate. That is literally "the push notification lies
+there, but never shows up at right time".
+
+Added `reviewBannerIsRedundantWhileActive(kind:applicationIsActive:)`, scoped to the two REVIEW kinds
+only. Battery, connection diagnosis, catch-up completion, morning summary, fit-check and sleep-logged
+still fire while the app is open, because those report state no card is already showing — pinned by test.
+
+**Why it is safe NOW and was not before.** I deliberately deferred this earlier: suppressing a
+badly-timed signal without an alternative delivery path would have removed it entirely, since discovery
+was foreground-only. Defect (2) (entry Z) fixed that — the resident checkpoint can now discover a new
+nap/night while backgrounded, so a BGTask pass can still deliver. The dependency ran (2) -> (3), and
+doing (3) first would have made things worse.
+
+Deliberately NOT clearing any dedup receipt on suppression — the lesson from defect (4), where the
+suppression path wiped `workoutReviewLastCandidateIDKey` and re-armed already-delivered candidates.
+Suppression means "not now", not "the user has never seen this".
+
+Also added the missing `import UIKit` (the file is already `@MainActor`, so `UIApplication.shared` is
+actor-safe here). `AtriaEventNotificationPolicyTests`: **18/18 green**.
+
+**Item 11 now 3 of 5.** Remaining: (1) pass-bound rather than event-bound scheduling — the architectural
+one, which subsumes the journal-nudge half of (5) measured in AE; and (5)'s "Nap detected" push, which
+stays inert until motion recovers.
 
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
