@@ -78,7 +78,7 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 8 | Stress reads low | **FIXED** (W) | `6bb48d8b`; scoring v4 anchors on the learned awake reference; simulated 65.6/29.6/4.9 over 130k real samples |
 | 9 | Sleep-view stress vs general stress disagree (pinned 3/high) | **FIXED** | full scale was rest+14 vs a SLEEPING baseline; rebanded |
 | 10 | Sleep stages not working | **PARTLY FIXED, STILL BLOCKED** (I + gate B + U) | gate B fixed; motion retry now fires but proof still disconnects — stages stay fail-closed |
-| 11 | Notifications never fire at the right moment | **1 of 5 FIXED** (T) | workout class un-silenced; (1)(2)(3)(5) open — see T |
+| 11 | Notifications never fire at the right moment | **2 of 5 FIXED** (T + Z) | workout class un-silenced; background nap-catcher now runs; (1)(3)(5) open |
 | 12 | 5 GB+ data size, need raw/insight retention tiers | **PARTS 1 + 3 FIXED** (L + Y) | 2.13 GB dedupe tier (`32f4e598`); fence lifted + 30-day raw horizon; part 2 (compression) DROPPED on evidence (P) |
 | 13 | Insight→suggestion engine | TODO | |
 | 14 | Rings cropped in scroll-up floating overlay | **FIXED** (D) | |
@@ -773,6 +773,35 @@ the user asked for.
 xcodebuilds ran concurrently, then passed 4/4 in isolation with the same change applied. It revokes on a
 sort-comparison counter, so its timing shifts under machine load. Pre-existing load-sensitive flake, NOT
 a regression — I initially and wrongly called it mine.
+
+## Z. Item 11 defect (2) FIXED — the background nap-catcher was a no-op in the exact case it was written for
+
+`runResidentSleepReviewRefreshIfUseful` (Sessions.swift:27948) exists specifically to catch a daytime
+nap while the app stays backgrounded. Its own doc comment cites the on-device evidence:
+
+> "The net effect, verified on-device 2026-08-01, was a 14:05-16:40 nap that produced no detection at
+> all while the app stayed backgrounded — the app depended on a manual foreground to do its own work."
+
+It then routes into `scheduleSleepReviewCacheRefresh`, whose gate
+(`shouldEnqueueSleepReviewProjection`) requires **both** `sleepReviewProjectionForegroundAuthority` AND
+UIKit `.active`. A background checkpoint can satisfy neither, so the nap-catcher dead-ends and the
+review notification cannot fire until the user opens the app. Same defect class as the rest of this
+report: a discovery path whose only trigger cannot occur in the state it targets.
+
+**Fix:** a narrow `backgroundResidentAdmission`, granted only for
+`residentSleepReviewRefreshReason` and only when restore is not blocked. Both foreground gates are kept
+verbatim for every UI-driven path, so the SwiftUI-scene/UIKit-state ABA race the authority was built to
+close stays closed — a throttled resident checkpoint has no interleaving UI request and is not a
+participant in that race. Unattended CPU stays bounded by the existing 15-minute
+`shouldAttemptResidentSleepReviewRefresh` throttle plus the input-key dedupe, which tests pin as still
+authoritative.
+
+`AtriaSleepReviewCacheTests`: **57/57 green**.
+
+**Item 11 now 2 of 5.** Still open: (1) pass-bound rather than event-bound scheduling, (3) the banner
+landing ~6 s AFTER foregrounding, (5) no "Nap detected" push exists and the journal nudge is a clock
+alarm at median-wake+15. Note (5)'s nap push would be inert until motion recovers (items 6/10), so it
+should follow the R10 proof work rather than precede it.
 
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
