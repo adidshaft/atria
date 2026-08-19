@@ -452,6 +452,23 @@ final class AtriaHistoricalArchiveDurableStore {
             )
         }
         try loadAndVerifyReceiptState()
+        // Bootstrap the retention clock on the very first launch that has no
+        // marker yet.
+        //
+        // Without this the L3 fix is only half a fix: `lastPruneAtUnix` is
+        // seeded from `now()` when the sidecar is absent, but the sidecar is only
+        // written by a completed prune — and a prune needs 6 h measured from that
+        // seed. So every relaunch re-seeded the clock and the marker could never
+        // come into existence, leaving the interval effectively uptime-based
+        // exactly as before. Confirmed on device 2026-08-19: after two launches
+        // carrying the fix, no `prune.json` existed and the identity index was
+        // still 1.26 GB.
+        //
+        // Stamping it here starts the clock at first launch and lets it survive
+        // every restart from then on.
+        if !fileManager.fileExists(atPath: pruneStateURL.path) {
+            persistLastPruneAtUnixBestEffort()
+        }
     }
 
     deinit {
