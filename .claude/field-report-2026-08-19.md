@@ -1711,6 +1711,13 @@ Not doing it unasked. A relaunch is a device action, it destroys the evidence th
 diagnose this properly, and the user may be using the phone (scene last active 08:04). Offered instead.
 
 | 10:14 | 06:29 | 3.75 h | deferred | park 96 min |
+| 10:24 | 06:29 | 3.92 h | deferred | park 106 min; lane-ceiling fix written |
+| 10:37 | 06:52 | 3.75 h | — | **park self-resolved after ~112 min**, before the fix could install |
+| 10:39 | 06:52 | 3.77 h | terminal_consumer_materialization_deferred_raw_first_slice | lane ceiling now installed |
+
+**Prune marker survived a FOURTH relaunch** — `prune.json` still stamped 05:58 after the 10:37 install.
+The retention clock has now held across installs at 06:26, 07:19, 07:26, 07:57 and 10:37 without ever
+being re-seeded, so the wall-clock interval is thoroughly proven. Prune still due ~11:58.
 
 ## BF. Narrowed WITHOUT the relaunch — no timeout, and no failure to trigger the retry
 
