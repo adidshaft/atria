@@ -2064,6 +2064,35 @@ of them today. Acting on that grep would have deleted the entire test suite.
 Only 6 `XCTSkip` sites exist across the whole suite, so there is no meaningful dead-test population
 to remove.
 
+## The root-level `test_*.py` / `test_*.sh` scripts: none are dead
+
+Asked whether the 37 root-level test scripts are needed. Answer from running them, not from reading
+names:
+
+| outcome | files | detail |
+|---|---|---|
+| pass under `unittest` | **23** | 317+ cases exercising the `tools/` scripts |
+| runs as a script (`main()`, exit 0) | 1 | `test_decode_whoop_att_capture.py` |
+| pytest-style bare `def test_*` | 1 | `test_analyze_whoop4_gravity_walk.py`, 4 functions; pytest is not installed here |
+| **189 tests, 54 failures + 2 errors** | 1 | `test_handoff_static_checks.py` (15,525 lines) |
+
+**Nothing here should be deleted.** I checked a second heuristic before trusting it, and it was wrong
+in the same way the pbxproj one was: mapping `test_X.py → tools/X.*` reported 12 "subjects missing",
+but `test_fit_step_calibration.py` targets `tools/fit_step_calibration.swift` and
+`test_activity_detection_evaluation.py` targets `tools/evaluate_activity_detection.py`. Name-shape
+inference produced a plausible deletion list twice today; both times running the thing settled it.
+
+### The 54 static-check failures are PRE-EXISTING
+
+Ran the same suite in a detached worktree at `0c2602fb`, the last commit before this session:
+
+    HEAD (329a0ca5):  Ran 189 tests — FAILED (failures=54, errors=2)
+    0c2602fb baseline: Ran 189 tests — FAILED (failures=54, errors=2)
+
+Identical. None of today's ~50 commits caused any of it. This is accumulated source-pin drift — the
+suite asserts on Swift source shapes that have since moved or been renamed — and it is a well-bounded
+repair job rather than a regression to chase now.
+
 ### What 17:58:46 tests
 
 The whole retention chain end to end, in one shot: does the compaction survive to completion this
