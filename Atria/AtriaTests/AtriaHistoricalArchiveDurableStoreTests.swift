@@ -1527,4 +1527,54 @@ final class AtriaHistoricalArchiveDurableStoreTests: XCTestCase {
                       "the real index must survive the sweep")
     }
 
+    /// `pruneExpiredIdentitiesLocked` stamps and persists `lastPruneAtUnix`
+    /// BEFORE running the compaction it authorises, so a prune killed mid-stream
+    /// still advances the clock a full six hours while the index it failed to
+    /// compact goes unrevisited. Device 2026-08-19: marker stamped 11:58:46,
+    /// compaction killed ~12:00 after writing 565.6 MB, next attempt not due
+    /// until 17:58. An orphaned temporary at init is exact evidence of that.
+    func testInterruptedCompactionPullsTheRetentionClockForward() {
+        let interval: TimeInterval = 6 * 60 * 60
+        let retry: TimeInterval = 30 * 60
+        let stamped: TimeInterval = 1_787_120_326      // 11:58:46
+        let now = stamped + 35 * 60                    // next launch, 12:33
+
+        let first = AtriaHistoricalArchiveDurableStore
+            .retentionClockAfterInterruptedCompaction(
+                lastPruneAtUnix: stamped, retries: 0, now: now,
+                interval: interval, retryDelay: retry, maximumRetries: 3)
+        XCTAssertNotNil(first)
+        // The next maintenance pass must fire `retry` from now, not 6 h from the
+        // stamp.
+        XCTAssertEqual(now - (first?.lastPruneAtUnix ?? 0), interval - retry,
+                       accuracy: 0.001)
+        XCTAssertEqual(first?.retries, 1)
+
+        // A compaction that dies every time must not rewrite hundreds of MB
+        // every 30 minutes forever.
+        XCTAssertNil(AtriaHistoricalArchiveDurableStore
+            .retentionClockAfterInterruptedCompaction(
+                lastPruneAtUnix: stamped, retries: 3, now: now,
+                interval: interval, retryDelay: retry, maximumRetries: 3),
+            "the fast-retry streak must be bounded")
+
+        // Never lengthen a wait that is already shorter than the retry window.
+        let nearlyDue = now - interval + 60
+        XCTAssertNil(AtriaHistoricalArchiveDurableStore
+            .retentionClockAfterInterruptedCompaction(
+                lastPruneAtUnix: nearlyDue, retries: 0, now: now,
+                interval: interval, retryDelay: retry, maximumRetries: 3),
+            "a prune already due sooner must not be pushed back")
+
+        // Non-finite clocks must not produce a poisoned marker.
+        XCTAssertNil(AtriaHistoricalArchiveDurableStore
+            .retentionClockAfterInterruptedCompaction(
+                lastPruneAtUnix: stamped, retries: 0, now: .nan,
+                interval: interval, retryDelay: retry, maximumRetries: 3))
+        XCTAssertNil(AtriaHistoricalArchiveDurableStore
+            .retentionClockAfterInterruptedCompaction(
+                lastPruneAtUnix: .infinity, retries: 0, now: now,
+                interval: interval, retryDelay: retry, maximumRetries: 3))
+    }
+
 }
