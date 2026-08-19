@@ -1716,6 +1716,29 @@ diagnose this properly, and the user may be using the phone (scene last active 0
 | 10:39 | 06:52 | 3.77 h | terminal_consumer_materialization_deferred_raw_first_slice | lane ceiling now installed |
 | 10:44 | 06:52 | 3.85 h | **deferred_terminal_materialization** | park re-entered ~7 min post-install — first live test of `dd79df63` |
 | 10:54 | 06:53 | 4.01 h | deferred_terminal_materialization | **1 min of frontier in 10 min = 0.10x realtime** — sharpest measure yet of what the park costs |
+| 11:04 | 06:53 | 4.18 h | deferred_terminal_materialization | frontier UNCHANGED; ceiling not observed firing at the edge of its window |
+
+### The ceiling may be the defect class again — unproven, flagged early
+
+Two facts from 11:04, neither of which I want to soften:
+
+1. `releaseMaterializationLaneIfHeldTooLong` has exactly **one** call site
+   (AtriaBLEManager.swift:11093, the deferral site). It can therefore only run when a sync attempt
+   re-enters that path.
+2. Every `atria.offlineSync.*` key is **byte-identical** between the 10:44 and 11:04 pulls — status,
+   reason, all timestamps. Twenty minutes, no writes.
+
+The process is demonstrably alive: HR arrived 0.5 min before the pull. So this is not suspension.
+
+If sync attempts are not re-entering during a park, then a timeout evaluated only at the deferral
+site cannot fire — which would make my own fix an instance of
+[[atria-recovery-state-defect-class]]: *a recovery bounded by the very path it is meant to unblock.*
+That would be the second time this session I reproduced the shape while fixing it.
+
+**This is not proven.** A re-entry that rewrites identical values is invisible in a plist diff, so
+fact 2 is consistent with both readings. The deciding observation is the ~11:10 threshold I set in
+advance: frozen past it, and the placement is wrong. I am not changing code on an inference I have
+already been burned by once today.
 
 ### First field test of the materialization lane ceiling
 
