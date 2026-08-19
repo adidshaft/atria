@@ -1560,6 +1560,22 @@ disconnect, and the next R10 requalification is not due until ~16:05 (12 h after
 | ~16:05 | second R10 proof sample, into the new forensic ring |
 | tonight | gate B (90 s), item 5's per-episode cap, event-bound review delivery, background nap catcher — all meet a real night for the first time |
 
+## BA. Loop re-paced 5 min -> hourly, and the checkpoints written into the prompt
+
+`08:17  lastHR 0.2 min  frontier 08-19 06:18  backlog 1.98 h  stallRe 331` — first time under two hours.
+
+The 5-minute cadence was right while there was code to write. It is wrong now: all 15 items have
+dispositions and the nearest checkpoint is ~90 minutes out, so a 5-minute loop would fire ~18 no-op
+passes before anything could possibly report. Replaced job `f15fbb2a` (every 5 min) with `834f47fa`
+(hourly at :23).
+
+Hourly still catches every checkpoint within an hour of it landing, and the new prompt carries the
+checkpoint table plus an explicit instruction: **if nothing has reported, keep the pass short — one
+device read, report, hold, and do not manufacture code changes.** That instruction exists because the
+failure mode from here is inventing reasons to touch code, not missing a signal.
+
+To restore the fast cadence: `CronDelete 834f47fa`, then re-run `/loop 5min …`.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
