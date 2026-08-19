@@ -469,6 +469,96 @@ final class AtriaHistoricalArchiveDurableStore {
         if !fileManager.fileExists(atPath: pruneStateURL.path) {
             persistLastPruneAtUnixBestEffort()
         }
+
+        // Reclaim compaction temporaries orphaned by a process death.
+        Self.sweepStaleIdentityCompactionTemporaries(
+            in: indexURL.deletingLastPathComponent(),
+            fileManager: fileManager
+        )
+    }
+
+    /// Age below which a compaction temporary is left alone.
+    ///
+    /// Our own compaction cannot be running at `init`, so in principle any
+    /// temporary here is already dead. The gate exists only for the case of a
+    /// second container client (an extension) writing one concurrently, and is
+    /// set well past the ~2 min it took to stream 565 MB on device.
+    nonisolated static let identityCompactionTemporaryMinimumAge: TimeInterval = 30 * 60
+
+    /// A compaction temporary is `.<index name>.compact.<UUID>.tmp`, beside the
+    /// index. The UUID means every attempt creates a NEW file rather than
+    /// reusing one, so orphans accumulate instead of overwriting.
+    nonisolated static func identityCompactionTemporaryIsStale(
+        name: String,
+        modifiedAt: Date?,
+        now: Date,
+        minimumAge: TimeInterval = identityCompactionTemporaryMinimumAge
+    ) -> Bool {
+        guard name.hasPrefix("."), name.hasSuffix(".tmp"),
+              name.contains(".compact.") else { return false }
+        // No modification date: it cannot be shown to be live, and the name is
+        // ours. Treat it as stale rather than leaking it forever.
+        guard let modifiedAt else { return true }
+        let age = now.timeIntervalSince(modifiedAt)
+        // A future mtime must not be read as a huge age by a clock skew.
+        guard age >= 0 else { return false }
+        return age >= minimumAge
+    }
+
+    /// Deletes compaction temporaries left behind when the process died
+    /// mid-stream, and returns the bytes reclaimed.
+    ///
+    /// **Why this exists.** `compactIdentityIndexOutsideHorizonLocked` removes
+    /// its temporary on exactly three paths: a thrown error, a no-op pass, and
+    /// the successful `replaceItemAt`. All three require the compaction to
+    /// *conclude*. When the process is killed mid-stream none of them run, and
+    /// because the name carries a fresh UUID the next attempt does not reuse the
+    /// file — it adds another one.
+    ///
+    /// Observed on device 2026-08-19: the 11:58:46 prune streamed 565.6 MB, the
+    /// process was replaced (`processInstanceID` 54B93EA6 → 181EA23D), and the
+    /// temporary was still sitting there afterwards. Nothing else collects it —
+    /// `AtriaManagedStorageInventory.sweepOrphanedArtifacts` walks only the
+    /// Documents debug logs and `FileManager.temporaryDirectory`, and it passes
+    /// `.skipsHiddenFiles`, so a dot-prefixed file in the archive directory is
+    /// invisible to it twice over.
+    ///
+    /// That makes this the retention feature ADDING up to ~1 GB per interrupted
+    /// run to the 5 GB the user complained about — the same failure shape as the
+    /// rest of this report: cleanup bound to a completion that did not happen.
+    @discardableResult
+    nonisolated static func sweepStaleIdentityCompactionTemporaries(
+        in directoryURL: URL,
+        now: Date = Date(),
+        minimumAge: TimeInterval = identityCompactionTemporaryMinimumAge,
+        fileManager: FileManager = .default
+    ) -> Int64 {
+        let contents = (try? fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+            // Compaction temporaries are dot-prefixed: they MUST be included.
+            options: []
+        )) ?? []
+        var reclaimed: Int64 = 0
+        for url in contents {
+            let values = try? url.resourceValues(
+                forKeys: [.contentModificationDateKey, .fileSizeKey]
+            )
+            guard identityCompactionTemporaryIsStale(
+                name: url.lastPathComponent,
+                modifiedAt: values?.contentModificationDate,
+                now: now,
+                minimumAge: minimumAge
+            ) else { continue }
+            let size = Int64(values?.fileSize ?? 0)
+            guard (try? fileManager.removeItem(at: url)) != nil else { continue }
+            reclaimed += size
+        }
+        if reclaimed > 0 {
+            AtriaDebugLog("ATRIADBG archive_store status=compaction_temporaries_swept reclaimed_bytes=%lld",
+                          reclaimed)
+        }
+        return reclaimed
     }
 
     deinit {

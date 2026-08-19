@@ -1444,4 +1444,87 @@ final class AtriaHistoricalArchiveDurableStoreTests: XCTestCase {
             .split(separator: "\n")
             .count
     }
+    // MARK: - Orphaned compaction temporaries
+
+    /// The compaction temporary is removed on three paths — a thrown error, a
+    /// no-op pass, and the successful replace — and all three require the
+    /// compaction to CONCLUDE. A process killed mid-stream runs none of them,
+    /// and the UUID in the name means the next attempt adds a file rather than
+    /// reusing one. Device 2026-08-19: 565.6 MB left behind by the 11:58:46
+    /// prune when the process was replaced mid-write.
+    func testStaleCompactionTemporariesAreSweptAtInit() throws {
+        let now = Date(timeIntervalSince1970: 1_787_120_000)
+        let liveName = ".historical-archive.identity.jsonl.compact.\(UUID().uuidString).tmp"
+
+        // Old enough, correctly named: reclaim it.
+        XCTAssertTrue(AtriaHistoricalArchiveDurableStore
+            .identityCompactionTemporaryIsStale(
+                name: liveName,
+                modifiedAt: now.addingTimeInterval(-31 * 60),
+                now: now))
+
+        // Still plausibly being written by another container client: leave it.
+        XCTAssertFalse(AtriaHistoricalArchiveDurableStore
+            .identityCompactionTemporaryIsStale(
+                name: liveName,
+                modifiedAt: now.addingTimeInterval(-60),
+                now: now))
+
+        // Not ours — never touch a real archive file, however old.
+        for foreign in ["historical-archive.identity.jsonl",
+                        "historical-archive.identity.lookup-v1.sqlite",
+                        ".historical-archive.identity.jsonl.swap.tmp",
+                        "compact.tmp"] {
+            XCTAssertFalse(AtriaHistoricalArchiveDurableStore
+                .identityCompactionTemporaryIsStale(
+                    name: foreign,
+                    modifiedAt: now.addingTimeInterval(-10 * 86_400),
+                    now: now),
+                "\(foreign) must never be swept")
+        }
+
+        // A future mtime is clock skew, not a huge age.
+        XCTAssertFalse(AtriaHistoricalArchiveDurableStore
+            .identityCompactionTemporaryIsStale(
+                name: liveName,
+                modifiedAt: now.addingTimeInterval(3_600),
+                now: now))
+
+        // Unknown mtime: it cannot be shown to be live and the name is ours,
+        // so sweep rather than leak it forever.
+        XCTAssertTrue(AtriaHistoricalArchiveDurableStore
+            .identityCompactionTemporaryIsStale(
+                name: liveName, modifiedAt: nil, now: now))
+    }
+
+    /// End to end on a real directory: the orphan goes, the archive stays.
+    func testCompactionTemporarySweepReclaimsBytesAndSparesRealFiles() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atria-compact-sweep-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let now = Date(timeIntervalSince1970: 1_787_120_000)
+        let orphan = directory.appendingPathComponent(
+            ".historical-archive.identity.jsonl.compact.\(UUID().uuidString).tmp")
+        let payload = Data(repeating: 0x41, count: 4_096)
+        try payload.write(to: orphan)
+        try FileManager.default.setAttributes(
+            [.modificationDate: now.addingTimeInterval(-3_600)],
+            ofItemAtPath: orphan.path)
+
+        let keeper = directory.appendingPathComponent(
+            "historical-archive.identity.jsonl")
+        try Data("{}\n".utf8).write(to: keeper)
+
+        let reclaimed = AtriaHistoricalArchiveDurableStore
+            .sweepStaleIdentityCompactionTemporaries(in: directory, now: now)
+
+        XCTAssertEqual(reclaimed, Int64(payload.count))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: orphan.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keeper.path),
+                      "the real index must survive the sweep")
+    }
+
 }
