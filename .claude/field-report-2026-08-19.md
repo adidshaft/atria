@@ -2029,6 +2029,41 @@ Drain over 12:14 → 12:51: frontier 07:16 → 07:52, i.e. 36 minutes of frontie
 since the ceiling landed, so `materializationLaneCeilingReceipt.v1` is still absent — the receipt is
 armed and waiting, and its absence right now is the honest reading rather than a failure.
 
+## Repo cleanup pass (user-requested): 8.73 GB → 1.4 GB
+
+| removed | size | why it was safe |
+|---|---|---|
+| `build/` | 3.2 GB | gitignored build output, regenerable |
+| `evidence/` payloads >5 MB (127 files) | 3.55 GB | all captured 2026-07-26…07-31; dominated by 81 oversized `sessions.json` and 10 `historical-archive.identity.jsonl` device pulls, every type superseded by newer copies in the live container |
+| 3 clean git worktrees | 213 MB | `git worktree remove` deletes the checkout, **not** the branch — `claude/app-ux-ui-polish-a68d7e`, `claude/trusting-engelbart-3f1a5f` and `claude/relaxed-faraday-a4ad5c` were re-verified present afterwards |
+| 27 stale worktree records | — | git itself marked them `prunable`; their directories were already gone |
+| `logs/live-device` | 181 MB | gitignored, last written 2026-07-30 |
+| `__pycache__`, stray `.tmp` | ~1 MB | build/scratch residue |
+| my own scratchpad (`dd2`, `dd3`, 6 xcresult bundles) | 1.15 GB | superseded derived data and result bundles |
+
+The removed evidence payloads are itemised with sizes in
+[`.claude/evidence-pruned-2026-08-19.md`](evidence-pruned-2026-08-19.md) — `evidence/` is gitignored,
+so a manifest written inside it would not have been version-controlled. The 66 `evidence/` citations
+in `docs/WHOOP4_PROTOCOL_FINDINGS.md` still resolve: directory structure and all 13,936 small
+analysis files were kept.
+
+### Deliberately NOT removed
+
+**Four worktrees with uncommitted edits.** `agent-a3ac32b3300f4a61d` (5 modified files including
+`AtriaHealthScreen.swift` and `AtriaStressDetailView.swift`), `agent-a20fb84ef7bf7d604` (2),
+`agent-aaf58d1f2586859da` (3), `design-consent-fdd4ed` (4). Their commits are all reachable, but the
+working-tree edits exist nowhere else. That is the user's call, not mine.
+
+**No tests were deleted, and the check that suggested otherwise was wrong.** Comparing
+`AtriaTests/*.swift` against `project.pbxproj` reported **307 of 307 files "not in project"** — which
+is not 307 orphans, it is a broken test. The target uses a `PBXFileSystemSynchronizedRootGroup`
+(5 entries in the pbxproj), so files are included by directory membership and never listed
+individually. Every one of those 307 files compiles and runs; we executed 428 cases from a single one
+of them today. Acting on that grep would have deleted the entire test suite.
+
+Only 6 `XCTSkip` sites exist across the whole suite, so there is no meaningful dead-test population
+to remove.
+
 ### What 17:58:46 tests
 
 The whole retention chain end to end, in one shot: does the compaction survive to completion this
