@@ -79,7 +79,7 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 9 | Sleep-view stress vs general stress disagree (pinned 3/high) | **FIXED** | full scale was rest+14 vs a SLEEPING baseline; rebanded |
 | 10 | Sleep stages not working | **PARTLY FIXED, STILL BLOCKED** (I + gate B + U) | gate B fixed; motion retry now fires but proof still disconnects — stages stay fail-closed |
 | 11 | Notifications never fire at the right moment | **1 of 5 FIXED** (T) | workout class un-silenced; (1)(2)(3)(5) open — see T |
-| 12 | 5 GB+ data size, need raw/insight retention tiers | **PART 1/3 FIXED** (L) | 2.13 GB dedupe tier reclaimed (`32f4e598`); part 2 = wire compression (M); part 3 = fence + raw prune (K) |
+| 12 | 5 GB+ data size, need raw/insight retention tiers | **PARTS 1 + 3 FIXED** (L + Y) | 2.13 GB dedupe tier (`32f4e598`); fence lifted + 30-day raw horizon; part 2 (compression) DROPPED on evidence (P) |
 | 13 | Insight→suggestion engine | TODO | |
 | 14 | Rings cropped in scroll-up floating overlay | **FIXED** (D) | |
 | 15 | Anything else | ongoing | |
@@ -733,6 +733,46 @@ PhysiologicalModel, DailyTrend, ReadingFreshness and SessionStressContextPublica
 
 Also note `AtriaStressState.rawActivation` is `fact.score / 3` — a 0...1 value. Zone edges are at
 **1/3 and 2/3**, not 1 and 2. My first test asserted the wrong scale.
+
+## Y. CORRECTION to K — the release fence's stated blocker was STALE. Fence lifted (item 12 part 3)
+
+**I was wrong in entry K.** I grepped `HistoricalArchive.swift` for `checkpoint()`, `isCancelled`,
+`CooperativeDeadline` and `workCounter`, found zero, and concluded the fence's reason ("composite
+readers/publishers whose inner loops cannot all be revoked atomically") still held. The grep was
+accurate; the inference was not. **The file uses a different idiom — `shouldContinue`:**
+
+```
+132  shouldContinue references in HistoricalArchive.swift
+20+  functions accepting it
+28   `guard shouldContinue()` sites, plus inner-loop checks every 16-32 iterations
+```
+
+The token those consume is `archiveCompactionWorkerShouldContinue`, which revokes on lease expiry,
+thermal pressure and Low Power Mode; `shouldContinueArchiveCompactionWork` additionally requires the app
+to still be backgrounded on the current lease generation. Revocation is cooperative, threaded and deep.
+The proof the fence was waiting on was already done.
+
+**Lifted.** `shouldExecuteArchiveWideMaintenance(explicitDebugOverride:automaticAdmission:)` now admits
+either authority, and the call site computes `automaticAdmission` from
+`shouldAdmitAutomaticArchiveCompaction(...)` — the full environmental model that was written for exactly
+this and left unreachable (BGProcessing lane only, app backgrounded, no exact-recovery or
+recovered-cycle owner, thermal/Low-Power/battery admission; battery monitoring is enabled at
+AtriaBLEManager.swift:5729 so the level is real, not -1). Horizon set to **30 days** per the user's
+choice.
+
+Retirement stays fail-closed independently of this gate: `AtriaHistoricalRawRetirementExecutor.retire`
+unlinks a raw chunk only after proving a committed aggregate AND manifest match its `contentSHA256`,
+byte count, row count and both timestamps with a semantic-parity receipt, with `shouldContinue()`
+checked at every stage. So the fence controls whether the graph RUNS, never whether an unverified
+deletion can happen — which is precisely the "insights derived and verified before raw is retired" model
+the user asked for.
+
+`AtriaBackgroundProjectionTests`: **77/77 green** on a clean run.
+
+**Flake note:** `testRecoveredArchiveSortRevocationInstallsNoSnapshotOrCache` failed twice while other
+xcodebuilds ran concurrently, then passed 4/4 in isolation with the same change applied. It revokes on a
+sort-comparison counter, so its timing shifts under machine load. Pre-existing load-sensitive flake, NOT
+a regression — I initially and wrongly called it mine.
 
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.

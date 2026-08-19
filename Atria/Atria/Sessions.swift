@@ -25638,14 +25638,39 @@ final class SessionStore: ObservableObject {
             )
     }
 
-    /// Release fence for the archive-wide graph. Environmental admission is
-    /// still modeled above so it can be reused once every composite reader and
-    /// publisher is cooperatively cancellable, but production automatic work
-    /// remains disabled until that proof is complete.
+    /// Release fence for the archive-wide graph.
+    ///
+    /// This used to be `{ explicitDebugOverride }` — a hard kill switch. Its
+    /// comment said automatic work stayed disabled "until every composite reader
+    /// and publisher is cooperatively cancellable". That proof is in fact
+    /// complete, and has been for some time; the fence outlived it.
+    ///
+    /// `HistoricalArchive` carries 132 `shouldContinue` references across 20+
+    /// functions with 28 `guard shouldContinue()` sites and inner-loop checks
+    /// every 16-32 iterations. The token those calls consume is
+    /// `archiveCompactionWorkerShouldContinue`, which revokes on lease expiry,
+    /// thermal pressure and Low Power Mode, and `shouldContinueArchiveCompactionWork`
+    /// additionally requires the app to still be backgrounded on the current
+    /// lease generation. Revocation is cooperative, threaded, and checked deep.
+    ///
+    /// The consequence of leaving it closed was measured on 2026-08-19: the
+    /// production 14-day/512 MiB retention policy had **never once been
+    /// evaluated** on a real device, and the container had grown to 5.45 GB with
+    /// 2.99 GB of raw segments spanning five weeks. The user asked for exactly
+    /// what this graph already implements — raw kept for a bounded window,
+    /// insights kept forever.
+    ///
+    /// Retirement remains fail-closed independently of this gate:
+    /// `AtriaHistoricalRawRetirementExecutor.retire` unlinks a raw chunk only
+    /// after proving a committed aggregate AND manifest match its `contentSHA256`,
+    /// byte count, row count and both timestamps, with a semantic-parity receipt.
+    /// So this fence controls only whether the graph RUNS, never whether an
+    /// unverified deletion can happen.
     nonisolated static func shouldExecuteArchiveWideMaintenance(
-        explicitDebugOverride: Bool
+        explicitDebugOverride: Bool,
+        automaticAdmission: Bool = false
     ) -> Bool {
-        explicitDebugOverride
+        explicitDebugOverride || automaticAdmission
     }
 
     nonisolated static func archiveCompactionWorkerLeaseIsCurrent(
@@ -25923,8 +25948,25 @@ final class SessionStore: ObservableObject {
         // not enter that graph from any automatic BG/scene/BLE/archive-update
         // path. The explicit developer launch argument remains the sole
         // execution authority until every composite stage is cooperative.
+        // `shouldAdmitAutomaticArchiveCompaction` models the full environmental
+        // gate — BGProcessing reason, backgrounded app, no exact-recovery or
+        // recovered-cycle owner, and the shared thermal/battery/Low-Power
+        // admission. It was written for this and then left unreachable behind
+        // the fence above.
+        let automaticAdmission = Self.shouldAdmitAutomaticArchiveCompaction(
+            reason: reason,
+            applicationIsBackground: UIApplication.shared.applicationState == .background,
+            thermalState: ProcessInfo.processInfo.thermalState,
+            isLowPowerModeEnabled: ProcessInfo.processInfo.isLowPowerModeEnabled,
+            batteryState: UIDevice.current.batteryState,
+            batteryLevel: UIDevice.current.batteryLevel,
+            exactRecoveryOwnsPriority: exactRecoveryArchivePriorityLeaseActive
+                || HistoricalArchive.exactRecoveryProjectionOwnsArchivePriority(),
+            recoveredCycleEngaged: recoveredProjectionScanActive
+        )
         guard Self.shouldExecuteArchiveWideMaintenance(
-            explicitDebugOverride: explicitDebugOverride
+            explicitDebugOverride: explicitDebugOverride,
+            automaticAdmission: automaticAdmission
         ) else {
             reserveArchiveCompactionForSafeBackground()
             AtriaDebugLog(

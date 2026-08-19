@@ -6,8 +6,13 @@ import Foundation
 /// first pass `AtriaHistoricalRetentionTransaction`; its committed manifest is
 /// the only proof that the raw file may be retired.
 struct AtriaHistoricalRetentionPolicy: Equatable, Sendable {
+    /// 30 days of raw, chosen by the user on 2026-08-19 ("raw data maintained
+    /// only up to a week or month, but insights are persisted all the time").
+    /// Insights are unaffected: `aggregates-v2` and the rollups are what every
+    /// history surface reads, and on the field device they were only ~93 MB
+    /// against 2.99 GB of raw.
     static let production = AtriaHistoricalRetentionPolicy(
-        rawHorizon: 14 * 24 * 60 * 60,
+        rawHorizon: 30 * 24 * 60 * 60,
         maximumRawBytes: 512 * 1024 * 1024
     )
 

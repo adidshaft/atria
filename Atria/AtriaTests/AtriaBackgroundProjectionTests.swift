@@ -441,13 +441,68 @@ final class AtriaBackgroundProjectionTests: XCTestCase {
         )
     }
 
-    func testAutomaticArchiveWideMaintenanceFailsClosedInRelease() {
+    /// Renamed and re-scoped 2026-08-19 (field report item 12). This asserted
+    /// "only the explicit developer launch authority may enter the graph", which
+    /// meant the production 14-day retention policy had never once been evaluated
+    /// on a real device — the field container reached 5.45 GB with 2.99 GB of raw
+    /// segments spanning five weeks. The fence's stated reason (composite readers
+    /// not cooperatively cancellable) was stale: `HistoricalArchive` carries 132
+    /// `shouldContinue` references with 28 guard sites and inner-loop checks.
+    ///
+    /// The gate is now the environmental admission model, which was written for
+    /// exactly this and had been left unreachable.
+    func testArchiveWideMaintenanceRequiresDebugOverrideOrEnvironmentalAdmission() {
+        XCTAssertFalse(SessionStore.shouldExecuteArchiveWideMaintenance(
+            explicitDebugOverride: false,
+            automaticAdmission: false
+        ), "no authority at all must still fail closed")
+        XCTAssertTrue(SessionStore.shouldExecuteArchiveWideMaintenance(
+            explicitDebugOverride: true,
+            automaticAdmission: false
+        ), "the explicit developer launch authority still enters the graph")
+        XCTAssertTrue(SessionStore.shouldExecuteArchiveWideMaintenance(
+            explicitDebugOverride: false,
+            automaticAdmission: true
+        ), "a BGProcessing pass that satisfies the admission model may now run retention")
+        // The default keeps every other caller fail-closed.
         XCTAssertFalse(SessionStore.shouldExecuteArchiveWideMaintenance(
             explicitDebugOverride: false
         ))
-        XCTAssertTrue(SessionStore.shouldExecuteArchiveWideMaintenance(
-            explicitDebugOverride: true
-        ), "only the explicit developer launch authority may enter the graph")
+    }
+
+    /// The admission model is what actually protects the device now, so pin its
+    /// real conditions rather than trusting the fence above it.
+    func testAutomaticArchiveCompactionAdmissionRefusesUnsafeEnvironments() {
+        func admits(reason: String = "bg_processing",
+                    background: Bool = true,
+                    thermal: ProcessInfo.ThermalState = .nominal,
+                    lowPower: Bool = false,
+                    batteryState: UIDevice.BatteryState = .unplugged,
+                    batteryLevel: Float = 0.9,
+                    exactRecovery: Bool = false,
+                    recoveredCycle: Bool = false) -> Bool {
+            SessionStore.shouldAdmitAutomaticArchiveCompaction(
+                reason: reason,
+                applicationIsBackground: background,
+                thermalState: thermal,
+                isLowPowerModeEnabled: lowPower,
+                batteryState: batteryState,
+                batteryLevel: batteryLevel,
+                exactRecoveryOwnsPriority: exactRecovery,
+                recoveredCycleEngaged: recoveredCycle
+            )
+        }
+        XCTAssertTrue(admits(), "a healthy backgrounded BGProcessing pass is admitted")
+        XCTAssertFalse(admits(reason: "scene_active"), "only the BGProcessing lane")
+        XCTAssertFalse(admits(background: false), "never while the user is in the app")
+        XCTAssertFalse(admits(thermal: .serious))
+        XCTAssertFalse(admits(thermal: .critical))
+        XCTAssertFalse(admits(lowPower: true))
+        XCTAssertFalse(admits(batteryLevel: 0.3), "unplugged below 50% is refused")
+        XCTAssertTrue(admits(batteryState: .charging, batteryLevel: 0.3),
+                      "charging lifts the battery floor")
+        XCTAssertFalse(admits(exactRecovery: true), "never contend with exact recovery")
+        XCTAssertFalse(admits(recoveredCycle: true))
     }
 
     func testAutomaticFullBackgroundProjectionFailsClosedInRelease() {
