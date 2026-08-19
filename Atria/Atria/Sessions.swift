@@ -51732,6 +51732,9 @@ final class SessionStore: ObservableObject {
         // bytes across every managed store and records the honest retention
         // state — currently blocked, and the receipt names exactly why.
         Task.detached(priority: .utility) {
+            // Reclaim first, then measure, so the receipt reports the container
+            // as it now stands rather than as it was a moment ago.
+            let reclaimed = AtriaManagedStorageInventory.sweepOrphanedArtifacts()
             let categories = AtriaManagedStorageInventory.measure()
             AtriaManagedStorageInventory.recordReceipt(
                 categories: categories,
@@ -51739,7 +51742,8 @@ final class SessionStore: ObservableObject {
                     AtriaManagedStorageInventory
                         .currentRetentionExecutionState,
                 nextEligibleAction:
-                    "enable cold-session consumer parity; archive-wide maintenance is now admitted"
+                    "enable cold-session consumer parity; archive-wide maintenance is now admitted",
+                reclaimedBytes: reclaimed
             )
         }
         // Insights compute AFTER the launch render (off the critical path). It's

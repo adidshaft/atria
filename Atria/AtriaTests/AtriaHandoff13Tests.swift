@@ -5,6 +5,80 @@ import XCTest
 /// positive awake bracing, the isolated ring day browser, and truthful
 /// whole-container storage accounting.
 final class AtriaHandoff13Tests: XCTestCase {
+    /// The sweep must reclaim exactly the orphans and nothing else. Runs against
+    /// real temporary directories so the FileManager behaviour is covered, not a
+    /// mock of it.
+    func testOrphanSweepReclaimsOnlyOrphansAndAgedArtifacts() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let documents = root.appendingPathComponent("Documents")
+        let tmp = root.appendingPathComponent("tmp")
+        try fm.createDirectory(at: documents, withIntermediateDirectories: true)
+        try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        let now = Date(timeIntervalSince1970: 1_787_100_000)
+        func write(_ url: URL, bytes: Int, ageHours: Double) throws {
+            try Data(repeating: 0x41, count: bytes).write(to: url)
+            try fm.setAttributes(
+                [.modificationDate: now.addingTimeInterval(-ageHours * 3_600)],
+                ofItemAtPath: url.path
+            )
+        }
+
+        // Orphans: memprobe pair in Documents (no writer anywhere in the app).
+        try write(documents.appendingPathComponent("atria-memprobe.log"), bytes: 4_000, ageHours: 1)
+        try write(documents.appendingPathComponent("atria-memprobe.1.log"), bytes: 6_000, ageHours: 1)
+        // Real user data in Documents must survive regardless of age.
+        try write(documents.appendingPathComponent("sessions.json"), bytes: 5_000, ageHours: 9_000)
+        // Aged generated artifacts in tmp -> swept.
+        try write(tmp.appendingPathComponent("atria-share-story.png"), bytes: 3_000, ageHours: 840)
+        try write(tmp.appendingPathComponent("Atria-walking.html"), bytes: 2_000, ageHours: 30)
+        // A fresh share artifact may still be owned by a sheet -> kept.
+        try write(tmp.appendingPathComponent("atria-share-live.png"), bytes: 1_000, ageHours: 2)
+        // A non-generated tmp file is never the sweep's business.
+        try write(tmp.appendingPathComponent("scratch.dat"), bytes: 7_000, ageHours: 900)
+
+        let reclaimed = AtriaManagedStorageInventory.sweepOrphanedArtifacts(
+            documentsURL: documents, temporaryURL: tmp, now: now, fileManager: fm
+        )
+
+        XCTAssertEqual(reclaimed, 4_000 + 6_000 + 3_000 + 2_000,
+                       "exactly the two memprobe logs and the two aged artifacts")
+        XCTAssertFalse(fm.fileExists(atPath: documents.appendingPathComponent("atria-memprobe.log").path))
+        XCTAssertFalse(fm.fileExists(atPath: documents.appendingPathComponent("atria-memprobe.1.log").path))
+        XCTAssertFalse(fm.fileExists(atPath: tmp.appendingPathComponent("atria-share-story.png").path))
+        XCTAssertFalse(fm.fileExists(atPath: tmp.appendingPathComponent("Atria-walking.html").path))
+        // Survivors.
+        XCTAssertTrue(fm.fileExists(atPath: documents.appendingPathComponent("sessions.json").path),
+                      "user data is never swept")
+        XCTAssertTrue(fm.fileExists(atPath: tmp.appendingPathComponent("atria-share-live.png").path),
+                      "a fresh share artifact may still be in use")
+        XCTAssertTrue(fm.fileExists(atPath: tmp.appendingPathComponent("scratch.dat").path),
+                      "non-generated tmp files are out of scope")
+    }
+
+    /// A second pass over an already-clean container reclaims nothing and throws
+    /// nothing — the sweep must be idempotent and safe on every launch.
+    func testOrphanSweepIsIdempotent() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let documents = root.appendingPathComponent("Documents")
+        let tmp = root.appendingPathComponent("tmp")
+        try fm.createDirectory(at: documents, withIntermediateDirectories: true)
+        try fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        XCTAssertEqual(
+            AtriaManagedStorageInventory.sweepOrphanedArtifacts(
+                documentsURL: documents, temporaryURL: tmp, fileManager: fm
+            ), 0)
+        XCTAssertEqual(
+            AtriaManagedStorageInventory.sweepOrphanedArtifacts(
+                documentsURL: documents, temporaryURL: tmp, fileManager: fm
+            ), 0)
+    }
+
     /// Field report 2026-08-19, item 12 / item 15 lead (e). The inventory receipt
     /// asserted `RETENTION_EXECUTION_BLOCKED(automatic_execution_disabled+...)`,
     /// which stopped being true when the archive-wide fence was lifted. This
