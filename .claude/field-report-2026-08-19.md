@@ -1216,6 +1216,31 @@ corrected to `RETENTION_EXECUTION_ADMITTED(bg_processing_environmental_admission
 — the half that is still true is still named. Both call sites migrated; the old symbol is gone, so it
 cannot silently drift again.
 
+## AN. Orphan sweep WIRED — the 50.8 MB now actually gets reclaimed
+
+Previous entry shipped the policy and its tests but deliberately stopped short of invoking it, because
+deleting user files from a per-launch task is the shape that has burned this session twice. With the
+policy pinned, the wiring is now bounded.
+
+`sweepOrphanedArtifacts(documentsURL:temporaryURL:now:fileManager:)` deletes exactly two things —
+the memprobe pair in Documents (writer removed from the codebase) and generated `.png`/`.html`/`.gpx`
+in `tmp/` older than 24 h — and returns the bytes reclaimed. It never walks the archive, never touches a
+store, and every failure is swallowed: reclaiming disk must never fail a launch, so a file that will not
+delete is simply counted as not reclaimed.
+
+Wired into the existing per-launch inventory `Task.detached`, **before** `measure()` so the receipt
+reports the container as it now stands rather than as it was a moment ago. `Receipt.reclaimedBytes`
+already existed and was always 0; it now carries the real figure, so the sweep is auditable rather than
+silent.
+
+Tests run against **real temporary directories**, not a mock, and pin both directions: the two memprobe
+logs and two aged artifacts are reclaimed (exact byte total), while `sessions.json`, a 2-hour-old share
+PNG, and a non-generated `tmp/` file all survive. A second pass reclaims 0 and throws nothing, so the
+sweep is idempotent and safe on every launch.
+
+`AtriaHandoff13Tests`: **14/14 green**. One compile error caught en route — I passed `reclaimedBytes`
+before `nextEligibleAction` at the call site.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7

@@ -179,16 +179,18 @@ enum AtriaManagedStorageInventory {
         categories: [CategoryBytes],
         retentionExecution: String,
         nextEligibleAction: String,
+        reclaimedBytes: Int64 = 0,
         now: Date = Date(),
         defaults: UserDefaults = .standard
     ) {
-        let receipt = Receipt(
+        var receipt = Receipt(
             recordedAtUnix: now.timeIntervalSince1970,
             categories: categories,
             totalBytes: categories.reduce(0) { $0 + $1.bytes },
             retentionExecution: retentionExecution,
             nextEligibleAction: nextEligibleAction
         )
+        receipt.reclaimedBytes = reclaimedBytes
         guard let data = try? JSONEncoder().encode(receipt) else { return }
         defaults.set(data, forKey: receiptKey)
     }
@@ -197,6 +199,65 @@ enum AtriaManagedStorageInventory {
     /// planner consults. Automatic execution is a debug-only override and
     /// every compact cold consumer is shadow-only — so retention execution
     /// is blocked, and the receipt says by exactly what.
+    /// Deletes orphaned debug logs and aged generated artifacts, returning the
+    /// bytes reclaimed.
+    ///
+    /// Scope is deliberately tiny. It touches exactly two things: the memprobe
+    /// pair in Documents, whose writer no longer exists anywhere in the codebase,
+    /// and generated `.png`/`.html`/`.gpx` files in `tmp/` older than 24 h. It
+    /// never walks the archive, never touches a store, and never removes anything
+    /// a reader could still resolve — `shouldSweepGeneratedArtifact` gates on both
+    /// extension and age so an in-flight share sheet cannot lose its file.
+    ///
+    /// Every failure is swallowed: reclaiming disk must never be able to fail a
+    /// launch, and a file that will not delete is simply counted as not reclaimed.
+    @discardableResult
+    static func sweepOrphanedArtifacts(
+        documentsURL: URL? = nil,
+        temporaryURL: URL? = nil,
+        now: Date = Date(),
+        fileManager: FileManager = .default
+    ) -> Int64 {
+        var reclaimed: Int64 = 0
+
+        let documents = documentsURL
+            ?? fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+        if let documents {
+            for name in orphanedDebugLogNames {
+                let url = documents.appendingPathComponent(name)
+                guard let size = (try? fileManager.attributesOfItem(atPath: url.path)[.size])
+                        as? NSNumber else { continue }
+                guard (try? fileManager.removeItem(at: url)) != nil else { continue }
+                reclaimed += size.int64Value
+            }
+        }
+
+        let temporary = temporaryURL ?? fileManager.temporaryDirectory
+        let contents = (try? fileManager.contentsOfDirectory(
+            at: temporary,
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        for url in contents {
+            let values = try? url.resourceValues(
+                forKeys: [.contentModificationDateKey, .fileSizeKey]
+            )
+            guard let modified = values?.contentModificationDate,
+                  shouldSweepGeneratedArtifact(name: url.lastPathComponent,
+                                               modifiedAt: modified,
+                                               now: now) else { continue }
+            let size = Int64(values?.fileSize ?? 0)
+            guard (try? fileManager.removeItem(at: url)) != nil else { continue }
+            reclaimed += size
+        }
+
+        if reclaimed > 0 {
+            AtriaDebugLog("ATRIADBG managed_storage status=orphans_swept reclaimed_bytes=%lld",
+                          reclaimed)
+        }
+        return reclaimed
+    }
+
     /// Was `RETENTION_EXECUTION_BLOCKED(automatic_execution_disabled+cold_session_consumers_shadow_only)`.
     ///
     /// The first half stopped being true when the archive-wide release fence was
