@@ -1715,6 +1715,7 @@ diagnose this properly, and the user may be using the phone (scene last active 0
 | 10:37 | 06:52 | 3.75 h | — | **park self-resolved after ~112 min**, before the fix could install |
 | 10:39 | 06:52 | 3.77 h | terminal_consumer_materialization_deferred_raw_first_slice | lane ceiling now installed |
 | 10:44 | 06:52 | 3.85 h | **deferred_terminal_materialization** | park re-entered ~7 min post-install — first live test of `dd79df63` |
+| 10:54 | 06:53 | 4.01 h | deferred_terminal_materialization | **1 min of frontier in 10 min = 0.10x realtime** — sharpest measure yet of what the park costs |
 
 ### First field test of the materialization lane ceiling
 
