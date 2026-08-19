@@ -1683,16 +1683,24 @@ conclusion rather than opening a new front.
 
 `09:04  frontier 06:29 (unchanged)  backlog 2.58 h  deferred_terminal_materialization`
 
-## BE. Hold — materialization park now 36+ min, frontier unmoved
+## BE. Monitoring trace (no-op passes consolidated here)
 
-`09:14  lastHR 0.4 min  frontier 08-19 06:29  backlog 2.75 h  stallRe 332  deferred_terminal_materialization`
+Rather than a new lettered entry per 10-minute pass, holding passes append a row. A pass only earns its
+own entry if something changes materially.
 
-Frontier unchanged since 08:38 — **36 minutes and counting**, backlog 2.16 -> 2.75 h. Consistent with BD:
-no sync runs while the lane is held, so no frontier commit is attempted. Nothing new to learn from
-another read of the same state; holding until the ~11:58 prune, which is the checkpoint that actually
-tests whether a smaller archive frees the lane.
+| time | frontier | backlog | syncStatus | note |
+|---|---|---|---|---|
+| 08:17 | 06:18 | 1.98 h | draining | low-water mark |
+| 08:38 | 06:29 | 2.16 h | deferred_terminal_materialization | park begins; stallRe 331 -> 332 |
+| 08:57 | 06:29 | 2.47 h | deferred | container diff proves work IS happening (+8 segments, +4 aggregates, +32 receipts) |
+| 09:04 | 06:29 | 2.58 h | deferred | frontier trace done (BD) |
+| 09:14 | 06:29 | 2.75 h | deferred | park 36 min |
+| 09:24 | 06:29 | 2.92 h | deferred | park **46 min**; flushDebt 1688 -> 767, so debt IS being worked off |
 
-No code change.
+Park duration now matches entry O's 47 minutes almost exactly — this looks like a characteristic
+duration rather than a hang. HR stays live throughout; only history catch-up stalls.
+
+Next checkpoint remains the ~11:58 prune. No code change.
 
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
