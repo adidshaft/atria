@@ -906,6 +906,44 @@ density — which would make HRV loss another downstream victim of the same link
 This also matters for item 8: with `hrvBaseline` nil, stress scores HR-only, so the v4 recalibration is
 carrying the whole signal by itself.
 
+## AD. HRV RESOLVED by measurement — the gate is correct, the LINK was the problem. No code change.
+
+Pulled `Documents/sessions.json` (12.6 MB, 28 sessions, 24 with RR) and measured continuous-RR spans
+directly. **My AC hypothesis was wrong** — sessions are not short. Most are a full 180 minutes.
+
+The real mechanism is intra-session dropout density. Median RR spacing is ~1.0 s everywhere (the stream
+is dense), but a few percent of intervals arrive more than 3 s late, and they are spread evenly enough
+to chop every candidate five-minute window:
+
+| session | gaps > 3 s | mean clean run | longest run | HRV windows |
+|---|---|---|---|---|
+| 08-17 04:00 | 4.3 % | ~23 s | 122 s | 0 |
+| 08-18 07:27 | 4.4 % | ~23 s | 72 s | 0 |
+| 08-18 16:28 | 6.7 % | ~15 s | 85 s | 0 |
+| **08-18 04:27** | **2.1 %** | ~48 s | **1377 s** | **6 -> the one night HRV worked** |
+| 08-19 02:12 *(post-fix)* | 2.6 % | ~38 s | 367 s | 3 |
+| 08-19 05:12 *(post-fix)* | **1.3 %** | ~77 s | 603 s | 2 |
+
+At ~1 RR/s a 300 s window needs ~300 consecutive intervals with no >3 s gap. P(clean) falls off a
+cliff: 1.4e-06 at 4.4 % dropout, 1.7e-03 at 2.1 %, 2.0e-02 at 1.3 %. So HRV appears only once the
+dropout rate drops below roughly 2 %, which is exactly what the table shows.
+
+**Conclusions:**
+1. The HRV qualification is CORRECT and needs no change. RMSSD across a >3 s hole would difference
+   non-adjacent beats. Widening the gate to make a number appear would be fabrication.
+2. The defect is upstream: BLE dropouts degrade an otherwise dense RR stream.
+3. **The two lowest-dropout sessions on record are both post-fix** (2.6 % and 1.3 %, versus 4.3-6.7 %
+   before), and both produced qualifying windows. That is consistent with the items-1/2/3 link-stability
+   fix improving RR continuity — but it is **two samples**, so suggestive, not proven. Re-measure after a
+   full night on the current build.
+
+**Nothing shipped.** The correct lever was already pulled.
+
+One honest gap remains, NOT built: the app shows no HRV and does not say why. The project's own rule is
+that fail-closed states must be visible, so "HRV needs 5 unbroken minutes of beat-to-beat data; the strap
+link dropped N times last night" would be truthful and useful. Left for the user to decide — it is a UI
+addition, not a defect fix.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
