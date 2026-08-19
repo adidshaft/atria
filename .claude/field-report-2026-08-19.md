@@ -1647,6 +1647,42 @@ session has twice punished confident changes to things I had not fully traced, a
 whether a stalled frontier here is a defect or an honest "publication checkpoint not yet reached". The
 next iteration should trace what actually advances `drainedThroughUnix` before anything is touched.
 
+## BD. Traced the frontier — my "third mechanism" was a CONSEQUENCE, not a mechanism
+
+Followed the explicit next task from BC before touching anything. `drainedThroughUnix` is advanced in
+exactly one meaningful place, `commitDurableHistoricalRawFrontier` (AtriaBLEManager.swift:37370), and
+its first line is:
+
+```swift
+guard offlineHistoricalSyncInProgress,
+      generation == offlineHistoricalSyncGeneration else { return }
+```
+
+**The frontier can only advance while an offline historical sync is actually running.** The device sits
+at `lastStatus = deferred_terminal_materialization`, which is set on the path that returns `false`
+WITHOUT starting a sync (AtriaBLEManager.swift:10988). So while materialization holds the lane, no sync
+runs, and therefore no frontier commit is even attempted.
+
+**That corrects my own model from BC.** I reported three distinct mechanisms behind item 2's symptom.
+There are **two**:
+
+1. the silent-stream central-rebuild latch — fixed, `47538c32`
+2. terminal-materialization deferral parking the drain lane — and the frozen frontier is its
+   **consequence**, not a separate fault
+
+It also explains the apparent contradiction that raw segments kept arriving (+8) while the frontier
+froze: those are LIVE capture writes, which do not go through the historical-sync path. Live data flows;
+history catch-up is what stalls. The user sees "last sync" stuck precisely because `drainedThroughUnix`
+tracks the history drain, not the live stream.
+
+**Still no code change, and now for a better reason than caution:** the frontier behaviour is CORRECT
+given a deferred sync. Making it advance independently would be a lie — it would report catch-up
+progress that did not happen. The real target is the deferral itself, i.e. reducing the materialization
+work that steals the lane, which is exactly what item 12's retention does. This strengthens the BB
+conclusion rather than opening a new front.
+
+`09:04  frontier 06:29 (unchanged)  backlog 2.58 h  deferred_terminal_materialization`
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
