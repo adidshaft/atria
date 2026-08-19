@@ -2093,6 +2093,29 @@ Identical. None of today's ~50 commits caused any of it. This is accumulated sou
 suite asserts on Swift source shapes that have since moved or been renamed — and it is a well-bounded
 repair job rather than a regression to chase now.
 
+### 14:04 — a park has begun, and this one is decidable
+
+`deferred_terminal_materialization` at 14:04, the first park since the ceiling AND its receipt both
+landed on the device. The flag was set between 13:54 and 14:04, so the ceiling is eligible
+**14:14–14:24**.
+
+Unlike the 11:04 attempt, the outcome is no longer ambiguous. Pass conditions, written before the
+result:
+
+- `materializationLaneCeilingReceipt.v1` appears with `count: 1` and `heldSeconds ≥ 1200` → the
+  ceiling fired. That is the proof the stdout-only log could not give.
+- Park ends, no receipt, **and `processInstanceID` changed** → a relaunch cleared it again, exactly
+  as on 11:04. Not evidence for the fix.
+- Park ends, no receipt, same `processInstanceID` → it completed or self-resolved normally. Also not
+  evidence for the fix.
+- Still parked past ~14:30 with no receipt → the release does not reach its call site, and the
+  re-entry concern recorded at 11:04 is confirmed rather than merely open.
+
+Checking `processInstanceID` is not optional here — it is the specific thing that made the last
+attempt undecidable, and I would otherwise be free to read a bare release as success.
+
+Frontier ran 1.2x in the ten minutes before the park (08:49 → 09:01).
+
 ### What 17:58:46 tests
 
 The whole retention chain end to end, in one shot: does the compaction survive to completion this
