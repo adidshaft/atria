@@ -1797,6 +1797,26 @@ in the loop brief is not what a free lane guarantees — it was one favourable w
 is 0 on the current slice, so this process has not yet committed productive rows. Not diagnosing it
 from one sample; recording it so the next free-lane window has something to compare against.
 
+### Pre-prune baseline, measured 4 minutes before it is due (11:54)
+
+| artifact | size | mtime |
+|---|---|---|
+| `historical-archive.identity.jsonl` | **1.28 GB** | 11:51 |
+| `historical-archive.identity.lookup-v1.sqlite` | **839.7 MB** | 11:51 |
+| `…sqlite-wal` / `-shm` | 302 KB / 32 KB | 11:51 / 11:54 |
+| `historical-archive.identity.prune.json` | 38 bytes | **05:58** (unmoved) |
+
+The ledger is still GROWING (1.27 → 1.28 GB) right up to the prune, and both primary artifacts were
+written 3 minutes ago, so this is a live baseline rather than a stale one. That matters for reading
+the result: any post-prune shrink has to be scored against 1.28 GB, not against this morning's 1.27 GB
+figure, or the reclaim will look larger than it was.
+
+Drain meanwhile is deferring under a THIRD distinct reason today, `deferred_live_continuity_owner`
+(the drain yielding to live capture) — not the materialization park. Frontier 07:04 → 07:07 across
+11:33–11:54, attempts creeping 23717 → 23725. Recorded, not diagnosed: the deferral reasons have
+rotated all morning and one 20-minute window cannot separate healthy live-capture priority from
+another park wearing different clothes.
+
 **Install deferred deliberately.** The receipt from `3d4a6f3a` is committed but NOT on the device, so
 the next park is still unmeasurable. Installing now would relaunch the process ~30 min before the
 first retention prune and disturb the checkpoint this loop has been waiting on since 05:58. The
