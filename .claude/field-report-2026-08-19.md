@@ -1683,6 +1683,17 @@ conclusion rather than opening a new front.
 
 `09:04  frontier 06:29 (unchanged)  backlog 2.58 h  deferred_terminal_materialization`
 
+## BE. Hold — materialization park now 36+ min, frontier unmoved
+
+`09:14  lastHR 0.4 min  frontier 08-19 06:29  backlog 2.75 h  stallRe 332  deferred_terminal_materialization`
+
+Frontier unchanged since 08:38 — **36 minutes and counting**, backlog 2.16 -> 2.75 h. Consistent with BD:
+no sync runs while the lane is held, so no frontier commit is attempted. Nothing new to learn from
+another read of the same state; holding until the ~11:58 prune, which is the checkpoint that actually
+tests whether a smaller archive frees the lane.
+
+No code change.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
