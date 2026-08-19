@@ -1418,6 +1418,29 @@ which is exactly the conservative property the drift regression proved was missi
 Not yet installed — the device still runs the fragile version, so this needs a build+install before the
 scale is right on the phone.
 
+## AU. Re-anchored scale INSTALLED and verified live — 69.2 % calm on the real archive
+
+Built at `77101667`, symbols verified (`zoneEdges` / `calmEdge` present), installed and launched 07:57.
+
+Computed the edges from the **live** on-device archive as it now stands:
+
+```
+12 qualifying days, 133,300 samples
+p70 = 80   p96 = 92   ->  midpoint 86, halfWidth 6
+=> calm 69.2 %   moderate 26.0 %   high 4.8 %
+```
+
+The archive has grown since the fix was written (132,880 -> 133,300 samples) and the derived edges did
+**not move**. That is the stability property the percentile anchor was chosen for, demonstrated rather
+than argued: under the old center/spread anchor the same six hours moved the calm edge 79 -> 68 bpm.
+
+The regression is closed on device, and the scale now sits in the band the user chose.
+
+Also confirmed this launch: `reclaimed 0.0 MB` in the storage receipt — the orphan sweep is correctly
+**idempotent**, having already taken its 39.9 MB and finding nothing left to take.
+
+Device otherwise healthy: HR live, `stallReconnects` still 331, backlog down to **2.40 h**.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
