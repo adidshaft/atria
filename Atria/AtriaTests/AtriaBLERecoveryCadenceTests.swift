@@ -10748,9 +10748,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertFalse(AtriaBLEManager.materializationLaneHeldTooLong(
             startedAt: nil, now: claimed.addingTimeInterval(9_999), ceiling: ceiling))
 
-        // A healthy materialization runs well inside the ceiling — the longest
-        // productive run measured this session was ~47 min of REAL work, but that
-        // one completed; this ceiling only catches a lane that never finishes.
+        // Inside the ceiling, nothing is reclaimed. NOTE: the ledger's 47- and
+        // 56-minute figures are PARK durations, not healthy work — no healthy
+        // materialization has ever been timed on device, so this bound is set
+        // from the failure side, not from a measured productive run.
         XCTAssertFalse(AtriaBLEManager.materializationLaneHeldTooLong(
             startedAt: claimed, now: claimed.addingTimeInterval(ceiling - 60), ceiling: ceiling))
 
@@ -10765,6 +10766,43 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         // A backwards clock must not release a lane that just claimed it.
         XCTAssertFalse(AtriaBLEManager.materializationLaneHeldTooLong(
             startedAt: claimed, now: claimed.addingTimeInterval(-3_600), ceiling: ceiling))
+    }
+
+    /// A ceiling release must leave durable evidence. It previously logged only
+    /// to ATRIADBG (stdout), and on 2026-08-19 that made a real firing
+    /// unprovable: the park ended inside a window containing both the ceiling's
+    /// eligibility AND a process relaunch, which clears the process-local flag
+    /// on its own. The counter is what separates "fired once" from "is
+    /// truncating the same work over and over".
+    func testMaterializationLaneCeilingReleaseLeavesACountedReceipt() {
+        let first = AtriaBLEManager.makeMaterializationLaneCeilingReceipt(
+            heldSeconds: 1_263.44, ceilingSeconds: 1_200,
+            atUnix: 1_787_120_000, priorCount: 0)
+        XCTAssertEqual(first.count, 1)
+        XCTAssertEqual(first.heldSeconds, 1_263.4, accuracy: 0.001)
+        XCTAssertEqual(first.ceilingSeconds, 1_200, accuracy: 0.001)
+
+        // Repeated truncation is visible as a climb, not as a fresh single event.
+        let second = AtriaBLEManager.makeMaterializationLaneCeilingReceipt(
+            heldSeconds: 1_201, ceilingSeconds: 1_200,
+            atUnix: 1_787_125_000, priorCount: first.count)
+        XCTAssertEqual(second.count, 2)
+
+        // Defensive: a negative hold or a corrupt prior count cannot poison it.
+        let guarded = AtriaBLEManager.makeMaterializationLaneCeilingReceipt(
+            heldSeconds: -5, ceilingSeconds: 1_200,
+            atUnix: 1_787_130_000, priorCount: -9)
+        XCTAssertEqual(guarded.heldSeconds, 0, accuracy: 0.001)
+        XCTAssertEqual(guarded.count, 1)
+
+        // It must survive the round trip it is stored through.
+        let data = try? JSONEncoder().encode(second)
+        XCTAssertNotNil(data)
+        let decoded = data.flatMap {
+            try? JSONDecoder().decode(
+                AtriaBLEManager.MaterializationLaneCeilingReceipt.self, from: $0)
+        }
+        XCTAssertEqual(decoded, second)
     }
 
     func testSilentStreamCentralRebuildPermitReArmsAfterAQuietInterval() {

@@ -1960,10 +1960,52 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// Releasing early is deliberately the SAFE direction. It does not abandon
     /// data — the release goes through the ordinary
     /// `finishHistoricalConsumerMaterialization` path, so every existing cleanup
-    /// and re-arm runs, and the next pass simply attempts the work again. The
-    /// ceiling is generous enough that no healthy materialization observed this
-    /// session (the longest productive run was ~47 min) comes near it.
+    /// and re-arm runs, and the next pass simply attempts the work again.
+    ///
+    /// **What 20 minutes is, honestly:** an assumption, not a measured bound.
+    /// An earlier version of this comment claimed "the longest productive run
+    /// was ~47 min", which misread the evidence — the 47- and 56-minute figures
+    /// in the ledger are PARK durations (the frontier frozen), not healthy work,
+    /// and 47 min would in any case exceed this ceiling rather than sit inside
+    /// it. No healthy materialization has ever been timed on device. The ceiling
+    /// is therefore set from the failure side: every observed park (47, 56, 106,
+    /// 112 min) is well past it. If a legitimate materialization is ever measured
+    /// above 20 min, this constant is wrong and must rise — the receipt below
+    /// exists to make that case visible instead of silent.
     nonisolated static let historicalConsumerMaterializationLaneCeiling: TimeInterval = 20 * 60
+
+    /// Durable evidence that a ceiling release actually happened.
+    ///
+    /// The release path originally logged only to ATRIADBG, which goes to
+    /// stdout and is unrecoverable after the fact. On 2026-08-19 that cost a
+    /// verification outright: a park ended somewhere inside a window that
+    /// contained BOTH the ceiling's eligibility and a process relaunch (a new
+    /// `processInstanceID` appeared in the slice receipt), and the two are
+    /// indistinguishable without a durable mark — a relaunch clears this
+    /// process-local flag on its own. A fix whose firing cannot be observed
+    /// cannot be trusted, so the release now leaves a counted receipt.
+    struct MaterializationLaneCeilingReceipt: Codable, Equatable, Sendable {
+        let atUnix: Double
+        let heldSeconds: Double
+        let ceilingSeconds: Double
+        /// Monotonic across releases, so repeated truncation of the same work
+        /// (the failure mode of a ceiling set too low) is visible as a climb.
+        let count: Int
+    }
+
+    nonisolated static func makeMaterializationLaneCeilingReceipt(
+        heldSeconds: Double,
+        ceilingSeconds: Double = historicalConsumerMaterializationLaneCeiling,
+        atUnix: Double,
+        priorCount: Int
+    ) -> MaterializationLaneCeilingReceipt {
+        MaterializationLaneCeilingReceipt(
+            atUnix: atUnix,
+            heldSeconds: (max(0, heldSeconds) * 10).rounded() / 10,
+            ceilingSeconds: ceilingSeconds,
+            count: max(0, priorCount) + 1
+        )
+    }
 
     nonisolated static func materializationLaneHeldTooLong(
         startedAt: Date?,
@@ -1992,10 +2034,36 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         AtriaDebugLog("ATRIADBG offline_sync status=materialization_lane_ceiling_released held_s=%.0f ceiling_s=%.0f action=finish_and_allow_retry",
                       held,
                       Self.historicalConsumerMaterializationLaneCeiling)
+        persistMaterializationLaneCeilingReceipt(heldSeconds: held, at: now)
         finishHistoricalConsumerMaterialization(
             reason: "materialization_lane_ceiling"
         )
         return true
+    }
+
+    /// Writes the durable release receipt, carrying the prior count forward.
+    private func persistMaterializationLaneCeilingReceipt(
+        heldSeconds: Double,
+        at now: Date
+    ) {
+        let defaults = UserDefaults.standard
+        let prior: MaterializationLaneCeilingReceipt? = (
+            defaults.data(forKey: OfflineSyncDefaults.materializationLaneCeilingReceipt)
+        ).flatMap {
+            try? JSONDecoder().decode(
+                MaterializationLaneCeilingReceipt.self, from: $0
+            )
+        }
+        let receipt = Self.makeMaterializationLaneCeilingReceipt(
+            heldSeconds: heldSeconds,
+            atUnix: now.timeIntervalSince1970,
+            priorCount: prior?.count ?? 0
+        )
+        guard let encoded = try? JSONEncoder().encode(receipt) else { return }
+        defaults.set(
+            encoded,
+            forKey: OfflineSyncDefaults.materializationLaneCeilingReceipt
+        )
     }
     /// Set only while a failed local terminal projection releases a newer,
     /// authorized motion-bank ticket through normal BLE admission.  It is
