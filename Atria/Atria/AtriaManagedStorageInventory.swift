@@ -197,6 +197,48 @@ enum AtriaManagedStorageInventory {
     /// planner consults. Automatic execution is a debug-only override and
     /// every compact cold consumer is shadow-only — so retention execution
     /// is blocked, and the receipt says by exactly what.
-    static let currentRetentionExecutionBlocked =
-        "RETENTION_EXECUTION_BLOCKED(automatic_execution_disabled+cold_session_consumers_shadow_only)"
+    /// Was `RETENTION_EXECUTION_BLOCKED(automatic_execution_disabled+cold_session_consumers_shadow_only)`.
+    ///
+    /// The first half stopped being true when the archive-wide release fence was
+    /// lifted (df11d6c5): automatic maintenance now runs from the BGProcessing
+    /// lane under `shouldAdmitAutomaticArchiveCompaction`. Leaving the old string
+    /// in place would make this receipt assert a blocker that no longer exists —
+    /// and this file's own header says "a false storage promise is worse than an
+    /// honest blocker", which cuts both ways: a false blocker misreports state
+    /// just as badly.
+    ///
+    /// The second half is still true, so it is still named.
+    static let currentRetentionExecutionState =
+        "RETENTION_EXECUTION_ADMITTED(bg_processing_environmental_admission)+COLD_SESSION_CONSUMERS_SHADOW_ONLY"
+
+    /// Orphaned debug artifacts with no remaining writer, plus generated share/
+    /// export files old enough that no sheet can still be holding them.
+    ///
+    /// Measured on device 2026-08-19: **50.8 MB** of pure dead weight —
+    /// 17.0 MB of `atria-memprobe*.log` whose writer no longer exists anywhere in
+    /// the codebase (only a stale comment at HistoricalArchive.swift:6483
+    /// survives), and 33.8 MB of `tmp/` share PNGs, exported HTML and GPX, the
+    /// oldest dating to 7/15 — thirty-five days earlier. `tmp/` is nominally
+    /// purgeable by iOS; it demonstrably was not being purged here.
+    static let orphanedDebugLogNames = ["atria-memprobe.log", "atria-memprobe.1.log"]
+
+    /// Generated `tmp/` artifacts are only swept once they are old enough that an
+    /// in-flight share sheet cannot still own them.
+    static let generatedArtifactMinimumAge: TimeInterval = 24 * 60 * 60
+
+    nonisolated static func shouldSweepGeneratedArtifact(
+        name: String,
+        modifiedAt: Date,
+        now: Date,
+        minimumAge: TimeInterval = generatedArtifactMinimumAge
+    ) -> Bool {
+        let generated = name.hasSuffix(".png")
+            || name.hasSuffix(".html")
+            || name.hasSuffix(".gpx")
+        guard generated else { return false }
+        let age = now.timeIntervalSince(modifiedAt)
+        // A forward-dated file (clock correction) is not evidence of age.
+        guard age >= 0 else { return false }
+        return age >= minimumAge
+    }
 }
