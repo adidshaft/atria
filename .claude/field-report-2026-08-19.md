@@ -2015,7 +2015,26 @@ Worth stating plainly: that helper looked right, read right, and was exactly bac
 assertion on the *interval* — `now - marker == interval - retryDelay` — failed it. A test that had
 merely checked "non-nil and counter incremented" would have passed a dead function.
 
-74/74 across the three retention suites. Not yet installed.
+74/74 across the three retention suites.
+
+**Installed 12:55.** Post-launch state: no compaction temporaries, marker intact at 11:58:46, next
+prune **17:58:46**. The sidecar still reads `{"lastPruneAtUnix": …}` with no
+`interruptedCompactionRetries` field — which is correct, not a failed write: the field is only
+emitted by `persistLastPruneAtUnixBestEffort()`, and neither a prune nor an interruption adjustment
+happened at this launch. The loader treats an absent field as zero, which is exactly the
+older-sidecar case it was written for.
+
+Drain over 12:14 → 12:51: frontier 07:16 → 07:52, i.e. 36 minutes of frontier in 37 minutes of wall
+(~0.97x), with backlog flat at 4.96 → 4.98 h. Keeping pace, not catching up. No park has occurred
+since the ceiling landed, so `materializationLaneCeilingReceipt.v1` is still absent — the receipt is
+armed and waiting, and its absence right now is the honest reading rather than a failure.
+
+### What 17:58:46 tests
+
+The whole retention chain end to end, in one shot: does the compaction survive to completion this
+time; if it does, how much does 1.28 GB actually shrink; if it is interrupted again, does the orphan
+get swept, does `reclaimedBytes` finally report it, and does the clock pull forward to ~30 min
+instead of six hours. Every retention fix from today converges on that single event.
 
 **Install deferral, resolved.** The receipt from `3d4a6f3a` was committed but not on the device, so
 the next park was unmeasurable. Installing before the prune would have relaunched the process ~30 min
