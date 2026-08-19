@@ -1912,10 +1912,34 @@ the compaction never finished. The question "does a smaller archive stop termina
 stealing the drain lane" is therefore still unanswered, and stays on the checkpoint list for the
 14:00 prune.
 
-**Install deferred deliberately.** The receipt from `3d4a6f3a` is committed but NOT on the device, so
-the next park is still unmeasurable. Installing now would relaunch the process ~30 min before the
-first retention prune and disturb the checkpoint this loop has been waiting on since 05:58. The
-receipt only pays off on a *future* park; the prune happens once. Install goes after the prune reports.
+### Installed at 12:27 — and the sweep correctly did NOT fire
+
+Both pending fixes are now on the device (`3d4a6f3a` receipt, `bb429531` sweep + inventory).
+Build succeeded, installed, relaunched at 12:27.
+
+The orphan is still there:
+
+    .historical-archive.identity.jsonl.compact.0CC8F9A4-….tmp   565.6 MB   mtime 12:00   STILL PRESENT
+
+That is not a failed fix. The temporary's mtime is 12:00 and the launch was at 12:27–12:28 — **28
+minutes old against my own 30-minute age gate**. The sweep declined it, which is exactly what the
+gate is for. Verification therefore needs a store init after 12:30, i.e. the next relaunch.
+
+Recording this before re-checking so it cannot be quietly rewritten later: the *pass* condition is
+the file being gone after a post-12:30 launch. If it survives that, the fix is wrong and the cause is
+something else — a lazily-constructed store whose init is not reached, or a failed `removeItem`.
+
+It is worth being blunt that a 30-minute gate is a real cost here: an orphan is not collected by the
+*next* launch, only by the next launch 30 minutes after the leak. Given how often this process is
+replaced that is acceptable, but it is a deliberate trade, not a free one.
+
+Container unchanged at 6.321 GB across 3603 files (down from 3641 — unrelated sidecar churn, not the
+orphan).
+
+**Install deferral, resolved.** The receipt from `3d4a6f3a` was committed but not on the device, so
+the next park was unmeasurable. Installing before the prune would have relaunched the process ~30 min
+ahead of the checkpoint this loop had waited on since 05:58. The receipt only pays off on a *future*
+park; the prune happened once.
 
 ### First field test of the materialization lane ceiling
 
