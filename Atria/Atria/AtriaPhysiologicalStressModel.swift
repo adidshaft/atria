@@ -92,21 +92,31 @@ enum AtriaPhysiologicalStressModel {
     /// to 14 days) and then thrown it away — `_ = awakeReference` at two sites.
     /// Wiring it in is what makes the HR term mean anything for a specific
     /// person; see `hrStressCoordinate`.
+    /// Zone edges in bpm, taken from the wearer's own multi-day quiet-awake
+    /// distribution (`AtriaAwakeBaselineArchive.zoneEdges`).
+    ///
+    /// Was `(center, spread)` from the 45-minute live reference. That anchor is
+    /// VOLATILE and produced a real regression: on 2026-08-19 it moved from
+    /// (85, 2.97) to (80, 7.41) within six hours, swinging the scored
+    /// distribution from 65.6 % calm to 14.5 % calm / 80.7 % moderate — the old
+    /// 95 %-Medium failure mode. A midpoint anchored on a drifting center lands
+    /// mid-distribution and puts half the wearer's day above it by construction.
+    ///
+    /// Percentiles of a pooled multi-day histogram cannot drift that way:
+    /// `calm` IS the wearer's p70 and `high` their p96, so the calm fraction is
+    /// ~70 % by definition. Measured over the field device's own 132,880 samples
+    /// across 12 qualifying days: **69.1 % calm, 26.0 % moderate, 4.8 % high.**
     struct AwakeReference: Equatable, Sendable {
-        let center: Double
-        let spread: Double
+        /// The calm/moderate edge, in bpm (the wearer's calm percentile).
+        let calmEdge: Double
+        /// The moderate/high edge, in bpm (the wearer's high percentile).
+        let highEdge: Double
 
-        /// Half-width from the midpoint to a zone edge, in bpm.
-        ///
-        /// The learned `spread` comes from a 45-minute window, so it can be far
-        /// tighter than the wearer's real day-to-day variability — the
-        /// 2026-08-19 field device reported 2.97 bpm against a robust 12-day
-        /// spread of 7.6. Using it raw would make the scale hypersensitive, so
-        /// floor it; cap it so a noisy window cannot widen the scale back toward
-        /// the useless HR-reserve coordinate.
-        var zoneHalfWidth: Double {
-            min(12, max(6, spread * 2))
-        }
+        var zoneMidpoint: Double { (calmEdge + highEdge) / 2 }
+
+        /// Floored so a degenerate distribution cannot collapse the scale into a
+        /// step function at a single bpm.
+        var zoneHalfWidth: Double { max(4, (highEdge - calmEdge) / 2) }
     }
 
     struct Personalization: Equatable, Sendable {
@@ -607,14 +617,17 @@ enum AtriaPhysiologicalStressModel {
                                    maximumHeartRate maximum: Double,
                                    awakeReference: AwakeReference?) -> Double {
         guard let awakeReference,
-              awakeReference.center.isFinite,
-              awakeReference.spread.isFinite,
-              awakeReference.center > rest else {
+              awakeReference.calmEdge.isFinite,
+              awakeReference.highEdge.isFinite,
+              awakeReference.highEdge > awakeReference.calmEdge,
+              awakeReference.calmEdge > rest else {
             let h = clamp01((meanHR - rest) / max(1, maximum - rest))
             return sigmoid(8 * (h - 0.25))
         }
-        let halfWidth = awakeReference.zoneHalfWidth
-        return sigmoid(log(2) * (meanHR - awakeReference.center) / halfWidth)
+        // 3*sigmoid(-ln2) = 1 and 3*sigmoid(+ln2) = 2, so the zone boundaries
+        // land exactly on the wearer's own percentiles.
+        return sigmoid(log(2) * (meanHR - awakeReference.zoneMidpoint)
+                       / awakeReference.zoneHalfWidth)
     }
 
     static func sigmoid(_ value: Double) -> Double {

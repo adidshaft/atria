@@ -301,6 +301,7 @@ enum AtriaStressMonitor {
                       hasContact: Bool,
                       contactAgeSeconds: TimeInterval,
                       awakeReference: (center: Double, spread: Double)? = nil,
+                      awakeBaselineArchive: AtriaAwakeBaselineArchive? = nil,
                       now: Date = Date()) -> AtriaStressState {
         guard hasContact, hrNow > 0 else {
             return AtriaStressState(level: nil, label: "No signal", detail: "",
@@ -370,12 +371,14 @@ enum AtriaStressMonitor {
                 lnRMSSDValues: qualifiedLnRMSSD,
                 qualifiedDayCount: baseline.freshHRVSampleCount(now: now)
             ),
-            // Field report 2026-08-19 item 8: this was computed, persisted and
-            // then discarded (`_ = awakeReference`). Without it the HR term is
-            // scored against the whole heart-rate reserve, which on the field
-            // device was 17x wider than the wearer's real quiet-awake spread.
-            awakeReference: awakeReference.map {
-                .init(center: $0.center, spread: $0.spread)
+            // Field report 2026-08-19 item 8. The scale is anchored on the
+            // wearer's own multi-day quiet-awake percentiles, NOT the 45-minute
+            // live reference — that anchor drifted (85/2.97 -> 80/7.41 in six
+            // hours) and swung the distribution to 80.7 % moderate. This static
+            // entry point has no store, so callers pass the archive explicitly;
+            // omitting it keeps the untouched heart-rate-reserve coordinate.
+            awakeReference: awakeBaselineArchive?.zoneEdges().map {
+                .init(calmEdge: $0.calm, highEdge: $0.high)
             }
         )
         let motion: AtriaPhysiologicalStressModel.MotionContext = workoutActive
@@ -1134,6 +1137,61 @@ struct AtriaAwakeBaselineArchive: Codable, Equatable {
     }
 
     private(set) var days: [Day]
+
+    /// Zone edges taken from the wearer's OWN multi-day quiet-awake
+    /// distribution, in bpm.
+    ///
+    /// This replaces the 45-minute `awakeReference` center/spread as the stress
+    /// scale's anchor. That reference is volatile: on 2026-08-19 it moved from
+    /// (center 85, spread 2.97) to (center 80, spread 7.41) inside six hours,
+    /// which swung the scored distribution from 65.6 % calm to **14.5 % calm /
+    /// 80.7 % moderate** — the old 95 %-Medium failure mode, reintroduced.
+    ///
+    /// A midpoint anchored on a drifting center lands mid-distribution and puts
+    /// half the wearer's day above it BY CONSTRUCTION. Percentiles of the pooled
+    /// multi-day histogram cannot do that: `calmPercentile` IS the calm fraction
+    /// by definition, so "calm-dominant with reachable High" is expressed
+    /// directly rather than hoped for.
+    struct ZoneEdges: Equatable {
+        let calm: Double
+        let high: Double
+    }
+
+    /// Pooled bpm → count across every qualifying day.
+    var pooledHistogram: [Int: Int] {
+        var pooled: [Int: Int] = [:]
+        for day in days where day.sampleCount >= Self.minimumSamplesPerDay {
+            for (bpm, count) in day.histogram {
+                pooled[bpm, default: 0] += count
+            }
+        }
+        return pooled
+    }
+
+    /// `nil` until the archive has enough qualifying days, so a thin history
+    /// falls back to the untouched heart-rate-reserve coordinate rather than
+    /// inventing a personal scale from a handful of samples.
+    func zoneEdges(calmPercentile: Double = 0.70,
+                   highPercentile: Double = 0.96) -> ZoneEdges? {
+        guard qualifyingDayCount >= Self.minimumQualifyingDays else { return nil }
+        let pooled = pooledHistogram
+        let total = pooled.values.reduce(0, +)
+        guard total > 0 else { return nil }
+
+        func percentile(_ fraction: Double) -> Double? {
+            let target = max(1, Int((Double(total) * fraction).rounded(.up)))
+            var cumulative = 0
+            for bpm in pooled.keys.sorted() {
+                cumulative += pooled[bpm] ?? 0
+                if cumulative >= target { return Double(bpm) }
+            }
+            return nil
+        }
+        guard let calm = percentile(calmPercentile),
+              let high = percentile(highPercentile),
+              high > calm else { return nil }
+        return ZoneEdges(calm: calm, high: high)
+    }
 
     private static let defaultsKey = "atria.stress.awakeBaseline.v1"
     private static let retentionDays = 30
@@ -3968,11 +4026,9 @@ final class AtriaStressMonitorStore: ObservableObject {
             maximumHeartRate: Double(restingMaxHR.max),
             restingBaselineDayCount: baseline.freshRestingSampleCount(now: minute),
             hrvBaseline: hrvBaseline,
-            // The live consumer of the learner above. Before this it was
-            // discarded, so every minute was scored against the heart-rate
-            // reserve instead of against this wearer (field report item 8).
-            awakeReference: awakeReference.map {
-                .init(center: $0.center, spread: $0.spread)
+            // Same archive-derived anchor as the fixture path above.
+            awakeReference: awakeBaselineArchive.zoneEdges().map {
+                .init(calmEdge: $0.calm, highEdge: $0.high)
             }
         )
 
