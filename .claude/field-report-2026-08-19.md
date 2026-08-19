@@ -1441,6 +1441,43 @@ Also confirmed this launch: `reclaimed 0.0 MB` in the storage receipt — the or
 
 Device otherwise healthy: HR live, `stallReconnects` still 331, backlog down to **2.40 h**.
 
+## AV. Item 10 CORRECTION — stages are not "structurally unreachable"; they produce on 19 % of nights
+
+Verified against `daily-metrics.json` rather than reasoning about gates. Stages DO produce:
+
+| nights with stages | segments |
+|---|---|
+| 08-11 | 50 |
+| 08-12 | 302 |
+| 08-14 | 86 |
+| 08-15 | 104 |
+| 08-18 | 160 |
+
+**5 of the 26 nights that have a sleep duration produced stages — 19 %, not zero.** I described item 10
+as stages being "structurally unreachable" and "fail-closed" on this strap. That was too strong. The
+user's complaint stands as an experience — 81 % of nights come back blank — but the mechanism is
+intermittency, not impossibility.
+
+**Duration is definitively NOT the discriminator**, which rules out the obvious explanation:
+
+```
+08-16   650 min of sleep  ->   0 segments
+08-14   189 min of sleep  ->  86 segments
+```
+
+A 10.8-hour night produced nothing while a 3.2-hour night produced 86 segments. What tracks instead is
+**RR/HR continuity**, the same variable that governs HRV (entry AD). The one night with detailed session
+telemetry is decisive: 08-18 had the lowest dropout rate measured (2.1 %, longest clean run 1377 s), and
+it is the night that produced BOTH 160 stage segments AND the only HRV value in 38 nights.
+
+So items 8, 10 and the HRV gap share one upstream cause — BLE dropouts fragmenting an otherwise dense
+stream — and the link-stability fix (items 1/2/3) is the lever for all three.
+
+Gate B (`maximumHeartRateGap` 15 s -> 90 s) went on device at 04:05 and has not yet met a night; its
+effect is measurable on tonight's sleep. Against a 4 % dropout rate the 90 s window admits roughly six
+times more of a segment than 15 s did, so it should raise that 19 % materially — but that is a
+prediction, and the next iteration should check it rather than assume it.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
