@@ -7,6 +7,57 @@ import XCTest
 /// point outlive the night they describe. Locks the pure change-detector so a
 /// night edit re-freezes while intra-day strain accrual never does.
 final class AtriaRecoveryFreezeTests: XCTestCase {
+    /// Field report 2026-08-19, item 13. `preparedDailyMetricHistory` derives
+    /// `restingHR` from the confirmed main-sleep night alone but emits a row for
+    /// every day carrying any session rollup, and the merge seeded `merged` from
+    /// `computed` first — so on a day with wear but no confirmed night the
+    /// recompute's nil discarded an existing row holding a real `wearRestingHR`
+    /// measurement.
+    ///
+    /// Measured on device: restingHR present on only 27 of 43 days (63%), with
+    /// 08-19 still carrying `rhr = 68` and no confirmed sleep — a wear-derived
+    /// value the next rebuild would have erased. That starves the measured-HR
+    /// insight chain (`DailyRollupVitals.rhr` -> `AtriaHighlights` /
+    /// `healthDeviationDecision`, both of which need a minimum n).
+    func testRebuildDoesNotEraseAMeasuredRestingHeartRate() {
+        let day = Date(timeIntervalSince1970: 1_787_000_000)
+        let rebuilt = SavedDailyMetric(day: day, recoveryPercent: nil,
+                                       recoveryConfidence: "learning",
+                                       hrv: nil, restingHR: nil, respiratoryRate: nil,
+                                       sleepDuration: nil, sleepSpan: nil,
+                                       sleepStart: nil, sleepEnd: nil, sleepSource: nil,
+                                       sleepStageSegments: [], sleepConsistencyPercent: nil,
+                                       strain: nil)
+        var measured = rebuilt
+        measured.restingHR = 68
+
+        let preserved = SessionStore.dailyMetricPreservingMeasuredFacts(
+            rebuilt: rebuilt, existing: measured
+        )
+        XCTAssertEqual(preserved.restingHR, 68,
+                       "a rebuild that could not observe resting HR must not assert its absence")
+
+        // It only ever fills a nil: a value the rebuild DID derive still wins.
+        var rederived = rebuilt
+        rederived.restingHR = 55
+        XCTAssertEqual(
+            SessionStore.dailyMetricPreservingMeasuredFacts(
+                rebuilt: rederived, existing: measured
+            ).restingHR,
+            55,
+            "the recompute's own measurement is authoritative"
+        )
+        // And it can never invent one neither row holds.
+        XCTAssertNil(
+            SessionStore.dailyMetricPreservingMeasuredFacts(
+                rebuilt: rebuilt, existing: rebuilt
+            ).restingHR
+        )
+        // Every other field still comes from the rebuild.
+        XCTAssertEqual(preserved.day, rebuilt.day)
+        XCTAssertEqual(preserved.recoveryConfidence, rebuilt.recoveryConfidence)
+    }
+
     private func at(_ h: Double) -> Date { Date(timeIntervalSince1970: 1_800_000_000 + h * 3600) }
 
     func testHistoryAndSleepWaitForMatchingMetricRollupPublication() throws {
