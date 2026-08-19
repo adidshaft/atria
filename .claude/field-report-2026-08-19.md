@@ -1714,6 +1714,24 @@ diagnose this properly, and the user may be using the phone (scene last active 0
 | 10:24 | 06:29 | 3.92 h | deferred | park 106 min; lane-ceiling fix written |
 | 10:37 | 06:52 | 3.75 h | — | **park self-resolved after ~112 min**, before the fix could install |
 | 10:39 | 06:52 | 3.77 h | terminal_consumer_materialization_deferred_raw_first_slice | lane ceiling now installed |
+| 10:44 | 06:52 | 3.85 h | **deferred_terminal_materialization** | park re-entered ~7 min post-install — first live test of `dd79df63` |
+
+### First field test of the materialization lane ceiling
+
+The park re-entered at or before 10:44, which is the first one to begin under the installed
+20-minute ceiling. If the lane is genuinely held, `releaseMaterializationLaneIfHeldTooLong` should
+fire around **11:01–11:04** and the frontier should start moving again without a relaunch.
+
+That is a real prediction with a falsifiable time, and it is worth being precise about what each
+outcome means:
+
+- frontier advances near 11:04 → the ceiling fired; `dd79df63` works.
+- frontier advances well before 11:00 → the park self-resolved again (as it did at ~10:30 after
+  112 min), and the ceiling is still unproven — NOT evidence for the fix.
+- frontier still frozen past ~11:10 → the ceiling did not fire at the deferral site, and the
+  placement needs re-examining.
+
+The middle case is the one I would most easily misread as success, so it is written down first.
 
 **Prune marker survived a FOURTH relaunch** — `prune.json` still stamped 05:58 after the 10:37 install.
 The retention clock has now held across installs at 06:26, 07:19, 07:26, 07:57 and 10:37 without ever
