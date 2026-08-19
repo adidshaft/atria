@@ -82,6 +82,7 @@ enum AtriaBehaviorImpact {
         }
 
         var result: [BehaviorImpactSummary] = []
+        var testedCount = 0
         for tag in BehaviorJournalEntry.Tag.allCases {
             guard shouldContinue() else { return nil }
             var loggedDayKeys = Set<Date>()
@@ -107,6 +108,10 @@ enum AtriaBehaviorImpact {
                 continue
             }
 
+            // Every tag reaching here is a hypothesis actually searched, and it
+            // counts toward the correction below whether or not it survives.
+            testedCount += 1
+
             let impact = mean(logged) - mean(comparison)
             guard abs(impact) >= minimumImpact else { continue }
 
@@ -120,12 +125,43 @@ enum AtriaBehaviorImpact {
                                                 pValue: pValue))
         }
         guard shouldContinue() else { return nil }
+
+        // Multiple-comparisons correction over the searched candidates.
+        //
+        // `BehaviorJournalEntry.Tag` has FORTY cases, and each was screened at an
+        // uncorrected p < 0.10. That is a 98.5 % chance of at least one false
+        // positive per run and about four spurious findings expected — for a
+        // surface that tells the wearer things like "alcohol: -5 % next-day
+        // recovery". An engine that invents four causal-sounding claims out of
+        // noise is worse than one that says nothing.
+        //
+        // The v2 engine already does this: `AtriaJournalInsights` applies "a
+        // Bonferroni correction over the searched candidates" plus permutation
+        // testing (AtriaJournalInsights.swift:262). v1 was the outlier, exactly
+        // like `maximumHeartRateGap` was the lone 15 s outlier against a 90 s
+        // stack. Match the sibling rather than invent a third policy.
+        //
+        // Corrected over tags actually TESTED, not all 40, which is both the
+        // standard treatment and the less conservative one: a wearer who logs two
+        // tags is not penalised for the thirty-eight they never used.
+        result = result.filter {
+            $0.pValue < correctedThreshold(testedCount: testedCount)
+        }
         result.sort {
             if abs($0.impact) != abs($1.impact) { return abs($0.impact) > abs($1.impact) }
             if $0.loggedDays != $1.loggedDays { return $0.loggedDays > $1.loggedDays }
             return $0.tag.rawValue < $1.tag.rawValue
         }
         return shouldContinue() ? result : nil
+    }
+
+    /// Family-wise threshold after Bonferroni over the searched candidates.
+    /// Zero tested candidates cannot produce a finding, so the threshold
+    /// collapses to zero rather than dividing by zero.
+    static func correctedThreshold(testedCount: Int,
+                                   familyWise: Double = maximumPValue) -> Double {
+        guard testedCount > 0 else { return 0 }
+        return familyWise / Double(testedCount)
     }
 
     static func mean(_ values: [Double]) -> Double {

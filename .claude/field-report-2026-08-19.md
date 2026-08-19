@@ -1088,6 +1088,39 @@ stamped **05:58** after this relaunch — it was NOT overwritten. That is exactl
 marker now survives restarts, so the six-hour retention clock keeps counting from first launch instead of
 resetting on every process death. First prune still due ~11:58.
 
+## AJ. Item 13 — the "learning engine" was manufacturing ~4 false findings per run
+
+`AtriaBehaviorImpact.summariesCancellable` screens **every** `BehaviorJournalEntry.Tag` at an
+uncorrected `p < 0.10`. There are **40 tags**. So once a wearer journals enough to clear the day gates:
+
+```
+P(at least one false positive) = 98.5 %
+expected spurious findings      = 4.0 per run
+```
+
+on a surface that renders causal-sounding claims like "alcohol: -5 % next-day recovery". An engine that
+invents four such claims out of noise is worse than one that says nothing — and this is the very engine
+item 13 asks to "learn from the insight and suggest".
+
+**The codebase already had the answer.** `AtriaJournalInsights` (v2) applies "a Bonferroni correction
+over the searched candidates" plus 2000-permutation testing (AtriaJournalInsights.swift:262). v1 was the
+lone outlier — the same shape as `maximumHeartRateGap = 15` standing against a 90 s stack everywhere
+else (item 10 gate B). Matched the sibling rather than inventing a third policy.
+
+Added `correctedThreshold(testedCount:familyWise:)` and filtered results through it. Corrected over tags
+**actually tested**, not all 40: a wearer who logs two tags is not penalised for the thirty-eight they
+never used, and that is also the standard "searched candidates" treatment v2's comment names. Zero
+tested candidates collapses the threshold to 0 rather than dividing by zero.
+
+`AtriaBehaviorImpactPresentationTests`: **23/23 green**, including a genuinely strong single-tag effect
+that still survives the correction (so this tightens false positives without silencing real findings).
+
+**Item 13 status:** input defect fixed (AB), first engine unblocked (AH), and the statistical engine no
+longer fabricates findings (AJ). The remaining ask — predictors derived from MEASUREMENT rather than
+hand-typed tags — stays open. It needs a new predictor family, a widened `BehaviorImpactSummary` type and
+UI surface, and it would raise the searched-candidate count, so the correction above is a prerequisite
+rather than an afterthought.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7

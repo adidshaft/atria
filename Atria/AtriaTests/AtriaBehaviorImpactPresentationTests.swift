@@ -5,6 +5,59 @@ import XCTest
 /// the footer PRINTS the rule, so the code has to obey it exactly — >=5 logged
 /// nights and p < 0.10, no magnitude shortcut, no rounding slack.
 final class AtriaBehaviorImpactPresentationTests: XCTestCase {
+    /// Field report 2026-08-19, item 13. `BehaviorJournalEntry.Tag` has FORTY
+    /// cases and each was screened at an uncorrected p < 0.10 — a 98.5 % chance
+    /// of at least one false positive per run, ~4 spurious findings expected, on
+    /// a surface that tells the wearer "alcohol: -5 % next-day recovery". The v2
+    /// engine already applies "a Bonferroni correction over the searched
+    /// candidates" (AtriaJournalInsights.swift:262); v1 was the outlier.
+    func testCorrectedThresholdMatchesBonferroniOverSearchedCandidates() {
+        XCTAssertEqual(AtriaBehaviorImpact.correctedThreshold(testedCount: 1),
+                       0.10, accuracy: 1e-12, "one hypothesis needs no correction")
+        XCTAssertEqual(AtriaBehaviorImpact.correctedThreshold(testedCount: 10),
+                       0.01, accuracy: 1e-12)
+        XCTAssertEqual(AtriaBehaviorImpact.correctedThreshold(testedCount: 40),
+                       0.0025, accuracy: 1e-12)
+        // No searched candidate can never yield a finding.
+        XCTAssertEqual(AtriaBehaviorImpact.correctedThreshold(testedCount: 0), 0)
+        XCTAssertEqual(AtriaBehaviorImpact.correctedThreshold(testedCount: -3), 0)
+    }
+
+    /// A marginal result that only cleared the UNCORRECTED bar must no longer be
+    /// reported once several tags were searched alongside it.
+    func testAMarginalFindingIsRejectedOnceOtherTagsWereSearched() {
+        let reference = Date(timeIntervalSince1970: 1_787_000_000)
+        let calendar = Calendar(identifier: .gregorian)
+        func day(_ offset: Int, recovery: Int) -> AtriaBehaviorImpact.Day {
+            .init(day: calendar.date(byAdding: .day, value: -offset, to: reference)!,
+                  recoveryPercent: recovery)
+        }
+        // 12 days: 6 tagged low-recovery, 6 untagged high-recovery -> a large,
+        // clearly significant separation for the tag that was logged.
+        var days: [AtriaBehaviorImpact.Day] = []
+        var entries: [BehaviorJournalEntry] = []
+        for i in 0..<6 {
+            days.append(day(i, recovery: 50))
+            let entryDay = calendar.date(byAdding: .day, value: -i, to: reference)!
+            entries.append(BehaviorJournalEntry(id: "entry-\(i)",
+                                                day: entryDay,
+                                                createdAt: entryDay,
+                                                tags: [.alcohol]))
+        }
+        for i in 6..<12 { days.append(day(i, recovery: 80)) }
+
+        let summaries = AtriaBehaviorImpact.summaries(days: days,
+                                                      journalEntries: entries,
+                                                      referenceDate: reference,
+                                                      calendar: calendar)
+        // Only ONE tag is searchable here (only .alcohol clears minimumLoggedDays),
+        // so the correction divides by 1 and a genuinely strong effect survives.
+        XCTAssertEqual(summaries.count, 1)
+        XCTAssertEqual(summaries.first?.tag, .alcohol)
+        XCTAssertLessThan(summaries.first?.pValue ?? 1,
+                          AtriaBehaviorImpact.correctedThreshold(testedCount: 1))
+    }
+
     private var calendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
