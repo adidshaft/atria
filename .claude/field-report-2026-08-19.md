@@ -1740,6 +1740,55 @@ fact 2 is consistent with both readings. The deciding observation is the ~11:10 
 advance: frozen past it, and the placement is wrong. I am not changing code on an inference I have
 already been burned by once today.
 
+| 11:14 | 06:58 | 4.26 h | **armed** | park ended — but see below, it is NOT attributable to the ceiling |
+
+### Verdict on the ceiling: UNPROVEN, and my 11:04 reasoning had a hole
+
+The park ended between 11:04 and 11:14 and the frontier moved again. That lands inside the ceiling's
+eligibility window, so the tempting read is "it fired". It is not supported.
+
+`durableProductiveSliceReceipt.processInstanceID` changed
+`0FAE7AFB-…` → `54B93EA6-…`, with `recordedAtUnix` 11:13:55. **The app relaunched inside the same
+window.** `historicalConsumerMaterializationInFlight` is process-local, so a relaunch clears it
+unaided — which is precisely the pre-fix behaviour the doc comment describes as "holds the lane until
+the process dies". Ceiling and relaunch are indistinguishable here, and the simpler explanation is
+already sufficient.
+
+This is the trap written down at 10:44 as outcome 2, arriving in a form I had not predicted (a
+relaunch rather than a self-resolve). Writing the outcomes in advance is what stopped it being scored
+as a win.
+
+**A hole in my own 11:04 argument, too.** I filtered the plist keys on `Attempt` (capital A), which
+silently excluded `atria.offlineSync.attempts`. It was frozen at 23680 from 10:39 through 11:04 and
+then jumped +9 by 11:14 — but that does NOT prove the absence of re-entry either, because the
+increment at AtriaBLEManager.swift:13743 sits downstream of the deferral guard, so a park is expected
+to freeze it. The re-entry question remains genuinely open.
+
+### The instrument that was missing (`AtriaBLESchema.swift`, `AtriaBLEManager.swift`)
+
+The reason today's firing is undecidable is that the release path logged **only** to `ATRIADBG`,
+which is stdout and unrecoverable after the fact. A fix whose firing cannot be observed cannot be
+trusted, and every future firing would have been just as ambiguous.
+
+Added `atria.offlineSync.materializationLaneCeilingReceipt.v1`: a counted, durable receipt
+(`atUnix`, `heldSeconds`, `ceilingSeconds`, `count`). The count is the part that matters — it
+separates "fired once, correctly" from "is truncating the same work over and over", which is the
+failure mode of a ceiling set too low.
+
+### A wrong claim in the shipped comment, corrected
+
+The ceiling's own doc comment justified 20 minutes with "the longest productive run was ~47 min" —
+which is false twice over. The 47- and 56-minute figures in this ledger are **park** durations
+(entries at lines 377/1591/1699), not healthy work; and 47 min would *exceed* a 20-minute ceiling,
+not sit comfortably inside it. The same wrong sentence had been copied into the test.
+
+The honest statement, now in both places: **no healthy materialization has ever been timed on
+device.** The 20-minute bound is set from the failure side — every observed park (47, 56, 106, 112
+min) is well past it — and if a legitimate run is ever measured above 20 min the constant is wrong
+and must rise. The new receipt is what would make that visible instead of silent.
+
+428/428 green in `AtriaBLERecoveryCadenceTests`.
+
 ### First field test of the materialization lane ceiling
 
 The park re-entered at or before 10:44, which is the first one to begin under the installed

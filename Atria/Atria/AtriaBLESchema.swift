@@ -412,6 +412,11 @@ extension AtriaBLEManager {
         // the fast connected retry cadence.
         static let durableProductiveSliceReceipt =
             "atria.offlineSync.durableProductiveSliceReceipt.v1"
+        /// Durable receipt for a materialization-lane ceiling release.
+        /// The release path logged only to ATRIADBG (stdout), which made a
+        /// firing unprovable after the fact — see the 2026-08-19 field note.
+        static let materializationLaneCeilingReceipt =
+            "atria.offlineSync.materializationLaneCeilingReceipt.v1"
     }
 
     enum KeepaliveDefaults {
