@@ -63,6 +63,10 @@
 	<string>Atria reads Health only to confirm locally captured Atria data appears in Apple Health and, when you enable it, to use nutrition samples from your food app as recovery context.</string>
 	<key>NSHealthUpdateUsageDescription</key>
 	<string>This app writes local heart-rate sessions, workouts, and user-confirmed sleep to Apple Health when you explicitly enable export.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Atria keeps a Bluetooth connection to your strap so heart-rate and motion can continue while the app is in the background.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Atria records your route, distance, pace, and elevation only while an outdoor workout is active, including when the screen is locked.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Atria records your route, distance, pace, and elevation only while you run, walk, hike, or cycle with an active workout.</string>
 	<key>NSMotionUsageDescription</key>
