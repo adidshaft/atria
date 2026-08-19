@@ -1241,6 +1241,36 @@ sweep is idempotent and safe on every launch.
 `AtriaHandoff13Tests`: **14/14 green**. One compile error caught en route — I passed `reclaimedBytes`
 before `nextEligibleAction` at the call site.
 
+## AO. FIRST REAL BYTES RECLAIMED — 39.9 MB, device-measured
+
+Installed the sweep and measured the container before and after:
+
+| | sweepable | container |
+|---|---|---|
+| before | 39.8 MB / 63 files | 5.506 GB |
+| after | 0.0 MB / 1 file | **5.467 GB** |
+
+**Reclaimed 39.9 MB**, and `memprobe` now returns **zero** matches in the container listing — both
+orphaned logs gone.
+
+The device's own receipt confirms it auditably rather than silently:
+
+```
+recordedAt         08-19 07:20:05
+reclaimedBytes     41,795,313  (39.9 MB)
+retentionExecution RETENTION_EXECUTION_ADMITTED(bg_processing_environmental_admission)
+                   +COLD_SESSION_CONSUMERS_SHADOW_ONLY
+```
+
+That is `Receipt.reclaimedBytes` — a field that existed and had always been 0 — carrying a real figure
+for the first time, alongside the corrected retention string reporting the honest state.
+
+**Correction to my own figure.** I quoted "50.8 MB of orphans" in AM. That was the total
+orphan/transient footprint; **39.8 MB of it was in scope for this sweep.** The other ~11 MB is `tmp/`
+content that is not a generated share/export artifact (e.g. two 5.5 MB UUID-named files), which the
+sweep deliberately does not touch. So 39.9 MB reclaimed matches the designed scope exactly — the earlier
+number measured the wrong set.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
