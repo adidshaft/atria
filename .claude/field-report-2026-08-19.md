@@ -803,6 +803,31 @@ landing ~6 s AFTER foregrounding, (5) no "Nap detected" push exists and the jour
 alarm at median-wake+15. Note (5)'s nap push would be inert until motion recovers (items 6/10), so it
 should follow the R10 proof work rather than precede it.
 
+## AA. Installed everything, and the device caught a flaw in MY OWN retention fix
+
+Built clean at `73663bdb`, verified by literal (`proofDisconnectHistory.v1`, `resident_review_checkpoint`,
+`currentCycleAcrossMidnight`, `notifiedCountByStart` all present), installed and launched 05:40.
+Post-install state is healthy: HR live, frontier advancing (23:19 -> 23:31), `stallReconnects` still 331,
+`requalifyAttemptAt` still 04:04:48 (correct — the 12 h interval puts the next R10 attempt ~16:05), and
+`proofDisconnectHistory` at 0 entries (correct — no proof disconnect since the ring shipped).
+
+**Then the device disproved half of L3.** Checking the container found **no `prune.json`** and the
+identity files unchanged at 1.26 GB / 839.7 MB after two launches carrying the fix.
+
+The mechanism: `lastPruneAtUnix` is seeded from `now()` when the sidecar is absent, but the sidecar was
+only written *by a completed prune* — and a prune needs 6 h measured from that seed. So every relaunch
+re-seeded the clock, the marker could never come into existence, and the interval stayed effectively
+**uptime-based, exactly the bug L3 claimed to fix.** I fixed the reading and not the bootstrapping.
+
+Fixed: stamp the marker at init when it is absent, so the clock starts at first launch and survives
+every restart from then on. Test asserts a first launch creates it without waiting for a prune, and that
+a relaunch three hours later inherits the ORIGINAL stamp rather than overwriting it.
+
+`AtriaHistoricalArchiveDurableStoreTests`: **34/34 green**.
+
+Lesson worth keeping: a fix that only ever runs after the condition it fixes is not a fix. This is the
+same shape as the four recovery-state defects in this report — I reproduced it while fixing them.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7

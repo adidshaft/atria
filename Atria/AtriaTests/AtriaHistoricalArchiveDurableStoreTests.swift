@@ -198,6 +198,41 @@ final class AtriaHistoricalArchiveDurableStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: plain), Data("{\"a\":1}\n".utf8))
     }
 
+    /// The other half of the wall-clock fix, caught on device 2026-08-19.
+    ///
+    /// `lastPruneAtUnix` is seeded from `now()` when no marker exists, but the
+    /// marker was only written by a COMPLETED prune — which needs 6 h measured
+    /// from that seed. So every relaunch re-seeded the clock, the marker never
+    /// came into existence, and the interval stayed effectively uptime-based. The
+    /// field device carried the fix through two launches with no `prune.json` and
+    /// a still-1.26 GB identity index.
+    func testFirstLaunchStampsTheRetentionClockWithoutWaitingForAPrune() throws {
+        let directory = try temporaryDirectory()
+        let index = directory.appendingPathComponent("historical.index.jsonl")
+        let marker = index.deletingPathExtension().appendingPathExtension("prune.json")
+        let start: TimeInterval = 1_800_000_000
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        _ = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [],
+            now: { Date(timeIntervalSince1970: start) }
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path),
+                      "a first launch must start the retention clock immediately")
+
+        // A relaunch three hours later inherits the ORIGINAL stamp, so the 6 h
+        // interval keeps counting instead of restarting.
+        let later = start + 3 * 3_600
+        let second = try AtriaHistoricalArchiveDurableStore(
+            indexURL: index,
+            existingArchiveURLs: [],
+            now: { Date(timeIntervalSince1970: later) }
+        )
+        XCTAssertEqual(second.lastPruneAtUnixForTesting, start, accuracy: 0.001,
+                       "the bootstrap stamp must not be overwritten by a relaunch")
+    }
+
     /// The retention decision itself, isolated from any file work.
     func testIdentityLineRetentionScannerMatchesTheParser() {
         let cutoff: TimeInterval = 1_800_000_000
