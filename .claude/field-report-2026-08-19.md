@@ -2139,6 +2139,39 @@ one. But it is the first datum on the side of the question that mattered: a 20-m
 *above* healthy duration rather than cutting into it. If the next several healthy runs also land under
 20 minutes, the constant is defensible on measurement instead of on the failure side alone.
 
+## LOOP STOPPED 15:35 (user request). State at stop.
+
+Cron `c359e608` cancelled. Device state at the last read:
+
+    15:33   frontier 08-19 10:41   backlog 4.88 h   armed   attempts 23877   flushDebt 1994
+
+Session totals: ~55 commits on `codex/whoop-remaining-product-gaps`, all pushed. All 15 field-report
+items have dispositions; every remaining question is device-gated on events that fall after this stop.
+
+### Three checkpoints are now UNWATCHED
+
+1. **17:58:46 — the second retention prune.** The most valuable one outstanding. Every retention fix
+   from today converges on it: does the compaction survive to completion; if so how far does 1.28 GB
+   fall; if it is interrupted again, does the orphan get swept, does `reclaimedBytes` finally report
+   it, and does `retentionClockAfterInterruptedCompaction` pull the retry to ~30 min instead of six
+   hours. Read `prune.json`, the archive file sizes, and any `.compact.<UUID>.tmp`.
+2. **~16:05 — the second R10 proof sample.** `atria.protectedR10.proofDisconnectHistory.v1` was still
+   empty at 15:33. This is the remaining physical evidence for items 6/10.
+3. **Tonight's sleep** — first night carrying gate B (90 s HR gap), item 5's per-episode notification
+   cap, event-bound review delivery, and the background nap catcher.
+
+### Instruments left armed on the device
+
+- `materializationLaneCeilingReceipt.v1` — absent, correctly. Two parks were observed after it landed
+  (14:04 and 14:24); both released inside the same process in well under 20 minutes, so the ceiling
+  was never eligible. **The ceiling itself remains UNPROVEN** — no firing has ever been observed, and
+  the re-entry concern from 11:04 is open, not resolved.
+- Healthy-materialization duration now has two data points, both under ~16 min. That is the first
+  evidence that the 20-minute bound sits above healthy work rather than truncating it, but two
+  observations at 10-minute sampling are not a distribution.
+- `retentionClockAfterInterruptedCompaction` and the compaction-temporary sweep are installed but have
+  not been exercised since 12:32 — they need a fresh interruption.
+
 ### What 17:58:46 tests
 
 The whole retention chain end to end, in one shot: does the compaction survive to completion this
