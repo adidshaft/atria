@@ -1763,6 +1763,29 @@ catches a lane that neither completes nor fails. Fails safe on a backwards clock
 
 `AtriaBLERecoveryCadenceTests`: **427/427 green**, including the exact 106-minute field case.
 
+### BG-correction: the park SELF-RESOLVED before the fix could be installed
+
+Built and installed at 10:37. Between the 10:24 read and the pre-install baseline the park **ended on
+its own**: frontier moved 06:29 -> **06:52**, status left `deferred_terminal_materialization`. Total
+hold ~112 min (08:38 -> ~10:30).
+
+**So my stated mechanism was stronger than the evidence supported.** I wrote that a materialization
+which neither completes nor fails "holds the lane until the process dies". It did not — it released
+after ~112 minutes without a relaunch. What I actually proved is narrower and still real:
+
+- there is **no timeout** enforcing an end (verified in code: 11 clear sites, all on completion/failure;
+  the one bounded retry arms only from the failure catch)
+- the observed hold was **112 minutes**, during which `drainedThroughUnix` — the user's "last sync" —
+  was completely frozen and the backlog grew 1.98 h -> 3.92 h
+
+The fix stands on that narrower claim: a nearly two-hour freeze of the user-visible sync clock is a real
+defect regardless of whether it would eventually have cleared, and a 20-minute ceiling bounds it without
+abandoning data. But I should not have asserted an unbounded hold, and `dd79df63`'s message says "until
+the process died" — that phrasing overstates what was observed.
+
+Post-install 10:37: frontier 06:52, backlog 3.75 h, `deferred_archive_warm` (a different, expected
+post-launch state), flushDebt 1489, HR live, stallRe 332.
+
 **Correcting my previous read.** At 09:24 I wrote that the park matching entry O's 47 minutes "looks
 like a characteristic duration rather than a hang". It has now run 56 minutes and `flushDebt` has
 stopped falling, so that reading was premature.
