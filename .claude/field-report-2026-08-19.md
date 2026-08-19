@@ -1710,6 +1710,41 @@ queued materialization work is real.
 Not doing it unasked. A relaunch is a device action, it destroys the evidence that would let anyone
 diagnose this properly, and the user may be using the phone (scene last active 08:04). Offered instead.
 
+| 10:14 | 06:29 | 3.75 h | deferred | park 96 min |
+
+## BF. Narrowed WITHOUT the relaunch — no timeout, and no failure to trigger the retry
+
+Traced the escape paths for `historicalConsumerMaterializationInFlight` instead of intervening.
+
+There IS a bounded retry: `scheduleTerminalConsumerDependencyRetry` re-arms
+`resumePendingFullDrainPublicationIfNeeded` on a 15-minute
+`terminalConsumerDependencyMismatchRetryInterval`, with a fingerprint-based suppression guard. At 96
+minutes that is ~6 windows, so the obvious question is why six retries have not cleared it.
+
+**Device answer: the retry has not been firing, because nothing has failed.**
+
+```
+terminalArchiveFailureAt.v1   08-19 01:07:33  — 547 min ago, UNCHANGED through the whole park
+terminalConsumerDependencyMismatch.v1  present (older .v1 schema)
+terminalConsumerDependencyMismatchAt.v2  ABSENT
+```
+
+`scheduleTerminalConsumerDependencyRetry` is called from the terminal-archive-failure catch. No new
+terminal failure has occurred since 01:07, so that retry never armed during this park.
+
+**So the shape is now evidenced rather than guessed:** the flag is a process-local `var` with **no
+watchdog and no timeout**; its 11 clear sites all sit on completion or failure paths; and the one
+bounded retry that could rescue it only arms on a failure that is not happening. A materialization that
+neither completes nor fails therefore holds the lane indefinitely — until the process dies.
+
+That is the **fourth** instance of this report's recovery-state defect class, and unlike the earlier
+three it is characterised from code plus device state without needing to destroy the evidence.
+
+**Still not fixing it in this pass.** The correct fix is a bounded deadline on the in-flight flag, but
+that belongs in the same careful pass as the range-loss clear (AL) — both touch sync-state ownership,
+and this session has twice punished confident changes to state machines I had only partly traced. The
+~11:58 prune may also change the input conditions materially, which is worth seeing first.
+
 **Correcting my previous read.** At 09:24 I wrote that the park matching entry O's 47 minutes "looks
 like a characteristic duration rather than a hang". It has now run 56 minutes and `flushDebt` has
 stopped falling, so that reading was premature.
