@@ -1532,6 +1532,34 @@ Also corrected in memory: the HRV gate must NOT be widened (`maxReadyRRGapSecond
 never be extrapolated from a window measured during materialization contention, and
 `rawActivation = score / 3` so zone edges sit at 1/3 and 2/3.
 
+## AZ. Monitoring pass — nothing to change, everything on track
+
+Deliberately a short iteration. All 15 items have dispositions and the remaining work is device-gated,
+so manufacturing a change here would add risk without value.
+
+```
+08:12  lastHR 0.3 min ago   frontier 08-19 06:06   backlog 2.11 h
+       stallRe 331 (unchanged since 02:11)   keepalive history_transport_owned
+       R10 pure_hr_v10/fallback_active  imu=0  requalifyAt 08-19 04:04
+       proofDisconnectHistory: 0 entries
+```
+
+Drain over the longer 07:26 -> 08:12 window: 64 min of backlog cleared in 46 min wall, net
+**1.38 min/min**, converging **~09:44** (my earlier 09:37 was computed off a 37-minute window; the
+longer baseline is the better estimate).
+
+`proofDisconnectHistory` at 0 entries is CORRECT, not a failure — the ring only fills on a proof
+disconnect, and the next R10 requalification is not due until ~16:05 (12 h after 04:04).
+
+### Open checkpoints, in order
+
+| when | what it tests |
+|---|---|
+| ~09:44 | drain fully caught up — first time since the 08-18 stall |
+| ~11:58 | first identity-retention prune (the 2.13 GB) |
+| ~16:05 | second R10 proof sample, into the new forensic ring |
+| tonight | gate B (90 s), item 5's per-episode cap, event-bound review delivery, background nap catcher — all meet a real night for the first time |
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
