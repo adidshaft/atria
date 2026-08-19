@@ -1343,6 +1343,54 @@ not manufacturing a fix for a healthy subsystem.
 Two of five were real defects, two were my own misreadings of single-slot diagnostics, and one was a
 correct fail-closed state.
 
+## AS. REGRESSION I INTRODUCED — the v4 stress scale is calibration-fragile and is currently wrong on device
+
+Verified two shipped fixes against the device. One landed exactly as intended; the other did not.
+
+**AH (whiteboard coach) — VERIFIED GOOD.** The device baseline holds 19 fresh resting samples and 1
+fresh HRV sample against `trustedMinimumSamples = 14`:
+
+```
+restingTrusted = TRUE  (19/14)
+hrvTrusted     = FALSE (1/14)
+```
+
+That is precisely the state the resting-only lane was built for, so this user now gets real guidance
+instead of "Calibrating your baseline · 1 of 14 nights" forever. Device-confirmed, not hypothetical.
+
+**AS (stress v4) — REGRESSION.** I calibrated the v4 scale against a single snapshot of
+`stress.awakeReference.v1`. That reference is **volatile**, and it drifted during this very session:
+
+| | center | spread | zoneHalfWidth | calm edge | high edge |
+|---|---|---|---|---|---|
+| at calibration 01:57 | 85.0 | 2.97 | 6.0 | 79 bpm | 91 bpm |
+| now 07:18 | **80.0** | **7.41** | **12.0 (capped)** | **68 bpm** | 92 bpm |
+
+Re-simulated over the same 132,880-sample histogram:
+
+| | calm | moderate | high |
+|---|---|---|---|
+| what I simulated and shipped | 65.6 % | 28.4 % | 6.0 % |
+| **what it now produces** | **14.5 %** | **80.7 %** | 4.8 % |
+
+A calm edge of 68 bpm sits at roughly this wearer's **p8**, so ~92 % of waking life reads
+Moderate-or-above. That is the **old 95 %-Medium failure mode** the project already fixed once, and the
+exact opposite of the "keep Calm-dominant" behaviour the user chose.
+
+**Root cause of my error:** I anchored the midpoint on the learned center, having verified it only at a
+moment when that center happened to sit at the wearer's p90. When it drifts down to ~p73 the midpoint
+lands mid-distribution, and a mid-distribution midpoint puts half the mass above it **by construction**
+— the precise failure I identified and rejected during simulation, then reintroduced through a volatile
+anchor. `spread * 2` hitting the 12 cap widened it further.
+
+**The app already holds the stable input I should have used:** `stress.awakeBaseline.v1` carries per-day
+quiet-awake histograms over 12 days (132,880 samples). Zone edges derived from that distribution's own
+percentiles — e.g. calm edge near p70, high edge near p96 — would be stable, self-calibrating, and
+express "calm-dominant with reachable High" directly.
+
+Not shipping another guess at hour six on a metric the user is watching. Surfaced to the user with the
+options rather than silently re-tuning.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
