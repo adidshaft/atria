@@ -1852,6 +1852,66 @@ worth stating plainly rather than discovering later.
 
 The WAL going to Zero KB at 11:59 says the sqlite side checkpointed as part of the same pass.
 
+## The prune's real outcome: it LEAKED 565.6 MB, and the storage number is under-reported
+
+Follow-up at 12:13–12:15 turned the checkpoint from a success into two defects — both mine, both
+shipped this morning.
+
+### 1. The compaction was killed mid-stream and permanently orphaned its temporary
+
+    .historical-archive.identity.jsonl.compact.0CC8F9A4-….tmp   565.6 MB   mtime 12:00  (UNCHANGED at 12:13)
+    historical-archive.identity.jsonl                           1.28 GB    mtime 12:13  (still being appended)
+    reclaimedBytes                                              0
+
+`processInstanceID` moved 54B93EA6 → 181EA23D: the process was replaced around 12:00, mid-write.
+
+`compactIdentityIndexOutsideHorizonLocked` removes its temporary on exactly three paths — a thrown
+error, a `dropped == 0` no-op, and the successful `replaceItemAt`. **All three require the compaction
+to conclude.** A process killed mid-stream runs none of them, and the filename carries a fresh
+`UUID()`, so the next attempt does not reuse the file — it adds another one.
+
+Nothing else collects it. `sweepOrphanedArtifacts` walks only the Documents debug logs and
+`FileManager.temporaryDirectory`, and passes `.skipsHiddenFiles` — so a dot-prefixed file in the
+archive directory is invisible to it twice over.
+
+So the retention feature built to *reduce* the user's 5 GB can *add* up to ~1 GB per interrupted run,
+every 6 hours. That is item 12 made worse by the fix for item 12. It is also, once again, the shape
+this whole report keeps finding: **cleanup bound to a completion that did not happen.**
+
+**Fixed** (`AtriaHistoricalArchiveDurableStore`): `sweepStaleIdentityCompactionTemporaries` runs at
+store init, matching `.<index>.compact.<UUID>.tmp` with a 30-minute age gate — our own compaction
+cannot be running at init, so the gate only protects a hypothetical second container client. Future
+mtime is treated as clock skew, absent mtime as stale, and non-matching names are never touched.
+
+### 2. The inventory the user sees under-reports by 1.34 GB
+
+Summing the container's own file listing against the inventory recorded at 12:10:53:
+
+| source | bytes |
+|---|---|
+| container file listing (3641 files) | **6.32 GB** |
+| `debug.managedStorageInventory.v1` total | **4.98 GB** |
+| gap | **1.34 GB** |
+
+The gap decomposes almost exactly: the 565.6 MB orphan above, plus the **839.7 MB
+`historical-archive.identity.lookup-v1.sqlite`, which appears in no category path at all**
+(4.98 + 0.57 + 0.84 = 6.38 GB against 6.32 GB measured, inside the rounding of devicectl's
+one-decimal sizes). The `archive_identity_and_manifest` category lists two files — the manifest and
+the identity index — and the lookup database was simply never added.
+
+Item 12 opens with "I'm not really confident on the data size". The app's own answer to that question
+was wrong by 27%. **Fixed**: the lookup database is now in `categoryPaths`; `allocatedBytes` already
+folds in its `-wal`/`-shm` sidecars.
+
+36/36 `AtriaHistoricalArchiveDurableStoreTests`, 14/14 `AtriaHandoff13Tests`.
+
+### What the prune did NOT tell us
+
+No reclaim figure exists yet — `reclaimedBytes` is 0 and the index is unchanged at 1.28 GB, because
+the compaction never finished. The question "does a smaller archive stop terminal materialization
+stealing the drain lane" is therefore still unanswered, and stays on the checkpoint list for the
+14:00 prune.
+
 **Install deferred deliberately.** The receipt from `3d4a6f3a` is committed but NOT on the device, so
 the next park is still unmeasurable. Installing now would relaunch the process ~30 min before the
 first retention prune and disturb the checkpoint this loop has been waiting on since 05:58. The

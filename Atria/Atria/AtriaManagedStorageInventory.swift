@@ -45,7 +45,14 @@ enum AtriaManagedStorageInventory {
         ("raw_history", ["atria-historical/segments"]),
         ("archive_identity_and_manifest",
          ["atria-historical/historical-archive.jsonl",
-          "atria-historical/historical-archive.identity.jsonl"]),
+          "atria-historical/historical-archive.identity.jsonl",
+          // The identity lookup database was missing from every category, so
+          // its 839.7 MB was absent from the total the user is shown.
+          // Measured on device 2026-08-19: summing the container's own file
+          // listing gave 6.32 GB against a reported 4.98 GB, and this file plus
+          // an orphaned compaction temporary accounted for the whole gap.
+          // `allocatedBytes` folds in the -wal/-shm sidecars.
+          "atria-historical/historical-archive.identity.lookup-v1.sqlite"]),
         ("retired_replay_evidence", ["atria-historical/retired-replay-v1"]),
         ("aggregates_and_sidecars",
          ["atria-historical/aggregates-v2",
