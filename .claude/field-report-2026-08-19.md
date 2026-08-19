@@ -1478,6 +1478,40 @@ effect is measurable on tonight's sleep. Against a 4 % dropout rate the 90 s win
 times more of a segment than 15 s did, so it should raise that 19 % materially — but that is a
 prediction, and the next iteration should check it rather than assume it.
 
+## AW. Drain is converging — 2.44x realtime, full catch-up due ~09:37
+
+Backlog trace across the session:
+
+```
+02:19  4.75 h      (just after the item-1/2/3 fix relaunch)
+02:56  4.40 h
+06:04  6.19 h      <- grew while materialization held the lane (entry O)
+07:26  3.17 h
+07:57  2.40 h
+08:03  2.28 h
+```
+
+Recent window 07:26 -> 08:03: **53 minutes of backlog cleared in 37 minutes of wall clock**, i.e. net
+closure **1.44 min/min**, frontier advancing **~2.44x realtime**. At that rate the remaining 2.28 h
+converges around **09:37** — the first time this device will be fully caught up since the 08-18 stall.
+
+Note this is materially faster than the **1.53x** I measured at 02:19-02:56 and corrected the ETA to
+back then. The difference is the materialization park (entry O) that was holding the lane in the early
+hours; with that cleared the drain runs closer to the 2.37x first burst. My 05:47 and 10:54 ETAs were
+both wrong for the same reason — I extrapolated a rate measured during contention.
+
+## AX. Item 5 fix installed but NOT yet exercised — recording that honestly
+
+`atria.notification.sleepReview.notifiedCountByStart.v1` is **absent** on device. That is expected, not
+a failure: the key is only written when a sleep-review notification is actually delivered, and none has
+fired since the install (no reviewable night today yet). The pre-existing
+`notifiedEndByStart.v1` holds 8 entries, correctly bounded at `maximumTrackedStarts = 8`, and the
+`scheduleCount` keys still number 60 with the newest dating to 08-18 — no new deliveries.
+
+So the per-episode cap is shipped and installed but **unverified in the field**. Tonight's sleep is its
+first real test, alongside gate B and the event-bound review delivery. Recording this rather than
+implying the fix is proven.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
