@@ -862,6 +862,50 @@ This does not "build an insight engine" — it stops starving the one that alrea
 half of item 13 (measured predictors, graduated rather than binary gates) remains open and is a genuine
 feature, not a bug.
 
+## AC. Installed and VERIFIED the retention clock starts; HRV investigated but deliberately NOT changed
+
+Installed `3fcdbcf5` at 05:58 (fresh derived-data path — the earlier build failed only because two of my
+own concurrent builds shared one `build.db`). **Device-verified:**
+`Documents/atria-historical/historical-archive.identity.prune.json` now EXISTS, 38 bytes, stamped 05:58.
+The AA bootstrap fix works: the retention clock is running for the first time. `identity.jsonl` is still
+1.27 GB, as expected — the first prune comes due ~11:58, six hours after the marker.
+
+### HRV gap — measured, partially explained, and left alone on purpose
+
+Follow-up to the `hrv` 1/43 figure noticed in AB. Device facts:
+
+| | |
+|---|---|
+| confirmed sleeps with `hrvWindowCount = 0` | **37 of 38** |
+| confirmed sleeps with `respiratoryRate` | 24 of 38 |
+| the one success | 08-18, `hrvWindowCount = 12`, hrv 61 |
+
+Both metrics come from the same RR stream, so this is an internal contradiction worth chasing. The gate
+chain for HRV: `hasQualifiedRRProvenance` (an `allSatisfy` over the WHOLE session — one non-2A37 /
+non-verified-V24 point voids it) -> `minimumQualifiedRRBeatCount` = 0.5 beats/s x 300 s = 150 ->
+segments split whenever a consecutive RR gap exceeds `HRVSnapshot.maxReadyRRGapSeconds = 3 s` -> each
+segment must span >= 300 s -> **>= 3 windows** before any value is produced.
+
+**A wrong inference of mine, corrected.** I first concluded the RR stream was too sparse, having read
+`rrPresence.rrGap = 5.98 s` from an earlier snapshot — double the 3 s continuity limit. The CURRENT
+device reads **`rrGap = 1.00 s` with 1143 `rrValues`**, comfortably inside the limit. So sparsity does
+**not** explain the failure at present RR rates, and the line I printed claiming "nearly every
+consecutive pair BREAKS the segment" was wrong.
+
+**Nothing shipped for this.** Loosening `maxReadyRRGapSeconds` would compute RMSSD across non-adjacent
+beats — fabricating HRV, a direct violation of the project's honesty rule. A gate that is clinically
+correct must not be widened to make a number appear.
+
+**Leading hypothesis for the next iteration (explicitly unproven):** the comment at the HRV producer says
+"A confirmed sleep commonly spans several connection-bounded sessions", and windows must reach 300 s
+*within one session*. This link drops on a ~1778 s ambient interval and logged 331 stall reconnects. If
+sessions are routinely shorter than five minutes of continuous RR, no window can form regardless of RR
+density — which would make HRV loss another downstream victim of the same link instability as items
+1/2/3. Test by measuring per-session RR span on a recent night BEFORE touching any threshold.
+
+This also matters for item 8: with `hrvBaseline` nil, stress scores HR-only, so the v4 recalibration is
+carrying the whole signal by itself.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
