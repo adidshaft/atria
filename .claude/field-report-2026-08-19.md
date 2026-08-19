@@ -78,7 +78,7 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 8 | Stress reads low | **FIXED** (W) | `6bb48d8b`; scoring v4 anchors on the learned awake reference; simulated 65.6/29.6/4.9 over 130k real samples |
 | 9 | Sleep-view stress vs general stress disagree (pinned 3/high) | **FIXED** | full scale was rest+14 vs a SLEEPING baseline; rebanded |
 | 10 | Sleep stages not working | **PARTLY FIXED, STILL BLOCKED** (I + gate B + U) | gate B fixed; motion retry now fires but proof still disconnects — stages stay fail-closed |
-| 11 | Notifications never fire at the right moment | **2 of 5 FIXED** (T + Z) | workout class un-silenced; background nap-catcher now runs; (1)(3)(5) open |
+| 11 | Notifications never fire at the right moment | **2 of 5 FIXED** (T + Z) | (5) journal half MEASURED (AE): nudge = learned wake − 45 min = 10:09, not a hard-coded 08:00; (1)(3)(5) open |
 | 12 | 5 GB+ data size, need raw/insight retention tiers | **PARTS 1 + 3 FIXED** (L + Y) | 2.13 GB dedupe tier (`32f4e598`); fence lifted + 30-day raw horizon; part 2 (compression) DROPPED on evidence (P) |
 | 13 | Insight→suggestion engine | **INPUT DEFECT FIXED** (AB) | rebuild no longer erases measured restingHR (63%→ should approach 100%); engine-design half still open |
 | 14 | Rings cropped in scroll-up floating overlay | **FIXED** (D) | |
@@ -943,6 +943,39 @@ One honest gap remains, NOT built: the app shows no HRV and does not say why. Th
 that fail-closed states must be visible, so "HRV needs 5 unbroken minutes of beat-to-beat data; the strap
 link dropped N times last night" would be truthful and useful. Left for the user to decide — it is a UI
 addition, not a defect fix.
+
+## AE. Item 11 (5) journal nudge — measured, and a self-correction
+
+Started on the journal-nudge half of item 11 defect (5): "Start the day with Journal — right after main
+night sleep is detected."
+
+**Correction to something I said mid-investigation.** I first reported
+`atria.dutyCycle.sleepWindowEndMin` as **None** on the device and was about to conclude the nudge falls
+back to a hard-coded `8 * 60` = 08:00. That was **my own key-casing error** — the schema key is
+`atria.dutycycle.sleepWindowEndMin`, lowercase `c` (AtriaBLESchema.swift:448). Searched correctly, the
+device has it populated:
+
+```
+atria.dutycycle.sleepWindowStartMin = 143  -> 02:23
+atria.dutycycle.sleepWindowEndMin   = 654  -> 10:54
+morningNudgeMinutes(654)            = 609  -> 10:09   (windowEnd - 45 min)
+```
+
+So the learned window IS working and the nudge is NOT a hard-coded 08:00. The mechanism is
+`windowEnd - 45 min`, where `windowEnd` is the learned typical wake.
+
+**What is actually true:** it is still a *fixed clock time* recomputed from a 14-day median, not anchored
+to the night that just ended. On 08-18 that happened to land well — confirmed sleep 04:27 + 303 min
+-> wake ~09:30, nudge at 10:09, i.e. ~39 min after the real wake. On a 06:00 wake the same schedule
+would be roughly 4 hours late. That matches the user's complaint in shape, but the magnitude is much
+smaller than the original finding implied, and on some nights it is fine.
+
+**Nothing shipped.** The honest fix is to deliver relative to the ACTUAL detected wake when one exists,
+keeping the median-derived pre-schedule as the fallback it was designed to be (it exists precisely so an
+unconfirmed night still gets a nudge — see the comment at LocalNotificationScheduler.swift:448-455).
+That is really item 11 defect (1), event-bound rather than pass-bound scheduling, and it is notification
+surgery that deserves a fresh session rather than the tail of a long one — especially having just made a
+lookup error on this very item.
 
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
