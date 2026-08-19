@@ -1740,10 +1740,28 @@ neither completes nor fails therefore holds the lane indefinitely — until the 
 That is the **fourth** instance of this report's recovery-state defect class, and unlike the earlier
 three it is characterised from code plus device state without needing to destroy the evidence.
 
-**Still not fixing it in this pass.** The correct fix is a bounded deadline on the in-flight flag, but
-that belongs in the same careful pass as the range-loss clear (AL) — both touch sync-state ownership,
-and this session has twice punished confident changes to state machines I had only partly traced. The
-~11:58 prune may also change the input conditions materially, which is worth seeing first.
+## BG. FIXED — a bounded ceiling on the materialization lane
+
+Changed my mind on deferring this, for a reason that distinguishes it from the range-loss clear (AL):
+**the failure modes are not comparable.** Clearing a range-loss ticket wrongly can drop genuine
+unrecovered data. Releasing a stuck in-flight flag cannot — the release goes through the ordinary
+`finishHistoricalConsumerMaterialization` path, every existing cleanup and re-arm runs, and the next
+pass simply attempts the work again. Early release is the SAFE direction, and the lane was actively
+costing the user item 2's symptom for 106 minutes and climbing (backlog 1.98 h -> 3.92 h).
+
+Added `historicalConsumerMaterializationLaneCeiling = 20 min` plus
+`materializationLaneHeldTooLong(startedAt:now:ceiling:)`, with the flag now stamping
+`historicalConsumerMaterializationStartedAt` via `didSet` so the claim time cannot drift from the claim.
+
+The reclaim is invoked **at the deferral site itself** — that is what made the hold self-sustaining:
+every sync attempt saw the flag, deferred to it, and never asked how long it had been set. Now the
+attempt reclaims a lane past its ceiling before deferring to it again.
+
+20 minutes is generous against observation: the longest PRODUCTIVE materialization measured this session
+was ~47 min, but that one completed and would never reach this path while progressing — the ceiling only
+catches a lane that neither completes nor fails. Fails safe on a backwards clock.
+
+`AtriaBLERecoveryCadenceTests`: **427/427 green**, including the exact 106-minute field case.
 
 **Correcting my previous read.** At 09:24 I wrote that the park matching entry O's 47 minutes "looks
 like a characteristic duration rather than a hang". It has now run 56 minutes and `flushDebt` has

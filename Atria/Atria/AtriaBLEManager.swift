@@ -1927,7 +1927,76 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var activeFullDrainEventIdentity:
         AtriaHistoricalFullDrainCoverageStore.EventIdentity?
     private var activeHistoricalRequestBinding: AtriaBLEHistoryRequestAuthorityStore.Binding?
-    private var historicalConsumerMaterializationInFlight = false
+    private var historicalConsumerMaterializationInFlight = false {
+        didSet {
+            guard historicalConsumerMaterializationInFlight != oldValue else { return }
+            historicalConsumerMaterializationStartedAt =
+                historicalConsumerMaterializationInFlight ? Date() : nil
+        }
+    }
+    /// When the current materialization claimed the lane, or nil when idle.
+    private var historicalConsumerMaterializationStartedAt: Date?
+
+    /// Ceiling on how long one terminal materialization may hold the drain lane.
+    ///
+    /// This flag had **no watchdog and no timeout**. All eleven of its clear
+    /// sites sit on a completion or failure path, and the one bounded rescue —
+    /// `scheduleTerminalConsumerDependencyRetry` — arms only from the
+    /// terminal-archive-FAILURE catch. So a materialization that neither
+    /// completes nor fails holds the lane until the process dies.
+    ///
+    /// Observed on device 2026-08-19: the lane was held from 08:38 past 10:24 —
+    /// **106 minutes and still climbing** — with `deferred_terminal_materialization`
+    /// throughout, `terminalArchiveFailureAt` unchanged at 01:07 (so no failure
+    /// ever armed the retry), and `drainedThroughUnix` frozen at 06:29 while the
+    /// backlog grew 1.98 h -> 3.92 h. `commitDurableHistoricalRawFrontier` guards
+    /// on `offlineHistoricalSyncInProgress`, so while the lane is held no sync
+    /// runs and the user's "last sync" cannot advance at all. That is field
+    /// report item 2's symptom, from a second mechanism.
+    ///
+    /// Fourth instance of this report's recovery-state defect class: state that
+    /// gates recovery, clearable only by an outcome that is not occurring.
+    ///
+    /// Releasing early is deliberately the SAFE direction. It does not abandon
+    /// data — the release goes through the ordinary
+    /// `finishHistoricalConsumerMaterialization` path, so every existing cleanup
+    /// and re-arm runs, and the next pass simply attempts the work again. The
+    /// ceiling is generous enough that no healthy materialization observed this
+    /// session (the longest productive run was ~47 min) comes near it.
+    nonisolated static let historicalConsumerMaterializationLaneCeiling: TimeInterval = 20 * 60
+
+    nonisolated static func materializationLaneHeldTooLong(
+        startedAt: Date?,
+        now: Date,
+        ceiling: TimeInterval = historicalConsumerMaterializationLaneCeiling
+    ) -> Bool {
+        guard let startedAt else { return false }
+        let held = now.timeIntervalSince(startedAt)
+        // A backwards clock must not release a lane that just claimed it.
+        guard held >= 0 else { return false }
+        return held >= ceiling
+    }
+
+    /// Releases a materialization that has held the lane past its ceiling.
+    /// Returns true when it actually released one.
+    @discardableResult
+    private func releaseMaterializationLaneIfHeldTooLong(now: Date = Date()) -> Bool {
+        guard historicalConsumerMaterializationInFlight,
+              Self.materializationLaneHeldTooLong(
+                startedAt: historicalConsumerMaterializationStartedAt,
+                now: now
+              ) else { return false }
+        let held = now.timeIntervalSince(
+            historicalConsumerMaterializationStartedAt ?? now
+        )
+        AtriaDebugLog("ATRIADBG offline_sync status=materialization_lane_ceiling_released held_s=%.0f ceiling_s=%.0f action=finish_and_allow_retry",
+                      held,
+                      Self.historicalConsumerMaterializationLaneCeiling)
+        finishHistoricalConsumerMaterialization(
+            reason: "materialization_lane_ceiling"
+        )
+        return true
+    }
     /// Set only while a failed local terminal projection releases a newer,
     /// authorized motion-bank ticket through normal BLE admission.  It is
     /// synchronous/MainActor-scoped, so it cannot suppress a later ordinary
@@ -11017,6 +11086,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           force ? 1 : 0)
             return false
         }
+        // Reclaim a lane held past its ceiling before deferring to it again.
+        // Without this the deferral below is what made the hold self-sustaining:
+        // every sync attempt saw the flag, deferred, and never questioned how
+        // long it had been set.
+        releaseMaterializationLaneIfHeldTooLong()
         guard !historicalConsumerMaterializationInFlight else {
             if let authority =
                     transientConnectedMotionBankHistoryRequestAuthority {
