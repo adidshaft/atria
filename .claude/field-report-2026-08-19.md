@@ -1576,6 +1576,43 @@ failure mode from here is inventing reasons to touch code, not missing a signal.
 
 To restore the fast cadence: `CronDelete 834f47fa`, then re-run `/loop 5min …`.
 
+## BB. Checkpoint REPORTED and contradicted my prediction — the drain re-parked, it does not converge monotonically
+
+First hourly pass. The ~09:44 convergence estimate is **retracted**.
+
+```
+07:26  3.17 h      08:12  2.11 h
+08:03  2.28 h      08:17  1.98 h   <- low-water mark
+                   08:38  2.16 h   <- GREW back
+```
+
+08:17 -> 08:38: 21 min of wall clock, backlog **grew 11 minutes**. The frontier advanced only 10 min in
+21, i.e. **0.49x realtime — losing ground.** `syncStatus = deferred_terminal_materialization`: the same
+park as entry O, which held the lane for 47 minutes in the early hours.
+
+**Corrected model.** The drain does not converge steadily toward a predictable ETA. It oscillates
+between two regimes:
+
+| regime | rate | driver |
+|---|---|---|
+| draining | ~2.4x realtime | materialization idle, lane free |
+| parked | ~0.5x realtime | `deferred_terminal_materialization` holds the lane |
+
+Every ETA I have given (05:47, 10:54, 09:37, 09:44) assumed the draining regime persists. All four were
+wrong for the same reason: **I kept extrapolating a rate from whichever regime happened to be active
+when I measured.** The honest statement is that catch-up time is not predictable from a spot rate — it
+depends on how much materialization work is queued, which is itself a function of the archive size.
+
+That is not a new defect. It is the O/AW behaviour, now seen twice, and it strengthens the case that
+item 12's retention work (archive size) is the real lever on item 1's catch-up latency — not drain
+tuning.
+
+Also noted: `stallReconnects` 331 -> **332**, the first increment since 02:11. One reconnect in 6.5
+hours against 323 in the four hours before the fix. Not a regression; recording the datapoint.
+
+**No code change.** This is a measurement that corrects a prediction, which is what the checkpoint was
+for.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
