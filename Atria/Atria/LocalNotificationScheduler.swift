@@ -649,6 +649,48 @@ enum LocalNotificationScheduler {
     /// Runtime efficacy depends on the overnight sleep candidate actually being
     /// materialized before this runs (audit §5); when no candidate exists this
     /// pass is a harmless no-op that reschedules the same pending set.
+    /// Event-bound delivery for a sleep/nap review, fired the moment the
+    /// candidate is ADMITTED rather than on the next launch/scene/BGTask pass.
+    ///
+    /// Field report 2026-08-19, item 11 defect (1): "no physiological event in
+    /// Atria schedules its own notification." `scheduleSleepLogged` already does
+    /// this for an AUTO-CONFIRMED night, but a night or nap that needs review —
+    /// the case the user actually hits — had no equivalent, so the prompt waited
+    /// for a pass that might be hours away or might require opening the app.
+    ///
+    /// This deliberately runs the SAME `makeSleepReviewDecision` gate stack, so
+    /// every existing protection still applies unchanged: the per-episode
+    /// delivery cap, the window-start end-growth debounce, the per-candidate
+    /// cooldown, local dismissal, the settings toggle, and the
+    /// redundant-while-active suppression. It adds a trigger, not a policy.
+    ///
+    /// Needs no `AtriaBLEManager`: the sleep path takes only `store`. The
+    /// live-capture protection is workout-only.
+    static func scheduleAdmittedSleepReview(store: SessionStore) async {
+        guard AtriaNotificationSettings.load().allows(kind: "sleep_review") else { return }
+        let decision = await makeSleepReviewDecision(store: store)
+        guard decision.shouldSchedule else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=sleep_review reason=%@ trigger=admission",
+                          decision.reason)
+            return
+        }
+        guard !reviewBannerIsRedundantWhileActive(
+            kind: decision.kind,
+            applicationIsActive: UIApplication.shared.applicationState == .active
+        ) else {
+            AtriaDebugLog("ATRIADBG notification_skip kind=sleep_review reason=redundant_while_app_active trigger=admission")
+            return
+        }
+        do {
+            try await add(decision: decision, center: UNUserNotificationCenter.current())
+            AtriaDebugLog("ATRIADBG notification_scheduled kind=sleep_review trigger=admission reason=%@",
+                          decision.reason)
+        } catch {
+            AtriaDebugLog("ATRIADBG notification_error kind=sleep_review trigger=admission error=%@",
+                          String(describing: error))
+        }
+    }
+
     static func scheduleBackgroundReviewPass(store: SessionStore, ble: AtriaBLEManager) async {
         await schedule(store: store,
                        ble: ble,

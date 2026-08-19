@@ -36992,6 +36992,17 @@ final class SessionStore: ObservableObject {
                     : "not_qualified(pending_store_validity)"
                 SessionStore.recordSleepReviewAdmissionReceipt(receipt)
                 guard persisted else { return }
+                // Event-bound delivery (field report item 11 defect 1). Admission
+                // is the physiological moment the app knows there is a night or
+                // nap to review; before this the prompt waited for the next
+                // launch / scene-active / BGTask pass. Reachable while
+                // backgrounded only because the resident checkpoint can now run
+                // unattended (defect 2). Runs the same gate stack, so every
+                // existing cap, debounce and cooldown still applies.
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await LocalNotificationScheduler.scheduleAdmittedSleepReview(store: self)
+                }
                 AtriaDebugLog(
                     "ATRIADBG sleep_review_admission status=saved_review source=%@ start=%.0f end=%.0f",
                     reason,
