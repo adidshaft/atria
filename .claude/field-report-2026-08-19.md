@@ -1789,6 +1789,19 @@ and must rise. The new receipt is what would make that visible instead of silent
 
 428/428 green in `AtriaBLERecoveryCadenceTests`.
 
+| 11:24 | 07:00 | 4.39 h | armed | lane free, attempts climbing 23689 -> 23705, but only 2 min frontier in 10 |
+
+Worth noting against the "lane free means fast drain" assumption: the lane IS free, sync attempts are
+climbing normally, and the frontier still advanced only 2 minutes in 10 (0.20x). So the 2.4x figure
+in the loop brief is not what a free lane guarantees — it was one favourable window. `durableRowsDelta`
+is 0 on the current slice, so this process has not yet committed productive rows. Not diagnosing it
+from one sample; recording it so the next free-lane window has something to compare against.
+
+**Install deferred deliberately.** The receipt from `3d4a6f3a` is committed but NOT on the device, so
+the next park is still unmeasurable. Installing now would relaunch the process ~30 min before the
+first retention prune and disturb the checkpoint this loop has been waiting on since 05:58. The
+receipt only pays off on a *future* park; the prune happens once. Install goes after the prune reports.
+
 ### First field test of the materialization lane ceiling
 
 The park re-entered at or before 10:44, which is the first one to begin under the installed
