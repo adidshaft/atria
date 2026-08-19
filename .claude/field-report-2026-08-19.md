@@ -1512,6 +1512,26 @@ So the per-episode cap is shipped and installed but **unverified in the field**.
 first real test, alongside gate B and the event-bound review delivery. Recording this rather than
 implying the fix is proven.
 
+## AY. Memory consolidated to the CORRECTED state
+
+The durable memory files were written around commit 14 and several headline conclusions have since been
+reversed. Rewrote them so a future session inherits the corrections rather than the first drafts:
+
+- `atria-field-report-2026-08-19` now lists **seven** plausible-but-wrong fixes, not three — and names
+  the two that were **my own shipped regressions** (the retention marker that could only run after the
+  condition it fixed; the stress v4 anchor that drifted to 80.7 % moderate). It also carries the
+  single-most-useful model to inherit: items 8, 10 and the HRV gap share ONE upstream cause (BLE
+  dropouts fragmenting an otherwise dense RR stream), so the link-stability fix is the lever for all
+  three.
+- `atria-recovery-state-defect-class` goes from four instances to **six**, adding the foreground-only
+  nap catcher and the range-loss clear that needs a window which no longer exists — and records that I
+  reproduced the bug while fixing it.
+- Both index lines updated; the old "14 commits / FOUR wrong fixes / 4 instances" framing is gone.
+
+Also corrected in memory: the HRV gate must NOT be widened (`maxReadyRRGapSeconds`), the drain rate must
+never be extrapolated from a window measured during materialization contention, and
+`rawActivation = score / 3` so zone edges sit at 1/3 and 2/3.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
