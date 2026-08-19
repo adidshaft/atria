@@ -1613,6 +1613,40 @@ hours against 323 in the four hours before the fix. Not a regression; recording 
 **No code change.** This is a measurement that corrects a prediction, which is what the checkpoint was
 for.
 
+## BC. Frontier frozen while work IS happening — item 2's symptom in a third form
+
+Pushed everything through `65df64c8`; loop re-paced to 10 minutes (`c359e608`) at the user's request.
+
+`08:57  frontier 08-19 06:29 — UNCHANGED since 08:38, backlog 2.16 -> 2.47 h`
+
+Ran the same is-it-wedged test as entry O. Container diff 07:20 -> 08:58 (98 min):
+
+| directory | 07:20 | 08:58 | delta |
+|---|---|---|---|
+| segments (raw) | 707 | 715 | **+8** |
+| aggregates-v2 | 360 | 364 | +4 |
+| retention-manifests-v2 | 360 | 364 | +4 |
+| consumer-receipts-v1 | 801 | 833 | **+32** |
+
+**So nothing is wedged.** Raw is still being drained to disk (+8 segments), aggregates are still being
+built (+4, roughly one per two new segments), and receipts are still being written (+32). The rate is
+far below entry O's +126 aggregates/107 min, but that window was burning a post-relaunch backlog; +4
+against +8 new segments is steady-state, not a crawl.
+
+**What is NOT advancing is `drainedThroughUnix` — the value the UI shows as "last sync".** Raw arrives,
+aggregates build, receipts land, and the user-visible frontier sits still at 06:29 while wall clock runs
+to 08:57.
+
+That makes **three distinct mechanisms** now identified behind item 2's single symptom:
+1. the silent-stream central-rebuild latch (fixed, `47538c32`)
+2. terminal-materialization deferral parking the drain lane (entry O)
+3. **this** — the frontier not advancing even while the materialization it defers to is productive
+
+**No code change.** The frontier/publication gate is the least-understood part of this subsystem, this
+session has twice punished confident changes to things I had not fully traced, and I do not yet know
+whether a stalled frontier here is a defect or an honest "publication checkpoint not yet reached". The
+next iteration should trace what actually advances `drainedThroughUnix` before anything is touched.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
