@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import UserNotifications
 
 @MainActor
@@ -1170,9 +1171,33 @@ enum LocalNotificationScheduler {
         let preferences = AtriaNotificationSettings.load()
         var scheduled = 0
         let defaults = UserDefaults.standard
+        let applicationIsActive = UIApplication.shared.applicationState == .active
         for decision in decisions where decision.shouldSchedule {
             guard preferences.allows(kind: decision.kind) else {
                 AtriaDebugLog("ATRIADBG notification_skip kind=%@ reason=user_disabled", decision.kind)
+                continue
+            }
+            if Self.reviewBannerIsRedundantWhileActive(kind: decision.kind,
+                                                       applicationIsActive: applicationIsActive) {
+                // Field report 2026-08-19, item 11 defect (3). These decisions are
+                // produced only by a launch / scene-active / BGTask PASS and carry
+                // `delay: 6`, so a foreground pass lands the banner about six
+                // seconds AFTER the user opens Atria — the one moment it is
+                // useless, and exactly "the push notification lies there, but
+                // never shows up at right time".
+                //
+                // The in-app review card is the correct surface while the app is
+                // open, and it is already showing the same candidate. Deliberately
+                // NOT clearing any dedup receipt here (the lesson from defect 4):
+                // suppression means "not now", not "the user has never seen this".
+                //
+                // Safe to suppress only because defect (2) is fixed: the resident
+                // checkpoint can now discover a new nap/night while backgrounded,
+                // so a BGTask pass can still deliver this. Before that fix this
+                // would have removed a badly-timed signal and replaced it with
+                // nothing.
+                AtriaDebugLog("ATRIADBG notification_skip kind=%@ reason=redundant_while_app_active",
+                              decision.kind)
                 continue
             }
             if decision.kind == "battery",
@@ -2092,6 +2117,19 @@ enum LocalNotificationScheduler {
         defaults.set(count + 1, forKey: countKey)
         defaults.set(now, forKey: lastKey)
         return true
+    }
+
+    /// Review prompts duplicate a card the user is already looking at.
+    ///
+    /// Scoped to the REVIEW kinds only. Everything else — battery, connection
+    /// diagnosis, catch-up completion, the morning summary — may still fire while
+    /// the app is open, because those report state the user cannot otherwise see.
+    nonisolated static func reviewBannerIsRedundantWhileActive(
+        kind: String,
+        applicationIsActive: Bool
+    ) -> Bool {
+        guard applicationIsActive else { return false }
+        return kind == "sleep_review" || kind == "workout_review"
     }
 
     private static func add(decision: NotificationDecision,
