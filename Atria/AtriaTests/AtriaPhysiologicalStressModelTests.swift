@@ -24,36 +24,38 @@ final class AtriaPhysiologicalStressModelTests: XCTestCase {
         // Their median day sits below even the Calm/Moderate edge.
         XCTAssertLessThan(reserveScore(75), 1.0)
 
-        // With the learned reference the same wearer gets a usable scale.
-        let reference = AtriaPhysiologicalStressModel.AwakeReference(center: 85, spread: 2.97)
+        // With the wearer's own percentile edges the same wearer gets a usable
+        // scale. p70 = 80 and p96 = 92 on the field device's 132,880-sample,
+        // 12-day pooled histogram -> midpoint 86, halfWidth 6.
+        let reference = AtriaPhysiologicalStressModel.AwakeReference(calmEdge: 80, highEdge: 92)
         func referenceScore(_ bpm: Double) -> Double {
             3 * AtriaPhysiologicalStressModel.hrStressCoordinate(
                 meanHR: bpm, restingHeartRate: rest,
                 maximumHeartRate: maximum, awakeReference: reference
             )
         }
-        // Zone edges land at center +/- zoneHalfWidth, because 3*sigmoid(-ln2)=1
-        // and 3*sigmoid(+ln2)=2.
-        XCTAssertEqual(reference.zoneHalfWidth, 6.0, accuracy: 0.001,
-                       "a 45-min spread of 2.97 must be floored, not used raw")
-        XCTAssertEqual(referenceScore(85 - 6), 1.0, accuracy: 0.001)
-        XCTAssertEqual(referenceScore(85 + 6), 2.0, accuracy: 0.001)
+        // The zone boundaries land exactly on the wearer's percentiles, because
+        // 3*sigmoid(-ln2) = 1 and 3*sigmoid(+ln2) = 2.
+        XCTAssertEqual(reference.zoneMidpoint, 86.0, accuracy: 0.001)
+        XCTAssertEqual(reference.zoneHalfWidth, 6.0, accuracy: 0.001)
+        XCTAssertEqual(referenceScore(80), 1.0, accuracy: 0.001, "p70 IS the calm edge")
+        XCTAssertEqual(referenceScore(92), 2.0, accuracy: 0.001, "p96 IS the high edge")
         // A typical day is still calm-dominant...
         XCTAssertLessThan(referenceScore(75), 1.0)
         // ...and a genuine excursion can finally reach High.
         XCTAssertGreaterThanOrEqual(referenceScore(92), 2.0)
     }
 
-    /// The floor and cap keep a momentary window from making the scale either
-    /// hypersensitive or as useless as the reserve it replaces.
-    func testAwakeReferenceHalfWidthIsBounded() {
-        func halfWidth(_ spread: Double) -> Double {
-            AtriaPhysiologicalStressModel.AwakeReference(center: 85, spread: spread).zoneHalfWidth
+    /// A degenerate distribution must not collapse the scale into a step
+    /// function at a single bpm.
+    func testAwakeReferenceHalfWidthIsFloored() {
+        func halfWidth(calm: Double, high: Double) -> Double {
+            AtriaPhysiologicalStressModel.AwakeReference(calmEdge: calm, highEdge: high).zoneHalfWidth
         }
-        XCTAssertEqual(halfWidth(0), 6.0, accuracy: 0.001, "floored")
-        XCTAssertEqual(halfWidth(2.97), 6.0, accuracy: 0.001, "the field value floors")
-        XCTAssertEqual(halfWidth(4), 8.0, accuracy: 0.001, "a real spread widens it")
-        XCTAssertEqual(halfWidth(40), 12.0, accuracy: 0.001, "capped")
+        XCTAssertEqual(halfWidth(calm: 80, high: 92), 6.0, accuracy: 0.001)
+        XCTAssertEqual(halfWidth(calm: 80, high: 81), 4.0, accuracy: 0.001, "floored")
+        XCTAssertEqual(halfWidth(calm: 70, high: 100), 15.0, accuracy: 0.001,
+                       "a genuinely wide distribution is not capped — it is the wearer's own")
     }
 
     /// No reference means no change: a wearer who has not accumulated one is
@@ -61,8 +63,11 @@ final class AtriaPhysiologicalStressModelTests: XCTestCase {
     func testMissingOrInvalidReferenceFallsBackToTheReserveCoordinate() {
         let rest = 56.0, maximum = 187.0
         for reference in [nil,
-                          AtriaPhysiologicalStressModel.AwakeReference(center: 50, spread: 5),
-                          AtriaPhysiologicalStressModel.AwakeReference(center: .nan, spread: 5)] {
+                          // calm edge below resting: not a personal scale
+                          AtriaPhysiologicalStressModel.AwakeReference(calmEdge: 50, highEdge: 60),
+                          // inverted edges
+                          AtriaPhysiologicalStressModel.AwakeReference(calmEdge: 92, highEdge: 80),
+                          AtriaPhysiologicalStressModel.AwakeReference(calmEdge: .nan, highEdge: 92)] {
             XCTAssertEqual(
                 AtriaPhysiologicalStressModel.hrStressCoordinate(
                     meanHR: 80, restingHeartRate: rest,

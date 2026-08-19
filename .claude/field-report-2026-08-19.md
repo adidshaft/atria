@@ -1391,6 +1391,33 @@ express "calm-dominant with reachable High" directly.
 Not shipping another guess at hour six on a metric the user is watching. Surfaced to the user with the
 options rather than silently re-tuning.
 
+## AT. Stress scale RE-ANCHORED on the wearer's own 12-day distribution (user's choice)
+
+Replaced the volatile 45-minute `(center, spread)` anchor with percentiles of the multi-day quiet-awake
+histogram the app already stores. `AtriaAwakeBaselineArchive.zoneEdges(calmPercentile:highPercentile:)`
+pools every qualifying day (>= 30 samples) and returns the wearer's **p70** and **p96** as the
+calm/moderate and moderate/high edges. `AwakeReference` now carries those edges;
+`zoneMidpoint` and `zoneHalfWidth` fall out of them, and because `3*sigmoid(-ln2) = 1` and
+`3*sigmoid(+ln2) = 2` the zone boundaries land **exactly on those percentiles**.
+
+**Why this cannot drift the way my first attempt did:** `calmPercentile` IS the calm fraction by
+definition. "Calm-dominant with reachable High" is now expressed structurally rather than hoped for from
+where a moving center happens to sit.
+
+Verified against the device's own 132,880 samples over 12 qualifying days: **p70 = 80, p96 = 92 ->
+midpoint 86, halfWidth 6 -> 69.1 % calm, 26.0 % moderate, 4.8 % high.** Inside the band the user chose.
+
+Two of my own earlier tests failed and both were right to: they asserted the 45-minute reference forks
+the kernel, which is precisely what this stops. Migrated to assert the opposite — the volatile tuple now
+has **no** effect, while the multi-day archive does. The seeding test likewise flipped to
+`XCTAssertEqual`: `minimumQualifyingDays = 3`, so **one warmed day no longer personalises the scale**,
+which is exactly the conservative property the drift regression proved was missing.
+
+`AtriaStressMonitorTests` + `AtriaPhysiologicalStressModelTests`: **88/88 green**.
+
+Not yet installed — the device still runs the fragile version, so this needs a build+install before the
+scale is right on the phone.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7

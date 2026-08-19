@@ -626,31 +626,44 @@ final class AtriaStressMonitorTests: XCTestCase {
                        "the recalibration must ship as a new version, not edit v3 in place")
 
         let baseline = makeBaseline(restingMean: 56, restingSD: 3, hrvSampleDays: 0)
-        let awake = (center: 85.0, spread: 2.97) // the field device's learned reference
+        // Re-anchored 2026-08-19: the 45-minute (center, spread) reference is NO
+        // LONGER a scoring input. It drifted 85/2.97 -> 80/7.41 within six hours
+        // on the field device and swung the distribution to 80.7 % moderate, so
+        // the scale now reads the wearer's multi-day quiet-awake percentiles
+        // instead. This parameter must therefore have no effect at all.
+        let volatileReference = (center: 80.0, spread: 7.41)
 
-        func activation(hr: Int, awake: (center: Double, spread: Double)?) -> Double {
+        func activation(hr: Int,
+                        awake: (center: Double, spread: Double)?,
+                        archive: AtriaAwakeBaselineArchive? = nil) -> Double {
             AtriaStressMonitor.score(hrNow: hr, hrWindow: [hr, hr, hr], rrWindowMs: [],
                                      hrvFallbackRMSSD: nil, baseline: baseline,
                                      restingMaxHR: restingMaxHR, workoutActive: false,
                                      zoneIndex: 0, inSleepWindow: false, hasContact: true,
-                                     contactAgeSeconds: 300, awakeReference: awake, now: now)
+                                     contactAgeSeconds: 300, awakeReference: awake,
+                                     awakeBaselineArchive: archive, now: now)
                 .rawActivation
         }
-        // A wearer with no learned reference is scored exactly as before.
-        XCTAssertEqual(activation(hr: 85, awake: nil),
+
+        XCTAssertEqual(activation(hr: 85, awake: volatileReference),
                        activation(hr: 85, awake: nil),
-                       accuracy: 1e-12)
-        // With a reference, the same HR now means something specific to them.
-        XCTAssertNotEqual(activation(hr: 85, awake: awake),
-                          activation(hr: 85, awake: nil),
-                          accuracy: 1e-9)
-        // And the zone edges are theirs: center +/- halfWidth. Note
-        // `rawActivation` is `fact.score / 3`, so the Calm/Moderate and
-        // Moderate/High edges sit at 1/3 and 2/3, not 1 and 2.
-        XCTAssertLessThan(activation(hr: 78, awake: awake), 1.0 / 3,
-                          "center - halfWidth must be the Calm edge")
-        XCTAssertGreaterThanOrEqual(activation(hr: 92, awake: awake), 2.0 / 3,
-                                    "center + halfWidth must be the High edge — the whole point of item 8")
+                       accuracy: 1e-12,
+                       "the volatile 45-minute reference must not fork scoring any more")
+
+        // The wearer's OWN multi-day distribution is what personalises it.
+        var archive = AtriaAwakeBaselineArchive()
+        let base = now.addingTimeInterval(-6 * 86_400)
+        for day in 0..<4 {
+            for step in 0..<40 {
+                archive.record(bpm: 70 + (step % 25),
+                               at: base.addingTimeInterval(Double(day) * 86_400 + Double(step) * 30))
+            }
+        }
+        XCTAssertNotNil(archive.zoneEdges(), "four qualifying days must produce edges")
+        XCTAssertNotEqual(activation(hr: 95, awake: nil, archive: archive),
+                          activation(hr: 95, awake: nil),
+                          accuracy: 1e-9,
+                          "the multi-day distribution IS the personal scale")
     }
 
     func testAwakeReferenceLearnsRobustMedianOnceWarm() {
@@ -731,19 +744,21 @@ final class AtriaStressMonitorTests: XCTestCase {
         XCTAssertEqual(storeB.state.minuteFact?.scoringVersion,
                        AtriaPhysiologicalStressModel.scoringVersion)
 
-        // Store C: fresh launch on an EMPTY suite -> no seed -> it falls back to
-        // the reserve coordinate, so the same 85 bpm scores differently. This is
-        // the whole value of persisting the reference: the seeded launch scores
-        // the wearer against themselves from its very first tick.
+        // Store C: fresh launch on an EMPTY suite. Re-anchored 2026-08-19: the
+        // persisted 45-minute reference still RESTORES (the learner needs it),
+        // but it is no longer a scoring input, and one warmed day is below
+        // `minimumQualifyingDays`. So B and C must now score IDENTICALLY — the
+        // scale refuses to personalise itself off a single day, which is the
+        // conservative property the drift regression showed was missing.
         let emptyName = "atria.stress.awakeref.test.empty.\(UUID().uuidString)"
         let emptySuite = try XCTUnwrap(UserDefaults(suiteName: emptyName))
         defer { emptySuite.removePersistentDomain(forName: emptyName) }
         let storeC = AtriaStressMonitorStore(defaults: emptySuite)
         warmToFirstScoredTick(storeC)
         XCTAssertEqual(storeC.state.kind, .scored)
-        XCTAssertNotEqual(storeC.state.rawActivation, storeB.state.rawActivation,
-                          accuracy: 1e-9,
-                          "a seeded launch must score against the wearer's own reference")
+        XCTAssertEqual(storeC.state.rawActivation, storeB.state.rawActivation,
+                       accuracy: 1e-12,
+                       "a single warmed day must not personalise the scale")
     }
 
     // A persisted reference older than the seed max-age must be ignored — awake
