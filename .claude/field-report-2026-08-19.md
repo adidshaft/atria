@@ -1696,9 +1696,25 @@ own entry if something changes materially.
 | 09:04 | 06:29 | 2.58 h | deferred | frontier trace done (BD) |
 | 09:14 | 06:29 | 2.75 h | deferred | park 36 min |
 | 09:24 | 06:29 | 2.92 h | deferred | park **46 min**; flushDebt 1688 -> 767, so debt IS being worked off |
+| 09:34 | 06:29 | 3.08 h | deferred | park **56 min** — EXCEEDS the 47-min precedent; flushDebt frozen at 767 |
 
-Park duration now matches entry O's 47 minutes almost exactly — this looks like a characteristic
-duration rather than a hang. HR stays live throughout; only history catch-up stalls.
+**Correcting my previous read.** At 09:24 I wrote that the park matching entry O's 47 minutes "looks
+like a characteristic duration rather than a hang". It has now run 56 minutes and `flushDebt` has
+stopped falling, so that reading was premature.
+
+But the follow-up test is **less conclusive than I first treated it**. Container diff 08:58 -> 09:35
+(37 min) shows `aggregates-v2 +0`, `segments +0`, `hr-index +0`, `consumer-receipts +5`. That looks
+alarming next to the earlier +8/+4/+32, until you notice **file COUNTS are a coarse instrument here**:
+segments rotate at 32 MB so live writes append to the existing file without creating one, and an
+aggregate is built per SEALED chunk, so no seal in 37 minutes means no new aggregate regardless of
+health. `+0` therefore does not prove a wedge.
+
+What IS solid and did change: **`flushDebt` was actively falling (1688 -> 767) and has now frozen**,
+alongside a park exceeding its previous duration. Receipts still tick (+5), so something is alive.
+
+Honest position: this is no longer well described as a characteristic park, but I do not have evidence
+sufficient to call it wedged either. Not acting on it — the ~11:58 prune is 2 h away and is the
+intervention most likely to change this state anyway.
 
 Next checkpoint remains the ~11:58 prune. No code change.
 
