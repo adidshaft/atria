@@ -1698,6 +1698,7 @@ own entry if something changes materially.
 | 09:24 | 06:29 | 2.92 h | deferred | park **46 min**; flushDebt 1688 -> 767, so debt IS being worked off |
 | 09:34 | 06:29 | 3.08 h | deferred | park **56 min** — EXCEEDS the 47-min precedent; flushDebt frozen at 767 |
 | 09:44 | 06:29 | 3.25 h | deferred | park 66 min; flushDebt still 767; no change from 09:34 |
+| 09:54 | 06:29 | 3.42 h | deferred | park 76 min; flushDebt still 767; unchanged |
 
 **Correcting my previous read.** At 09:24 I wrote that the park matching entry O's 47 minutes "looks
 like a characteristic duration rather than a hang". It has now run 56 minutes and `flushDebt` has
