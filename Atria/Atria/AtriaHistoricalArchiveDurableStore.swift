@@ -312,6 +312,8 @@ final class AtriaHistoricalArchiveDurableStore {
     private var registeredArchivePaths = Set<String>()
     private var openBatches: [UUID: DrainBatch] = [:]
     private var lastPruneAtUnix: TimeInterval
+    /// Consecutive prunes whose compaction was cut short by a process death.
+    private var interruptedCompactionRetries: Int = 0
     private var durableSequence: UInt64 = 0
     private var receiptChainSHA256 = String(repeating: "0", count: 64)
 
@@ -470,11 +472,77 @@ final class AtriaHistoricalArchiveDurableStore {
             persistLastPruneAtUnixBestEffort()
         }
 
-        // Reclaim compaction temporaries orphaned by a process death.
-        Self.sweepStaleIdentityCompactionTemporaries(
+        // Reclaim compaction temporaries orphaned by a process death, and — if
+        // one was found — pull the retention clock forward so the compaction it
+        // belonged to is retried soon rather than in six hours.
+        self.interruptedCompactionRetries =
+            Self.loadInterruptedCompactionRetries(from: pruneStateURL)
+        let reclaimed = Self.sweepStaleIdentityCompactionTemporaries(
             in: indexURL.deletingLastPathComponent(),
             fileManager: fileManager
         )
+        if reclaimed > 0,
+           let adjusted = Self.retentionClockAfterInterruptedCompaction(
+               lastPruneAtUnix: lastPruneAtUnix,
+               retries: interruptedCompactionRetries,
+               now: now().timeIntervalSince1970
+           ) {
+            self.lastPruneAtUnix = adjusted.lastPruneAtUnix
+            self.interruptedCompactionRetries = adjusted.retries
+            persistLastPruneAtUnixBestEffort()
+            AtriaDebugLog("ATRIADBG historical_identity_prune status=compaction_interrupted retry=%ld reclaimed_bytes=%lld",
+                          adjusted.retries, reclaimed)
+        }
+    }
+
+    /// How soon a prune whose compaction was interrupted may be retried.
+    nonisolated static let interruptedCompactionRetryDelay: TimeInterval = 30 * 60
+    /// After this many consecutive interruptions, stop pulling the clock
+    /// forward and let the ordinary six-hour cadence take over.
+    nonisolated static let maximumInterruptedCompactionRetries = 3
+
+    /// Decides the retention clock after an interrupted compaction is detected.
+    ///
+    /// **The defect this repairs.** `pruneExpiredIdentitiesLocked` stamps
+    /// `lastPruneAtUnix` and persists it *before* the compaction it authorises
+    /// runs. So a prune killed mid-stream still advances the clock a full six
+    /// hours, and the index it failed to compact is not revisited until then —
+    /// while the marker records the prune as having happened.
+    ///
+    /// Observed exactly that way on device 2026-08-19: the marker was stamped
+    /// 11:58:46, the compaction was killed around 12:00 having written 565.6 MB,
+    /// and the next attempt would not have come until 17:58. On a device whose
+    /// process is replaced as often as this one, a compaction that needs several
+    /// uninterrupted minutes could be starved indefinitely while the retention
+    /// bookkeeping claimed to be running normally.
+    ///
+    /// The presence of an orphaned temporary at init is precise evidence that
+    /// the previous compaction did not conclude, so it is used as the trigger.
+    ///
+    /// The retry count is what keeps this safe: a compaction that dies every
+    /// time would otherwise rewrite hundreds of megabytes every 30 minutes
+    /// forever. After `maximumInterruptedCompactionRetries` the clock is left
+    /// alone and the ordinary cadence resumes.
+    ///
+    /// Returns nil when the clock must not be moved.
+    nonisolated static func retentionClockAfterInterruptedCompaction(
+        lastPruneAtUnix: TimeInterval,
+        retries: Int,
+        now: TimeInterval,
+        interval: TimeInterval = 6 * 60 * 60,
+        retryDelay: TimeInterval = interruptedCompactionRetryDelay,
+        maximumRetries: Int = maximumInterruptedCompactionRetries
+    ) -> (lastPruneAtUnix: TimeInterval, retries: Int)? {
+        guard retries < maximumRetries else { return nil }
+        guard now.isFinite, lastPruneAtUnix.isFinite else { return nil }
+        // Marker EARLIER == more elapsed == prune due sooner. Solving
+        // `now + retryDelay - marker == interval` gives the marker that makes
+        // the next maintenance pass fire `retryDelay` from now.
+        let candidate = now + retryDelay - interval
+        // Only ever shorten the wait. If the existing marker already fires at
+        // least as soon, leave it alone.
+        guard candidate < lastPruneAtUnix else { return nil }
+        return (candidate, retries + 1)
     }
 
     /// Age below which a compaction temporary is left alone.
@@ -1010,6 +1078,11 @@ final class AtriaHistoricalArchiveDurableStore {
             return 0
         }
 
+        // The compaction concluded, so the interruption streak is over.
+        // Reset before the replace: if the replace itself throws, the next init
+        // finds no temporary (the catch removed it) and would not have retried
+        // anyway.
+        interruptedCompactionRetries = 0
         _ = try fileManager.replaceItemAt(indexURL, withItemAt: temporaryURL)
         try Self.synchronizeDirectory(indexURL.deletingLastPathComponent())
         let newBytes = ((try? fileManager.attributesOfItem(
@@ -1049,9 +1122,23 @@ final class AtriaHistoricalArchiveDurableStore {
         return stored
     }
 
+    /// Reads the interrupted-compaction retry count. Absent in sidecars written
+    /// before this field existed, which correctly reads as zero.
+    private static func loadInterruptedCompactionRetries(from url: URL) -> Int {
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dictionary = object as? [String: Any],
+              let stored = dictionary["interruptedCompactionRetries"] as? Int,
+              stored >= 0 else { return 0 }
+        return stored
+    }
+
     private func persistLastPruneAtUnixBestEffort() {
         guard let data = try? JSONSerialization.data(
-            withJSONObject: ["lastPruneAtUnix": lastPruneAtUnix],
+            withJSONObject: [
+                "lastPruneAtUnix": lastPruneAtUnix,
+                "interruptedCompactionRetries": interruptedCompactionRetries
+            ],
             options: [.sortedKeys]
         ) else { return }
         // Retention bookkeeping must never invalidate a raw+index fsync that

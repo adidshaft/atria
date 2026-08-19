@@ -1909,8 +1909,11 @@ folds in its `-wal`/`-shm` sidecars.
 
 No reclaim figure exists yet — `reclaimedBytes` is 0 and the index is unchanged at 1.28 GB, because
 the compaction never finished. The question "does a smaller archive stop terminal materialization
-stealing the drain lane" is therefore still unanswered, and stays on the checkpoint list for the
-14:00 prune.
+stealing the drain lane" is therefore still unanswered, and stays on the checkpoint list.
+
+**Correction:** an earlier line here said this moves to "the 14:00 prune". That was wrong — the
+interval is six hours (`AtriaHistoricalArchiveDurableStore` line 836), so from the 11:58:46 stamp the
+next prune is **17:58**, not 14:00.
 
 ### Installed at 12:27 — and the sweep correctly did NOT fire
 
@@ -1978,6 +1981,41 @@ inventory pass is harmless. **Not yet installed** — it needs another orphan to
 is none on the device now.
 
 51/51 across `AtriaHandoff13Tests` + `AtriaHistoricalArchiveDurableStoreTests`.
+
+## The marker is stamped BEFORE the work it records
+
+Chasing when the next prune is due surfaced the reason today's compaction will not simply be retried.
+
+`pruneExpiredIdentitiesLocked` sets `lastPruneAtUnix` and calls
+`persistLastPruneAtUnixBestEffort()` **before** the compaction it authorises runs. So a prune killed
+mid-stream still advances the clock a full six hours, and the index it failed to compact is not
+revisited until then — while the sidecar records the prune as having happened.
+
+That is exactly today's sequence: marker stamped 11:58:46, compaction killed ~12:00 having written
+565.6 MB, next attempt not due until **17:58**. On a device whose process is replaced as often as this
+one, a compaction needing several uninterrupted minutes can be starved indefinitely while retention
+bookkeeping reports normal operation. It is the same family as everything else in this report, with
+the polarity flipped: instead of a recovery blocked by the success it needs, here the **success
+marker is written before the success**.
+
+**Fixed.** The orphaned temporary found at init is precise evidence that the previous compaction did
+not conclude, so it now also pulls the retention clock forward:
+`retentionClockAfterInterruptedCompaction` sets the marker so the next maintenance pass fires 30
+minutes out instead of six hours, bounded to **3 consecutive fast retries** — a compaction that dies
+every time must not rewrite hundreds of megabytes every half hour forever. The counter lives in the
+sidecar (absent in older files, which reads as zero) and resets when a compaction concludes.
+
+**A bug I wrote and the test caught.** My first guard was `candidate > lastPruneAtUnix`, reasoning
+that the clock must not move backwards. That is inverted: an *earlier* marker means *more* elapsed
+time, which is what makes the prune due sooner. The guard rejected every real case and the helper
+returned nil unconditionally. Corrected to `candidate < lastPruneAtUnix` — only ever shorten the
+wait, never lengthen one that is already closer.
+
+Worth stating plainly: that helper looked right, read right, and was exactly backwards. Only the
+assertion on the *interval* — `now - marker == interval - retryDelay` — failed it. A test that had
+merely checked "non-nil and counter incremented" would have passed a dead function.
+
+74/74 across the three retention suites. Not yet installed.
 
 **Install deferral, resolved.** The receipt from `3d4a6f3a` was committed but not on the device, so
 the next park was unmeasurable. Installing before the prune would have relaunched the process ~30 min
