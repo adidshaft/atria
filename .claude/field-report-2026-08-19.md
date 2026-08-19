@@ -555,8 +555,8 @@ device-proven, bounded, and pure loss with no tradeoff.
 `reviewNotificationsProtectedByLiveCapture` returned
 `status == .connected && rangeLossBackfillPending && sessionSampleCount > 0`.
 `rangeLossBackfillPending` is a **durable ticket that only new rows can acknowledge** — not a statement
-that anything is filling right now. On the field device it has been `true` since **2026-08-06, thirteen
-days**, and the strap is worn/connected/streaming almost continuously, so the guard returned true
+that anything is filling right now. On the field device it has been `true` since **2026-08-08 17:08 —
+over ten days** (corrected: I originally wrote 08-06 / thirteen days; unix 1786189119 is 08-08 17:08:39), and the strap is worn/connected/streaming almost continuously, so the guard returned true
 essentially always and **every** workout notification was dropped with
 `reason: "live_capture_protected_range_loss_backfill"` — including around the 21:42:50
 `workout_start_boundary` journal close for the Strength workout the user reported. That is item 11's
@@ -1121,6 +1121,28 @@ hand-typed tags — stays open. It needs a new predictor family, a widened `Beha
 UI surface, and it would raise the searched-candidate count, so the correction above is a prerequisite
 rather than an afterthought.
 
+## AK. Verified the item-11 fix is durable — and corrected a date I quoted repeatedly
+
+Tracked `rangeLossBackfillRequestedAt` across **all 30 device snapshots** taken this session, spanning
+five hours:
+
+```
+requestedAt = 08-08 17:08:39   — IDENTICAL in every single snapshot
+startedAt   = moves every ~15 min (the retry cadence)
+```
+
+**This verifies the item-11 defect-(4) fix by measurement rather than by reasoning.** I bounded the
+live-capture suppression by the ticket's own age on the assumption that `requestedAt` is a one-shot
+stamp. If it were re-stamped on each retry the ticket would keep looking fresh and workout notifications
+would stay suppressed forever — the fix would have been useless. It never moves, so a stale ticket stays
+stale and the suppression genuinely releases. Only `startedAt` advances.
+
+**Correction.** I have been writing that this ticket has been pending "since 2026-08-06, thirteen days",
+in two places in this ledger and in commit `4ec5096e`'s message. Unix `1786189119` is
+**2026-08-08 17:08:39**, so the correct figure is **10.6 days**. The substance is unchanged — a durable
+ticket stuck for over ten days silencing an entire notification class — but the number was wrong and is
+now fixed above.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
@@ -1165,7 +1187,8 @@ by the success it is blocking. Not acted on — flagged for the user.
 4. Items 8/9 stress, 10 stages, 5 duplicate sleep prompt, 11 notification timing, 4 midnight rings.
 
 ## Standing note
-`offlineSync.rangeLossBackfillPending = true` since **2026-08-06** (13 days).
+`offlineSync.rangeLossBackfillPending = true` since **2026-08-08 17:08** (10.6 days — see AK for the
+correction to the 08-06 figure I originally quoted).
 `scheduleStaleArmedRangeLossBackfillReconciliation` only clears statuses in
 `["armed","archived","archive_metric_ready","throttled","no_rows"]`, but the live status is
 `gap_retained_transaction_unverified` — so the reconciliation can never fire. Separate defect, worth
