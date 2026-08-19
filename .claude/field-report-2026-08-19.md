@@ -1074,6 +1074,20 @@ resting-trusted / HRV-untrusted baseline (`learn(fromResting:hrv: 0)` is the no-
 **Item 13 now: input defect fixed (AB) + the first engine unblocked (AH).** The broader ask — measured
 predictors instead of hand-typed journal tags — remains open and is a genuine feature.
 
+## AI. Full set installed 06:26 — and the retention bootstrap proved itself across a relaunch
+
+Built at `7ed43886`, verified by literal (`redundant_while_app_active`, `resting HR only`,
+`trigger=admission`, `resident_review_checkpoint` all present), installed and launched.
+
+Post-install: HR live, `stallReconnects` still **331** (no recurrence of the original stall since 02:11),
+link connected, drain frontier advanced to 08-19 02:21 with the backlog down to **4.14 h** (from 6.19 h
+at 06:04).
+
+**The AA fix verified in the way that matters:** `historical-archive.identity.prune.json` is still
+stamped **05:58** after this relaunch — it was NOT overwritten. That is exactly the bug AA repaired: the
+marker now survives restarts, so the six-hour retention clock keeps counting from first launch instead of
+resetting on every process death. First prune still due ~11:58.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
