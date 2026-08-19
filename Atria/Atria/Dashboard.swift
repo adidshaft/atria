@@ -332,9 +332,85 @@ struct AtriaWhiteboardCoachSentence {
         let yesterdayStrainDisplay: Double?
     }
 
+    /// Guidance from a mature resting-HR band while the HRV band is still
+    /// (or permanently) immature. Always names what it did NOT use.
+    nonisolated static func restingOnlyGuidance(
+        kernel: Coach.Guidance,
+        context: DayContext,
+        rhrZ: Double
+    ) -> Coach.Guidance {
+        let yesterdayTRIMP = context.yesterdayTRIMP
+            .flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        let yesterdayStrain = context.yesterdayStrainDisplay
+            .flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        let qualifier = " HRV is still calibrating, so this reads resting HR only."
+
+        if rhrZ > 1 {
+            let clause: String
+            if let yesterdayTRIMP {
+                clause = String(format: " — go easier than yesterday's %.0f TRIMP.", yesterdayTRIMP)
+            } else if let yesterdayStrain {
+                clause = String(format: " — go easier than yesterday's Strain %.1f.", yesterdayStrain)
+            } else {
+                clause = " — keep today easy."
+            }
+            return Coach.Guidance(
+                headline: "Take today lighter than yesterday",
+                detail: "Resting HR is above your typical band" + clause + qualifier,
+                color: .orange,
+                target: kernel.target,
+                state: kernel.state,
+                reason: "whiteboard_lighter_resting_only")
+        }
+
+        let headline: String
+        let clause: String
+        if let yesterdayTRIMP {
+            headline = "Room to match yesterday"
+            clause = String(format: " — room to repeat yesterday's %.0f TRIMP.", yesterdayTRIMP)
+        } else if let yesterdayStrain {
+            headline = "Room to match yesterday"
+            clause = String(format: " — room to repeat yesterday's Strain %.1f.", yesterdayStrain)
+        } else {
+            headline = "Inside your resting-HR band"
+            clause = " — no strain recorded yesterday, go by feel."
+        }
+        return Coach.Guidance(
+            headline: headline,
+            detail: "Resting HR is inside your typical band" + clause + qualifier,
+            color: .green,
+            target: kernel.target,
+            state: kernel.state,
+            reason: "whiteboard_match_resting_only")
+    }
+
     static func rewrite(kernel: Coach.Guidance,
                         context: DayContext) -> Coach.Guidance {
         guard context.baseline.hrvTrusted, context.baseline.restingTrusted else {
+            // Resting-only lane (field report 2026-08-19, item 13).
+            //
+            // This used to withhold ALL guidance until BOTH baselines matured.
+            // On a strap that cannot deliver HRV that is not "calibrating", it is
+            // permanent: the 2026-08-19 device had HRV on 1 of 43 days because RR
+            // dropouts prevent a five-minute window from ever forming, so
+            // `hrvTrusted` would never become true and the wearer would read
+            // "Calibrating your baseline · 1 of 14 nights" forever.
+            //
+            // Resting HR does not share that limit — it learns from qualified
+            // daytime low-HR windows (see the note at Insights.swift:298-300), and
+            // it was trusted on this device. So when the resting band IS mature,
+            // say what it measured and disclose what it did not, rather than
+            // saying nothing. That is this file's neighbouring doctrine verbatim:
+            // "Withholding is not more honest — it just leaves the wearer with
+            // nothing while the app silently waits."
+            //
+            // Precedent for HRV-free guidance already exists in the recovery
+            // model (`limitedEvidenceEstimateWithoutHRV`, HRV weighted exactly 0
+            // at `.unverified` confidence), so this introduces no new claim class.
+            if context.baseline.restingTrusted,
+               let rhrZ = context.baseline.restingBandZ(restingHR: context.restingHR) {
+                return restingOnlyGuidance(kernel: kernel, context: context, rhrZ: rhrZ)
+            }
             return Coach.Guidance(
                 headline: "Calibrating your baseline",
                 detail: "\(min(context.baseline.hrvSampleCount, 14)) of 14 nights of HRV and resting heart rate build your personal bands.",

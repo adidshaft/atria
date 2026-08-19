@@ -80,7 +80,7 @@ is only ~93 MB — so raw-tier retention can be cut hard without touching what t
 | 10 | Sleep stages not working | **PARTLY FIXED, STILL BLOCKED** (I + gate B + U) | gate B fixed; motion retry now fires but proof still disconnects — stages stay fail-closed |
 | 11 | Notifications never fire at the right moment | **4 of 5 FIXED** (T+Z+AF+AG) | workout un-silenced, background discovery, redundant-banner suppression, event-bound review delivery; only (5) nap push open (blocked on motion) |
 | 12 | 5 GB+ data size, need raw/insight retention tiers | **PARTS 1 + 3 FIXED** (L + Y) | 2.13 GB dedupe tier (`32f4e598`); fence lifted + 30-day raw horizon; part 2 (compression) DROPPED on evidence (P) |
-| 13 | Insight→suggestion engine | **INPUT DEFECT FIXED** (AB) | rebuild no longer erases measured restingHR (63%→ should approach 100%); engine-design half still open |
+| 13 | Insight→suggestion engine | **INPUT FIXED + FIRST ENGINE UNBLOCKED** (AB + AH) | restingHR no longer erased; whiteboard coach now guides from a mature resting band instead of waiting forever on HRV |
 | 14 | Rings cropped in scroll-up floating overlay | **FIXED** (D) | |
 | 15 | Anything else | ongoing | |
 
@@ -1038,6 +1038,41 @@ Added `LocalNotificationScheduler.scheduleAdmittedSleepReview(store:)` and calle
 — so it correctly waits on the R10 proof work rather than being built now. The journal-nudge half of (5),
 measured in AE, is materially improved by this change for the review prompt, though the nudge itself is
 still median-anchored.
+
+## AH. Item 13 engine half — the whiteboard coach was permanently, not temporarily, silent
+
+`AtriaWhiteboardCoachSentence.rewrite` (Dashboard.swift:336) required **both** `hrvTrusted` AND
+`restingTrusted` before producing any guidance; otherwise "Calibrating your baseline · N of 14 nights"
+with `target: nil`.
+
+On this device that is not calibration, it is permanent silence. Per entry AD, HRV appears on 1 of 43
+days because RR dropouts stop a five-minute window ever forming, so `hrvTrusted` **never flips** and the
+wearer reads "1 of 14 nights" forever — while a perfectly mature resting band sits unused. That is item
+13's "there must be engines that learn and suggest": the engine exists and is gated behind a baseline
+this hardware cannot produce.
+
+Two facts made a resting-only lane the right answer rather than an invention:
+1. **The file's own neighbouring doctrine** (Insights.swift:302-317): "a value is shown from the first
+   day and the qualifier discloses how far the baseline has matured, rather than withholding the reading
+   until it is confident. **Withholding is not more honest — it just leaves the wearer with nothing while
+   the app silently waits.**" The whiteboard was the site violating it.
+2. **Precedent for HRV-free guidance already ships** — the recovery model's
+   `limitedEvidenceEstimateWithoutHRV` weights HRV exactly 0 at `.unverified`. No new claim class.
+
+Added `restingOnlyGuidance(kernel:context:rhrZ:)`, taken only when the resting band is mature and HRV is
+not. It calls an elevated resting HR on its own, keeps the kernel target (a real band backs it), and
+**always** appends "HRV is still calibrating, so this reads resting HR only" — it never claims an HRV
+reading it does not have, pinned by test. With NEITHER band mature the original calibrating tier is
+untouched.
+
+Resting HR does not share HRV's limitation: it learns from qualified daytime low-HR windows
+(Insights.swift:298-300), which is why it matured on this device and HRV did not.
+
+`AtriaWhiteboardCoachSentenceTests`: **9/9 green, 0 skipped** — the fixture genuinely produces a
+resting-trusted / HRV-untrusted baseline (`learn(fromResting:hrv: 0)` is the no-HRV sentinel).
+
+**Item 13 now: input defect fixed (AB) + the first engine unblocked (AH).** The broader ask — measured
+predictors instead of hand-typed journal tags — remains open and is a genuine feature.
 
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.

@@ -26,6 +26,80 @@ final class AtriaWhiteboardCoachSentenceTests: XCTestCase {
         return AtriaBaselineTargetSnapshot(baseline)
     }
 
+    /// A baseline where resting HR matured but HRV never can — the 2026-08-19
+    /// field device had HRV on 1 of 43 days, because RR dropouts prevent a
+    /// five-minute window from forming, so `hrvTrusted` would never flip.
+    private func restingOnlyBaseline(restingHR: Int = 55) -> AtriaBaselineTargetSnapshot {
+        var baseline = PersonalBaseline()
+        let start = Date().addingTimeInterval(-15 * 86_400)
+        for day in 0..<16 {
+            // hrv: 0 is the "no HRV this night" sentinel — `learn` records
+            // rmssd only when hrv > 0, so this matures the resting band alone.
+            baseline.learn(fromResting: restingHR + day % 2,
+                           hrv: 0,
+                           at: start.addingTimeInterval(Double(day) * 86_400),
+                           overnight: true)
+        }
+        return AtriaBaselineTargetSnapshot(baseline)
+    }
+
+    /// Field report 2026-08-19, item 13. The whiteboard withheld ALL guidance
+    /// until BOTH baselines matured. On a strap that cannot deliver HRV that is
+    /// permanent silence, not calibration — the wearer reads "Calibrating your
+    /// baseline · 1 of 14 nights" forever while a usable resting band sits there.
+    func testMatureRestingBandGuidesWhileHRVIsStillCalibrating() throws {
+        let baseline = restingOnlyBaseline()
+        try XCTSkipUnless(baseline.restingTrusted && !baseline.hrvTrusted,
+                          "fixture must be resting-trusted and HRV-untrusted")
+
+        let rewritten = AtriaWhiteboardCoachSentence.rewrite(
+            kernel: kernel,
+            context: .init(hrvMS: nil,
+                           restingHR: 55,
+                           baseline: baseline,
+                           yesterdayTRIMP: 120,
+                           yesterdayStrainDisplay: 12.0))
+
+        XCTAssertNotEqual(rewritten.reason, "whiteboard_calibrating",
+                          "a mature resting band must produce guidance, not silence")
+        XCTAssertTrue(rewritten.reason.hasSuffix("_resting_only"))
+        XCTAssertTrue(rewritten.detail.contains("resting HR only"),
+                      "it must disclose that HRV did not contribute")
+        XCTAssertFalse(rewritten.detail.contains("HRV is below"),
+                       "it must never claim an HRV reading it does not have")
+        XCTAssertEqual(rewritten.target, kernel.target,
+                       "the kernel target survives when a real band backs it")
+    }
+
+    /// An elevated resting HR still earns the lighter-day call on its own.
+    func testRestingOnlyLaneStillCallsAnElevatedRestingHeartRate() throws {
+        let baseline = restingOnlyBaseline()
+        try XCTSkipUnless(baseline.restingTrusted && !baseline.hrvTrusted)
+        let rewritten = AtriaWhiteboardCoachSentence.rewrite(
+            kernel: kernel,
+            context: .init(hrvMS: nil,
+                           restingHR: 75,
+                           baseline: baseline,
+                           yesterdayTRIMP: 120,
+                           yesterdayStrainDisplay: nil))
+        XCTAssertEqual(rewritten.reason, "whiteboard_lighter_resting_only")
+        XCTAssertTrue(rewritten.detail.contains("Resting HR is above your typical band"))
+        XCTAssertTrue(rewritten.detail.contains("resting HR only"))
+    }
+
+    /// With NEITHER band mature the original calibrating tier is unchanged.
+    func testNoMatureBandStillCalibrates() {
+        let rewritten = AtriaWhiteboardCoachSentence.rewrite(
+            kernel: kernel,
+            context: .init(hrvMS: 58,
+                           restingHR: 55,
+                           baseline: AtriaBaselineTargetSnapshot(PersonalBaseline()),
+                           yesterdayTRIMP: 120,
+                           yesterdayStrainDisplay: 12.0))
+        XCTAssertEqual(rewritten.reason, "whiteboard_calibrating")
+        XCTAssertNil(rewritten.target)
+    }
+
     func testUntrustedBaselineCalibratesAndHidesTheTarget() {
         let rewritten = AtriaWhiteboardCoachSentence.rewrite(
             kernel: kernel,
