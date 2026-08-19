@@ -5,6 +5,53 @@ import XCTest
 /// positive awake bracing, the isolated ring day browser, and truthful
 /// whole-container storage accounting.
 final class AtriaHandoff13Tests: XCTestCase {
+    /// Field report 2026-08-19, item 12 / item 15 lead (e). The inventory receipt
+    /// asserted `RETENTION_EXECUTION_BLOCKED(automatic_execution_disabled+...)`,
+    /// which stopped being true when the archive-wide fence was lifted. This
+    /// file's own header says "a false storage promise is worse than an honest
+    /// blocker" — a false BLOCKER misreports state just as badly.
+    func testRetentionExecutionStateNoLongerClaimsAutomaticExecutionIsDisabled() {
+        let state = AtriaManagedStorageInventory.currentRetentionExecutionState
+        XCTAssertFalse(state.contains("automatic_execution_disabled"),
+                       "automatic maintenance is admitted from the BGProcessing lane now")
+        XCTAssertTrue(state.contains("ADMITTED"))
+        // The half that IS still true must still be named.
+        XCTAssertTrue(state.contains("COLD_SESSION_CONSUMERS_SHADOW_ONLY"))
+    }
+
+    /// 50.8 MB of orphaned artifacts were measured on the device: 17.0 MB of
+    /// memprobe logs whose writer no longer exists in the codebase, and 33.8 MB
+    /// of generated tmp/ share and export files, the oldest 35 days old.
+    func testGeneratedArtifactSweepOnlyTakesAgedGeneratedFiles() {
+        let now = Date(timeIntervalSince1970: 1_787_100_000)
+        func sweep(_ name: String, ageHours: Double) -> Bool {
+            AtriaManagedStorageInventory.shouldSweepGeneratedArtifact(
+                name: name,
+                modifiedAt: now.addingTimeInterval(-ageHours * 3_600),
+                now: now
+            )
+        }
+        // Aged generated artifacts go.
+        XCTAssertTrue(sweep("atria-share-story.png", ageHours: 25))
+        XCTAssertTrue(sweep("Atria-walking.html", ageHours: 24))
+        XCTAssertTrue(sweep("Atria-window.gpx", ageHours: 840))   // the 35-day case
+        // A share sheet may still own a fresh one.
+        XCTAssertFalse(sweep("atria-share-story.png", ageHours: 1))
+        XCTAssertFalse(sweep("atria-share-story.png", ageHours: 23.9))
+        // Never touch anything that is not a generated artifact.
+        XCTAssertFalse(sweep("sessions.json", ageHours: 900))
+        XCTAssertFalse(sweep("historical-archive.jsonl", ageHours: 900))
+        XCTAssertFalse(sweep("daily-metrics.json", ageHours: 900))
+        // A forward-dated file is not evidence of age.
+        XCTAssertFalse(sweep("atria-share-story.png", ageHours: -5))
+    }
+
+    /// The orphan list names only files with no remaining writer.
+    func testOrphanedDebugLogsAreTheMemprobePair() {
+        XCTAssertEqual(Set(AtriaManagedStorageInventory.orphanedDebugLogNames),
+                       ["atria-memprobe.log", "atria-memprobe.1.log"])
+    }
+
     private var defaults: UserDefaults!
     private var suiteName = ""
 
@@ -329,7 +376,7 @@ final class AtriaHandoff13Tests: XCTestCase {
         AtriaManagedStorageInventory.recordReceipt(
             categories: categories,
             retentionExecution:
-                AtriaManagedStorageInventory.currentRetentionExecutionBlocked,
+                AtriaManagedStorageInventory.currentRetentionExecutionState,
             nextEligibleAction: "test",
             defaults: defaults
         )
@@ -339,9 +386,20 @@ final class AtriaHandoff13Tests: XCTestCase {
         let receipt = try JSONDecoder().decode(
             AtriaManagedStorageInventory.Receipt.self, from: data
         )
-        XCTAssertTrue(receipt.retentionExecution.hasPrefix(
-            "RETENTION_EXECUTION_BLOCKED("
-        ), "no nominal cap may masquerade as enforced")
+        // The intent here — "no nominal cap may masquerade as enforced" — is
+        // unchanged; the literal it pinned is not. `RETENTION_EXECUTION_BLOCKED(`
+        // stopped being true when the archive-wide fence was lifted (df11d6c5),
+        // so the caps are still nominal but for a DIFFERENT reason: automatic
+        // maintenance is now admitted, while every cold-session consumer remains
+        // shadow-only. Assert the honest property rather than the stale string.
+        XCTAssertTrue(
+            receipt.retentionExecution.contains("COLD_SESSION_CONSUMERS_SHADOW_ONLY"),
+            "no nominal cap may masquerade as enforced — the shadow-only caveat must stay disclosed"
+        )
+        XCTAssertFalse(
+            receipt.retentionExecution.contains("automatic_execution_disabled"),
+            "the receipt must not assert a blocker that no longer exists"
+        )
         XCTAssertEqual(receipt.totalBytes,
                        categories.reduce(0) { $0 + $1.bytes })
     }

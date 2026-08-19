@@ -51737,9 +51737,9 @@ final class SessionStore: ObservableObject {
                 categories: categories,
                 retentionExecution:
                     AtriaManagedStorageInventory
-                        .currentRetentionExecutionBlocked,
+                        .currentRetentionExecutionState,
                 nextEligibleAction:
-                    "enable cold-session consumer parity, then archive-wide maintenance lease"
+                    "enable cold-session consumer parity; archive-wide maintenance is now admitted"
             )
         }
         // Insights compute AFTER the launch render (off the critical path). It's

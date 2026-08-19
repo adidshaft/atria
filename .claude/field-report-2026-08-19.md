@@ -1190,6 +1190,32 @@ right fix is clear: a completed sync that finds NO pending ledger windows and NO
 recoverable target, and should clear under its own distinct auditable status rather than requiring
 `resolvedWindows > 0`. That deserves a fresh session and its own verification, not the tail of this one.
 
+## AM. Item 15 lead (e) + an honesty regression I introduced myself
+
+**50.8 MB of orphaned artifacts measured on device**, none of which has a reader:
+
+| MB | files | what |
+|---|---|---|
+| 22.8 | 61 | `tmp/` share PNG + exported HTML/GPX, oldest **7/15 — 35 days old** |
+| 17.0 | 2 | `atria-memprobe*.log` — **the writer no longer exists anywhere in the codebase**, only a stale comment at HistoricalArchive.swift:6483 survives |
+| 11.0 | 9 | other `tmp/` |
+
+`tmp/` is nominally purgeable by iOS; it demonstrably was not being purged here. Added
+`shouldSweepGeneratedArtifact(name:modifiedAt:now:minimumAge:)` — generated extensions only
+(`.png`/`.html`/`.gpx`), age-gated at 24 h so an in-flight share sheet cannot own the file, and refusing
+forward-dated files since a clock correction is not evidence of age. `orphanedDebugLogNames` names only
+the memprobe pair, which has no writer at all.
+
+**And an honesty regression I created.** `AtriaManagedStorageInventory.currentRetentionExecutionBlocked`
+still asserted `RETENTION_EXECUTION_BLOCKED(automatic_execution_disabled+cold_session_consumers_shadow_only)`.
+The first half stopped being true the moment I lifted the archive-wide fence in `df11d6c5` — automatic
+maintenance now runs from the BGProcessing lane under `shouldAdmitAutomaticArchiveCompaction`. This
+file's own header says *"a false storage promise is worse than an honest blocker"*, and that cuts both
+ways: a false BLOCKER misreports state just as badly. Renamed to `currentRetentionExecutionState` and
+corrected to `RETENTION_EXECUTION_ADMITTED(bg_processing_environmental_admission)+COLD_SESSION_CONSUMERS_SHADOW_ONLY`
+— the half that is still true is still named. Both call sites migrated; the old symbol is gone, so it
+cannot silently drift again.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
