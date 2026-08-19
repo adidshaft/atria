@@ -1310,6 +1310,39 @@ triage, it will need the same treatment.
 07:26. Each relaunch is an independent test of the AA bootstrap fix, and the marker has not been
 re-seeded once. The six-hour interval is genuinely wall-clock now; prune due ~11:58.
 
+## AR. Item 15 lead (c) CLOSED as not-a-defect — the park is NOT engaged
+
+Checked whether the sequence-gap terminal park had exhausted its budget and wedged. It has not:
+
+```
+atria.offlineSync.sequenceGapParkedAt.v1             ABSENT
+atria.offlineSync.sequenceGapParkedFrontierUnix.v1   ABSENT
+```
+
+Both park keys are absent, so the ticket was never parked. `historySequenceGapAttemptBudget = 6` per
+exact gap fingerprint was never exhausted.
+
+The failure that raised the lead — `history_sequence_gap_replay_mismatch_expected_44057_received_57618` —
+is stamped **2026-08-18 02:08:23, 1.22 days ago**, and it is a single historical event rather than an
+ongoing condition. The drain has advanced continuously all session since: frontier 21:34 -> 04:16 with
+the backlog falling 4.75 h -> 3.17 h. A parked ticket would not do that.
+
+**No change shipped.** Same discipline as lead (b): the honest output is closing a lead with evidence,
+not manufacturing a fix for a healthy subsystem.
+
+### Item 15 sweep — all five leads now resolved
+
+| lead | outcome |
+|---|---|
+| (a) range-loss ticket stuck 10.6 d | **root-caused** (AL) — needs a window that no longer exists; fix shape recorded, deliberately not shipped (data-integrity risk) |
+| (b) `publicationCheckpointMissing` | **closed, not a defect** (AP) — recurring transient race, already self-heals; my "stuck since 08-14" reading was wrong |
+| (c) sequence-gap terminal park | **closed, not a defect** (AR) — park never engaged, budget never exhausted |
+| (d) `hrv.lastReadyAnalysisAt` 8 d stale | **resolved** (AD) — RR dropouts prevent 5-min windows; gate is correct, link was the cause |
+| (e) 17 MB memprobe + tmp leftovers | **FIXED and measured** (AN/AO) — 39.9 MB reclaimed on device |
+
+Two of five were real defects, two were my own misreadings of single-slot diagnostics, and one was a
+correct fail-closed state.
+
 ## Done this loop
 - `32f4e598` **L**: identity retention now actually reclaims (items 12 part 1). 39/39 green.
 - `3cc520a9` **I**: pure-HR fallback passive requalification (items 6/10 root) + item 9 reband + item 7
