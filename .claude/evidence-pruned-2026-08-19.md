@@ -135,3 +135,147 @@ resolve. This manifest is the record of what the payloads were.
 | 5.7 MB | `evidence/2026-07-29-autonomous-day-model/raw-v2/raw-20260728-250013a1-50ea-4d88-8468-d75c0404e38b.jsonl` |
 | 5.6 MB | `evidence/2026-07-29-autonomous-day-model/raw-v2/raw-20260728-2fac1ada-802c-4977-9a00-bb424206baa2.jsonl` |
 | 5.3 MB | `evidence/2026-07-29-autonomous-day-model/raw-v2/raw-20260728-3c524535-7258-4716-aa19-c2cbcdeb6a0c.jsonl` |
+
+## Second pass — 2026-08-19: uncited evidence directories removed
+
+Every remaining `evidence/` directory was cross-checked against the 63 paths cited in
+`docs/WHOOP4_PROTOCOL_FINDINGS.md`. The 62 cited directories that exist on disk were KEPT in
+full (309 MB). The 108 uncited directories below were removed (345 MB); all were captured
+2026-07-26…07-31 and none is referenced by any tracked document.
+
+- `evidence/2026-07-26-07621cc-gate2-physical`
+- `evidence/2026-07-26-0e70a3f-gate2-exact-range-rerun`
+- `evidence/2026-07-26-0e70a3f-gate2-full-drain-throughput`
+- `evidence/2026-07-26-5087501-gate2-exact-range`
+- `evidence/2026-07-26-50fb08c-gate2-rerun`
+- `evidence/2026-07-26-62c2f09-gate2-rerun`
+- `evidence/2026-07-26-784adb0-gate2-rerun`
+- `evidence/2026-07-26-931ce42-gate2-rerun`
+- `evidence/2026-07-26-a3052df-atria-foreground`
+- `evidence/2026-07-26-a3052df-launch-baseline`
+- `evidence/2026-07-26-a3052df-launch-followup`
+- `evidence/2026-07-26-callback-hr-install`
+- `evidence/2026-07-26-callback-hr-installed-runtime`
+- `evidence/2026-07-26-callback-hr-locked`
+- `evidence/2026-07-26-cdaecc6-gate2-rerun`
+- `evidence/2026-07-26-current-audit`
+- `evidence/2026-07-26-e361107-gate2-rerun`
+- `evidence/2026-07-26-e3bc545-foreground`
+- `evidence/2026-07-26-e3bc545-foreground-2m`
+- `evidence/2026-07-26-e3bc545-foreground-retry`
+- `evidence/2026-07-26-e3bc545-installed`
+- `evidence/2026-07-26-e3e6be8-gate2-rerun`
+- `evidence/2026-07-26-e4dfc30-installed`
+- `evidence/2026-07-26-e4dfc30-locked-range-cycle-1`
+- `evidence/2026-07-26-e4dfc30-locked-range-cycle-2`
+- `evidence/2026-07-26-e4dfc30-locked-range-cycle-3`
+- `evidence/2026-07-26-e4dfc30-locked-range-cycle-3-final`
+- `evidence/2026-07-26-e4dfc30-locked-range-cycle-3-retry`
+- `evidence/2026-07-26-e4dfc30-locked-stationary-soak`
+- `evidence/2026-07-26-e4dfc30-mirroring-foreground-2m`
+- `evidence/2026-07-26-ec35646-gate2-rerun`
+- `evidence/2026-07-26-f5dc146-gate2-resume`
+- `evidence/2026-07-26-gate-1-accepted.md` — **DELETED IN ERROR, see the correction below**
+- `evidence/2026-07-26-gate2-bluetooth-outage`
+- `evidence/2026-07-26-gate2-controlled-outage-2`
+- `evidence/2026-07-26-gate2-preflight-current-state`
+- `evidence/2026-07-26-gate2-sacrificial-fast-drain`
+- `evidence/2026-07-26-gate2-sacrificial-trim`
+- `evidence/2026-07-26-gate2-sacrificial-trim-9byte`
+- `evidence/2026-07-26-gate2-sacrificial-trim-prestate`
+- `evidence/2026-07-26-gate3-manual-workout`
+- `evidence/2026-07-26-locked-live-followup`
+- `evidence/2026-07-26-locked-live-followup-2`
+- `evidence/2026-07-26-pre-gate2-fast-drain`
+- `evidence/2026-07-26-retainer-after`
+- `evidence/2026-07-26-retainer-install`
+- `evidence/2026-07-27-all-day-bank-owner-fix`
+- `evidence/2026-07-27-gate4-v12-fresh-walk-pending-count`
+- `evidence/2026-07-27-gate4-v13-acquisition-ready`
+- `evidence/2026-07-27-live-workout-ui-physical`
+- `evidence/2026-07-27-post-ui-resume`
+- `evidence/2026-07-27-recovery-live-drift`
+- `evidence/2026-07-27-rhr-authority`
+- `evidence/2026-07-27-terminal-retention-device`
+- `evidence/2026-07-28-baseline-seed-physical`
+- `evidence/2026-07-28-final-recovery-fast-path-physical`
+- `evidence/2026-07-28-final-release-physical`
+- `evidence/2026-07-28-final-release-physical-postlaunch`
+- `evidence/2026-07-28-goal-resume-runtime`
+- `evidence/2026-07-28-graph-axis-release`
+- `evidence/2026-07-28-linked-sleep-recovery-background`
+- `evidence/2026-07-28-linked-sleep-recovery-physical`
+- `evidence/2026-07-28-metric-audit-post-recovery`
+- `evidence/2026-07-28-post-axis-release-runtime`
+- `evidence/2026-07-28-post-gym-audit`
+- `evidence/2026-07-28-post-relaunch-runtime`
+- `evidence/2026-07-28-post-relaunch-soak-2m`
+- `evidence/2026-07-28-recovery-authority-fix`
+- `evidence/2026-07-28-recovery-authority-physical`
+- `evidence/2026-07-28-sleep-boundary-physical`
+- `evidence/2026-07-28-sleep-recovery-settlement`
+- `evidence/2026-07-28-step-card-debugger-proof`
+- `evidence/2026-07-28-step-card-relaunch-pass`
+- `evidence/2026-07-28-step-card-scan-serialization-postinstall`
+- `evidence/2026-07-28-step-card-scan-serialization-postinstall-2`
+- `evidence/2026-07-28-step-receipt-after-settlement`
+- `evidence/2026-07-28-step-receipt-decoupled`
+- `evidence/2026-07-28-step-receipt-failure-full`
+- `evidence/2026-07-28-step-receipt-fixed-runtime`
+- `evidence/2026-07-28-step-receipt-hourly-checkpoint`
+- `evidence/2026-07-28-step-receipt-hourly-result`
+- `evidence/2026-07-28-step-receipt-pre-fix-final`
+- `evidence/2026-07-28-step-receipt-publication-fix`
+- `evidence/2026-07-28-step-receipt-validation`
+- `evidence/2026-07-28-ui-minimalism-graph-axes-final-physical`
+- `evidence/2026-07-28-ui-minimalism-graph-axes-physical`
+- `evidence/2026-07-28-visible-ui-hang`
+- `evidence/2026-07-29-build3-full-motion-audit`
+- `evidence/2026-07-29-build3-physical-ui`
+- `evidence/2026-07-29-build3-postinstall`
+- `evidence/2026-07-29-build3-trend-physical-failure`
+- `evidence/2026-07-29-metric-truth-release-physical`
+- `evidence/2026-07-29-step-v14-physical`
+- `evidence/2026-07-30-battery-charge-reliability`
+- `evidence/2026-07-30-final-v17-release`
+- `evidence/2026-07-30-native-false-step-filter-trial-v3`
+- `evidence/2026-07-30-native-false-step-filter-trial-v4`
+- `evidence/2026-07-30-native-walk-detector-readonly-enumeration`
+- `evidence/2026-07-30-native-walk-detector-readonly-enumeration-v2`
+- `evidence/2026-07-30-native-walk-detector-readonly-enumeration-v3`
+- `evidence/2026-07-30-native-walk-detector-readonly-enumeration-v4`
+- `evidence/2026-07-30-post-mac-r19-restore-v1`
+- `evidence/2026-07-30-process-health`
+- `evidence/2026-07-30-v16-all-day-physical`
+- `evidence/2026-07-30-v17-cpu-bounded-history`
+- `evidence/2026-07-30-v18-process-retry`
+- `evidence/2026-07-30-whoop4-all-feature-values-readonly-v2-pairing`
+- `evidence/2026-07-30-whoop4-all-feature-values-readonly-v3-bond-confirmation`
+- `evidence/2026-07-31-claude-three-day-handoff`
+
+
+## Correction — one cited file was deleted by mistake
+
+`evidence/2026-07-26-gate-1-accepted.md` was **cited** by `docs/WHOOP4_PROTOCOL_FINDINGS.md` and
+should have been kept. It is gone, and it is not recoverable: `evidence/` is gitignored, so there is
+no copy in git, and a filesystem search across the home directory and `/private/tmp` found none.
+
+**The bug in my own cleanup.** The keep-list was built with
+`grep -o "evidence/2026-07-[0-9]\{2\}-[a-z0-9-]*"`, whose character class stops at the `.` in
+`.md` — so the citation was recorded as the directory-shaped `2026-07-26-gate-1-accepted`. The
+delete loop then iterated `ls evidence | grep "^2026"`, which lists **files as well as directories**,
+saw `2026-07-26-gate-1-accepted.md`, failed to match it against the truncated keep-list entry, and
+removed it.
+
+Two off-by-one assumptions in the same loop: a regex that silently dropped extensions, and an
+enumeration I described to myself as "directories" that was really "entries". Neither would have
+mattered alone.
+
+**Scope: exactly one file.** Every other entry in the delete list is a directory, confirmed by
+re-scanning the list for names with extensions — one match, this one. The other 62 cited directories
+were verified present after the pass.
+
+**What would have caught it:** comparing the delete list against the citation list *by resolved path*
+before running `rm`, rather than after. The integrity check I ran was the right check — it caught
+this within a minute — but it ran after the deletion instead of before it, which is the difference
+between a warning and a loss.
