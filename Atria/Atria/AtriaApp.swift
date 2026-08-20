@@ -1332,6 +1332,10 @@ struct AtriaApp: App {
             store.confirmBestWorkoutCandidateFromLaunchIfRequested(arguments: arguments)
             store.confirmWorkoutWindowFromLaunchIfRequested(arguments: arguments)
             store.confirmBestSleepCandidateFromLaunchIfRequested(arguments: arguments)
+            // Production reconciliation, not a launch-arg diagnostic: heal any
+            // machine-authored confirmed sleep that a durable dismissal
+            // tombstone suppresses (the dismissal/auto-confirm race).
+            store.reconcileDismissalTombstonesOnLaunch()
             store.exportHealthKitFromLaunchIfRequested(arguments: arguments)
             store.auditHealthKitHRReferenceFromLaunchIfRequested(arguments: arguments)
             schedulePostHealthKitGateStatusIfNeeded(store: store,

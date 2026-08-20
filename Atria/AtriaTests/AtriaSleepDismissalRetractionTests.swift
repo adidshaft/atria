@@ -110,18 +110,6 @@ final class AtriaSleepDismissalRetractionTests: XCTestCase {
         try? await Task.sleep(for: .milliseconds(500))
     }
 
-    @MainActor
-    private func waitForRetraction(of id: String,
-                                   in store: SessionStore,
-                                   timeout: TimeInterval = 5) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if !store.confirmedSleeps.contains(where: { $0.id == id }) { return }
-            await Task.yield()
-            try? await Task.sleep(for: .milliseconds(20))
-        }
-    }
-
     private static func clearTombstones(overlappingStart start: Date, end: Date) {
         let unrelated = AtriaDismissedSleepCandidateStore.load().filter {
             !$0.overlaps(start: start, end: end)
@@ -133,6 +121,16 @@ final class AtriaSleepDismissalRetractionTests: XCTestCase {
         AtriaDismissedSleepCandidateStore.load().contains {
             $0.overlaps(start: start, end: end)
         }
+    }
+
+    /// Installs a durable tombstone BEFORE a store is created, so the store's
+    /// init-time load observes it — the launch-sweep tests need the pre-fix
+    /// device shape (tombstone persisted by an older build, record surviving).
+    private static func installTombstone(start: Date, end: Date) {
+        var all = AtriaDismissedSleepCandidateStore.load()
+        all.removeAll { $0.overlaps(start: start, end: end) }
+        all.append(AtriaDismissedSleepCandidate(start: start, end: end))
+        AtriaDismissedSleepCandidateStore.save(all)
     }
 
     // MARK: - Pure retraction predicate
@@ -250,7 +248,10 @@ final class AtriaSleepDismissalRetractionTests: XCTestCase {
         XCTAssertTrue(store.dismissSleepCandidate(night))
         XCTAssertTrue(Self.hasTombstone(overlappingStart: start, end: end),
                       "the dismissal tombstone must be recorded before retraction settles")
-        await waitForRetraction(of: record.id, in: store)
+        // Deterministic completion: retraction is idempotent, so driving it
+        // directly cannot double-delete even if the dismissal's own async
+        // sweep already won.
+        _ = await store.retractConfirmedSleeps(ids: [record.id])
         XCTAssertFalse(store.confirmedSleeps.contains { $0.id == record.id },
                        "the machine-authored record must not survive the user's dismissal")
 
@@ -284,7 +285,8 @@ final class AtriaSleepDismissalRetractionTests: XCTestCase {
         XCTAssertTrue(store.dismissSleepCandidate(night),
                       "a confirmed machine-authored night must accept dismissal")
         XCTAssertTrue(Self.hasTombstone(overlappingStart: start, end: end))
-        await waitForRetraction(of: record.id, in: store)
+        // Deterministic completion (idempotent with the in-flight sweep).
+        _ = await store.retractConfirmedSleeps(ids: [record.id])
         XCTAssertFalse(store.confirmedSleeps.contains { $0.id == record.id })
     }
 
@@ -392,5 +394,72 @@ final class AtriaSleepDismissalRetractionTests: XCTestCase {
         let second = await store.retractConfirmedSleeps(ids: [record.id])
         XCTAssertEqual(second, 0, "retracting an already-removed id is a no-op")
         XCTAssertFalse(store.confirmedSleeps.contains { $0.id == record.id })
+    }
+
+    // MARK: - Launch-time tombstone reconciliation
+
+    @MainActor
+    func testLaunchSweepRetractsMachineRecordSuppressedByPreexistingTombstone() async throws {
+        await quiesceSharedConfirmedStore()
+        let start = date(2026, 8, 18, 13, 15)
+        let end = date(2026, 8, 18, 16, 15)
+        // The pre-fix device shape: an older build persisted the tombstone,
+        // yet the raced machine record survived into the next launch.
+        Self.installTombstone(start: start, end: end)
+        let store = makeStore(now: date(2026, 8, 18, 18, 0))
+        let record = confirmedSleep(id: "launch-sweep-\(UUID().uuidString)",
+                                    start: start,
+                                    end: end,
+                                    source: "aggregate_sleep",
+                                    confidence: "medium")
+        await store.debugInstallConfirmedSleepsForTesting([record])
+        addTeardownBlock { @MainActor in
+            _ = await store.debugInstallConfirmedSleepsForTesting([])
+            Self.clearTombstones(overlappingStart: start, end: end)
+        }
+
+        store.reconcileDismissalTombstonesOnLaunch()
+        _ = await store.retractConfirmedSleeps(ids: [record.id])
+        XCTAssertFalse(store.confirmedSleeps.contains { $0.id == record.id },
+                       "the launch sweep must heal a record its stored tombstone suppresses")
+        XCTAssertTrue(Self.hasTombstone(overlappingStart: start, end: end))
+
+        // Idempotent: a second sweep over the healed state selects nothing.
+        XCTAssertTrue(store.reconcileDismissalTombstonesOnLaunch().isEmpty)
+    }
+
+    @MainActor
+    func testLaunchSweepNeverTouchesUserAuthoredOrUnsuppressedRecords() async throws {
+        await quiesceSharedConfirmedStore()
+        let start = date(2026, 8, 19, 13, 15)
+        let end = date(2026, 8, 19, 16, 15)
+        Self.installTombstone(start: start, end: end)
+        let store = makeStore(now: date(2026, 8, 19, 18, 0))
+        // A user-authored record inside the tombstone window (the plain-Confirm
+        // shape also writes a settling tombstone beside a protected record) and
+        // a machine record far outside any tombstone.
+        let userRecord = confirmedSleep(id: "launch-user-\(UUID().uuidString)",
+                                        start: start,
+                                        end: end,
+                                        source: "user_adjusted_sleep",
+                                        confidence: "medium")
+        let farStart = date(2026, 8, 19, 1, 0)
+        let farRecord = confirmedSleep(id: "launch-far-\(UUID().uuidString)",
+                                       start: farStart,
+                                       end: date(2026, 8, 19, 7, 30),
+                                       source: "aggregate_sleep",
+                                       confidence: "medium")
+        await store.debugInstallConfirmedSleepsForTesting([userRecord, farRecord])
+        addTeardownBlock { @MainActor in
+            _ = await store.debugInstallConfirmedSleepsForTesting([])
+            Self.clearTombstones(overlappingStart: start, end: end)
+        }
+
+        XCTAssertTrue(store.reconcileDismissalTombstonesOnLaunch().isEmpty,
+                      "neither the user-authored nor the unsuppressed record may be selected")
+        XCTAssertTrue(store.confirmedSleeps.contains { $0.id == userRecord.id },
+                      "user-authored records are never retracted by the launch sweep")
+        XCTAssertTrue(store.confirmedSleeps.contains { $0.id == farRecord.id },
+                      "records no tombstone suppresses are untouched")
     }
 }
