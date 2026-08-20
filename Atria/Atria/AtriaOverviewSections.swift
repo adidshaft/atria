@@ -11504,7 +11504,12 @@ private struct AtriaPreparedMetricChart: View {
                 chartLegendAndCompanions
             }
         }
-        .padding(14)
+        // 12pt gutter (2026-08-05 width audit): match the app-wide screen
+        // gutter horizontally; vertical inset stays 14. Reduced padding only —
+        // the Handoff-10 CP3 revert above forbids re-introducing the
+        // full-bleed negative inset on this card.
+        .padding(.horizontal, 12)
+        .padding(.vertical, 14)
         .atriaInsetCard(tint: tint)
     }
 

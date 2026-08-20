@@ -633,7 +633,9 @@ struct AtriaStressDetailView: View {
                             tint: input.tint,
                             tintKey: input.state.level?.rawValue ?? -1
                         )
-                        .frame(height: 184)
+                        // Declutter batch 3 (2026-08-20, plan D8): 184 → 230
+                        // after the batch-1 copy dedupes freed the space.
+                        .frame(height: 230)
                         .accessibilityLabel(timelineAccessibilityLabel(points: projection.stressPoints))
                         .atriaInspectableGraph(
                             AtriaInspectableGraph(
@@ -653,7 +655,9 @@ struct AtriaStressDetailView: View {
                         )
                     } else if !input.heartRateReadings.isEmpty {
                         AtriaStressHeartRateTimelineChart(points: input.heartRateReadings)
-                            .frame(height: 184)
+                            // Matches the stress variant above so the card
+                            // does not jump when the picker toggles.
+                            .frame(height: 230)
                             .accessibilityLabel("Measured heart rate timeline; blanks are telemetry gaps")
                     } else {
                         Text("Measured minute heart rate will appear here as live observations arrive.")
@@ -1049,7 +1053,8 @@ struct AtriaStressDailyTrendCard: View {
         // (fractions of measured time), so a scale would label a constant.
         // The caption carries the unit instead.
         .chartYAxis(.hidden)
-        .frame(height: 120)
+        // Declutter batch 3 (2026-08-20, plan D8): 120 → 150.
+        .frame(height: 150)
     }
 
     private func legend(color: Color, label: String) -> some View {
