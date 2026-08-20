@@ -104,6 +104,7 @@ private final class AtriaAppDependencies {
     let workoutRouteRecorder: AtriaWorkoutRouteRecorder
     let workoutRuntime: AtriaWorkoutRuntime
     private var durableStepReceiptObserver: NSObjectProtocol?
+    private var civilDayRolloverObserver: NSObjectProtocol?
 
     init() {
         let store = SessionStore()
@@ -196,6 +197,33 @@ private final class AtriaAppDependencies {
                 )
             }
         }
+        // 2026-08-20 (widget-sync RC1): nothing republished the widget
+        // snapshot when the civil day rolled over, so a snapshot published
+        // late in the evening wore "Awaiting today's data"/"--" from 00:00
+        // until the next full publish even though the in-app Today was still
+        // correct — background patch lanes cannot cross the extension's
+        // day fence. iOS coalesces `.NSCalendarDayChanged` and delivers it on
+        // resume when the process slept across midnight, so this trigger is
+        // launch-independent; the existing scene-foreground publish paths
+        // remain the backstop. Exactly one republish per midnight, and it
+        // MUST go through `schedulePublish` so it inherits the
+        // `shouldPersistSnapshot` launch fence — never a direct defaults
+        // write. `publish()` itself resolves prior-vs-current identity
+        // honestly via AtriaCurrentDayPresentation.
+        civilDayRolloverObserver = NotificationCenter.default.addObserver(
+            forName: .NSCalendarDayChanged,
+            object: nil,
+            queue: .main
+        ) { [weak store, weak ble] _ in
+            MainActor.assumeIsolated {
+                guard let store, let ble else { return }
+                WidgetSnapshotPublisher.schedulePublish(
+                    store: store,
+                    ble: ble,
+                    reason: "civil_day_rollover"
+                )
+            }
+        }
         store.onRecoveredDataRecomputePublished = { [weak store, weak ble] revision, reason in
             guard let store, let ble else { return }
             WidgetSnapshotPublisher.schedulePublish(
@@ -230,6 +258,11 @@ private final class AtriaAppDependencies {
         if let durableStepReceiptObserver {
             NotificationCenter.default.removeObserver(
                 durableStepReceiptObserver
+            )
+        }
+        if let civilDayRolloverObserver {
+            NotificationCenter.default.removeObserver(
+                civilDayRolloverObserver
             )
         }
     }

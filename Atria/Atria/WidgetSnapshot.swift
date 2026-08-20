@@ -143,6 +143,25 @@ struct WidgetSnapshot: Codable {
     /// End of the civil day owning current-cycle RHR/HRV. Recovery and sleep had
     /// separate expiry keys already; this closes the remaining biomarker lane.
     var biomarkerExpiresAt: Date? = nil
+    /// 2026-08-20 (widget-sync RC3): the clock of the last FULL stable publish.
+    /// `createdAt` advances on every live/battery/receipt patch, so the
+    /// extension's 6h stale disclosure keyed on it could never fire while any
+    /// patch lane was active — and conversely a patch could not honestly renew
+    /// recovery/sleep/HRV it never recomputed. Set only in `publish()`; every
+    /// partial patch lane carries it unchanged. Additive schema-4 key; legacy
+    /// payloads fall back to `createdAt`.
+    var stableEvidenceRefreshedAt: Date? = nil
+    /// 2026-08-20 (widget-sync RC4, §13.6 pre-render): app-rendered display
+    /// strings for the step tile and the strain value, computed by the exact
+    /// models the in-app cards use (AtriaDailyStepPresentation and
+    /// Metrics.StrainPresentation). The extension prefers these verbatim and
+    /// keeps its own derivations only as legacy fallback, so the app and its
+    /// widget can no longer disagree about the same number. Display-only:
+    /// they carry zero authority semantics and always follow the family they
+    /// describe through every patch lane.
+    var stepsValueText: String? = nil
+    var stepsStatusText: String? = nil
+    var strainValueText: String? = nil
 }
 
 /// 2026-08-14 (§13.6): pre-rendered morning-whiteboard rows. Display truth is
@@ -225,6 +244,13 @@ enum WidgetSnapshotPublisher {
         let stepsCoverageFraction: Double?
         let priorCycleSteps: Int?
         let priorCycleEndedAt: Date?
+        /// 2026-08-20 (widget-sync RC4): display-only pre-rendered strings from
+        /// the same AtriaDailyStepPresentation the projection above resolved.
+        /// Defaulted vars so existing constructors keep compiling; they gain no
+        /// authority in `durableStepPatchedSnapshot` — they only ride along
+        /// with the step family they describe.
+        var stepsValueText: String? = nil
+        var stepsStatusText: String? = nil
     }
 
     private static let key = "atria.widgetSnapshot.v1"
@@ -274,6 +300,8 @@ enum WidgetSnapshotPublisher {
                                          stepsCompleteness: String? = nil,
                                          stepsCoverageFraction: Double? = nil,
                                          stepsAuthorityVersion: String? = nil,
+                                         stepsValueText: String? = nil,
+                                         stepsStatusText: String? = nil,
                                          strain: Double,
                                          strainDetail: String? = nil,
                                          strainCapturedAt: Date? = nil,
@@ -330,6 +358,8 @@ enum WidgetSnapshotPublisher {
                 stepsCompleteness: stepsCompleteness,
                 stepsCoverageFraction: stepsCoverageFraction,
                 stepsAuthorityVersion: stepsAuthorityVersion,
+                stepsValueText: stepsValueText,
+                stepsStatusText: stepsStatusText,
                 strain: strain,
                 strainDetail: strainDetail,
                 strainCapturedAt: strainCapturedAt,
@@ -520,7 +550,11 @@ enum WidgetSnapshotPublisher {
                 stepCompletenessIdentifier(presentation.completeness),
             stepsCoverageFraction: presentation.coverageFraction,
             priorCycleSteps: presentation.priorCycleReceipt?.steps,
-            priorCycleEndedAt: presentation.priorCycleReceipt?.endedAt
+            priorCycleEndedAt: presentation.priorCycleReceipt?.endedAt,
+            stepsValueText: publishedSteps == nil
+                ? nil : presentation.valueText,
+            stepsStatusText: publishedSteps == nil
+                ? nil : presentation.detailText
         )
     }
 
@@ -723,6 +757,14 @@ enum WidgetSnapshotPublisher {
             ? projection.priorCycleSteps : nil
         patched.stepsPriorCycleEndedAt = projection.steps == nil
             ? projection.priorCycleEndedAt : nil
+        // RC4: pre-rendered strings follow the displayed family exactly — a
+        // rewritten row carries its own app-rendered text (nil when absent, so
+        // the extension falls back to its legacy derivation), never the text
+        // of the row it replaced.
+        patched.stepsValueText = projection.steps == nil
+            ? nil : projection.stepsValueText
+        patched.stepsStatusText = projection.steps == nil
+            ? nil : projection.stepsStatusText
         return patched
     }
 
@@ -997,6 +1039,11 @@ enum WidgetSnapshotPublisher {
             current.stepsReceiptInvalidatesIndependentPartial
         merged.stepsPriorCycleSteps = current.stepsPriorCycleSteps
         merged.stepsPriorCycleEndedAt = current.stepsPriorCycleEndedAt
+        // RC4: the preserved step family keeps the pre-rendered strings that
+        // describe it; every non-step field (including strainValueText and
+        // stableEvidenceRefreshedAt) stays owned by the fresh broad candidate.
+        merged.stepsValueText = current.stepsValueText
+        merged.stepsStatusText = current.stepsStatusText
         return merged
     }
 
@@ -1014,6 +1061,8 @@ enum WidgetSnapshotPublisher {
         stepsCompleteness: String? = nil,
         stepsCoverageFraction: Double? = nil,
         stepsAuthorityVersion: String? = nil,
+        stepsValueText: String? = nil,
+        stepsStatusText: String? = nil,
         strain: Double,
         strainDetail: String? = nil,
         strainCapturedAt: Date? = nil,
@@ -1147,10 +1196,26 @@ enum WidgetSnapshotPublisher {
         // 2026-08-14 (§13.6): a live patch updates only live fields; the
         // whiteboard mirror and its expiry ride along unchanged from the
         // delivered snapshot.
-        return snapshotCarryingStablePresentation(
+        var carried = snapshotCarryingStablePresentation(
             from: current,
             into: patched
         )
+        // 2026-08-20 (widget-sync RC4): pre-rendered display strings follow
+        // their own families. An accepted step patch installs the caller's
+        // app-rendered strings (nil lets the extension fall back to its legacy
+        // derivation); a rejected patch keeps the delivered row's strings. An
+        // unchanged aggregate keeps its rendered strain text; a moved one
+        // clears it so a stale pre-render can never describe a patched number.
+        carried.stepsValueText = acceptsIncomingSteps
+            ? (steps == nil ? nil : stepsValueText)
+            : current.stepsValueText
+        carried.stepsStatusText = acceptsIncomingSteps
+            ? (steps == nil ? nil : stepsStatusText)
+            : current.stepsStatusText
+        carried.strainValueText =
+            abs(current.strain - strain) <= 0.000_000_001
+                ? current.strainValueText : nil
+        return carried
     }
 
     /// A pulse-time patch may make an already-qualified cumulative value more
@@ -1192,6 +1257,10 @@ enum WidgetSnapshotPublisher {
         carried.recoveryZone = current.recoveryZone
         carried.hrvCapturedAt = current.hrvCapturedAt
         carried.biomarkerExpiresAt = current.biomarkerExpiresAt
+        // 2026-08-20 (widget-sync RC3): the stable-evidence clock is owned by
+        // the full publisher alone; every partial lane carries it unchanged so
+        // a patch can neither renew nor erase the extension's stale disclosure.
+        carried.stableEvidenceRefreshedAt = current.stableEvidenceRefreshedAt
         return carried
     }
 
@@ -1326,10 +1395,21 @@ enum WidgetSnapshotPublisher {
             from: snapshot,
             into: sanitized
         )
+        // 2026-08-20 (widget-sync RC4): the dispute touches only battery
+        // fields; the step/strain families and their app-rendered strings ride
+        // along unchanged.
+        sanitized.stepsValueText = snapshot.stepsValueText
+        sanitized.stepsStatusText = snapshot.stepsStatusText
+        sanitized.strainValueText = snapshot.strainValueText
         guard let sanitizedData = try? JSONEncoder.widgetSnapshotEncoder.encode(sanitized) else { return }
         defaults.set(sanitizedData, forKey: key)
         #if canImport(WidgetKit)
-        WidgetCenter.shared.reloadAllTimelines()
+        // 2026-08-20 (widget-sync RC6): a disputed battery must still reload
+        // immediately, but through the coalescer's delivery ledger — the raw
+        // WidgetCenter call left `lastTimelineReloadSnapshot`/`Date` stale, so
+        // the next scheduled reload compared against a snapshot WidgetKit had
+        // already moved past.
+        deliverTimelineReload(sanitized, now: Date())
         #endif
         AtriaDebugLog("ATRIADBG widget_snapshot status=battery_invalidated reason=disputed_transition")
     }
@@ -1823,6 +1903,30 @@ enum WidgetSnapshotPublisher {
         )
         snapshot.hrvCapturedAt = displayHRV?.measuredAt
         snapshot.biomarkerExpiresAt = displayDayEnd
+        // 2026-08-20 (widget-sync RC3): only the full stable publish may
+        // advance the stable-evidence clock the extension's stale disclosure
+        // ages from; every patch lane carries it unchanged.
+        snapshot.stableEvidenceRefreshedAt = now
+        // 2026-08-20 (widget-sync RC4, §13.6 pre-render): serialize the exact
+        // strings the in-app Steps card and strain hero render, from the same
+        // models. The extension prefers these verbatim; its own derivations
+        // remain only as legacy fallback for patched or pre-update payloads.
+        snapshot.stepsValueText = publishedSteps == nil
+            ? nil : dailySteps.valueText
+        snapshot.stepsStatusText = publishedSteps == nil
+            ? nil : dailySteps.detailText
+        if widgetDayResolution.strainOverride != nil {
+            // The partial current-day override is a lower bound, matching the
+            // "Partial · current day" detail published beside it.
+            snapshot.strainValueText =
+                "≥ " + String(format: "%.1f", max(0, presentedWidgetStrain))
+        } else if strainIsCredible, strainPresentation.value != nil {
+            snapshot.strainValueText = strainPresentation.valueText
+        } else {
+            // Not credible: the credibility clock is withheld above and the
+            // widget fails closed to its placeholder — never a rendered value.
+            snapshot.strainValueText = nil
+        }
         // Cold-start + card-settlement guard: landing sessions makes the UI
         // interactive before the async confirmed-sleep -> metric -> rollup chain
         // is complete. Preserve the last durable widget until both authorities
@@ -2072,6 +2176,12 @@ enum WidgetSnapshotPublisher {
         )
         parts.append(snapshot.stepsCycleStart.map { String($0.timeIntervalSince1970) } ?? "steps_cycle_absent")
         parts.append(snapshot.stepsCycleExpiresAt.map { String($0.timeIntervalSince1970) } ?? "steps_expiry_absent")
+        // 2026-08-20 (widget-sync RC4): a changed app-rendered string is a
+        // visible semantic transition. The strings are minute-granular at
+        // most (frontier text), so this stays inside the sensor-lane budget.
+        parts.append(snapshot.stepsValueText ?? "steps_value_text_absent")
+        parts.append(snapshot.stepsStatusText ?? "steps_status_text_absent")
+        parts.append(snapshot.strainValueText ?? "strain_value_text_absent")
         parts.append(snapshot.stepsPriorCycleSteps.map(String.init) ?? "prior_steps_absent")
         parts.append(snapshot.stepsPriorCycleEndedAt.map { String($0.timeIntervalSince1970) } ?? "prior_steps_end_absent")
         parts.append(snapshot.dailyStepGoal.map(String.init) ?? "-")
@@ -2159,6 +2269,16 @@ enum WidgetSnapshotPublisher {
         lastTimelineReloadSnapshot = snapshot
         lastTimelineReloadDate = now
         WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    /// 2026-08-20 (widget-sync RC6): read-only visibility into the reload
+    /// ledger so tests can prove the battery-invalidation dispute path keeps
+    /// `lastTimelineReloadSnapshot`/`Date` truthful instead of bypassing them.
+    static var lastDeliveredTimelineReloadLedger:
+        (snapshot: WidgetSnapshot, deliveredAt: Date)? {
+        guard let snapshot = lastTimelineReloadSnapshot,
+              let deliveredAt = lastTimelineReloadDate else { return nil }
+        return (snapshot, deliveredAt)
     }
 #endif
 
