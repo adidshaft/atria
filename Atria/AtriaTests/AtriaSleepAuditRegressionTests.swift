@@ -2,6 +2,18 @@ import XCTest
 @testable import Atria
 
 final class AtriaSleepAuditRegressionTests: XCTestCase {
+    // Time-anchored fixture replays (e.g. the July-26 reported-sleep capture)
+    // run under `.boundedRecent`, whose onset clamp reads the device-use
+    // journal from shared standard defaults. Whatever journal earlier suites
+    // or previous runs persisted on this host/simulator silently clamps the
+    // fixture's onset and shifts duration/session assertions — the exact
+    // contamination class documented 2026-08-06. An empty journal is exact
+    // identity with clamp-off, so reset before every test.
+    override func setUp() {
+        super.setUp()
+        AtriaDeviceUseJournal.reset()
+    }
+
     private static let utcCalendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC")!
@@ -1732,6 +1744,19 @@ final class AtriaSleepAuditRegressionTests: XCTestCase {
         // the old two-hour cluster allowance attached an isolated 41-minute
         // low-HR fragment ending at 05:25. That 1h56 awake gap made the whole
         // aggregate too sparse and incorrectly removed the review card.
+        // This fixture is an untracked physical-device evidence pull (private
+        // health data, kept out of git by policy — see .gitignore). On a
+        // machine without the local evidence tree, skip instead of failing:
+        // the replay is machine-bound, not broken. 2026-08-20: the file was
+        // lost once to an evidence cleanup and reconstructed from the
+        // 2026-07-27-gate4-v13-acquisition-ready snapshot (see the capture
+        // directory's README).
+        try XCTSkipUnless(
+            FileManager.default.fileExists(
+                atPath: july26ReportedSleepSessionsURL.path
+            ),
+            "local evidence pull evidence/2026-07-27-all-day-motion-default/settled/sessions.json is absent on this machine"
+        )
         let allSessions = try JSONDecoder().decode(
             [SavedSession].self,
             from: Data(contentsOf: july26ReportedSleepSessionsURL)

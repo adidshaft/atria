@@ -408,16 +408,23 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         // show; a stale count must not hide it.
         let f = footer(backlogPending: false, debtRecords: 4_867, debtAge: 41 * 60)
         XCTAssertNotNil(f)
-        XCTAssertTrue(f!.detail.contains("history backlog"))
+        XCTAssertTrue(f!.detail.contains("behind"))
+        XCTAssertTrue(f!.accessibilityDetail.contains("history backlog"))
     }
 
     func testBehindFrontierAndActivityAreHonest() {
         let f = footer(flushAgo: 120, liveHeartRateIsCurrent: true)
         XCTAssertNotNil(f)
         XCTAssertTrue(f!.active)
-        XCTAssertTrue(f!.detail.contains("19h 0m history backlog"))
-        XCTAssertTrue(f!.detail.contains("live HR current"))
-        XCTAssertTrue(f!.detail.contains("catching up now"))
+        // R17: the visible detail is numbers-first; the reassurance
+        // clauses are relocated to the accessibility sentence, not deleted.
+        XCTAssertTrue(f!.detail.contains("19h 0m behind"))
+        XCTAssertTrue(f!.detail.contains("Through"))
+        XCTAssertFalse(f!.detail.contains("live HR current"))
+        XCTAssertFalse(f!.detail.contains("catching up now"))
+        XCTAssertTrue(f!.accessibilityDetail.contains("19h 0m history backlog"))
+        XCTAssertTrue(f!.accessibilityDetail.contains("live HR current"))
+        XCTAssertTrue(f!.accessibilityDetail.contains("catching up now"))
         XCTAssertTrue(f!.headline.contains("Strap history through"))
         XCTAssertTrue(f!.headline.contains("yesterday"),
                       "a 19h-old frontier at 5 AM lands yesterday morning")
@@ -427,7 +434,9 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         let f = footer(flushAgo: 45 * 60)
         XCTAssertNotNil(f)
         XCTAssertFalse(f!.active)
-        XCTAssertTrue(f!.detail.contains("paused"))
+        // The paused truth stays machine-visible (icon keys off `active`)
+        // and spoken (accessibility sentence); the visible detail is numeric.
+        XCTAssertTrue(f!.accessibilityDetail.contains("paused"))
     }
 
     func testLeaseCountsAsActiveWithoutFlushTimestamp() {
@@ -440,12 +449,16 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         XCTAssertNotNil(f)
         XCTAssertEqual(f!.headline, "Strap history backfill")
         XCTAssertFalse(f!.detail.contains("history backlog"))
+        XCTAssertFalse(f!.detail.contains("Through"))
+        XCTAssertFalse(f!.detail.contains("behind"))
     }
 
     func testTodayFrontierOmitsDayLabel() {
         let f = footer(drainedAgo: 30 * 60, flushAgo: 60)
         XCTAssertNotNil(f)
         XCTAssertFalse(f!.headline.contains("yesterday"))
-        XCTAssertTrue(f!.detail.contains("30m history backlog"))
+        XCTAssertFalse(f!.detail.contains("yesterday"))
+        XCTAssertTrue(f!.detail.contains("30m behind"))
+        XCTAssertTrue(f!.accessibilityDetail.contains("30m history backlog"))
     }
 }

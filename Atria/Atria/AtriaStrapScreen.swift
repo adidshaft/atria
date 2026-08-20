@@ -71,6 +71,11 @@ struct AtriaStrapScreen: View {
                 AtriaStrapStatusRow(title: "Strap control",
                                     value: collectionLiveStore.state.coexistenceStatusText,
                                     detail: officialAppInstalled ? "WHOOP app also installed" : "Only Atria connects",
+                                    // Healthy (.cleared) carries the detail in the
+                                    // tile's accessibilityLabel only; unresolved and
+                                    // risk states keep it visible (declutter plan
+                                    // R21, 2026-08-20).
+                                    showsDetail: collectionLiveStore.state.officialAppCoexistenceRisk != .cleared,
                                     systemImage: "checkmark.shield.fill",
                                     tint: collectionLiveStore.state.officialAppCoexistenceRisk == .suspected ? .red : Metrics.electricGreen)
             }
@@ -292,17 +297,16 @@ private struct AtriaStrapConnectionHero: View {
                     .background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
                 Text("Not connected")
                     .font(.headline.weight(.bold))
-                Text(displayStatus == .poweredOff
-                     ? "Turn on Bluetooth to begin \u{2014} Atria reconnects automatically."
-                     : coreLiveStore.state.bluetoothPermissionDenied
-                     ? "Allow Bluetooth access in Settings, then return to Atria."
-                     : !statusStore.state.isBluetoothReady
-                     ? "Bluetooth is unavailable right now. Atria will retry automatically."
-                     : "Bring your strap into range to begin \u{2014} Atria scans automatically.")
+                // Short state words only (declutter plan R21, 2026-08-20).
+                // The full guidance sentences are relocated verbatim to the
+                // accessibilityLabel below; the "Connection guide" button
+                // underneath opens the status-aware recovery steps.
+                Text(disconnectedStateText)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel(disconnectedGuidanceSentence)
                 Button {
                     ble.startScan(reason: "strap_screen_hero")
                 } label: {
@@ -361,6 +365,31 @@ private struct AtriaStrapConnectionHero: View {
             : "Waiting for Bluetooth"
     }
 
+    /// 3-4-word disconnected states for the hero caption (declutter plan
+    /// R21, 2026-08-20). The pre-R21 full sentences survive verbatim in
+    /// `disconnectedGuidanceSentence` — relocated, never deleted.
+    private var disconnectedStateText: String {
+        if displayStatus == .poweredOff { return "Bluetooth is off" }
+        if coreLiveStore.state.bluetoothPermissionDenied { return "Bluetooth access needed" }
+        if !statusStore.state.isBluetoothReady { return "Bluetooth unavailable \u{2014} retrying" }
+        return "Out of range \u{2014} scanning"
+    }
+
+    /// The full guidance sentences, verbatim, carried by the shortened
+    /// caption's accessibilityLabel so VoiceOver keeps the actionable copy.
+    private var disconnectedGuidanceSentence: String {
+        if displayStatus == .poweredOff {
+            return "Turn on Bluetooth to begin \u{2014} Atria reconnects automatically."
+        }
+        if coreLiveStore.state.bluetoothPermissionDenied {
+            return "Allow Bluetooth access in Settings, then return to Atria."
+        }
+        if !statusStore.state.isBluetoothReady {
+            return "Bluetooth is unavailable right now. Atria will retry automatically."
+        }
+        return "Bring your strap into range to begin \u{2014} Atria scans automatically."
+    }
+
     private var connectionSymbol: String {
         if displayStatus == .connected {
             return coreLiveStore.state.strapStreamConnectionSymbol
@@ -382,6 +411,10 @@ private struct AtriaStrapStatusRow: View, Equatable {
     let title: String
     let value: String
     let detail: String
+    /// When false the detail line is spoken (accessibilityLabel below) but
+    /// not drawn — used by the Strap control tile's healthy state
+    /// (declutter plan R21, 2026-08-20).
+    var showsDetail: Bool = true
     let systemImage: String
     let tint: Color
 
@@ -389,6 +422,7 @@ private struct AtriaStrapStatusRow: View, Equatable {
         lhs.title == rhs.title
             && lhs.value == rhs.value
             && lhs.detail == rhs.detail
+            && lhs.showsDetail == rhs.showsDetail
             && lhs.systemImage == rhs.systemImage
     }
 
@@ -422,11 +456,13 @@ private struct AtriaStrapStatusRow: View, Equatable {
                 .lineLimit(1)
                 .minimumScaleFactor(0.72)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text(detail)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+            if showsDetail {
+                Text(detail)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 72, alignment: .topLeading)
         .padding(10)
