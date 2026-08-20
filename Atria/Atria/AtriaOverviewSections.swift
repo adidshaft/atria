@@ -4432,8 +4432,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     private var strainCompareDetailText: String {
         // Plain-language pass (2026-07-31 device review): "Building baseline"
         // under "Strain vs typical" told a first-time user nothing. Say what
-        // the card is waiting for in plain words.
-        guard let median = strainCompareMedian else { return "Still learning your typical day" }
+        // the card is waiting for — and say it with the same vocabulary the
+        // Today whiteboard uses for the identical >=7-day median gate
+        // (declutter batch 2b, 2026-08-20).
+        guard let median = strainCompareMedian else { return "Median needs 7 days" }
         let medianText = String(format: "%.1f", median)
         guard !metricIsPending(hero.strainValue) else { return "14-day median \(medianText)" }
         let delta = hero.strain - median
