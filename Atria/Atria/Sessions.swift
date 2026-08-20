@@ -8569,6 +8569,23 @@ final class SessionStore: ObservableObject {
                                   deferDerivedPublication: true,
                                   recoveredMutationBase: base)
     }
+
+    /// Deterministic seam for the save-time dismissal re-check: drives the
+    /// real durable save with the same recheck identity the auto-confirm
+    /// paths pass, without requiring a full settlement-worker run. The
+    /// mid-flight race shape is reproduced by persisting the tombstone to
+    /// the durable store after this SessionStore's init-time load — exactly
+    /// the state a dismissal handled during the save's suspension points
+    /// leaves behind.
+    @discardableResult
+    func debugSaveAutoConfirmedSleepsForTesting(
+        _ sleeps: [UserConfirmedSleep],
+        recheck: AutoConfirmSaveTimeDismissalRecheck
+    ) async -> Bool {
+        await saveConfirmedSleeps(sleeps,
+                                  deferDerivedPublication: true,
+                                  autoConfirmDismissalRecheck: recheck)
+    }
     #endif
     /// Posted by the history "Detected activities" surface (2026-07-17) so the
     /// Home shell — which owns the guided review sheet — can present the
@@ -37535,6 +37552,11 @@ final class SessionStore: ObservableObject {
         var saved = 0
         var firstSavedOvernight: UserConfirmedSleep?
         var stressContextChanged = false
+        // Records this pass mints or extends, re-checked against freshly
+        // loaded dismissal tombstones immediately before the persist writes —
+        // the loop check below cannot see a "not sleep" tap that lands during
+        // the save's own suspension points.
+        var saveTimeRecheckIDs: Set<String> = []
         for candidate in candidates.prefix(limit) {
             guard !dismissedSleepCandidates.contains(where: {
                 $0.suppresses(start: candidate.start, end: candidate.end)
@@ -37593,6 +37615,7 @@ final class SessionStore: ObservableObject {
             ) {
                 stressContextChanged = stressContextChanged
                     || Self.sleepStressContextAuthority(extended) != nil
+                saveTimeRecheckIDs.insert(extended.id)
                 saved += 1
                 continue
             }
@@ -37617,6 +37640,7 @@ final class SessionStore: ObservableObject {
             }
             existing = insertionBase
             existing.append(confirmed)
+            saveTimeRecheckIDs.insert(confirmed.id)
             if candidate.kind != "nap_candidate", firstSavedOvernight == nil {
                 firstSavedOvernight = confirmed
             }
@@ -37638,19 +37662,31 @@ final class SessionStore: ObservableObject {
             pendingSleepSettlementRetry?.cancel()
             pendingSleepSettlementRetry = nil
         }
+        let dismissalRecheck = AutoConfirmSaveTimeDismissalRecheck(
+            recordIDs: saveTimeRecheckIDs
+        )
         guard await saveConfirmedSleeps(existing,
                                   deferDerivedPublication: deferDerivedPublication,
                                   archiveFreeLatestNightSettlement:
                                     archiveFreeLatestNightSettlement,
                                   publishStressContext:
                                     stressContextChanged,
+                                  autoConfirmDismissalRecheck: dismissalRecheck,
                                   executionShouldContinue:
                                     executionShouldContinue) else {
             persistenceFailure?()
             AtriaDebugLog("ATRIADBG sleep_auto_confirm status=store_failed source=%@ saved=%d", reason, saved)
             return false
         }
-        if let firstSavedOvernight {
+        // A record dropped by the save-time re-check honored a dismissal that
+        // landed mid-flight: never banner or notify it as logged sleep, and
+        // retract an extend-path banner that already points at a dropped id.
+        if let banner = autoSleepLoggedBanner,
+           dismissalRecheck.suppressedIDs.contains(banner.sleepID) {
+            autoSleepLoggedBanner = nil
+        }
+        if let firstSavedOvernight,
+           !dismissalRecheck.suppressedIDs.contains(firstSavedOvernight.id) {
             autoSleepLoggedBanner = AutoSleepLoggedBanner(id: firstSavedOvernight.id,
                                                           start: firstSavedOvernight.start,
                                                           end: firstSavedOvernight.end,
@@ -37658,11 +37694,13 @@ final class SessionStore: ObservableObject {
                                                           sleepID: firstSavedOvernight.id)
             LocalNotificationScheduler.scheduleSleepLogged(firstSavedOvernight)
         }
-        AtriaDebugLog("ATRIADBG sleep_auto_confirm status=saved source=%@ saved=%d candidates=%d policy=motion_or_unambiguous_hr_only",
+        AtriaDebugLog("ATRIADBG sleep_auto_confirm status=saved source=%@ saved=%d candidates=%d save_time_suppressed=%d policy=motion_or_unambiguous_hr_only",
                       reason,
                       saved,
-                      candidates.count)
-        if let firstSavedOvernight {
+                      candidates.count,
+                      dismissalRecheck.suppressedIDs.count)
+        if let firstSavedOvernight,
+           !dismissalRecheck.suppressedIDs.contains(firstSavedOvernight.id) {
             DetectionEventLog.append(DetectionEvent(kind: "sleepAutoConfirmed",
                                                      detail: "\(isoString(firstSavedOvernight.start))–\(isoString(firstSavedOvernight.end)), \(SleepHistorySnapshot.formatDuration(firstSavedOvernight.duration))"))
         }
@@ -38462,6 +38500,9 @@ final class SessionStore: ObservableObject {
                                            sourceSessions: sourceSessions,
                                            precomputedMaterialization:
                                             preparedMaterialization) {
+            let dismissalRecheck = AutoConfirmSaveTimeDismissalRecheck(
+                recordIDs: [extended.id]
+            )
             guard await saveConfirmedSleeps(existing,
                                       deferDerivedPublication: deferDerivedPublication,
                                       archiveFreeLatestNightSettlement:
@@ -38469,10 +38510,20 @@ final class SessionStore: ObservableObject {
                                       publishStressContext:
                                         Self.sleepStressContextAuthority(extended)
                                             != nil,
+                                      autoConfirmDismissalRecheck:
+                                        dismissalRecheck,
                                       executionShouldContinue:
                                         executionShouldContinue) else {
                 persistenceFailure?()
                 return false
+            }
+            if dismissalRecheck.suppressedIDs.contains(extended.id) {
+                // The save-time re-check honored a dismissal that landed while
+                // this persist was in flight; the extended night was dropped.
+                if autoSleepLoggedBanner?.sleepID == extended.id {
+                    autoSleepLoggedBanner = nil
+                }
+                return true
             }
             AtriaDebugLog("ATRIADBG sleep_wake_boundary status=extended reason=%@ id=%@ end=%@",
                           reason, extended.id, isoString(extended.end))
@@ -38505,6 +38556,9 @@ final class SessionStore: ObservableObject {
 
         existing = insertionBase
         existing.append(confirmed)
+        let dismissalRecheck = AutoConfirmSaveTimeDismissalRecheck(
+            recordIDs: [confirmed.id]
+        )
         guard await saveConfirmedSleeps(existing,
                                   deferDerivedPublication: deferDerivedPublication,
                                   archiveFreeLatestNightSettlement:
@@ -38512,10 +38566,16 @@ final class SessionStore: ObservableObject {
                                   publishStressContext:
                                     Self.sleepStressContextAuthority(confirmed)
                                         != nil,
+                                  autoConfirmDismissalRecheck: dismissalRecheck,
                                   executionShouldContinue:
                                     executionShouldContinue) else {
             persistenceFailure?()
             return false
+        }
+        guard !dismissalRecheck.suppressedIDs.contains(confirmed.id) else {
+            // The save-time re-check honored a dismissal that landed while
+            // this persist was in flight; nothing was logged for the user.
+            return true
         }
         autoSleepLoggedBanner = AutoSleepLoggedBanner(id: confirmed.id,
                                                       start: confirmed.start,
@@ -39045,6 +39105,29 @@ final class SessionStore: ObservableObject {
             .suppresses(start: sleep.start, end: sleep.end)
             && !sleepRecordIsUserAuthored(sleep)
             && sleep.dayPrimaryChoice == nil
+    }
+
+    /// Save-time selection for the auto-confirm dismissal re-check: of the
+    /// records an in-flight auto-confirm pass minted or extended
+    /// (`recheckIDs`), those a tombstone retracts under the canonical
+    /// `dismissalRetractsConfirmedSleep` rule. Scoped to `recheckIDs` so a
+    /// pre-existing record awaiting its own retraction sweep is never
+    /// silently filtered out of an unrelated save. Exposed (not `private`)
+    /// so unit tests can exercise the selection matrix directly.
+    nonisolated static func saveTimeDismissalSuppressedSleepIDs(
+        in settled: [UserConfirmedSleep],
+        recheckIDs: Set<String>,
+        tombstones: [AtriaDismissedSleepCandidate]
+    ) -> Set<String> {
+        guard !recheckIDs.isEmpty, !tombstones.isEmpty else { return [] }
+        return Set(settled.filter { record in
+            recheckIDs.contains(record.id)
+                && tombstones.contains {
+                    dismissalRetractsConfirmedSleep(record,
+                                                    dismissalStart: $0.start,
+                                                    dismissalEnd: $0.end)
+                }
+        }.map(\.id))
     }
 
     /// Strict record atomicity (2026-08-12 user decision): two saved sleep
@@ -41557,6 +41640,21 @@ final class SessionStore: ObservableObject {
         )
     }
 
+    /// Identity carrier for the save-time dismissal re-check (follow-up to the
+    /// 2026-08-20 dismissal/auto-confirm race fix): an auto-confirm pass hands
+    /// `saveConfirmedSleeps` the ids of the records it minted or extended in
+    /// this pass, the save re-checks exactly those against freshly loaded
+    /// dismissal tombstones immediately before the write, and the ids it
+    /// dropped are reported back so the caller never banners or notifies a
+    /// record the user dismissed while the persist was in flight.
+    @MainActor
+    final class AutoConfirmSaveTimeDismissalRecheck {
+        let recordIDs: Set<String>
+        private(set) var suppressedIDs: Set<String> = []
+        init(recordIDs: Set<String>) { self.recordIDs = recordIDs }
+        func markSuppressed(_ ids: Set<String>) { suppressedIDs.formUnion(ids) }
+    }
+
     @discardableResult
     private func saveConfirmedSleeps(
         _ sleeps: [UserConfirmedSleep],
@@ -41564,6 +41662,7 @@ final class SessionStore: ObservableObject {
         archiveFreeLatestNightSettlement: Bool = false,
         publishStressContext: Bool = false,
         recoveredMutationBase: [UserConfirmedSleep]? = nil,
+        autoConfirmDismissalRecheck: AutoConfirmSaveTimeDismissalRecheck? = nil,
         executionShouldContinue:
             @escaping @Sendable () -> Bool = { true }
     ) async -> Bool {
@@ -41632,11 +41731,43 @@ final class SessionStore: ObservableObject {
             )
             return false
         }
+        // Save-time dismissal re-check: the auto-confirm loop's tombstone
+        // check and this write are separated by suspension points (the
+        // transaction gate, the authoritative load, the off-main save
+        // preparation), and a "not sleep" tap handled on the MainActor inside
+        // any of them lands too late for that check yet too early for
+        // dismissal-time retraction to see the record. Re-check the freshly
+        // loaded tombstones here — after the last suspension before the write
+        // — and drop the suppressed auto-confirmations from the written set.
+        // Scoped to the ids this pass minted or extended so an unrelated save
+        // never silently filters a pre-existing record out from under its own
+        // retraction sweep.
+        var settledSleeps = preparation.settledSleeps
+        var saveTimeSuppressedIDs: Set<String> = []
+        if let autoConfirmDismissalRecheck,
+           !autoConfirmDismissalRecheck.recordIDs.isEmpty {
+            saveTimeSuppressedIDs = Self.saveTimeDismissalSuppressedSleepIDs(
+                in: settledSleeps,
+                recheckIDs: autoConfirmDismissalRecheck.recordIDs,
+                tombstones: AtriaDismissedSleepCandidateStore.load()
+            )
+            if !saveTimeSuppressedIDs.isEmpty {
+                settledSleeps.removeAll { saveTimeSuppressedIDs.contains($0.id) }
+                autoConfirmDismissalRecheck.markSuppressed(saveTimeSuppressedIDs)
+                AtriaDebugLog("ATRIADBG sleep_auto_confirm status=save_time_dismissal_suppressed records=%d",
+                              saveTimeSuppressedIDs.count)
+                DetectionEventLog.append(DetectionEvent(
+                    kind: "sleepCandidateSkipped",
+                    reason: "save_time_dismissal_suppressed",
+                    detail: "\(saveTimeSuppressedIDs.count) auto-confirmation(s) dropped at save time after a mid-flight dismissal"
+                ))
+            }
+        }
         confirmedRecordWriteGeneration &+= 1
         let generation = confirmedRecordWriteGeneration
         let result = await Self.confirmedRecordWorker.performAsync(.sleeps(
             generation: generation,
-            records: preparation.settledSleeps,
+            records: settledSleeps,
             defaultsKey: ConfirmedSleepDefaults.key
         ))
         guard case .sleeps(let completedGeneration, let sorted, _) = result,
@@ -41677,7 +41808,8 @@ final class SessionStore: ObservableObject {
                 )
                 recoveredConcurrentConfirmedSleepDeletedIDs.insert(id)
             }
-            for (id, sleep) in preparation.concurrentDelta.upserts {
+            for (id, sleep) in preparation.concurrentDelta.upserts
+            where !saveTimeSuppressedIDs.contains(id) {
                 recoveredConcurrentConfirmedSleepDeletedIDs.remove(id)
                 recoveredConcurrentConfirmedSleepUpserts[id] = sleep
             }
