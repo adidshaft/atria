@@ -12137,14 +12137,58 @@ final class AtriaHomeModel {
                                    officialAppCoexistenceRisk: ble.officialAppCoexistenceRisk)
     }
 
-    /// Durable coaching targets require canonical Recovery authority. Pending
-    /// sleep review scores are intentionally `.unverified` and stay visual-only.
+    /// W3-B (strain-targets fix 2): the presentation authority in
+    /// `SessionStore.pendingSleepRecoveryEstimate` stamps every pending
+    /// sleep-review preview with this marker. The preview is display evidence
+    /// only and must NEVER reach the durable strain-target minter, whatever
+    /// its tier; a source-scan test pins the Sessions.swift stamp to this
+    /// constant so the two cannot drift.
+    nonisolated static let pendingSleepReviewPreviewDetailMarker = "pending sleep review"
+
+    /// Durable coaching targets require numeric AUTHORITATIVE Recovery.
+    /// Canonical tiers mint canonically; a numeric authoritative `.unverified`
+    /// projection may provisionally fill an empty cycle slot (W3-B fix 2,
+    /// via `AtriaDailyStrainTargetStore.mintAuthority`). The pending
+    /// sleep-review presentation preview is intentionally `.unverified` and
+    /// stays visual-only — it is stripped here by its authority marker before
+    /// any write authority is derived.
     nonisolated static func recoveryAuthorizedForStrainTarget(
         _ estimate: Metrics.RecoveryEstimate
-    ) -> Int? {
+    ) -> (percent: Int, tier: Metrics.RecoveryEstimate.Confidence)? {
+        guard !estimate.detail.contains(Self.pendingSleepReviewPreviewDetailMarker) else {
+            return nil
+        }
         guard estimate.confidence == .personalBaseline
-                || estimate.confidence == .validated else { return nil }
-        return estimate.percent
+                || estimate.confidence == .validated
+                || estimate.confidence == .unverified,
+              let percent = estimate.percent else { return nil }
+        return (percent, estimate.confidence)
+    }
+
+    /// W3-B (strain-targets fix 5): shifted-sleeper presentation continuity.
+    /// During the post-wake window where the cycle has flipped but recovery is
+    /// not yet canonical (no frozen target and no live kernel target), append
+    /// the PRIOR cycle's frozen target to the guidance sentence as a dated
+    /// disclosure — the AtriaCurrentDayPresentation/AtriaPriorCycleDisclosure
+    /// pattern: a prior cycle's value may only appear dated, never as today's
+    /// primary. No fabricated value: the real prior target with its real date,
+    /// and `target` stays nil so the zone chip stays absent
+    /// (`TargetZones.strain` fail-closed behavior).
+    nonisolated static func guidanceDisclosingPriorCycleStrainTarget(
+        _ guidance: Coach.Guidance,
+        priorCycleTarget: AtriaFrozenDailyStrainTarget?
+    ) -> Coach.Guidance {
+        guard guidance.target == nil, let prior = priorCycleTarget else { return guidance }
+        let dateText = prior.day.formatted(.dateTime.month(.abbreviated).day())
+        let qualifier = prior.isProvisional ? "provisional target" : "target"
+        let disclosure = String(format: " Prior cycle (%@) %@ was %.1f — shown dated until this cycle's recovery is ready.",
+                                dateText, qualifier, prior.target)
+        return Coach.Guidance(headline: guidance.headline,
+                              detail: guidance.detail + disclosure,
+                              color: guidance.color,
+                              target: nil,
+                              state: guidance.state,
+                              reason: guidance.reason + "_prior_cycle_target_disclosed")
     }
 
     private static func makeHeroSnapshot(ble: AtriaBLEManager,
@@ -12296,19 +12340,25 @@ final class AtriaHomeModel {
             || storedRecovery != nil
             || (latestSleep.map { ($0.end ?? $0.day) == physiologicalCycle.start } == true)
         let loadIsPrepared = store.hasLoadedSavedSessions && store.trainingLoadSummaryIsPrepared
-        // Pending-review Recovery is display evidence only. Only canonical
-        // personal-baseline/validated authority may mint or replace the durable
-        // daily strain target; visual guidance below may still use the clearly
+        // Pending-review Recovery is display evidence only — the gate strips
+        // it before any write authority is derived. Canonical
+        // personal-baseline/validated authority may mint, replace, or
+        // invalidate the durable daily strain target; a numeric authoritative
+        // `.unverified` projection may provisionally fill an empty cycle slot
+        // (W3-B fix 2, shared `mintAuthority` standard, tier recorded as
+        // provenance); visual guidance below may still use the clearly
         // labelled pending estimate.
         let strainTargetRecovery = recoveryAuthorizedForStrainTarget(recovery)
-        let frozenTarget = AtriaDailyStrainTargetStore.resolve(recovery: strainTargetRecovery,
+        let frozenTarget = AtriaDailyStrainTargetStore.resolve(recovery: strainTargetRecovery?.percent,
+                                                               recoveryConfidence: strainTargetRecovery?.tier,
                                                                load: load,
                                                                recoveryIsAttributedToCurrentDay: recoveryIsAttributedToCurrentDay
                                                                    && strainTargetRecovery != nil,
                                                                loadIsPrepared: loadIsPrepared,
                                                                mutationAuthority: strainTargetRecovery == nil
                                                                    ? .preserveExisting
-                                                                   : .canonical,
+                                                                   : AtriaDailyStrainTargetStore.mintAuthority(
+                                                                       recoveryConfidence: strainTargetRecovery?.tier),
                                                                cycleStart: physiologicalCycle.start,
                                                                now: now,
                                                                calendar: calendar)
@@ -12327,13 +12377,25 @@ final class AtriaHomeModel {
                                             to: calendar.startOfDay(for: night.day)) else { return nil }
             return store.dailyRollupHistory.first { calendar.isDate($0.day, inSameDayAs: prior) }
         }
-        let guidance = AtriaWhiteboardCoachSentence.rewrite(
+        let whiteboardGuidance = AtriaWhiteboardCoachSentence.rewrite(
             kernel: kernelGuidance,
             context: .init(hrvMS: Int(deferredDetails?.hrvValue ?? fallbackHrv.value),
                            restingHR: presentationRestingHeartRate,
                            baseline: AtriaBaselineTargetSnapshot(store.baseline),
                            yesterdayTRIMP: whiteboardYesterday?.trimp,
                            yesterdayStrainDisplay: whiteboardYesterday?.strain))
+        // W3-B (strain-targets fix 5): the shifted sleeper who confirmed a
+        // ~19:15 wake sees the cycle flip with no canonical recovery yet. When
+        // no target exists for the new cycle, the prior cycle's REAL frozen
+        // target survives only as a dated disclosure inside the guidance
+        // sentence; `target` stays nil so the zone chip stays absent.
+        let guidance = Self.guidanceDisclosingPriorCycleStrainTarget(
+            whiteboardGuidance,
+            priorCycleTarget: frozenTarget == nil && whiteboardGuidance.target == nil
+                ? AtriaDailyStrainTargetStore.priorCycleSnapshot(cycleStart: physiologicalCycle.start,
+                                                                 now: now,
+                                                                 calendar: calendar)
+                : nil)
         // Handoff-10 CP1: present the identity-resolved values. Cycle math
         // (guidance, strain target) above intentionally still uses the
         // wake-to-wake projection; only what the Today surface DISPLAYS as

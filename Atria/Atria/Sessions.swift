@@ -10458,6 +10458,9 @@ final class SessionStore: ObservableObject {
     /// on the pre-rollover projection until an unrelated event fired.
     private var physiologicalCycleRolloverTask: Task<Void, Never>?
     private var scheduledPhysiologicalCycleRolloverBoundary: Date?
+    /// W3-A P0-3: one outstanding re-run of the morning minter, armed one
+    /// second after a confirmed near-future wake passes. Re-arming replaces it.
+    private var morningSettlementNearFutureRetryTask: Task<Void, Never>?
     private var workoutRehydrationDeferredUntilForeground = false
     /// Retention is durability-preserving maintenance over an already-fsynced
     /// archive. Foreground archive notifications retain only this intent; a
@@ -11488,7 +11491,78 @@ final class SessionStore: ObservableObject {
         refreshCurrentCycleStrapStepReceipt(
             reason: "physiological_cycle_rollover"
         )
+        settleWakeDayFrozenMetricAtCycleRolloverIfNeeded()
         schedulePhysiologicalCycleRolloverCheck(reason: reason)
+    }
+
+    /// W3-A P0-2: the cycle flip is the exact instant the frozen wake-day
+    /// metric's honesty gates (`completedBy: now`, `end <= now`) become
+    /// satisfiable for a sleep that was confirmed while its measured wake was
+    /// still in the future — today's shape for a shifted-schedule sleeper
+    /// confirming at ~19:15. Settling here (instead of only refreshing the
+    /// step receipt) closes both the future-end race and the
+    /// background-deferred-confirm window with one edge. The settle is
+    /// bounded by design — the minter never reads the live journal or the
+    /// historical archive — and it tolerates a mutation-fence bail, relying
+    /// on the existing launch-repair path in that case.
+    private func settleWakeDayFrozenMetricAtCycleRolloverIfNeeded() {
+        let calendar = Calendar.current
+        let now = Date()
+        guard let sleep = AtriaPhysiologicalCycle.latestCompletedMainSleep(
+            now: now,
+            confirmedSleeps: cachedConfirmedSleeps,
+            calendar: calendar
+        ) else { return }
+        let wakeDay = EventCivilTime.day(
+            containing: sleep.end,
+            eventTimeZoneIdentifier: sleep.eventTimeZoneIdentifier,
+            outputCalendar: calendar
+        )
+        let metric = dailyMetricHistory.first {
+            calendar.isDate($0.day, inSameDayAs: wakeDay)
+        }
+        let rollup = dailyRollupHistory.first {
+            calendar.isDate($0.day, inSameDayAs: wakeDay)
+        }
+        guard Self.cycleRolloverSettlementRequired(
+            sleep: sleep,
+            metric: metric,
+            rollup: rollup,
+            calendar: calendar
+        ) else {
+            AtriaDebugLog(
+                "ATRIADBG morning_settlement status=already_settled reason=cycle_rollover sleep_id=%@",
+                sleep.id
+            )
+            return
+        }
+        _ = settleConfirmedMorningAuthority(
+            reason: "cycle_rollover_settlement",
+            now: now,
+            completion: { [weak self] succeeded in
+                guard succeeded else { return }
+                self?.publishDashboardRevision()
+            }
+        )
+    }
+
+    /// Pure decision for the rollover-edge settle: mint only when the wake
+    /// day's frozen metric is missing or fails the exact three-way identity
+    /// proof (`deferredLaunchCardSettlementMatches`) — the same check the
+    /// launch fast path trusts. A matching, already-settled day is left
+    /// byte-identical.
+    nonisolated static func cycleRolloverSettlementRequired(
+        sleep: UserConfirmedSleep,
+        metric: SavedDailyMetric?,
+        rollup: DailyRollupStoreEntry?,
+        calendar: Calendar = .current
+    ) -> Bool {
+        !deferredLaunchCardSettlementMatches(
+            sleep: sleep,
+            metric: metric,
+            rollup: rollup,
+            calendar: calendar
+        )
     }
 
     /// Publishes the current physiological cycle's strap-only step receipt
@@ -23717,6 +23791,7 @@ final class SessionStore: ObservableObject {
         recoveredDataDerivedCompletedStages.removeAll()
         pendingWorkoutStepEvidenceWorkItem?.cancel()
         physiologicalCycleRolloverTask?.cancel()
+        morningSettlementNearFutureRetryTask?.cancel()
         deferredLaunchCardSettlementRetryTask?.cancel()
         pendingDailyMetricInsightRefreshTask?.cancel()
         pendingSleepReadinessRetry?.cancel()
@@ -41371,7 +41446,7 @@ final class SessionStore: ObservableObject {
             && completedGeneration == requestedGeneration
     }
 
-    private struct ConfirmedSleepSavePreparation: @unchecked Sendable {
+    struct ConfirmedSleepSavePreparation: @unchecked Sendable {
         let settledSleeps: [UserConfirmedSleep]
         let baselineInputsChanged: Bool
         let concurrentDelta: (
@@ -41437,7 +41512,33 @@ final class SessionStore: ObservableObject {
         return normalized
     }
 
-    nonisolated private static func prepareConfirmedSleepSave(
+    /// W3-A P0-1 (recovery settlement at the cycle flip): the boundary the
+    /// save transaction arms for `handlePhysiologicalCycleRollover`. A confirm
+    /// whose measured wake is still slightly in the future — the shifted
+    /// sleeper's daily ~19:15 reality — is invisible to `nextNoSleepRollover`
+    /// because `boundaryEligibleMainSleeps` honestly filters `end <= now`, so
+    /// without an armed edge at the sleep's own end the new wake day's frozen
+    /// metric stays unminted until the next launch while widgets, trend and
+    /// HealthKit wait. Arm the existing rollover timer at end+1s instead: the
+    /// handler re-checks settlement there, after the honesty gates'
+    /// precondition has become true. The `completedBy: now` and `end <= now`
+    /// gates themselves are never loosened — this re-triggers the minter; it
+    /// never mints from an unfinished night.
+    nonisolated static func settlementArmedRolloverBoundary(
+        noSleepRollover: Date?,
+        newestSettledMainSleepEnd: Date?,
+        preparationNow: Date
+    ) -> Date? {
+        guard let end = newestSettledMainSleepEnd,
+              end > preparationNow else {
+            return noSleepRollover
+        }
+        let settlementEdge = end.addingTimeInterval(1)
+        guard let noSleepRollover else { return settlementEdge }
+        return min(noSleepRollover, settlementEdge)
+    }
+
+    nonisolated static func prepareConfirmedSleepSave(
         base: [UserConfirmedSleep],
         desired: [UserConfirmedSleep],
         authoritativeCurrent: [UserConfirmedSleep],
@@ -41562,12 +41663,28 @@ final class SessionStore: ObservableObject {
             calendar: calendar
         ).start
         guard shouldContinue() else { return nil }
-        let nextRolloverBoundary = AtriaPhysiologicalCycle
+        let nextNoSleepRolloverBoundary = AtriaPhysiologicalCycle
             .nextNoSleepRollover(
                 now: preparationNow,
                 confirmedSleeps: settledSleeps,
                 calendar: calendar
             )
+        guard shouldContinue() else { return nil }
+        // W3-A P0-1: a future-end confirm arms the settlement edge at the
+        // confirmed sleep's own end (+1s) so the cycle flip settles the new
+        // wake day's frozen metric without waiting for the next launch.
+        guard let settledCanonicalMains = AtriaPhysiologicalCycle
+            .canonicalMainSleepsCancellable(
+                from: settledSleeps,
+                shouldContinue: shouldContinue
+            ) else { return nil }
+        let nextRolloverBoundary = settlementArmedRolloverBoundary(
+            noSleepRollover: nextNoSleepRolloverBoundary,
+            newestSettledMainSleepEnd: settledCanonicalMains
+                .map(\.end)
+                .max(),
+            preparationNow: preparationNow
+        )
         guard shouldContinue() else { return nil }
         return .init(
             settledSleeps: settledSleeps,
@@ -52411,6 +52528,62 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// W3-A P0-3: the "near future" horizon for deferring the minter to a
+    /// one-shot retry at the confirmed end. Wide enough for the
+    /// device-observed ~6-minute future-end confirms; a more distant future
+    /// end is not deferred (the save-path armed rollover boundary owns that
+    /// edge), so a stray far-future record can never park the minter.
+    nonisolated static let morningSettlementNearFutureRetryWindow: TimeInterval = 10 * 60
+
+    /// Pure decision for the near-future deferral: non-nil (the retry
+    /// instant, end+1s) exactly when the newest confirmed main sleep ends in
+    /// (now, now+window]. A completed sleep (end <= now) or a distant future
+    /// end returns nil and the minter proceeds unchanged.
+    nonisolated static func morningSettlementNearFutureRetryDate(
+        newestConfirmedMainSleepEnd: Date?,
+        now: Date,
+        window: TimeInterval = morningSettlementNearFutureRetryWindow
+    ) -> Date? {
+        guard let end = newestConfirmedMainSleepEnd,
+              end > now,
+              end.timeIntervalSince(now) <= window else { return nil }
+        return end.addingTimeInterval(1)
+    }
+
+    /// W3-A P0-3: one-shot re-run of the morning minter one second after a
+    /// confirmed near-future wake passes. One outstanding retry at a time;
+    /// re-arming replaces it. The task re-enters
+    /// `settleConfirmedMorningAuthority`, whose own guards (mutation fence,
+    /// completed-main resolution, near-future re-check against any newer
+    /// future-end confirm) stay authoritative at fire time.
+    private func scheduleMorningSettlementNearFutureRetry(
+        at retryAt: Date,
+        now: Date,
+        originReason: String
+    ) {
+        morningSettlementNearFutureRetryTask?.cancel()
+        let delay = max(1, retryAt.timeIntervalSince(now))
+        AtriaDebugLog(
+            "ATRIADBG morning_settlement status=near_future_retry_scheduled origin=%@ delay=%.0f",
+            originReason,
+            delay
+        )
+        morningSettlementNearFutureRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(
+                nanoseconds: UInt64(delay * 1_000_000_000)
+            )
+            guard !Task.isCancelled, let self else { return }
+            self.morningSettlementNearFutureRetryTask = nil
+            _ = self.settleConfirmedMorningAuthority(
+                reason: "near_future_end_retry",
+                completion: { [weak self] succeeded in
+                    guard succeeded else { return }
+                    self?.publishDashboardRevision()
+                }
+            )
+        }
+    }
+
     /// Mints the morning metric and rollup directly from the exact confirmed
     /// sleep record. This is bounded by the small persisted collections and
     /// never reads the live journal or historical archive.
@@ -52433,6 +52606,34 @@ final class SessionStore: ObservableObject {
                 reason,
                 canonicalMutationAllowed ? 1 : 0,
                 recoveredDataMutationTransaction.activeTicket == nil ? 0 : 1
+            )
+            return false
+        }
+        // W3-A P0-3 (belt-and-braces): a direct minter call landing minutes
+        // before a confirmed future-end wake would resolve
+        // `latestCompletedMainSleep` to the PREVIOUS night — its `end <= now`
+        // filter is an honesty gate and stays — and silently settle
+        // yesterday's wake day, leaving the new day unminted with nothing
+        // scheduled to re-run the minter. Defer instead and re-run this exact
+        // minter one second after the confirmed end passes. The gates are
+        // never loosened: this re-triggers when their precondition becomes
+        // true; it never mints from an unfinished night.
+        if let retryAt = Self.morningSettlementNearFutureRetryDate(
+            newestConfirmedMainSleepEnd: AtriaPhysiologicalCycle
+                .canonicalMainSleeps(from: cachedConfirmedSleeps)
+                .map(\.end)
+                .max(),
+            now: now
+        ) {
+            scheduleMorningSettlementNearFutureRetry(
+                at: retryAt,
+                now: now,
+                originReason: reason
+            )
+            AtriaDebugLog(
+                "ATRIADBG morning_settlement status=deferred reason=%@ guard=near_future_sleep_end retry_at=%.3f",
+                reason,
+                retryAt.timeIntervalSince1970
             )
             return false
         }
