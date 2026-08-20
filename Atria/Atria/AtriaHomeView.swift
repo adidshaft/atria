@@ -9865,6 +9865,7 @@ final class AtriaHomeModel {
     private var diagnosticsPresentationIsDirty = false
     private var diagnosticsPresentationResumeScheduled = false
     private var applicationActivationRetryScheduled = false
+    private var livePresentationWatchdogTimer: Timer?
     private var liveSessionDerived: LiveSessionDerived
     private var diagnosticsWorkItem: DispatchWorkItem?
     private var diagnosticsWorkInFlight = false
@@ -10406,7 +10407,45 @@ final class AtriaHomeModel {
         }
     }
 
+    /// Recovery-state-class hardening (2026-08-21 device freeze): a missed
+    /// scene-activation edge left every live surface frozen at its launch
+    /// snapshot — the battery pill read "Pending" while the engine's
+    /// persisted stream state was `live`. Activation is edge-driven (scene
+    /// onChange + one-shot retry), and both are fenced behind the very
+    /// mirrors a missed edge leaves stale, so one lost edge froze the UI
+    /// permanently. This watchdog reads the GROUND TRUTH
+    /// (UIApplication.applicationState) on a slow cadence and repairs the
+    /// mirrors when they disagree; it is a no-op every tick the pipeline is
+    /// healthy, and it never fabricates activation the OS does not report.
+    private func startLivePresentationWatchdog() {
+        livePresentationWatchdogTimer?.invalidate()
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.repairLivePresentationIfActiveButFrozen()
+            }
+        }
+        timer.tolerance = 2
+        RunLoop.main.add(timer, forMode: .common)
+        livePresentationWatchdogTimer = timer
+    }
+
+    private func repairLivePresentationIfActiveButFrozen() {
+        guard UIApplication.shared.applicationState == .active else { return }
+        if AtriaHistoricalProjectionForegroundGate.isBackgrounded {
+            // Mirrors the scene-active onChange arm: the OS says active, so
+            // the projection gate's backgrounded latch is provably stale.
+            AtriaHistoricalProjectionForegroundGate.isBackgrounded = false
+        }
+        if !scenePresentationIsActive {
+            setScenePresentationActive(true)
+        } else if !livePresentationAuthority.isActive
+                    || livePresentationAuthority.catchUpIsPending {
+            attemptLivePresentationCatchUpIfNeeded()
+        }
+    }
+
     private func bind() {
+        startLivePresentationWatchdog()
         Publishers.Merge(
             NotificationCenter.default.publisher(
                 for: UIApplication.didBecomeActiveNotification
