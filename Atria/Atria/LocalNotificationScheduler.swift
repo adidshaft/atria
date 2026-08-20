@@ -1347,10 +1347,21 @@ enum LocalNotificationScheduler {
                     ? recovery.percent
                     : nil)
         }
+        // W1-C: one honesty standard for the one durable strain-target write.
+        // The scheduler mirrors Home's writer (AtriaHomeModel's
+        // recoveryAuthorizedForStrainTarget → mutationAuthority derivation):
+        // a nil attribution PRESERVES the stored target instead of erasing it
+        // (the recovery-state defect class), and minting requires the shared
+        // canonical-confidence gate, so a learning/unverified projection may
+        // read a valid same-cycle target but can never write one.
         let frozenTarget = AtriaDailyStrainTargetStore.resolve(recovery: attributedRecovery,
                                                                load: store.trainingLoadSummarySnapshot,
                                                                recoveryIsAttributedToCurrentDay: attributedRecovery != nil,
                                                                loadIsPrepared: store.hasLoadedSavedSessions && store.trainingLoadSummaryIsPrepared,
+                                                               mutationAuthority: attributedRecovery == nil
+                                                                   ? .preserveExisting
+                                                                   : AtriaDailyStrainTargetStore.mintAuthority(
+                                                                       recoveryConfidence: recovery.confidence),
                                                                cycleStart: physiologicalCycle.start,
                                                                now: now,
                                                                calendar: calendar)

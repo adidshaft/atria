@@ -417,8 +417,11 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         let maintenance = try XCTUnwrap(motion.range(
             of: "maintainPendingWorkoutMotionBankTickets("
         ))
+        // W1-A 2026-08-20: the bare continuation-latch guard became the
+        // unified idle-window radio-ownership predicate; the ticket
+        // housekeeping must still run before the ownership decision.
         let rawContinuation = try XCTUnwrap(motion.range(
-            of: "guard !connectedRawHistoryCatchUpContinuationPending"
+            of: "guard !rawLaneActivelyOwnsRadio"
         ))
         XCTAssertLessThan(maintenance.lowerBound, rawContinuation.lowerBound)
     }

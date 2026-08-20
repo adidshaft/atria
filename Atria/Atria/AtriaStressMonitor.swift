@@ -1782,7 +1782,7 @@ enum AtriaHistoricalStressReplay {
     /// against the same `AtriaPhysiologicalStressModel` gates the kernel
     /// enforces — never interpolation. Diagnostic only; no product reader.
     struct GapReceiptSummary: Codable {
-        var schema: Int = 2
+        var schema: Int = 3
         var recordedAtUnix: TimeInterval
         var windowStartUnix: TimeInterval
         var windowEndUnix: TimeInterval
@@ -1801,7 +1801,19 @@ enum AtriaHistoricalStressReplay {
         /// terminalize when the session seals into a saved session.
         var activeJournalRowCapDeferred: Int
         var kernelDeclined: Int
-        /// "minuteUnix|classification", newest last, capped.
+        /// W1-B (schema 3): minutes a structurally-aborted replay could not
+        /// adjudicate. The kernel never ran, so they are named for the abort
+        /// (`replay_aborted_*`) rather than blamed as `kernel_declined`.
+        /// Absent when the replay ran to completion.
+        var replayAborted: Int?
+        /// The abort classification threaded from the replay worker (e.g.
+        /// `replay_aborted_session_order`). Absent for a completed replay.
+        var replayAbortReason: String?
+        /// "minuteUnix|classification", newest last, capped — when the window
+        /// holds more missing minutes than the cap, the NEWEST entries are the
+        /// ones retained (W1-B fixed the cap, which previously kept the
+        /// oldest and silently dropped exactly the near-past minutes the
+        /// receipts exist to explain).
         var missingMinutes: [String]
     }
 
@@ -1917,6 +1929,7 @@ enum AtriaHistoricalStressReplay {
         draft: GapClassificationDraft,
         mergedStoreMinutes: Set<Int>,
         now: Date,
+        replayAbortReason: String? = nil,
         defaults: UserDefaults = .standard
     ) {
         var summary = GapReceiptSummary(
@@ -1933,6 +1946,7 @@ enum AtriaHistoricalStressReplay {
             kernelDeclined: 0,
             missingMinutes: []
         )
+        summary.replayAbortReason = replayAbortReason
         for key in draft.classesByMinute.keys.sorted() {
             var classification = draft.classesByMinute[key] ?? "kernel_declined"
             if classification == "qualified_and_reconciled" {
@@ -1957,12 +1971,29 @@ enum AtriaHistoricalStressReplay {
                     summary.insufficientHRSamples += 1
                 case "source_not_yet_durable":
                     summary.sourceNotYetDurable += 1
-                default: summary.kernelDeclined += 1
+                default:
+                    // W1-B: the draft's evidence-shortfall classes describe
+                    // the SOURCE and stay truthful even when the replay
+                    // aborted — but `kernel_declined` claims the kernel ran
+                    // and declined. In an aborted replay it never ran, so
+                    // these minutes carry the abort marker instead.
+                    if let replayAbortReason {
+                        classification = replayAbortReason
+                        summary.replayAborted = (summary.replayAborted ?? 0) + 1
+                    } else {
+                        summary.kernelDeclined += 1
+                    }
                 }
             }
-            if summary.missingMinutes.count < gapReceiptMinuteCap {
-                summary.missingMinutes.append("\(key)|\(classification)")
-            }
+            summary.missingMinutes.append("\(key)|\(classification)")
+        }
+        // "Newest last, capped": iteration is ascending, so retaining the
+        // suffix keeps the NEWEST entries — the documented contract. The old
+        // append-until-cap kept the oldest 96 and dropped the newest.
+        if summary.missingMinutes.count > gapReceiptMinuteCap {
+            summary.missingMinutes.removeFirst(
+                summary.missingMinutes.count - gapReceiptMinuteCap
+            )
         }
         guard let data = try? JSONEncoder().encode(summary) else { return }
         defaults.set(data, forKey: gapReceiptKey)
@@ -2482,6 +2513,72 @@ enum AtriaHistoricalStressReplay {
             previous = session.start
         }
         return direction == -1 ? Array(sessions.reversed()) : sessions
+    }
+
+    /// W1-B: caller-side mirror of `chronologicallyOrderedSessions`' direction
+    /// rule (either monotonic start order is accepted; a mixed order fails
+    /// closed). Lets the replay worker NAME an ordering abort honestly without
+    /// teaching `evaluate` to sort — the refusal to sort is a deliberate
+    /// overlap-provenance guard and must stay.
+    static func sessionStartOrderIsMonotonic(_ starts: [Date]) -> Bool {
+        var direction = 0 // 1 ascending, -1 descending
+        var previous: Date?
+        for start in starts {
+            guard start.timeIntervalSinceReferenceDate.isFinite else {
+                return false
+            }
+            if let previous, start != previous {
+                let nextDirection = start > previous ? 1 : -1
+                if direction != 0, direction != nextDirection { return false }
+                direction = nextDirection
+            }
+            previous = start
+        }
+        return true
+    }
+
+    /// W1-B (stress-gaps fix 1): order-preserving journal union for
+    /// `scheduleHistoricalStressReplay`. SessionStore's cache publishes
+    /// newest-first and `evaluate` refuses to sort, so the resident journal —
+    /// the newest session — joins at the FRONT of the list after the id
+    /// dedupe. Appending it at the end flipped the monotonic direction and
+    /// every journal-unioned replay failed closed to `.empty` (the
+    /// device-proven qualifiedAndReconciled=0 defect since d10f1fcd). A
+    /// journal unexpectedly older than the current head, or structurally
+    /// invalid (end < start), is dropped for the run: fail closed, identical
+    /// to today's no-journal replay. The span is returned only when the
+    /// journal was actually unioned, matching the draft's active-journal
+    /// overlay contract.
+    static func journalUnionedSourceSessions(
+        savedSessions: [SavedSession],
+        journal: SavedSession?
+    ) -> (sessions: [SavedSession],
+          activeJournalSpan: ClosedRange<TimeInterval>?) {
+        guard let journal else { return (savedSessions, nil) }
+        var sessions = savedSessions
+        sessions.removeAll { $0.id == journal.id }
+        guard journal.end >= journal.start,
+              sessions.first.map({ journal.start >= $0.start }) ?? true else {
+            return (sessions, nil)
+        }
+        sessions.insert(journal, at: 0)
+        let spanStart = journal.start.timeIntervalSince1970
+        let spanEnd = journal.end.timeIntervalSince1970
+        return (sessions, spanStart...spanEnd)
+    }
+
+    /// W1-B (stress-gaps fix 4): a structurally-rejected non-empty source
+    /// names its abort instead of blaming a kernel that never ran. Returns nil
+    /// for a completed replay — including the authoritative empty-source
+    /// result, which carries managed ranges and is therefore not `.empty`.
+    static func replayAbortReason(
+        result: Result,
+        sourceSessions: [SavedSession]
+    ) -> String? {
+        guard result == .empty, !sourceSessions.isEmpty else { return nil }
+        return sessionStartOrderIsMonotonic(sourceSessions.map(\.start))
+            ? "replay_aborted_structural"
+            : "replay_aborted_session_order"
     }
 
     private static func minuteFloor(_ date: Date) -> Date {
@@ -3677,17 +3774,29 @@ final class AtriaStressMonitorStore: ObservableObject {
         // live and restored timelines cannot silently mix scoring kernels.
         guard case .scored = latestState.kind, let level = latestState.level,
               latestState.minuteFact != nil else { return }
-        let priorUnsavedSamples = unsavedHistorySamples
-        let livePoint = StressHistoryPoint(
-            t: now,
-            activation: latestState.rawActivation,
-            level: level,
-            confidence: latestState.confidence,
-            hrvAvailable: latestState.hrvAvailable,
-            minuteFact: latestState.minuteFact,
-            factSource: .live,
-            scoringVersion: AtriaStressMonitor.scoringVersion
+        recordScoredHistoryPoint(
+            StressHistoryPoint(
+                t: now,
+                activation: latestState.rawActivation,
+                level: level,
+                confidence: latestState.confidence,
+                hrvAvailable: latestState.hrvAvailable,
+                minuteFact: latestState.minuteFact,
+                factSource: .live,
+                scoringVersion: AtriaStressMonitor.scoringVersion
+            ),
+            now: now
         )
+    }
+
+    /// W1-B: shared durable-recording tail for the live-tick minute fact and
+    /// bounded retroactive catch-up facts. `now` is the point's own clock; the
+    /// exact-clock collision rule and the one-minute spacing guard keep the
+    /// array chronological, so an out-of-order retroactive point is dropped —
+    /// never inserted mid-history and never allowed to displace a live fact.
+    private func recordScoredHistoryPoint(_ livePoint: StressHistoryPoint,
+                                          now: Date) {
+        let priorUnsavedSamples = unsavedHistorySamples
         if let last = history.last, last.t == now {
             // Recovered replay can finish just before the live minute publishes.
             // Exact-clock acquisition authority belongs to the live fact.
@@ -3726,7 +3835,7 @@ final class AtriaStressMonitorStore: ObservableObject {
         // Every complete v3 fact participates. HR-only facts remain explicitly
         // lower confidence in minute provenance; silently dropping them would
         // turn the daily distribution into undisclosed HR+HRV-only coverage.
-        if distributionArchive.record(level: level, at: now) {
+        if distributionArchive.record(level: livePoint.level, at: now) {
             advanceDistributionRevision()
             unsavedDistributionSamples += 1
             // At the one-minute history cadence this writes at most every ten
@@ -4040,6 +4149,14 @@ final class AtriaStressMonitorStore: ObservableObject {
 
     /// Feed one pulse tick in. Safe to call as often as ~every 5s (or on every
     /// HR/RR update); the buffers + EMA absorb the exact cadence.
+    ///
+    /// `confirmedSleeps` feeds ONLY the bounded retroactive catch-up for
+    /// tick-starved minute boundaries, whose sleep evidence must be computed
+    /// at the skipped minute itself (`hasQualifiedActiveSleepEvidence(in:at:)`)
+    /// rather than copied from the current tick. Callers that omit it keep
+    /// the fail-closed default: skipped minutes score with sleep context
+    /// `.unavailable`. The current minute continues to use the caller-computed
+    /// `hasActiveSleepEvidence`, unchanged.
     func update(heartRate: Int,
                 hasContact: Bool,
                 recentRRSamples: [AtriaBreathworkSession.RRSample],
@@ -4049,7 +4166,14 @@ final class AtriaStressMonitorStore: ObservableObject {
                  baseline: PersonalBaseline,
                  restingMaxHR: (rest: Int, max: Int),
                  hasActiveSleepEvidence: Bool = false,
+                 confirmedSleeps: [UserConfirmedSleep] = [],
                  now: Date = Date()) {
+
+        // W1-B retroactive catch-up: a skipped minute's warm-up eligibility is
+        // judged against the contact epoch that was current when that minute
+        // elapsed — captured before this very tick's bookkeeping can restart
+        // the epoch (a >60s tick stall restarts warm-up on the resuming tick).
+        let contactEpochBeforeTick = contactStartedAt
 
         if hasContact, heartRate > 0 {
             if latestLiveHeartRate?.bpm != heartRate {
@@ -4160,6 +4284,24 @@ final class AtriaStressMonitorStore: ObservableObject {
             return
         }
 
+        let currentMinute = Date(timeIntervalSince1970:
+            floor(now.timeIntervalSince1970 / AtriaPhysiologicalStressModel.evaluationCadence)
+                * AtriaPhysiologicalStressModel.evaluationCadence)
+
+        // W1-B (stress-gaps fix 3): bounded, oldest-first retroactive catch-up
+        // for tick-starved minute boundaries. This runs BEFORE the warm-up
+        // guard because a >60s tick stall restarts warm-up on this very tick,
+        // yet the leading skipped minute's five-minute window elapsed under
+        // the PRIOR contact epoch and remains fully adjudicated by the
+        // unchanged kernel gates (290s span / 60s gap / 5 samples) against the
+        // retained buffer — a window the gates decline stays an honest gap.
+        evaluateTickStarvedMinutes(upTo: currentMinute,
+                                   contactEpochBeforeTick: contactEpochBeforeTick,
+                                   recentRRSamples: recentRRSamples,
+                                   baseline: baseline,
+                                   restingMaxHR: restingMaxHR,
+                                   confirmedSleeps: confirmedSleeps)
+
         let contactAge = contactStartedAt.map { now.timeIntervalSince($0) } ?? 0
         guard contactAge >= AtriaStressMonitor.warmUpSeconds else {
             previousMinuteFact = nil
@@ -4175,29 +4317,14 @@ final class AtriaStressMonitorStore: ObservableObject {
             return
         }
 
-        let minute = Date(timeIntervalSince1970:
-            floor(now.timeIntervalSince1970 / AtriaPhysiologicalStressModel.evaluationCadence)
-                * AtriaPhysiologicalStressModel.evaluationCadence)
+        let minute = currentMinute
         guard lastEvaluatedMinute != minute else { return }
         lastEvaluatedMinute = minute
 
-        let freshBaseline = baseline.freshSamples(now: minute)
-        let qualifiedLnRMSSD = freshBaseline
-            .filter(\.isOvernightSample)
-            .compactMap(\.lnRMSSD)
-        let hrvBaseline = AtriaPhysiologicalStressModel.robustHRVBaseline(
-            lnRMSSDValues: qualifiedLnRMSSD,
-            qualifiedDayCount: baseline.freshHRVSampleCount(now: minute)
-        )
-        let personalization = AtriaPhysiologicalStressModel.Personalization(
-            restingHeartRate: baseline.restingHR ?? Double(restingMaxHR.rest),
-            maximumHeartRate: Double(restingMaxHR.max),
-            restingBaselineDayCount: baseline.freshRestingSampleCount(now: minute),
-            hrvBaseline: hrvBaseline,
-            // Same archive-derived anchor as the fixture path above.
-            awakeReference: awakeBaselineArchive.zoneEdges().map {
-                .init(calmEdge: $0.calm, highEdge: $0.high)
-            }
+        let personalization = minuteScoringPersonalization(
+            at: minute,
+            baseline: baseline,
+            restingMaxHR: restingMaxHR
         )
 
         let motionContext: AtriaPhysiologicalStressModel.MotionContext
@@ -4224,29 +4351,8 @@ final class AtriaStressMonitorStore: ObservableObject {
         // artifact. This bounded work occurs once per minute, after the cadence
         // guard above, rather than on every live pulse tick.
         _ = hrvSnapshot
-        let rrStart = minute.addingTimeInterval(-AtriaPhysiologicalStressModel.windowDuration)
-        let rawRR = Self.timeAlignedRRIntervals(
-            recentRRSamples,
-            heartRates: hrBuffer,
-            start: rrStart,
-            end: minute
-        )
-        let (rrQuality, correctedRR) = HRVAnalyzer.analyze(
-            rawRR,
-            now: minute,
-            includeTachogram: true,
-            provenance: .localRRWindow
-        )
-        let qualifiedRR: [AtriaPhysiologicalStressModel.RRSample]
-        if rrQuality?.isLiveStressEligible(on: minute, maximumAge: 60) == true {
-            qualifiedRR = correctedRR.map {
-                .init(date: $0.t,
-                      milliseconds: $0.ms,
-                      qualified: $0.corrected && !$0.interpolated)
-            }
-        } else {
-            qualifiedRR = []
-        }
+        let qualifiedRR = qualifiedRRWindow(endingAt: minute,
+                                            recentRRSamples: recentRRSamples)
         let input = AtriaPhysiologicalStressModel.WindowInput(
             end: minute,
             heartRates: hrBuffer.map {
@@ -4306,5 +4412,186 @@ final class AtriaStressMonitorStore: ObservableObject {
             )
         }
         recordHistory(now: fact.date)
+    }
+
+    /// W1-B (stress-gaps fix 3): evaluates minute boundaries that never
+    /// received a tick — starved MainActor, suspension, missed timer —
+    /// oldest-first, bounded to the five boundaries the retained HR buffer
+    /// can still fully evidence (`windowDuration / evaluationCadence`).
+    /// Every window passes the UNCHANGED kernel gates (290s span, 60s max
+    /// gap, 5 samples) or stays an honest gap; nothing is interpolated.
+    /// Sleep evidence is computed at the skipped minute itself; motion
+    /// context fails closed to `.unavailable`; and any boundary that does
+    /// not produce a fact clears the EMA seed, so no fact ever smooths
+    /// across a telemetry gap (decline-resets-EMA, mirrored from the live
+    /// path and the replay kernel).
+    private func evaluateTickStarvedMinutes(
+        upTo currentMinute: Date,
+        contactEpochBeforeTick: Date?,
+        recentRRSamples: [AtriaBreathworkSession.RRSample],
+        baseline: PersonalBaseline,
+        restingMaxHR: (rest: Int, max: Int),
+        confirmedSleeps: [UserConfirmedSleep]
+    ) {
+        guard let priorMinute = lastEvaluatedMinute else { return }
+        let cadence = AtriaPhysiologicalStressModel.evaluationCadence
+        let missedBoundaries = Int(
+            (currentMinute.timeIntervalSince(priorMinute) / cadence).rounded()
+        ) - 1
+        guard missedBoundaries >= 1 else { return }
+        let bound = Int(AtriaPhysiologicalStressModel.windowDuration / cadence)
+        let catchUpCount = min(missedBoundaries, bound)
+        if missedBoundaries > catchUpCount {
+            // Boundaries older than the retained buffer stay honest gaps and
+            // break the EMA chain; the kernel could never evidence them.
+            previousMinuteFact = nil
+        }
+        for index in stride(from: catchUpCount, through: 1, by: -1) {
+            let minute = currentMinute.addingTimeInterval(
+                -Double(index) * cadence
+            )
+            lastEvaluatedMinute = minute
+            // Warm-up honesty at the skipped minute, judged against the
+            // contact epoch that was current when it elapsed — never against
+            // an epoch restarted by the tick that triggered this catch-up.
+            guard let epoch = contactEpochBeforeTick,
+                  minute.timeIntervalSince(epoch)
+                    >= AtriaStressMonitor.warmUpSeconds else {
+                previousMinuteFact = nil
+                continue
+            }
+            // Sleep evidence at the skipped minute, not the current tick.
+            let sleepContext: AtriaPhysiologicalStressModel.SleepContext =
+                Self.hasQualifiedActiveSleepEvidence(in: confirmedSleeps,
+                                                     at: minute)
+                ? .asleep : .unavailable
+            let input = AtriaPhysiologicalStressModel.WindowInput(
+                end: minute,
+                heartRates: hrBuffer.map {
+                    .init(date: $0.t, bpm: $0.bpm, qualified: true)
+                },
+                rrIntervals: qualifiedRRWindow(
+                    endingAt: minute,
+                    recentRRSamples: recentRRSamples
+                ),
+                personalization: minuteScoringPersonalization(
+                    at: minute,
+                    baseline: baseline,
+                    restingMaxHR: restingMaxHR
+                ),
+                // Motion state at a starved minute is unknown; it fails
+                // closed to `.unavailable` and can never attenuate a
+                // cardiac elevation as if motion had been proven.
+                motionContext: .unavailable,
+                sleepContext: sleepContext
+            )
+            guard let fact = AtriaPhysiologicalStressModel.evaluate(
+                input,
+                previous: previousMinuteFact
+            ) else {
+                previousMinuteFact = nil
+                continue
+            }
+            previousMinuteFact = fact
+            recordRetroactiveFact(fact)
+        }
+    }
+
+    /// Records a catch-up fact exactly the way the live minute path does —
+    /// same point shape, same exact-clock authority, same distribution
+    /// participation — without touching presentation state, which always
+    /// belongs to the current tick.
+    private func recordRetroactiveFact(
+        _ fact: AtriaPhysiologicalStressModel.MinuteFact
+    ) {
+        let level: AtriaStressLevel
+        switch fact.zone {
+        case .calm: level = .calm
+        case .moderate: level = .medium
+        case .high: level = .high
+        }
+        if let measuredHeartRate = hrBuffer.last(where: {
+            $0.t <= fact.date && (30...240).contains($0.bpm)
+        }) {
+            _ = mergeHeartRateHistory(
+                [HeartRateHistoryPoint(t: measuredHeartRate.t,
+                                       bpm: measuredHeartRate.bpm)],
+                now: fact.date
+            )
+        }
+        recordScoredHistoryPoint(
+            StressHistoryPoint(
+                t: fact.date,
+                activation: fact.score
+                    / AtriaStressEvidenceProjection.maximumDisplayValue,
+                level: level,
+                confidence: fact.confidence.numericValue,
+                hrvAvailable: !fact.isHROnly,
+                minuteFact: fact,
+                factSource: .live,
+                scoringVersion: AtriaStressMonitor.scoringVersion
+            ),
+            now: fact.date
+        )
+    }
+
+    /// Per-minute scoring calibration, shared by the live tick and the
+    /// bounded retroactive catch-up (context skew there is ≤ 5 minutes by
+    /// construction because the catch-up bound is the window itself).
+    private func minuteScoringPersonalization(
+        at minute: Date,
+        baseline: PersonalBaseline,
+        restingMaxHR: (rest: Int, max: Int)
+    ) -> AtriaPhysiologicalStressModel.Personalization {
+        let freshBaseline = baseline.freshSamples(now: minute)
+        let qualifiedLnRMSSD = freshBaseline
+            .filter(\.isOvernightSample)
+            .compactMap(\.lnRMSSD)
+        let hrvBaseline = AtriaPhysiologicalStressModel.robustHRVBaseline(
+            lnRMSSDValues: qualifiedLnRMSSD,
+            qualifiedDayCount: baseline.freshHRVSampleCount(now: minute)
+        )
+        return AtriaPhysiologicalStressModel.Personalization(
+            restingHeartRate: baseline.restingHR ?? Double(restingMaxHR.rest),
+            maximumHeartRate: Double(restingMaxHR.max),
+            restingBaselineDayCount: baseline.freshRestingSampleCount(now: minute),
+            hrvBaseline: hrvBaseline,
+            // Same archive-derived anchor as the fixture path above.
+            awakeReference: awakeBaselineArchive.zoneEdges().map {
+                .init(calmEdge: $0.calm, highEdge: $0.high)
+            }
+        )
+    }
+
+    /// Admits RR only when the artifact/provenance/confidence pipeline marks
+    /// the complete local five-minute window ending at `minute` ready. Shared
+    /// by the live tick and the bounded retroactive catch-up — the gates are
+    /// identical in both paths, so catch-up can never loosen RR admission.
+    private func qualifiedRRWindow(
+        endingAt minute: Date,
+        recentRRSamples: [AtriaBreathworkSession.RRSample]
+    ) -> [AtriaPhysiologicalStressModel.RRSample] {
+        let rrStart = minute.addingTimeInterval(
+            -AtriaPhysiologicalStressModel.windowDuration
+        )
+        let rawRR = Self.timeAlignedRRIntervals(
+            recentRRSamples,
+            heartRates: hrBuffer,
+            start: rrStart,
+            end: minute
+        )
+        let (rrQuality, correctedRR) = HRVAnalyzer.analyze(
+            rawRR,
+            now: minute,
+            includeTachogram: true,
+            provenance: .localRRWindow
+        )
+        guard rrQuality?.isLiveStressEligible(on: minute, maximumAge: 60) == true
+        else { return [] }
+        return correctedRR.map {
+            .init(date: $0.t,
+                  milliseconds: $0.ms,
+                  qualified: $0.corrected && !$0.interpolated)
+        }
     }
 }

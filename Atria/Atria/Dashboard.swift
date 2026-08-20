@@ -49,13 +49,41 @@ struct AtriaFrozenDailyStrainTarget: Codable, Equatable {
 
 enum AtriaDailyStrainTargetStore {
     static let storageKey = "atria.coach.frozenDailyStrainTarget.v1"
+    /// Audit slot for a relocated stale blob (see
+    /// `liveSnapshotRelocatingStale`). Evidence of a mint outage lives here;
+    /// it is never read back as a live coaching value.
+    static let auditStorageKey = "atria.coach.frozenDailyStrainTarget.last"
 
     enum MutationAuthority: Equatable {
         /// Canonical Recovery may mint, replace, or explicitly invalidate.
         case canonical
         /// Presentation-only/unknown Recovery may read a valid same-cycle
         /// target, but it may not write or delete durable coaching state.
+        /// (One hygiene exception: a blob more than one full cycle stale is
+        /// relocated to `auditStorageKey` on any resolve — no reader may
+        /// return it, so relocation changes no coaching answer.)
         case preserveExisting
+    }
+
+    /// W1-C (strain-targets fix 1): ONE honesty standard for the one durable
+    /// strain-target write. Every writer — the Home hero snapshot and the
+    /// notification scheduler — must derive its `MutationAuthority` from this
+    /// gate. Only canonical Recovery tiers may mint, replace, or explicitly
+    /// invalidate the frozen daily target; pending sleep-review scores are
+    /// intentionally `.unverified` and stay visual-only. Listing `.validated`
+    /// mirrors the existing Home gate
+    /// (`AtriaHomeModel.recoveryAuthorizedForStrainTarget`); it does not
+    /// upgrade any tier — `.validated` remains reserved for the held-out
+    /// outcome study.
+    static func mintAuthority(
+        recoveryConfidence: Metrics.RecoveryEstimate.Confidence?
+    ) -> MutationAuthority {
+        switch recoveryConfidence {
+        case .personalBaseline, .validated:
+            return .canonical
+        case .learning, .unverified, .none:
+            return .preserveExisting
+        }
     }
 
     static func resolve(recovery: Int?,
@@ -67,7 +95,10 @@ enum AtriaDailyStrainTargetStore {
                         now: Date = Date(),
                         calendar: Calendar = .current,
                         defaults: UserDefaults = .standard) -> AtriaFrozenDailyStrainTarget? {
-        let existing = loadSnapshot(defaults: defaults)
+        let existing = liveSnapshotRelocatingStale(cycleStart: cycleStart,
+                                                   now: now,
+                                                   calendar: calendar,
+                                                   defaults: defaults)
         if mutationAuthority == .preserveExisting {
             guard let existing,
                   existing.target.isFinite,
@@ -90,6 +121,13 @@ enum AtriaDailyStrainTargetStore {
                 abs(existing.day.timeIntervalSince($0)) < 1
             } ?? calendar.isDate(existing.day, inSameDayAs: now)
             if sameCycle, recovery == nil || existing.recovery == recovery {
+                if let upgraded = remintUpgradingLearningLoad(existing: existing,
+                                                             load: load,
+                                                             loadIsPrepared: loadIsPrepared,
+                                                             now: now,
+                                                             defaults: defaults) {
+                    return upgraded
+                }
                 // Preserve through transient hydration, but never across a new
                 // wake boundary or a changed recovery for this sleep.
                 return existing
@@ -105,16 +143,7 @@ enum AtriaDailyStrainTargetStore {
         let adjustment: Double
         let provenance: String
         if let load, load.confidence != "learning", let ratio = load.ratio {
-            if ratio > 1.30 {
-                adjustment = -2
-                provenance = "load_high"
-            } else if ratio < 0.80 {
-                adjustment = 1
-                provenance = "load_low"
-            } else {
-                adjustment = 0
-                provenance = "load_aligned"
-            }
+            (adjustment, provenance) = loadAdjustment(forRatio: ratio)
         } else {
             adjustment = 0
             provenance = "load_learning_at_mint"
@@ -137,6 +166,85 @@ enum AtriaDailyStrainTargetStore {
     static func loadSnapshot(defaults: UserDefaults = .standard) -> AtriaFrozenDailyStrainTarget? {
         guard let data = defaults.data(forKey: storageKey) else { return nil }
         return try? JSONDecoder().decode(AtriaFrozenDailyStrainTarget.self, from: data)
+    }
+
+    /// Shared acute:chronic thresholds for the frozen target's load leg — the
+    /// mint path and the one-shot learning upgrade must never drift apart.
+    static func loadAdjustment(forRatio ratio: Double) -> (adjustment: Double, provenance: String) {
+        if ratio > 1.30 { return (-2, "load_high") }
+        if ratio < 0.80 { return (1, "load_low") }
+        return (0, "load_aligned")
+    }
+
+    /// W1-C (strain-targets fix 3): a target minted before training load was
+    /// prepared carries `load_learning_at_mint`. When the SAME cycle later
+    /// supplies a prepared, non-learning load, re-mint exactly once with the
+    /// same recovery and the real adjustment. The old provenance stays legible
+    /// inside the new string (e.g. `load_high_upgraded_from_learning`) —
+    /// provenance relocates, never disappears — and because the upgraded
+    /// provenance no longer equals `load_learning_at_mint`, a second upgrade
+    /// can never fire: at most one per cycle. This is the one disclosed
+    /// exception to the frozen-day rule ("a daily goal must not move
+    /// backward"): the load leg may lower the target by 2 exactly once, and
+    /// the provenance says so. Only reachable from a `.canonical` caller —
+    /// `.preserveExisting` returns before the same-cycle branch.
+    private static func remintUpgradingLearningLoad(
+        existing: AtriaFrozenDailyStrainTarget,
+        load: TrainingLoadSummary?,
+        loadIsPrepared: Bool,
+        now: Date,
+        defaults: UserDefaults
+    ) -> AtriaFrozenDailyStrainTarget? {
+        guard existing.loadProvenance == "load_learning_at_mint",
+              loadIsPrepared,
+              let load,
+              load.confidence != "learning",
+              let ratio = load.ratio else { return nil }
+        let (adjustment, provenance) = loadAdjustment(forRatio: ratio)
+        let upgraded = AtriaFrozenDailyStrainTarget(
+            day: existing.day,
+            timeZoneIdentifier: existing.timeZoneIdentifier,
+            recovery: existing.recovery,
+            target: min(max(Coach.baseStrainTarget(recovery: existing.recovery) + adjustment, 4), 21),
+            loadAdjustment: adjustment,
+            loadProvenance: "\(provenance)_upgraded_from_learning",
+            createdAt: now
+        )
+        if let data = try? JSONEncoder().encode(upgraded) {
+            defaults.set(data, forKey: storageKey)
+        }
+        return upgraded
+    }
+
+    /// W1-C (strain-targets fix 4): stale-blob hygiene. A stored target whose
+    /// day predates the current cycle by more than one full cycle is evidence
+    /// of a mint outage (the device's July-22 blob), not a live coaching
+    /// value. Relocate the raw bytes to the audit slot: keeps the evidence,
+    /// empties the live slot — never silently deleted, never returned. A blob
+    /// from the immediately previous cycle is NOT relocated; the normal mint
+    /// path replaces it without churn.
+    private static func liveSnapshotRelocatingStale(
+        cycleStart: Date?,
+        now: Date,
+        calendar: Calendar,
+        defaults: UserDefaults
+    ) -> AtriaFrozenDailyStrainTarget? {
+        guard let data = defaults.data(forKey: storageKey) else { return nil }
+        guard let snapshot = try? JSONDecoder().decode(AtriaFrozenDailyStrainTarget.self,
+                                                       from: data) else {
+            // Undecodable evidence stays where it is; hygiene never guesses.
+            return nil
+        }
+        let cycleAnchor = cycleStart ?? calendar.startOfDay(for: now)
+        guard let previousCycleFloor = calendar.date(byAdding: .day,
+                                                     value: -1,
+                                                     to: cycleAnchor),
+              snapshot.day < previousCycleFloor else {
+            return snapshot
+        }
+        defaults.set(data, forKey: auditStorageKey)
+        defaults.removeObject(forKey: storageKey)
+        return nil
     }
 }
 

@@ -1133,6 +1133,12 @@ extension AtriaBLEManager {
         case complete
         case awaitThermalRecovery
         case yieldForPublication(TimeInterval)
+        /// W1-A 2026-08-20 (step-latency Step 2): a scheduled coarse pause,
+        /// long enough for the existing arm path's idle-window test to open
+        /// present 0x69 capture. Never an interleave inside a continuation
+        /// episode — the raw lane stays latched and the next slice's serve
+        /// cutover reclaims transport.
+        case pauseForPresentCapture(TimeInterval)
         case resumeAfter(TimeInterval)
         case retryAfter(TimeInterval)
     }
@@ -1171,6 +1177,37 @@ extension AtriaBLEManager {
                     || postHistoryRawRestorationActive))
     }
 
+    /// W1-A 2026-08-20: floor below which a pending continuation's next
+    /// evaluation still counts as active radio ownership. The 60s floor keeps
+    /// 2s productive chains from arm/disarm churn (arm-path comment of the
+    /// original inline test).
+    nonisolated static let connectedRawContinuationIdleWindowSeconds:
+        TimeInterval = 60
+
+    /// W1-A 2026-08-20 (step-latency Step 1): the ONE predicate for "the raw
+    /// lane actively owns the radio". The continuation flag is a SCHEDULING
+    /// latch that stays true across hours of idle retry cadence while a
+    /// backlog exists — treating the bare latch as radio ownership disarmed
+    /// the all-day bank for ~12k seconds of a sampled day and deferred closed
+    /// directOffload tickets for as long as any backlog existed. A pending
+    /// continuation owns the radio only while its next evaluation is sooner
+    /// than `rawSliceIdleWindow`; an unknown next evaluation fails closed to
+    /// active ownership. Extracted from the arm path's inline idle test so
+    /// the arm path, the offload resume path, and the hourly-checkpoint gate
+    /// cannot drift apart again.
+    nonisolated static func connectedRawContinuationActivelyOwnsRadio(
+        continuationPending: Bool,
+        nextEvaluationNotBefore: Date?,
+        now: Date,
+        rawSliceIdleWindow: TimeInterval =
+            connectedRawContinuationIdleWindowSeconds
+    ) -> Bool {
+        guard continuationPending else { return false }
+        guard let nextEvaluationNotBefore else { return true }
+        return nextEvaluationNotBefore.timeIntervalSince(now)
+            < rawSliceIdleWindow
+    }
+
     /// Productive raw slices chain on a later accepted-HR boundary instead of
     /// waiting behind the global history-attempt timestamp. Zero-progress or
     /// protocol-failure attempts retain the conservative backoff. When bounded
@@ -1183,6 +1220,32 @@ extension AtriaBLEManager {
     /// alone must never create an empty 120-second cooling loop.
     /// With no pending publication work, the existing small periodic duty pause
     /// remains the only interruption.
+    ///
+    /// W1-A 2026-08-20 (step-latency Step 2) adds one more leg: after roughly
+    /// 25–30 minutes of sustained productive drain
+    /// (`presentCaptureShareAfterSlices` productive slices), a single coarse
+    /// `pauseForPresentCapture` long enough (>= the 60s arm-path idle window
+    /// plus margin) for the EXISTING arm path to open present 0x69 capture in
+    /// the gap; the next slice's serve cutover closes it into honest
+    /// coverage. This is a scheduled pause, never a 69/01 interleave inside a
+    /// raw continuation episode (the physically rejected v5 flow manufactured
+    /// tickets faster than read_cursor could converge). Under the ITEM-4
+    /// strap-power constraint the capture cadence stretches twice over: the
+    /// slice cadence itself is 15x slower AND the slice-count threshold
+    /// doubles.
+    nonisolated static let
+        connectedRawCatchUpPresentCaptureShareAfterSlicesDefault = 30
+    nonisolated static let
+        connectedRawCatchUpConstrainedPresentCaptureShareAfterSlicesDefault = 60
+    nonisolated static let
+        connectedRawCatchUpPresentCaptureSharePauseSecondsDefault:
+        TimeInterval = 120
+    /// Margin above the idle window that any capture pause must keep so the
+    /// arm path still sees a comfortably-in-the-future next evaluation by the
+    /// time it runs.
+    nonisolated static let
+        connectedRawCatchUpPresentCaptureSharePauseMarginSeconds:
+        TimeInterval = 30
     nonisolated static func connectedRawHistoryCatchUpContinuationDisposition(
         backlogPending: Bool,
         cursorCaughtUp: Bool,
@@ -1203,7 +1266,14 @@ extension AtriaBLEManager {
         strapPowerConstrained: Bool = false,
         constrainedProductiveDelay: TimeInterval = 30,
         constrainedDutyPauseAfterSlices: Int = 2,
-        constrainedDutyPause: TimeInterval = 60
+        constrainedDutyPause: TimeInterval = 60,
+        productiveSlicesSinceCaptureShare: Int = 0,
+        presentCaptureShareAfterSlices: Int =
+            connectedRawCatchUpPresentCaptureShareAfterSlicesDefault,
+        presentCaptureSharePause: TimeInterval =
+            connectedRawCatchUpPresentCaptureSharePauseSecondsDefault,
+        constrainedPresentCaptureShareAfterSlices: Int =
+            connectedRawCatchUpConstrainedPresentCaptureShareAfterSlicesDefault
     ) -> ConnectedRawHistoryCatchUpContinuationDisposition {
         // ITEM-4 2026-08-15: on a low-battery discharging strap the cadence
         // stretches (2s→30s between slices, long pause every 2 instead of
@@ -1236,6 +1306,24 @@ extension AtriaBLEManager {
            thermalDisposition == .fullRate,
            nextProductiveCount >= max(1, publicationYieldAfterSlices) {
             return .yieldForPublication(max(1, publicationYieldBudget))
+        }
+        // W1-A 2026-08-20 (step-latency Step 2): the bounded capture-share
+        // leg. Only sustained PRODUCTIVE drain accumulates toward it (the
+        // productive guard above already returned for dry slices, whose 120s
+        // retry is itself an armable idle gap). The pause is clamped so it
+        // can never drop below the idle window + margin — even a
+        // misconfigured caller cannot recreate a sub-idle-window interleave.
+        let effectiveCaptureShareAfterSlices = strapPowerConstrained
+            ? constrainedPresentCaptureShareAfterSlices
+            : presentCaptureShareAfterSlices
+        let nextCaptureShareCount =
+            max(0, productiveSlicesSinceCaptureShare) + 1
+        if nextCaptureShareCount >= max(1, effectiveCaptureShareAfterSlices) {
+            return .pauseForPresentCapture(max(
+                connectedRawContinuationIdleWindowSeconds
+                    + connectedRawCatchUpPresentCaptureSharePauseMarginSeconds,
+                presentCaptureSharePause
+            ))
         }
         if nextProductiveCount >= max(1, effectiveDutyPauseAfterSlices) {
             return .resumeAfter(max(1, effectiveDutyPause))

@@ -9875,7 +9875,7 @@ final class AtriaHomeModel {
     private var historicalStressReplayGate = AtriaHistoricalStressReplayGenerationGate()
     private var historicalStressCalibrationPublicationGate =
         AtriaHistoricalStressCalibrationPublicationGate()
-    private var historicalStressReplayWorker: Task<(AtriaHistoricalStressReplay.Result, AtriaHistoricalStressReplay.GapClassificationDraft?), Never>?
+    private var historicalStressReplayWorker: Task<(AtriaHistoricalStressReplay.Result, AtriaHistoricalStressReplay.GapClassificationDraft?, String?), Never>?
     private let historicalStressReplayTriggerSubject = PassthroughSubject<Void, Never>()
     /// Publishes the exact fallback resting-HR scalar consumed by historical
     /// personalization while the durable baseline is still learning.
@@ -11484,7 +11484,8 @@ final class AtriaHomeModel {
 
         let worker = Task.detached(priority: .utility)
             { () -> (AtriaHistoricalStressReplay.Result,
-                     AtriaHistoricalStressReplay.GapClassificationDraft?) in
+                     AtriaHistoricalStressReplay.GapClassificationDraft?,
+                     String?) in
             // Handoff-12 CP2: today's live-period minutes live in the resident
             // journal, not in any saved session, so a replay sourced only from
             // saved sessions could never reconcile a minute the live scorer
@@ -11501,12 +11502,20 @@ final class AtriaHomeModel {
                             + 2_000_000_000
                     )
                 )) ?? nil
-            var sourceSessions = savedSessions
-            if let journal {
-                sourceSessions.removeAll { $0.id == journal.id }
-                sourceSessions.append(journal)
-            }
-            let unionSessions = sourceSessions
+            // W1-B (stress-gaps fix 1): the saved-session cache is
+            // newest-first and `evaluate` refuses to sort (deliberate
+            // overlap-provenance guard), so the resident journal — the newest
+            // session — must join at the FRONT after the id dedupe. The old
+            // `append` flipped the monotonic direction and made every
+            // journal-unioned replay fail closed to `.empty` (device-proven
+            // qualifiedAndReconciled=0 since d10f1fcd). A journal older than
+            // the head is dropped for this run — fail closed, identical to a
+            // no-journal replay.
+            let union = AtriaHistoricalStressReplay.journalUnionedSourceSessions(
+                savedSessions: savedSessions,
+                journal: journal
+            )
+            let unionSessions = union.sessions
             guard let snapshot = await MainActor.run(body: {
                 AtriaHistoricalStressReplay.snapshot(
                     sessions: unionSessions,
@@ -11515,8 +11524,15 @@ final class AtriaHomeModel {
                     personalization: personalization,
                     now: now
                 )
-            }) else { return (.empty, nil) }
+            }) else { return (.empty, nil, nil) }
             let result = AtriaHistoricalStressReplay.evaluate(snapshot)
+            // W1-B (stress-gaps fix 4): a structurally-rejected non-empty
+            // source yields an honest abort marker for the gap receipts —
+            // never per-minute `kernel_declined` for a kernel that never ran.
+            let replayAbortReason = AtriaHistoricalStressReplay.replayAbortReason(
+                result: result,
+                sourceSessions: unionSessions
+            )
             // Handoff-13 CP2: the draft classifies against the replay SOURCE
             // only; the finalize step on the main actor overlays merged-store
             // presence and the active-journal row-cap deferral, where those
@@ -11524,16 +11540,14 @@ final class AtriaHomeModel {
             let draft = AtriaHistoricalStressReplay.classifyGapMinutes(
                 sessions: unionSessions,
                 producedFacts: result.facts,
-                activeJournalSpan: journal.map {
-                    $0.start.timeIntervalSince1970...$0.end.timeIntervalSince1970
-                },
+                activeJournalSpan: union.activeJournalSpan,
                 now: now
             )
-            return (result, draft)
+            return (result, draft, replayAbortReason)
         }
         historicalStressReplayWorker = worker
         Task { @MainActor [weak self] in
-            let (replay, draft) = await worker.value
+            let (replay, draft, replayAbortReason) = await worker.value
             guard !worker.isCancelled,
                   let self,
                   self.historicalStressReplayGate.accepts(generation) else {
@@ -11560,7 +11574,8 @@ final class AtriaHomeModel {
                 AtriaHistoricalStressReplay.finalizeGapReceipts(
                     draft: draft,
                     mergedStoreMinutes: mergedMinutes,
-                    now: now
+                    now: now,
+                    replayAbortReason: replayAbortReason
                 )
             }
         }
