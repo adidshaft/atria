@@ -267,6 +267,23 @@ enum AtriaSleepHypnogramPresentation {
     }
 }
 
+/// The one shared stage-color token (2026-08-20 palette consolidation): the
+/// design file's stage table — Awake #FFB340, REM #64D2FF, Light #4C8DFF,
+/// Deep #7B6CF0 — with the app's SWS band folding into Deep exactly like
+/// every other display surface. Any stage-derived pixels (hypnogram lanes,
+/// review-sheet distribution bars, Vitals chips) draw from here so a chip
+/// can never disagree with the plot beside it.
+enum AtriaSleepStagePalette {
+    static func color(for stage: SleepStageKind) -> Color {
+        switch stage.displayStage {
+        case .awake: return Color(red: 1.0, green: 0.702, blue: 0.251)      // #FFB340
+        case .rem: return Color(red: 0.392, green: 0.824, blue: 1.0)        // #64D2FF
+        case .light: return Color(red: 0.298, green: 0.553, blue: 1.0)      // #4C8DFF
+        case .sws, .deep: return Color(red: 0.482, green: 0.424, blue: 0.941) // #7B6CF0
+        }
+    }
+}
+
 /// Shared hypnogram card for the sleep detail sheet and the History day sheet.
 /// Fed by display segments + the real sleep window; axis, lanes, and legend
 /// derive from data only.
@@ -389,13 +406,9 @@ struct AtriaSleepHypnogramCard: View, Equatable {
     }
 
     /// Stage hues from the design file's stage table (dark-first palette).
+    /// Delegates to the shared token so every stage surface keys one palette.
     static func color(for stage: SleepStageKind) -> Color {
-        switch stage.displayStage {
-        case .awake: return Color(red: 1.0, green: 0.702, blue: 0.251)      // #FFB340
-        case .rem: return Color(red: 0.392, green: 0.824, blue: 1.0)        // #64D2FF
-        case .light: return Color(red: 0.298, green: 0.553, blue: 1.0)      // #4C8DFF
-        case .sws, .deep: return Color(red: 0.482, green: 0.424, blue: 0.941) // #7B6CF0
-        }
+        AtriaSleepStagePalette.color(for: stage)
     }
 
     private var state: DisplayState {
