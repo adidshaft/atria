@@ -279,3 +279,30 @@ were verified present after the pass.
 before running `rm`, rather than after. The integrity check I ran was the right check — it caught
 this within a minute — but it ran after the deletion instead of before it, which is the difference
 between a warning and a loss.
+
+## Third pass — machine dumps removed, notes and manifests kept
+
+The 62 surviving directories were July gate-run device snapshots: 6,867 machine files (`sessions.json`
+copies, preference plists, raw `.jsonl`, `.csv`) against only 389 human-readable notes. The findings
+derived from them already live in `docs/WHOOP4_PROTOCOL_FINDINGS.md`; nothing in the app or the test
+suite reads any of it.
+
+Removed the 6,867 dumps (**300 MB**), kept all `.md`/`.txt`/`.sha256` notes (8 MB), and wrote a
+`MANIFEST.txt` into each of the 62 directories listing every removed file with its size — so a
+citation still resolves to a directory that documents exactly what it held.
+
+`evidence/` is now **9.9 MB**, down from 4.2 GB.
+
+**The pre-delete check earned its place this time.** Before running `rm` I verified the delete and
+keep lists did not overlap, that no `.md`/`.txt`/`.sha256` had leaked into the delete list, and which
+cited directories would be left with nothing. That last check found **13 cited directories with zero
+notes** — they would have become empty shells. That is what prompted the per-directory manifests. Run
+after the deletion, the same check would only have told me what I had already lost.
+
+## Deliberately kept
+
+- **`docs/` (896 KB, 30 files)** — the handoff plans, protocol findings and acceptance checklists,
+  most committed within the last week and actively referenced by this ledger and the FABLE prompt.
+  Deleting them would trade real knowledge for under a megabyte. Not a space problem.
+- **`assets/` (30 MB, tracked)** — App Store listing screenshots. They are already in git history, so
+  removing the working copy reclaims nothing from `.git` while losing the submission material.
