@@ -172,6 +172,40 @@ enum AtriaSleepWakeResearch {
     /// exactly like the HR rule at `sampleRange` below.
     private static let minimumQualifiedRRBeatsPerEpoch = 15
 
+    // MARK: P3 decision-refinement constants (2026-08-20, design 1.1 step 4)
+    //
+    // Every constant below is consulted ONLY when the epoch's own RR is valid
+    // (`rrEpochValid`) AND the night produced a median RMSSD reference. An
+    // rr-empty run — or any epoch below the 15-beat floor — takes the exact
+    // pre-RR decision path: no RR input means no behavior change.
+
+    /// RR-assisted REM edge band: each bound is the existing night REM band's
+    /// bound relaxed by a small, documented margin. An epoch inside this
+    /// widened shell is admitted as REM only when its local RMSSD is elevated
+    /// above the night median (the REM autonomic-variability signature). The
+    /// admission runs strictly AFTER every awake rule in `stage()`, so RR can
+    /// only ever widen REM recall among epochs already cleared as non-awake —
+    /// it can never convert an epoch the awake rules would call awake.
+    private static let remEdgeProgressLowerBound = 0.15 // band: 0.18
+    private static let remEdgeProgressUpperBound = 0.91 // band: 0.88
+    private static let remEdgeDeltaLowerBound = 1.0 // band: 2
+    private static let remEdgeDeltaUpperBound = 14.0 // band: 12
+    private static let remEdgeVariabilityFloor = 2.4 // band: 3.2
+    private static let remEdgeTrendFloor = -1.5 // band: -1 (exclusive)
+    /// "Elevated" means STRICTLY greater than the night median times this
+    /// factor. The strict comparison keeps a degenerate flat tachogram
+    /// (median 0, local 0) from counting as elevated.
+    private static let remRMSSDElevationFactor = 1.2
+    /// Deep hedge, estimate-lane epochs only (`motionMeasurementValidated ==
+    /// false` — deep is the least reliable HR-only call): with valid RR a deep
+    /// call must also beat these tightened ceilings AND sit strictly below the
+    /// night-median RMSSD. An epoch that matches the legacy deep region but
+    /// fails the hedge falls to LIGHT — never sws (which display-folds to
+    /// deep) and never awake — so awake seconds are bit-identical before and
+    /// after by construction and `reconcilesForPresentation` is unaffected.
+    private static let estimateDeepHedgeTrendCeiling = 1.0 // legacy: 1.5
+    private static let estimateDeepHedgeVariabilityCeiling = 3.0 // legacy: 3.5
+
     private struct EpochFeature: Equatable {
         let start: Date
         let end: Date
@@ -185,8 +219,10 @@ enum AtriaSleepWakeResearch {
         let motionMovementIntensity: Double
         let motionMeasurementValidated: Bool
         // RR tachogram features (2026-08-20, P1). Computed only when
-        // `rrEpochValid`; nil otherwise. UNUSED by `stage()` until the
-        // decision-rule phase lands — plumbing must stay behavior-neutral.
+        // `rrEpochValid`; nil otherwise. As of P3, `stage()` consumes
+        // `rrRMSSDLocal` (with the once-per-night median) for two strictly
+        // refinement-only rules: REM edge admission and the estimate-lane
+        // deep hedge. Awake decisions never read any RR field.
         let rrMedianMs: Double?
         let rrRMSSDLocal: Double?
         let rrShortSmooth: Double?
@@ -427,6 +463,15 @@ enum AtriaSleepWakeResearch {
                                          motionBacked: motionBacked,
                                          workCounter: workCounter,
                                          cooperativeDeadline: cooperativeDeadline)
+        // P3 (2026-08-20, design 1.1 step 4): the night-level RMSSD reference
+        // is computed exactly ONCE per run and handed to every epoch decision —
+        // `stage()` never rescans the night. Nil whenever no epoch carries
+        // valid RR, which keeps rr-empty runs on the exact pre-RR path.
+        let nightMedianRMSSD = try nightMedianLocalRMSSD(
+            features: features,
+            workCounter: workCounter,
+            cooperativeDeadline: cooperativeDeadline
+        )
         var staged: [(start: Date, end: Date, stage: SleepStageKind)] = []
 
         for (index, feature) in features.enumerated() {
@@ -435,7 +480,8 @@ enum AtriaSleepWakeResearch {
             }
             let stage = stage(feature: feature,
                               restingHR: restingHR,
-                              isNap: isNap)
+                              isNap: isNap,
+                              nightMedianRMSSD: nightMedianRMSSD)
             staged.append((feature.start, feature.end, stage))
         }
 
@@ -637,7 +683,8 @@ enum AtriaSleepWakeResearch {
 
     private static func stage(feature: EpochFeature,
                               restingHR: Int,
-                              isNap: Bool) -> SleepStageKind {
+                              isNap: Bool,
+                              nightMedianRMSSD: Double?) -> SleepStageKind {
         let delta = feature.averageHR - Double(restingHR)
         let trendUp = feature.differenceOfGaussians
         let variability = feature.localVariability
@@ -647,6 +694,13 @@ enum AtriaSleepWakeResearch {
         if feature.motionMeasurementValidated,
            (stillness < 0.55 || feature.motionMovementIntensity > 0.35) { return .awake }
         if stillness < 0.7 && variability >= 6 { return .awake }
+        // P3 (2026-08-20): the ONLY behavior-changing RR phase. Both RR
+        // refinements below are gated strictly on this epoch's own RR validity
+        // plus the once-per-night median RMSSD; every awake rule above ran
+        // first and never consults RR, so awake decisions are RR-blind by
+        // construction. Naps keep their dedicated rules untouched — the
+        // design's band/threshold references are the night rules.
+        let localRMSSD: Double? = feature.rrEpochValid ? feature.rrRMSSDLocal : nil
         if isNap {
             if feature.progress > 0.20 && delta <= 10 && variability >= 3.5 && trendUp > -1 { return .rem }
             if delta <= 3 && variability <= 3 { return .deep }
@@ -657,7 +711,37 @@ enum AtriaSleepWakeResearch {
         if feature.progress >= 0.18 && feature.progress <= 0.88 && delta >= 2 && delta <= 12 && variability >= 3.2 && trendUp > -1 {
             return .rem
         }
-        if delta <= 2 && trendUp <= 1.5 && variability <= 3.5 { return .deep }
+        // (a) RR-assisted REM edge admission — recall-widening ONLY. Placed
+        // strictly after every awake rule and after the untouched legacy REM
+        // band: an epoch inside the documented widened shell of that band is
+        // admitted as REM when its local RMSSD is elevated above the night
+        // median (REM autonomic-variability signature).
+        if let localRMSSD, let nightMedianRMSSD,
+           localRMSSD > nightMedianRMSSD * remRMSSDElevationFactor,
+           feature.progress >= remEdgeProgressLowerBound,
+           feature.progress <= remEdgeProgressUpperBound,
+           delta >= remEdgeDeltaLowerBound, delta <= remEdgeDeltaUpperBound,
+           variability >= remEdgeVariabilityFloor,
+           trendUp > remEdgeTrendFloor {
+            return .rem
+        }
+        if delta <= 2 && trendUp <= 1.5 && variability <= 3.5 {
+            // (b) Deep hedge — deep is the least reliable HR-only call. On an
+            // estimate-lane epoch with valid RR, the legacy deep region must
+            // also beat the tightened ceilings and a strictly-below-median
+            // RMSSD. A failed hedge falls to LIGHT: never sws (which
+            // display-folds to deep) and never awake, so the change is
+            // reconcile-neutral by construction. Motion-validated epochs keep
+            // the legacy rule verbatim.
+            if feature.motionMeasurementValidated { return .deep }
+            guard let localRMSSD, let nightMedianRMSSD else { return .deep }
+            if trendUp <= estimateDeepHedgeTrendCeiling,
+               variability <= estimateDeepHedgeVariabilityCeiling,
+               localRMSSD < nightMedianRMSSD {
+                return .deep
+            }
+            return .light
+        }
         if delta <= 7 && trendUp <= 3.5 { return .sws }
         return .light
     }
@@ -690,12 +774,12 @@ enum AtriaSleepWakeResearch {
         )
     }
 
-    /// Test-visible per-epoch RR feature projection (2026-08-20, P1). The RR
-    /// fields are computed inside `epochFeatures` but deliberately unused by
-    /// `stage()` in this phase, so segments cannot observe them; this narrow
-    /// probe lets pure tests pin per-epoch validity (≥15 in-epoch beats), the
-    /// no-borrowing rule, and the feature arithmetic without widening the
-    /// engine's private surface.
+    /// Test-visible per-epoch RR feature projection (2026-08-20, P1). This
+    /// narrow probe lets pure tests pin per-epoch validity (≥15 in-epoch
+    /// beats), the no-borrowing rule, and the feature arithmetic without
+    /// widening the engine's private surface. (Since P3, `stage()` also
+    /// consumes `rrRMSSDLocal` through its refinement-only rules; the probe's
+    /// meaning — features as computed, before any decision — is unchanged.)
     struct RRFeatureDiagnostics: Equatable {
         let start: Date
         let end: Date
@@ -1133,6 +1217,47 @@ enum AtriaSleepWakeResearch {
             squaredDifferenceTotal += difference * difference
         }
         return sqrt(squaredDifferenceTotal / Double(range.count - 1))
+    }
+
+    /// The night-level RMSSD reference for the P3 decision refinements:
+    /// the median of every rr-valid epoch's local RMSSD (awake epochs
+    /// included — determinism over cleverness), computed exactly once per
+    /// stage run in `stageSegmentsCore` and passed into `stage()`, which must
+    /// never rescan the night per epoch. Nil when no epoch carries valid RR,
+    /// so an rr-empty run records ZERO RR work here and every RR refinement
+    /// stays inert.
+    private static func nightMedianLocalRMSSD(
+        features: [EpochFeature],
+        workCounter: StageWorkCounter?,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> Double? {
+        var values: [Double] = []
+        values.reserveCapacity(features.count)
+        for (index, feature) in features.enumerated() {
+            if index.isMultiple(of: 256) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            guard feature.rrEpochValid,
+                  let rmssd = feature.rrRMSSDLocal else { continue }
+            workCounter?.visitRR()
+            values.append(rmssd)
+        }
+        guard !values.isEmpty else { return nil }
+        if let cooperativeDeadline {
+            try AtriaSleepCooperativeAlgorithms.stableSort(
+                &values,
+                cooperativeDeadline: cooperativeDeadline,
+                areInIncreasingOrder: <
+            )
+        } else {
+            values.sort()
+        }
+        try cooperativeDeadline?.checkpoint()
+        let middle = values.count / 2
+        if values.count.isMultiple(of: 2) {
+            return (values[middle - 1] + values[middle]) / 2
+        }
+        return values[middle]
     }
 
     private static func gaussianSmoothedRRMs(samples: [RRSample],

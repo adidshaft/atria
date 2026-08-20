@@ -4,13 +4,17 @@ import XCTest
 /// P0/P1 of the 2026-08-20 sleep-stage RR track.
 ///
 /// P0 is the parity fence: the RR parameters are defaulted, and with
-/// `rrSamples: []` — or with any RR input at all, until the decision-rule
-/// phase deliberately lands — the engine's STAGED output (every boundary and
-/// stage) is ELEMENT-IDENTICAL to the pre-RR engine. The expected timelines
-/// below were captured from the unmodified engine on 2026-08-20 and are the
-/// regression fence for the whole track. (P2, design 1.2, deliberately added
-/// exactly one id-level difference: estimate-lane coverage ≥ 0.90 mints the
-/// strong-RR estimate prefix — pinned in AtriaSleepStageRR90TierMintTests.)
+/// `rrSamples: []` the engine's STAGED output (every boundary and stage) is
+/// ELEMENT-IDENTICAL to the pre-RR engine — no RR input means no behavior
+/// change, in every phase. The expected timelines below were captured from
+/// the unmodified engine on 2026-08-20 and remain the rr-empty regression
+/// fence for the whole track. Two later phases deliberately moved the
+/// with-RR expectations: P2 (design 1.2) mints the strong-RR estimate prefix
+/// at coverage ≥ 0.90 (pinned in AtriaSleepStageRR90TierMintTests), and P3
+/// (design 1.1 step 4) consumes `rrRMSSDLocal` through two refinement-only
+/// decision rules — the with-RR pins in this file state the P3 expectations,
+/// and the full refinement behavior lives in
+/// AtriaSleepStageRRDecisionRefinementTests.
 ///
 /// P1 pins the plumbing rules: qualified-provenance gather (2A37 + verified
 /// WHOOP4 historical V24 only, 300–2000 ms clamp), per-epoch RR validity
@@ -79,8 +83,29 @@ final class AtriaSleepStageRRFeatureTests: XCTestCase {
         (12_000, 14_400, .awake),
     ]
 
-    private func expectedParitySegments(prefix: String) -> [SleepStageSegment] {
-        expectedParityRuns.enumerated().map { index, run in
+    /// P3 (design 1.1 step 4) estimate-lane expectation for the parity night
+    /// under a dense UNIFORM tachogram: every epoch's local RMSSD equals the
+    /// night median exactly, so the REM edge admission never fires (elevation
+    /// requires strictly above 1.2× median) and the deep hedge's
+    /// strictly-below-median requirement fails everywhere. The deep run —
+    /// and only the deep run — falls to light; awake, sws, rem and every
+    /// boundary are bit-identical to the pre-RR pins.
+    private let hedgedEstimateParityRuns: [(start: Int, end: Int, stage: SleepStageKind)] = [
+        (0, 870, .awake),
+        (870, 2_400, .light),
+        (2_400, 2_610, .sws),
+        (2_610, 5_370, .light),
+        (5_370, 8_940, .sws),
+        (8_940, 11_100, .rem),
+        (11_100, 12_000, .light),
+        (12_000, 14_400, .awake),
+    ]
+
+    private func expectedParitySegments(
+        prefix: String,
+        runs: [(start: Int, end: Int, stage: SleepStageKind)]? = nil
+    ) -> [SleepStageSegment] {
+        (runs ?? expectedParityRuns).enumerated().map { index, run in
             SleepStageSegment(
                 id: "\(prefix)\(1_800_000_000 + run.start)-\(index)-\(run.stage.rawValue)",
                 start: Self.parityBase.addingTimeInterval(TimeInterval(run.start)),
@@ -169,15 +194,19 @@ final class AtriaSleepStageRRFeatureTests: XCTestCase {
         XCTAssertEqual(checked, motionBacked)
     }
 
-    func testRRInputCannotChangeTheStagedTimelineWhileDecisionRulesAreUnwired() throws {
-        // P1 computes RR features but stage() must not consume them yet: a
-        // dense qualified tachogram and a claimed-perfect coverage fraction
-        // leave both lanes exactly on the pinned STAGED timelines — every
-        // boundary and stage identical. P2 (design 1.2) deliberately changed
-        // ONE thing about this fixture's estimate-lane output: coverage ≥ 0.90
-        // now mints the strong-RR estimate id prefix. The boundaries stay
-        // element-identical; the rr90 mint itself is pinned by
-        // AtriaSleepStageRR90TierMintTests.
+    func testDenseRRLeavesMotionLanePinnedAndHedgesOnlyTheEstimateDeepRun() throws {
+        // P3 (design 1.1 step 4) REPLACED the former P1 pin that RR could not
+        // change the staged timeline: RR is now a deliberate refinement input.
+        // On this fixture's dense UNIFORM tachogram (every epoch's RMSSD ==
+        // the night median) the refinements resolve exactly as documented at
+        // `hedgedEstimateParityRuns`:
+        // - motion lane: bit-identical to the pre-RR pins, ids included — the
+        //   deep hedge is estimate-lane only and REM edge admission requires
+        //   RMSSD elevation this tachogram never shows;
+        // - estimate lane: the deep run falls to light; awake/sws/rem and
+        //   every boundary stay pinned, and coverage 1 ≥ 0.90 still mints the
+        //   strong-RR estimate prefix (P2, pinned in
+        //   AtriaSleepStageRR90TierMintTests).
         let samples = paritySamples()
         let denseRR = denseParityRR()
 
@@ -194,7 +223,8 @@ final class AtriaSleepStageRRFeatureTests: XCTestCase {
         )
         XCTAssertEqual(
             motionBacked,
-            expectedParitySegments(prefix: SleepStageSegment.motionReceiptIDPrefix)
+            expectedParitySegments(prefix: SleepStageSegment.motionReceiptIDPrefix),
+            "dense RR must leave the motion lane element-identical to the pre-RR pins"
         )
 
         let estimate = try AtriaSleepWakeResearch.stageSegments(
@@ -215,8 +245,9 @@ final class AtriaSleepStageRRFeatureTests: XCTestCase {
         )
         XCTAssertEqual(
             estimate,
-            expectedParitySegments(prefix: SleepStageSegment.hrEstimateStrongRRIDPrefix),
-            "coverage 1 ≥ 0.90 mints the strong-RR estimate prefix; boundaries stay pinned"
+            expectedParitySegments(prefix: SleepStageSegment.hrEstimateStrongRRIDPrefix,
+                                   runs: hedgedEstimateParityRuns),
+            "estimate lane under a uniform tachogram: exactly the deep run is hedged to light; awake stays bit-identical"
         )
     }
 
@@ -606,8 +637,11 @@ final class AtriaSleepStageRRFeatureTests: XCTestCase {
                        dense.rrVisits,
                        "the RR work receipt must be deterministic")
 
-        // The staged timelines themselves stay identical across every RR
-        // density — the P1 features are computed but unused by stage().
+        // The staged timelines stay identical across every RR density on THIS
+        // fixture: it is motion-backed with full validated motion (the P3
+        // deep hedge is estimate-lane only) and its constant-1000 ms
+        // tachogram has zero RMSSD everywhere (REM edge admission requires
+        // elevation strictly above the night median, and 0 > 0 never holds).
         XCTAssertEqual(sparse.segments, empty.segments)
         XCTAssertEqual(dense.segments, empty.segments)
     }

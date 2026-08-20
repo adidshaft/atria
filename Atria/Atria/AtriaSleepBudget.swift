@@ -169,6 +169,99 @@ enum AtriaOvernightTypical {
     }
 }
 
+/// P7 (2026-08-20 sleep-stage design, Track 2 §2.1) — per-stage "typical
+/// range" baseline for the WHOOP-style stage rows: for each display stage,
+/// the mean ± 1 SD band of that stage's per-night duration across the user's
+/// recent qualified nights.
+///
+/// ±1 SD is a deliberate choice, documented here at the definition: it
+/// matches the sleep-surface precedent directly above
+/// (`AtriaOvernightTypical.restingBand`, also mean ± 1 SD) rather than the
+/// vitals ±1.5 SD grammar — these bands render on the same sleep detail
+/// surfaces as the resting band, and "typical" must mean one thing there.
+///
+/// Baseline honesty (binding):
+/// - Only nights that are `.confirmed`, are main sleep (`!isNapEvidence`),
+///   and carry validated motion evidence may seed the baseline.
+/// - HR-only ESTIMATE nights NEVER seed it: estimated stage boundaries must
+///   not become the yardstick later nights are measured against. This is
+///   enforced beyond the motion-evidence predicate — a night whose evidence
+///   resolved to `.hrOnlyEstimate` (estimate-prefixed segment ids) is
+///   excluded even when a contradictory legacy record also claims
+///   `motionValidated == true`.
+/// - Hidden below `minimumQualifiedNights` qualified nights — the same
+///   documented 14-night floor as `AtriaOvernightTypical`, referenced (not
+///   re-typed) so the sleep surfaces keep exactly one such constant.
+/// - Pure and read-only over `Night` values: it never touches stored
+///   records, and in particular never reads or rewrites the frozen
+///   sleep-need receipts (`AtriaSleepBudget.FrozenNeed` stays untouched).
+enum AtriaStageTypicalRange {
+    /// Documented minimum qualified nights before any typical band is shown
+    /// (the existing sleep-surface constant precedent, AtriaOvernightTypical).
+    static let minimumQualifiedNights = AtriaOvernightTypical.minimumQualifiedNights
+
+    /// The baseline looks back over at most this many most-recent nights of
+    /// history, so a months-old sleep pattern ages out of "typical".
+    static let recencyWindowNights = 30
+
+    /// Whether one night may seed the baseline. See the honesty rules at the
+    /// type definition; the `.hrOnlyEstimate` exclusion is what keeps a
+    /// contradictory `motionValidated == true` flag on an estimate-provenance
+    /// night from smuggling estimated durations into the yardstick. A night
+    /// with no displayed stage timeline (e.g. a motion-ready rollup that never
+    /// staged) also cannot seed — counting it as zero minutes of every stage
+    /// would silently drag the baseline down.
+    static func qualifies(_ night: SleepHistorySnapshot.Night) -> Bool {
+        night.confirmed
+            && !night.isNapEvidence
+            && night.hasValidatedMotionEvidence
+            && night.stageEvidence != .hrOnlyEstimate
+            && !night.displayStageSegments.isEmpty
+    }
+
+    /// Per-display-stage typical bands (seconds) over the qualified nights
+    /// inside the recent-`recencyWindowNights` window, or nil while fewer
+    /// than `minimumNights` qualified nights exist — never a band drawn from
+    /// too little evidence. Recency is applied first, qualification second
+    /// (the window is the user's last 30 nights of history; only the
+    /// qualified ones inside it seed). Snapshot producers differ on array
+    /// order (some are newest-first), so recency sorts explicitly instead of
+    /// trusting input order. A stage whose band is degenerate (identical on
+    /// every seeding night, SD 0) is omitted rather than drawn zero-width.
+    static func ranges(nights: [SleepHistorySnapshot.Night],
+                       minimumNights: Int = minimumQualifiedNights)
+        -> [SleepStageKind: ClosedRange<TimeInterval>]? {
+        let recent = nights
+            .sorted { $0.reviewReferenceDate < $1.reviewReferenceDate }
+            .suffix(recencyWindowNights)
+        let qualified = recent.filter(qualifies)
+        guard qualified.count >= minimumNights else { return nil }
+        var ranges: [SleepStageKind: ClosedRange<TimeInterval>] = [:]
+        for stage in SleepStageKind.displayOrder {
+            // `stageDuration` reads the night's display durations, which are
+            // already SWS→deep folded — the Deep band includes stored SWS.
+            if let band = band(values: qualified.map { $0.stageDuration(stage) }) {
+                ranges[stage] = band
+            }
+        }
+        return ranges.isEmpty ? nil : ranges
+    }
+
+    /// Mean ± 1 SD (population SD — the same estimator as
+    /// `AtriaOvernightTypical.restingBand`), floored at zero because a stage
+    /// duration cannot be negative. Nil when degenerate (SD 0).
+    static func band(values: [TimeInterval]) -> ClosedRange<TimeInterval>? {
+        guard !values.isEmpty else { return nil }
+        let mean = values.reduce(0, +) / Double(values.count)
+        let variance = values.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(values.count)
+        let sd = variance.squareRoot()
+        let low = max(0, mean - sd)
+        let high = mean + sd
+        guard high > low else { return nil }
+        return low...high
+    }
+}
+
 /// GAP-06 — the current-generation composite Atria Sleep Score.
 ///
 /// It is INTENTIONALLY and permanently provisional under the current model:
