@@ -5147,6 +5147,21 @@ struct AtriaSleepActivityReviewSheet: View {
                           resting: restingBaseline ?? night.restingHR)
     }
 
+    /// P6: this night's display stage runs for the stage-colored HR trace —
+    /// exactly the pure timeline math the hypnogram card renders
+    /// (`timelineRuns` over the honesty-gated `displayStageSegments`, same
+    /// default mark budget), never raw `stageSegments`. Nil (uncolored trace)
+    /// when the night has no drawable window or no display segments.
+    private var overnightStageRuns: [AtriaSleepHypnogramPresentation.Run]? {
+        guard let start = night.start, let end = night.end, end > start,
+              !night.displayStageSegments.isEmpty else { return nil }
+        return AtriaSleepHypnogramPresentation.timelineRuns(
+            for: night.displayStageSegments,
+            windowStart: start,
+            windowEnd: end
+        ).runs
+    }
+
     /// Reads this night's real archived heart-rate rows over the exact saved
     /// sleep window (its own timestamps, so travel nights are not reinterpreted
     /// against the phone's current clock) and builds the same 5-minute-bucket
@@ -5186,9 +5201,16 @@ struct AtriaSleepActivityReviewSheet: View {
                         stageBreakdown
                     }
                     nightVitals
+                    // P6 (2026-08-20 design 2.1): the overnight HR trace is
+                    // stage-colored from the SAME display runs the hypnogram
+                    // card above draws, so the two surfaces cannot disagree;
+                    // estimate nights carry the mandatory estimate title in
+                    // the card's own legend (2.0 invariant).
                     AtriaSleepStressCard(projection: overnightHRProjection,
                                          displayTimeZone: eventTimeZone,
-                                         typicalRestingBand: typicalRestingBand)
+                                         typicalRestingBand: typicalRestingBand,
+                                         stageRuns: overnightStageRuns,
+                                         stageRunsAreEstimated: night.isEstimatedStageDisplay)
                     Button(action: onEditTimes) {
                         Label("Edit sleep times", systemImage: "pencil")
                             .frame(maxWidth: .infinity)

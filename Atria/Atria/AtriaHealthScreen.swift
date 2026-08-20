@@ -2727,6 +2727,47 @@ enum AtriaSleepStressArchiveProjection {
     }
 }
 
+/// P6 (2026-08-20 sleep-stage design 2.1) — the pure wall-clock join between
+/// the overnight trace's observed 5-minute buckets and the hypnogram's display
+/// stage runs. Runs carry real wall-clock bounds and buckets carry real Dates,
+/// so the join is pure Date containment:
+///   - a bucket whose Date falls inside a run takes that run's display stage;
+///   - a bucket outside every run resolves nil (an unscored gap — it keeps the
+///     trace's existing neutral style);
+///   - containment is half-open [start, end): exactly-abutting runs hand a
+///     boundary bucket to exactly one owner, and a run NEVER claims a bucket
+///     beyond its own wall-clock end — no bridging, in either direction.
+/// Missing buckets never reach the join at all (the projection leaves unworn
+/// time bucketless), so nothing here can invent coverage.
+enum AtriaSleepStressStageColoring {
+    static func stageAtDate(_ date: Date,
+                            runs: [AtriaSleepHypnogramPresentation.Run]) -> SleepStageKind? {
+        // Runs are non-overlapping by construction (timelineRuns merges and
+        // never overlaps), so first-match containment is order-independent.
+        runs.first { date >= $0.start && date < $0.end }?.stage.displayStage
+    }
+
+    /// Display stages present in the runs, in the canonical display order —
+    /// the legend never lists a color the trace does not draw.
+    static func legendStages(for runs: [AtriaSleepHypnogramPresentation.Run]) -> [SleepStageKind] {
+        let present = Set(runs.map { $0.stage.displayStage })
+        return SleepStageKind.displayOrder.filter { present.contains($0) }
+    }
+
+    /// The legend line as one testable string (also the accessibility text).
+    /// Estimate nights co-render the mandatory estimate title with the
+    /// stage-derived pixels (design 2.0 invariant) — appended as
+    /// "· Estimated stages · HR-only". No runs ⇒ no stage pixels ⇒ no legend
+    /// (and no estimate marker to attach it to).
+    static func legendText(runs: [AtriaSleepHypnogramPresentation.Run],
+                           isEstimated: Bool) -> String? {
+        let stages = legendStages(for: runs)
+        guard !stages.isEmpty else { return nil }
+        let names = stages.map(\.label).joined(separator: " · ")
+        return isEstimated ? "\(names) · \(AtriaSleepStageEstimateLabel.title)" : names
+    }
+}
+
 struct AtriaSleepStressCard: View {
     let projection: AtriaSleepStressProjection
     /// Timezone the trace's time axis renders in. Defaults to the device zone
@@ -2737,6 +2778,17 @@ struct AtriaSleepStressCard: View {
     /// GAP-07: the user's typical overnight resting-HR band, shaded behind the
     /// heart-rate trace when enough qualified nights exist. Nil hides it.
     var typicalRestingBand: ClosedRange<Double>? = nil
+    /// P6: the night's display stage runs — the SAME pure timeline math the
+    /// hypnogram card draws (`AtriaSleepHypnogramPresentation.timelineRuns`
+    /// over `night.displayStageSegments`) — used to color each observed
+    /// 5-minute HR bucket by the run containing its Date. Nil keeps today's
+    /// uncolored trace (the Health screen's current-cycle card passes nothing).
+    var stageRuns: [AtriaSleepHypnogramPresentation.Run]? = nil
+    /// True when those runs are a display-only HR-only ESTIMATE
+    /// (`night.isEstimatedStageDisplay`): the stage legend then co-renders the
+    /// mandatory `AtriaSleepStageEstimateLabel.title` (design 2.0 invariant —
+    /// the label travels with any stage-derived pixels, this card included).
+    var stageRunsAreEstimated: Bool = false
     private enum Mode: String, CaseIterable, Identifiable { case heartRate = "Heart rate", load = "HR load"; var id: String { rawValue } }
     @State private var mode: Mode = .heartRate
 
@@ -2752,7 +2804,18 @@ struct AtriaSleepStressCard: View {
     private struct HRTracePoint: Identifiable {
         let date: Date
         let bpm: Double
+        /// Gap-only continuity id (unchanged semantics): increments only across
+        /// a real missing-wear gap. The inspector keeps reading this, so
+        /// expanding the chart still shows the same unbridged trace.
         let segment: Int
+        /// Chart series id: the gap segmentation PLUS a split at every stage
+        /// change, so each drawn sub-series carries exactly one color. Equal to
+        /// `segment` when stage coloring is inactive — zero rendering change.
+        let series: Int
+        /// P6: this bucket's display stage from the pure run join; nil = the
+        /// bucket sits in unscored time (or coloring is inactive) and keeps
+        /// the existing neutral trace style.
+        let stage: SleepStageKind?
         var id: TimeInterval { date.timeIntervalSinceReferenceDate }
     }
 
@@ -2761,18 +2824,39 @@ struct AtriaSleepStressCard: View {
     /// It must NOT go through AtriaStressDetailReading, whose initializer clamps
     /// score to 0...3 — that silently collapsed every bpm to 3 and rendered the
     /// heart-rate line far below the axis (invisible).
+    ///
+    /// P6: when `stageRuns` is provided, each bucket is additionally joined to
+    /// the run containing its Date (`AtriaSleepStressStageColoring.stageAtDate`)
+    /// — a display-color join only. It never adds, moves, or bridges buckets:
+    /// gap segmentation is computed exactly as before, and a bucket outside
+    /// every run stays nil-stage (neutral style).
     private var heartRatePoints: [HRTracePoint] {
         let sorted = projection.heartRateSamples.sorted { $0.date < $1.date }
+        let runs = stageRuns ?? []
         var segment = 0
+        var series = 0
         var previousDate: Date?
+        var previousStage: SleepStageKind?
         return sorted.map { sample in
-            if let previousDate,
-               sample.date.timeIntervalSince(previousDate)
-                > AtriaChartVisualGrammar.traceDisplayContinuityGap {
-                segment += 1
+            let stage = runs.isEmpty
+                ? nil
+                : AtriaSleepStressStageColoring.stageAtDate(sample.date, runs: runs)
+            if let previousDate {
+                if sample.date.timeIntervalSince(previousDate)
+                    > AtriaChartVisualGrammar.traceDisplayContinuityGap {
+                    segment += 1
+                    series += 1
+                } else if stage != previousStage {
+                    series += 1
+                }
             }
             previousDate = sample.date
-            return HRTracePoint(date: sample.date, bpm: sample.bpm, segment: segment)
+            previousStage = stage
+            return HRTracePoint(date: sample.date,
+                                bpm: sample.bpm,
+                                segment: segment,
+                                series: series,
+                                stage: stage)
         }
     }
 
@@ -2847,22 +2931,22 @@ struct AtriaSleepStressCard: View {
                                 .foregroundStyle(.orange)
                         }
                     } else {
+                        // P6: `series` splits at stage changes as well as real
+                        // gaps, so every sub-series is single-stage and takes
+                        // one palette color; nil-stage buckets (unscored time,
+                        // or no stage runs supplied) keep the existing style.
                         ForEach(heartRatePoints) { point in
                             AreaMark(x: .value("Time", point.date),
                                      y: .value("BPM", point.bpm),
-                                     series: .value("Segment", point.segment))
+                                     series: .value("Segment", point.series))
                                 .interpolationMethod(.linear)
-                                .foregroundStyle(.linearGradient(colors: [.red.opacity(0.18), .red.opacity(0.02)],
-                                                                  startPoint: .bottom,
-                                                                  endPoint: .top))
+                                .foregroundStyle(Self.hrAreaStyle(for: point.stage))
                             LineMark(x: .value("Time", point.date),
                                      y: .value("BPM", point.bpm),
-                                     series: .value("Segment", point.segment))
+                                     series: .value("Segment", point.series))
                                 .interpolationMethod(.linear)
                                 .lineStyle(AtriaChartVisualGrammar.traceLine)
-                                .foregroundStyle(.linearGradient(colors: [.red, .orange],
-                                                                  startPoint: .bottom,
-                                                                  endPoint: .top))
+                                .foregroundStyle(Self.hrLineStyle(for: point.stage))
                         }
                         // GAP-07: high-load buckets are marked on the HR trace
                         // too, at exactly the timestamps the load mode marks —
@@ -2929,6 +3013,12 @@ struct AtriaSleepStressCard: View {
                 .clipped()
                 .environment(\.timeZone, displayTimeZone)
                 .atriaInspectableGraph(inspectorGraph)
+                // P6: the color key for the stage-colored trace, directly
+                // under the chart it explains. HR mode only — the 0–3 load
+                // view is never stage-colored.
+                if mode == .heartRate {
+                    stageLegend
+                }
                 if let highTimingSummary {
                     Text(highTimingSummary)
                         .font(.caption2.weight(.semibold))
@@ -2956,9 +3046,75 @@ struct AtriaSleepStressCard: View {
         .accessibilityElement(children: .combine)
         // The ready branch keeps the relocated provenance title and the 0–3
         // scale disclaimer audible even though they left the visible card.
+        // P6: the stage legend — estimate title included — is audible too,
+        // because the combined element's explicit label replaces child text.
         .accessibilityLabel(projection.availability == .ready
-                            ? "Overnight heart-rate load. \(projection.availability.title). \(highSummary). \(highTimingSummary ?? "") \(projection.availability.detail)"
+                            ? "Overnight heart-rate load. \(projection.availability.title). \(highSummary). \(highTimingSummary ?? "") \(stageLegendText.map { "\($0). " } ?? "")\(projection.availability.detail)"
                             : "Overnight heart-rate load. \(projection.availability.title). \(projection.availability.detail)")
+    }
+
+    /// P6 neutral-vs-stage styles. A nil stage keeps the exact pre-P6 trace
+    /// gradients (the "current neutral style" of the design — unscored gaps
+    /// and the no-runs Health-screen card are byte-identical to before);
+    /// a joined stage draws from the one shared `AtriaSleepStagePalette`.
+    private static func hrAreaStyle(for stage: SleepStageKind?) -> AnyShapeStyle {
+        guard let stage else {
+            return AnyShapeStyle(.linearGradient(colors: [.red.opacity(0.18), .red.opacity(0.02)],
+                                                 startPoint: .bottom,
+                                                 endPoint: .top))
+        }
+        let color = AtriaSleepStagePalette.color(for: stage)
+        return AnyShapeStyle(.linearGradient(colors: [color.opacity(0.20), color.opacity(0.03)],
+                                             startPoint: .bottom,
+                                             endPoint: .top))
+    }
+
+    private static func hrLineStyle(for stage: SleepStageKind?) -> AnyShapeStyle {
+        guard let stage else {
+            return AnyShapeStyle(.linearGradient(colors: [.red, .orange],
+                                                 startPoint: .bottom,
+                                                 endPoint: .top))
+        }
+        return AnyShapeStyle(AtriaSleepStagePalette.color(for: stage))
+    }
+
+    /// The testable legend string; non-nil exactly when stage coloring drew
+    /// stage pixels (also read into the card's accessibility label).
+    private var stageLegendText: String? {
+        guard let stageRuns else { return nil }
+        return AtriaSleepStressStageColoring.legendText(runs: stageRuns,
+                                                        isEstimated: stageRunsAreEstimated)
+    }
+
+    /// Color-dot legend for the stage-colored trace. Estimate nights append
+    /// the mandatory estimate title — the honesty label travels with the
+    /// pixels it qualifies (design 2.0).
+    private var stageLegendStages: [SleepStageKind] {
+        AtriaSleepStressStageColoring.legendStages(for: stageRuns ?? [])
+    }
+
+    @ViewBuilder
+    private var stageLegend: some View {
+        let legendStages = stageLegendStages
+        if !legendStages.isEmpty {
+            HStack(spacing: 8) {
+                ForEach(legendStages) { stage in
+                    HStack(spacing: 3) {
+                        Circle()
+                            .fill(AtriaSleepStagePalette.color(for: stage))
+                            .frame(width: 6, height: 6)
+                        Text(stage.label)
+                    }
+                }
+                if stageRunsAreEstimated {
+                    Text("· \(AtriaSleepStageEstimateLabel.title)")
+                }
+            }
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.68)
+        }
     }
 
     private var heartRateDomain: ClosedRange<Double> {
