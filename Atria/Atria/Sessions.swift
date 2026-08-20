@@ -3265,6 +3265,34 @@ enum SleepStageEvidence: String, Codable, Equatable {
 enum AtriaSleepStageEstimateLabel {
     static let title = "Estimated stages · HR-only"
     static let caption = "Motion not available — stage boundaries are estimates from heart rate and breathing."
+
+    /// Tier-aware captions (2026-08-20 design 1.2/1.4). The generic `caption`
+    /// above stays byte-identical for its existing pins; tier-aware surfaces
+    /// render one of these instead. The tier only ever changes the CAPTION's
+    /// hedging — the title, and the contract that the label is visibly
+    /// co-rendered with any estimated bars, are tier-independent.
+    static let strongRRCaption = "Motion not available — stage boundaries are estimates from heart rate and near-continuous beat-to-beat rhythm."
+    static let standardCaption = "Motion not available — stage boundaries are rough estimates from heart rate with limited beat-to-beat rhythm data."
+
+    static func caption(for tier: SleepStageEstimateConfidenceTier) -> String {
+        switch tier {
+        case .strongRR: return strongRRCaption
+        case .standard: return standardCaption
+        }
+    }
+}
+
+/// Display-confidence tier for HR-only ESTIMATE nights (2026-08-20 design
+/// 1.2). Derived exclusively from segment id prefixes — provenance lives in
+/// the ids, never in record-level flags — and confers NO engine authority:
+/// a strong-RR night sits behind the same duration-credit fence, downgrade
+/// gates, and mandatory estimate label as a standard one.
+enum SleepStageEstimateConfidenceTier: Equatable {
+    /// Every segment carries `SleepStageSegment.hrEstimateStrongRRIDPrefix`:
+    /// the staging window had ≥ 0.90 qualified-RR coverage.
+    case strongRR
+    /// Anything else — plain estimate ids, and mixed sets fail toward here.
+    case standard
 }
 
 struct SleepStageSegment: Codable, Identifiable, Equatable {
@@ -3290,12 +3318,42 @@ struct SleepStageSegment: Codable, Identifiable, Equatable {
     /// never contribute duration credit or motion authority.
     static let hrEstimateIDPrefix = "research-hr-estimate-v1-"
 
-    /// True when every segment in a non-empty set carries the HR-only
-    /// estimate provenance mark. Mixed sets are NOT estimate-provenance —
-    /// they fail toward the stricter handling of their non-estimate members.
+    /// Strong-RR display-confidence tier of the SAME estimate lane
+    /// (2026-08-20 design 1.2): minted instead of `hrEstimateIDPrefix` when
+    /// the staging window's qualified-RR coverage was ≥ 0.90 (inclusive,
+    /// matching the ≥ 0.60 floor grammar). This is display confidence ONLY —
+    /// segments with this prefix stay estimate provenance everywhere: no
+    /// duration credit, no motion authority, no auto-confirm/validated
+    /// promotion, and the mandatory estimate label still renders. The tier
+    /// layers ABOVE the 0.60 admission floors; it never relaxes them.
+    static let hrEstimateStrongRRIDPrefix = "research-hr-estimate-rr90-v1-"
+
+    /// Every estimate-lane id prefix, in mint order. `allHREstimateProvenance`
+    /// below is the single choke point every estimate fence keys on (duration
+    /// credit, backfill hygiene, Night downgrade); a new estimate tier extends
+    /// those fences by joining this list, never by adding a parallel check.
+    static let hrEstimateIDPrefixes = [hrEstimateIDPrefix, hrEstimateStrongRRIDPrefix]
+
+    /// True when every segment in a non-empty set carries an HR-only
+    /// estimate provenance mark (plain or strong-RR — tiers within the one
+    /// estimate lane are treated identically here). Mixed estimate+motion
+    /// sets are NOT estimate-provenance — they fail toward the stricter
+    /// handling of their non-estimate members.
     static func allHREstimateProvenance(_ segments: [SleepStageSegment]?) -> Bool {
         guard let segments, !segments.isEmpty else { return false }
-        return segments.allSatisfy { $0.id.hasPrefix(hrEstimateIDPrefix) }
+        return segments.allSatisfy { segment in
+            hrEstimateIDPrefixes.contains { segment.id.hasPrefix($0) }
+        }
+    }
+
+    /// True only when every segment in a non-empty set carries the strong-RR
+    /// estimate prefix. UI confidence-tier input ONLY (design 1.2): a mixed
+    /// rr90+plain set fails toward the standard (more hedged) tier, and this
+    /// helper grants no authority beyond caption choice — every fence still
+    /// routes through `allHREstimateProvenance`.
+    static func allStrongRREstimateProvenance(_ segments: [SleepStageSegment]?) -> Bool {
+        guard let segments, !segments.isEmpty else { return false }
+        return segments.allSatisfy { $0.id.hasPrefix(hrEstimateStrongRRIDPrefix) }
     }
 }
 
@@ -40336,7 +40394,9 @@ final class SessionStore: ObservableObject {
         return Self.copyConfirmedSleep(sleep, stageSegments: migratedStages)
     }
 
-    nonisolated private static func
+    // Internal (not private) so the backfill-hygiene behavior is directly
+    // testable — same seam pattern as `fragmentedAggregateHRStagesAreUnsupported`.
+    nonisolated static func
         shouldPreserveConfirmedSleepStageSegments(
             _ sleep: UserConfirmedSleep
         ) -> Bool {
@@ -40346,11 +40406,13 @@ final class SessionStore: ObservableObject {
         if sleep.source == "validated_sleep_stages" { return true }
         // These versioned IDs are bounded migration receipts: only the fail-
         // closed engine emits them — `research-motion-v2-` when dense, local
-        // HR plus actual recovered motion epochs backed the night, and
-        // `research-hr-estimate-v1-` when dense HR alone staged a labeled
-        // ESTIMATE (2026-08-12; renders only through the estimate lane).
-        // Legacy `research-*` segments have neither provenance and are
-        // stripped until source sessions reconstruct them.
+        // HR plus actual recovered motion epochs backed the night, and the
+        // estimate-lane prefixes (`research-hr-estimate-v1-`, and its
+        // strong-RR tier `research-hr-estimate-rr90-v1-` via the
+        // `allHREstimateProvenance` choke point) when dense HR alone staged
+        // a labeled ESTIMATE (2026-08-12; renders only through the estimate
+        // lane). Legacy `research-*` segments have neither provenance and
+        // are stripped until source sessions reconstruct them.
         guard stageSegments.allSatisfy({ $0.id.hasPrefix(SleepStageSegment.motionReceiptIDPrefix) })
                 || SleepStageSegment.allHREstimateProvenance(stageSegments) else {
             return false
@@ -53878,8 +53940,10 @@ struct SleepHistorySnapshot: Equatable {
                 evidence = .hrOnlyEstimate
             }
             // Estimate provenance is encoded in the segment ids themselves
-            // (`research-hr-estimate-v1-`). No record-level flag — not a
-            // legacy `motionValidated == true`, not a "ready" confidence —
+            // (`research-hr-estimate-v1-` / `research-hr-estimate-rr90-v1-`;
+            // the strong-RR tier is the same estimate lane through the same
+            // choke point). No record-level flag — not a legacy
+            // `motionValidated == true`, not a "ready" confidence —
             // may promote HR-only estimate bars to validated-style authority.
             // Contradictory records fail toward the estimate label.
             if evidence != .none,
@@ -53949,6 +54013,21 @@ struct SleepHistorySnapshot: Equatable {
         /// not decoration.
         var isEstimatedStageDisplay: Bool {
             stageEvidence == .hrOnlyEstimate && !displayStageSegments.isEmpty
+        }
+
+        /// Display-confidence tier for the estimate label's caption
+        /// (2026-08-20 design 1.2), derived purely from the RAW segment id
+        /// prefixes — never a stored flag. `.strongRR` requires EVERY raw
+        /// segment to carry the strong-RR prefix; mixed sets fail toward
+        /// `.standard`. Meaningful only alongside `isEstimatedStageDisplay`;
+        /// the tier changes caption copy only — the mandatory estimate
+        /// label, duration-credit fence, and downgrade gates are
+        /// tier-independent. (Display segments preserve incoming ids through
+        /// folding/reconciliation, so raw prefixes are the one authority.)
+        var estimateConfidenceTier: SleepStageEstimateConfidenceTier {
+            SleepStageSegment.allStrongRREstimateProvenance(stageSegments)
+                ? .strongRR
+                : .standard
         }
 
         /// Per-night stage provenance label. Unlike `stageEvidence.label`

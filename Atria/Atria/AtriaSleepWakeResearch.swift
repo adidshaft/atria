@@ -304,9 +304,10 @@ enum AtriaSleepWakeResearch {
         isNap: Bool,
         motionEpochs: [AtriaRecoveredMotionEpoch],
         rrSamples: [RRSample] = [],
-        // P1 (2026-08-20): threaded but not yet consulted. The rr90
-        // confidence-tier prefix (design 1.2) is minted from this value in a
-        // later phase; accepting it now keeps every caller's wiring stable.
+        // P2 (2026-08-20, design 1.2): consumed ONLY at the estimate lane's
+        // mint in `merge()` — coverage ≥ 0.90 mints the strong-RR estimate
+        // prefix instead of the plain one. Never admission evidence: no gate
+        // above or below reads it, and the motion lane ignores it entirely.
         qualifiedRRCoverageFraction: Double = 0,
         allowHROnlyEstimate: Bool = false,
         workCounter: StageWorkCounter?,
@@ -441,6 +442,7 @@ enum AtriaSleepWakeResearch {
         guard staged.count >= max(8, epochCount / 3) else { return [] }
         let merged = try merge(staged,
                                motionBacked: motionBacked,
+                               qualifiedRRCoverageFraction: qualifiedRRCoverageFraction,
                                cooperativeDeadline: cooperativeDeadline)
         return try timelineHasDenseLocalEvidence(merged,
                                                  start: start,
@@ -1181,15 +1183,30 @@ enum AtriaSleepWakeResearch {
     private static func merge(
         _ staged: [(start: Date, end: Date, stage: SleepStageKind)],
         motionBacked: Bool,
+        qualifiedRRCoverageFraction: Double,
         cooperativeDeadline: AtriaSleepSettlementDeadline?
     ) throws -> [SleepStageSegment] {
         try cooperativeDeadline?.checkpoint()
         // Provenance is encoded in the segment id itself so every downstream
         // consumer (receipt checks, duration credit, migration preservation)
         // can distinguish the lanes without trusting record-level flags.
-        let provenancePrefix = motionBacked
-            ? SleepStageSegment.motionReceiptIDPrefix
-            : SleepStageSegment.hrEstimateIDPrefix
+        // P2 (2026-08-20, design 1.2): the estimate lane splits into two
+        // display-confidence tiers by the window's qualified-RR coverage —
+        // ≥ 0.90 (inclusive, same grammar as the 0.60 floors) mints the
+        // strong-RR estimate prefix. Both estimate prefixes route through
+        // the `allHREstimateProvenance` choke point, so the duration-credit
+        // fence, backfill hygiene, and Night downgrade gates treat the tiers
+        // identically; the tier changes label copy only. The motion lane's
+        // prefix is deliberately untouched so
+        // `hasTimeAlignedResearchStageReceipt` semantics never move.
+        let provenancePrefix: String
+        if motionBacked {
+            provenancePrefix = SleepStageSegment.motionReceiptIDPrefix
+        } else if qualifiedRRCoverageFraction >= 0.90 {
+            provenancePrefix = SleepStageSegment.hrEstimateStrongRRIDPrefix
+        } else {
+            provenancePrefix = SleepStageSegment.hrEstimateIDPrefix
+        }
         var merged: [(start: Date, end: Date, stage: SleepStageKind)] = []
         for (index, item) in staged.enumerated() {
             if index.isMultiple(of: 256) {

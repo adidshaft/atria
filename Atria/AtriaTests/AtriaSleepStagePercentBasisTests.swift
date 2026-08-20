@@ -157,6 +157,12 @@ final class AtriaSleepStagePercentBasisTests: XCTestCase {
 
     // MARK: - Source pins: the review sheet reads the legend basis
 
+    /// Updated for P5 (2026-08-20): the percent BARS moved into
+    /// `AtriaSleepStageRowStrip` (AtriaSleepStageRows.swift) as per-stage
+    /// occurrence lanes. The basis is unchanged — the sheet still gates on
+    /// the shared legend and the strip's percents come from the same
+    /// `AtriaSleepStagePresentation.shares` authority; the retired
+    /// fraction-of-span basis must not reappear on either surface.
     func testReviewSheetStageRowsReadTheLegendNotFractionOfSpan() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory
@@ -170,11 +176,22 @@ final class AtriaSleepStagePercentBasisTests: XCTestCase {
 
         XCTAssertTrue(sheet.contains("AtriaSleepHypnogramPresentation.legend(for: night.displayStageSegments)"),
                       "the rows must read the shared legend authority")
-        XCTAssertTrue(sheet.contains("let fraction = Double(row.percent) / 100"),
-                      "the bar pixels mirror the displayed percent exactly")
+        XCTAssertTrue(sheet.contains("AtriaSleepStageRowStrip(segments: night.displayStageSegments"),
+                      "the strip consumes only the honesty-gated display segments")
         XCTAssertFalse(sheet.contains("row.seconds / spanSeconds"),
                        "the fraction-of-span basis is retired")
         XCTAssertFalse(sheet.contains("private var spanSeconds"),
                        "no span denominator survives in the review sheet")
+
+        let stripURL = testsDirectory
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaSleepStageRows.swift")
+        let strip = try String(contentsOf: stripURL, encoding: .utf8)
+        XCTAssertTrue(strip.contains("AtriaSleepStagePresentation.shares(for: segments)"),
+                      "the strip's percents keep the one shares authority")
+        XCTAssertTrue(strip.contains("AtriaSleepHypnogramPresentation.spans(for: segments"),
+                      "the occurrence lanes reuse the hypnogram's pure span math")
+        XCTAssertFalse(strip.contains("spanSeconds"),
+                       "the fraction-of-span basis must not reappear in the strip")
     }
 }

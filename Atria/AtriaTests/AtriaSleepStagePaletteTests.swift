@@ -80,6 +80,10 @@ final class AtriaSleepStagePaletteTests: XCTestCase {
         XCTAssertFalse(summary.contains("case .light: return .cyan"))
     }
 
+    /// Updated for P5 (2026-08-20): the review sheet's per-stage pixels moved
+    /// into `AtriaSleepStageRowStrip` (AtriaSleepStageRows.swift); the sheet
+    /// mounts the strip, and the strip's dots and occurrence lanes key the
+    /// shared token — never an ad-hoc color mapping.
     func testReviewSheetBarsKeyTheSharedPalette() throws {
         let monitor = try source("AtriaActivityMonitor.swift")
         let start = try XCTUnwrap(monitor.range(of: "private var stageBreakdown: some View"))
@@ -87,6 +91,13 @@ final class AtriaSleepStagePaletteTests: XCTestCase {
                                               range: start.lowerBound..<monitor.endIndex))
         let breakdown = String(monitor[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(breakdown.contains("AtriaSleepStagePalette.color(for: row.stage)"))
+        XCTAssertTrue(breakdown.contains("AtriaSleepStageRowStrip(segments: night.displayStageSegments"),
+                      "the sheet mounts the row strip on the honesty-gated display segments")
+
+        let strip = try source("AtriaSleepStageRows.swift")
+        XCTAssertTrue(strip.contains("AtriaSleepStagePalette.color(for: row.stage)"),
+                      "the strip's stage pixels must draw from the shared token")
+        XCTAssertFalse(strip.contains("case .awake: return .orange"),
+                       "no ad-hoc system-color mapping may appear in the strip")
     }
 }
