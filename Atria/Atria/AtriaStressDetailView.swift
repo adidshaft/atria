@@ -423,7 +423,8 @@ struct AtriaStressElevatedEvidence: Equatable {
               active.end == latestReadingAt,
               !state.detail.isEmpty else { return nil }
         let minutes = max(1, Int((active.duration / 60).rounded(.down)))
-        return "\(minutes) min elevated · \(state.detail)"
+        // Dedupe (2026-08-20): provenance renders once, in the hero detail line.
+        return "\(minutes) min elevated"
     }
 }
 
@@ -535,9 +536,11 @@ struct AtriaStressDetailView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(input.presentation.metricTitle)
                     .font(.headline.weight(.bold))
-                Text(updateText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if let updateText {
+                    Text(updateText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Spacer(minLength: 8)
@@ -572,7 +575,6 @@ struct AtriaStressDetailView: View {
         VStack(spacing: 10) {
             AtriaStressGauge(score: input.score,
                              label: input.state.label,
-                             evidenceMode: input.presentation.evidenceMode,
                              tint: input.tint,
                              reduceMotion: reduceMotion)
                 .frame(height: 190)
@@ -754,10 +756,11 @@ struct AtriaStressDetailView: View {
         .atriaCard(cornerRadius: 22, emphasis: .strong)
     }
 
-    private var updateText: String {
+    private var updateText: String? {
         switch stressFreshness {
         case .live:
-            return "Live"
+            // Dedupe (2026-08-20): the header's Live pill already announces it.
+            return nil
         case .stale:
             guard let updatedAt = input.updatedAt else { return "Last reading" }
             return "Last reading \(updatedAt.formatted(.relative(presentation: .named)))"
@@ -839,7 +842,6 @@ struct AtriaStressDetailView: View {
 private struct AtriaStressGauge: View {
     let score: Double?
     let label: String
-    let evidenceMode: AtriaStressEvidenceMode?
     let tint: Color
     let reduceMotion: Bool
 
@@ -879,19 +881,13 @@ private struct AtriaStressGauge: View {
             }
             .frame(width: 170, height: 170)
 
-            if evidenceMode == .cardiacArousal {
-                Text("HR-only estimate · lower confidence")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 286)
-            } else {
-                Text(Self.thresholdSummary)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .monospacedDigit()
-                    .frame(maxWidth: 286)
-            }
+            // Dedupe (2026-08-20): HR-only provenance renders once, in the
+            // hero detail line below the gauge (and in heroAccessibilityLabel).
+            Text(Self.thresholdSummary)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .monospacedDigit()
+                .frame(maxWidth: 286)
         }
     }
 
@@ -1250,13 +1246,9 @@ enum AtriaStressTimelineEvidencePresentation: Equatable {
     case cardiacArousal
     case empty
 
-    var title: String {
-        switch self {
-        case .physiologicalStress: return "Physiological stress"
-        case .cardiacArousal: return "Physiological stress"
-        case .empty: return "Timeline"
-        }
-    }
+    // Dedupe (2026-08-20): the screen header already reads "Physiological
+    // stress"; every state reuses the neutral `.empty` caption.
+    var title: String { "Timeline" }
 }
 
 /// Pure selection contract for the expanded history card. Every model-emitted

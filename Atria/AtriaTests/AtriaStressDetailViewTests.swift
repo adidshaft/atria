@@ -287,9 +287,11 @@ final class AtriaStressDetailViewTests: XCTestCase {
         let evidence = AtriaStressElevatedEvidence.analyze(readings)
         let last = try XCTUnwrap(readings.last?.date)
 
+        // Dedupe (2026-08-20): the scoring-reason suffix now renders only in
+        // the hero detail line; the intervention card keeps the duration.
         XCTAssertEqual(evidence.interventionDetail(state: scoredState(activation: 0.8),
                                                     updatedAt: last),
-                       "4 min elevated · Physiological stress · HR + HRV")
+                       "4 min elevated")
         XCTAssertNil(evidence.interventionDetail(state: scoredState(activation: 0.8),
                                                   updatedAt: last.addingTimeInterval(91)))
         XCTAssertNil(evidence.interventionDetail(state: AtriaStressState(

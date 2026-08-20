@@ -155,6 +155,11 @@ struct AtriaTrendChartCard: View {
                     // hidden because the chart sat at the card's bottom edge, but
                     // chart-first ordering now places content beneath it.
                     .clipped()
+                    // Full-bleed plot inside the card (2026-08-05 width audit);
+                    // cancels the card's 16pt inset on the plot only. Must sit
+                    // OUTSIDE .clipped() so the widened frame is not clipped
+                    // back to the inset width.
+                    .padding(.horizontal, -16)
                 if prepared.series.count >= 2, priorComparisonIsAvailable {
                     priorComparisonControl
                 }

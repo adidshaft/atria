@@ -4598,23 +4598,14 @@ struct AtriaHomeView: View {
                     topChrome
                     // Full-bleed: the notice spans the width flush against the
                     // chrome above it, so it takes no inset or gap of its own.
-                    AtriaHomeRecoveryStatusHost(
-                        coreLiveStore: model.coreLiveStore,
-                        maturityText: { store.baseline.restingBaselineMaturityQualifierText() },
-                        hrvMaturityText: { store.baseline.hrvBaselineMaturityQualifierText() },
-                        vo2MaturityText: {
-                            // Preliminary VO₂ progress (2026-07-31 device
-                            // review): nil (no notice) until a preliminary
-                            // value is actually published, and again once the
-                            // 14-day resting baseline is trusted.
-                            let summary = store.vo2MaxEstimateSummary(
-                                rest: store.baseline.restingInt ?? 0,
-                                maxHR: store.profile.maxHR
-                            )
-                            guard let day = summary.preliminaryRestingDayCount else { return nil }
-                            return "VO₂ max estimating · day \(day) of \(PersonalBaseline.trustedMinimumSamples)"
-                        }
-                    )
+                    //
+                    // The calibration-progress qualifiers (RHR learning, HRV
+                    // calibrating, VO₂ estimating) no longer page through this
+                    // pinned band (2026-08-20 declutter R1): each metric's own
+                    // tile already discloses the same maturity — HRV/RHR
+                    // "Calibrating · night N of 14" and VO₂ "Improving · day
+                    // N of M" — so the band carries sync-truth states only.
+                    AtriaHomeRecoveryStatusHost(coreLiveStore: model.coreLiveStore)
                     if showConnectivityPill {
                         connectivityPill
                             .padding(.horizontal, 16)

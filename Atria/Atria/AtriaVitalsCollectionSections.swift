@@ -6588,14 +6588,10 @@ struct AtriaSleepStageSummary: View, Equatable {
                 .atriaInspectableGraph(sleepStageGraph)
             }
 
-            if night.isEstimatedStageDisplay {
-                // Mandatory estimate caption, rendered WITH the bars: HR-only
-                // estimates must never carry validated visual authority.
-                Text(AtriaSleepStageEstimateLabel.caption)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            // Estimate provenance on-card = the title label + "Low confidence"
+            // chip above (declutter 2026-08-20, R8). The full caption stays in
+            // this card's accessibilityLabel and renders with the bars on the
+            // sleep detail sheet (AtriaSleepHypnogram).
 
             // Compact per-stage chips from the SAME integrity-gated legend the
             // detail sheet uses (SWS folds into Deep; zero-duration stages

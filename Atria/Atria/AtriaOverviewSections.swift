@@ -3212,7 +3212,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                 }
             }
         }
-        .padding(16)
+        // 12pt gutter (2026-08-05 width audit): match the app-wide screen
+        // gutter horizontally; vertical inset stays 16.
+        .padding(.horizontal, 12)
+        .padding(.vertical, 16)
         .atriaCard(emphasis: .strong)
         .sheet(isPresented: $showManualSleepSheet) {
             AtriaManualSleepSheet { start, end, isNap in
@@ -5435,7 +5438,9 @@ struct AtriaWeeklyReportSheet: View {
                     }
                     .atriaCardAction()
                 }
-                .padding(18)
+                // 12pt gutter (2026-08-05 width audit); vertical inset stays 18.
+                .padding(.horizontal, 12)
+                .padding(.vertical, 18)
             }
             .navigationTitle("Weekly report")
             .navigationBarTitleDisplayMode(.inline)
@@ -5872,7 +5877,9 @@ struct AtriaMonthlyReportSheet: View {
                                                  tint: Metrics.electricYellow)
                     }
                 }
-                .padding(18)
+                // 12pt gutter (2026-08-05 width audit); vertical inset stays 18.
+                .padding(.horizontal, 12)
+                .padding(.vertical, 18)
             }
             .navigationTitle("Monthly report")
             .navigationBarTitleDisplayMode(.inline)
@@ -6725,17 +6732,10 @@ private struct AtriaGlanceMetricCard: View, Equatable {
             .frame(height: Self.footerHeight, alignment: .center)
             .accessibilityHidden(true)
         } else {
-            HStack(spacing: 5) {
-                Image(systemName: systemImage)
-                    .font(.caption2.weight(.bold))
-                Text(detail)
-                    .font(.caption2.weight(.bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            }
-            .foregroundStyle(tint.opacity(0.72))
-            .frame(height: Self.footerHeight, alignment: .center)
-            .accessibilityHidden(true)
+            // The header already renders this card's detail string; keep the
+            // footer slot empty so tall cards stay row-aligned in the grid.
+            Color.clear
+                .frame(height: Self.footerHeight)
         }
     }
 }
@@ -8419,20 +8419,8 @@ private struct AtriaDayPlanLane: View, Equatable {
             }
             .frame(height: 28)
             .accessibilityHidden(true)
-
-            HStack {
-                Text(cueText)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.76)
-                Spacer(minLength: 8)
-                Text("Recover · Hold · Push")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.74)
-            }
+            // The cue renders once in the card headline and the scale in the
+            // lane segments; the combined accessibilityLabel keeps both here.
         }
         .padding(11)
         .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: 18, style: .continuous))

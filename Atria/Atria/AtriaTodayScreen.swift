@@ -1528,7 +1528,9 @@ struct AtriaTodayScreen: View {
                             .font(.caption.weight(.bold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
-                        Text("Notifications are off, so here it is instead.")
+                        // Full "shown instead of a notification" honesty copy
+                        // lives in the accessibilityLabel below (declutter R22).
+                        Text("Notifications off")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -3302,7 +3304,7 @@ private struct AtriaTodayAddMetricsSheet: View {
                 } header: {
                     Text("Add or remove metrics")
                 } footer: {
-                    Text("Showing \(selectedKeys.count) of \(AtriaHomeLayoutConfig.maxTodayCards) metrics. Changes appear on Today immediately.")
+                    Text("Showing \(selectedKeys.count) of \(AtriaHomeLayoutConfig.maxTodayCards) metrics.")
                 }
             }
             .navigationTitle("Today metrics")
@@ -4127,6 +4129,10 @@ struct AtriaTodayMorningWhiteboardModel: Equatable {
         let sentence: String
         let tone: Tone
         let route: AtriaMetricDetailKind
+        /// VoiceOver copy when the visible sentence is a shortened form
+        /// (declutter R22): "calibrating" must survive in the spoken label
+        /// even though the row shows only the progress count.
+        var accessibilitySentence: String? = nil
     }
 
     let rows: [Row]
@@ -4145,6 +4151,7 @@ struct AtriaTodayMorningWhiteboardModel: Equatable {
         // HRV vs the 14–30 night personal band.
         let hrvSentence: String
         let hrvTone: Tone
+        var hrvAccessibilitySentence: String? = nil
         // §13.3 (2026-08-14): z comes from the shared band authority so the
         // coach sentence and this row can never disagree.
         if let z = baseline.hrvBandZ(hrvMS: hrvMS),
@@ -4155,7 +4162,8 @@ struct AtriaTodayMorningWhiteboardModel: Equatable {
             hrvSentence = "typical \(lower)–\(upper) ms"
             hrvTone = z >= -1 ? .supportive : (z >= -2 ? .caution : .strained)
         } else {
-            hrvSentence = "calibrating · \(min(baseline.hrvSampleCount, 14)) of 14 nights"
+            hrvSentence = "\(min(baseline.hrvSampleCount, 14)) of 14 nights"
+            hrvAccessibilitySentence = "calibrating · " + hrvSentence
             hrvTone = .neutral
         }
         rows.append(Row(id: "hrv",
@@ -4163,18 +4171,21 @@ struct AtriaTodayMorningWhiteboardModel: Equatable {
                         valuePhrase: hrvMS.map { "HRV \($0) ms" } ?? "HRV —",
                         sentence: hrvSentence,
                         tone: hrvTone,
-                        route: .hrv))
+                        route: .hrv,
+                        accessibilitySentence: hrvAccessibilitySentence))
 
         // RHR vs the personal band (lower is supportive).
         let rhrSentence: String
         let rhrTone: Tone
+        var rhrAccessibilitySentence: String? = nil
         if let z = baseline.restingBandZ(restingHR: restingHR),
            let mean = baseline.restingMean,
            let sd = baseline.restingSD {
             rhrSentence = "typical \(Int((mean - sd).rounded()))–\(Int((mean + sd).rounded())) bpm"
             rhrTone = z <= 1 ? .supportive : (z <= 2 ? .caution : .strained)
         } else {
-            rhrSentence = "calibrating · \(min(baseline.restingSampleCount, 14)) of 14 days"
+            rhrSentence = "\(min(baseline.restingSampleCount, 14)) of 14 days"
+            rhrAccessibilitySentence = "calibrating · " + rhrSentence
             rhrTone = .neutral
         }
         rows.append(Row(id: "rhr",
@@ -4182,7 +4193,8 @@ struct AtriaTodayMorningWhiteboardModel: Equatable {
                         valuePhrase: restingHR.map { "RHR \($0) bpm" } ?? "RHR —",
                         sentence: rhrSentence,
                         tone: rhrTone,
-                        route: .restingHeartRate))
+                        route: .restingHeartRate,
+                        accessibilitySentence: rhrAccessibilitySentence))
 
         // Sleep hours vs THAT night's frozen need — never a recomputation.
         let sleepSentence: String
@@ -4276,7 +4288,7 @@ private struct AtriaTodayMorningWhiteboardCard: View, Equatable {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("\(row.valuePhrase), \(row.sentence)")
+                .accessibilityLabel("\(row.valuePhrase), \(row.accessibilitySentence ?? row.sentence)")
             }
         }
         .padding(.vertical, 6)

@@ -359,7 +359,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
             isCurrentPhysiologicalDay: false,
             currentState: .noSignal,
             now: now
-        ).contains("past two days"))
+        ).contains("2-day detailed-history window"))
         XCTAssertEqual(AtriaActivityStressHistoryPresentation.emptyTimelineMessage(
             loadState: .loaded,
             interval: recent,
@@ -379,7 +379,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                                            rawActivation: 0.4,
                                            hrvAvailable: true),
             now: now
-        ), "No measured stress reading has been recorded since waking.")
+        ), "No stress readings since waking")
     }
 
     func testOvernightHeartRateArchiveReadDistinguishesFailureWearAndBaseline() {
@@ -552,7 +552,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
             loadState: .loaded,
             workoutEnd: now.addingTimeInterval(-72 * 3_600),
             now: now
-        ).contains("outside that window"))
+        ).contains("2-day detailed-history window"))
         XCTAssertEqual(AtriaActivityStressHistoryPresentation.workoutEmptyMessage(
             loadState: .loaded,
             workoutEnd: now,
