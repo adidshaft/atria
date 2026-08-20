@@ -39453,6 +39453,38 @@ final class SessionStore: ObservableObject {
         return true
     }
 
+    /// Applies durable "not sleep" tombstones to machine-authored confirmed
+    /// records once at launch. Both auto-save paths consult tombstones before
+    /// persisting and plain Confirm mints user-authored (predicate-protected)
+    /// records, so a machine-authored record that a stored tombstone
+    /// suppresses can only be the dismissal/auto-confirm race — including
+    /// records raced before dismissal-time retraction shipped (device
+    /// 2026-08-20: a 13:15–16:15 aggregate_sleep survived its own tombstone).
+    /// Returns the scheduled retraction ids so callers (and deterministic
+    /// tests) can observe the selection without racing the async sweep.
+    @discardableResult
+    func reconcileDismissalTombstonesOnLaunch() -> [String] {
+        let tombstones = dismissedSleepCandidates
+        guard !tombstones.isEmpty else { return [] }
+        let retractableIDs = cachedConfirmedSleeps.filter { record in
+            tombstones.contains {
+                Self.dismissalRetractsConfirmedSleep(
+                    record,
+                    dismissalStart: $0.start,
+                    dismissalEnd: $0.end
+                )
+            }
+        }.map(\.id)
+        guard !retractableIDs.isEmpty else { return [] }
+        AtriaDebugLog("ATRIADBG sleep_dismissal_reconcile status=launch_sweep retractable=%d tombstones=%d",
+                      retractableIDs.count,
+                      tombstones.count)
+        Task { @MainActor [weak self] in
+            _ = await self?.retractConfirmedSleeps(ids: retractableIDs)
+        }
+        return retractableIDs
+    }
+
     /// Retracts each record through `deleteConfirmedSleep` so tombstoning, day
     /// invalidation, and the settlement snapshot refresh fire exactly as a
     /// manual delete does. Idempotent — an already-removed id is a no-op — and
