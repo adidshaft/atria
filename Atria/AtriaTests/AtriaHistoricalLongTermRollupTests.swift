@@ -33,8 +33,10 @@ final class AtriaHistoricalLongTermRollupTests: XCTestCase {
         XCTAssertEqual(facts.rr.acceptedBeatCount, 4)
         XCTAssertEqual(facts.rr.sumNNMilliseconds, 3_550)
         XCTAssertEqual(facts.rr.adjacentDifferenceCount, 3)
+        // 100² + 100² + 150² spelled as a literal: the mixed-literal
+        // arithmetic sat at the type-checker's budget edge.
         XCTAssertEqual(facts.rr.sumAdjacentDifferenceSquaredMilliseconds,
-                       100 * 100 + 100 * 100 + 150 * 150,
+                       42_500.0,
                        accuracy: 0.000_001)
         XCTAssertTrue(facts.boundaryRREpochs.isEmpty)
         XCTAssertEqual(facts.motion.epochCount, 2)

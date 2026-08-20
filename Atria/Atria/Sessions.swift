@@ -16497,6 +16497,7 @@ final class SessionStore: ObservableObject {
         )
         dailyRollupStore.endRecoveredDataPublicationFence()
         scheduleDailyMetricPersist(reason: "recovered_transaction_commit", delay: 0)
+        flushPendingDeferredStageBackfillPublicationAfterRecoveredTerminal()
         return true
     }
 
@@ -16550,6 +16551,7 @@ final class SessionStore: ObservableObject {
                 recoveredLifecycleRollbackNeedsStressEdge
                     || stressReplayOutcome.shouldPublish
         }
+        flushPendingDeferredStageBackfillPublicationAfterRecoveredTerminal()
         return true
     }
 
@@ -17183,6 +17185,7 @@ final class SessionStore: ObservableObject {
                     publishStressCalibrationFenceDidRelease(
                         reason: "recovered_reservation_rollback_final_state"
                     )
+                    flushPendingDeferredStageBackfillPublicationAfterRecoveredTerminal()
                 }
                 if ticket.reason.hasPrefix(
                     "bg_projection_current_window_bootstrap"
@@ -42518,12 +42521,23 @@ final class SessionStore: ObservableObject {
                           reason)
             return
         }
-        // A live recovered-data transaction owns its own terminal publication
-        // edge; publishing under it could expose a mid-transaction image.
-        guard recoveredDataMutationTransaction.activeTicket == nil else {
-            AtriaDebugLog("ATRIADBG sleep_stage_backfill_publication status=skipped reason=%@ guard=recovered_transaction_active",
-                          reason)
-            return
+        // A live recovered-data transaction that has already journaled a
+        // canonical mutation owns its own terminal publication edge;
+        // publishing under it could expose a mid-transaction image. An
+        // admitted-but-unmutated transaction has no intermediate image to
+        // expose, and the launch projection's admission is timing-driven:
+        // treating bare admission as a publication fence silently swallowed
+        // committed stages until relaunch whenever the projection happened to
+        // be in flight (2026-08-20). When a prepared mutation does exist, the
+        // publication is parked and flushed at the transaction's terminal
+        // edges — commit and rollback — so it can only be delayed, never lost.
+        if recoveredDataMutationTransaction.activeTicket != nil {
+            guard recoveredDataMutationTransaction.rollbackOperationCount == 0 else {
+                pendingDeferredStageBackfillPublicationReason = reason
+                AtriaDebugLog("ATRIADBG sleep_stage_backfill_publication status=deferred_until_recovered_terminal reason=%@ guard=recovered_transaction_mutated",
+                              reason)
+                return
+            }
         }
         sleepHistorySnapshot = SleepHistorySnapshot(
             rollups: historySnapshot.rollups,
@@ -42537,6 +42551,24 @@ final class SessionStore: ObservableObject {
         refreshHistorySnapshotCache(deferred: true)
         AtriaDebugLog("ATRIADBG sleep_stage_backfill_publication status=published reason=%@",
                       reason)
+    }
+
+    /// A narrow stage-backfill publication that arrived while a recovered-data
+    /// transaction held a prepared mutation. Flushed at BOTH terminal edges
+    /// (commit and rollback) so an in-flight projection can only delay the
+    /// committed stages, never swallow them — the swallow is exactly the
+    /// recovery-state defect class this codebase keeps refinding: state
+    /// cleared only by an edge that may never run.
+    private var pendingDeferredStageBackfillPublicationReason: String?
+
+    private func flushPendingDeferredStageBackfillPublicationAfterRecoveredTerminal() {
+        guard let reason = pendingDeferredStageBackfillPublicationReason else {
+            return
+        }
+        pendingDeferredStageBackfillPublicationReason = nil
+        publishDeferredConfirmedSleepStageBackfill(
+            reason: reason + "_after_recovered_terminal"
+        )
     }
 
     nonisolated static func recoveredMotionProvenance(

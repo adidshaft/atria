@@ -421,7 +421,7 @@ final class AtriaHistoricalReplayIdentityShardTests: XCTestCase {
                                                            identityRetention: .infinity,
                                                            now: { self.now })
         let batch = store.beginDrainBatch()
-        let identities = (0..<frameCount).map { value in
+        let identities: [AtriaHistoricalArchiveDurableStore.FrameIdentity] = (0..<frameCount).map { (value: Int) -> AtriaHistoricalArchiveDurableStore.FrameIdentity in
             AtriaHistoricalArchiveDurableStore.FrameIdentity(
                 strapIdentifier: "strap-1",
                 protocolVersion: 24,

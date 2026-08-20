@@ -1380,9 +1380,20 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         )?.lowerBound)
         let helper = String(source[helperStart..<helperEnd])
         XCTAssertTrue(helper.contains("guard canonicalMutationAllowed"))
+        // A recovered transaction fences this publication only once it has
+        // journaled a canonical mutation — that is when a mid-transaction
+        // image exists. Bare admission is timing-driven (the launch
+        // projection can be admitted at any instant) and fencing on it
+        // silently swallowed committed stages until relaunch (2026-08-20).
         XCTAssertTrue(helper.contains(
-            "guard recoveredDataMutationTransaction.activeTicket == nil"
-        ), "a live recovered transaction owns its own terminal publication")
+            "guard recoveredDataMutationTransaction.rollbackOperationCount == 0"
+        ), "a mutated recovered transaction owns its own terminal publication")
+        XCTAssertTrue(helper.contains(
+            "pendingDeferredStageBackfillPublicationReason = reason"
+        ), "a fenced publication parks for the transaction's terminal edges — delayed, never lost")
+        XCTAssertTrue(helper.contains(
+            "func flushPendingDeferredStageBackfillPublicationAfterRecoveredTerminal"
+        ), "both terminal edges flush the parked publication")
         XCTAssertTrue(helper.contains("confirmedSleeps: cachedConfirmedSleeps"),
                       "publication reads post-commit truth so a newer user edit wins")
         XCTAssertTrue(helper.contains("refreshHistorySnapshotCache(deferred: true)"),
