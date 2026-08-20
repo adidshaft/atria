@@ -738,8 +738,10 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         let selector = String(
             source[selectorStart.lowerBound..<selectorEnd.lowerBound]
         )
+        // W1-A 2026-08-20: the bare continuation-latch guard became the
+        // unified idle-window radio-ownership predicate.
         let continuationGuard = try XCTUnwrap(selector.range(
-            of: "guard !connectedRawHistoryCatchUpContinuationPending"
+            of: "guard !rawLaneActivelyOwnsRadio"
         ))
         let ledgerMutation = try XCTUnwrap(selector.range(
             of: "repairTransportOnlyClearedWorkoutMotionTicketIfNeeded()"
@@ -1821,22 +1823,23 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
         )
     }
 
-    // Drain-on-glance (2026-08-01): opening the app closes a >10-minute bank
+    // Drain-on-glance (2026-08-01): opening the app closes an open bank
     // immediately so fresh steps credit within ~1-2 minutes, bounded by a
     // persisted 10-minute glance fence and blocked while a history sync owns
-    // the radio or the live link lacks accepted HR.
-    func testGlanceCheckpointRequiresTenMinutesOfBankedMotion() {
+    // the radio or the live link lacks accepted HR. W1-A 2026-08-20: the
+    // minimum-open threshold dropped from ten minutes to five.
+    func testGlanceCheckpointRequiresFiveMinutesOfBankedMotion() {
         XCTAssertTrue(AtriaBLEManager.historicalMotionBankGlanceCheckpointEligible(
-            bankOpenSeconds: 11 * 60,
+            bankOpenSeconds: 6 * 60,
             secondsSinceLastGlanceCheckpoint: nil,
             historySyncInProgress: false,
             connectedWithAcceptedHR: true))
         XCTAssertFalse(AtriaBLEManager.historicalMotionBankGlanceCheckpointEligible(
-            bankOpenSeconds: 10 * 60,
+            bankOpenSeconds: 5 * 60,
             secondsSinceLastGlanceCheckpoint: nil,
             historySyncInProgress: false,
             connectedWithAcceptedHR: true),
-                       "exactly ten minutes is not yet >10 minutes of banked motion")
+                       "exactly five minutes is not yet >5 minutes of banked motion")
         XCTAssertFalse(AtriaBLEManager.historicalMotionBankGlanceCheckpointEligible(
             bankOpenSeconds: 4 * 60,
             secondsSinceLastGlanceCheckpoint: nil,

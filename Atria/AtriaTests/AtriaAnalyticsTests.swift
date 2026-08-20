@@ -1906,13 +1906,28 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(first.target, 13, accuracy: 0.0001)
         XCTAssertEqual(first.loadProvenance, "load_learning_at_mint")
 
+        // W1-C (strain-targets fix 3): a target minted before load prepared
+        // upgrades exactly once to the real adjustment, disclosed in
+        // provenance ("…_upgraded_from_learning"); afterwards it never moves
+        // again for the rest of the cycle.
         let afterAsyncLoad = try XCTUnwrap(AtriaDailyStrainTargetStore.resolve(recovery: 50,
                                                                                load: highLoad,
                                                                                now: dayOne.addingTimeInterval(3_600),
                                                                                calendar: calendar,
                                                                                defaults: defaults))
-        XCTAssertEqual(afterAsyncLoad, first,
-                       "Background load preparation must not move today's already-visible target")
+        XCTAssertEqual(afterAsyncLoad.target, 11, accuracy: 0.0001)
+        XCTAssertEqual(afterAsyncLoad.loadAdjustment, -2, accuracy: 0.0001)
+        XCTAssertEqual(afterAsyncLoad.loadProvenance, "load_high_upgraded_from_learning")
+        XCTAssertEqual(afterAsyncLoad.day, first.day)
+        XCTAssertEqual(afterAsyncLoad.recovery, first.recovery)
+
+        let afterSecondAsyncLoad = try XCTUnwrap(AtriaDailyStrainTargetStore.resolve(recovery: 50,
+                                                                                     load: highLoad,
+                                                                                     now: dayOne.addingTimeInterval(7_200),
+                                                                                     calendar: calendar,
+                                                                                     defaults: defaults))
+        XCTAssertEqual(afterSecondAsyncLoad, afterAsyncLoad,
+                       "The learning-load upgrade fires at most once per cycle")
 
         let dayTwo = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: dayOne))
         let nextDay = try XCTUnwrap(AtriaDailyStrainTargetStore.resolve(recovery: 50,

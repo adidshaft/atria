@@ -10105,8 +10105,10 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         let maintenanceCall = try XCTUnwrap(resume.range(
             of: "maintainPendingWorkoutMotionBankTickets("
         ))
+        // W1-A 2026-08-20: the bare continuation-latch guard became the
+        // unified idle-window radio-ownership predicate.
         let rawContinuationGuard = try XCTUnwrap(resume.range(
-            of: "guard !connectedRawHistoryCatchUpContinuationPending"
+            of: "guard !rawLaneActivelyOwnsRadio"
         ))
         XCTAssertLessThan(
             maintenanceCall.lowerBound,

@@ -1856,6 +1856,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// can never authorize a BLE command or survive a callback epoch change.
     private var connectedRawHistoryCatchUpContinuationPending = false
     private var connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+    /// W1-A 2026-08-20 (step-latency Step 2): cumulative productive slices
+    /// since the last scheduled present-capture pause. Unlike the
+    /// consecutive counter above, it survives short duty pauses; any lane
+    /// teardown, live-HR preempt, zero-progress retry, or publication yield
+    /// resets it, because each of those already opens (or defers behind) a
+    /// >=60s armable idle gap. Resetting is always safe — it only delays the
+    /// next capture pause, never shortens one.
+    private var connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare = 0
     /// ITEM-4 2026-08-15: hysteresis memory for the strap-battery duty
     /// shaping — once constrained, stays constrained until level clears
     /// floor + margin (or the strap charges). Process-local by design.
@@ -3346,10 +3354,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     nonisolated private static let workoutHistoricalMotionBankLastGlanceCheckpointAtKey =
         "atria.workoutHistoricalMotionBank.lastGlanceCheckpointAt.v1"
     /// A glance checkpoint needs enough banked motion to be worth a close
-    /// (ten minutes) and keeps at least ten minutes between glance-triggered
-    /// closes.
+    /// (five minutes — W1-A 2026-08-20 lowered from ten so a glance while a
+    /// backlog is pending credits banked steps sooner) and keeps at least
+    /// ten minutes between glance-triggered closes.
     nonisolated static let workoutHistoricalMotionBankGlanceMinimumOpenSeconds:
-        TimeInterval = 10 * 60
+        TimeInterval = 5 * 60
     nonisolated static let workoutHistoricalMotionBankGlanceMinimumInterval:
         TimeInterval = 10 * 60
     nonisolated private static let workoutHistoricalMotionBankRearmNotBeforeKey =
@@ -3402,6 +3411,43 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
 #endif
         return 60 * 60
+    }
+    /// W1-A 2026-08-20 (step-latency Step 2): scheduled capture-share cadence
+    /// during sustained raw catch-up. DEBUG launch-arg overrides mirror
+    /// `--atria-gate4-daily-checkpoint-seconds` above so a device test can
+    /// shrink the cadence without shipping a different production constant.
+    private var connectedRawCatchUpPresentCaptureShareAfterSlices: Int {
+#if DEBUG
+        let prefix = "--atria-raw-capture-share-after-slices="
+        if let argument = ProcessInfo.processInfo.arguments.first(
+            where: { $0.hasPrefix(prefix) }
+        ),
+           let value = Int(argument.dropFirst(prefix.count)),
+           value >= 2,
+           value <= 240 {
+            return value
+        }
+#endif
+        return Self.connectedRawCatchUpPresentCaptureShareAfterSlicesDefault
+    }
+    /// The pause floor stays >= the 60s idle window + margin even in DEBUG:
+    /// a shorter pause would recreate the physically rejected v5-style
+    /// interleave inside a raw continuation episode.
+    private var connectedRawCatchUpPresentCaptureSharePauseSeconds:
+        TimeInterval {
+#if DEBUG
+        let prefix = "--atria-raw-capture-share-pause-seconds="
+        if let argument = ProcessInfo.processInfo.arguments.first(
+            where: { $0.hasPrefix(prefix) }
+        ),
+           let value = TimeInterval(argument.dropFirst(prefix.count)),
+           value >= Self.connectedRawContinuationIdleWindowSeconds
+               + Self.connectedRawCatchUpPresentCaptureSharePauseMarginSeconds,
+           value <= 10 * 60 {
+            return value
+        }
+#endif
+        return Self.connectedRawCatchUpPresentCaptureSharePauseSecondsDefault
     }
     nonisolated private var protectedR10StandardDiscoveryStarted: Bool {
         get { callbackPolicyState.snapshot().protectedStandardDiscoveryStarted }
@@ -4817,6 +4863,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         connectedRawHistoryCatchUpEvaluationNotBefore = nil
         connectedRawHistoryCatchUpContinuationPending = false
         connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+        connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare = 0
         UserDefaults.standard.set(now.timeIntervalSince1970,
                                   forKey: "atria.ble.connectionEpochAt")
         UserDefaults.standard.set(reason, forKey: "atria.ble.connectionEpochReason")
@@ -13450,6 +13497,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // the persisted cooldown on a later exact accepted-HR boundary.
         connectedRawHistoryCatchUpContinuationPending = false
         connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+        connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare = 0
         connectedRawHistoryCatchUpEvaluationNotBefore = retryNotBefore
         connectedRawNoRadioCaptureDeferral = nil
         // Any pull queued behind this owner was minted before the failed
@@ -15906,6 +15954,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 ? retryNotBefore
                 : nil
             connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+            connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare = 0
             connectedRawNoRadioCaptureDeferral = nil
             // Handoff-10 CP2B: a live-HR preempt is a deliberate release, not
             // a crash — retire this generation's `.started` receipt so it
@@ -16015,7 +16064,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 publicationYieldBudget:
                     connectedRawHistoryCatchUpPublicationYieldBudget,
                 // ITEM-4 2026-08-15: strap-battery-aware cadence stretch.
-                strapPowerConstrained: evaluateConnectedRawCatchUpStrapPowerConstraint()
+                strapPowerConstrained: evaluateConnectedRawCatchUpStrapPowerConstraint(),
+                // W1-A 2026-08-20: bounded capture-share leg inputs.
+                productiveSlicesSinceCaptureShare:
+                    connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare,
+                presentCaptureShareAfterSlices:
+                    connectedRawCatchUpPresentCaptureShareAfterSlices,
+                presentCaptureSharePause:
+                    connectedRawCatchUpPresentCaptureSharePauseSeconds
             )
         let action: String
         switch disposition {
@@ -16026,6 +16082,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     connectedRawHistoryCatchUpZeroProgressRetryInterval
                 )
             connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+            connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare = 0
             if case .queuedPull(let intentID) = authority.request.intent,
                queuedConnectedRawHistoryCatchUpIntent?.id == intentID {
                 queuedConnectedRawHistoryCatchUpIntent = nil
@@ -16044,6 +16101,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             connectedRawHistoryCatchUpContinuationPending = true
             connectedRawHistoryCatchUpEvaluationNotBefore = nil
             connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+            connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare = 0
             action = "await_critical_thermal_recovery"
         case .yieldForPublication(let budget):
             beginConnectedRawHistoryCatchUpPublicationYield(
@@ -16055,6 +16113,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             action = String(
                 format: "yield_for_publication_%.0fs",
                 budget
+            )
+        case .pauseForPresentCapture(let pause):
+            // W1-A 2026-08-20 (step-latency Step 2): a scheduled pause, not a
+            // lane release — the continuation stays latched and NO new arming
+            // code runs here. The pause is >= the 60s idle window + margin,
+            // so the EXISTING accepted-HR arm path sees the raw lane as idle
+            // and opens 0x69 for present capture; the next slice's serve
+            // cutover closes it into honest coverage.
+            connectedRawHistoryCatchUpContinuationPending = true
+            connectedRawHistoryCatchUpEvaluationNotBefore =
+                now.addingTimeInterval(pause)
+            connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+            connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare = 0
+            action = String(
+                format: "pause_for_present_capture_%.0fs",
+                pause
             )
         case .resumeAfter(let delay):
             connectedRawHistoryCatchUpContinuationPending = true
@@ -16068,12 +16142,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 connectedRawHistoryCatchUpConsecutiveProductiveSlices =
                     nextProductiveCount
             }
+            // W1-A: every productive slice — whether followed by the short
+            // productive delay or the small duty pause — advances the coarse
+            // capture-share cadence.
+            connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare += 1
             action = String(format: "resume_after_%.0fs", delay)
         case .retryAfter(let delay):
             connectedRawHistoryCatchUpContinuationPending = true
             connectedRawHistoryCatchUpEvaluationNotBefore =
                 now.addingTimeInterval(delay)
             connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+            // W1-A: the 120s zero-progress retry is itself an armable idle
+            // gap under the unified ownership predicate, so the capture-share
+            // cadence restarts rather than stacking a second pause on top.
+            connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare = 0
             // ITEM-4 2026-08-15: count the dry slice for exponential backoff.
             connectedRawCatchUpConsecutiveZeroProgressSlices += 1
             action = String(format: "retry_after_%.0fs", delay)
@@ -16152,6 +16234,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         connectedRawHistoryCatchUpPublicationYield = yield
         connectedRawHistoryCatchUpContinuationPending = true
         connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+        // W1-A: a publication yield's deadline sits >= the idle window away,
+        // so with the unified ownership predicate the bank can arm during the
+        // yield itself — restart the capture-share cadence instead of
+        // stacking a scheduled pause right after it.
+        connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare = 0
         connectedRawHistoryCatchUpEvaluationNotBefore = yield.deadline
         connectedRawHistoryCatchUpPublicationYieldTimeoutTask = Task {
             @MainActor [weak self] in
@@ -17522,6 +17609,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         guard strapBacklogPending else {
             connectedRawHistoryCatchUpContinuationPending = false
             connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+            connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare = 0
             connectedRawNoRadioCaptureDeferral = nil
             return false
         }
@@ -17639,6 +17727,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 )
                 connectedRawHistoryCatchUpContinuationPending = false
                 connectedRawHistoryCatchUpConsecutiveProductiveSlices = 0
+                connectedRawHistoryCatchUpProductiveSlicesSinceCaptureShare = 0
                 connectedRawHistoryCatchUpEvaluationNotBefore = retryNotBefore
                 AtriaDebugLog(
                     "ATRIADBG offline_sync status=connected_raw_no_radio_capture_turn authority=%@ retry_unix=%.3f action=release_logical_fifo_owner_rearm_present_bank_defer_raw_120s_retain_backlog_no_command",
@@ -25545,8 +25634,16 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // selector stays out of this lane until global catch-up releases it.
         let noRadioPresentCaptureTurn =
             connectedRawNoRadioCaptureTurnIsCurrent()
+        // W1-A 2026-08-20 (step-latency Step 1): the bare continuation latch
+        // here deferred closed directOffload tickets for as long as any
+        // backlog existed. The arm path's idle-window ownership test is the
+        // one predicate for "the raw lane actively owns the radio": a >=60s
+        // idle raw gap admits the offload and the next slice's serve cutover
+        // reclaims transport.
+        let rawLaneActivelyOwnsRadio =
+            connectedRawContinuationActivelyOwnsRadio(now: sampleTime)
         let bankOffloadStarted =
-            connectedRawHistoryCatchUpContinuationPending
+            rawLaneActivelyOwnsRadio
                 || noRadioPresentCaptureTurn
                 ? false
                 : resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
@@ -25570,10 +25667,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                 )
                 )
             }
-            if !connectedRawHistoryCatchUpContinuationPending,
-               connectedRawHistoryCatchUpPublicationYield == nil,
-               !(postHistoryLiveRestorationGeneration != nil
-                    && connectedRawHistoryCatchUpContinuationPending) {
+            // W1-A 2026-08-20 (step-latency Step 1): same unified ownership
+            // predicate as the offload gate above. The old third clause
+            // (post-history restoration AND the bare latch) was subsumed by
+            // the first: the arm path already scopes post-history
+            // restoration by active ownership, so mirroring that here keeps
+            // one standard. The publication-yield fence stays untouched.
+            if !rawLaneActivelyOwnsRadio,
+               connectedRawHistoryCatchUpPublicationYield == nil {
                 checkpointDailyHistoricalMotionBankIfNeeded(
                     at: sampleTime,
                     reason: "fresh_accepted_hr"
@@ -28125,8 +28226,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
 
     /// Drain-on-glance (2026-08-01): opening the app is the user asking
     /// "where am I now?", so a bank that has been quietly accumulating for
-    /// over ten minutes closes and offloads immediately instead of waiting
-    /// out the hourly maintenance fence — fresh steps credit within a minute
+    /// over five minutes (W1-A 2026-08-20: lowered from ten) closes and
+    /// offloads immediately instead of waiting out the hourly maintenance
+    /// fence — fresh steps credit within a minute
     /// or two of the glance. Pure so the eligibility is unit-testable:
     /// requires a healthy live link (connected + accepted HR), no history
     /// sync owning the radio, a bank open longer than `minimumOpenSeconds`,
@@ -28344,6 +28446,24 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         publishHistoricalRecoveryProgressIfNeeded(now: now)
     }
 
+    /// W1-A 2026-08-20 (step-latency Step 1): instance wrapper around the ONE
+    /// pure raw-lane radio-ownership predicate
+    /// (`Self.connectedRawContinuationActivelyOwnsRadio`). The arm path, the
+    /// offload resume path, and the hourly-checkpoint gate all route through
+    /// this so the offload lanes can no longer treat the bare scheduling
+    /// latch as radio ownership while the arm path already knew better.
+    private func connectedRawContinuationActivelyOwnsRadio(
+        now: Date
+    ) -> Bool {
+        Self.connectedRawContinuationActivelyOwnsRadio(
+            continuationPending:
+                connectedRawHistoryCatchUpContinuationPending,
+            nextEvaluationNotBefore:
+                connectedRawHistoryCatchUpEvaluationNotBefore,
+            now: now
+        )
+    }
+
     /// Duty-cycle attribution must not misfile time the bank is genuinely
     /// armed: gate declines fire before the already-armed short-circuit, so
     /// an armed bank riding out a history sync would otherwise bill hours
@@ -28383,12 +28503,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // future owns no radio: let the bank capture present motion in the
         // gap; the next history slice's serve cutover reclaims it cleanly.
         // The 60s floor keeps 2s productive chains from arm/disarm churn.
-        let rawSliceIdleWindow: TimeInterval = 60
+        // W1-A 2026-08-20: the inline idle test moved to the shared pure
+        // predicate so the offload lanes apply the identical standard.
         let rawContinuationActivelyOwnsRadio =
-            connectedRawHistoryCatchUpContinuationPending
-                && !(connectedRawHistoryCatchUpEvaluationNotBefore.map {
-                        $0.timeIntervalSince(now) >= rawSliceIdleWindow
-                    } ?? false)
+            connectedRawContinuationActivelyOwnsRadio(now: now)
         guard !historyOnlyProbeMode,
               !freshHistoryOwnerCutoverPending,
               !Self.historicalMotionBankRearmBlockedByRawOwnership(
@@ -30188,7 +30306,29 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     }
 
     @discardableResult
-    private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
+        /// W1-A (step-latency Step 1): the arm path's idle-window ownership
+    /// predicate replaces the bare continuation latch at every offload gate;
+    /// each decision taken while the latch is pending is counted so one
+    /// defaults pull proves idle-gap admissions happen on device.
+    private func deferMotionBankOffloadForActiveRawLane(reason: String,
+                                                        now: Date) -> Bool {
+        let rawLaneActivelyOwnsRadio =
+            connectedRawContinuationActivelyOwnsRadio(now: now)
+        if connectedRawHistoryCatchUpContinuationPending {
+            AtriaMotionBankOffloadAdmissionDiag.note(
+                rawLaneActivelyOwnsRadio
+                    ? "deferred_raw_active" : "admitted_raw_idle"
+            )
+        }
+        guard rawLaneActivelyOwnsRadio else { return false }
+        AtriaDebugLog(
+            "ATRIADBG workout_motion_bank_offload status=deferred reason=%@ detail=connected_raw_fifo_continuation_owns_radio action=no_selector_no_attempt_no_cadence_mutation",
+            reason
+        )
+        return true
+    }
+
+private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         reason: String,
         maintenanceWindow: Bool = false,
         expectedArchiveWarmTicketID: String? = nil,
@@ -30217,11 +30357,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 expectedLocalDependencyTicketID,
             ].compactMap { $0 })
         )
-        guard !connectedRawHistoryCatchUpContinuationPending else {
-            AtriaDebugLog(
-                "ATRIADBG workout_motion_bank_offload status=deferred reason=%@ detail=connected_raw_fifo_continuation action=no_selector_no_attempt_no_cadence_mutation",
-                reason
-            )
+        // W1-A: the raw lane's idle-window ownership (with admission
+        // diagnostics) must release the radio before any offload work.
+        guard !deferMotionBankOffloadForActiveRawLane(reason: reason, now: now) else {
             return false
         }
         guard !connectedRawNoRadioCaptureTurnIsCurrent() else {
@@ -48257,4 +48395,50 @@ extension AtriaBLEManager: CBPeripheralDelegate {
         }
     }
 
+}
+
+/// W1-A 2026-08-20 (step-latency Step 1 observability): day-keyed counts of
+/// motion-bank offload admission decisions taken while a connected-raw
+/// continuation latch was pending. `deferred_raw_active` means the raw
+/// lane's idle-window ownership test refused the offload;
+/// `admitted_raw_idle` means a >=60s idle raw gap admitted it. Mirrors
+/// `AtriaMotionBankDutyCycleDiag`'s persistence shape (day rollover
+/// snapshots to a yesterday key) but counts decisions instead of
+/// attributing time. Diagnostic only — never an input to arming, coverage,
+/// or step decisions.
+enum AtriaMotionBankOffloadAdmissionDiag {
+    static let stateKey = "atria.debug.motionBankOffloadAdmission.v1"
+    static let previousDayKey =
+        "atria.debug.motionBankOffloadAdmission.yesterday.v1"
+
+    struct State: Codable, Equatable {
+        var day: String
+        var counts: [String: Int]
+    }
+
+    static func note(
+        _ outcome: String,
+        now: Date = Date(),
+        defaults: UserDefaults = .standard
+    ) {
+        let day = AtriaMotionBankDutyCycleDiag.dayKey(for: now)
+        var state = load(defaults: defaults) ?? State(day: day, counts: [:])
+        if state.day != day {
+            if let snapshot = try? JSONEncoder().encode(state),
+               let text = String(data: snapshot, encoding: .utf8) {
+                defaults.set(text, forKey: previousDayKey)
+            }
+            state = State(day: day, counts: [:])
+        }
+        state.counts[outcome, default: 0] += 1
+        guard let data = try? JSONEncoder().encode(state),
+              let text = String(data: data, encoding: .utf8) else { return }
+        defaults.set(text, forKey: stateKey)
+    }
+
+    static func load(defaults: UserDefaults = .standard) -> State? {
+        guard let text = defaults.string(forKey: stateKey),
+              let data = text.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(State.self, from: data)
+    }
 }
