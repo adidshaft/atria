@@ -12,6 +12,39 @@ struct AtriaChartEvent: Identifiable, Equatable {
     let tint: Color
 }
 
+extension AtriaChartEvent {
+    /// The ONE activity-marker builder every chart route shares: the compact
+    /// trend card's expanded route, the metric-detail expanded route, and the
+    /// Vitals trend host must all describe the same saved records the same
+    /// way. Divergent per-surface copies were one way the full-screen chart
+    /// disagreed with inline surfaces about the same day (2026-08-20
+    /// expanded-activities report): the detail-sheet copy skipped the
+    /// accidental-fragment gate the inline Vitals copy applied.
+    /// `presentableWorkouts` is the documented shared filter for chart
+    /// markers (AtriaWorkoutMetricPresentation); only real confirmed sleep
+    /// nights mark — never review candidates.
+    static func activityEvents(
+        workouts: [UserConfirmedWorkout],
+        sleepNights: [SleepHistorySnapshot.Night]
+    ) -> [AtriaChartEvent] {
+        var events = AtriaWorkoutMetricPresentation.presentableWorkouts(workouts).map { workout in
+            AtriaChartEvent(id: "workout-\(workout.id)",
+                            day: workout.start,
+                            label: workout.activitySubtype ?? workout.activityType ?? "Workout",
+                            systemImage: "flame.fill",
+                            tint: Metrics.electricStrain)
+        }
+        events.append(contentsOf: sleepNights.filter(\.confirmed).map { night in
+            AtriaChartEvent(id: "sleep-\(night.id)",
+                            day: night.day,
+                            label: "Sleep",
+                            systemImage: "bed.double.fill",
+                            tint: Metrics.electricSleep)
+        })
+        return events
+    }
+}
+
 /// Shared expanded-chart experience (user feedback 2026-07-07: "all of the
 /// graphs should have basic functions and open in landscape mode when
 /// expanded"). Presented full-screen; the canvas renders rotated 90° so the
@@ -60,6 +93,7 @@ struct AtriaExpandedChartView: View {
          baselineBand: AtriaDetailBaselineBand? = nil,
          events: [AtriaChartEvent] = [],
          overlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = [],
+         xDomain: ClosedRange<Date>? = nil,
          comparisonPeriodNoun: String = "period",
          onDismiss: @escaping () -> Void) {
         self.title = title
@@ -75,7 +109,8 @@ struct AtriaExpandedChartView: View {
         self.prepared = AtriaExpandedChartPreparedModel(points: points,
                                                         priorPoints: priorPoints,
                                                         baselineBand: baselineBand,
-                                                        overlays: overlays)
+                                                        overlays: overlays,
+                                                        explicitXDomain: xDomain)
     }
 
     private var spanDays: Int {
@@ -319,9 +354,12 @@ struct AtriaExpandedChartView: View {
             currentSeriesMarks
 
             // Event lane: real saved activity pinned to the top of the plot.
-            // Gated by the edit-chart "Mark journal events" toggle.
+            // Gated by the edit-chart "Mark journal events" toggle. Draws the
+            // day-bucketed in-domain lane list so the rendered markers, the
+            // footer count, and the edit sheet's availability all describe
+            // the exact same events.
             if markJournalEvents {
-                ForEach(events) { event in
+                ForEach(laneEvents) { event in
                     PointMark(x: .value("Day", event.day, unit: .day),
                               y: .value(title, prepared.eventLaneY))
                         .symbol {
@@ -427,12 +465,31 @@ struct AtriaExpandedChartView: View {
         prepared.overlay(title: activeOverlayTitle)
     }
 
-    /// Only events inside the chart's x-domain: the marker lane clips to it,
-    /// so counting the full unfiltered list over-reported what is actually
-    /// marked (2026-07-31 audit item 10).
+    /// Only events the marker lane actually draws (the 2026-07-31 audit item
+    /// 10 rule: never count what is not marked). Membership must use the same
+    /// DAY-BUCKETED x the lane's `unit: .day` PointMark plots — the previous
+    /// raw-timestamp domain test disagreed with the render, so an afternoon
+    /// workout on the last plotted day drew a marker while counting as zero,
+    /// which told the edit sheet there were no journal events to toggle
+    /// (2026-08-20 expanded-activities report).
+    private var laneEvents: [AtriaChartEvent] {
+        Self.eventLaneEvents(events, xDomain: prepared.xDomain)
+    }
+
     private var visibleEventCount: Int {
-        events.reduce(into: 0) { count, event in
-            if prepared.xDomain.contains(event.day) { count += 1 }
+        laneEvents.count
+    }
+
+    /// Pure lane membership: an event marks iff its DAY (the lane renders
+    /// day-bucketed marks) sits inside the x-domain. Half-open on the upper
+    /// edge so a calendar-period domain ending at the NEXT period's midnight
+    /// never admits the next period's first day.
+    static func eventLaneEvents(_ events: [AtriaChartEvent],
+                                xDomain: ClosedRange<Date>,
+                                calendar: Calendar = .current) -> [AtriaChartEvent] {
+        events.filter { event in
+            let day = calendar.startOfDay(for: event.day)
+            return day >= xDomain.lowerBound && day < xDomain.upperBound
         }
     }
 
@@ -543,7 +600,7 @@ struct AtriaExpandedChartView: View {
     }
 }
 
-private struct AtriaExpandedChartPreparedOverlay: Identifiable {
+struct AtriaExpandedChartPreparedOverlay: Identifiable {
     let title: String
     let unit: String
     let tint: Color
@@ -552,7 +609,7 @@ private struct AtriaExpandedChartPreparedOverlay: Identifiable {
     var id: String { title }
 }
 
-private struct AtriaExpandedChartPreparedModel {
+struct AtriaExpandedChartPreparedModel {
     let dataStart: Date
     let dataEnd: Date
     let xDomain: ClosedRange<Date>
@@ -566,12 +623,30 @@ private struct AtriaExpandedChartPreparedModel {
     init(points: [AtriaDetailChartPoint],
          priorPoints: [AtriaDetailChartPoint],
          baselineBand: AtriaDetailBaselineBand?,
-         overlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])]) {
+         overlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])],
+         explicitXDomain: ClosedRange<Date>? = nil,
+         calendar: Calendar = .current) {
         let now = Date()
         dataStart = points.first?.day ?? now
         dataEnd = points.last?.day ?? now
-        xDomain = dataStart.addingTimeInterval(-43_200)...dataEnd.addingTimeInterval(43_200)
-        spanDays = max(1, Calendar.current.dateComponents([.day], from: dataStart, to: dataEnd).day ?? 1)
+        // The metric-detail route plots a calendar PERIOD: its inline chart's
+        // x-domain is the full selected week/month, not just the sub-range
+        // holding metric points. Deriving the expanded domain from points
+        // alone CLIPPED the activity lane to that sub-range, silently
+        // dropping markers for period days whose metric had not settled yet —
+        // today's confirmed sleep or workout, exactly the records the inline
+        // surfaces show (2026-08-20 expanded-activities report). An explicit
+        // domain from the presenting chart therefore wins; the trend-card
+        // route keeps the legacy data-derived window unchanged.
+        if let explicitXDomain {
+            xDomain = explicitXDomain
+            spanDays = max(1, calendar.dateComponents([.day],
+                                                      from: explicitXDomain.lowerBound,
+                                                      to: explicitXDomain.upperBound).day ?? 1)
+        } else {
+            xDomain = dataStart.addingTimeInterval(-43_200)...dataEnd.addingTimeInterval(43_200)
+            spanDays = max(1, calendar.dateComponents([.day], from: dataStart, to: dataEnd).day ?? 1)
+        }
 
         var values: [Double] = []
         values.reserveCapacity(points.count + priorPoints.count + 2)

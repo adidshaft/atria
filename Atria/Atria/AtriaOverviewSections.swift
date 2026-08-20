@@ -9253,6 +9253,7 @@ struct AtriaMetricDetailSheet: View {
                                        baselineBand: config.band,
                                        events: expandedChartEvents,
                                        overlays: expandedChartOverlays,
+                                       xDomain: expandedChartXDomain,
                                        comparisonPeriodNoun: range.narrativeLabel,
                                        onDismiss: { showExpandedChart = false })
             }
@@ -11025,8 +11026,11 @@ struct AtriaMetricDetailSheet: View {
                 )
         )
         let prepared = metricChartPreparedDataCache.value(for: cacheKey) {
-            let visiblePeriod = range.periodInterval(
-                containing: (preparation.valueKey ?? preparationInput).referenceDate,
+            // Same helper the expanded full-screen route passes as its
+            // explicit domain: inline and expanded plot one period.
+            let visibleXDomain = Self.chartPeriodXDomain(
+                range: range,
+                referenceDate: (preparation.valueKey ?? preparationInput).referenceDate,
                 calendar: (preparation.valueKey ?? preparationInput).calendar
             )
             return AtriaMetricChartPreparedData(
@@ -11035,7 +11039,7 @@ struct AtriaMetricDetailSheet: View {
                 baselineBounds: baselineBand.map { $0.lower...$0.upper },
                 priorAverage: comparison?.priorAverage,
                 companionPoints: companions.map(\.points),
-                xDomain: visiblePeriod.start...visiblePeriod.end
+                xDomain: visibleXDomain
             )
         }
         return AtriaPreparedMetricChart(
@@ -11065,24 +11069,15 @@ struct AtriaMetricDetailSheet: View {
 
     /// Real saved activity for the expanded chart's marker lane: confirmed
     /// workouts (strain hue) and confirmed sleep nights (sleep hue). Only
-    /// records that exist — an empty day has no marker.
+    /// records that exist — an empty day has no marker. Built by the ONE
+    /// shared `AtriaChartEvent.activityEvents` builder so this expanded
+    /// route can never drift from the inline surfaces again — the local copy
+    /// it replaces skipped the accidental-fragment gate the inline Vitals
+    /// host applied (2026-08-20 expanded-activities report).
     private var expandedChartEvents: [AtriaChartEvent] {
         expandedChartEventsCache.value(key: expandedChartEventsKey) {
-            var events: [AtriaChartEvent] = confirmedWorkouts.map { workout in
-                AtriaChartEvent(id: "workout-\(workout.id)",
-                                day: workout.start,
-                                label: workout.activitySubtype ?? workout.activityType ?? "Workout",
-                                systemImage: "flame.fill",
-                                tint: Metrics.electricStrain)
-            }
-            events.append(contentsOf: sleepHistory.nights.filter(\.confirmed).map { night in
-                AtriaChartEvent(id: "sleep-\(night.id)",
-                                day: night.day,
-                                label: "Sleep",
-                                systemImage: "bed.double.fill",
-                                tint: Metrics.electricSleep)
-            })
-            return events
+            AtriaChartEvent.activityEvents(workouts: confirmedWorkouts,
+                                           sleepNights: sleepHistory.nights)
         }
     }
 
@@ -11104,6 +11099,37 @@ struct AtriaMetricDetailSheet: View {
             hasher.combine(sleepHistory.nights.last?.id)
         }
         return hasher.finalize()
+    }
+
+    /// ONE source of truth for the horizontal window of this metric/range:
+    /// the inline detail chart's `prepared.xDomain` and the expanded
+    /// full-screen chart must plot the SAME calendar period. The expanded
+    /// chart used to derive its domain from the metric points alone, so
+    /// activity markers on period days without a settled metric point —
+    /// today's workout or confirmed sleep, exactly what the inline surfaces
+    /// show — were clipped out of the full-screen view (2026-08-20
+    /// expanded-activities report).
+    static func chartPeriodXDomain(range: AtriaTrendRange,
+                                   referenceDate: Date,
+                                   calendar: Calendar) -> ClosedRange<Date> {
+        let period = range.periodInterval(containing: referenceDate,
+                                          calendar: calendar)
+        return period.start...period.end
+    }
+
+    /// The exact period the accepted preparation is plotting (never the live
+    /// `periodAnchor`, which runs ahead during an async prepare) — the same
+    /// reference the inline chart's cached `xDomain` uses. Nil only for
+    /// `.all`, whose "period" starts at `.distantPast`: there the recorded
+    /// data span IS the window, so the expanded chart keeps its legacy
+    /// data-derived domain instead of a fabricated multi-millennium axis.
+    private var expandedChartXDomain: ClosedRange<Date>? {
+        guard range != .all else { return nil }
+        return Self.chartPeriodXDomain(
+            range: range,
+            referenceDate: (preparation.valueKey ?? preparationInput).referenceDate,
+            calendar: (preparation.valueKey ?? preparationInput).calendar
+        )
     }
 
     /// The expanded chart mirrors whatever the inline chart currently shows
