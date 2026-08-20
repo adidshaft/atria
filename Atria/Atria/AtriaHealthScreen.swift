@@ -2803,13 +2803,12 @@ struct AtriaSleepStressCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Overnight HR load")
-                        .font(.subheadline.weight(.bold))
-                    Text(projection.availability.title)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                // "Observed HR · personal baseline" and the 0–3 disclaimer are
+                // not deleted: they live in the inspector subtitle and this
+                // card's accessibilityLabel. Non-ready titles still render via
+                // the ContentUnavailableView below.
+                Text("Overnight HR load")
+                    .font(.subheadline.weight(.bold))
                 Spacer(minLength: 8)
                 if projection.availability == .ready {
                     Text(highSummary)
@@ -2935,7 +2934,9 @@ struct AtriaSleepStressCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if mode == .heartRate, let band = typicalRestingBand {
-                    Text("Shaded band: your typical overnight resting HR, \(Int(band.lowerBound.rounded()))–\(Int(band.upperBound.rounded())) bpm")
+                    // What the shaded band is stays explained in the inspector
+                    // subtitle; the caption keeps only the numbers.
+                    Text("Typical resting \(Int(band.lowerBound.rounded()))–\(Int(band.upperBound.rounded())) bpm")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -2947,16 +2948,14 @@ struct AtriaSleepStressCard: View {
                     .frame(maxWidth: .infinity, minHeight: 126)
                     .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
-
-            Text(projection.availability.detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
         .padding(12)
         .atriaInsetCard(tint: .orange)
         .accessibilityElement(children: .combine)
+        // The ready branch keeps the relocated provenance title and the 0–3
+        // scale disclaimer audible even though they left the visible card.
         .accessibilityLabel(projection.availability == .ready
-                            ? "Overnight heart-rate load. \(highSummary). \(highTimingSummary ?? "")"
+                            ? "Overnight heart-rate load. \(projection.availability.title). \(highSummary). \(highTimingSummary ?? "") \(projection.availability.detail)"
                             : "Overnight heart-rate load. \(projection.availability.title). \(projection.availability.detail)")
     }
 
@@ -2998,7 +2997,9 @@ struct AtriaSleepStressCard: View {
         case .load:
             return AtriaInspectableGraph(
                 title: "Overnight HR load",
-                subtitle: "Observed HR relative to your resting baseline · 0–3 scale",
+                // The card's relocated ready-state disclaimer: the inspector is
+                // the on-demand home for the full 0–3 scale explanation.
+                subtitle: AtriaSleepStressProjection.Availability.ready.detail,
                 content: .timeSeries([
                     .init(title: "HR load",
                           unit: "",

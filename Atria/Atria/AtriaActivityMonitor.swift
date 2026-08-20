@@ -945,22 +945,22 @@ enum AtriaActivityStressHistoryPresentation {
         case .loading:
             return "Loading saved stress readings…"
         case .unavailable:
-            return "Saved stress history couldn’t be read. New measured readings will still appear here."
+            return "Saved history couldn’t be read"
         case .disabled, .loaded:
             break
         }
 
         let cutoff = now.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
         if interval.end <= cutoff {
-            return "Detailed stress readings are kept for the past two days; this day is outside that window."
+            return "Outside the 2-day detailed-history window"
         }
         if isCurrentPhysiologicalDay {
             if currentState.minuteFact?.isHROnly == true
                 || currentState.evidenceMode == .cardiacArousal {
-                return "An HR-only physiological-stress estimate is available at lower confidence."
+                return "HR-only estimate · lower confidence"
             }
             if currentState.kind == .scored {
-                return "No measured stress reading has been recorded since waking."
+                return "No stress readings since waking"
             }
             let detail = AtriaStressPresentation.make(state: currentState).detail
             return detail.isEmpty
@@ -986,7 +986,7 @@ enum AtriaActivityStressHistoryPresentation {
         case .disabled, .loaded:
             let cutoff = now.addingTimeInterval(-AtriaStressHistoryArchive.retentionWindow)
             if workoutEnd <= cutoff {
-                return "Detailed stress readings are kept for the past two days; this workout is outside that window."
+                return "Outside the 2-day detailed-history window"
             }
             return "No measured stress readings were recorded during this workout."
         }
@@ -1829,7 +1829,7 @@ struct AtriaActivityMonitorTab: View {
                 .foregroundStyle(.primary)
                 .multilineTextAlignment(.center)
 
-            Text("Workouts and sleep land here on their own once they are detected or confirmed. Use Add to log something yourself.")
+            Text("Detected workouts and sleep appear here. Use Add to log your own.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -2478,10 +2478,14 @@ struct AtriaActivityMonitorTab: View {
                 heartRateTimelineChart(range: plotRange,
                                        axisTicks: axisTicks,
                                        spans: spans)
+                    // Full-bleed plot (2026-08-05 width audit).
+                    .padding(.horizontal, -12)
             } else {
                 stressTimelineChart(range: plotRange,
                                     axisTicks: axisTicks,
                                     spans: spans)
+                    // Full-bleed plot (2026-08-05 width audit).
+                    .padding(.horizontal, -12)
             }
         }
         .padding(12)
@@ -2749,9 +2753,8 @@ struct AtriaActivityMonitorTab: View {
         case .idle: return "Heart-rate history has not loaded yet."
         case .loading: return "Loading recorded heart rate…"
         case .preparing: return "Preparing recorded history…"
-        case .loaded: return "No heart-rate samples were captured in this window."
-        case .unavailable: return "Heart-rate history couldn’t be read for this window."
-        case .interrupted: return "Heart-rate history refresh stopped before this window was available."
+        case .loaded: return "No HR recorded in this window"
+        case .unavailable, .interrupted: return "History unavailable for this window"
         }
     }
 
