@@ -16664,7 +16664,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// rewritten by parking — this is scheduling state only.
     private func registerHistorySequenceGapDrainFailure(detail: String) {
         let defaults = UserDefaults.standard
-        guard let fingerprint = offlineHistoricalSyncGapFingerprint else {
+        // The connected raw catch-up lane drains from the durable frontier and
+        // carries no sync-scoped gap fingerprint, but its flash-discontinuity
+        // failure describes the same durable gap ledger the range-loss lane
+        // serves — and the park/suppression check derives its comparison
+        // fingerprint from that ledger. Falling back here keeps a wrapped
+        // flash boundary inside the attempt budget no matter which lane
+        // observed it; skipping accounting left the retry loop unbounded.
+        guard let fingerprint = offlineHistoricalSyncGapFingerprint
+                ?? currentHistoricalGapFingerprintForCadence(
+                    defaults: defaults
+                ) else {
             AtriaDebugLog("ATRIADBG offline_sync status=sequence_gap_attempt_unkeyed detail=%@ action=skip_accounting",
                           detail)
             return

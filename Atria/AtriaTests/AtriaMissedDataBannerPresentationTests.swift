@@ -311,6 +311,51 @@ final class AtriaHomeRecoverySyncPresentationTests: XCTestCase {
         XCTAssertTrue(yesterday.title.contains("yesterday"))
         XCTAssertFalse(yesterday.title.contains("saved"))
     }
+
+    func testStrapCaughtUpReportAcceptsOnlyFreshCaughtUpLevel() {
+        let now = date(day: 20, hour: 9, minute: 0).timeIntervalSince1970
+        XCTAssertTrue(AtriaHomeRecoverySyncPresentation.strapReportsCaughtUp(
+            flushDebtLevelRaw: "caught_up",
+            flushDebtObservedAtUnix: now - 30,
+            nowUnix: now
+        ))
+        // Boundary: exactly at the freshness window still counts.
+        XCTAssertTrue(AtriaHomeRecoverySyncPresentation.strapReportsCaughtUp(
+            flushDebtLevelRaw: "caught_up",
+            flushDebtObservedAtUnix: now - 120,
+            nowUnix: now
+        ))
+        // A backlog level never claims synced regardless of freshness.
+        for level in ["low", "high"] {
+            XCTAssertFalse(AtriaHomeRecoverySyncPresentation.strapReportsCaughtUp(
+                flushDebtLevelRaw: level,
+                flushDebtObservedAtUnix: now - 5,
+                nowUnix: now
+            ))
+        }
+    }
+
+    func testStrapCaughtUpReportFailsClosedOnStaleMissingOrInvalidObservation() {
+        let now = date(day: 20, hour: 9, minute: 0).timeIntervalSince1970
+        // Stale: link lost or app suspended since the last 0x22 response.
+        XCTAssertFalse(AtriaHomeRecoverySyncPresentation.strapReportsCaughtUp(
+            flushDebtLevelRaw: "caught_up",
+            flushDebtObservedAtUnix: now - 121,
+            nowUnix: now
+        ))
+        for observedAt in [nil, 0, Double.nan, now + 60] as [Double?] {
+            XCTAssertFalse(AtriaHomeRecoverySyncPresentation.strapReportsCaughtUp(
+                flushDebtLevelRaw: "caught_up",
+                flushDebtObservedAtUnix: observedAt,
+                nowUnix: now
+            ))
+        }
+        XCTAssertFalse(AtriaHomeRecoverySyncPresentation.strapReportsCaughtUp(
+            flushDebtLevelRaw: nil,
+            flushDebtObservedAtUnix: now - 5,
+            nowUnix: now
+        ))
+    }
 }
 
 /// The Overview sync-progress footer must be honest (real frontier, real
