@@ -39026,6 +39026,27 @@ final class SessionStore: ObservableObject {
             || sleep.confidence.hasPrefix("manual_")
     }
 
+    /// Whether a "not sleep" dismissal for this window is entitled to retract
+    /// an already-persisted confirmed record. Automatic settlement and the
+    /// dismissal tap can race in either order; once the tombstone exists, a
+    /// machine-authored record for the same window must not survive on timing
+    /// alone (device 2026-08-20: the dismissed 13:15-16:15 afternoon window
+    /// kept its `aggregate_sleep` auto-confirmation). Reuses the candidate
+    /// ≥0.70-overlap suppression rule so retraction and suppression agree on
+    /// "the same window", and never claims user work: authored records (per
+    /// `sleepRecordIsUserAuthored`) and any record carrying the day-primary
+    /// answer stay authoritative — dismissal is not deletion for those.
+    nonisolated static func dismissalRetractsConfirmedSleep(
+        _ sleep: UserConfirmedSleep,
+        dismissalStart: Date,
+        dismissalEnd: Date
+    ) -> Bool {
+        AtriaDismissedSleepCandidate(start: dismissalStart, end: dismissalEnd)
+            .suppresses(start: sleep.start, end: sleep.end)
+            && !sleepRecordIsUserAuthored(sleep)
+            && sleep.dayPrimaryChoice == nil
+    }
+
     /// Strict record atomicity (2026-08-12 user decision): two saved sleep
     /// activities can never overlap. A user save whose window intersects an
     /// existing confirmed record — other than the one it explicitly replaces —
@@ -39405,16 +39426,46 @@ final class SessionStore: ObservableObject {
 
     /// Marks a sensor suggestion as not sleep. The time-window tombstone is
     /// durable because regenerated rollups do not retain stable candidate IDs.
+    /// When automatic settlement already persisted the window — it raced ahead
+    /// of the tap, or the presented snapshot was stale — the tombstone alone
+    /// left the machine-authored record standing (device 2026-08-20), so the
+    /// dismissal also retracts those records through the normal deletion path.
+    /// A confirmed night the user authored keeps the old guard instead:
+    /// dismissal is not deletion for a record the user created or edited.
     @discardableResult
     func dismissSleepCandidate(_ night: SleepHistorySnapshot.Night) -> Bool {
-        guard !night.confirmed, let start = night.start, let end = night.end, end > start else { return false }
+        guard let start = night.start, let end = night.end, end > start else { return false }
+        let retractableIDs = cachedConfirmedSleeps
+            .filter { Self.dismissalRetractsConfirmedSleep($0, dismissalStart: start, dismissalEnd: end) }
+            .map(\.id)
+        if night.confirmed, retractableIDs.isEmpty { return false }
         addDismissedSleepCandidate(start: start, end: end)
+        if !retractableIDs.isEmpty {
+            Task { @MainActor [weak self] in
+                _ = await self?.retractConfirmedSleeps(ids: retractableIDs)
+            }
+        }
         sleepHistorySnapshot = SleepHistorySnapshot(rollups: historySnapshot.rollups,
                                                     confirmedSleeps: cachedConfirmedSleeps,
                                                     dismissedCandidates: dismissedSleepCandidates)
         refreshHistorySnapshotCache(deferred: true)
         dashboardRevision &+= 1
         return true
+    }
+
+    /// Retracts each record through `deleteConfirmedSleep` so tombstoning, day
+    /// invalidation, and the settlement snapshot refresh fire exactly as a
+    /// manual delete does. Idempotent — an already-removed id is a no-op — and
+    /// bounded: the id list is a fixed snapshot, never re-derived while
+    /// deleting, and the delete path records tombstones without re-entering
+    /// this sweep.
+    @discardableResult
+    func retractConfirmedSleeps(ids: [String]) async -> Int {
+        var retracted = 0
+        for id in ids {
+            if await deleteConfirmedSleep(id: id) { retracted += 1 }
+        }
+        return retracted
     }
 
     private func addDismissedSleepCandidate(start: Date, end: Date) {
