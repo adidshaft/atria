@@ -1499,8 +1499,11 @@ final class AtriaAnalyticsTests: XCTestCase {
         let constant = (0..<8).map { (x: 3.0, y: Double(50 + $0)) }
         XCTAssertNil(AtriaJournalInsights.rankCorrelationInsight(questionID: "b", label: "b", pairs: constant))
         // (c) threshold split with a side that can never reach 5 days
-        let lopsided = (0..<10).map { (minutes: 480, recovery: 70.0 - Double($0 % 2)) }
-            + (0..<4).map { (minutes: 1200, recovery: 58.0 + Double($0 % 2)) }
+        let lopsidedLow: [(minutes: Int, recovery: Double)] =
+            (0..<10).map { (minutes: 480, recovery: 70.0 - Double($0 % 2)) }
+        let lopsidedHigh: [(minutes: Int, recovery: Double)] =
+            (0..<4).map { (minutes: 1200, recovery: 58.0 + Double($0 % 2)) }
+        let lopsided = lopsidedLow + lopsidedHigh
         XCTAssertNil(AtriaJournalInsights.thresholdSplitInsight(questionID: "c", label: "c", pairs: lopsided))
         // (d) 11 total days is below the minimum
         let eleven = (0..<11).map { (minutes: 480 + $0 * 60, recovery: 60.0 + Double($0)) }

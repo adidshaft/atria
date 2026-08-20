@@ -352,9 +352,11 @@ final class AtriaWorkoutShareSnapshotTests: XCTestCase {
 
     func testRoutePreviewBoundsGeometryAndPreservesEndpointsAndBreaks() {
         let start = Date(timeIntervalSinceReferenceDate: 900_000_000)
-        let points = (0..<1_000).map { index in
-            AtriaWorkoutRoute.Point(latitude: 28.6 + Double(index) * 0.00001,
-                                    longitude: 77.2 + sin(Double(index) / 40) * 0.001,
+        let points: [AtriaWorkoutRoute.Point] = (0..<1_000).map { (index: Int) -> AtriaWorkoutRoute.Point in
+            let latDrift: Double = Double(index) * 0.00001
+            let lonDrift: Double = sin(Double(index) / 40) * 0.001
+            return AtriaWorkoutRoute.Point(latitude: 28.6 + latDrift,
+                                    longitude: 77.2 + lonDrift,
                                     altitude: 200,
                                     timestamp: start.addingTimeInterval(Double(index)),
                                     horizontalAccuracy: 3,

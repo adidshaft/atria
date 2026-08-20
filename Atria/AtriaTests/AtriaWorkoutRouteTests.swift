@@ -1324,11 +1324,12 @@ final class AtriaWorkoutRouteTests: XCTestCase {
         let workoutID = "route-large-share-\(UUID().uuidString)"
         let start = Date(timeIntervalSince1970: 22_000)
         let pointCount = 20_000
-        let points = (0..<pointCount).map { index in
-            AtriaWorkoutRoute.Point(
-                latitude: 28.61 + (Double(index) * 0.000_001),
-                longitude: 77.20 + (Double(index) * 0.000_001),
-                altitude: 200 + Double(index % 20),
+        let points: [AtriaWorkoutRoute.Point] = (0..<pointCount).map { (index: Int) -> AtriaWorkoutRoute.Point in
+            let drift: Double = Double(index) * 0.000_001
+            return AtriaWorkoutRoute.Point(
+                latitude: 28.61 + drift,
+                longitude: 77.20 + drift,
+                altitude: 200.0 + Double(index % 20),
                 timestamp: start.addingTimeInterval(Double(index)),
                 horizontalAccuracy: 4,
                 startsNewSegment: index == 0 || index == 10_000

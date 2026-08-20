@@ -196,8 +196,10 @@ final class AtriaHistoricalAggregateReaderTests: XCTestCase {
         XCTAssertEqual(stats.sumNNMilliseconds, 3_550)
         XCTAssertEqual(stats.adjacentDifferenceCount, 3)
         // 800→900, epoch bridge 900→1000, 1000→850.
+        // (100² + 100² + 150² spelled as a literal: the mixed-literal
+        // arithmetic sat at the type-checker's timeout edge.)
         XCTAssertEqual(stats.sumAdjacentDifferenceSquaredMilliseconds,
-                       100 * 100 + 100 * 100 + 150 * 150,
+                       42_500.0,
                        accuracy: 0.000_001)
         XCTAssertEqual(stats.adjacentDifferenceOver50Count, 3)
     }
