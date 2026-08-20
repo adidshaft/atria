@@ -128,6 +128,53 @@ struct AtriaActivityDisplayWindow: Equatable {
         return DateInterval(start: blockStart, end: interval.end)
     }
 
+    /// Civil-day-honest label for the CURRENT window (device 2026-08-20 19:09
+    /// IST): a shifted sleeper's confirmed 13:15–19:15 same-civil-day sleep was
+    /// EDITED so its wake sat minutes in the future. The wake-to-wake cycle
+    /// correctly refused to advance until that wake passed
+    /// (`boundaryEligibleMainSleeps` requires `end <= now`), so the whole Today
+    /// window — and the freshly saved Aug 20 row shown inside it — fell back
+    /// under the PREVIOUS wake's civil day and displayed under an "Aug 19"
+    /// label. The cycle math stays the accounting authority (recovery, strain,
+    /// interval bounds are untouched); only the LABEL the rows group under is
+    /// corrected: when the current window contains a confirmed non-nap sleep
+    /// newer than its anchoring boundary whose wake falls on the civil day of
+    /// `now` (in the record's own event time zone), the day is labelled that
+    /// civil day — exactly the wake-day grouping History, Sleep History, and
+    /// historical ownership already use.
+    static func currentLabelDay(cycleDisplayDay: Date,
+                                cycleStart: Date,
+                                now: Date,
+                                sleepHistory: SleepHistorySnapshot,
+                                calendar: Calendar) -> Date {
+        let today = calendar.startOfDay(for: now)
+        guard !calendar.isDate(cycleDisplayDay, inSameDayAs: today) else {
+            return cycleDisplayDay
+        }
+        let windowShowsCurrentCivilDayWake = (sleepHistory.nights
+            + sleepHistory.additionalMainNights)
+            .contains { night in
+                guard night.confirmed,
+                      !night.isNapEvidence,
+                      let start = night.start,
+                      let end = night.end,
+                      end > start,
+                      // Strictly newer than the anchoring boundary: the sleep
+                      // the user woke FROM ends exactly at `cycleStart` and
+                      // must keep the cycle's own label.
+                      end > cycleStart,
+                      // The record has begun, so the wake-to-now window really
+                      // displays its row; a purely future plan cannot relabel.
+                      start < now else { return false }
+                let wakeDay = EventCivilTime.day(
+                    containing: end,
+                    eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
+                    outputCalendar: calendar)
+                return calendar.isDate(wakeDay, inSameDayAs: today)
+            }
+        return windowShowsCurrentCivilDayWake ? today : cycleDisplayDay
+    }
+
     static func current(now: Date,
                         sleepHistory: SleepHistorySnapshot,
                         calendar: Calendar = .current) -> Self {
@@ -143,7 +190,11 @@ struct AtriaActivityDisplayWindow: Equatable {
         return Self(interval: interval,
                     displayInterval: displayInterval(for: interval,
                                                      sleepHistory: sleepHistory),
-                    labelDay: day.displayDay,
+                    labelDay: currentLabelDay(cycleDisplayDay: day.displayDay,
+                                              cycleStart: day.start,
+                                              now: now,
+                                              sleepHistory: sleepHistory,
+                                              calendar: calendar),
                     isCurrentPhysiologicalDay: true,
                     historicalStartBoundary: nil,
                     historicalEndBoundary: nil)

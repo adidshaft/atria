@@ -2729,22 +2729,13 @@ final class AtriaTrendChartProjectionStore: ObservableObject {
                                                events: cachedEvents))
     }
 
+    /// Shared activity builder (2026-08-20): this projection previously
+    /// duplicated the mapping WITHOUT the accidental-fragment gate, so the
+    /// trend card's expanded chart could mark a sub-minute live fragment the
+    /// inline Vitals host deliberately suppressed. One builder, one truth.
     private static func makeEvents(store: SessionStore) -> [AtriaChartEvent] {
-        var events = store.confirmedWorkouts.map { workout in
-            AtriaChartEvent(id: "workout-\(workout.id)",
-                            day: workout.start,
-                            label: workout.activitySubtype ?? workout.activityType ?? "Workout",
-                            systemImage: "flame.fill",
-                            tint: Metrics.electricStrain)
-        }
-        events.append(contentsOf: store.sleepHistorySnapshot.nights.filter(\.confirmed).map { night in
-            AtriaChartEvent(id: "sleep-\(night.id)",
-                            day: night.day,
-                            label: "Sleep",
-                            systemImage: "bed.double.fill",
-                            tint: Metrics.electricSleep)
-        })
-        return events
+        AtriaChartEvent.activityEvents(workouts: store.confirmedWorkouts,
+                                       sleepNights: store.sleepHistorySnapshot.nights)
     }
 }
 
