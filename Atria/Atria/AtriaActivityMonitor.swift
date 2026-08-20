@@ -5103,21 +5103,15 @@ struct AtriaSleepActivityReviewSheet: View {
     /// archived heart-rate rows. Missing wear stays a gap; nothing is inferred.
     @State private var overnightHRProjection = AtriaSleepStressProjection.unavailable
 
-    private var spanSeconds: TimeInterval {
-        guard let start = night.start, let end = night.end, end > start else {
-            return night.duration
-        }
-        return end.timeIntervalSince(start)
-    }
-
-    private var stageRows: [(stage: SleepStageKind, seconds: TimeInterval)] {
-        guard !night.displayStageSegments.isEmpty else { return [] }
-        return SleepStageKind.displayOrder.compactMap { stage in
-            let seconds = night.stageDuration(stage)
-                + (stage == .deep ? night.stageDuration(.sws) : 0)
-            guard seconds > 0 else { return nil }
-            return (stage, seconds)
-        }
+    /// One percent authority (2026-08-20 basis unification): these rows read
+    /// the same largest-remainder shares-of-classified-time legend as the
+    /// hypnogram card above (`AtriaSleepStagePresentation.shares` via
+    /// `AtriaSleepHypnogramPresentation.legend`), so the two surfaces can
+    /// never disagree. The former fraction-of-span basis let unscored gap
+    /// time silently dilute every percent; durations stay real minutes and
+    /// are never re-derived from percent.
+    private var stageRows: [AtriaSleepHypnogramPresentation.LegendEntry] {
+        AtriaSleepHypnogramPresentation.legend(for: night.displayStageSegments)
     }
 
     private static func hoursMinutes(_ seconds: TimeInterval) -> String {
@@ -5244,7 +5238,9 @@ struct AtriaSleepActivityReviewSheet: View {
                 .foregroundStyle(.tertiary)
                 .kerning(0.8)
             ForEach(stageRows, id: \.stage) { row in
-                let fraction = spanSeconds > 0 ? row.seconds / spanSeconds : 0
+                // Bar width mirrors the displayed percent exactly — the
+                // number and the pixels share the one legend basis.
+                let fraction = Double(row.percent) / 100
                 HStack(spacing: 10) {
                     Text(row.stage.label)
                         .font(.subheadline.weight(.semibold))
@@ -5252,18 +5248,18 @@ struct AtriaSleepActivityReviewSheet: View {
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
                             Capsule()
-                                .fill(AtriaSleepHypnogramCard.color(for: row.stage).opacity(0.18))
+                                .fill(AtriaSleepStagePalette.color(for: row.stage).opacity(0.18))
                             Capsule()
-                                .fill(AtriaSleepHypnogramCard.color(for: row.stage))
+                                .fill(AtriaSleepStagePalette.color(for: row.stage))
                                 .frame(width: max(4, geo.size.width * fraction))
                         }
                     }
                     .frame(height: 8)
-                    Text("\(Int((fraction * 100).rounded()))%")
+                    Text("\(row.percent)%")
                         .font(.caption.weight(.bold).monospacedDigit())
                         .foregroundStyle(.secondary)
                         .frame(width: 40, alignment: .trailing)
-                    Text(Self.hoursMinutes(row.seconds))
+                    Text(Self.hoursMinutes(TimeInterval(row.minutes) * 60))
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .frame(width: 56, alignment: .trailing)

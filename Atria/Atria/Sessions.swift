@@ -40161,6 +40161,13 @@ final class SessionStore: ObservableObject {
                 }
             }
         }
+        let rrInputs = try sleepStageQualifiedRRInputs(
+            from: sessions,
+            start: start,
+            end: end,
+            maximumRows: maximumRows,
+            cooperativeDeadline: cooperativeDeadline
+        )
         try cooperativeDeadline?.checkpoint()
         if let cooperativeDeadline {
             return try AtriaSleepWakeResearch.stageSegments(
@@ -40171,6 +40178,8 @@ final class SessionStore: ObservableObject {
                 isNap: isNap,
                 motionValidated: motionValidated,
                 motionEpochs: recoveredMotionEpochs,
+                rrSamples: rrInputs.rrSamples,
+                qualifiedRRCoverageFraction: rrInputs.qualifiedRRCoverageFraction,
                 allowHROnlyEstimate: allowHROnlyEstimate,
                 cooperativeDeadline: cooperativeDeadline
             )
@@ -40183,8 +40192,70 @@ final class SessionStore: ObservableObject {
             isNap: isNap,
             motionValidated: motionValidated,
             motionEpochs: recoveredMotionEpochs,
+            rrSamples: rrInputs.rrSamples,
+            qualifiedRRCoverageFraction: rrInputs.qualifiedRRCoverageFraction,
             allowHROnlyEstimate: allowHROnlyEstimate
         )
+    }
+
+    /// Test-visible pure RR gather for the stage engine (2026-08-20, P1).
+    /// Sessions must be provenance-qualified as a whole — standard 2A37 and
+    /// verified WHOOP4 historical V24 beats only (`hasQualifiedRRProvenance`;
+    /// V24 is never promoted), a mixed or unlabeled stream contributes
+    /// nothing — and each beat is clamped to the same 300–2000 ms physiologic
+    /// bound as `confirmedSleepRespiratoryRateCore`. The window coverage
+    /// fraction uses the auto-confirm gate's samples-per-second convention.
+    /// RR is a refinement input, never admission evidence: an over-budget RR
+    /// stream is dropped whole (empty samples, zero coverage) so the night
+    /// still stages under its HR-only rules, in contrast to the HR/motion
+    /// bounds above, which must abandon the projection.
+    nonisolated static func sleepStageQualifiedRRInputs(
+        from sessions: [SavedSession],
+        start: Date,
+        end: Date,
+        maximumRows: Int?,
+        cooperativeDeadline: AtriaSleepSettlementDeadline?
+    ) throws -> (rrSamples: [AtriaSleepWakeResearch.RRSample],
+                 qualifiedRRCoverageFraction: Double) {
+        try cooperativeDeadline?.checkpoint()
+        guard end > start else { return ([], 0) }
+        var rrSamples: [AtriaSleepWakeResearch.RRSample] = []
+        for (sessionIndex, session) in sessions.enumerated() {
+            if sessionIndex.isMultiple(of: 8) {
+                try cooperativeDeadline?.checkpoint()
+            }
+            guard session.end >= start,
+                  session.start <= end,
+                  let rrPoints = session.rrPoints,
+                  !rrPoints.isEmpty else { continue }
+            let provenanceQualified: Bool
+            if let cooperativeDeadline {
+                provenanceQualified = try session.hasQualifiedRRProvenance(
+                    cooperativeDeadline: cooperativeDeadline
+                )
+            } else {
+                provenanceQualified = session.hasQualifiedRRProvenance
+            }
+            guard provenanceQualified else { continue }
+            for (pointIndex, point) in rrPoints.enumerated() {
+                if pointIndex.isMultiple(of: 256) {
+                    try cooperativeDeadline?.checkpoint()
+                }
+                let t = session.start.addingTimeInterval(max(0, point.t))
+                if t >= start, t <= end, (300...2_000).contains(point.ms) {
+                    rrSamples.append(.init(t: t, ms: Double(point.ms)))
+                    if let maximumRows, rrSamples.count > maximumRows {
+                        return ([], 0)
+                    }
+                }
+            }
+        }
+        try cooperativeDeadline?.checkpoint()
+        let qualifiedRRCoverageFraction = min(
+            1,
+            Double(rrSamples.count) / max(1, end.timeIntervalSince(start))
+        )
+        return (rrSamples, qualifiedRRCoverageFraction)
     }
 
     private nonisolated static func sleepStageResearchSampleCount(from sessions: [SavedSession],

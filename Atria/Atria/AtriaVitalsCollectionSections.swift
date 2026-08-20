@@ -6726,14 +6726,12 @@ struct AtriaSleepStageSummary: View, Equatable {
         }
     }
 
+    /// Shared design palette (2026-08-20 consolidation): the per-stage chips
+    /// and the inspectable-graph tints now key the exact hues the stepped
+    /// timeline above draws with — the former ad-hoc system colors made the
+    /// chip row disagree with the plot it captions.
     private func color(for stage: SleepStageKind) -> Color {
-        switch stage {
-        case .awake: return .orange
-        case .light: return .cyan
-        case .rem: return .indigo
-        case .sws: return .blue
-        case .deep: return .purple
-        }
+        AtriaSleepStagePalette.color(for: stage)
     }
 
     private var sleepStageGraph: AtriaInspectableGraph? {
