@@ -553,13 +553,16 @@ final class AtriaRecoveryProjectionCadenceTests: XCTestCase {
             physiologicalCycle: makeCycle(start: start)
         ))
         XCTAssertEqual(pending.confidence, .unverified)
+        // W3-B: `.unverified` may now mint provisionally — but ONLY from the
+        // authoritative projection. The pending-review preview stays stripped
+        // by its presentation-authority marker, whatever its tier.
         XCTAssertNil(AtriaHomeModel.recoveryAuthorizedForStrainTarget(pending))
 
         let suite = "AtriaRecoveryProjectionCadenceTests.target.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         XCTAssertNil(AtriaDailyStrainTargetStore.resolve(
-            recovery: AtriaHomeModel.recoveryAuthorizedForStrainTarget(pending),
+            recovery: AtriaHomeModel.recoveryAuthorizedForStrainTarget(pending)?.percent,
             load: nil,
             recoveryIsAttributedToCurrentDay: false,
             loadIsPrepared: true,

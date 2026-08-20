@@ -140,6 +140,32 @@ struct AtriaMetricZone: Equatable {
     }
 
     static let nonMedicalDisclaimer = "General wellness guidance only, not medical advice."
+
+    /// W3-B (strain-targets fix 2), labels only: the source line for a strain
+    /// target minted from a numeric authoritative `.unverified` recovery. The
+    /// head of `targetSummary` is what `sourceLabel` surfaces in the info
+    /// sheet, so replacing it labels the target "provisional" everywhere the
+    /// existing plumbing already reads — the level, value, and bands are
+    /// untouched. Wave 4 (W4-C) carries this label through the Overview chip.
+    static let provisionalStrainTargetSourceHead = "Provisional target (recovery unverified)"
+
+    /// Label-only transform: same zone, provisional source line.
+    func labelingProvisionalStrainTarget() -> AtriaMetricZone {
+        let tail = targetSummary
+            .components(separatedBy: "·")
+            .dropFirst()
+            .joined(separator: "·")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = tail.isEmpty
+            ? Self.provisionalStrainTargetSourceHead
+            : "\(Self.provisionalStrainTargetSourceHead) · \(tail)"
+        return AtriaMetricZone(level: level,
+                               title: title,
+                               current: current,
+                               targetSummary: summary,
+                               recommendation: recommendation,
+                               disclaimer: disclaimer)
+    }
 }
 
 struct AtriaBaselineTargetSnapshot: Equatable {
@@ -225,14 +251,22 @@ extension Metrics {
         AtriaAnalytics.TargetZones.recovery(pct, target: target)
     }
 
+    /// `provisional` (W3-B, labels only, default false so every existing call
+    /// site is unchanged): relabels the zone's source line for a target minted
+    /// from a numeric authoritative `.unverified` recovery
+    /// (`AtriaFrozenDailyStrainTarget.isProvisional`). A nil target still
+    /// returns nil — the chip's fail-closed absence is untouched.
     static func strainZone(strain: Double,
                            target: Double?,
                            greenBand: Double = 1.5,
-                           yellowBand: Double = 3.0) -> AtriaMetricZone? {
-        AtriaAnalytics.TargetZones.strain(strain: strain,
-                                          target: target,
-                                          greenBand: greenBand,
-                                          yellowBand: yellowBand)
+                           yellowBand: Double = 3.0,
+                           provisional: Bool = false) -> AtriaMetricZone? {
+        let zone = AtriaAnalytics.TargetZones.strain(strain: strain,
+                                                     target: target,
+                                                     greenBand: greenBand,
+                                                     yellowBand: yellowBand)
+        guard provisional else { return zone }
+        return zone?.labelingProvisionalStrainTarget()
     }
 
     static func hrvZone(_ rmssd: Int?,

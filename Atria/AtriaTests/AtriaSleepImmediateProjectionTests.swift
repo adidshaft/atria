@@ -627,7 +627,20 @@ final class AtriaSleepImmediateProjectionTests: XCTestCase {
         )
         let dashboardHandler = String(source[start.lowerBound..<end.lowerBound])
 
-        XCTAssertTrue(dashboardHandler.contains("scheduleWidgetSnapshot(reason: \"dashboard_revision\")"))
+        // 2026-08-20: the inline closure was extracted to
+        // handleDashboardRevisionUpdate() (type-check relief on this large
+        // view); follow the indirection so the pin still proves the revision
+        // stream schedules a widget snapshot without a relaunch.
+        XCTAssertTrue(dashboardHandler.contains("handleDashboardRevisionUpdate()"))
+        let handlerStart = try XCTUnwrap(
+            source.range(of: "private func handleDashboardRevisionUpdate() {")
+        )
+        let handlerEnd = try XCTUnwrap(
+            source.range(of: "private func ",
+                         range: handlerStart.upperBound..<source.endIndex)
+        )
+        let handlerBody = String(source[handlerStart.lowerBound..<handlerEnd.lowerBound])
+        XCTAssertTrue(handlerBody.contains("scheduleWidgetSnapshot(reason: \"dashboard_revision\")"))
     }
 
     func testDeferredLaunchSettlementRejectsGreyOrStaleRowsAndAcceptsCoherentCards() {

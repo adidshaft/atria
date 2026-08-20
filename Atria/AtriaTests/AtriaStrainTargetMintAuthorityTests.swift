@@ -73,13 +73,16 @@ final class AtriaStrainTargetMintAuthorityTests: XCTestCase {
                        "the durable snapshot must survive a nil-attribution scheduler pass")
     }
 
-    // MARK: - Fix 1: unverified tiers cannot mint via either writer shape
+    // MARK: - Fix 1 (as amended by W3-B fix 2): tier → authority standard
 
-    func testUnverifiedTierCannotMintViaEitherWriterShape() throws {
+    func testTierAuthorityStandardAndLearningCannotMintViaEitherWriterShape() throws {
+        // W3-B (strain-targets fix 2): a numeric AUTHORITATIVE `.unverified`
+        // recovery may provisionally fill an empty cycle slot; learning and
+        // absent recovery stay read-only; canonical tiers stay canonical.
         XCTAssertEqual(AtriaDailyStrainTargetStore.mintAuthority(recoveryConfidence: .learning),
                        .preserveExisting)
         XCTAssertEqual(AtriaDailyStrainTargetStore.mintAuthority(recoveryConfidence: .unverified),
-                       .preserveExisting)
+                       .provisionalMint)
         XCTAssertEqual(AtriaDailyStrainTargetStore.mintAuthority(recoveryConfidence: .personalBaseline),
                        .canonical)
         XCTAssertEqual(AtriaDailyStrainTargetStore.mintAuthority(recoveryConfidence: .validated),
@@ -87,7 +90,7 @@ final class AtriaStrainTargetMintAuthorityTests: XCTestCase {
         XCTAssertEqual(AtriaDailyStrainTargetStore.mintAuthority(recoveryConfidence: nil),
                        .preserveExisting)
 
-        for tier in [Metrics.RecoveryEstimate.Confidence.learning, .unverified] {
+        for tier in [Metrics.RecoveryEstimate.Confidence.learning] {
             // Scheduler shape: numeric attributed recovery, confidence-gated
             // authority.
             let (schedulerDefaults, schedulerName) = try isolatedDefaults()
@@ -115,7 +118,7 @@ final class AtriaStrainTargetMintAuthorityTests: XCTestCase {
             )
             XCTAssertNil(authorized, "\(tier) must not pass Home's gate")
             XCTAssertNil(AtriaDailyStrainTargetStore.resolve(
-                recovery: authorized,
+                recovery: authorized?.percent,
                 load: .learning,
                 recoveryIsAttributedToCurrentDay: false,
                 loadIsPrepared: true,
@@ -134,7 +137,7 @@ final class AtriaStrainTargetMintAuthorityTests: XCTestCase {
     func testHomeGateAndSharedMintAuthorityCannotDrift() throws {
         // Behavioral equivalence: for every Recovery tier, Home's writer gate
         // authorizes a durable write exactly when the shared helper grants
-        // canonical authority.
+        // write authority (canonical or, since W3-B fix 2, provisional).
         let tiers: [Metrics.RecoveryEstimate.Confidence] = [
             .learning, .unverified, .personalBaseline, .validated
         ]
@@ -144,7 +147,7 @@ final class AtriaStrainTargetMintAuthorityTests: XCTestCase {
             ) != nil
             let sharedAuthorizes = AtriaDailyStrainTargetStore.mintAuthority(
                 recoveryConfidence: tier
-            ) == .canonical
+            ) != .preserveExisting
             XCTAssertEqual(homeAuthorizes, sharedAuthorizes,
                            "one honesty standard: Home and the shared helper disagree on \(tier)")
         }

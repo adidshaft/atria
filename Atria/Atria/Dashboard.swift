@@ -1,7 +1,17 @@
 import SwiftUI
 
 struct AtriaFrozenDailyStrainTarget: Codable, Equatable {
-    static let currentSchemaVersion = 1
+    /// W3-B (strain-targets fix 2): schema 2 adds `recoveryConfidence` — the
+    /// Recovery tier that minted this target, stored as provenance. Decoding
+    /// stays `decodeIfPresent`-defaulted (the established migration pattern
+    /// below), so the on-device v1 blob — day/recovery/target only — still
+    /// decodes.
+    static let currentSchemaVersion = 2
+
+    /// Tier provenance recorded for blobs written before schema 2 (and for
+    /// canonical callers that predate the tier parameter). "legacy" is an
+    /// unknown tier, not a claim — it is never treated as provisional.
+    static let legacyRecoveryConfidence = "legacy"
 
     let schemaVersion: Int
     let day: Date
@@ -10,7 +20,17 @@ struct AtriaFrozenDailyStrainTarget: Codable, Equatable {
     let target: Double
     let loadAdjustment: Double
     let loadProvenance: String
+    let recoveryConfidence: String
     let createdAt: Date
+
+    /// True when this target was provisionally minted from a numeric
+    /// AUTHORITATIVE `.unverified` recovery and no canonical settle has
+    /// upgraded it yet. The value is real; surfaces label it "provisional".
+    /// An upgraded blob stores e.g. "personal baseline_upgraded_from_unverified"
+    /// (provenance relocates, never disappears) and is no longer provisional.
+    var isProvisional: Bool {
+        recoveryConfidence == Metrics.RecoveryEstimate.Confidence.unverified.rawValue
+    }
 
     init(day: Date,
          timeZoneIdentifier: String,
@@ -18,6 +38,7 @@ struct AtriaFrozenDailyStrainTarget: Codable, Equatable {
          target: Double,
          loadAdjustment: Double,
          loadProvenance: String,
+         recoveryConfidence: String,
          createdAt: Date) {
         self.schemaVersion = Self.currentSchemaVersion
         self.day = day
@@ -26,12 +47,13 @@ struct AtriaFrozenDailyStrainTarget: Codable, Equatable {
         self.target = target
         self.loadAdjustment = loadAdjustment
         self.loadProvenance = loadProvenance
+        self.recoveryConfidence = recoveryConfidence
         self.createdAt = createdAt
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, day, timeZoneIdentifier, recovery, target
-        case loadAdjustment, loadProvenance, createdAt
+        case loadAdjustment, loadProvenance, recoveryConfidence, createdAt
     }
 
     init(from decoder: Decoder) throws {
@@ -43,6 +65,8 @@ struct AtriaFrozenDailyStrainTarget: Codable, Equatable {
         target = try values.decode(Double.self, forKey: .target)
         loadAdjustment = try values.decodeIfPresent(Double.self, forKey: .loadAdjustment) ?? 0
         loadProvenance = try values.decodeIfPresent(String.self, forKey: .loadProvenance) ?? "legacy"
+        recoveryConfidence = try values.decodeIfPresent(String.self, forKey: .recoveryConfidence)
+            ?? Self.legacyRecoveryConfidence
         createdAt = try values.decodeIfPresent(Date.self, forKey: .createdAt) ?? day
     }
 }
@@ -57,6 +81,17 @@ enum AtriaDailyStrainTargetStore {
     enum MutationAuthority: Equatable {
         /// Canonical Recovery may mint, replace, or explicitly invalidate.
         case canonical
+        /// W3-B (strain-targets fix 2): a NUMERIC AUTHORITATIVE `.unverified`
+        /// recovery may fill an EMPTY cycle slot so a stable daily target is
+        /// reachable on limited-evidence days. It may never replace, upgrade,
+        /// or delete existing durable state — weaker evidence cannot erase
+        /// stronger — and the mint is labeled provisional through its stored
+        /// tier provenance. The pending sleep-review presentation preview is
+        /// also `.unverified` but is display evidence only; writers must
+        /// strip it BEFORE deriving authority (Home's
+        /// `recoveryAuthorizedForStrainTarget` gate; the scheduler only ever
+        /// sees the authoritative projection).
+        case provisionalMint
         /// Presentation-only/unknown Recovery may read a valid same-cycle
         /// target, but it may not write or delete durable coaching state.
         /// (One hygiene exception: a blob more than one full cycle stale is
@@ -65,13 +100,16 @@ enum AtriaDailyStrainTargetStore {
         case preserveExisting
     }
 
-    /// W1-C (strain-targets fix 1): ONE honesty standard for the one durable
-    /// strain-target write. Every writer — the Home hero snapshot and the
-    /// notification scheduler — must derive its `MutationAuthority` from this
-    /// gate. Only canonical Recovery tiers may mint, replace, or explicitly
-    /// invalidate the frozen daily target; pending sleep-review scores are
-    /// intentionally `.unverified` and stay visual-only. Listing `.validated`
-    /// mirrors the existing Home gate
+    /// W1-C (strain-targets fix 1) + W3-B (fix 2): ONE honesty standard for
+    /// the one durable strain-target write. Every writer — the Home hero
+    /// snapshot and the notification scheduler — must derive its
+    /// `MutationAuthority` from this gate. Canonical Recovery tiers may mint,
+    /// replace, or explicitly invalidate the frozen daily target; a numeric
+    /// authoritative `.unverified` tier may provisionally fill an empty cycle
+    /// slot (never replace or delete); learning stays read-only. The
+    /// pending-review presentation preview must never reach this gate with
+    /// write intent (see `.provisionalMint`). Listing `.validated` mirrors
+    /// the existing Home gate
     /// (`AtriaHomeModel.recoveryAuthorizedForStrainTarget`); it does not
     /// upgrade any tier — `.validated` remains reserved for the held-out
     /// outcome study.
@@ -81,12 +119,15 @@ enum AtriaDailyStrainTargetStore {
         switch recoveryConfidence {
         case .personalBaseline, .validated:
             return .canonical
-        case .learning, .unverified, .none:
+        case .unverified:
+            return .provisionalMint
+        case .learning, .none:
             return .preserveExisting
         }
     }
 
     static func resolve(recovery: Int?,
+                        recoveryConfidence: Metrics.RecoveryEstimate.Confidence? = nil,
                         load: TrainingLoadSummary?,
                         recoveryIsAttributedToCurrentDay: Bool = true,
                         loadIsPrepared: Bool = true,
@@ -99,7 +140,7 @@ enum AtriaDailyStrainTargetStore {
                                                    now: now,
                                                    calendar: calendar,
                                                    defaults: defaults)
-        if mutationAuthority == .preserveExisting {
+        let validSameCycleExisting: AtriaFrozenDailyStrainTarget? = {
             guard let existing,
                   existing.target.isFinite,
                   (0...21).contains(existing.target) else { return nil }
@@ -107,38 +148,85 @@ enum AtriaDailyStrainTargetStore {
                 abs(existing.day.timeIntervalSince($0)) < 1
             } ?? calendar.isDate(existing.day, inSameDayAs: now)
             return sameCycle ? existing : nil
-        }
-        guard recoveryIsAttributedToCurrentDay else {
-            // A deleted/reclassified sleep must not leave a target that implies
-            // recovery still belongs to the active physiological cycle.
-            defaults.removeObject(forKey: storageKey)
-            return nil
-        }
-        if let existing,
-           existing.target.isFinite,
-           (0...21).contains(existing.target) {
-            let sameCycle = cycleStart.map {
-                abs(existing.day.timeIntervalSince($0)) < 1
-            } ?? calendar.isDate(existing.day, inSameDayAs: now)
-            if sameCycle, recovery == nil || existing.recovery == recovery {
-                if let upgraded = remintUpgradingLearningLoad(existing: existing,
-                                                             load: load,
-                                                             loadIsPrepared: loadIsPrepared,
-                                                             now: now,
-                                                             defaults: defaults) {
-                    return upgraded
-                }
-                // Preserve through transient hydration, but never across a new
-                // wake boundary or a changed recovery for this sleep.
-                return existing
+        }()
+        switch mutationAuthority {
+        case .preserveExisting:
+            return validSameCycleExisting
+
+        case .provisionalMint:
+            // W3-B (strain-targets fix 2): a numeric authoritative
+            // `.unverified` recovery may only FILL an empty cycle slot. An
+            // existing same-cycle target — whatever tier minted it — always
+            // stands, and nil attribution preserves, never deletes (the
+            // repo's recovery-state defect class).
+            if let validSameCycleExisting { return validSameCycleExisting }
+            guard recoveryIsAttributedToCurrentDay,
+                  loadIsPrepared,
+                  let recovery else { return nil }
+            return mint(recovery: recovery,
+                        recoveryConfidence: Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
+                        load: load,
+                        cycleStart: cycleStart,
+                        now: now,
+                        calendar: calendar,
+                        defaults: defaults)
+
+        case .canonical:
+            guard recoveryIsAttributedToCurrentDay else {
+                // A deleted/reclassified sleep must not leave a target that
+                // implies recovery still belongs to the active physiological
+                // cycle. Only a genuinely canonical caller may assert this.
+                defaults.removeObject(forKey: storageKey)
+                return nil
             }
-        }
+            if let existingSnapshot = validSameCycleExisting {
+                if recovery == nil || existingSnapshot.recovery == recovery {
+                    if let upgraded = remintUpgradingRecoveryTier(existing: existingSnapshot,
+                                                                 recoveryConfidence: recoveryConfidence,
+                                                                 load: load,
+                                                                 loadIsPrepared: loadIsPrepared,
+                                                                 now: now,
+                                                                 defaults: defaults) {
+                        return upgraded
+                    }
+                    if let upgraded = remintUpgradingLearningLoad(existing: existingSnapshot,
+                                                                 load: load,
+                                                                 loadIsPrepared: loadIsPrepared,
+                                                                 now: now,
+                                                                 defaults: defaults) {
+                        return upgraded
+                    }
+                    // Preserve through transient hydration, but never across a
+                    // new wake boundary or a changed recovery for this sleep.
+                    return existingSnapshot
+                }
+            }
 
-        guard loadIsPrepared,
-              let recovery else {
-            return nil
+            guard loadIsPrepared,
+                  let recovery else {
+                return nil
+            }
+            return mint(recovery: recovery,
+                        recoveryConfidence: recoveryConfidence?.rawValue
+                            ?? AtriaFrozenDailyStrainTarget.legacyRecoveryConfidence,
+                        load: load,
+                        cycleStart: cycleStart,
+                        now: now,
+                        calendar: calendar,
+                        defaults: defaults)
         }
+    }
 
+    /// The one durable mint. `recoveryConfidence` is the tier provenance the
+    /// blob records — callers pass their real tier; untyped legacy callers
+    /// record "legacy", never a fabricated tier.
+    private static func mint(recovery: Int,
+                             recoveryConfidence: String,
+                             load: TrainingLoadSummary?,
+                             cycleStart: Date?,
+                             now: Date,
+                             calendar: Calendar,
+                             defaults: UserDefaults) -> AtriaFrozenDailyStrainTarget {
         let base = Coach.baseStrainTarget(recovery: recovery)
         let adjustment: Double
         let provenance: String
@@ -155,6 +243,7 @@ enum AtriaDailyStrainTargetStore {
             target: min(max(base + adjustment, 4), 21),
             loadAdjustment: adjustment,
             loadProvenance: provenance,
+            recoveryConfidence: recoveryConfidence,
             createdAt: now
         )
         if let data = try? JSONEncoder().encode(snapshot) {
@@ -166,6 +255,36 @@ enum AtriaDailyStrainTargetStore {
     static func loadSnapshot(defaults: UserDefaults = .standard) -> AtriaFrozenDailyStrainTarget? {
         guard let data = defaults.data(forKey: storageKey) else { return nil }
         return try? JSONDecoder().decode(AtriaFrozenDailyStrainTarget.self, from: data)
+    }
+
+    /// W3-B (strain-targets fix 5): the PRIOR cycle's frozen target, read for
+    /// a DATED disclosure during the post-wake window where the cycle has
+    /// flipped but recovery is not yet canonical (no target minted for the
+    /// new cycle). Returns the live blob only when its day falls inside the
+    /// immediately previous cycle window: a same-cycle blob is the live
+    /// answer (`resolve` returns it as the target), and anything older is
+    /// mint-outage evidence that hygiene relocates to the audit slot — never
+    /// a coaching display. Read-only: never mutates storage, and callers must
+    /// never present the result as the current cycle's target — only as the
+    /// real prior target with its real date.
+    static func priorCycleSnapshot(cycleStart: Date?,
+                                   now: Date = Date(),
+                                   calendar: Calendar = .current,
+                                   defaults: UserDefaults = .standard) -> AtriaFrozenDailyStrainTarget? {
+        guard let data = defaults.data(forKey: storageKey),
+              let snapshot = try? JSONDecoder().decode(AtriaFrozenDailyStrainTarget.self,
+                                                       from: data),
+              snapshot.target.isFinite,
+              (0...21).contains(snapshot.target) else { return nil }
+        let cycleAnchor = cycleStart ?? calendar.startOfDay(for: now)
+        guard let previousCycleFloor = calendar.date(byAdding: .day,
+                                                     value: -1,
+                                                     to: cycleAnchor),
+              snapshot.day >= previousCycleFloor,
+              snapshot.day.timeIntervalSince(cycleAnchor) < -1 else {
+            return nil
+        }
+        return snapshot
     }
 
     /// Shared acute:chronic thresholds for the frozen target's load leg — the
@@ -208,6 +327,63 @@ enum AtriaDailyStrainTargetStore {
             target: min(max(Coach.baseStrainTarget(recovery: existing.recovery) + adjustment, 4), 21),
             loadAdjustment: adjustment,
             loadProvenance: "\(provenance)_upgraded_from_learning",
+            recoveryConfidence: existing.recoveryConfidence,
+            createdAt: now
+        )
+        if let data = try? JSONEncoder().encode(upgraded) {
+            defaults.set(data, forKey: storageKey)
+        }
+        return upgraded
+    }
+
+    /// W3-B (strain-targets fix 2): a target provisionally minted from a
+    /// numeric authoritative `.unverified` recovery re-mints EXACTLY ONCE when
+    /// the same cycle's recovery settles at a canonical tier with the same
+    /// percent. The provisional tier stays legible inside the new provenance
+    /// (e.g. "personal baseline_upgraded_from_unverified") — provenance
+    /// relocates, never disappears — and because the stored tier is then no
+    /// longer exactly "unverified", a second tier upgrade can never fire. The
+    /// load leg is re-derived at upgrade time with the canonical caller's
+    /// load, so the value may move exactly once, disclosed in provenance; if
+    /// the provisional mint's load was still learning, that history is kept
+    /// via the W1-C "_upgraded_from_learning" suffix (which also keeps the
+    /// separate load upgrade from firing a second move). Tier downgrades
+    /// never re-mint: canonical state stands. Only reachable from a
+    /// `.canonical` caller.
+    private static func remintUpgradingRecoveryTier(
+        existing: AtriaFrozenDailyStrainTarget,
+        recoveryConfidence: Metrics.RecoveryEstimate.Confidence?,
+        load: TrainingLoadSummary?,
+        loadIsPrepared: Bool,
+        now: Date,
+        defaults: UserDefaults
+    ) -> AtriaFrozenDailyStrainTarget? {
+        guard existing.isProvisional,
+              let tier = recoveryConfidence,
+              tier == .personalBaseline || tier == .validated else { return nil }
+        let adjustment: Double
+        let loadProvenance: String
+        if loadIsPrepared, let load, load.confidence != "learning", let ratio = load.ratio {
+            let (derivedAdjustment, derivedProvenance) = loadAdjustment(forRatio: ratio)
+            adjustment = derivedAdjustment
+            loadProvenance = existing.loadProvenance == "load_learning_at_mint"
+                ? "\(derivedProvenance)_upgraded_from_learning"
+                : derivedProvenance
+        } else {
+            // No prepared load at settle time: keep the existing load leg
+            // byte-for-byte so the tier upgrade alone never moves the value.
+            adjustment = existing.loadAdjustment
+            loadProvenance = existing.loadProvenance
+        }
+        let upgraded = AtriaFrozenDailyStrainTarget(
+            day: existing.day,
+            timeZoneIdentifier: existing.timeZoneIdentifier,
+            recovery: existing.recovery,
+            target: min(max(Coach.baseStrainTarget(recovery: existing.recovery) + adjustment, 4), 21),
+            loadAdjustment: adjustment,
+            loadProvenance: loadProvenance,
+            recoveryConfidence: "\(tier.rawValue)_upgraded_from_"
+                + Metrics.RecoveryEstimate.Confidence.unverified.rawValue,
             createdAt: now
         )
         if let data = try? JSONEncoder().encode(upgraded) {
