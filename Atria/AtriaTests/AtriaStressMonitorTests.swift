@@ -2475,7 +2475,10 @@ final class AtriaStressMonitorTests: XCTestCase {
     }
 
     func testStressPersistenceUsesV3NamespacesAndFailsClosedOnLegacySemantics() throws {
-        XCTAssertEqual(AtriaStressMonitor.scoringVersion, 3)
+        // Scoring v4 = the 2026-08-19 learned-awake-reference anchor
+        // (6bb48d8b). The persistence NAMESPACES deliberately stay v3 - the
+        // shard schema did not change; only the kernel's scoring did.
+        XCTAssertEqual(AtriaStressMonitor.scoringVersion, 4)
         XCTAssertEqual(AtriaStressHistoryArchive.currentSchemaVersion, 3)
         XCTAssertEqual(AtriaStressHistoryPersistence.filenamePrefix, "stress-minute-v3-")
         XCTAssertEqual(AtriaStressHistoryPersistence.productionDirectoryName,

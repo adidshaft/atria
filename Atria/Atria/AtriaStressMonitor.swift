@@ -1465,15 +1465,24 @@ enum AtriaHistoricalStressReplay {
         /// Non-empty only for a successfully validated full-source replay.
         /// Failures/cancellation use `.empty` with no destructive authority.
         let managedRanges: [ManagedRange]
+        /// The complete qualified confirmed-sleep window set of a successfully
+        /// validated snapshot, or nil when this result carries no sleep
+        /// authority (failure/cancellation and direct legacy/test ingestion).
+        /// Non-nil authority lets the merge relabel stored minutes' sleep
+        /// context — including reverting a stale `.asleep` after a sleep
+        /// deletion — while nil must never relabel or revert anything.
+        let sleepContextAuthority: [SleepContextInterval]?
 
         init(facts: [AtriaPhysiologicalStressModel.MinuteFact],
              heartRates: [HeartRatePoint],
              authorityByDate: [Date: AtriaStressReplayAuthority] = [:],
-             managedRanges: [ManagedRange] = []) {
+             managedRanges: [ManagedRange] = [],
+             sleepContextAuthority: [SleepContextInterval]? = nil) {
             self.facts = facts
             self.heartRates = heartRates
             self.authorityByDate = authorityByDate
             self.managedRanges = managedRanges
+            self.sleepContextAuthority = sleepContextAuthority
         }
 
         static let empty = Result(facts: [],
@@ -2042,7 +2051,8 @@ enum AtriaHistoricalStressReplay {
             return Result(facts: [],
                           heartRates: [],
                           authorityByDate: [:],
-                          managedRanges: managedRanges)
+                          managedRanges: managedRanges,
+                          sleepContextAuthority: snapshot.sleepContexts)
         }
         let retainedStart = snapshot.now.addingTimeInterval(
             -AtriaStressHistoryArchive.retentionWindow
@@ -2053,7 +2063,8 @@ enum AtriaHistoricalStressReplay {
             return Result(facts: [],
                           heartRates: [],
                           authorityByDate: [:],
-                          managedRanges: managedRanges)
+                          managedRanges: managedRanges,
+                          sleepContextAuthority: snapshot.sleepContexts)
         }
 
         var facts: [AtriaPhysiologicalStressModel.MinuteFact] = []
@@ -2173,7 +2184,8 @@ enum AtriaHistoricalStressReplay {
         return Result(facts: facts,
                       heartRates: sampledHeartRates,
                       authorityByDate: authorityByDate,
-                      managedRanges: managedRanges)
+                      managedRanges: managedRanges,
+                      sleepContextAuthority: snapshot.sleepContexts)
     }
 
     private static func qualifiedRRSamples(
@@ -2362,6 +2374,76 @@ enum AtriaHistoricalStressReplay {
         }
         let required = 0.80 * windowEnd.timeIntervalSince(windowStart)
         return covered >= required ? .asleep : .unavailable
+    }
+
+    /// One minimal sleep re-context mutation: the stored minute ending at
+    /// `date` must carry `sleepContext` to agree with the current qualified
+    /// confirmed-sleep windows.
+    struct SleepRecontextChange: Equatable, Sendable {
+        let date: Date
+        let sleepContext: AtriaPhysiologicalStressModel.SleepContext
+    }
+
+    /// Pure planner for the confirmed-sleep re-context pass (2026-08-20 device
+    /// evidence: overnight minutes persisted with sleep context "unavailable"
+    /// because the live sleep authority never publishes — issue #30, which
+    /// stays open for the live case — and a stored fact was never revisited
+    /// once the sleep WAS confirmed, so sleeping REM heart rate rendered as
+    /// moderate/high stress).
+    ///
+    /// Given the stored minute facts in chronological order and the same
+    /// qualified window set `materialize` builds from confirmed sleeps, this
+    /// returns the minimal set of minutes whose `sleepContext` label must
+    /// change to stay honest:
+    /// - a minute whose exact five-minute score window reaches the same >=80%
+    ///   qualified coverage the kernel scores with becomes `.asleep`;
+    /// - a minute currently `.asleep` that no longer reaches that coverage
+    ///   (the sleep was deleted or resized) reverts to `.unavailable`.
+    /// An explicit `.awake` claim is stronger authority than window absence
+    /// and is never rewritten. Scores and every measured field are outside
+    /// this planner's vocabulary entirely — it names dates and labels only —
+    /// so a second pass over already-relabelled facts plans nothing.
+    static func planSleepRecontext(
+        facts: [AtriaPhysiologicalStressModel.MinuteFact],
+        sleepContexts: [SleepContextInterval]
+    ) -> [SleepRecontextChange] {
+        guard facts.count <= AtriaStressHistoryArchive.maximumPointCount,
+              sleepContexts.count <= maximumContextIntervalCount,
+              isChronological(sleepContexts, date: { $0.start }),
+              sleepContexts.allSatisfy({
+                  $0.start.timeIntervalSinceReferenceDate.isFinite
+                    && $0.end.timeIntervalSinceReferenceDate.isFinite
+                    && $0.end > $0.start
+              }) else {
+            // Malformed authority must never rewrite stored context; the empty
+            // plan is the fail-closed outcome.
+            return []
+        }
+        var changes: [SleepRecontextChange] = []
+        var sleepContextLower = 0
+        var previousDate: Date?
+        for fact in facts {
+            guard fact.date.timeIntervalSinceReferenceDate.isFinite,
+                  previousDate.map({ fact.date > $0 }) ?? true else {
+                // Ambiguous minute ordering would make the swept window
+                // qualification unreliable; plan nothing.
+                return []
+            }
+            previousDate = fact.date
+            let desired = qualifiedSleepContext(
+                sleepContexts,
+                lowerIndex: &sleepContextLower,
+                windowStart: fact.date.addingTimeInterval(
+                    -AtriaPhysiologicalStressModel.windowDuration
+                ),
+                windowEnd: fact.date
+            )
+            guard fact.sleepContext != .awake,
+                  fact.sleepContext != desired else { continue }
+            changes.append(SleepRecontextChange(date: fact.date,
+                                                sleepContext: desired))
+        }
+        return changes
     }
 
     private static func isChronological<Value>(
@@ -3339,6 +3421,68 @@ final class AtriaStressMonitorStore: ObservableObject {
         }
     }
 
+    /// Structural admission for a replay's optional confirmed-sleep window
+    /// authority, mirroring the snapshot checks `evaluate` enforces. `nil`
+    /// (no authority) is always admissible; a malformed non-nil window set
+    /// fails the whole publication closed rather than relabelling context
+    /// from corrupt intervals.
+    nonisolated private static func isValidSleepContextAuthority(
+        _ contexts: [AtriaHistoricalStressReplay.SleepContextInterval]?
+    ) -> Bool {
+        guard let contexts else { return true }
+        guard contexts.count
+                <= AtriaHistoricalStressReplay.maximumContextIntervalCount else {
+            return false
+        }
+        var previousStart: Date?
+        for context in contexts {
+            guard context.start.timeIntervalSinceReferenceDate.isFinite,
+                  context.end.timeIntervalSinceReferenceDate.isFinite,
+                  context.end > context.start,
+                  previousStart.map({ context.start >= $0 }) ?? true else {
+                return false
+            }
+            previousStart = context.start
+        }
+        return true
+    }
+
+    /// Applies the pure re-context plan to the merged timeline. Only the
+    /// `sleepContext` label inside `minuteFact` changes; activation, level,
+    /// confidence, provenance, replay authority, and the scoring version are
+    /// carried over unchanged, so exact-clock immutability rules and every
+    /// persisted score stay untouched.
+    nonisolated private static func applyingSleepRecontext(
+        to points: [StressHistoryPoint],
+        sleepContexts: [AtriaHistoricalStressReplay.SleepContextInterval]
+    ) -> [StressHistoryPoint] {
+        let plan = AtriaHistoricalStressReplay.planSleepRecontext(
+            facts: points.compactMap(\.minuteFact),
+            sleepContexts: sleepContexts
+        )
+        guard !plan.isEmpty else { return points }
+        let relabelByDate = Dictionary(
+            plan.map { ($0.date, $0.sleepContext) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return points.map { point in
+            guard let fact = point.minuteFact,
+                  let sleepContext = relabelByDate[fact.date],
+                  fact.sleepContext != sleepContext else { return point }
+            return StressHistoryPoint(
+                t: point.t,
+                activation: point.activation,
+                level: point.level,
+                confidence: point.confidence,
+                hrvAvailable: point.hrvAvailable,
+                minuteFact: fact.relabelingSleepContext(sleepContext),
+                factSource: point.factSource,
+                replayAuthority: point.replayAuthority,
+                scoringVersion: point.scoringVersion
+            )
+        }
+    }
+
     private static func approximatelyEqual(_ lhs: Double,
                                            _ rhs: Double,
                                            tolerance: Double = 1e-9) -> Bool {
@@ -3668,6 +3812,7 @@ final class AtriaStressMonitorStore: ObservableObject {
         guard replay.facts.count <= AtriaStressHistoryArchive.maximumPointCount,
               replay.heartRates.count <= AtriaStressHistoryArchive.maximumPointCount,
               Self.areValidManagedRanges(replay.managedRanges, now: now),
+              Self.isValidSleepContextAuthority(replay.sleepContextAuthority),
               replay.authorityByDate.count <= replay.facts.count,
               replay.authorityByDate.allSatisfy({ date, authority in
                   factDates.contains(date) && authority.isStructurallyValid
@@ -3703,9 +3848,23 @@ final class AtriaStressMonitorStore: ObservableObject {
                                                 into: history,
                                                 managedRanges: replay.managedRanges,
                                                 now: now)
-        let historyChanged = merged != history
+        // Confirmed-sleep re-context (2026-08-20): the live path cannot know
+        // sleep at acquisition time (issue #30 stays open for the live case),
+        // so overnight minutes were stored with sleep context "unavailable"
+        // and sleeping REM HR rendered as stress. A validated replay carries
+        // the complete qualified confirmed-sleep window set; relabel ONLY the
+        // sleepContext of stored minutes to agree with it. Scores, cardiac
+        // evidence, provenance, and replay authority stay untouched — live
+        // immutability protects measurements, not a context label the store
+        // could never have known. Nil authority (failed replay, legacy/test
+        // ingestion) relabels nothing and can never revert `.asleep`.
+        let recontexted = replay.sleepContextAuthority.map {
+            Self.applyingSleepRecontext(to: merged, sleepContexts: $0)
+        } ?? merged
+        let mergedFactsChanged = merged != history
+        let historyChanged = recontexted != history
         if historyChanged {
-            history = merged
+            history = recontexted
             historyDurabilityLedger.retainOnly(history.lazy.map(\.t))
             historyDurabilityLedger.markDirty(history.lazy.compactMap { point in
                 previousByTimestamp[point.t] == point ? nil : point.t
@@ -3723,6 +3882,15 @@ final class AtriaStressMonitorStore: ObservableObject {
         guard historyChanged || heartRateChanged else { return }
         advanceHistoryRevision()
         guard historyChanged, let historyPersistence else { return }
+        guard mergedFactsChanged else {
+            // Sleep re-context changed labels only. A full 48-hour save would
+            // rewrite every shard for a metadata relabel; the bounded
+            // checkpoint drain instead rewrites exactly the hours whose
+            // minutes changed, two atomic shard replacements per hop, through
+            // the same lane routine checkpoints use.
+            checkpointHistory(now: now, force: true)
+            return
+        }
         let submission = historyDurabilityLedger.submission(
             for: history.lazy.map(\.t)
         )

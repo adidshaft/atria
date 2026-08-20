@@ -328,6 +328,29 @@ enum AtriaPhysiologicalStressModel {
             self.scoringVersion = scoringVersion
         }
 
+        /// Metadata-only relabel used by the confirmed-sleep re-context pass.
+        /// Every measured and scored field — score, unsmoothedScore, mean HR,
+        /// RMSSD, both stress terms, the weighting, motion, confidence, and
+        /// the scoring version — carries over unchanged; only the
+        /// sleep-context label moves. The designated initializer's clamps are
+        /// idempotent over an already-constructed fact, so nothing is
+        /// re-derived: a relabel can never fabricate or suppress a score.
+        func relabelingSleepContext(_ sleepContext: SleepContext) -> MinuteFact {
+            MinuteFact(date: date,
+                       score: score,
+                       unsmoothedScore: unsmoothedScore,
+                       meanHeartRate: meanHeartRate,
+                       rmssd: rmssd,
+                       hrStress: hrStress,
+                       hrvStress: hrvStress,
+                       heartRateWeight: heartRateWeight,
+                       motionContext: motionContext,
+                       sleepContext: sleepContext,
+                       confidence: confidence,
+                       baselineLearning: baselineLearning,
+                       scoringVersion: scoringVersion)
+        }
+
         private static func clamp01(_ value: Double) -> Double {
             AtriaPhysiologicalStressModel.clamp01(value)
         }
