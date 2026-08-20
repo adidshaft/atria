@@ -32,8 +32,15 @@ private func atriaRecoveryZoneColor(_ percent: Int?, zone: String? = nil) -> Col
 // Widget snapshots are local-only and can go stale if Atria hasn't been
 // opened in a while. Anything 6h+ old is called out honestly instead of
 // silently showing a number that may no longer be true.
+// 2026-08-20 (widget-sync RC3): `createdAt` advances on every live/battery/
+// receipt patch without recomputing recovery, sleep, or HRV, so an age keyed
+// on it both hid genuine staleness (a step receipt "renewed" a 9h-old
+// recovery) and could never be renewed honestly by the patch that hid it.
+// Age from the full-publish stable-evidence clock; `createdAt` remains the
+// fallback for legacy payloads that predate the field.
 private func atriaSnapshotAgeMinutes(_ snapshot: AtriaWidgetSnapshot, now: Date = Date()) -> Int {
-    max(0, Int(now.timeIntervalSince(snapshot.createdAt) / 60))
+    let stableRefreshedAt = snapshot.stableEvidenceRefreshedAt ?? snapshot.createdAt
+    return max(0, Int(now.timeIntervalSince(stableRefreshedAt) / 60))
 }
 
 private func atriaSnapshotIsStale(_ snapshot: AtriaWidgetSnapshot, now: Date = Date()) -> Bool {
@@ -71,6 +78,15 @@ private let atriaLiveActivityStepFreshness: TimeInterval = 15
 // prevents static-widget freshness rules from being mistaken for the tighter
 // Live Activity transport window.
 private let atriaStepFreshness = atriaLiveActivityStepFreshness
+// 2026-08-20 (widget-sync RC5): the app's step model stops claiming a live
+// strap subtotal as the CURRENT count 15s after its detector coordinate
+// (AtriaDailyStepPresentation.liveEvidenceMaximumAge). The static widget keeps
+// the 90s `atriaStaticStepFreshness` purely as WidgetKit delivery slack so a
+// healthy stream does not flicker to "--" between coalesced reloads — but past
+// this claim window the numeric value line must wear its capture frontier
+// instead of implying a currency the app itself no longer claims. Canonical
+// cycle-bound rows are untouched.
+private let atriaLiveSourceStepValueClaimWindow: TimeInterval = 15
 private let atriaStaticSensorFutureTolerance: TimeInterval = 5
 
 private func atriaCivilDayKey(_ date: Date, calendar: Calendar) -> String {
@@ -82,6 +98,58 @@ private func atriaCivilDayKey(_ date: Date, calendar: Calendar) -> String {
         components.day ?? 0
     )
 }
+
+// 2026-08-20 (widget-sync RC1/RC2): byte-identical mirror of the pure day-
+// fence decision in Atria/AtriaWidgetDayFence.swift — the app copy carries the
+// unit coverage (the two targets share no source file), and
+// AtriaWidgetDayFenceTests pins the two mirror blocks byte-identical.
+// ATRIA-DAY-FENCE-MIRROR-BEGIN
+/// Decision for one decoded widget payload at render time.
+/// `belongsToCurrentDay` is the H10 civil-day identity; `keepsSteps` /
+/// `keepsStrain` say whether those families survive a day-key mismatch
+/// because their own physiological cycle fences are still in the future.
+/// Recovery, sleep, biomarkers, and the whiteboard never survive civil
+/// midnight.
+struct AtriaWidgetDayFenceDecision: Equatable {
+    let belongsToCurrentDay: Bool
+    let keepsSteps: Bool
+    let keepsStrain: Bool
+}
+
+enum AtriaWidgetDayFence {
+    /// Pure day-fence resolution. New payloads compare the explicit publisher
+    /// day key plus its timezone identity; legacy payloads only survive while
+    /// `createdAt` is on the reader's current local day. Steps and strain are
+    /// wake-to-wake physiological values: while their publisher-persisted
+    /// cycle expiry is still in the future they remain the CURRENT cycle's
+    /// values and survive the civil-day blanking with their partial/frontier
+    /// disclosures intact. Absent fences (legacy payloads) keep failing
+    /// closed exactly as before. This split must hold even when no rollover
+    /// republish ever fires — the fence is never clearable only by the
+    /// success it blocks.
+    static func resolve(
+        displayCivilDayKeyMatchesCurrentDay: Bool?,
+        displayTimeZoneMatchesCurrentCalendar: Bool,
+        createdAtIsOnCurrentDay: Bool,
+        stepsCycleExpiresAt: Date?,
+        strainCycleExpiresAt: Date?,
+        now: Date
+    ) -> AtriaWidgetDayFenceDecision {
+        let belongsToCurrentDay: Bool
+        if let displayCivilDayKeyMatchesCurrentDay {
+            belongsToCurrentDay = displayCivilDayKeyMatchesCurrentDay
+                && displayTimeZoneMatchesCurrentCalendar
+        } else {
+            belongsToCurrentDay = createdAtIsOnCurrentDay
+        }
+        return AtriaWidgetDayFenceDecision(
+            belongsToCurrentDay: belongsToCurrentDay,
+            keepsSteps: stepsCycleExpiresAt.map { now < $0 } == true,
+            keepsStrain: strainCycleExpiresAt.map { now < $0 } == true
+        )
+    }
+}
+// ATRIA-DAY-FENCE-MIRROR-END
 
 private func atriaCumulativeDayStrainIsCurrent(_ snapshot: AtriaWidgetSnapshot,
                                                now: Date) -> Bool {
@@ -144,6 +212,29 @@ private func atriaStepValueText(_ snapshot: AtriaWidgetSnapshot,
         return "≥\(value)"
     }
     return snapshot.stepsAreEstimated == false ? value : "~\(value)"
+}
+
+/// 2026-08-20 (widget-sync RC4, §13.6 pre-render): the app serializes the
+/// exact status line its own Steps card shows. A pre-rendered CURRENCY claim
+/// ("Today so far …") is honored only while the row's evidence clock still
+/// supports it at render time — past that the legacy render-time derivations
+/// name the frontier honestly. Frontier-anchored strings ("Counted/Verified
+/// through HH:MM", "Yesterday: …") stay truthful at any age and are preferred
+/// verbatim.
+private func atriaPreRenderedStepStatus(_ snapshot: AtriaWidgetSnapshot,
+                                        now: Date) -> String? {
+    guard let statusText = snapshot.stepsStatusText else { return nil }
+    guard statusText.localizedCaseInsensitiveContains("so far") else {
+        return statusText
+    }
+    guard let capturedAt = snapshot.stepsCapturedAt else { return nil }
+    let currencyWindow = snapshot.stepsSource == "verifiedCanonical"
+        ? atriaStaticStepFreshness
+        : atriaLiveSourceStepValueClaimWindow
+    let age = now.timeIntervalSince(capturedAt)
+    return age >= -atriaStaticSensorFutureTolerance && age <= currencyWindow
+        ? statusText
+        : nil
 }
 
 private func atriaBatteryEvidenceDate(_ snapshot: AtriaWidgetSnapshot) -> Date? {
@@ -235,26 +326,44 @@ struct AtriaWidgetSnapshot: Codable {
     var recoveryZone: String? = nil
     var hrvCapturedAt: Date? = nil
     var biomarkerExpiresAt: Date? = nil
+    /// 2026-08-20 (widget-sync RC3): additive full-publish stable-evidence
+    /// clock. The stale disclosure ages from this, never from the patched
+    /// `createdAt`; legacy payloads fall back to `createdAt`.
+    var stableEvidenceRefreshedAt: Date? = nil
+    /// 2026-08-20 (widget-sync RC4, §13.6 pre-render): app-rendered display
+    /// strings for the step tile and strain value. Preferred verbatim; the
+    /// derivations below survive only as legacy fallback.
+    var stepsValueText: String? = nil
+    var stepsStatusText: String? = nil
+    var strainValueText: String? = nil
 
     /// Fail closed at the local civil-day boundary. New payloads compare the
     /// explicit publisher day key; legacy payloads remain decodable but only
     /// survive while `createdAt` is still on the reader's current local day.
+    /// 2026-08-20 (widget-sync RC1/RC2): the fence is split by family — steps
+    /// and strain survive civil midnight while their own publisher-persisted
+    /// cycle fences are still in the future (a shifted sleeper's cycle
+    /// legitimately expires mid-afternoon), keeping their partial/frontier
+    /// disclosures. Recovery, sleep, biomarkers, and the whiteboard never
+    /// survive civil midnight (H10 identity, unchanged).
     mutating func atriaEnforceCurrentDayIdentity(
         now: Date = Date(),
         calendar: Calendar = .current
     ) {
         let currentDayKey = atriaCivilDayKey(now, calendar: calendar)
-        let belongsToCurrentDay: Bool
-        if let displayCivilDayKey {
-            let belongsToCurrentTimeZone = displayTimeZoneIdentifier.map {
+        let decision = AtriaWidgetDayFence.resolve(
+            displayCivilDayKeyMatchesCurrentDay: displayCivilDayKey.map {
+                $0 == currentDayKey
+            },
+            displayTimeZoneMatchesCurrentCalendar: displayTimeZoneIdentifier.map {
                 $0 == calendar.timeZone.identifier
-            } ?? true
-            belongsToCurrentDay = displayCivilDayKey == currentDayKey
-                && belongsToCurrentTimeZone
-        } else {
-            belongsToCurrentDay = calendar.isDate(createdAt, inSameDayAs: now)
-        }
-        if !belongsToCurrentDay {
+            } ?? true,
+            createdAtIsOnCurrentDay: calendar.isDate(createdAt, inSameDayAs: now),
+            stepsCycleExpiresAt: stepsCycleExpiresAt,
+            strainCycleExpiresAt: strainCycleExpiresAt,
+            now: now
+        )
+        if !decision.belongsToCurrentDay {
             recoveryPercent = nil
             recoveryDetail = "Awaiting today's data"
             sleepHours = nil
@@ -267,20 +376,27 @@ struct AtriaWidgetSnapshot: Codable {
             hrvRMSSD = nil
             hrvState = "learning"
             hrvCapturedAt = nil
-            strain = 0
-            strainDetail = "Awaiting today's data"
-            strainCapturedAt = nil
-            strainCycleStart = nil
-            strainCycleExpiresAt = nil
-            steps = nil
-            stepsCapturedAt = nil
-            stepsSource = nil
-            stepsCompleteness = nil
-            stepsCoverageFraction = nil
-            stepsCycleStart = nil
-            stepsCycleExpiresAt = nil
-            stepsPriorCycleSteps = nil
-            stepsPriorCycleEndedAt = nil
+            if !decision.keepsStrain {
+                strain = 0
+                strainDetail = "Awaiting today's data"
+                strainCapturedAt = nil
+                strainCycleStart = nil
+                strainCycleExpiresAt = nil
+                strainValueText = nil
+            }
+            if !decision.keepsSteps {
+                steps = nil
+                stepsCapturedAt = nil
+                stepsSource = nil
+                stepsCompleteness = nil
+                stepsCoverageFraction = nil
+                stepsCycleStart = nil
+                stepsCycleExpiresAt = nil
+                stepsPriorCycleSteps = nil
+                stepsPriorCycleEndedAt = nil
+                stepsValueText = nil
+                stepsStatusText = nil
+            }
         }
         if let expires = recoveryExpiresAt, now >= expires {
             recoveryPercent = nil
@@ -383,6 +499,12 @@ struct AtriaWidgetProvider: TimelineProvider {
             (snapshot?.strainCapturedAt, atriaCumulativeDayStrainFreshness)
         ]
         if snapshot?.stepsSource != "verifiedCanonical" {
+            // 2026-08-20 (widget-sync RC5): a live-source value has two visible
+            // transitions — it gains its capture-frontier qualifier at the
+            // app's claim window and fails closed at the delivery-slack
+            // boundary. Schedule both so neither waits for the 15-min refresh.
+            expirySources.append((snapshot?.stepsCapturedAt,
+                                  atriaLiveSourceStepValueClaimWindow))
             expirySources.append((snapshot?.stepsCapturedAt, atriaStaticStepFreshness))
         }
         for (capturedAt, freshness) in expirySources {
@@ -1337,7 +1459,10 @@ struct AtriaWidgetEntryView: View {
             let hours = atriaSnapshotAgeMinutes(snapshot, now: entry.date) / 60
             return "Widget stale \(hours)h · Open Atria"
         }
-        return "Widget updated \(atriaTimeOfDayFormatter.string(from: snapshot.createdAt))"
+        // RC3: the footer dates the last FULL stable rebuild — a live/battery/
+        // receipt patch advancing `createdAt` must not re-date recovery, sleep,
+        // or HRV. `createdAt` remains the legacy-payload fallback.
+        return "Widget updated \(atriaTimeOfDayFormatter.string(from: snapshot.stableEvidenceRefreshedAt ?? snapshot.createdAt))"
     }
 
     private var widgetStatusTint: Color {
@@ -3160,11 +3285,27 @@ enum AtriaWidgetMetric: String, Identifiable {
         switch self {
         case .steps:
             guard let steps = atriaCurrentStepValue(s, now: now) else { return "--" }
-            return atriaStepValueText(s, steps: steps)
+            // RC4 (§13.6 pre-render): prefer the app-rendered value string;
+            // the derivation below stays as legacy fallback.
+            let text = s.stepsValueText ?? atriaStepValueText(s, steps: steps)
+            // RC5: a live-source row older than the app's 15s claim window
+            // keeps the 90s delivery slack but wears its capture frontier on
+            // the value line itself, so the value and its status line claim
+            // the same window. Canonical cycle-bound rows are untouched.
+            if s.stepsSource != "verifiedCanonical",
+               let capturedAt = s.stepsCapturedAt,
+               now.timeIntervalSince(capturedAt)
+                   > atriaLiveSourceStepValueClaimWindow {
+                return "\(text) · \(atriaCaptureTimeText(capturedAt))"
+            }
+            return text
         case .strain:
             // This is accumulated day load, independent of the live-HR clock,
             // but it still belongs to one bounded physiological cycle.
             guard atriaCumulativeDayStrainIsCurrent(s, now: now) else { return "--" }
+            // RC4 (§13.6 pre-render): prefer the value the in-app hero
+            // rendered from the same aggregate.
+            if let strainValueText = s.strainValueText { return strainValueText }
             let numeric = String(format: "%.1f", max(0, s.strain))
             return s.strainDetail?.localizedCaseInsensitiveContains("partial") == true
                 ? "≥ \(numeric)"
@@ -3190,6 +3331,12 @@ enum AtriaWidgetMetric: String, Identifiable {
             if snapshot.stepsSource == "verifiedCanonical" {
                 guard let steps = atriaCurrentStepValue(snapshot, now: now) else {
                     return "Step archive expired"
+                }
+                // RC4 (§13.6 pre-render): the app-rendered status line is
+                // authoritative while its claim is still current; the legacy
+                // derivations below remain the render-time fallback.
+                if let statusText = atriaPreRenderedStepStatus(snapshot, now: now) {
+                    return statusText
                 }
                 if snapshot.stepsCompleteness == "partial" {
                     // 2026-08-12: never lead with a coverage percent — it
@@ -3237,6 +3384,12 @@ enum AtriaWidgetMetric: String, Identifiable {
                                                            freshness: atriaStaticStepFreshness,
                                                            now: now) else {
                 return "Step stale · last \(atriaCaptureTimeText(capturedAt))"
+            }
+            // RC4 (§13.6 pre-render): within the app's claim window prefer the
+            // app-rendered live status; past it the derivation below carries
+            // the honest capture time.
+            if let statusText = atriaPreRenderedStepStatus(snapshot, now: now) {
+                return statusText
             }
             let accuracy = snapshot.stepsAreEstimated == false ? "Confirmed" : "Estimated"
             let captured = atriaCaptureTimeText(capturedAt)

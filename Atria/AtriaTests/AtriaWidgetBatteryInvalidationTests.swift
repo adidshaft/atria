@@ -2002,7 +2002,11 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertEqual(value.completeness, .partial)
         // Pin migrated 2026-08-05: clean number per the 26057206 decision;
         // partiality is pinned by .partial + coverageFraction below.
-        XCTAssertEqual(value.valueText, "2345")
+        // W2-A fix 4: the pre-rendered app string is preferred, and a partial
+        // verified canonical count is a LOWER BOUND — the ">=" qualifier is
+        // the field-report-2026-08-19 honesty decision (the widget and app
+        // must agree, and the qualified form is the honest one).
+        XCTAssertEqual(value.valueText, "≥2345")
         XCTAssertEqual(value.coverageFraction ?? -1, 0.75, accuracy: 0.001)
     }
 
@@ -2652,8 +2656,12 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         XCTAssertTrue(aggregate.contains("private var accessibleMediumWidget"))
         XCTAssertTrue(aggregate.contains("private var widgetStatusFooter"))
         XCTAssertTrue(aggregate.contains("return \"Widget stale \\(hours)h · Open Atria\""))
-        XCTAssertTrue(aggregate.contains("return \"Widget updated \\(atriaTimeOfDayFormatter.string(from: snapshot.createdAt))\""),
-                      "the delivery clock must explicitly qualify the widget, not Recovery")
+        // 2026-08-20 (widget-sync RC3): the footer dates the last FULL stable
+        // rebuild, not the patched delivery clock — a live/battery/receipt
+        // patch advancing `createdAt` must not re-date recovery/sleep/HRV.
+        // `createdAt` stays the legacy-payload fallback.
+        XCTAssertTrue(aggregate.contains("return \"Widget updated \\(atriaTimeOfDayFormatter.string(from: snapshot.stableEvidenceRefreshedAt ?? snapshot.createdAt))\""),
+                      "the stable-evidence clock must qualify the widget, not Recovery")
         XCTAssertTrue(aggregate.contains("case \"unverified\": return \"Early estimate\""))
         // 2026-08-14 (assessment P0.3): the reserved tier renders as the
         // strongest honest claim on every surface.

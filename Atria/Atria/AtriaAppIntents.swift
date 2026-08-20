@@ -95,7 +95,8 @@ struct AtriaMetricsIntent: AppIntent {
         let hrv = snapshot.hrvRMSSD.map { "\($0) milliseconds" } ?? snapshot.hrvState
         let strain = AtriaIntentMetricPresentation.strainSpoken(
             value: snapshot.strain,
-            detail: snapshot.strainDetail
+            detail: snapshot.strainDetail,
+            appRenderedValueText: snapshot.strainValueText
         )
         let summary = "Recovery is \(recovery), strain is \(strain), and HRV is \(hrv)."
         return .result(value: summary,
@@ -123,7 +124,8 @@ private struct AtriaMetricsSnippetView: View {
                  value: snapshot.map {
                     AtriaIntentMetricPresentation.strainCompact(
                         value: $0.strain,
-                        detail: $0.strainDetail
+                        detail: $0.strainDetail,
+                        appRenderedValueText: $0.strainValueText
                     )
                  } ?? "--",
                  tint: .orange)
@@ -419,8 +421,21 @@ enum AtriaIntentMetricPresentation {
 
     nonisolated static func strainSpoken(
         value: Double,
-        detail: String?
+        detail: String?,
+        appRenderedValueText: String? = nil
     ) -> String {
+        // 2026-08-20 (widget-sync RC4, §13.6 pre-render): prefer the exact
+        // string the in-app hero rendered. "≥" is unspeakable, so the spoken
+        // surface translates the lower-bound qualifier without re-deriving
+        // the number; the derivation below stays as legacy fallback.
+        if let appRenderedValueText {
+            if appRenderedValueText.hasPrefix("≥") {
+                let numeric = appRenderedValueText.dropFirst()
+                    .trimmingCharacters(in: .whitespaces)
+                return "at least \(numeric)"
+            }
+            return appRenderedValueText
+        }
         let numeric = String(format: "%.1f", value)
         return detail?.localizedCaseInsensitiveContains("partial") == true
             ? "at least \(numeric)" : numeric
@@ -428,8 +443,12 @@ enum AtriaIntentMetricPresentation {
 
     nonisolated static func strainCompact(
         value: Double,
-        detail: String?
+        detail: String?,
+        appRenderedValueText: String? = nil
     ) -> String {
+        // 2026-08-20 (widget-sync RC4): the compact stat shows the app-
+        // rendered value verbatim when the snapshot carries one.
+        if let appRenderedValueText { return appRenderedValueText }
         let numeric = String(format: "%.1f", value)
         return detail?.localizedCaseInsensitiveContains("partial") == true
             ? "≥ \(numeric)" : numeric

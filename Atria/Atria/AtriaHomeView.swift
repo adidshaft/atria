@@ -3510,6 +3510,12 @@ struct AtriaHomeView: View {
             stepsAuthorityVersion: steps == nil
                 ? nil
                 : WidgetSnapshotPublisher.qualifiedStepAuthorityVersion,
+            // 2026-08-20 (widget-sync RC4, §13.6 pre-render): the live lane
+            // carries the same rendered strings the in-app Steps card shows
+            // for this exact presentation, so an accepted live patch replaces
+            // the pre-rendered text together with the family it describes.
+            stepsValueText: steps == nil ? nil : dailySteps.valueText,
+            stepsStatusText: steps == nil ? nil : dailySteps.detailText,
             strain: model.heroStore.state.strain,
             strainDetail: model.heroStore.state.strainDetail,
             strainCapturedAt: ble.lastAcceptedHeartRateAt,
