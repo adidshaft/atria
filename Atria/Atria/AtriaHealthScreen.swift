@@ -2920,10 +2920,12 @@ struct AtriaSleepStressCard: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .frame(height: 156)
+                // 200pt (was 156): the declutter pass (D8) reclaimed the room
+                // freed by relocating the disclaimer/subtitle copy (B4/R7).
+                .frame(height: 200)
                 // Clip the AreaMark gradient to the plot frame (2026-08-08):
                 // unlike every other AreaMark chart this one had no clip, so the
-                // fill/glow bled below the 156pt frame onto the caption text.
+                // fill/glow bled below the fixed frame onto the caption text.
                 .clipped()
                 .environment(\.timeZone, displayTimeZone)
                 .atriaInspectableGraph(inspectorGraph)

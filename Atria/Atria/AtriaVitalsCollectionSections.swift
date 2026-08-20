@@ -4491,6 +4491,7 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
                                         yDomain: series.yDomain,
                                         buckets: series.buckets,
                                         displayContinuity: series.displayContinuity,
+                                        usesLeadingValueAxis: true,
                                         selectedTime: .constant(nil),
                                         showsXAxis: true)
                     // This is a preview inside one large button, not an
@@ -4503,14 +4504,17 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
                     .background(Color(.systemBackground).opacity(0.18), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .clipped()
-                    // Leading-only bleed (2026-08-10 chart-truth audit): the
-                    // inner backdrop strip stretches to the outer card's LEADING
-                    // edge, but the trailing edge keeps its 12pt inset so the
-                    // trailing bpm axis has a real gutter — the full-horizontal
-                    // bleed clipped the top/right "120" label against the card's
-                    // rounded corner (screenshot 2). The header row keeps its
-                    // 12pt inset either way.
-                    .padding(.leading, -12)
+                    // Trailing-only bleed (2026-08-20 declutter D15): with the
+                    // bpm axis moved to the LEADING edge (usesLeadingValueAxis
+                    // above), the plot's trailing side carries no labels, so
+                    // the inner backdrop strip now stretches to the outer
+                    // card's TRAILING edge. The leading edge keeps its 12pt
+                    // inset as the axis gutter — the 2026-08-10 chart-truth
+                    // audit proved a bled axis edge clips its outermost label
+                    // against the card's rounded corner (screenshot 2, the old
+                    // top/right "120"). The header row keeps its 12pt inset
+                    // either way.
+                    .padding(.trailing, -12)
 
             }
             .padding(12)
@@ -5485,6 +5489,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
     let yDomain: ClosedRange<Int>
     let buckets: [AtriaHeartRateBucket]?
     let displayContinuity: AtriaHeartRateDisplayContinuity
+    let usesLeadingValueAxis: Bool
     @Binding var selectedTime: Date?
     @Binding var selectedRange: ClosedRange<Date>?
     let selectionMode: AtriaHeartRateExplorer.SelectionMode
@@ -5496,6 +5501,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
          yDomain: ClosedRange<Int>,
          buckets: [AtriaHeartRateBucket]? = nil,
          displayContinuity: AtriaHeartRateDisplayContinuity = .ambient,
+         usesLeadingValueAxis: Bool = false,
          selectedTime: Binding<Date?>,
          selectedRange: Binding<ClosedRange<Date>?> = .constant(nil),
          selectionMode: AtriaHeartRateExplorer.SelectionMode = .point,
@@ -5506,6 +5512,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         self.yDomain = yDomain
         self.buckets = buckets
         self.displayContinuity = displayContinuity
+        self.usesLeadingValueAxis = usesLeadingValueAxis
         self._selectedTime = selectedTime
         self._selectedRange = selectedRange
         self.selectionMode = selectionMode
@@ -5517,6 +5524,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
     static func == (lhs: AtriaHeartRateAxisChart, rhs: AtriaHeartRateAxisChart) -> Bool {
         lhs.points == rhs.points && lhs.yDomain == rhs.yDomain && lhs.buckets == rhs.buckets
             && lhs.displayContinuity == rhs.displayContinuity
+            && lhs.usesLeadingValueAxis == rhs.usesLeadingValueAxis
             && lhs.selectionMode == rhs.selectionMode && lhs.visibleDomain == rhs.visibleDomain
             && lhs.showsXAxis == rhs.showsXAxis
     }
@@ -5682,15 +5690,34 @@ struct AtriaHeartRateAxisChart: View, Equatable {
             }
         }
         .chartYAxis {
-            // Trailing axis: the leading bpm gutter (~28pt) was the largest
-            // single left inset on the Vitals tab (space audit 2026-07-07).
-            // Hidden entirely while the plot is empty — a 60–120 bpm scale
-            // over "No heart-rate points to plot yet" is a fabricated axis
-            // (chart-honesty rule, 2026-08-04).
-            if !plotIsEmpty {
+            // Trailing axis by default: the leading bpm gutter (~28pt) was the
+            // largest single left inset on the Vitals tab (space audit
+            // 2026-07-07). Hidden entirely while the plot is empty — a 60–120
+            // bpm scale over "No heart-rate points to plot yet" is a
+            // fabricated axis (chart-honesty rule, 2026-08-04).
+            if !plotIsEmpty, !usesLeadingValueAxis {
                 AxisMarks(position: .trailing, values: .automatic(desiredCount: 5)) { value in
                     AxisGridLine().foregroundStyle(.secondary.opacity(0.18))
                     AxisTick().foregroundStyle(.secondary.opacity(0.45))
+                    AxisValueLabel {
+                        if let bpm = value.as(Int.self) {
+                            Text("\(bpm)")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            // The compact timeline preview opts into a LEADING bpm axis so its
+            // plot can bleed to the trailing card edge instead (2026-08-20
+            // declutter D15). Gridline/tick/label treatment mirrors the stress
+            // timeline's leading axis — quiet gridlines, clear ticks, caption2
+            // monospaced secondary labels — so the two Vitals leading axes
+            // read as one grammar.
+            if !plotIsEmpty, usesLeadingValueAxis {
+                AxisMarks(position: .leading, values: .automatic(desiredCount: 5)) { value in
+                    AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
+                    AxisTick().foregroundStyle(.clear)
                     AxisValueLabel {
                         if let bpm = value.as(Int.self) {
                             Text("\(bpm)")
