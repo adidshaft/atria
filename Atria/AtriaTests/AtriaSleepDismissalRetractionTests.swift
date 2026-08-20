@@ -8,7 +8,11 @@ import XCTest
 /// These tests pin the fix: a dismissal retracts machine-authored confirmed
 /// records it suppresses (both race directions), while user-authored records
 /// — by source, by user_confirmed_*/manual_* confidence, or by a day-primary
-/// answer — are never deleted by a dismissal.
+/// answer — are never deleted by a dismissal. The save-time re-check section
+/// pins the residual window's closure: a dismissal landing during the
+/// auto-confirm persist's own suspension points is honored by re-reading the
+/// durable tombstones immediately before the write and dropping the
+/// suppressed auto-confirmations from the written set.
 final class AtriaSleepDismissalRetractionTests: XCTestCase {
     private static let utcCalendar: Calendar = {
         var calendar = Calendar(identifier: .gregorian)
@@ -461,5 +465,226 @@ final class AtriaSleepDismissalRetractionTests: XCTestCase {
                       "user-authored records are never retracted by the launch sweep")
         XCTAssertTrue(store.confirmedSleeps.contains { $0.id == farRecord.id },
                       "records no tombstone suppresses are untouched")
+    }
+
+    // MARK: - Save-time dismissal re-check (mid-flight race)
+
+    func testSaveTimeSelectionScopesToRecheckIDsAndAuthorship() {
+        let start = date(2026, 8, 21, 13, 15)
+        let end = date(2026, 8, 21, 16, 15)
+        let tombstones = [AtriaDismissedSleepCandidate(start: start, end: end)]
+        let machine = confirmedSleep(id: "recheck-machine",
+                                     start: start,
+                                     end: end,
+                                     source: "aggregate_sleep",
+                                     confidence: "medium")
+        let unscoped = confirmedSleep(id: "recheck-unscoped",
+                                      start: start,
+                                      end: end,
+                                      source: "aggregate_sleep",
+                                      confidence: "medium")
+        let authored = confirmedSleep(id: "recheck-authored",
+                                      start: start,
+                                      end: end,
+                                      source: "aggregate_sleep",
+                                      confidence: "user_confirmed_hr_only")
+        let dayPrimary = confirmedSleep(id: "recheck-day-primary",
+                                        start: start,
+                                        end: end,
+                                        source: "aggregate_sleep",
+                                        confidence: "medium",
+                                        dayPrimaryChoice: true)
+        let settled = [machine, unscoped, authored, dayPrimary]
+        let recheckIDs: Set<String> = [machine.id, authored.id, dayPrimary.id]
+
+        XCTAssertEqual(
+            SessionStore.saveTimeDismissalSuppressedSleepIDs(in: settled,
+                                                             recheckIDs: recheckIDs,
+                                                             tombstones: tombstones),
+            [machine.id],
+            "only the recheck-scoped machine-authored record is suppressed; an unscoped record belongs to its own retraction sweep, and user work is never filtered"
+        )
+        XCTAssertTrue(
+            SessionStore.saveTimeDismissalSuppressedSleepIDs(in: settled,
+                                                             recheckIDs: recheckIDs,
+                                                             tombstones: []).isEmpty,
+            "no tombstones, no suppression"
+        )
+        // 180-minute windows: a 54-minute shift is exactly the 0.70 overlap
+        // boundary; one more minute is a different episode.
+        let belowBoundary = [AtriaDismissedSleepCandidate(
+            start: start.addingTimeInterval(55 * 60),
+            end: end.addingTimeInterval(55 * 60)
+        )]
+        XCTAssertTrue(
+            SessionStore.saveTimeDismissalSuppressedSleepIDs(in: settled,
+                                                             recheckIDs: recheckIDs,
+                                                             tombstones: belowBoundary).isEmpty,
+            "a sub-0.70 overlap never suppresses at save time either"
+        )
+    }
+
+    @MainActor
+    func testSaveTimeRecheckDropsRecordDismissedMidFlight() async throws {
+        await quiesceSharedConfirmedStore()
+        let start = date(2026, 8, 21, 13, 15)
+        let end = date(2026, 8, 21, 16, 15)
+        Self.clearTombstones(overlappingStart: start, end: end)
+        // The store's init-time tombstone load happens BEFORE the dismissal
+        // lands — the loop-level check saw nothing to suppress.
+        let store = makeStore(now: date(2026, 8, 21, 18, 0))
+        let record = confirmedSleep(id: "mid-flight-\(UUID().uuidString)",
+                                    start: start,
+                                    end: end,
+                                    source: "aggregate_sleep",
+                                    confidence: "medium")
+        addTeardownBlock { @MainActor in
+            _ = await store.debugInstallConfirmedSleepsForTesting([])
+            Self.clearTombstones(overlappingStart: start, end: end)
+        }
+
+        // The dismissal lands during the persist's in-flight awaits: the
+        // durable tombstone exists, the store's in-memory array predates it.
+        Self.installTombstone(start: start, end: end)
+        let recheck = SessionStore.AutoConfirmSaveTimeDismissalRecheck(
+            recordIDs: [record.id]
+        )
+        let saved = await store.debugSaveAutoConfirmedSleepsForTesting([record],
+                                                                       recheck: recheck)
+        XCTAssertTrue(saved, "the persist transaction itself succeeds")
+        XCTAssertEqual(recheck.suppressedIDs, [record.id],
+                       "the save-time re-check must report the dropped auto-confirmation")
+        XCTAssertFalse(store.confirmedSleeps.contains { $0.id == record.id },
+                       "a record whose window the user dismissed mid-flight must not persist")
+        XCTAssertTrue(Self.hasTombstone(overlappingStart: start, end: end),
+                      "the dismissal tombstone survives the save")
+    }
+
+    @MainActor
+    func testSaveTimeRecheckLeavesUnscopedAndUndismissedRecordsAlone() async throws {
+        await quiesceSharedConfirmedStore()
+        let clearStart = date(2026, 8, 22, 1, 0)
+        let clearEnd = date(2026, 8, 22, 7, 30)
+        let dismissedStart = date(2026, 8, 22, 13, 15)
+        let dismissedEnd = date(2026, 8, 22, 16, 15)
+        Self.clearTombstones(overlappingStart: clearStart, end: clearEnd)
+        Self.clearTombstones(overlappingStart: dismissedStart, end: dismissedEnd)
+        let store = makeStore(now: date(2026, 8, 22, 18, 0))
+        let clearRecord = confirmedSleep(id: "recheck-clear-\(UUID().uuidString)",
+                                         start: clearStart,
+                                         end: clearEnd,
+                                         source: "aggregate_sleep",
+                                         confidence: "medium")
+        // Machine-authored and freshly tombstoned, but NOT minted by this
+        // pass: the dismissal-time retraction and launch sweep own it — the
+        // save filter must not silently swallow it out of an unrelated save.
+        let unscopedRecord = confirmedSleep(id: "recheck-preexisting-\(UUID().uuidString)",
+                                            start: dismissedStart,
+                                            end: dismissedEnd,
+                                            source: "aggregate_sleep",
+                                            confidence: "medium")
+        addTeardownBlock { @MainActor in
+            _ = await store.debugInstallConfirmedSleepsForTesting([])
+            Self.clearTombstones(overlappingStart: clearStart, end: clearEnd)
+            Self.clearTombstones(overlappingStart: dismissedStart, end: dismissedEnd)
+        }
+
+        Self.installTombstone(start: dismissedStart, end: dismissedEnd)
+        let recheck = SessionStore.AutoConfirmSaveTimeDismissalRecheck(
+            recordIDs: [clearRecord.id]
+        )
+        let saved = await store.debugSaveAutoConfirmedSleepsForTesting(
+            [clearRecord, unscopedRecord],
+            recheck: recheck
+        )
+        XCTAssertTrue(saved)
+        XCTAssertTrue(recheck.suppressedIDs.isEmpty,
+                      "nothing in the recheck scope is dismissed, so nothing may be dropped")
+        XCTAssertTrue(store.confirmedSleeps.contains { $0.id == clearRecord.id },
+                      "an undismissed auto-confirmation persists normally")
+        XCTAssertTrue(store.confirmedSleeps.contains { $0.id == unscopedRecord.id },
+                      "a tombstoned record outside the recheck scope is left to its own retraction sweep")
+    }
+
+    @MainActor
+    func testSaveTimeRecheckNeverDropsUserAuthoredOrDayPrimaryRecords() async throws {
+        await quiesceSharedConfirmedStore()
+        let authoredStart = date(2026, 8, 23, 6, 0)
+        let authoredEnd = date(2026, 8, 23, 9, 0)
+        let primaryStart = date(2026, 8, 23, 13, 15)
+        let primaryEnd = date(2026, 8, 23, 16, 15)
+        Self.clearTombstones(overlappingStart: authoredStart, end: authoredEnd)
+        Self.clearTombstones(overlappingStart: primaryStart, end: primaryEnd)
+        let store = makeStore(now: date(2026, 8, 23, 18, 0))
+        let authored = confirmedSleep(id: "recheck-user-\(UUID().uuidString)",
+                                      start: authoredStart,
+                                      end: authoredEnd,
+                                      source: "aggregate_sleep",
+                                      confidence: "user_confirmed_hr_only")
+        let dayPrimary = confirmedSleep(id: "recheck-primary-\(UUID().uuidString)",
+                                        start: primaryStart,
+                                        end: primaryEnd,
+                                        source: "aggregate_sleep",
+                                        confidence: "medium",
+                                        dayPrimaryChoice: true)
+        addTeardownBlock { @MainActor in
+            _ = await store.debugInstallConfirmedSleepsForTesting([])
+            Self.clearTombstones(overlappingStart: authoredStart, end: authoredEnd)
+            Self.clearTombstones(overlappingStart: primaryStart, end: primaryEnd)
+        }
+
+        Self.installTombstone(start: authoredStart, end: authoredEnd)
+        Self.installTombstone(start: primaryStart, end: primaryEnd)
+        let recheck = SessionStore.AutoConfirmSaveTimeDismissalRecheck(
+            recordIDs: [authored.id, dayPrimary.id]
+        )
+        let saved = await store.debugSaveAutoConfirmedSleepsForTesting(
+            [authored, dayPrimary],
+            recheck: recheck
+        )
+        XCTAssertTrue(saved)
+        XCTAssertTrue(recheck.suppressedIDs.isEmpty,
+                      "the canonical retraction predicate protects user work at save time too")
+        XCTAssertTrue(store.confirmedSleeps.contains { $0.id == authored.id })
+        XCTAssertTrue(store.confirmedSleeps.contains { $0.id == dayPrimary.id })
+    }
+
+    func testBothAutomaticPersistencePathsThreadSaveTimeRecheck() throws {
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let source = try String(contentsOf: testsDirectory.deletingLastPathComponent()
+            .appendingPathComponent("Atria/Sessions.swift"), encoding: .utf8)
+
+        let closedStart = try XCTUnwrap(source.range(of: "private func autoConfirmStrongSleepCandidates"))
+        let closedEnd = try XCTUnwrap(source.range(of: "private func buildAutoConfirmedSleep",
+                                                   range: closedStart.upperBound..<source.endIndex))
+        let closed = source[closedStart.lowerBound..<closedEnd.lowerBound]
+        XCTAssertTrue(closed.contains("AutoConfirmSaveTimeDismissalRecheck("),
+                      "the settlement loop must mint a save-time recheck identity")
+        XCTAssertTrue(closed.contains("autoConfirmDismissalRecheck: dismissalRecheck"),
+                      "the settlement loop must thread its recheck into the persist")
+        XCTAssertTrue(closed.contains("!dismissalRecheck.suppressedIDs.contains(firstSavedOvernight.id)"),
+                      "a record dropped at save time must never banner or notify")
+
+        let wakeStart = try XCTUnwrap(source.range(of: "private func commitPreparedWakeBoundarySleepIfUseful"))
+        let wakeEnd = try XCTUnwrap(source.range(of: "private func applySleepExtend",
+                                                 range: wakeStart.upperBound..<source.endIndex))
+        let wake = source[wakeStart.lowerBound..<wakeEnd.lowerBound]
+        XCTAssertTrue(wake.contains("AutoConfirmSaveTimeDismissalRecheck("),
+                      "the wake-boundary path must mint a save-time recheck identity")
+        XCTAssertTrue(wake.contains("autoConfirmDismissalRecheck: dismissalRecheck"),
+                      "the wake-boundary path must thread its recheck into the persist")
+
+        let saveStart = try XCTUnwrap(source.range(of: "private func saveConfirmedSleeps("))
+        let saveEnd = try XCTUnwrap(source.range(of: "private func writeDutyCycleSleepWindow(from",
+                                                 range: saveStart.upperBound..<source.endIndex))
+        let save = source[saveStart.lowerBound..<saveEnd.lowerBound]
+        XCTAssertTrue(save.contains("AtriaDismissedSleepCandidateStore.load()"),
+                      "the re-check must read FRESH durable tombstones, not the init-time array")
+        XCTAssertTrue(save.contains("saveTimeDismissalSuppressedSleepIDs("),
+                      "the re-check must select through the canonical retraction predicate")
+        XCTAssertTrue(save.contains("records: settledSleeps"),
+                      "the write must consume the filtered set")
+        XCTAssertFalse(save.contains("records: preparation.settledSleeps"),
+                       "the unfiltered prepared set must never reach the writer directly")
     }
 }
