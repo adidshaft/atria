@@ -3765,6 +3765,21 @@ enum AtriaVitalsStressTimelineCopy {
     // the accessibility label below, not repeated across the viewport.
     static let gapNote = "5-min estimates · gaps are missing data"
     static let accessibilityLabel = "Physiological stress timeline, scale 0 through 3. Calm is 0 to 1, Moderate is 1 to 2, and High is 2 to 3. HR-only estimates are lower confidence. Collection gaps remain blank. Pinch to zoom between 12 and 4 hours."
+
+    /// The Sleep-band sentence joins the label only while the timeline
+    /// actually renders confirmed-sleep minutes — same gating as the visible
+    /// legend (2026-08-20).
+    static func accessibilityLabel(containsSleep: Bool) -> String {
+        guard containsSleep else { return accessibilityLabel }
+        return "\(accessibilityLabel) \(AtriaStressMinuteBand.accessibilityDisclosure)"
+    }
+
+    /// The scale row under the live timeline, mirrored for accessibility.
+    static func scaleAccessibilityLabel(containsSleep: Bool) -> String {
+        let base = "Physiological stress scale: Calm from 0 to 1, Moderate from 1 to 2, High from 2 to 3"
+        guard containsSleep else { return base }
+        return "\(base). \(AtriaStressMinuteBand.accessibilityDisclosure)"
+    }
 }
 
 /// One top-level monitoring surface keeps the two live signals on the same
@@ -3918,12 +3933,23 @@ private struct AtriaVitalsLiveSignalCard: View {
             }
 
             if projection.presentation == .physiologicalStress {
+                // Legend gating (2026-08-20): the Sleep entry joins the scale
+                // row only while confirmed-sleep minutes are actually rendered
+                // in the timeline window.
+                let containsSleep = AtriaStressMinuteBand.containsSleepMinutes(
+                    projection.stressPoints.map(\.reading)
+                )
                 HStack(spacing: 0) {
                     stressScaleItem("0–1", "Calm", tint: Metrics.electricGreen)
                     stressScaleItem("1–2", "Moderate", tint: Metrics.electricYellow)
                     stressScaleItem("2–3", "High", tint: Metrics.electricRed)
+                    if containsSleep {
+                        stressSleepScaleItem
+                    }
                 }
-                .accessibilityLabel("Physiological stress scale: Calm from 0 to 1, Moderate from 1 to 2, High from 2 to 3")
+                .accessibilityLabel(AtriaVitalsStressTimelineCopy.scaleAccessibilityLabel(
+                    containsSleep: containsSleep
+                ))
             }
 
             // A gap note is valuable beside a real timeline, but repeats the
@@ -3957,6 +3983,20 @@ private struct AtriaVitalsLiveSignalCard: View {
                 .font(.caption.weight(.bold).monospacedDigit())
                 .foregroundStyle(tint)
             Text(label)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// Not a score range: the Sleep band marks confirmed-sleep minutes, so its
+    /// legend slot carries the sleep glyph where the zone items show 0–1 etc.
+    private var stressSleepScaleItem: some View {
+        VStack(spacing: 2) {
+            Image(systemName: "moon.zzz.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(Metrics.electricSleep)
+            Text("Sleep")
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.secondary)
         }
@@ -4182,7 +4222,10 @@ private struct AtriaVitalsStressTimelineChart: View {
                     yStart: .value("Sleep floor", 0),
                     yEnd: .value("Sleep ceiling", 3)
                 )
-                .foregroundStyle(Color.indigo.opacity(0.09))
+                // The dedicated Sleep tint, not a stress zone color — these
+                // minutes are confirmed sleep, and their sleeping HR rises are
+                // not waking stress (2026-08-20).
+                .foregroundStyle(Metrics.electricSleep.opacity(0.14))
             }
 
             ForEach(AtriaStressContextInterval.intervals(from: points.map(\.reading)) {
@@ -4315,7 +4358,9 @@ private struct AtriaVitalsStressTimelineChart: View {
                 }
             }
         }
-        .accessibilityLabel(AtriaVitalsStressTimelineCopy.accessibilityLabel)
+        .accessibilityLabel(AtriaVitalsStressTimelineCopy.accessibilityLabel(
+            containsSleep: AtriaStressMinuteBand.containsSleepMinutes(points.map(\.reading))
+        ))
         .accessibilityHint("Drag across the chart to inspect time, score, heart rate, HRV availability, motion context, and confidence")
     }
 
@@ -4339,7 +4384,9 @@ private struct AtriaVitalsStressTimelineChart: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(reading.date.formatted(date: .omitted, time: .shortened))
                 .font(.caption2.weight(.semibold))
-            Text("\(reading.score.formatted(.number.precision(.fractionLength(2)))) · \(AtriaPhysiologicalStressModel.Zone.resolve(score: reading.score).rawValue)")
+            // Confirmed-sleep minutes say "Sleep" here, never a zone word; the
+            // numeric score stays visible either way.
+            Text(AtriaStressMinuteBand.scoreLine(reading))
                 .font(.caption.monospacedDigit().weight(.bold))
             Text(reading.heartRate.map { "HR \(Int($0.rounded())) bpm" }
                 ?? "HR unavailable")
@@ -4352,7 +4399,7 @@ private struct AtriaVitalsStressTimelineChart: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9))
         .accessibilityElement(children: .combine)
         .accessibilityValue(Text(
-            "\(reading.rmssd.map { "RMSSD \($0.formatted(.number.precision(.fractionLength(1)))) milliseconds" } ?? "HR-only estimate") · \(reading.motionContext.displayName) · \(reading.confidence.displayName) confidence"
+            "\(reading.sleepContext == .asleep ? "Sleep · " : "")\(reading.rmssd.map { "RMSSD \($0.formatted(.number.precision(.fractionLength(1)))) milliseconds" } ?? "HR-only estimate") · \(reading.motionContext.displayName) · \(reading.confidence.displayName) confidence"
         ))
     }
 }

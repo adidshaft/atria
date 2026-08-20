@@ -306,6 +306,65 @@ struct AtriaStressContextInterval: Identifiable, Equatable {
     }
 }
 
+/// Pure visual classification for one rendered stress minute (2026-08-20):
+/// a minute whose stored fact carries `sleepContext == .asleep` renders as a
+/// dedicated Sleep band (`Metrics.electricSleep`) instead of a Calm / Moderate
+/// / High zone color, because sleeping REM heart-rate rises are not waking
+/// stress. Presentation only — the score is never altered or hidden, so every
+/// score-derived aggregate (elevated windows, zone medians, distribution
+/// fractions) keeps counting these minutes.
+enum AtriaStressMinuteBand: Equatable {
+    case sleep
+    case zone(AtriaPhysiologicalStressModel.Zone)
+
+    static func resolve(sleepContext: AtriaPhysiologicalStressModel.SleepContext,
+                        score: Double) -> Self {
+        sleepContext == .asleep
+            ? .sleep
+            : .zone(.resolve(score: score))
+    }
+
+    static func resolve(_ reading: AtriaStressDetailReading) -> Self {
+        resolve(sleepContext: reading.sleepContext, score: reading.score)
+    }
+
+    /// The word beside the score in the drag-inspection cards, and what
+    /// accessibility reads for the inspected minute.
+    var displayName: String {
+        switch self {
+        case .sleep: return "Sleep"
+        case .zone(let zone): return zone.rawValue
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .sleep: return Metrics.electricSleep
+        case .zone(.calm): return Metrics.electricGreen
+        case .zone(.moderate): return Metrics.electricYellow
+        case .zone(.high): return Metrics.electricRed
+        }
+    }
+
+    /// Shared inspection copy: "1.40 · Moderate", "2.37 · Sleep". The numeric
+    /// score always renders — sleep changes the classification word, never the
+    /// value.
+    static func scoreLine(_ reading: AtriaStressDetailReading) -> String {
+        "\(reading.score.formatted(.number.precision(.fractionLength(2)))) · \(resolve(reading).displayName)"
+    }
+
+    /// Legend gating: a Sleep legend entry belongs on a stress timeline only
+    /// while at least one rendered minute actually is confirmed sleep.
+    static func containsSleepMinutes(_ readings: [AtriaStressDetailReading]) -> Bool {
+        readings.contains { $0.sleepContext == .asleep }
+    }
+
+    /// Appended to a timeline's accessibility label only when a Sleep band is
+    /// actually rendered — mirroring the visible legend gating.
+    static let accessibilityDisclosure =
+        "Confirmed sleep is shaded as a Sleep band, not a stress zone."
+}
+
 /// Measured-only elevated-stress evidence for the visible timeline. Atria
 /// integrates only adjacent readings with a plausible 30-second history
 /// cadence; gaps, isolated peaks, and short sparse runs never become windows.
@@ -669,6 +728,16 @@ struct AtriaStressDetailView: View {
                 // Full-bleed plot inside the card (2026-08-05 width audit).
                 .padding(.horizontal, -16)
 
+                // The Sleep legend appears only while sleep minutes are
+                // actually in the rendered window — a permanent entry would
+                // advertise a band most days never draw.
+                if selectedTimelineMetric == .stress,
+                   AtriaStressMinuteBand.containsSleepMinutes(
+                        projection.stressPoints.map(\.reading)
+                   ) {
+                    sleepBandLegend
+                }
+
             case .cardiacArousal:
                 Text("HR-only estimate · lower confidence")
                     .font(.caption)
@@ -688,6 +757,21 @@ struct AtriaStressDetailView: View {
         }
         .padding(16)
         .atriaCard(cornerRadius: 22, emphasis: .strong)
+    }
+
+    /// Legend for the confirmed-sleep band. Rendered only when the visible
+    /// window actually contains sleep minutes (gated at the call site).
+    private var sleepBandLegend: some View {
+        Label {
+            Text("Sleep · confirmed sleep")
+        } icon: {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(Metrics.electricSleep.opacity(0.5))
+                .frame(width: 14, height: 8)
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .accessibilityLabel(AtriaStressMinuteBand.accessibilityDisclosure)
     }
 
     private var interventionCard: some View {
@@ -1355,7 +1439,10 @@ private struct AtriaStressTimelineChart: View, Equatable {
                     yStart: .value("Sleep floor", 0),
                     yEnd: .value("Sleep ceiling", 3)
                 )
-                .foregroundStyle(Color.indigo.opacity(0.09))
+                // The dedicated Sleep tint, not a stress zone color — these
+                // minutes are confirmed sleep, and their sleeping HR rises are
+                // not waking stress (2026-08-20).
+                .foregroundStyle(Metrics.electricSleep.opacity(0.14))
             }
 
             ForEach(AtriaStressContextInterval.intervals(from: points.map(\.reading)) {
@@ -1482,7 +1569,9 @@ private struct AtriaStressTimelineChart: View, Equatable {
                     )
             }
         }
-        .accessibilityLabel(Self.timelineAccessibilityLabel)
+        .accessibilityLabel(Self.timelineAccessibilityLabel(
+            containsSleep: AtriaStressMinuteBand.containsSleepMinutes(points.map(\.reading))
+        ))
         .accessibilityHint("Drag across the chart to inspect time, score, heart rate, HRV, motion context, and confidence")
     }
 
@@ -1502,7 +1591,9 @@ private struct AtriaStressTimelineChart: View, Equatable {
         VStack(alignment: .leading, spacing: 2) {
             Text(reading.date.formatted(date: .omitted, time: .shortened))
                 .font(.caption2.weight(.semibold))
-            Text("\(reading.score.formatted(.number.precision(.fractionLength(2)))) · \(AtriaPhysiologicalStressModel.Zone.resolve(score: reading.score).rawValue)")
+            // Confirmed-sleep minutes say "Sleep" here, never a zone word; the
+            // numeric score stays visible either way.
+            Text(AtriaStressMinuteBand.scoreLine(reading))
                 .font(.caption.monospacedDigit().weight(.bold))
             Text(reading.heartRate.map { "HR \(Int($0.rounded())) bpm" } ?? "HR unavailable")
             Text(reading.rmssd.map { "RMSSD \($0.formatted(.number.precision(.fractionLength(1)))) ms" }
@@ -1518,8 +1609,10 @@ private struct AtriaStressTimelineChart: View, Equatable {
         .accessibilityElement(children: .combine)
     }
 
-    private static var timelineAccessibilityLabel: String {
-        "Physiological stress timeline, scale 0 through 3. Calm is 0 to 1, Moderate is 1 to 2, and High is 2 to 3. Gaps are not connected. Pinch to zoom between 24 and 4 hours."
+    private static func timelineAccessibilityLabel(containsSleep: Bool) -> String {
+        let base = "Physiological stress timeline, scale 0 through 3. Calm is 0 to 1, Moderate is 1 to 2, and High is 2 to 3. Gaps are not connected. Pinch to zoom between 24 and 4 hours."
+        guard containsSleep else { return base }
+        return "\(base) \(AtriaStressMinuteBand.accessibilityDisclosure)"
     }
 }
 
@@ -1609,6 +1702,18 @@ struct AtriaCardiacArousalTimelineChart: View, Equatable {
                           yEnd: .value("High ceiling", 3))
                 .foregroundStyle(Metrics.electricRed.opacity(0.045))
 
+            ForEach(AtriaStressContextInterval.intervals(from: points.map(\.reading)) {
+                $0.sleepContext == .asleep
+            }) { interval in
+                RectangleMark(
+                    xStart: .value("Sleep start", interval.start),
+                    xEnd: .value("Sleep end", interval.end),
+                    yStart: .value("Sleep floor", 0),
+                    yEnd: .value("Sleep ceiling", 3)
+                )
+                .foregroundStyle(Metrics.electricSleep.opacity(0.14))
+            }
+
             ForEach(points) { point in
                 LineMark(x: .value("Time", point.reading.date),
                          y: .value("Physiological stress", point.reading.score),
@@ -1654,7 +1759,11 @@ struct AtriaCardiacArousalTimelineChart: View, Equatable {
     }
 
     private var accessibilitySummary: String {
-        "Physiological stress timeline with \(points.count) lower-confidence HR-only estimates on a zero through three scale. Missing telemetry remains a gap."
+        let base = "Physiological stress timeline with \(points.count) lower-confidence HR-only estimates on a zero through three scale. Missing telemetry remains a gap."
+        guard AtriaStressMinuteBand.containsSleepMinutes(points.map(\.reading)) else {
+            return base
+        }
+        return "\(base) \(AtriaStressMinuteBand.accessibilityDisclosure)"
     }
 }
 

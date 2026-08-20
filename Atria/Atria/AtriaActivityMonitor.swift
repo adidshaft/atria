@@ -4951,6 +4951,22 @@ struct AtriaWorkoutStressTraceChart: View {
                     .lineStyle(StrokeStyle(lineWidth: 0.75))
                     .foregroundStyle(.secondary.opacity(0.18))
 
+                // Confirmed-sleep minutes inside this trace (rare, but a
+                // reviewed session can overlap a later-confirmed sleep) shade
+                // as the dedicated Sleep band, never a stress zone
+                // (2026-08-20).
+                ForEach(AtriaStressContextInterval.intervals(from: points.map(\.reading)) {
+                    $0.sleepContext == .asleep
+                }) { interval in
+                    RectangleMark(
+                        xStart: .value("Sleep start", interval.start),
+                        xEnd: .value("Sleep end", interval.end),
+                        yStart: .value("Sleep floor", 0),
+                        yEnd: .value("Sleep ceiling", 3)
+                    )
+                    .foregroundStyle(Metrics.electricSleep.opacity(0.14))
+                }
+
                 ForEach(points) { point in
                     AreaMark(x: .value("Time", point.reading.date),
                              y: .value("Stress", point.reading.score),
@@ -5015,8 +5031,11 @@ struct AtriaWorkoutStressTraceChart: View {
         let gapText = runCount > 1
             ? " \(runCount) measured runs; gaps contain no recorded stress score."
             : ""
+        let sleepText = AtriaStressMinuteBand.containsSleepMinutes(points.map(\.reading))
+            ? " \(AtriaStressMinuteBand.accessibilityDisclosure)"
+            : ""
         return String(format: "%d measured stress readings during this workout, %.1f to %.1f on a 0 to 3 scale.",
-                      summary.readingCount, low, high) + gapText
+                      summary.readingCount, low, high) + gapText + sleepText
     }
 }
 
