@@ -319,6 +319,16 @@ struct AtriaSleepHypnogramCard: View, Equatable {
     /// states can say what will unlock stages instead of only what is
     /// missing. nil keeps the generic (still honest) copy.
     let motionAvailability: AtriaStrapMotionAvailability?
+    /// P8 (2026-08-20 design 2.1): the night's SAVED sleep total, powering the
+    /// coarse sleep/wake totals on the generic estimate window. This is the
+    /// same duration authority every other surface displays — never a new
+    /// number, never stage-derived on estimate nights (the duration-credit
+    /// fence is upstream and untouched). nil keeps the pre-P8 capsule.
+    let sleepTotalSeconds: TimeInterval?
+    /// P8: coarse totals render only for CONFIRMED nights — candidates keep
+    /// the generic capsule so an unconfirmed window never gains total-style
+    /// authority.
+    let isConfirmedNight: Bool
 
     init(segments: [SleepStageSegment],
          start: Date?,
@@ -328,7 +338,9 @@ struct AtriaSleepHypnogramCard: View, Equatable {
          eventTimeZoneIdentifier: String? = nil,
          isManualEntry: Bool = false,
          measuredHeartRate: Int? = nil,
-         motionAvailability: AtriaStrapMotionAvailability? = nil) {
+         motionAvailability: AtriaStrapMotionAvailability? = nil,
+         sleepTotalSeconds: TimeInterval? = nil,
+         isConfirmedNight: Bool = false) {
         // Truth boundary (updated 2026-08-12): `.hrOnlyEstimate` segments may
         // render, but only as the labeled estimate timeline — the body pairs
         // any bars for that evidence with `AtriaSleepStageEstimateLabel`.
@@ -343,6 +355,8 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         self.isManualEntry = isManualEntry
         self.measuredHeartRate = measuredHeartRate
         self.motionAvailability = motionAvailability
+        self.sleepTotalSeconds = sleepTotalSeconds
+        self.isConfirmedNight = isConfirmedNight
     }
 
     /// The canonical feed: `displayStageSegments` is already honesty-gated
@@ -377,7 +391,9 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                   eventTimeZoneIdentifier: night.eventTimeZoneIdentifier,
                   isManualEntry: night.isManualEntry,
                   measuredHeartRate: night.restingHR,
-                  motionAvailability: motionAvailability)
+                  motionAvailability: motionAvailability,
+                  sleepTotalSeconds: night.duration,
+                  isConfirmedNight: night.confirmed)
     }
 
     static func displayState(segments: [SleepStageSegment],
@@ -460,6 +476,16 @@ struct AtriaSleepHypnogramCard: View, Equatable {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    // P8: the why line renders only under the mandatory
+                    // estimate label above, and only when the transport
+                    // evidence adds truth the caption doesn't already state.
+                    if let whyLine = Self.timelineWhyEstimateLine(
+                        motionAvailability: motionAvailability) {
+                        Text(whyLine)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             case .estimate:
                 if let start, let end {
@@ -500,6 +526,86 @@ struct AtriaSleepHypnogramCard: View, Equatable {
         default:
             return base + " Stages validate after the strap syncs motion evidence for this night; if motion isn't available, Atria may show a labeled HR-only estimate after its next stage pass."
         }
+    }
+
+    // MARK: - P8 coarse fallback + "why tonight is an estimate" (2026-08-20)
+
+    /// Coarse sleep/wake accounting for a confirmed HR-only night whose stage
+    /// output stays withheld (the sub-0.60 fallback). Both numbers come from
+    /// the night's OBSERVED record only: asleep is the saved sleep total (the
+    /// same duration authority every surface displays) and the second figure
+    /// is the saved window's remainder — honestly labeled "awake or
+    /// unmeasured" because HR alone cannot split real wake from coverage
+    /// gaps. Never derived from stage segments; nothing is interpolated.
+    struct CoarseNightTotals: Equatable {
+        let asleepMinutes: Int
+        let awakeOrUnmeasuredMinutes: Int
+    }
+
+    static let coarseAsleepTotalLabel = "Asleep"
+    static let coarseAwakeTotalLabel = "Awake or unmeasured"
+
+    static func coarseNightTotals(windowStart: Date,
+                                  windowEnd: Date,
+                                  sleepDuration: TimeInterval?) -> CoarseNightTotals? {
+        guard let sleepDuration, sleepDuration > 0 else { return nil }
+        let span = windowEnd.timeIntervalSince(windowStart)
+        guard span > 0 else { return nil }
+        // The saved total is displayed verbatim; only the remainder is
+        // clamped so contradictory data fails toward the saved number
+        // instead of minting negative wake time.
+        return CoarseNightTotals(
+            asleepMinutes: Int((sleepDuration / 60).rounded()),
+            awakeOrUnmeasuredMinutes: Int((max(0, span - sleepDuration) / 60).rounded())
+        )
+    }
+
+    /// Coarse-total text: a real zero reads "0m" — an honest amount, never
+    /// the unknown "--" the shared formatter uses for missing data.
+    static func coarseTotalText(minutes: Int) -> String {
+        minutes > 0 ? AtriaSleepHypnogramPresentation.durationText(minutes: minutes) : "0m"
+    }
+
+    /// The "why tonight is an estimate" line (P8; research-brief §2 Oura
+    /// pattern): one sentence naming the actual cause, keyed on the same
+    /// strap-motion transport evidence as `unavailableStagesDetail` — never a
+    /// promise the link cannot deliver.
+    static func whyEstimateLine(motionAvailability: AtriaStrapMotionAvailability?) -> String {
+        switch motionAvailability {
+        case .catchingUp:
+            return "Strap was in HR-only mode — motion data pending; a catch-up sync can still upgrade this night."
+        case .unavailableInCurrentTransport:
+            return "Strap was in HR-only mode — this link cannot sync motion right now, so this night stays an estimate."
+        default:
+            return "Motion evidence for this night hasn't synced, so Atria estimated from heart rate alone."
+        }
+    }
+
+    /// The why line for the LABELED estimate timeline. There the mandatory
+    /// `AtriaSleepStageEstimateLabel` caption already states the generic why
+    /// ("Motion not available — …"), so this adds a line only when the
+    /// transport evidence carries extra truth the caption lacks; nil means
+    /// the caption stands alone (never duplicated).
+    static func timelineWhyEstimateLine(
+        motionAvailability: AtriaStrapMotionAvailability?
+    ) -> String? {
+        switch motionAvailability {
+        case .catchingUp, .unavailableInCurrentTransport:
+            return whyEstimateLine(motionAvailability: motionAvailability)
+        default:
+            return nil
+        }
+    }
+
+    /// Single gate for the coarse totals: only the generic `.estimate` state
+    /// (no reconciled stage timeline), only confirmed nights, only a real
+    /// saved total inside a real window. `.estimatedTimeline` nights never
+    /// show totals — their legend already carries real stage minutes.
+    var coarseTotals: CoarseNightTotals? {
+        guard state == .estimate, isConfirmedNight, let start, let end else { return nil }
+        return Self.coarseNightTotals(windowStart: start,
+                                      windowEnd: end,
+                                      sleepDuration: sleepTotalSeconds)
     }
 
     // MARK: - Estimate + timeline
@@ -550,11 +656,54 @@ struct AtriaSleepHypnogramCard: View, Equatable {
             .font(.system(size: 10, weight: .medium).monospacedDigit())
             .foregroundStyle(.tertiary)
 
+            // P8 sub-0.60 coarse fallback: a confirmed HR-only night whose
+            // stage output stays withheld still gets honest sleep/wake
+            // TOTALS from the saved record — never fabricated stages.
+            if let totals = coarseTotals {
+                HStack(spacing: AtriaDesignTokens.Spacing.sm) {
+                    coarseTotalTile(label: Self.coarseAsleepTotalLabel,
+                                    minutes: totals.asleepMinutes,
+                                    color: Metrics.electricSleep)
+                    coarseTotalTile(label: Self.coarseAwakeTotalLabel,
+                                    minutes: totals.awakeOrUnmeasuredMinutes,
+                                    color: AtriaSleepStagePalette.color(for: .awake))
+                }
+            }
+
             Text(estimateDetail)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            // P8 "why tonight is an estimate": always present in this
+            // estimate-titled state, naming the actual cause.
+            Text(Self.whyEstimateLine(motionAvailability: motionAvailability))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// One coarse-total tile, styled like the legend tiles so the fallback
+    /// reads as the same card family — but only two totals, never stages.
+    private func coarseTotalTile(label: String, minutes: Int, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(Self.coarseTotalText(minutes: minutes))
+                .font(.system(size: 15, weight: .bold, design: .rounded).monospacedDigit())
+                .foregroundStyle(color)
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
+            Text(label)
+                .font(.system(size: 9.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .background(color.opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private var estimateDetail: String {
@@ -632,11 +781,22 @@ struct AtriaSleepHypnogramCard: View, Equatable {
             let stages = legend
                 .map { "\($0.stage.label) \(AtriaSleepHypnogramPresentation.durationText(minutes: $0.minutes))" }
                 .joined(separator: ", ")
-            return "\(AtriaSleepStageEstimateLabel.title). \(AtriaSleepStageEstimateLabel.caption) \(provenanceText). \(stages)."
+            // P8: VoiceOver reads the same transport why line as the visual
+            // copy whenever one renders.
+            let whyLine = Self.timelineWhyEstimateLine(motionAvailability: motionAvailability)
+                .map { " \($0)" } ?? ""
+            return "\(AtriaSleepStageEstimateLabel.title). \(AtriaSleepStageEstimateLabel.caption)\(whyLine) \(provenanceText). \(stages)."
         case .estimate:
             let heartRate = Self.measuredHeartRateText(measuredHeartRate)
                 .map { ". \($0)" } ?? ""
-            return "Estimated asleep window. \(provenanceText)\(heartRate). Awake, REM, Light, and Deep are not shown because heart rate alone cannot distinguish sleep stages."
+            // P8: the coarse totals and the why line are spoken exactly when
+            // they are drawn.
+            let totalsText = coarseTotals.map {
+                " \(Self.coarseAsleepTotalLabel) \(Self.coarseTotalText(minutes: $0.asleepMinutes))."
+                    + " \(Self.coarseAwakeTotalLabel) \(Self.coarseTotalText(minutes: $0.awakeOrUnmeasuredMinutes))."
+            } ?? ""
+            return "Estimated asleep window. \(provenanceText)\(heartRate).\(totalsText) Awake, REM, Light, and Deep are not shown because heart rate alone cannot distinguish sleep stages. "
+                + Self.whyEstimateLine(motionAvailability: motionAvailability)
         case .needsMotion:
             // ITEM-3 2026-08-15: VoiceOver reads the same unlock story as the
             // visual copy so the two can never diverge.
