@@ -5011,11 +5011,30 @@ struct AtriaHomeView: View {
         /// gap while recent history is fully synced. Returns nil when the frontier
         /// is missing or genuinely behind — never fabricating a "synced" claim.
         private func syncedStatusIfCurrent(now: Date) -> Status? {
-            guard let frontier = UserDefaults.standard.object(
-                forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
-            ) as? Double, frontier > 0 else { return nil }
-            let behind = now.timeIntervalSince1970 - frontier
-            guard behind >= 0, behind <= Self.syncedFrontierWindow else { return nil }
+            let defaults = UserDefaults.standard
+            let frontierCurrent: Bool = {
+                guard let frontier = defaults.object(
+                    forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+                ) as? Double, frontier > 0 else { return false }
+                let behind = now.timeIntervalSince1970 - frontier
+                return behind >= 0 && behind <= Self.syncedFrontierWindow
+            }()
+            // Second honest path: the strap's own recent pending-records
+            // report says the ring buffer is caught up. Between catch-up
+            // slices the drained frontier ages past the 5-second window even
+            // though nothing material is left on the strap, so keying only on
+            // the frontier kept the banner from ever settling on "Synced".
+            let strapCaughtUp = AtriaHomeRecoverySyncPresentation
+                .strapReportsCaughtUp(
+                    flushDebtLevelRaw: defaults.string(
+                        forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtLevel
+                    ),
+                    flushDebtObservedAtUnix: defaults.object(
+                        forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtObservedAt
+                    ) as? Double,
+                    nowUnix: now.timeIntervalSince1970
+                )
+            guard frontierCurrent || strapCaughtUp else { return nil }
             // A terminally parked older interval is excluded from "Synced":
             // the frontier being current is true, but the claim must carry
             // the unavailable-interval truth beside it.
@@ -5919,6 +5938,29 @@ enum AtriaHomeRecoverySyncPresentation {
         let title: String
         let compactTitle: String
         let accessibilityLabel: String
+    }
+
+    /// The strap itself recently reported a caught-up ring buffer
+    /// (`pending_records` inside the ~2-minute caught-up band from a 0x22
+    /// getDataRange response). That is the honest "nothing material left to
+    /// sync" signal even while the drained frontier sits one slice-cadence
+    /// behind now; keyed only on the 5-second frontier window, the banner
+    /// could never read "Synced" between catch-up slices on a healthy link.
+    /// Staleness fails closed: an old observation (link lost, app suspended)
+    /// never fabricates a synced claim.
+    static func strapReportsCaughtUp(
+        flushDebtLevelRaw: String?,
+        flushDebtObservedAtUnix: Double?,
+        nowUnix: Double,
+        freshnessWindow: TimeInterval = 120
+    ) -> Bool {
+        guard flushDebtLevelRaw
+                == AtriaBLEManager.FlushDebtLevel.caughtUp.rawValue,
+              let observedAt = flushDebtObservedAtUnix,
+              observedAt.isFinite,
+              observedAt > 0 else { return false }
+        let age = nowUnix - observedAt
+        return age >= 0 && age <= freshnessWindow
     }
 
     static func copy(savedRecords: Int,
