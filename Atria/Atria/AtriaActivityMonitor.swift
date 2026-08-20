@@ -5229,45 +5229,22 @@ struct AtriaSleepActivityReviewSheet: View {
         }
     }
 
+    /// P5 (2026-08-20): the per-stage row strip replaces the P4 percent bars.
+    /// Same shares percent basis (the `stageRows` legend above gates the
+    /// mount), but the pixels now show WHERE each stage occurred on the real
+    /// clock — `AtriaSleepStageRowStrip` renders one occurrence lane per
+    /// display stage from the same pure span math as the hypnogram, and
+    /// co-renders the mandatory estimate title on HR-only estimate nights.
+    @ViewBuilder
     private var stageBreakdown: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // The estimate marker stays attached to these per-stage bars —
-            // the labeled hypnogram card above is not enough on its own.
-            Text(night.isEstimatedStageDisplay ? "STAGES · HR-ONLY ESTIMATE" : "STAGES")
-                .font(.caption2.weight(.black))
-                .foregroundStyle(.tertiary)
-                .kerning(0.8)
-            ForEach(stageRows, id: \.stage) { row in
-                // Bar width mirrors the displayed percent exactly — the
-                // number and the pixels share the one legend basis.
-                let fraction = Double(row.percent) / 100
-                HStack(spacing: 10) {
-                    Text(row.stage.label)
-                        .font(.subheadline.weight(.semibold))
-                        .frame(width: 56, alignment: .leading)
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule()
-                                .fill(AtriaSleepStagePalette.color(for: row.stage).opacity(0.18))
-                            Capsule()
-                                .fill(AtriaSleepStagePalette.color(for: row.stage))
-                                .frame(width: max(4, geo.size.width * fraction))
-                        }
-                    }
-                    .frame(height: 8)
-                    Text("\(row.percent)%")
-                        .font(.caption.weight(.bold).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 40, alignment: .trailing)
-                    Text(Self.hoursMinutes(TimeInterval(row.minutes) * 60))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 56, alignment: .trailing)
-                }
-            }
+        if let start = night.start, let end = night.end, end > start {
+            AtriaSleepStageRowStrip(segments: night.displayStageSegments,
+                                    windowStart: start,
+                                    windowEnd: end,
+                                    isEstimated: night.isEstimatedStageDisplay,
+                                    confidenceTier: night.estimateConfidenceTier,
+                                    eventTimeZoneIdentifier: night.eventTimeZoneIdentifier)
         }
-        .padding(12)
-        .atriaInsetCard(tint: Metrics.electricSleep)
     }
 
     private var nightVitals: some View {

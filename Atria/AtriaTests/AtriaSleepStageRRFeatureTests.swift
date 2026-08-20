@@ -5,10 +5,12 @@ import XCTest
 ///
 /// P0 is the parity fence: the RR parameters are defaulted, and with
 /// `rrSamples: []` — or with any RR input at all, until the decision-rule
-/// phase deliberately lands — the engine's output is ELEMENT-IDENTICAL to
-/// the pre-RR engine. The expected timelines below were captured from the
-/// unmodified engine on 2026-08-20 and are the regression fence for the
-/// whole track.
+/// phase deliberately lands — the engine's STAGED output (every boundary and
+/// stage) is ELEMENT-IDENTICAL to the pre-RR engine. The expected timelines
+/// below were captured from the unmodified engine on 2026-08-20 and are the
+/// regression fence for the whole track. (P2, design 1.2, deliberately added
+/// exactly one id-level difference: estimate-lane coverage ≥ 0.90 mints the
+/// strong-RR estimate prefix — pinned in AtriaSleepStageRR90TierMintTests.)
 ///
 /// P1 pins the plumbing rules: qualified-provenance gather (2A37 + verified
 /// WHOOP4 historical V24 only, 300–2000 ms clamp), per-epoch RR validity
@@ -170,7 +172,12 @@ final class AtriaSleepStageRRFeatureTests: XCTestCase {
     func testRRInputCannotChangeTheStagedTimelineWhileDecisionRulesAreUnwired() throws {
         // P1 computes RR features but stage() must not consume them yet: a
         // dense qualified tachogram and a claimed-perfect coverage fraction
-        // leave both lanes exactly on the pinned timelines.
+        // leave both lanes exactly on the pinned STAGED timelines — every
+        // boundary and stage identical. P2 (design 1.2) deliberately changed
+        // ONE thing about this fixture's estimate-lane output: coverage ≥ 0.90
+        // now mints the strong-RR estimate id prefix. The boundaries stay
+        // element-identical; the rr90 mint itself is pinned by
+        // AtriaSleepStageRR90TierMintTests.
         let samples = paritySamples()
         let denseRR = denseParityRR()
 
@@ -208,7 +215,8 @@ final class AtriaSleepStageRRFeatureTests: XCTestCase {
         )
         XCTAssertEqual(
             estimate,
-            expectedParitySegments(prefix: SleepStageSegment.hrEstimateIDPrefix)
+            expectedParitySegments(prefix: SleepStageSegment.hrEstimateStrongRRIDPrefix),
+            "coverage 1 ≥ 0.90 mints the strong-RR estimate prefix; boundaries stay pinned"
         )
     }
 
