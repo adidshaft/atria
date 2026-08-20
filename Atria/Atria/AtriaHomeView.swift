@@ -6050,6 +6050,12 @@ enum AtriaSyncProgressFooterPresentation {
     struct Footer: Equatable {
         let headline: String
         let detail: String
+        /// Full-sentence status for VoiceOver: keeps the backlog wording and
+        /// the reassurance clauses ("live HR current", "paused · resumes in
+        /// the background") that the numbers-first visible detail no longer
+        /// carries — relocated, never deleted. The state icon still carries
+        /// active/paused visually.
+        let accessibilityDetail: String
         let active: Bool
     }
 
@@ -6118,8 +6124,10 @@ enum AtriaSyncProgressFooterPresentation {
               drainedThroughUnix <= now.timeIntervalSince1970 else {
             // No trustworthy frontier yet — state only, never a made-up time.
             let detail = liveText + stateText
+            let capitalized = detail.prefix(1).uppercased() + detail.dropFirst()
             return Footer(headline: "Strap history backfill",
-                          detail: detail.prefix(1).uppercased() + detail.dropFirst(),
+                          detail: capitalized,
+                          accessibilityDetail: capitalized,
                           active: active)
         }
         let frontier = Date(timeIntervalSince1970: drainedThroughUnix)
@@ -6142,9 +6150,13 @@ enum AtriaSyncProgressFooterPresentation {
             dayText = " \(dayFormatter.string(from: frontier))"
         }
         let behind = now.timeIntervalSince(frontier)
+        let throughText = "\(timeFormatter.string(from: frontier))\(dayText)"
         return Footer(
-            headline: "Strap history through \(timeFormatter.string(from: frontier))\(dayText)",
-            detail: "\(behindText(behind)) history backlog · \(liveText)\(stateText)",
+            headline: "Strap history through \(throughText)",
+            // Numbers-first visible line; the reassurance clauses live in
+            // accessibilityDetail (and the icon still shows active/paused).
+            detail: "Through \(throughText) · \(behindText(behind)) behind",
+            accessibilityDetail: "\(behindText(behind)) history backlog · \(liveText)\(stateText)",
             active: active
         )
     }
@@ -6187,7 +6199,7 @@ private struct AtriaSyncProgressFooter: View {
                 .background(Color(uiColor: .secondarySystemBackground),
                             in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(footer.headline). \(footer.detail).")
+                .accessibilityLabel("\(footer.headline). \(footer.accessibilityDetail).")
             }
         }
         .onReceive(refresh) { now = $0 }
@@ -9163,10 +9175,14 @@ final class AtriaHomeModel {
                 return "Charge unavailable"
             }
             switch batteryChargeStatus {
+            // "Charge unavailable" stays visible — it is a provenance fact,
+            // not decoration. The charge states drop the redundant "Strap"
+            // prefix on strap-owned surfaces; the fuller wording survives in
+            // batteryChargeText / batteryAccessibilityChargeText.
             case .levelOnly: return "Charge unavailable"
-            case .charging: return "Strap charging"
-            case .notCharging: return "Strap not charging"
-            case .full: return "Strap full"
+            case .charging: return "Charging"
+            case .notCharging: return "Not charging"
+            case .full: return "Full"
             }
         }
         var batteryHeaderChargeText: String {
@@ -9321,19 +9337,21 @@ final class AtriaHomeModel {
             }
         }
         var strapStreamConnectionDetail: String {
+            // Per-state short forms; each keeps the honest state fact
+            // (arriving / too low / reduced / connected-but-silent / pending).
             switch strapStreamState {
             case .live:
-                return "Live heart rate is arriving"
+                return "HR arriving"
             case .lowBatteryShutoff:
-                return "Strap battery too low for live heart rate. Charge to resume."
+                return "Too low for live HR"
             case .lowBatteryReducedDetail:
-                return "Low-battery mode. Reduced detail until charged."
+                return "Reduced detail until charged"
             case .silentUnknown:
-                return "Strap connected, but live heart rate is not arriving"
+                return "Connected — no live HR"
             case .warming:
                 return "Waiting for live heart rate"
             case .unknown:
-                return hasRecentHeartRateSample ? "Live heart rate is arriving" : "Strap stream state pending"
+                return hasRecentHeartRateSample ? "HR arriving" : "State pending"
             }
         }
         var strapStreamConnectionSymbol: String {
@@ -13345,7 +13363,9 @@ enum AtriaTopStatusProjection {
                         ? "Permission"
                         : "Bluetooth recovering"
                 } else if activelyLinking {
-                    label = "Linking to \(input.displayDeviceName)"
+                    // "Linking…" — the device name shrank this compact chip to
+                    // 0.6-scale micro-text; the name lives on the Strap screen.
+                    label = "Linking…"
                 } else if reconnectAge != nil {
                     label = "Reconnecting…"
                 } else {
@@ -13363,7 +13383,9 @@ enum AtriaTopStatusProjection {
                 } else if !input.hasEverConnected {
                     label = "Disconnected"
                 } else if activelyLinking {
-                    label = "Linking to \(input.displayDeviceName)"
+                    // "Linking…" — the device name shrank this compact chip to
+                    // 0.6-scale micro-text; the name lives on the Strap screen.
+                    label = "Linking…"
                 } else {
                     label = "Reconnecting…"
                 }
@@ -13848,7 +13870,13 @@ private struct AtriaConnectionDiagnosis: Equatable {
     private static let pendingKnownReconnectActionAge: TimeInterval = 15
 
     let title: String
+    /// Full-sentence guidance. Never rendered as banner body copy — it stays
+    /// in the banner accessibilityLabel and the local-notification body, and
+    /// the "?" connection-guide sheet carries the expanded recovery steps for
+    /// the domains that offer it. Relocated, never deleted.
     let action: String
+    /// Terse on-banner imperative rendered in the visible action slot.
+    let imperative: String
     let systemImage: String
     let tint: Color
     let guidanceDomain: AtriaConnectionGuidanceDomain
@@ -13893,42 +13921,51 @@ private struct AtriaConnectionDiagnosis: Equatable {
             if live.bluetoothPermissionDenied {
                 return AtriaConnectionDiagnosis(title: "Bluetooth permission needed",
                                                 action: "Allow Bluetooth for Atria in Settings.",
+                                                imperative: "Allow Bluetooth in Settings",
                                                 systemImage: "hand.raised.fill",
                                                 tint: .red,
                                                 guidanceDomain: .bluetoothLink)
             }
             return AtriaConnectionDiagnosis(title: "Bluetooth is off",
                                             action: "Turn on Bluetooth in Settings.",
+                                            imperative: "Turn on Bluetooth",
                                             systemImage: "bolt.slash.fill",
                                             tint: .red,
                                             guidanceDomain: .bluetoothLink)
         case .connected where live.isLowBatteryLiveLimited:
             return AtriaConnectionDiagnosis(title: "Strap battery too low",
                                             action: "Charge your strap to resume live heart rate.",
+                                            imperative: "Charge your strap",
                                             systemImage: "battery.25percent",
                                             tint: Metrics.electricYellow,
                                             guidanceDomain: .strapPower)
         case .connected where needsContactCoach:
             return AtriaConnectionDiagnosis(title: "Fit check needed",
                                             action: "Tighten the strap fit so Atria can read pulse.",
+                                            imperative: "Tighten the strap",
                                             systemImage: "heart.slash",
                                             tint: .orange,
                                             guidanceDomain: .wearSignal)
         case _ where live.batteryLevel >= 0 && live.batteryLevel <= Self.lowBatteryThreshold && live.batteryRecentlyDropping && !live.batteryIsCharging:
             return AtriaConnectionDiagnosis(title: "Strap battery low",
                                             action: "Charge your strap before a workout or overnight wear.",
+                                            imperative: "Charge your strap",
                                             systemImage: "battery.25percent",
                                             tint: Metrics.electricYellow,
                                             guidanceDomain: .strapPower)
         case .connected where officialAppRiskActive && live.officialAppCoexistenceRisk == .suspected:
             return AtriaConnectionDiagnosis(title: "WHOOP may interrupt",
                                             action: "Close or uninstall WHOOP if readings fragment.",
+                                            imperative: "Close the WHOOP app",
                                             systemImage: "exclamationmark.triangle.fill",
                                             tint: .orange,
                                             guidanceDomain: .appCoexistence)
         case .connected where officialAppRiskActive:
             return AtriaConnectionDiagnosis(title: "WHOOP app watch",
                                             action: "Atria is streaming; close WHOOP if drops return.",
+                                            // Atria is streaming here, so the terse form keeps the
+                                            // conditional rather than ordering an unneeded close.
+                                            imperative: "Close WHOOP if drops return",
                                             systemImage: "app.connected.to.app.below.fill",
                                             tint: .orange,
                                             guidanceDomain: .appCoexistence)
@@ -13936,6 +13973,7 @@ private struct AtriaConnectionDiagnosis: Equatable {
             if officialAppRiskActive {
                 return AtriaConnectionDiagnosis(title: "WHOOP app may interfere",
                                                 action: "Keep the strap nearby and close WHOOP if it keeps reclaiming it.",
+                                                imperative: "Close the WHOOP app",
                                                 systemImage: "exclamationmark.triangle.fill",
                                                 tint: .orange,
                                                 guidanceDomain: .appCoexistence)
@@ -13943,6 +13981,7 @@ private struct AtriaConnectionDiagnosis: Equatable {
             if pendingKnownReconnectActive {
                 return AtriaConnectionDiagnosis(title: "Strap out of range",
                                                 action: "Atria is still reconnecting to your saved strap. Bring it closer or keep wearing it.",
+                                                imperative: "Bring your strap closer",
                                                 systemImage: "dot.radiowaves.left.and.right",
                                                 tint: .cyan,
                                                 guidanceDomain: .bluetoothLink)
@@ -13950,12 +13989,14 @@ private struct AtriaConnectionDiagnosis: Equatable {
             if stalePairingSuspected {
                 return AtriaConnectionDiagnosis(title: "Connection keeps dropping",
                                                 action: "Forget the strap in Bluetooth, then reconnect.",
+                                                imperative: "Re-pair in Bluetooth settings",
                                                 systemImage: "arrow.triangle.2.circlepath.circle.fill",
                                                 tint: .orange,
                                                 guidanceDomain: .bluetoothLink)
             }
             return AtriaConnectionDiagnosis(title: "Looking for your strap",
                                             action: "Bring your strap closer and keep it on your wrist.",
+                                            imperative: "Bring your strap closer",
                                             systemImage: "dot.radiowaves.left.and.right",
                                             tint: .cyan,
                                             guidanceDomain: .bluetoothLink)
@@ -13963,6 +14004,7 @@ private struct AtriaConnectionDiagnosis: Equatable {
             if officialAppRiskActive {
                 return AtriaConnectionDiagnosis(title: "WHOOP app may interfere",
                                                 action: "Close or uninstall WHOOP if it keeps reclaiming the strap.",
+                                                imperative: "Close the WHOOP app",
                                                 systemImage: "exclamationmark.triangle.fill",
                                                 tint: .orange,
                                                 guidanceDomain: .appCoexistence)
@@ -13970,6 +14012,7 @@ private struct AtriaConnectionDiagnosis: Equatable {
             if pendingKnownReconnectActive {
                 return AtriaConnectionDiagnosis(title: "Strap out of range",
                                                 action: "Atria is still waiting for your saved strap. Bring it closer or keep wearing it.",
+                                                imperative: "Bring your strap closer",
                                                 systemImage: "dot.radiowaves.left.and.right",
                                                 tint: .cyan,
                                                 guidanceDomain: .bluetoothLink)
@@ -13977,12 +14020,14 @@ private struct AtriaConnectionDiagnosis: Equatable {
             if stalePairingSuspected {
                 return AtriaConnectionDiagnosis(title: "Stale Bluetooth pairing",
                                                 action: "Forget the strap in Bluetooth, then reconnect.",
+                                                imperative: "Re-pair in Bluetooth settings",
                                                 systemImage: "arrow.triangle.2.circlepath.circle.fill",
                                                 tint: .orange,
                                                 guidanceDomain: .bluetoothLink)
             }
             return AtriaConnectionDiagnosis(title: "Strap disconnected",
                                             action: "Bring it closer. If it keeps failing, forget it in Bluetooth and reconnect.",
+                                            imperative: "Bring your strap closer",
                                             systemImage: "bolt.horizontal.circle",
                                             tint: .blue,
                                             guidanceDomain: .bluetoothLink)
@@ -14018,7 +14063,10 @@ private struct AtriaConnectionDiagnosisBanner: View, Equatable {
                     // extra line has no scrolling-performance cost.
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(diagnosis.action)
+                // Terse imperative on the banner; the full sentence stays in
+                // the combined accessibilityLabel below and in the "?"
+                // connection-guide sheet for the domains that offer it.
+                Text(diagnosis.imperative)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)

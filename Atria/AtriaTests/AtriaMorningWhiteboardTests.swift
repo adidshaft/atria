@@ -83,7 +83,10 @@ final class AtriaMorningWhiteboardTests: XCTestCase {
                                                           yesterdayStrain: 8.0,
                                                           yesterdayStrainIsPartial: false)
         let sleep = try XCTUnwrap(model.rows.first { $0.id == "sleep" })
-        XCTAssertEqual(sleep.sentence, "need unavailable for this legacy night")
+        // Declutter R22: the visible row is the short form; the legacy-night
+        // reason must survive in the spoken label — relocated, never deleted.
+        XCTAssertEqual(sleep.sentence, "need unavailable")
+        XCTAssertEqual(sleep.accessibilitySentence, "need unavailable for this legacy night")
         let yesterday = try XCTUnwrap(model.rows.first { $0.id == "yesterday" })
         XCTAssertEqual(yesterday.valuePhrase, "Strain 8.0",
                        "legacy rollup rows keep the display score — TRIMP is never rebuilt by inverting the curve")

@@ -18,6 +18,14 @@ import SwiftUI
 /// Honesty rule: `.saved` is reachable ONLY from a persisted confirmed sleep.
 /// No other input may promote a night to saved, because that would claim
 /// confirmation before the production gates passed.
+///
+/// Declutter R4 (2026-08-20): Today renders the settlement row only for the
+/// actionable states (`processing`/`reviewReady`). The terminal `.saved` title
+/// + freshness stamp are RELOCATED to the ring hero's accessibility summary
+/// (see `accessibilitySummary` in AtriaTodayScreen), and `waitingForData` is
+/// carried by the sleep chip's "Awaiting current sleep" detail — all four
+/// states stay modeled here so nothing about the truth changed, only where
+/// each state is said.
 enum AtriaSleepSettlementState: Equatable {
     /// Wake boundary crossed, inside the settlement window. Detected, not yet
     /// eligible for auto-confirmation.

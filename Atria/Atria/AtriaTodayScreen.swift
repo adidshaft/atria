@@ -1043,8 +1043,20 @@ struct AtriaTodayScreen: View {
         // its small chip is the lesser evil than an inconsistent, seemingly-empty
         // column. We still drop a word-for-word duplicate CAPTION of the center
         // (exact-match only), so a learning-state caption isn't shown twice.
-        if slotMatchesRingCenter(slot), metric.detail == centerState {
-            metric.suppressesDetail = true
+        if slotMatchesRingCenter(slot) {
+            if metric.detail == centerState {
+                metric.suppressesDetail = true
+            } else if slot == .sleep,
+                      sleepPerformancePercent != nil,
+                      metric.detail == sleepNeedDetailText(performance: sleepPerformancePercent) {
+                // Declutter R22 (C13): the center's "N% of need" caption and
+                // the chip's "of Xh Ym need" caption state the same
+                // percent-of-need fact in two grammars — the center wins when
+                // sleep is the center metric. `accessibilitySummary` reads the
+                // detail before suppression, so the hours-need form survives
+                // in the spoken summary.
+                metric.suppressesDetail = true
+            }
         }
         return metric
     }
@@ -1490,16 +1502,26 @@ struct AtriaTodayScreen: View {
     /// owns Recovery and sleep-need math. Keeping the two projections separate
     /// lets a first-night candidate show its measured duration immediately
     /// without silently promoting it into physiological truth.
-    /// Inputs for the wake-settlement row. Confirmed projections carry their
-    /// durable save timestamp so freshness describes the save, not the wake.
+    /// Inputs for the wake-settlement row.
+    /// Declutter R4: the row renders only in the actionable settling/review
+    /// states (an unconfirmed candidate). The terminal "Sleep window saved" +
+    /// freshness stamp are RELOCATED to `accessibilitySummary` below, not
+    /// deleted (the sleep detail sheet lives in AtriaOverviewSections, outside
+    /// this pass's files). `waitingForData` also stops rendering as a row: the
+    /// sleep chip's "Awaiting current sleep" detail already carries that state
+    /// on-surface all day.
+    @ViewBuilder
     private var sleepSettlementRow: some View {
-        let night = latestDisplaySleep
-        let isConfirmed = night?.confirmed == true
-        return AtriaTodaySleepSettlementRow(
-            confirmedSleepEnd: isConfirmed ? night?.end : nil,
-            confirmedSleepSavedAt: isConfirmed ? night?.savedAt : nil,
-            candidateEnd: isConfirmed ? nil : night?.end
-        )
+        // A dated candidate end is what makes the row's two surviving states
+        // (processing/reviewReady) reachable; without one the row could only
+        // re-say waitingForData, which the gate excludes.
+        if let night = latestDisplaySleep, !night.confirmed, let candidateEnd = night.end {
+            AtriaTodaySleepSettlementRow(
+                confirmedSleepEnd: nil,
+                confirmedSleepSavedAt: nil,
+                candidateEnd: candidateEnd
+            )
+        }
     }
 
     /// In-app stand-in for a morning journal nudge that the system could not
@@ -1737,7 +1759,10 @@ struct AtriaTodayScreen: View {
         } else if currentDaySleep != nil {
             detail = sleepNeedDetailText(performance: performance)
         } else if let prior = latestDisplaySleep {
-            detail = "Last cycle · \(prior.day.formatted(.dateTime.month(.abbreviated).day())) · \(prior.durationText)"
+            // Declutter R22: the date stays as the honesty anchor; the
+            // "Last cycle" qualifier is RELOCATED to `accessibilitySummary`
+            // (and the detail sheet's dated disclosure), not deleted.
+            detail = Self.priorCycleSleepChipDetail(for: prior)
         } else {
             detail = AtriaCurrentDayPresentation.awaitingCurrentSleepDetail
         }
@@ -1779,6 +1804,14 @@ struct AtriaTodayScreen: View {
                                   // computed nightly need to close against -- never a fabricated
                                   // target when `sleepNeedHoursValue` can't be computed yet.
                                   targetFraction: fillProjection.authority == .nightlyNeed ? 1.0 : nil)
+    }
+
+    /// Dated prior-night chip caption, e.g. "Aug 19 · 7h 12m" (declutter R22).
+    /// One producer for the visible chip AND the accessibility restoration in
+    /// `accessibilitySummary`, so the two sites can never disagree about which
+    /// string means "showing a prior cycle".
+    private static func priorCycleSleepChipDetail(for prior: SleepHistorySnapshot.Night) -> String {
+        "\(prior.day.formatted(.dateTime.month(.abbreviated).day())) · \(prior.durationText)"
     }
 
     /// Recovery is owned by the physiological-cycle resolver in `SessionStore`.
@@ -2276,9 +2309,35 @@ struct AtriaTodayScreen: View {
     private var accessibilitySummary: String {
         let parts = ringSlots.map { slot -> String in
             let m = metric(for: slot)
-            return m.detail.isEmpty ? "\(m.title) \(m.value)" : "\(m.title) \(m.value) \(m.detail)"
+            var detail = m.detail
+            // Declutter R22: the visible sleep chip drops the "Last cycle"
+            // qualifier (the date stays as the honesty anchor); accessibility
+            // keeps the fully qualified form so the prior-night fact survives.
+            if slot == .sleep, let prior = latestDisplaySleep,
+               detail == Self.priorCycleSleepChipDetail(for: prior) {
+                detail = "Last cycle · \(detail)"
+            }
+            return detail.isEmpty ? "\(m.title) \(m.value)" : "\(m.title) \(m.value) \(detail)"
         }
-        return parts.joined(separator: ", ") + "."
+        var summary = parts.joined(separator: ", ") + "."
+        // Declutter R4: the settlement row renders only actionable states, so
+        // the terminal saved fact + freshness stamp are RELOCATED here. The
+        // stamp keeps describing the durable save, not the wake (savedAt),
+        // exactly as the row did.
+        if let night = latestDisplaySleep, night.confirmed {
+            let now = Date()
+            let state = AtriaSleepSettlementPresentation.state(
+                confirmedSleepEnd: night.end,
+                confirmedSleepSavedAt: night.savedAt,
+                candidateEnd: nil,
+                now: now
+            )
+            if case .saved = state {
+                let stamp = AtriaSleepSettlementPresentation.freshnessText(for: state, now: now)
+                summary += stamp.map { " \(state.title), updated \($0)." } ?? " \(state.title)."
+            }
+        }
+        return summary
     }
 
     private var healthValue: String {
@@ -2723,10 +2782,12 @@ struct AtriaTodayScreen: View {
             // The big number on this card counts THIS WEEK; when that count
             // is zero the subtitle must not describe an older workout as if
             // it were the counted scope (2026-08-05, seen live: "Strength ·
-            // 0.0 strain · Tue" beside a 0).
+            // 0.0 strain · Tue" beside a 0). Declutter R22: the "None this
+            // week" clause duplicated the visible 0 count — the "Last:"
+            // prefix alone keeps the older workout out of the counted scope.
             glanceMemo.workoutsOneLiner = latest.start >= weekStart
                 ? latestLine
-                : "None this week · last: \(latestLine)"
+                : "Last: \(latestLine)"
         } else {
             glanceMemo.workoutsOneLiner = "No workouts yet"
         }
@@ -2781,10 +2842,10 @@ struct AtriaTodayScreen: View {
     }
 
     private var strainCompareDetailText: String {
-        // Plain-language pass (2026-07-31 device review): mirrors
-        // AtriaOverviewSections.strainCompareDetailText — "Building baseline"
-        // told a first-time user nothing.
-        guard let median = strainCompareMedian else { return "Still learning your typical day" }
+        // Declutter R22: says the exact threshold (strainCompareMedian gates
+        // on 7 strains) in the sibling "Needs N nights" vocabulary, instead
+        // of the vaguer "Still learning your typical day" sentence.
+        guard let median = strainCompareMedian else { return "Median needs 7 days" }
         let medianText = String(format: "%.1f", median)
         guard !metricIsPending(displayHero.strainValue) else {
             return "14-day median \(medianText)"
@@ -4198,10 +4259,15 @@ struct AtriaTodayMorningWhiteboardModel: Equatable {
 
         // Sleep hours vs THAT night's frozen need — never a recomputation.
         let sleepSentence: String
+        var sleepAccessibilitySentence: String? = nil
         if let needHours {
             sleepSentence = "of \(AtriaMetricFormat.sleepHours(needHours)) need"
         } else if nightConfirmed == true {
-            sleepSentence = "need unavailable for this legacy night"
+            // Declutter R22: the legacy-night reason is RELOCATED to the
+            // spoken label (the sleep detail sheet the row routes to lives in
+            // AtriaOverviewSections, outside this pass's files), not deleted.
+            sleepSentence = "need unavailable"
+            sleepAccessibilitySentence = "need unavailable for this legacy night"
         } else {
             sleepSentence = "awaiting tonight's sleep"
         }
@@ -4210,7 +4276,8 @@ struct AtriaTodayMorningWhiteboardModel: Equatable {
                         valuePhrase: sleepDurationText.map { "Slept \($0)" } ?? "Sleep —",
                         sentence: sleepSentence,
                         tone: .neutral,
-                        route: .sleep))
+                        route: .sleep,
+                        accessibilitySentence: sleepAccessibilitySentence))
 
         // Assessment §13.2 (2026-08-14): yesterday leads with the persisted
         // TRIMP truth (P1.7 rollup field); the 0–21 display score stays as a
