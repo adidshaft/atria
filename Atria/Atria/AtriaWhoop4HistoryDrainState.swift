@@ -399,8 +399,13 @@ struct AtriaWhoop4HistoryDrainState: Equatable, Sendable {
                         pendingForwardDiscontinuity = nil
                         requiresPendingForwardDiscontinuityReplay = false
                     } else if !permitsUnconfirmedForwardDiscontinuity {
+                        // The stream key names WHICH record stream is pinned
+                        // at the boundary — without it a persisted failure
+                        // cannot distinguish a starved motion stream from a
+                        // starved HR stream (2026-08-20 device diagnosis had
+                        // to infer this from store write times instead).
                         return fail(.protocolViolation(
-                            "history_sequence_gap_replay_mismatch_expected_\(replayCandidate.transition.currentSequence)_received_\(sequence)"
+                            "history_sequence_gap_replay_mismatch_expected_\(replayCandidate.transition.currentSequence)_received_\(sequence)_stream_\(replayCandidate.transition.streamKey)"
                         ))
                     }
                 }

@@ -302,7 +302,7 @@ final class AtriaWhoop4HistoryDrainStateTests: XCTestCase {
         )
         XCTAssertEqual(effects, [.failed(
             generation: 21,
-            failure: .protocolViolation("history_sequence_gap_replay_mismatch_expected_36_received_37")
+            failure: .protocolViolation("history_sequence_gap_replay_mismatch_expected_36_received_37_stream_0")
         )])
     }
 
@@ -898,7 +898,7 @@ final class AtriaWhoop4HistoryDrainStateTests: XCTestCase {
 
         _ = state.begin(generation: 15)
         let failure = AtriaWhoop4HistoryDrainState.Failure.protocolViolation(
-            "history_sequence_gap_replay_mismatch_expected_18_received_19"
+            "history_sequence_gap_replay_mismatch_expected_18_received_19_stream_0"
         )
         XCTAssertEqual(state.receiveFrame(
             generation: 15,
