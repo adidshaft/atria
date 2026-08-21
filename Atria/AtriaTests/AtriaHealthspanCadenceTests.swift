@@ -89,7 +89,7 @@ final class AtriaHealthspanCadenceTests: XCTestCase {
 
         let engine = try String(contentsOf: appURL.appendingPathComponent("AtriaFitnessAge.swift"),
                                 encoding: .utf8)
-        XCTAssertTrue(engine.contains("static let earlyEstimateMinimumDays = 14"))
+        XCTAssertTrue(engine.contains("static let earlyEstimateMinimumDays = 3"))
         XCTAssertTrue(engine.contains("static let confidentBaselineDays = 28"))
     }
 

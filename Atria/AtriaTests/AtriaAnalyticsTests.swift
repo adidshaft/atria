@@ -83,7 +83,11 @@ final class AtriaAnalyticsTests: XCTestCase {
         }
     }
 
-    func testCurrentPhysicalBaselineVO2RemainsLearningUntilTrusted() {
+    func testVO2PublishesPreliminaryEstimateFromEvenAFewRestingDays() {
+        // 2026-08-22 user directive ("show insights in the best possible way with
+        // everything"): a preliminary VO2max estimate now appears from a single
+        // qualified resting-HR day rather than waiting a week, still clearly
+        // labeled preliminary until the trusted 14-day baseline.
         let summary = AtriaAnalytics.VO2Max.summary(
             rest: 59,
             maxHR: 190,
@@ -92,19 +96,9 @@ final class AtriaAnalyticsTests: XCTestCase {
             restingTrend: [57, 58, 68, 70, 60, 62, 57]
         )
 
-        XCTAssertNil(summary.value)
-        // 2026-07-28 deterministic-presentation pass: valueText is a DISPLAY
-        // string and now uses the app-wide no-value token. The invariant this
-        // test is named for is untouched and still asserted either side of this
-        // line -- no value, and confidence still reads "learning". VO2 max was
-        // the last value line saying "Learning" while Recovery, Stress,
-        // Respiration and Sleep beside it said "--".
-        XCTAssertEqual(summary.valueText, AtriaCompactMetricPresentation.noValue)
-        XCTAssertEqual(summary.confidence, "learning")
-        XCTAssertEqual(summary.detail, "2/14 RHR")
-        XCTAssertEqual(summary.compactStatusText, "2/14 RHR")
-        XCTAssertEqual(summary.trendDetail, "2/14 RHR days.")
-        XCTAssertTrue(summary.narrative.localizedCaseInsensitiveContains("7 qualified resting-HR days"))
+        XCTAssertEqual(try XCTUnwrap(summary.value), 49.27, accuracy: 0.1)
+        XCTAssertEqual(summary.confidence, "preliminary")
+        XCTAssertTrue(summary.narrative.contains("2/14 qualified RHR days"))
     }
 
     func testVO2PublishesPreliminaryValueBeforeTrustedBaseline() throws {
@@ -4508,25 +4502,26 @@ final class AtriaAnalyticsTests: XCTestCase {
                                                                historyDays: historyDays))
     }
 
-    func testFitnessAgeStaysCalibratingUntilFourteenDays() {
-        let summary = fitnessAgeSummary(historyDays: 13)
+    func testFitnessAgeStaysCalibratingBelowThreeDays() {
+        // 2026-08-22 user directive: the early-estimate floor dropped to 3 days.
+        let summary = fitnessAgeSummary(historyDays: 2)
 
         XCTAssertNil(summary.biologicalAge)
         XCTAssertEqual(summary.agingPaceText, "Calibrating")
-        XCTAssertTrue(summary.blockers.contains("14 days of heart data"))
+        XCTAssertTrue(summary.blockers.contains("3 days of heart data"))
         XCTAssertFalse(summary.isEarlyEstimate)
         XCTAssertNil(summary.earlyEstimateQualifierText)
         XCTAssertEqual(summary.footnote, AtriaFitnessAge.footnoteText)
     }
 
-    func testFitnessAgeShowsEarlyEstimateFromFourteenDays() {
-        let summary = fitnessAgeSummary(historyDays: 14)
+    func testFitnessAgeShowsEarlyEstimateFromThreeDays() {
+        let summary = fitnessAgeSummary(historyDays: 3)
 
         XCTAssertNotNil(summary.biologicalAge)
         XCTAssertTrue(summary.blockers.isEmpty)
         XCTAssertTrue(summary.isEarlyEstimate)
-        XCTAssertEqual(summary.earlyEstimateDayCount, 14)
-        XCTAssertEqual(summary.earlyEstimateQualifierText, "Early estimate · day 14 of 28")
+        XCTAssertEqual(summary.earlyEstimateDayCount, 3)
+        XCTAssertEqual(summary.earlyEstimateQualifierText, "Early estimate · day 3 of 28")
         XCTAssertEqual(summary.footnote, AtriaFitnessAge.footnoteText)
     }
 
