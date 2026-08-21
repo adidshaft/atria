@@ -645,6 +645,31 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
+    /// User directive 2026-08-22 ("higher-cadence profile"): while actively
+    /// catching up a step/drain backlog in the foreground on a charger, run the
+    /// tightest (Coverage) supervisor cadence regardless of the saved profile —
+    /// tighter checkpoint/stale/reconnect timers re-establish the link fastest
+    /// after each remote drop, giving the oldest-first drain the most connected
+    /// time. `min` because a lower multiplier is the tighter cadence. This does
+    /// NOT force full protocol: the HR-protective minimal-radio fallback stays
+    /// intact, so live heart-rate reliability is never traded away. Gated on
+    /// charging so it never costs off-charger battery.
+    nonisolated static func effectiveLongWearCadenceMultiplier(
+        profileMultiplier: Double,
+        catchUpBoostActive: Bool
+    ) -> Double {
+        guard catchUpBoostActive else { return profileMultiplier }
+        return min(profileMultiplier, CollectionProfile.maxCoverage.cadenceMultiplier)
+    }
+
+    nonisolated static func effectiveLongWearStaleTimeoutMultiplier(
+        profileMultiplier: Double,
+        catchUpBoostActive: Bool
+    ) -> Double {
+        guard catchUpBoostActive else { return profileMultiplier }
+        return min(profileMultiplier, CollectionProfile.maxCoverage.staleTimeoutMultiplier)
+    }
+
     nonisolated static func shouldBeginStalledStreamRepair(lastRepairAt: Date?,
                                                            now: Date,
                                                            cooldown: TimeInterval = stalledStreamRepairCooldown) -> Bool {
@@ -7655,8 +7680,21 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let noDataCheckInterval = defaults.object(forKey: LongWearDefaults.noDataCheckInterval) as? Double ?? 15
         let acceptedHRTimeout = defaults.object(forKey: LongWearDefaults.acceptedHRTimeout) as? Double ?? 45
         let profile = collectionProfile
-        let cadenceMultiplier = profile.cadenceMultiplier
-        let staleTimeoutMultiplier = profile.staleTimeoutMultiplier
+        // Higher-cadence catch-up boost (user directive 2026-08-22): tighten to
+        // the Coverage cadence while foregrounded on a charger with a real
+        // backlog, so the link recovers fastest after each remote drop and the
+        // drain gets maximum connected time. Falls back to the saved profile the
+        // moment charging/backlog ends; never forces full protocol.
+        let catchUpBoost = foregroundChargingFastCatchUpActive
+            && strapBacklogPendingForCatchUp()
+        let cadenceMultiplier = Self.effectiveLongWearCadenceMultiplier(
+            profileMultiplier: profile.cadenceMultiplier,
+            catchUpBoostActive: catchUpBoost
+        )
+        let staleTimeoutMultiplier = Self.effectiveLongWearStaleTimeoutMultiplier(
+            profileMultiplier: profile.staleTimeoutMultiplier,
+            catchUpBoostActive: catchUpBoost
+        )
         let noDataWatchdogTimeout = max(60, min(noDataTimeout * staleTimeoutMultiplier, 600))
         let acceptedHRWatchdogTimeout = max(35, min(acceptedHRTimeout * staleTimeoutMultiplier, 180))
         let hrContinuityTimeout = Self.hrContinuityWatchdogTimeout(
@@ -7681,10 +7719,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         cacheDutyCycleRestHR(rest)
         scheduleLongWearSupervisor(config: config)
         ensureForegroundKeepaliveWatchdog(reason: reason)
-        AtriaDebugLog("ATRIADBG long_wear_mode enabled=1 reason=%@ radio_mode=%@ supervisor=1 collection_profile=%@ cadence_multiplier=%.2f stale_timeout_multiplier=%.2f checkpoint_interval_s=%.0f live_workout_interval_s=%.0f workout_autosave_interval_s=%.0f no_data_timeout_s=%.0f no_data_check_interval_s=%.0f hr_continuity_timeout_s=%.0f supervisor_base_tick_s=%.0f accepted_hr_timeout_s=%.0f disconnect_reconnect_policy=staged_read_reassert_then_fresh_scan label=%@ rest_hr=%d max_hr=%d",
+        AtriaDebugLog("ATRIADBG long_wear_mode enabled=1 reason=%@ radio_mode=%@ supervisor=1 collection_profile=%@ catch_up_boost=%d cadence_multiplier=%.2f stale_timeout_multiplier=%.2f checkpoint_interval_s=%.0f live_workout_interval_s=%.0f workout_autosave_interval_s=%.0f no_data_timeout_s=%.0f no_data_check_interval_s=%.0f hr_continuity_timeout_s=%.0f supervisor_base_tick_s=%.0f accepted_hr_timeout_s=%.0f disconnect_reconnect_policy=staged_read_reassert_then_fresh_scan label=%@ rest_hr=%d max_hr=%d",
               reason,
               standardHROnlyMode ? "standard_hr_only" : "full_protocol",
               profile.rawValue,
+              catchUpBoost ? 1 : 0,
               cadenceMultiplier,
               staleTimeoutMultiplier,
               config.checkpointInterval,
