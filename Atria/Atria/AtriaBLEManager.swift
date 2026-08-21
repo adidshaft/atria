@@ -2273,6 +2273,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     // the drain immediately rather than waiting for the next tick/HR packet.
     private var phoneChargeStateObserver: NSObjectProtocol?
     private var lastPhoneChargingState: Bool?
+    /// Coalesces the strap-recharge flush trigger so a noisy sequence of accepted
+    /// 2A19 rises cannot re-prompt the guarded drain in a tight loop. A single
+    /// recharge edge arms once; the downstream maintenance ticker then carries the
+    /// catch-up on its own floored cadence.
+    private var lastStrapRechargeFlushArmAt: Date?
+    private static let strapRechargeFlushCoalesceInterval: TimeInterval = 300
     private var staleRangeLossReconciliationInFlight = false
     private var lastStaleRangeLossReconciliationAttemptAt: Date?
     private var offlineHistoricalSyncStartRows = 0
@@ -3975,6 +3981,50 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         rangeLossBackfillPending: Bool
     ) -> Bool {
         rangeLossBackfillPending && nowCharging && !previousCharging
+    }
+
+    /// Drain-keeping (strap-recharge flush, user directive 2026-08-22): a large
+    /// single-read rise in the strap's 2A19 battery percentage is the signature
+    /// of a recharge the app slept through — the strap sat off-wrist on a charger,
+    /// then reconnected at a much higher level. That is exactly when a banked
+    /// motion backlog is waiting to be flushed, yet nothing previously treated the
+    /// recharge itself as a catch-up trigger. When this fires the app refreshes the
+    /// strap-side debt (0x22 getDataRange) and re-arms the same fully-guarded
+    /// drain, so "I charged it hours ago" no longer leaves the backlog unflushed.
+    /// A gentle connected charge climbs one point per read and never trips the
+    /// minimum rise; a decline or an unknown baseline never trips either.
+    nonisolated static let strapRechargeFlushMinimumRise = 15
+
+    nonisolated static func strapRechargeIndicatesFlushOpportunity(
+        previousLevel: Int,
+        newLevel: Int,
+        minimumRise: Int = strapRechargeFlushMinimumRise
+    ) -> Bool {
+        previousLevel >= 0
+            && newLevel > previousLevel
+            && newLevel <= 100
+            && (newLevel - previousLevel) >= minimumRise
+    }
+
+    /// Fast catch-up (user directive 2026-08-22): while the app is foregrounded
+    /// AND on external power AND not thermally stressed, iOS is generous with CPU
+    /// and the battery cost is moot, so the HR-independent maintenance backstop
+    /// may re-arm the guarded drain on a tighter cadence — closing a deep backlog
+    /// in minutes rather than hours. Every downstream admission gate still applies;
+    /// this only changes how often the same guarded entry point is prompted, never
+    /// what it is allowed to do. Foreground-only keeps it clear of the background
+    /// CPU budget that the gentle cadence protects.
+    nonisolated static let fastCatchUpMaintenanceTickInterval: TimeInterval = 30
+
+    nonisolated static func shouldUseForegroundChargingFastCatchUp(
+        foregroundInteractive: Bool,
+        phoneCharging: Bool,
+        thermalState: ProcessInfo.ThermalState
+    ) -> Bool {
+        foregroundInteractive
+            && phoneCharging
+            && thermalState != .serious
+            && thermalState != .critical
     }
 
     /// Drain-keeping P6 (flush-debt tracker): the strap-side backlog, classified.
@@ -17056,6 +17106,58 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// fully-guarded `requestOfflineHistoricalSyncIfNeeded` — the same connected-
     /// drain lane the BGProcessing task uses (P1b/P2 admission), which the
     /// `scheduleRangeLossBackfillIfNeeded` lane cannot reach on connected WHOOP 4.
+    /// True while the foreground + external-power + thermal-OK fast-catch-up
+    /// window holds. Recomputed on demand (charge/thermal are cheap reads) so the
+    /// maintenance loop can tighten or relax its cadence as the state changes.
+    private var foregroundChargingFastCatchUpActive: Bool {
+        Self.shouldUseForegroundChargingFastCatchUp(
+            foregroundInteractive: foregroundInteractiveMode,
+            phoneCharging: Self.phoneStateIsCharging(UIDevice.current.batteryState),
+            thermalState: ProcessInfo.processInfo.thermalState
+        )
+    }
+
+    /// The maintenance backstop's sleep cadence: the tight fast-catch-up interval
+    /// while foregrounded on a charger, otherwise the gentle default. Bounded at
+    /// both ends; the re-arm floor still gates whether a due tick actually arms.
+    private var effectiveMaintenanceTickInterval: TimeInterval {
+        foregroundChargingFastCatchUpActive
+            ? Self.fastCatchUpMaintenanceTickInterval
+            : rangeLossBackfillMaintenanceTickInterval
+    }
+
+    /// Strap-recharge flush trigger: called from the accepted-2A19 path when the
+    /// battery percentage jumps enough to look like a recharge the app slept
+    /// through. Refreshes the strap-side debt (0x22) and re-arms the same guarded
+    /// drain the HR/charge paths use, so a recharge no longer leaves the banked
+    /// backlog waiting for an unrelated wake. Coalesced per recharge edge.
+    private func handleStrapRechargeFlushOpportunityIfNeeded(
+        previousLevel: Int,
+        newLevel: Int,
+        observedAt: Date
+    ) {
+        guard Self.strapRechargeIndicatesFlushOpportunity(
+            previousLevel: previousLevel,
+            newLevel: newLevel
+        ) else { return }
+        if let last = lastStrapRechargeFlushArmAt,
+           observedAt.timeIntervalSince(last) < Self.strapRechargeFlushCoalesceInterval {
+            return
+        }
+        lastStrapRechargeFlushArmAt = observedAt
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=strap_recharge_flush previous=%d new=%d action=refresh_debt_and_rearm_guarded_drain",
+            previousLevel,
+            newLevel
+        )
+        // Read the strap's data range so the flush-debt observation reflects the
+        // post-recharge backlog, then arm the same fully-guarded catch-up lanes
+        // the phone-charge edge uses. None of these send an unguarded command.
+        requestStrapStatusRead(reason: "strap_recharge")
+        startRangeLossBackfillMaintenanceTickerIfNeeded(reason: "strap_recharge")
+        scheduleRangeLossBackfillIfNeeded(reason: "strap_recharge")
+    }
+
     private func startRangeLossBackfillMaintenanceTickerIfNeeded(reason: String) {
         let defaults = UserDefaults.standard
         // A stale-but-nonzero debt observation still starts the backstop (the
@@ -17076,7 +17178,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         rangeLossBackfillMaintenanceTickerTask = Task { @MainActor in
             while !Task.isCancelled {
                 try? await Task.sleep(
-                    for: .seconds(rangeLossBackfillMaintenanceTickInterval)
+                    for: .seconds(effectiveMaintenanceTickInterval)
                 )
                 if Task.isCancelled { break }
                 maintenanceTickRangeLossBackfillReArmIfDue()
@@ -17169,9 +17271,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // so it closes faster; a shallow one keeps the gentle floor. Still floored
         // (never a tight loop) and still fully guarded downstream.
         let debtLevel = currentFlushDebtLevel(now: now)
-        let effectiveFloor = debtLevel == .high
+        // A deep backlog escalates to the tight floor so it closes faster; the
+        // foreground+charging fast-catch-up window does too (user directive
+        // 2026-08-22) so today's steps feel up to date while the app is open on a
+        // charger. Both stay floored at the active tick interval — never a tight
+        // loop — and everything downstream remains fully guarded.
+        let effectiveFloor = (debtLevel == .high || foregroundChargingFastCatchUpActive)
             ? min(rangeLossBackfillMaintenanceReArmFloor,
-                  rangeLossBackfillMaintenanceTickInterval)
+                  effectiveMaintenanceTickInterval)
             : rangeLossBackfillMaintenanceReArmFloor
         guard Self.shouldReArmRangeLossBackfillOnMaintenanceTick(
             rangeLossBackfillPending: true,
@@ -47671,6 +47778,14 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                     clearBatteryDropMarker()
                 }
                 assignIfChanged(\.batteryLevel, newLevel)
+                // A recharge the app slept through surfaces here as a large jump
+                // between the last accepted level and this one; treat it as a
+                // first-class catch-up trigger so the banked backlog flushes.
+                handleStrapRechargeFlushOpportunityIfNeeded(
+                    previousLevel: previous,
+                    newLevel: newLevel,
+                    observedAt: receivedAt
+                )
                 if self.r10MotionIsEligible, self.realtimeArmed {
                     self.ensureR10LivenessWatchdog(reason: "battery_eligible")
                     self.evaluateR10Liveness(now: receivedAt, reason: "battery_eligible")

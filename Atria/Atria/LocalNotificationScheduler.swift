@@ -153,13 +153,13 @@ enum LocalNotificationScheduler {
         if lowPowerMode {
             return SyncNudgeContent(
                 title: "Sync limited by Low Power Mode",
-                body: "Strap data is waiting. Open Atria for a few minutes — foreground sync runs at full speed."
+                body: "Strap data is waiting. Open Atria on a charger for a few minutes — plugged-in foreground sync catches up fastest."
             )
         }
         guard debtFresh else { return nil }
         return SyncNudgeContent(
             title: "Strap data waiting to sync",
-            body: "Background catch-up hasn't kept pace. Open Atria for a few minutes — sync runs fastest in the foreground."
+            body: "Background catch-up hasn't kept pace. Open Atria on a charger for a few minutes — it catches up fastest plugged in and in the foreground."
         )
     }
 

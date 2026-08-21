@@ -198,4 +198,67 @@ final class AtriaBackgroundDrainBacklogTests: XCTestCase {
         XCTAssertTrue(hold(backlog: backlog),
                       "hold engages on robust backlog even with the raw ticket clear (the bug's target case)")
     }
+
+    // MARK: - Strap-recharge flush trigger (user directive 2026-08-22)
+
+    private func rechargeFlush(_ previous: Int, _ new: Int) -> Bool {
+        AtriaBLEManager.strapRechargeIndicatesFlushOpportunity(
+            previousLevel: previous,
+            newLevel: new
+        )
+    }
+
+    func testLargeBatteryRiseLooksLikeRechargeAndFlushes() {
+        // The observed incident: charged hours ago, reconnects at a high level.
+        XCTAssertTrue(rechargeFlush(18, 92))
+        XCTAssertTrue(rechargeFlush(40, 100))
+    }
+
+    func testGentleConnectedChargeDoesNotTripRecharge() {
+        // A connected charge climbs one point per accepted read; never a jump.
+        XCTAssertFalse(rechargeFlush(61, 62))
+        XCTAssertFalse(rechargeFlush(80, 88), "below the +15 recharge floor")
+    }
+
+    func testRechargeFloorIsExactlyFifteen() {
+        XCTAssertTrue(rechargeFlush(50, 65), "a +15 rise qualifies")
+        XCTAssertFalse(rechargeFlush(50, 64), "a +14 rise does not")
+    }
+
+    func testDeclineOrUnknownBaselineNeverFlushes() {
+        XCTAssertFalse(rechargeFlush(90, 40), "a decline is not a recharge")
+        XCTAssertFalse(rechargeFlush(-1, 95), "no prior baseline cannot prove a recharge")
+        XCTAssertFalse(rechargeFlush(50, 130), "an implausible >100 level is rejected")
+    }
+
+    // MARK: - Foreground + charging fast catch-up gate (user directive 2026-08-22)
+
+    private func fast(
+        foreground: Bool,
+        charging: Bool,
+        thermal: ProcessInfo.ThermalState
+    ) -> Bool {
+        AtriaBLEManager.shouldUseForegroundChargingFastCatchUp(
+            foregroundInteractive: foreground,
+            phoneCharging: charging,
+            thermalState: thermal
+        )
+    }
+
+    func testFastCatchUpRequiresForegroundChargingAndCoolEnough() {
+        XCTAssertTrue(fast(foreground: true, charging: true, thermal: .nominal))
+        XCTAssertTrue(fast(foreground: true, charging: true, thermal: .fair))
+    }
+
+    func testFastCatchUpBlockedWhenNotForegroundOrNotCharging() {
+        XCTAssertFalse(fast(foreground: false, charging: true, thermal: .nominal),
+                       "background keeps the gentle cadence (CPU budget)")
+        XCTAssertFalse(fast(foreground: true, charging: false, thermal: .nominal),
+                       "off charger keeps the gentle cadence (battery)")
+    }
+
+    func testFastCatchUpBlockedWhenThermallyStressed() {
+        XCTAssertFalse(fast(foreground: true, charging: true, thermal: .serious))
+        XCTAssertFalse(fast(foreground: true, charging: true, thermal: .critical))
+    }
 }
