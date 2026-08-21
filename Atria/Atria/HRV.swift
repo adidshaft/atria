@@ -630,7 +630,7 @@ struct TachogramChart: View {
                           points: uncorrectedSamples.enumerated().map { index, sample in
                               .init(date: sample.t, value: sample.ms, segment: index)
                           })
-                ])
+                ], domain: nil)
             )
         )
     }

@@ -47768,15 +47768,15 @@ final class SessionStore: ObservableObject {
 
     private nonisolated static func computeBiologicalAgeSummary(_ input: BiologicalAgeComputationInput) -> BiologicalAgeSummary {
         let chronologicalAge = input.profile.age
+        // 2026-08-21 user directive: show an early fitness-age estimate from the
+        // best available inputs rather than gating it behind five simultaneously
+        // trusted 14-day baselines (which were essentially never all satisfied).
+        // Only the VO2 max estimate is a hard requirement now — and it is itself
+        // best-effort since 2026-08-21. Resting HR, HRV, sleep consistency and
+        // Zone-2+ are passed through as best-available values below; the pure
+        // model omits any that are missing and marks the result as early.
         var blockers: [String] = []
         if input.vo2MaxEstimate.value == nil { blockers.append("vo2max_learning") }
-        if !input.baseline.hasTrustedRestingBaseline(now: input.now) { blockers.append("resting_hr_learning") }
-        if !input.baseline.hasTrustedHRVBaseline(now: input.now) { blockers.append("hrv_learning") }
-        let sleepNights = input.confirmedSleeps.filter {
-            !confirmedSleepSourceIsNap(source: $0.source, duration: $0.duration)
-        }
-        if sleepNights.count < 3 { blockers.append("sleep_history_thin") }
-        if input.trainingLoadSummary.confidence != "local" { blockers.append("training_load_learning") }
         guard blockers.isEmpty, let vo2Max = input.vo2MaxEstimate.value else {
             return BiologicalAgeSummary.building(chronologicalAge: chronologicalAge, blockers: blockers)
         }
@@ -56913,7 +56913,7 @@ struct SessionDetail: View {
                       tint: .red,
                       points: AtriaInspectableGraph.segmentedPoints(readings,
                                                                     gapThreshold: 10))
-            ])
+            ], domain: nil)
         )
     }
 

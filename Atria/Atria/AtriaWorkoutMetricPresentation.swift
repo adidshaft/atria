@@ -144,19 +144,6 @@ enum AtriaWorkoutMetricPresentation {
         workout.reason.localizedCaseInsensitiveContains("stream_gap")
     }
 
-    /// A mostly observed workout with one material gap still has useful
-    /// measured values. Render them as lower bounds/observations rather than
-    /// either claiming false precision or throwing the measurements away.
-    private static func mayShowObservedLowerBound(
-        _ workout: UserConfirmedWorkout
-    ) -> Bool {
-        hasMaterialStreamGap(workout)
-            && workout.samples >= 2
-            && workout.avgHR > 0
-            && workout.peakHR > 0
-            && workout.streamCoveragePercent >= minimumNumericCoveragePercent
-    }
-
     static func hasHeartRateData(_ workout: UserConfirmedWorkout) -> Bool {
         heartRateState(workout) != .unavailable
     }
@@ -254,81 +241,60 @@ enum AtriaWorkoutMetricPresentation {
         )
     }
 
+    // 2026-08-21 user directive ("no need to say honest things — do the best
+    // with what we have"): show the measured value rather than gating workout
+    // metrics to "Incomplete"/"≥ observed". Partial-coverage numbers are still a
+    // lower bound, and they upgrade automatically as buffered strap history
+    // drains and the workout is re-scored (confirmedWorkoutNeedsHeartRateArchive
+    // Rehydration). Only a genuine absence of heart rate still says "No HR data".
     static func strainText(_ workout: UserConfirmedWorkout) -> String {
-        if metricsAreIncomplete(workout) {
-            guard mayShowObservedLowerBound(workout), let strain = workout.strain else {
-                return "Incomplete"
-            }
-            return "≥ \(String(format: "%.1f", strain))"
-        }
-        return workout.strain.map { String(format: "%.1f", $0) } ?? "--"
+        workout.strain.map { String(format: "%.1f", $0) } ?? "--"
     }
 
     static func averageHeartRateText(_ workout: UserConfirmedWorkout) -> String {
         switch heartRateState(workout) {
         case .unavailable: return "No HR data"
-        case .incomplete:
-            return mayShowObservedLowerBound(workout)
-                ? "\(workout.avgHR) observed"
-                : "Incomplete"
-        case .complete: return "\(workout.avgHR)"
+        case .incomplete, .complete: return "\(workout.avgHR)"
         }
     }
 
     static func peakHeartRateText(_ workout: UserConfirmedWorkout) -> String {
+        // A zero peak alongside a real average is corrupt evidence, not a low
+        // reading — never surface "0" as a peak.
+        guard workout.peakHR > 0 else { return "No HR data" }
         switch heartRateState(workout) {
         case .unavailable: return "No HR data"
-        case .incomplete:
-            return mayShowObservedLowerBound(workout)
-                ? "\(workout.peakHR) observed"
-                : "Incomplete"
-        case .complete: return "\(workout.peakHR)"
+        case .incomplete, .complete: return "\(workout.peakHR)"
         }
     }
 
     static func heartRateSummaryText(_ workout: UserConfirmedWorkout) -> String {
         switch heartRateState(workout) {
         case .unavailable: return "No HR data"
-        case .incomplete:
-            return mayShowObservedLowerBound(workout)
-                ? "\(workout.streamCoveragePercent)% HR · Partial"
-                : "\(workout.streamCoveragePercent)% HR · Incomplete"
-        case .complete: return "\(workout.avgHR) avg · \(workout.peakHR) peak"
+        case .incomplete, .complete:
+            return workout.peakHR > 0
+                ? "\(workout.avgHR) avg · \(workout.peakHR) peak"
+                : "\(workout.avgHR) avg"
         }
     }
 
     static func energyText(_ workout: UserConfirmedWorkout) -> String {
-        if metricsAreIncomplete(workout) {
-            guard mayShowObservedLowerBound(workout),
-                  let energy = workout.activeEnergyKilocalories else {
-                return "Incomplete"
-            }
-            return "≥ \(Int(energy.rounded()))"
-        }
-        return workout.activeEnergyKilocalories.map { "\(Int($0.rounded()))" } ?? "--"
+        workout.activeEnergyKilocalories.map { "\(Int($0.rounded()))" } ?? "--"
     }
 
     static func compactStatus(_ workout: UserConfirmedWorkout) -> String {
         switch heartRateState(workout) {
         case .unavailable: return "No HR data"
-        case .incomplete:
-            return mayShowObservedLowerBound(workout)
-                ? "\(workout.streamCoveragePercent)% HR · Partial"
-                : "\(workout.streamCoveragePercent)% HR · Incomplete"
-        case .complete: return "\(workout.streamCoveragePercent)% HR"
+        case .incomplete, .complete: return "\(workout.streamCoveragePercent)% HR"
         }
     }
 
     static func shareMetrics(_ workout: UserConfirmedWorkout) -> ShareMetrics {
-        let incomplete = metricsAreIncomplete(workout)
-        let observed = incomplete && mayShowObservedLowerBound(workout)
-        return ShareMetrics(strain: strainText(workout),
-                            peakHeartRate: (!incomplete || observed) && workout.peakHR > 0
-                                ? (observed ? "\(workout.peakHR) observed" : "\(workout.peakHR)")
-                                : "--",
-                            averageHeartRate: (!incomplete || observed) && workout.avgHR > 0
-                                ? (observed ? "\(workout.avgHR) observed" : "\(workout.avgHR)")
-                                : nil,
-                            includesZoneMinutes: !incomplete)
+        ShareMetrics(strain: strainText(workout),
+                     peakHeartRate: workout.peakHR > 0 ? "\(workout.peakHR)" : "--",
+                     averageHeartRate: workout.avgHR > 0 ? "\(workout.avgHR)" : nil,
+                     // Zone-minute breakdowns still need dense coverage to be
+                     // meaningful, so keep those gated to a complete stream.
+                     includesZoneMinutes: heartRateState(workout) == .complete)
     }
 }

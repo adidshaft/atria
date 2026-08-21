@@ -207,10 +207,9 @@ private func atriaStepValueText(_ snapshot: AtriaWidgetSnapshot,
     let value = steps >= 1000
         ? String(format: "%.1fk", Double(steps) / 1000)
         : "\(steps)"
-    if snapshot.stepsSource == "verifiedCanonical",
-       snapshot.stepsCompleteness == "partial" {
-        return "≥\(value)"
-    }
+    // 2026-08-21 user directive: no "≥" lower-bound prefix. A verified partial
+    // day now shows its plain number (app and widget agree); a still-validating
+    // live estimate keeps the mild "~" marker rather than reading as broken.
     return snapshot.stepsAreEstimated == false ? value : "~\(value)"
 }
 
@@ -2533,13 +2532,14 @@ private func liveActivityDailyStepGoalPresentation(
     // therefore fails closed. Only an explicit false value can claim exactness.
     let lowerBound = state.dailyStepsIsLowerBound != false
     let exact = !estimated && !lowerBound
-    let prefix = lowerBound ? "≥" : estimated ? "~" : ""
+    // 2026-08-21 user directive: no "≥" lower-bound prefix on the step count.
+    let prefix = estimated ? "~" : ""
     let reached = steps >= goal
     let text = reached && exact
         ? "Goal ✓ · \(steps)"
         : "\(prefix)\(steps) / \(goal)"
     let accessibility = lowerBound
-        ? "At least \(steps) of \(goal) verified daily strap steps"
+        ? "\(steps) of \(goal) verified daily strap steps so far"
         : estimated
         ? "Approximately \(steps) of \(goal) daily strap steps"
         : reached
@@ -3375,7 +3375,7 @@ enum AtriaWidgetMetric: String, Identifiable {
                 // lower bound instead of an unexplained wait state.
                 if let priorSteps = snapshot.stepsPriorCycleSteps,
                    let priorEndedAt = snapshot.stepsPriorCycleEndedAt {
-                    return "Prior cycle: ≥\(priorSteps) · ended \(atriaCaptureTimeText(priorEndedAt))"
+                    return "Prior cycle: \(priorSteps) · ended \(atriaCaptureTimeText(priorEndedAt))"
                 }
                 return "Waiting for strap"
             }

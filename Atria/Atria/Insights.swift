@@ -745,7 +745,7 @@ struct RestingTrendChart: View {
                                             value: $0.value,
                                             segment: $0.segment)
                                   })
-                        ])
+                        ], domain: nil)
                     )
                 )
             }

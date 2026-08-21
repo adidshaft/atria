@@ -632,26 +632,33 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(avgHR: 0)), "No HR data")
     }
 
-    func testSparseHeartRateRemainsVisibleButCannotClaimPreciseStrain() {
+    func testSparseHeartRateShowsMeasuredStrainValue() {
+        // 2026-08-21 user directive: show the measured value, not "Incomplete".
         XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: workout(strain: 1.1, coverage: 40)),
-                       "40% HR · Incomplete")
+                       "Strain 1.1")
     }
 
-    func testSeverelySparseWorkoutDoesNotShowPreciseDerivedMetrics() {
+    func testSeverelySparseWorkoutStillShowsItsMeasuredMetrics() {
         let sparse = workout(samples: 58, avgHR: 118, strain: 0.17, coverage: 3)
 
+        // The window is still classified as incomplete (used elsewhere to drive
+        // rehydration + the day-strain lower-bound), but the presentation now
+        // shows the measured numbers instead of "Incomplete".
         XCTAssertTrue(AtriaWorkoutMetricPresentation.metricsAreIncomplete(sparse))
-        XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: sparse), "3% HR · Incomplete")
-        XCTAssertEqual(AtriaWorkoutMetricPresentation.strainText(sparse), "Incomplete")
-        XCTAssertEqual(AtriaWorkoutMetricPresentation.averageHeartRateText(sparse), "Incomplete")
-        XCTAssertEqual(AtriaWorkoutMetricPresentation.energyText(sparse), "Incomplete")
+        XCTAssertEqual(AtriaActivityMonitorTab.strainBadge(for: sparse), "Strain 0.2")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.strainText(sparse), "0.2")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.averageHeartRateText(sparse), "118")
+        // No active-energy was computed for this fixture, so energy stays "--"
+        // (a genuine absence), never "Incomplete".
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.energyText(sparse), "--")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateSummaryText(sparse),
-                       "3% HR · Incomplete")
-        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(sparse), "Incomplete")
+                       "118 avg · 100 peak")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(sparse), "100")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.shareMetrics(sparse),
-                       .init(strain: "Incomplete",
-                             peakHeartRate: "--",
-                             averageHeartRate: nil,
+                       .init(strain: "0.2",
+                             peakHeartRate: "100",
+                             averageHeartRate: "118",
+                             // Zone-minute breakdowns still need dense coverage.
                              includesZoneMinutes: false))
 
         let complete = workout(samples: 1_200, avgHR: 126, strain: 5.4, coverage: 92)
@@ -665,7 +672,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                              includesZoneMinutes: true))
     }
 
-    func testWorkoutNumericMetricsRequireSeventyFivePercentCoverage() {
+    func testPartialCoverageWorkoutShowsMeasuredValuesButNotZoneMinutes() {
         for coverage in [24, 25, 40, 74] {
             let partial = workout(samples: 1_200,
                                   avgHR: 126,
@@ -674,7 +681,8 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
                                   coverage: coverage)
             XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(partial), .incomplete)
             XCTAssertTrue(AtriaWorkoutMetricPresentation.metricsAreIncomplete(partial))
-            XCTAssertEqual(AtriaWorkoutMetricPresentation.strainText(partial), "Incomplete")
+            // The strain value is shown; only the zone-minute breakdown is gated.
+            XCTAssertEqual(AtriaWorkoutMetricPresentation.strainText(partial), "5.4")
             XCTAssertFalse(AtriaWorkoutMetricPresentation.shareMetrics(partial).includesZoneMinutes)
         }
 
@@ -689,7 +697,7 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertTrue(AtriaWorkoutMetricPresentation.shareMetrics(qualified).includesZoneMinutes)
     }
 
-    func testMaterialContinuousGapRemainsPartialAboveCoverageThreshold() {
+    func testMaterialContinuousGapShowsMeasuredValuesWithoutHedging() {
         let gymWorkout = workout(samples: 2_563,
                                  avgHR: 120,
                                  peakHR: 158,
@@ -700,32 +708,38 @@ final class AtriaActivitySectionsCacheTests: XCTestCase {
         XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(gymWorkout),
                        .incomplete)
         XCTAssertTrue(AtriaWorkoutMetricPresentation.metricsAreIncomplete(gymWorkout))
-        XCTAssertEqual(AtriaWorkoutMetricPresentation.strainText(gymWorkout), "≥ 4.2")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.strainText(gymWorkout), "4.2")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.averageHeartRateText(gymWorkout),
-                       "120 observed")
+                       "120")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(gymWorkout),
-                       "158 observed")
+                       "158")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.compactStatus(gymWorkout),
-                       "78% HR · Partial")
+                       "78% HR")
         XCTAssertFalse(AtriaWorkoutMetricPresentation.shareMetrics(gymWorkout)
             .includesZoneMinutes)
     }
 
-    func testUnavailableAndOneSampleHeartRateNeverExposeNumericPeak() {
+    func testUnavailableAndCorruptHeartRateNeverExposeBadNumbers() {
+        // Genuine absence still says "No HR data".
         let unavailable = workout(samples: 0, avgHR: 0, peakHR: 0)
         XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(unavailable), .unavailable)
         XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateSummaryText(unavailable), "No HR data")
         XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(unavailable), "No HR data")
 
+        // 2026-08-22 user directive: a real (if sparse) reading shows its value
+        // rather than "Incomplete".
         let oneSample = workout(samples: 1, avgHR: 126, peakHR: 150, coverage: 100)
         XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(oneSample), .incomplete)
-        XCTAssertEqual(AtriaWorkoutMetricPresentation.averageHeartRateText(oneSample), "Incomplete")
-        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(oneSample), "Incomplete")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.averageHeartRateText(oneSample), "126")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(oneSample), "150")
 
+        // But a zero peak alongside a real average is corrupt, not low: never
+        // render "0 peak" — show the average alone.
         let corruptPeak = workout(samples: 200, avgHR: 126, peakHR: 0, coverage: 92)
         XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateState(corruptPeak), .incomplete)
         XCTAssertEqual(AtriaWorkoutMetricPresentation.heartRateSummaryText(corruptPeak),
-                       "92% HR · Incomplete")
+                       "126 avg")
+        XCTAssertEqual(AtriaWorkoutMetricPresentation.peakHeartRateText(corruptPeak), "No HR data")
     }
 
     func testDayStrainIsIncompleteWhenAnySameDayWorkoutIsSeverelySparse() {

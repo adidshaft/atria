@@ -28,7 +28,7 @@ final class AtriaGraphInspectorTests: XCTestCase {
                         .init(date: start, value: 60),
                         .init(date: start.addingTimeInterval(20), value: 90)
                       ])
-            ])
+            ], domain: nil)
         )
 
         let selected = try XCTUnwrap(graph.nearestReadings(to: start.addingTimeInterval(12)).first)
@@ -65,7 +65,7 @@ final class AtriaGraphInspectorTests: XCTestCase {
 
         XCTAssertTrue(vitals.contains("AxisMarks(values: compactAxisDates)"))
         XCTAssertTrue(vitals.contains("Text(date, format: .dateTime.weekday(.narrow))"))
-        XCTAssertTrue(vitals.contains("selectedTime: .constant(nil),\n                                        showsXAxis: true)"))
+        XCTAssertTrue(vitals.contains("selectedTime: .constant(nil),\n                                        showsXAxis: true,\n                                        xDomain: sixHourWindow)"))
         XCTAssertTrue(vitals.contains(".defaultDigits(amPM: .narrow)"),
                       "the compact HR preview must not truncate long minute/meridiem labels")
         XCTAssertTrue(vitals.contains("private static var portraitRestoreTask: Task<Void, Never>?"))

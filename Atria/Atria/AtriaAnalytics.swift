@@ -1889,25 +1889,36 @@ enum AtriaAnalytics {
                                 narrative: "Atria needs \(preliminaryMinimumRestingSamples) qualified resting-HR days before showing a preliminary VO2max estimate.",
                                 trendDetail: "\(restingSamples)/\(PersonalBaseline.trustedMinimumSamples) RHR days.")
             }
-            guard maxHRMeasured else {
-                return learning(detail: "Need HRmax",
-                                narrative: "Atria needs a measured HRmax before estimating VO2max.",
-                                trendDetail: "Needs measured HRmax.")
-            }
-
+            // 2026-08-21 user directive ("do the best with what we have"): show a
+            // best-effort VO2max even from an age-estimated HRmax rather than
+            // gating it away behind "Need HRmax". The Uth-Sørensen estimate
+            // (15.3·HRmax/RHR) works with any HRmax; a *measured* max simply
+            // raises confidence. This was the single highest-impact blocker — a
+            // measured HRmax rarely exists, so VO2max (and the Fitness Age that
+            // depends on it) was nil for almost everyone.
             let boundedEstimate = boundedEstimate(rest: rest, maxHR: maxHR)
             let baselineIsTrusted = restingSamples >= PersonalBaseline.trustedMinimumSamples
-            let confidence = baselineIsTrusted ? "rough estimate" : "preliminary"
-            let detail = "\(confidence) · RHR \(rest) · HRmax \(maxHR)"
+            let confidence: String
+            let narrative: String
+            if maxHRMeasured {
+                confidence = baselineIsTrusted ? "rough estimate" : "preliminary"
+                narrative = baselineIsTrusted
+                    ? "Rough estimate from measured max HR and resting baseline."
+                    : "\(restingSamples)/\(PersonalBaseline.trustedMinimumSamples) qualified RHR days · preliminary estimate from measured max HR."
+            } else {
+                confidence = "estimate"
+                narrative = baselineIsTrusted
+                    ? "Estimate from your resting baseline and an age-based max HR. A hard max-effort workout sharpens it."
+                    : "\(restingSamples)/\(PersonalBaseline.trustedMinimumSamples) qualified RHR days · early estimate from an age-based max HR."
+            }
+            let detail = "\(confidence) · RHR \(rest) · HRmax \(maxHR)\(maxHRMeasured ? "" : " (est.)")"
             let trend = trendText(currentEstimate: boundedEstimate,
                                   maxHR: maxHR,
                                   restingTrend: restingTrend)
             return VO2MaxEstimateSummary(value: boundedEstimate,
                                          confidence: confidence,
                                          detail: detail,
-                                         narrative: baselineIsTrusted
-                                            ? "Rough estimate from measured max HR and resting baseline."
-                                            : "\(restingSamples)/\(PersonalBaseline.trustedMinimumSamples) qualified RHR days · preliminary estimate from measured max HR.",
+                                         narrative: narrative,
                                          trendText: trend.text,
                                          trendDetail: trend.detail,
                                          trendDelta: trend.delta,

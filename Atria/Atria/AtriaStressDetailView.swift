@@ -709,7 +709,7 @@ struct AtriaStressDetailView: View {
                                                     value: $0.reading.score,
                                                     segment: $0.segment)
                                           })
-                                ])
+                                ], domain: nil)
                             )
                         )
                     } else if !input.heartRateReadings.isEmpty {

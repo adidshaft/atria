@@ -587,7 +587,7 @@ struct AtriaHealthspanDetailView: View {
                               points: model.trendPoints.map {
                                   .init(date: $0.day, value: $0.value)
                               })
-                    ])
+                    ], domain: nil)
                 )
             )
         }
