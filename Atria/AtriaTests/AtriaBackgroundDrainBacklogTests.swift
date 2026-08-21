@@ -300,4 +300,22 @@ final class AtriaBackgroundDrainBacklogTests: XCTestCase {
                 profileMultiplier: 0.85, catchUpBoostActive: true),
             0.85, accuracy: 0.0001)
     }
+
+    // MARK: - Profile → radio-mode coupling (user directive 2026-08-22)
+
+    func testCoverageProfileCouplesToFullProtocol() {
+        // false == full protocol (motion streams live → current steps).
+        XCTAssertEqual(
+            AtriaBLEManager.standardHROnlyRadioForCollectionProfile(.maxCoverage), false)
+    }
+
+    func testSaverProfileCouplesToHROnlyRadio() {
+        XCTAssertEqual(
+            AtriaBLEManager.standardHROnlyRadioForCollectionProfile(.batterySaver), true)
+    }
+
+    func testBalancedProfileLeavesRadioUntouched() {
+        XCTAssertNil(
+            AtriaBLEManager.standardHROnlyRadioForCollectionProfile(.balanced))
+    }
 }
