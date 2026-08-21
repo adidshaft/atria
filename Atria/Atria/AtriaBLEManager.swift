@@ -670,6 +670,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return min(profileMultiplier, CollectionProfile.maxCoverage.staleTimeoutMultiplier)
     }
 
+    /// The radio mode an explicit collection-profile choice implies, or nil to
+    /// leave the current radio untouched (user directive 2026-08-22, "higher-
+    /// cadence profile"). Coverage couples to FULL PROTOCOL so motion streams
+    /// live (current steps) and the link stays warm; Saver couples to the minimal
+    /// HR-only radio; Balanced leaves the user's separate radio choice alone.
+    /// Returns `true` for HR-only, `false` for full protocol. The streamSuppressed
+    /// storm fuse still overrides a `false` (full-protocol) result at the call
+    /// site, so this coupling never forces motion streaming onto a genuinely
+    /// unstable link and never trades away live-HR reliability.
+    nonisolated static func standardHROnlyRadioForCollectionProfile(
+        _ profile: CollectionProfile
+    ) -> Bool? {
+        switch profile {
+        case .maxCoverage: return false
+        case .batterySaver: return true
+        case .balanced: return nil
+        }
+    }
+
     nonisolated static func shouldBeginStalledStreamRepair(lastRepairAt: Date?,
                                                            now: Date,
                                                            cooldown: TimeInterval = stalledStreamRepairCooldown) -> Bool {
@@ -7644,6 +7663,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       profile.rawValue,
                       profile.cadenceMultiplier,
                       profile.staleTimeoutMultiplier)
+        // 2026-08-22 (user "higher-cadence profile"): couple the radio mode to the
+        // profile so one choice delivers the whole experience. Coverage → full
+        // protocol (motion streams live → current steps, warm link); Saver →
+        // minimal HR-only radio; Balanced leaves the radio as the user set it.
+        // Enabling full protocol is gated on the storm fuse being clear, so an
+        // unstable link keeps the HR-protective minimal radio (never risks issue #1).
+        if let desiredStandardOnly = Self.standardHROnlyRadioForCollectionProfile(profile) {
+            UserDefaults.standard.set(desiredStandardOnly,
+                                      forKey: RadioDefaults.standardHROnlyUserSelected)
+            let mayApply = desiredStandardOnly || !protectedR10StreamSuppressed
+            if standardHROnlyMode != desiredStandardOnly, mayApply {
+                applyStandardHROnly(enabled: desiredStandardOnly,
+                                    persist: true,
+                                    reconnect: true,
+                                    reason: "collection_profile_\(profile.rawValue)")
+            }
+        }
         guard longWearModeEnabled else { return }
         startLongWearMode(rest: rest, maxHR: maxHR, reason: "collection_profile")
     }
