@@ -1870,9 +1870,12 @@ enum AtriaAnalytics {
     enum VO2Max {
         /// The HR-ratio estimate is useful before the resting baseline is mature,
         /// but must not be presented with the same confidence as a trusted
-        /// 14-day baseline. Seven distinct qualified RHR days is the earliest
-        /// point at which Atria publishes a visibly preliminary value.
-        private static let preliminaryMinimumRestingSamples = 7
+        /// 14-day baseline. 2026-08-22 user directive ("show insights in the best
+        /// possible way with everything"): publish a visibly preliminary estimate
+        /// as soon as a single qualified resting-HR day exists, rather than
+        /// waiting a week. Confidence still rises to "rough estimate" at the
+        /// trusted 14-day baseline.
+        private static let preliminaryMinimumRestingSamples = 1
 
         static func summary(rest: Int,
                             maxHR: Int,

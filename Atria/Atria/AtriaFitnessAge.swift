@@ -53,8 +53,10 @@ enum AtriaFitnessAge {
     static let paceCalibratingCopy = "Calibrating 28-day baseline"
     /// Fewest days of heart history before any fitness-age estimate appears.
     /// From here the estimate is shown as an explicitly early, low-confidence
-    /// read; it graduates to confident at `confidentBaselineDays`.
-    static let earlyEstimateMinimumDays = 14
+    /// read; it graduates to confident at `confidentBaselineDays`. 2026-08-22
+    /// user directive: surface the early estimate after just a few days rather
+    /// than waiting two weeks — it is clearly labeled early until 28 days.
+    static let earlyEstimateMinimumDays = 3
     /// Days of heart history at which the estimate becomes confident. The
     /// pace-of-aging trend keeps its own four-weekly-check calibration.
     static let confidentBaselineDays = 28
@@ -147,7 +149,7 @@ enum AtriaFitnessAge {
         // instead of blocking the whole estimate.
         var blockers: [String] = []
         if inputs.historyDays < earlyEstimateMinimumDays {
-            blockers.append("14 days of heart data")
+            blockers.append("\(earlyEstimateMinimumDays) days of heart data")
         }
         if inputs.vo2Max == nil {
             blockers.append("VO2 max estimate")
@@ -157,7 +159,7 @@ enum AtriaFitnessAge {
                                         chronologicalAge: inputs.chronologicalAge,
                                         ageDelta: nil,
                                         agingPaceText: "Calibrating",
-                                        agingPaceDetail: "Needs 14 days before an early fitness-age estimate.",
+                                        agingPaceDetail: "Needs \(earlyEstimateMinimumDays) days of heart data before an early fitness-age estimate.",
                                         factors: [],
                                         blockers: blockers,
                                         footnote: footnoteText)
