@@ -2867,6 +2867,17 @@ struct AtriaActivityMonitorTab: View {
         }.joined(separator: "; ")
     }
 
+    /// The day window the inspector's trace lives in. Pinning the inspected
+    /// HR/stress chart to this keeps a sparse day from stretching a handful of
+    /// samples across the whole plot (2026-08-21 device report). The trace's
+    /// points are built from this same day window, so nothing is clipped.
+    private var inspectorDayDomain: ClosedRange<Date> {
+        let interval = currentDisplayWindow.displayInterval
+        return interval.start <= interval.end
+            ? interval.start...interval.end
+            : interval.start...interval.start.addingTimeInterval(1)
+    }
+
     private var timelineSignalInspector: AtriaInspectableGraph? {
         let subtitle = currentDisplayWindow.isCurrentPhysiologicalDay
             ? "Since waking"
@@ -2885,7 +2896,8 @@ struct AtriaActivityMonitorTab: View {
                                                       date: $0.t,
                                                       value: Double($0.bpm),
                                                       segment: $0.segment)
-                                            })])
+                                            })],
+                                     domain: inspectorDayDomain)
             )
         case .stress:
             guard !stressProjection.points.isEmpty else { return nil }
@@ -2900,7 +2912,8 @@ struct AtriaActivityMonitorTab: View {
                                                       date: $0.t,
                                                       value: $0.score,
                                                       segment: $0.segment)
-                                            })])
+                                            })],
+                                     domain: inspectorDayDomain)
             )
         }
     }
@@ -3086,10 +3099,13 @@ struct AtriaActivityMonitorTab: View {
     /// signal absent; sparse windows keep their explicit incomplete qualifier.
     static func strainBadge(for workout: UserConfirmedWorkout) -> String {
         guard workout.samples > 0, workout.avgHR > 0 else { return "No HR data" }
-        if AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout) {
+        // 2026-08-21: show the measured strain even on partial coverage rather
+        // than replacing it with a bare coverage badge. It upgrades as history
+        // drains and the workout re-scores. Fall back to coverage only when no
+        // strain has been computed at all.
+        guard let strain = workout.strain else {
             return AtriaWorkoutMetricPresentation.compactStatus(workout)
         }
-        guard let strain = workout.strain else { return "\(workout.avgHR) bpm avg" }
         return "Strain \(String(format: "%.1f", strain))"
     }
 
@@ -3608,7 +3624,7 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                 .controlSize(.small)
                 .frame(maxWidth: .infinity, minHeight: 36)
                 .accessibilityLabel("Preparing heart-rate trace")
-        } else if points.count >= 30 || hasWorkoutStressEvidence {
+        } else if !points.isEmpty || hasWorkoutStressEvidence {
             VStack(alignment: .leading, spacing: 8) {
                 // Native-clean (design 2026-08-05): plain-text selector replaces
                 // the boxed segmented control, matching the app-wide style.
@@ -3617,11 +3633,17 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                                   selection: $traceChartMode)
                 switch traceChartMode {
                 case .heartRate:
-                    if points.count >= 30 {
+                    if !points.isEmpty {
+                        // Pin to the workout's own window so a sparse HR-only
+                        // segment (common when the strap is in radio mode) shows
+                        // its few real samples in their true position instead of
+                        // being hidden below the old 30-sample floor or stretched
+                        // across the plot (2026-08-21 device report).
                         AtriaHeartRateAxisChart(points: points,
                                                 yDomain: AtriaHeartRateChartSeries.yDomain(for: points),
                                                 displayContinuity: .workout,
-                                                selectedTime: .constant(nil))
+                                                selectedTime: .constant(nil),
+                                                xDomain: workout.start...max(workout.end, workout.start.addingTimeInterval(1)))
                             .frame(height: 150)
                             .clipped()
                             // Full-bleed plot (2026-08-05 width audit).
@@ -3636,7 +3658,8 @@ private struct AtriaActivityWorkoutDetailSheet: View {
                     switch workoutStressProjection.presentation {
                     case .physiologicalStress:
                         AtriaWorkoutStressTraceChart(
-                            readings: workoutStressProjection.stressPoints.map(\.reading)
+                            readings: workoutStressProjection.stressPoints.map(\.reading),
+                            window: workout.start...max(workout.end, workout.start.addingTimeInterval(1))
                         )
                             .frame(height: 150)
                             // Full-bleed plot (2026-08-05 width audit).
@@ -4953,6 +4976,11 @@ struct AtriaWorkoutStressTraceSummary: Equatable {
 /// real gaps, and lower-confidence HR-only provenance as the live timeline.
 struct AtriaWorkoutStressTraceChart: View {
     let readings: [AtriaStressDetailReading]
+    /// Optional expected window (the workout interval). When set, the axis is
+    /// pinned to it so a sparse in-workout stress trace shows its readings in
+    /// their true position instead of stretching a few points across the whole
+    /// plot (2026-08-21 device report). `nil` keeps the prior data-derived axis.
+    var window: ClosedRange<Date>? = nil
 
     private var summary: AtriaWorkoutStressTraceSummary {
         AtriaWorkoutStressTraceSummary(readings: readings)
@@ -4961,6 +4989,19 @@ struct AtriaWorkoutStressTraceChart: View {
     private var points: [AtriaStressTimelinePoint] { summary.points }
     private var low: Double { summary.low ?? 0 }
     private var high: Double { summary.high ?? 0 }
+
+    /// The pinned window widened to always include the plotted readings, so
+    /// nothing is clipped. `nil` when the caller supplied no window (auto axis).
+    private var effectiveWindow: ClosedRange<Date>? {
+        guard let window else { return nil }
+        let lo = min(window.lowerBound, points.first?.reading.date ?? window.lowerBound)
+        let hi = max(window.upperBound, points.last?.reading.date ?? window.upperBound)
+        return lo <= hi ? lo...max(hi, lo.addingTimeInterval(1)) : window
+    }
+
+    /// Zone-band bounds: fill the pinned window when set, else the data extent.
+    private var zoneStart: Date { effectiveWindow?.lowerBound ?? points.first?.reading.date ?? .distantPast }
+    private var zoneEnd: Date { effectiveWindow?.upperBound ?? points.last?.reading.date ?? .distantFuture }
     private var singletonSegmentIDs: Set<Int> {
         Set(Dictionary(grouping: points, by: \.segment)
             .filter { $0.value.count == 1 }
@@ -4980,18 +5021,18 @@ struct AtriaWorkoutStressTraceChart: View {
                     .foregroundStyle(Metrics.electricRed)
             }
             Chart {
-                RectangleMark(xStart: .value("Calm start", points.first?.reading.date ?? .distantPast),
-                              xEnd: .value("Calm end", points.last?.reading.date ?? .distantFuture),
+                RectangleMark(xStart: .value("Calm start", zoneStart),
+                              xEnd: .value("Calm end", zoneEnd),
                               yStart: .value("Calm floor", 0),
                               yEnd: .value("Calm ceiling", 1))
                     .foregroundStyle(Metrics.electricGreen.opacity(0.055))
-                RectangleMark(xStart: .value("Moderate start", points.first?.reading.date ?? .distantPast),
-                              xEnd: .value("Moderate end", points.last?.reading.date ?? .distantFuture),
+                RectangleMark(xStart: .value("Moderate start", zoneStart),
+                              xEnd: .value("Moderate end", zoneEnd),
                               yStart: .value("Moderate floor", 1),
                               yEnd: .value("Moderate ceiling", 2))
                     .foregroundStyle(Metrics.electricYellow.opacity(0.045))
-                RectangleMark(xStart: .value("High start", points.first?.reading.date ?? .distantPast),
-                              xEnd: .value("High end", points.last?.reading.date ?? .distantFuture),
+                RectangleMark(xStart: .value("High start", zoneStart),
+                              xEnd: .value("High end", zoneEnd),
                               yStart: .value("High floor", 2),
                               yEnd: .value("High ceiling", 3))
                     .foregroundStyle(Metrics.electricRed.opacity(0.045))
@@ -5058,6 +5099,7 @@ struct AtriaWorkoutStressTraceChart: View {
                 }
             }
             .chartYScale(domain: 0...AtriaStressEvidenceProjection.maximumDisplayValue)
+            .atriaChartXScale(effectiveWindow)
             .chartYAxis {
                 AxisMarks(values: [0, 1, 2, 3]) { _ in
                     AxisGridLine().foregroundStyle(.secondary.opacity(0.15))

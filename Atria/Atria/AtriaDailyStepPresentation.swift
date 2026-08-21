@@ -87,6 +87,15 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     /// Keep this aligned with the strap-steps freshness tile.
     static let liveEvidenceMaximumAge: TimeInterval = 15
 
+    /// An in-cycle live step estimate may raise the shown total above the
+    /// drained verified floor only while verified coverage is below this
+    /// fraction — i.e. enough of the day is still undrained that the live
+    /// estimate legitimately fills the gap. Once verified coverage is high the
+    /// drained count is the trustworthy total and an inflated/preliminary live
+    /// count (e.g. 9999 steps over 75% coverage of one hour) must not override
+    /// it. This is the reliability guard on the 2026-08-22 live-estimate change.
+    static let liveEstimateCoverageCeiling: Double = 0.6
+
     enum Completeness: Equatable, Sendable {
         case complete
         case partial
@@ -179,10 +188,12 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         // the day. Showing it as one makes an absence of evidence look like a
         // completed step total (for example "0 · 3% covered").
         guard completeness != .partial || count > 0 else { return "--" }
-        guard source == .verifiedCanonical, completeness == .partial else {
-            return "\(count)"
-        }
-        return "≥\(count)"
+        // 2026-08-21 user directive: drop the "≥" lower-bound prefix entirely.
+        // The partial/open-cycle nature is still carried in detailText
+        // ("Counted through 8:12 AM" / "Today so far · estimate") and in the
+        // accessibility text; the hero number itself is now just the number, so
+        // it reads as a real step count instead of looking broken.
+        return "\(count)"
     }
 
     var detailText: String {
@@ -228,9 +239,9 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                 // which humans still read as "yesterday's total" — say
                 // "Yesterday" instead of the technical "Prior cycle … ended".
                 if priorCycleReadsAsYesterday(priorCycleReceipt) {
-                    return "Yesterday: ≥\(priorCycleReceipt.steps)"
+                    return "Yesterday: \(priorCycleReceipt.steps)"
                 }
-                return "Prior cycle: ≥\(priorCycleReceipt.steps) · ended "
+                return "Prior cycle: \(priorCycleReceipt.steps) · ended "
                     + priorCycleReceipt.endedAt.formatted(
                         date: .omitted,
                         time: .shortened
@@ -271,7 +282,7 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             let frontier = capturedAt.map {
                 ", through \($0.formatted(date: .omitted, time: .shortened))"
             } ?? ""
-            return "At least \(count) steps, \(coverage)\(frontier)."
+            return "\(count) steps so far, \(coverage)\(frontier)."
         case (.live, .partial):
             return "\(isValidated ? "\(count)" : "Approximately \(count)") steps today so far."
         default:
@@ -422,20 +433,49 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          coverageFraction: nil,
                          isOpenCycle: isOpenDay)
         }
+        // A same-cycle live detector coordinate is a real observed count for
+        // today even when it is no longer inside the strict live-freshness
+        // window or has not yet been cross-validated. The oldest-first drain
+        // means the durable partial can freeze on a tiny early-morning slice
+        // (2026-08-21 report: "stuck at 200"); when the live count is genuinely
+        // ahead of that slice it is the better, more up-to-date lower bound.
+        // This only ever RAISES the shown number to a real observation — it
+        // never fabricates or extrapolates a step.
+        let liveInCycle = liveAuthorityQualified
+            && isOpenDay
+            && liveCount > 0
+            && (liveCapturedAt.map {
+                $0 >= activeWindowStart && $0 <= now.addingTimeInterval(5)
+            } ?? false)
         // Without a fresh validated live coordinate, the best durable partial
-        // remains the honest lower bound for the active cycle.
+        // remains the honest lower bound for the active cycle — unless the live
+        // detector has observed more of the day than has drained so far.
         if let partial {
+            let banked = partial.knownStepDeltaSum
             let total = partial.knownCoverageSeconds + partial.missingCoverageSeconds
+            let coverageFraction = total > 0
+                ? Double(partial.knownCoverageSeconds) / Double(total) : nil
+            // Only fill the gap with the live estimate while verified coverage is
+            // low; a high-coverage verified count is the trustworthy total.
+            let liveMayFillGap = (coverageFraction ?? 1) < liveEstimateCoverageCeiling
+            let liveObserved = (liveInCycle && liveMayFillGap) ? max(0, liveCount) : 0
+            let usesLive = liveObserved > banked
             return .init(day: dayStart,
-                         count: partial.knownStepDeltaSum,
+                         count: max(banked, liveObserved),
                          completeness: .partial,
-                         source: .verifiedCanonical,
-                         isValidated: true,
-                         capturedAt: partial.dayEnd,
-                         coverageFraction: total > 0
-                            ? Double(partial.knownCoverageSeconds) / Double(total) : nil,
+                         source: usesLive ? .live : .verifiedCanonical,
+                         isValidated: usesLive ? liveIsValidated : true,
+                         capturedAt: usesLive ? liveCapturedAt : partial.dayEnd,
+                         coverageFraction: coverageFraction,
                          isOpenCycle: isOpenDay)
         }
+        // Intentionally NO branch here that surfaces a live count when there is
+        // no drained coverage at all: with no verified floor to sanity-check
+        // against, an unvalidated/preliminary count could be arbitrarily wrong,
+        // and the "stuck low" case the 2026-08-22 change targets always has a
+        // partial (a drained morning slice). Those no-coverage states keep their
+        // existing specific reasons (still-validating / no-longer-live / prior
+        // cycle) below.
         let emptyReason: UnavailabilityReason =
             !liveAuthorityQualified
                 ? .stepModelNotQualified

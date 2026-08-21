@@ -7,7 +7,10 @@ import UIKit
 /// as a continuous line. Histograms and intervals keep their native shapes.
 struct AtriaInspectableGraph {
     enum Content {
-        case timeSeries([Series])
+        /// `domain`, when set, pins the time axis so a sparse trace can't collapse
+        /// the plot to a tiny sub-range (2026-08-21). `nil` keeps the prior
+        /// data-derived behaviour for callers that don't have an expected window.
+        case timeSeries([Series], domain: ClosedRange<Date>?)
         case histogram([Bar])
         case intervals([Interval], domain: ClosedRange<Date>)
     }
@@ -102,7 +105,7 @@ struct AtriaInspectableGraph {
     }
 
     func nearestReadings(to date: Date) -> [Reading] {
-        guard case let .timeSeries(series) = content else { return [] }
+        guard case let .timeSeries(series, _) = content else { return [] }
         return series.compactMap { item in
             guard let point = Self.nearestPoint(in: item.points, to: date),
                   abs(point.date.timeIntervalSince(date)) <= Self.snapCeiling(for: item.points) else {
@@ -283,8 +286,8 @@ private struct AtriaGraphInspectorView: View {
 
     @ViewBuilder private var graphBody: some View {
         switch graph.content {
-        case let .timeSeries(series):
-            timeSeriesChart(series)
+        case let .timeSeries(series, domain):
+            timeSeriesChart(series, domain: domain)
         case let .histogram(bars):
             histogramChart(bars)
         case let .intervals(intervals, domain):
@@ -292,7 +295,8 @@ private struct AtriaGraphInspectorView: View {
         }
     }
 
-    private func timeSeriesChart(_ series: [AtriaInspectableGraph.Series]) -> some View {
+    private func timeSeriesChart(_ series: [AtriaInspectableGraph.Series],
+                                 domain: ClosedRange<Date>?) -> some View {
         Chart {
             ForEach(series) { item in
                 ForEach(item.points) { point in
@@ -313,6 +317,7 @@ private struct AtriaGraphInspectorView: View {
             }
         }
         .atriaGraphPlotSurface()
+        .atriaChartXScale(domain)
         .chartScrollableAxes(.horizontal)
         .chartXVisibleDomain(length: visibleDuration ?? defaultVisibleDuration(series))
         .chartXSelection(value: $selectedDate)
@@ -451,7 +456,7 @@ private struct AtriaGraphInspectorView: View {
 
     private var inspectableDuration: TimeInterval? {
         switch graph.content {
-        case let .timeSeries(series):
+        case let .timeSeries(series, _):
             return defaultVisibleDuration(series)
         case let .intervals(_, domain):
             return max(60, domain.upperBound.timeIntervalSince(domain.lowerBound))
@@ -470,7 +475,7 @@ private struct AtriaGraphInspectorView: View {
 
     private var currentVisibleDuration: TimeInterval {
         switch graph.content {
-        case let .timeSeries(series):
+        case let .timeSeries(series, _):
             return visibleDuration ?? defaultVisibleDuration(series)
         case let .intervals(_, domain):
             return visibleDuration ?? defaultIntervalVisibleDuration(domain: domain)

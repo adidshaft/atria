@@ -4520,7 +4520,13 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
     }
 
     var body: some View {
-        Button(action: onOpen) {
+        // Pin the preview to the 6-hour window the header promises. Without this
+        // the axis derived itself from whatever sparse samples exist, so a
+        // handful of clustered points stretched across the whole card and a
+        // stale tail read as "just now" (2026-08-21 device report).
+        let now = Date()
+        let sixHourWindow = now.addingTimeInterval(-6 * 3600)...now
+        return Button(action: onOpen) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Text("Heart-rate timeline")
@@ -4540,7 +4546,8 @@ private struct AtriaHeartRateTimelineCard: View, Equatable {
                                         displayContinuity: series.displayContinuity,
                                         usesLeadingValueAxis: true,
                                         selectedTime: .constant(nil),
-                                        showsXAxis: true)
+                                        showsXAxis: true,
+                                        xDomain: sixHourWindow)
                     // This is a preview inside one large button, not an
                     // inspector. Disable the chart's selection gesture so a
                     // plot-area tap always reaches the card action.
@@ -4965,7 +4972,13 @@ struct AtriaHeartRateExplorer: View {
     }
 
     private var heartRateChart: some View {
-        AtriaHeartRateAxisChart(points: series.visiblePoints,
+        // Anchor a minimum window so a sparse span (fewer real samples than the
+        // selected window) can't collapse the axis and stretch a few points
+        // across the plot. effectiveXDomain still widens to the full data extent,
+        // so scrolling to older readings keeps working.
+        let windowEnd = max(series.visiblePoints.last?.t ?? Date(), Date())
+        let explorerWindow = windowEnd.addingTimeInterval(-currentWindow.seconds)...windowEnd
+        return AtriaHeartRateAxisChart(points: series.visiblePoints,
                                 yDomain: series.yDomain,
                                 buckets: series.buckets,
                                 displayContinuity: series.displayContinuity,
@@ -4973,6 +4986,7 @@ struct AtriaHeartRateExplorer: View {
                                 selectedRange: $selectedRange,
                                 selectionMode: selectionMode,
                                 visibleDomain: currentWindow.seconds,
+                                xDomain: explorerWindow,
                                 scrollPosition: $scrollPosition)
             // Native pinch-to-zoom over the same window the slider drives.
             // Two fingers never fight the one-finger point/range inspection.
@@ -5542,6 +5556,13 @@ struct AtriaHeartRateAxisChart: View, Equatable {
     let selectionMode: AtriaHeartRateExplorer.SelectionMode
     let visibleDomain: TimeInterval?
     let showsXAxis: Bool
+    /// Minimum guaranteed time axis. When set, the X domain never collapses to
+    /// a sparse sample sub-range — a handful of clustered/stale samples can no
+    /// longer stretch across the whole plot (2026-08-21 device report). The
+    /// domain is at least this window and widens to include any data past it so
+    /// nothing is clipped and horizontal scrolling still works. `nil` keeps the
+    /// prior data-derived (auto) behaviour.
+    let xDomain: ClosedRange<Date>?
     @Binding var scrollPosition: Date
 
     init(points: [AtriaHomeModel.HeartRateChartPoint],
@@ -5554,6 +5575,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
          selectionMode: AtriaHeartRateExplorer.SelectionMode = .point,
          visibleDomain: TimeInterval? = nil,
          showsXAxis: Bool = true,
+         xDomain: ClosedRange<Date>? = nil,
          scrollPosition: Binding<Date> = .constant(Date())) {
         self.points = points
         self.yDomain = yDomain
@@ -5565,6 +5587,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         self.selectionMode = selectionMode
         self.visibleDomain = visibleDomain
         self.showsXAxis = showsXAxis
+        self.xDomain = xDomain
         self._scrollPosition = scrollPosition
     }
 
@@ -5573,7 +5596,20 @@ struct AtriaHeartRateAxisChart: View, Equatable {
             && lhs.displayContinuity == rhs.displayContinuity
             && lhs.usesLeadingValueAxis == rhs.usesLeadingValueAxis
             && lhs.selectionMode == rhs.selectionMode && lhs.visibleDomain == rhs.visibleDomain
-            && lhs.showsXAxis == rhs.showsXAxis
+            && lhs.showsXAxis == rhs.showsXAxis && lhs.xDomain == rhs.xDomain
+    }
+
+    /// Resolves the pinned time axis. `nil` when the caller opted out (auto).
+    /// When set, the returned range is at least `xDomain` and always spans the
+    /// plotted samples, so scrolling/clipping stay correct on dense data while
+    /// sparse data no longer collapses the axis.
+    private var effectiveXDomain: ClosedRange<Date>? {
+        guard let xDomain else { return nil }
+        let firsts = [buckets?.first?.t, points.first?.t].compactMap { $0 }
+        let lasts = [buckets?.last?.t, points.last?.t].compactMap { $0 }
+        let lower = min(xDomain.lowerBound, firsts.min() ?? xDomain.lowerBound)
+        let upper = max(xDomain.upperBound, lasts.max() ?? xDomain.upperBound)
+        return lower <= upper ? lower...upper : xDomain
     }
 
     /// True when neither series has anything to draw. Gates the y-axis so an
@@ -5714,6 +5750,7 @@ struct AtriaHeartRateAxisChart: View, Equatable {
             }
         }
         .chartYScale(domain: yDomain)
+        .atriaChartXScale(effectiveXDomain)
         .chartXAxis {
             if showsXAxis {
                 // Explicit boundary-aligned ticks with precomputed, deduped
@@ -5848,6 +5885,21 @@ struct AtriaHeartRateAxisChart: View, Equatable {
                                                 visibleDomain: TimeInterval) -> Bool {
         guard let first = points.first?.t, let last = points.last?.t else { return false }
         return last.timeIntervalSince(first) > max(1, visibleDomain)
+    }
+}
+
+extension View {
+    /// Pins a Charts time axis when a domain is supplied, and leaves the chart's
+    /// auto (data-derived) domain untouched when it is `nil`. Centralises the fix
+    /// for sparse HR/stress traces collapsing their X axis so several surfaces can
+    /// share one behaviour (2026-08-21).
+    @ViewBuilder
+    func atriaChartXScale(_ domain: ClosedRange<Date>?) -> some View {
+        if let domain {
+            self.chartXScale(domain: domain)
+        } else {
+            self
+        }
     }
 }
 

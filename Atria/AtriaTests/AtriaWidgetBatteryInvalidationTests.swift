@@ -2000,13 +2000,11 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
 
         XCTAssertEqual(value.source, .verifiedCanonical)
         XCTAssertEqual(value.completeness, .partial)
-        // Pin migrated 2026-08-05: clean number per the 26057206 decision;
-        // partiality is pinned by .partial + coverageFraction below.
-        // W2-A fix 4: the pre-rendered app string is preferred, and a partial
-        // verified canonical count is a LOWER BOUND — the ">=" qualifier is
-        // the field-report-2026-08-19 honesty decision (the widget and app
-        // must agree, and the qualified form is the honest one).
-        XCTAssertEqual(value.valueText, "≥2345")
+        // 2026-08-22: no "≥" prefix (user directive). Over 75% verified coverage
+        // the stale/inflated preliminary live count does NOT override the drained
+        // count — coverage is above the live-estimate ceiling — so the trustworthy
+        // verified number is shown, plainly.
+        XCTAssertEqual(value.valueText, "2345")
         XCTAssertEqual(value.coverageFraction ?? -1, 0.75, accuracy: 0.001)
     }
 
@@ -2050,7 +2048,10 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             .appendingPathComponent("AtriaWidget/AtriaWidget.swift"), encoding: .utf8)
 
         XCTAssertTrue(widgetSource.contains("snapshot.stepsSource == \"verifiedCanonical\""))
-        XCTAssertTrue(widgetSource.contains("return \"≥\\(value)\""))
+        // 2026-08-22 user directive: the step value drops the "≥" lower-bound
+        // prefix; a still-validating estimate keeps the mild "~" marker instead.
+        XCTAssertFalse(widgetSource.contains("return \"≥\\(value)\""))
+        XCTAssertTrue(widgetSource.contains("snapshot.stepsAreEstimated == false ? value : \"~\\(value)\""))
         XCTAssertTrue(widgetSource.contains("return \"Verified complete day\""))
         XCTAssertTrue(widgetSource.contains(
             ": \"Verified through \\(atriaCaptureTimeText(capturedAt))\""

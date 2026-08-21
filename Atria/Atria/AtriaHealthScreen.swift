@@ -751,7 +751,12 @@ struct AtriaHealthScreen: View {
     // collapsed on every mount — default-off placement, not a remembered
     // preference, so neither card can lead Health.
     @State private var showsProvisionalSleepScore = false
-    @State private var showsLabSection = false
+    // 2026-08-21 user directive ("many insights aren't even shown — fix it"):
+    // the Fitness Age estimate now resolves for far more users (best-effort
+    // VO2max + partial-factor fitness age), so surface it expanded by default
+    // instead of hidden behind a collapsed Lab disclosure. Still clearly labeled
+    // an estimate, and the user can still collapse the section.
+    @State private var showsLabSection = true
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
     @AtriaDefault(DetectionEventLog.revisionKey) private var detectionsRevision: Int = 0
@@ -3150,7 +3155,7 @@ struct AtriaSleepStressCard: View {
                                     value: $0.bpm,
                                     segment: $0.segment)
                           })
-                ])
+                ], domain: nil)
             )
         case .load:
             return AtriaInspectableGraph(
@@ -3167,7 +3172,7 @@ struct AtriaSleepStressCard: View {
                                     value: $0.reading.score,
                                     segment: $0.segment)
                           })
-                ])
+                ], domain: nil)
             )
         }
     }

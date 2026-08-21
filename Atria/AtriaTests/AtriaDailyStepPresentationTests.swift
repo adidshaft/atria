@@ -92,9 +92,9 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        // The test's own name says "lower bound label"; between 2026-08-12 and
-        // 2026-08-19 it asserted the opposite. Restored.
-        XCTAssertEqual(value.valueText, "≥3210")
+        // 2026-08-22 user directive: no "≥" prefix — the partial nature stays in
+        // the detail/accessibility lines, the hero number is just the number.
+        XCTAssertEqual(value.valueText, "3210")
         XCTAssertEqual(value.completeness, .partial)
         // 2026-08-12: the glance line leads with the capture frontier, never a
         // coverage percent — "50% tracked" read as "the strap detects steps
@@ -135,13 +135,15 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
     /// user conclude steps were broken.
     func testTerminalPureHRMotionRetainsLowerBoundAndShowsBlocker() {
         var value = partialVerified176()
-        XCTAssertEqual(value.valueText, "≥176")
+        // 2026-08-22 user directive: no "≥" prefix. Terminal pure-HR still
+        // retains the verified count and shows the motion blocker footnote.
+        XCTAssertEqual(value.valueText, "176")
         XCTAssertEqual(value.completeness, .partial)
         let coverageDetail = value.detailText
 
         value.motionAvailability = .unavailableInCurrentTransport
         // The verified count and coverage are untouched by the classification.
-        XCTAssertEqual(value.valueText, "≥176")
+        XCTAssertEqual(value.valueText, "176")
         XCTAssertEqual(value.detailText, coverageDetail)
         // The forward-looking promise becomes the terminal blocker.
         XCTAssertEqual(value.motionAvailabilityFootnote,
@@ -191,6 +193,9 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
     }
 
     func testPreliminaryLiveStrapTotalFailsClosedUntilValidated() {
+        // With NO drained coverage there is no verified floor to sanity-check an
+        // unvalidated live count against, so it still fails closed (the 2026-08-22
+        // live estimate only fills gaps against a real drained partial).
         let capturedAt = day.addingTimeInterval(14 * 3_600)
         let value = AtriaDailyStepPresentation.resolve(
             day: day,
@@ -254,6 +259,8 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
     }
 
     func testStaleStrapSubtotalIsUnavailableWithoutCanonicalCoverage() {
+        // No drained coverage → no verified floor → an unvalidated stale count
+        // still fails closed rather than masquerading as today's total.
         let now = day.addingTimeInterval(14 * 3_600)
         let value = AtriaDailyStepPresentation.resolve(
             day: day,
@@ -334,7 +341,11 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         )
     }
 
-    func testPhysiologicalMotionTickSubtotalOutranksFreshPreliminaryR10() {
+    func testHighCoverageVerifiedFloorIsNotOverriddenByInflatedPreliminaryLive() {
+        // Reliability guard (2026-08-22): over 94% verified coverage the drained
+        // count (1234) is the trustworthy total, so an inflated preliminary live
+        // count (9999 — physically impossible over that window) must NOT override
+        // it. The live estimate only fills genuinely-undrained gaps (low coverage).
         let wake = day.addingTimeInterval(7 * 3_600)
         let now = wake.addingTimeInterval(5 * 3_600)
         let motionTicks = AtriaHistoricalDailyConsumerProjection.StepDay(
@@ -365,7 +376,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertTrue(value.isValidated)
         XCTAssertEqual(value.source, .verifiedCanonical)
         XCTAssertEqual(value.completeness, .partial)
-        XCTAssertEqual(value.valueText, "≥1234")
+        XCTAssertEqual(value.valueText, "1234")
     }
 
     func testPhysicalAug11VerifiedCoverageStaysSeparateFromPreliminaryLedger()
@@ -396,22 +407,15 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        XCTAssertEqual(value.count, 176)
-        XCTAssertEqual(value.source, .verifiedCanonical)
+        // Option 1 (2026-08-22): over only 21% drained coverage the in-cycle
+        // live estimate (4257) is the more up-to-date total and is now shown as
+        // an estimate, rather than pinning the 176-step drained floor. This is
+        // the "stuck at 176 all morning" case the user asked to fix.
+        XCTAssertEqual(value.count, 4_257)
+        XCTAssertEqual(value.source, .live)
+        XCTAssertFalse(value.isValidated)
         XCTAssertEqual(value.completeness, .partial)
-        XCTAssertEqual(
-            try XCTUnwrap(value.coverageFraction),
-            11_598.0 / 55_224.0,
-            accuracy: 0.000_001
-        )
-        // 2026-08-12: the glance line is frontier-led (no leading percent);
-        // the 21% figure stays explained in accessibility.
-        XCTAssertTrue(value.detailText.hasPrefix("Counted through "))
-        XCTAssertTrue(value.accessibilityText.contains(
-            "motion tracked for 21 percent of your day"
-        ))
-        XCTAssertNotEqual(value.count, 4_257)
-        XCTAssertNotEqual(value.count, 4_433)
+        XCTAssertEqual(value.detailText, "Today so far · estimate")
     }
 
     func testFreshValidatedLiveOutranksPartialDurableReceiptWithoutSumming() {
@@ -448,7 +452,9 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.valueText, "1301")
     }
 
-    func testStaleValidatedLiveDoesNotOutrankPartialOpenDayReceipt() {
+    func testStaleValidatedInCycleLiveRaisesTotalAbovePartialReceipt() {
+        // Option 1: a same-cycle validated cumulative count (4000) above the
+        // drained floor (3210) is shown as the running total, plain number.
         let now = day.addingTimeInterval(14 * 3_600)
         let value = AtriaDailyStepPresentation.resolve(
             day: day,
@@ -466,11 +472,10 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        XCTAssertEqual(value.count, 3_210)
-        XCTAssertEqual(value.source, .verifiedCanonical)
+        XCTAssertEqual(value.count, 4_000)
+        XCTAssertEqual(value.source, .live)
         XCTAssertEqual(value.completeness, .partial)
-        // Verified + partial is a lower bound, and says so (2026-08-19, item 7).
-        XCTAssertEqual(value.valueText, "≥3210")
+        XCTAssertEqual(value.valueText, "4000")
     }
 
     // 2026-07-31: after a no-sleep rollover the fresh cycle has no receipt
@@ -499,9 +504,9 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.unavailabilityReason, .priorCycleReceiptOnly)
         XCTAssertEqual(value.priorCycleReceipt,
                        .init(steps: 1_435, endedAt: endedAt))
-        XCTAssertTrue(value.detailText.hasPrefix("Prior cycle: ≥1435 · ended "),
+        XCTAssertTrue(value.detailText.hasPrefix("Prior cycle: 1435 · ended "),
                       value.detailText)
-        XCTAssertTrue(value.accessibilityText.contains("Prior cycle: ≥1435"),
+        XCTAssertTrue(value.accessibilityText.contains("Prior cycle: 1435"),
                       value.accessibilityText)
     }
 
@@ -524,7 +529,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
 
         XCTAssertNil(value.count)
         XCTAssertEqual(value.unavailabilityReason, .priorCycleReceiptOnly)
-        XCTAssertTrue(value.detailText.hasPrefix("Prior cycle: ≥1435 · ended "))
+        XCTAssertTrue(value.detailText.hasPrefix("Prior cycle: 1435 · ended "))
     }
 
     func testStaleLiveWithinCurrentCycleKeepsStaleReason() {
@@ -575,7 +580,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
 
         XCTAssertNil(value.count)
         XCTAssertEqual(value.unavailabilityReason, .priorCycleReceiptOnly)
-        XCTAssertEqual(value.detailText, "Yesterday: ≥5251")
+        XCTAssertEqual(value.detailText, "Yesterday: 5251")
     }
 
     func testPriorCycleEndedPreviousEveningReadsAsYesterday() {
@@ -595,7 +600,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(value.unavailabilityReason, .priorCycleReceiptOnly)
-        XCTAssertEqual(value.detailText, "Yesterday: ≥5251")
+        XCTAssertEqual(value.detailText, "Yesterday: 5251")
     }
 
     func testPriorCycleEndedTodayAfternoonKeepsPreciseForm() {
@@ -615,7 +620,7 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(value.unavailabilityReason, .priorCycleReceiptOnly)
-        XCTAssertTrue(value.detailText.hasPrefix("Prior cycle: ≥5251 · ended "),
+        XCTAssertTrue(value.detailText.hasPrefix("Prior cycle: 5251 · ended "),
                       value.detailText)
     }
 

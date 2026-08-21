@@ -2211,7 +2211,8 @@ struct AtriaHomeView: View {
     }
 
     @discardableResult
-    private func beginWorkoutSession(configuration: AtriaWorkoutStartConfiguration = .init()) async -> Bool {
+    private func beginWorkoutSession(configuration: AtriaWorkoutStartConfiguration = .init(),
+                                     finalizeRetriesRemaining: Int = 2) async -> Bool {
         let requestedUptime = ProcessInfo.processInfo.systemUptime
         guard workoutSession == nil else { return false }
         guard await prepareWorkoutStartAuthority() else {
@@ -2226,12 +2227,37 @@ struct AtriaHomeView: View {
                 restoreOrFinalizePendingWorkoutIntent()
                 return false
             }
-            workoutEndNotice = .retained(
-                title: "Finishing saved workout",
-                message: "Atria is restoring the previous workout before starting another. Nothing has been overwritten."
-            )
-            schedulePendingWorkoutRecoveryRetries()
-            return false
+            // A previous *ended* segment still occupies the single crash-safe
+            // slot because its confirm+clear runs async behind a large-store
+            // flush. Refusing here silently dropped the next segment on
+            // 2026-08-21 (Walk→Strength recorded nothing until a force-quit).
+            // Finalize the previous workout INLINE first — its metadata-only
+            // save needs no strap, so it clears the slot even when the link
+            // dropped during the transition — then continue into the new
+            // segment. The recovered workout stays in history.
+            await finalizePendingWorkoutIntent(pending, showFailureNotice: false)
+            if AtriaPendingWorkoutIntent.load()?.endedAt != nil {
+                // Still occupied — rare transient I/O. Retry the inline finalize
+                // a couple of times before falling back, so the new segment is
+                // never lost to a slow flush.
+                if finalizeRetriesRemaining > 0 {
+                    try? await Task.sleep(for: .milliseconds(400))
+                    guard workoutSession == nil else { return false }
+                    return await beginWorkoutSession(
+                        configuration: configuration,
+                        finalizeRetriesRemaining: finalizeRetriesRemaining - 1
+                    )
+                }
+                // Persistent failure: keep the crash-safe record, retry recovery
+                // unbounded (no force-quit needed), and tell the user plainly.
+                workoutEndNotice = .retained(
+                    title: "Finishing previous workout",
+                    message: "Atria is still saving your last workout. It will finish automatically — try starting again in a moment. Nothing was lost."
+                )
+                schedulePendingWorkoutRecoveryRetries()
+                return false
+            }
+            // Slot freed — fall through and start the new segment below.
         }
         // `liveWorkoutStrengthHistory` is prepared while the activity picker
         // is visible. Starting with `.empty` is safe if the user taps before
@@ -2563,18 +2589,29 @@ struct AtriaHomeView: View {
             pendingWorkoutRecoveryTask = nil
             return
         }
+        // A terminal intent that hasn't confirmed+cleared must not require a
+        // force-quit to resolve (2026-08-21 report). The bounded [2,10,30]s
+        // schedule gave up after ~42s; a strap that reconnects a minute later
+        // then stayed wedged. Retry with exponential backoff (capped at 5 min)
+        // for as long as the ended intent survives and this view is alive.
+        // confirm is idempotent by workout ID and clearIfUnchanged is a CAS, so
+        // racing the runtime's own launch/scene recovery is safe.
         pendingWorkoutRecoveryTask = Task { @MainActor in
-            for delay in [2, 10, 30] {
+            defer { pendingWorkoutRecoveryTask = nil }
+            var delay: TimeInterval = 2
+            while !Task.isCancelled {
                 do {
                     try await Task.sleep(for: .seconds(delay))
                 } catch {
                     return
                 }
                 guard !Task.isCancelled,
-                      AtriaPendingWorkoutIntent.load()?.endedAt != nil else { return }
-                restoreOrFinalizePendingWorkoutIntent(showFailureNotice: false)
+                      let terminal = AtriaPendingWorkoutIntent.load(),
+                      terminal.endedAt != nil,
+                      workoutSession == nil else { return }
+                await finalizePendingWorkoutIntent(terminal, showFailureNotice: false)
+                delay = min(delay * 2, 5 * 60)
             }
-            pendingWorkoutRecoveryTask = nil
         }
     }
 

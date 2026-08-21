@@ -138,6 +138,13 @@ enum AtriaFitnessAge {
     }
 
     static func summary(inputs: Inputs) -> BiologicalAgeSummary {
+        // 2026-08-21 user directive ("show insights in the best possible way"):
+        // compute a best-effort fitness age from whatever factors exist rather
+        // than requiring all five. VO2 max (the primary CRF signal) and a
+        // 14-day history floor are still required for a meaningful estimate;
+        // Resting HR, HRV, Zone-2+ and sleep-consistency each contribute an
+        // independent additive offset, so a missing one is simply omitted
+        // instead of blocking the whole estimate.
         var blockers: [String] = []
         if inputs.historyDays < earlyEstimateMinimumDays {
             blockers.append("14 days of heart data")
@@ -145,24 +152,7 @@ enum AtriaFitnessAge {
         if inputs.vo2Max == nil {
             blockers.append("VO2 max estimate")
         }
-        if inputs.restingHeartRate == nil {
-            blockers.append("resting HR baseline")
-        }
-        if inputs.hrvRMSSD == nil {
-            blockers.append("HRV baseline")
-        }
-        if inputs.weeklyZone2PlusMinutes == nil {
-            blockers.append("weekly zone-2+ minutes")
-        }
-        if inputs.sleepConsistencyPercent == nil {
-            blockers.append("sleep consistency")
-        }
-        guard blockers.isEmpty,
-              let vo2Max = inputs.vo2Max,
-              let restingHeartRate = inputs.restingHeartRate,
-              let hrvRMSSD = inputs.hrvRMSSD,
-              let weeklyZone2PlusMinutes = inputs.weeklyZone2PlusMinutes,
-              let sleepConsistencyPercent = inputs.sleepConsistencyPercent else {
+        guard blockers.isEmpty, let vo2Max = inputs.vo2Max else {
             return BiologicalAgeSummary(biologicalAge: nil,
                                         chronologicalAge: inputs.chronologicalAge,
                                         ageDelta: nil,
@@ -173,44 +163,55 @@ enum AtriaFitnessAge {
                                         footnote: footnoteText)
         }
 
-        let factors = [
+        var factors: [BioAgeFactor] = [
             factor(id: "vo2max",
                    label: "VO2 max",
                    offset: vo2MaxOffset(age: inputs.chronologicalAge,
                                         vo2Max: vo2Max,
                                         sex: inputs.biologicalSex),
                    chronologicalAge: inputs.chronologicalAge,
-                   detail: String(format: "%.1f ml/kg/min, FRIEND age reference", vo2Max)),
-            factor(id: "rhr",
-                   label: "Resting HR",
-                   offset: restingHeartRateOffset(age: inputs.chronologicalAge,
-                                                  restingHeartRate: restingHeartRate),
-                   chronologicalAge: inputs.chronologicalAge,
-                   detail: "\(restingHeartRate) bpm, age-adjusted percentile band"),
-            factor(id: "lnrmssd",
-                   label: "HRV",
-                   offset: lnRMSSDOffset(age: inputs.chronologicalAge,
-                                         rmssd: hrvRMSSD),
-                   chronologicalAge: inputs.chronologicalAge,
-                   detail: "\(hrvRMSSD) ms HRV, age-adjusted band"),
-            factor(id: "zone2",
-                   label: "Zone 2+",
-                   offset: zone2PlusOffset(minutes: weeklyZone2PlusMinutes),
-                   chronologicalAge: inputs.chronologicalAge,
-                   detail: "\(Int(weeklyZone2PlusMinutes.rounded())) min in 7 days"),
-            factor(id: "sleep_consistency",
-                   label: "Sleep consistency",
-                   offset: sleepConsistencyOffset(percent: sleepConsistencyPercent),
-                   chronologicalAge: inputs.chronologicalAge,
-                   detail: "\(sleepConsistencyPercent)% timing consistency")
+                   detail: String(format: "%.1f ml/kg/min, FRIEND age reference", vo2Max))
         ]
+        if let restingHeartRate = inputs.restingHeartRate {
+            factors.append(factor(id: "rhr",
+                                  label: "Resting HR",
+                                  offset: restingHeartRateOffset(age: inputs.chronologicalAge,
+                                                                 restingHeartRate: restingHeartRate),
+                                  chronologicalAge: inputs.chronologicalAge,
+                                  detail: "\(restingHeartRate) bpm, age-adjusted percentile band"))
+        }
+        if let hrvRMSSD = inputs.hrvRMSSD {
+            factors.append(factor(id: "lnrmssd",
+                                  label: "HRV",
+                                  offset: lnRMSSDOffset(age: inputs.chronologicalAge,
+                                                        rmssd: hrvRMSSD),
+                                  chronologicalAge: inputs.chronologicalAge,
+                                  detail: "\(hrvRMSSD) ms HRV, age-adjusted band"))
+        }
+        if let weeklyZone2PlusMinutes = inputs.weeklyZone2PlusMinutes {
+            factors.append(factor(id: "zone2",
+                                  label: "Zone 2+",
+                                  offset: zone2PlusOffset(minutes: weeklyZone2PlusMinutes),
+                                  chronologicalAge: inputs.chronologicalAge,
+                                  detail: "\(Int(weeklyZone2PlusMinutes.rounded())) min in 7 days"))
+        }
+        if let sleepConsistencyPercent = inputs.sleepConsistencyPercent {
+            factors.append(factor(id: "sleep_consistency",
+                                  label: "Sleep consistency",
+                                  offset: sleepConsistencyOffset(percent: sleepConsistencyPercent),
+                                  chronologicalAge: inputs.chronologicalAge,
+                                  detail: "\(sleepConsistencyPercent)% timing consistency"))
+        }
         let rawDelta = factors.reduce(0) { $0 + $1.deltaVsChronological }
         let clampedDelta = min(max(rawDelta, -12), 12)
         let fitnessAge = inputs.chronologicalAge + clampedDelta
         let pace = contributorNarrative(factors: factors)
-        // 14–27 days: the full five-input estimate exists, but it is shown as
-        // explicitly early until the 28-day baseline makes it confident.
-        let earlyDayCount = inputs.historyDays < confidentBaselineDays ? inputs.historyDays : nil
+        // Shown as explicitly early until the 28-day baseline, and also whenever
+        // it is built from a partial factor set, so the confidence stays honest.
+        let hasAllFactors = factors.count == 5
+        let earlyDayCount = (inputs.historyDays < confidentBaselineDays || !hasAllFactors)
+            ? inputs.historyDays
+            : nil
         return BiologicalAgeSummary(biologicalAge: fitnessAge,
                                     chronologicalAge: inputs.chronologicalAge,
                                     ageDelta: clampedDelta,
@@ -292,7 +293,7 @@ enum AtriaFitnessAge {
         case let (nil, aging?):
             return "Your \(aging.label.lowercased()) is aging you"
         default:
-            return "All five inputs are close to age baseline"
+            return "Your heart-health inputs are close to age baseline"
         }
     }
 
