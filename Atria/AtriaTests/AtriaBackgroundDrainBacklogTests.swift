@@ -261,4 +261,43 @@ final class AtriaBackgroundDrainBacklogTests: XCTestCase {
         XCTAssertFalse(fast(foreground: true, charging: true, thermal: .serious))
         XCTAssertFalse(fast(foreground: true, charging: true, thermal: .critical))
     }
+
+    // MARK: - Higher-cadence catch-up boost (user directive 2026-08-22)
+
+    func testCatchUpBoostTightensCadenceToCoverage() {
+        // Without the boost, the saved profile's cadence is used verbatim.
+        XCTAssertEqual(
+            AtriaBLEManager.effectiveLongWearCadenceMultiplier(
+                profileMultiplier: 1.0, catchUpBoostActive: false),
+            1.0, accuracy: 0.0001)
+        // With the boost, Balanced (1.0) and Saver (1.75) both tighten to
+        // Coverage (0.75); an already-tight profile is left alone.
+        XCTAssertEqual(
+            AtriaBLEManager.effectiveLongWearCadenceMultiplier(
+                profileMultiplier: 1.0, catchUpBoostActive: true),
+            0.75, accuracy: 0.0001)
+        XCTAssertEqual(
+            AtriaBLEManager.effectiveLongWearCadenceMultiplier(
+                profileMultiplier: 1.75, catchUpBoostActive: true),
+            0.75, accuracy: 0.0001)
+        XCTAssertEqual(
+            AtriaBLEManager.effectiveLongWearCadenceMultiplier(
+                profileMultiplier: 0.75, catchUpBoostActive: true),
+            0.75, accuracy: 0.0001)
+    }
+
+    func testCatchUpBoostTightensStaleTimeoutToCoverage() {
+        XCTAssertEqual(
+            AtriaBLEManager.effectiveLongWearStaleTimeoutMultiplier(
+                profileMultiplier: 1.0, catchUpBoostActive: false),
+            1.0, accuracy: 0.0001)
+        XCTAssertEqual(
+            AtriaBLEManager.effectiveLongWearStaleTimeoutMultiplier(
+                profileMultiplier: 1.4, catchUpBoostActive: true),
+            0.85, accuracy: 0.0001)
+        XCTAssertEqual(
+            AtriaBLEManager.effectiveLongWearStaleTimeoutMultiplier(
+                profileMultiplier: 0.85, catchUpBoostActive: true),
+            0.85, accuracy: 0.0001)
+    }
 }
