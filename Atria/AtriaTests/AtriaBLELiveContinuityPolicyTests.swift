@@ -1629,6 +1629,56 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         )
     }
 
+    func testConnectedMotionBankHistoryConvergesThroughBriefHRSilenceOnlyWhenIdleAndProgressing() {
+        // #3 drain convergence (2026-08-23, flag-gated): in an idle context
+        // (charging / background / overnight) with a page actively landing, a brief
+        // 2A37 silence is the page transfer itself, not a stall — keep draining the
+        // day's banked backlog instead of abandoning it after 8s. Foreground or a
+        // genuine no-progress stall still finishes to protect the live HR view, and
+        // the extended idle budget + power park still bound it.
+        let started = Date(timeIntervalSince1970: 1_000)
+        func disp(hrAgo: TimeInterval,
+                  nowOffset: TimeInterval,
+                  progress: Bool,
+                  idle: Bool,
+                  power: Bool = false)
+            -> AtriaBLEManager.ConnectedMotionBankHistoryBudgetDisposition {
+            AtriaBLEManager.connectedMotionBankHistoryBudgetDisposition(
+                startedAt: started,
+                lastAcceptedHeartRateAt: started.addingTimeInterval(nowOffset - hrAgo),
+                now: started.addingTimeInterval(nowOffset),
+                liveSilenceLimit: 8,
+                absoluteLimit: 90,
+                powerPressureActive: power,
+                hasRecentDrainProgress: progress,
+                extendedIdleBudget: idle,
+                idleAbsoluteLimit: 300
+            )
+        }
+        // Idle + progressing + HR silent 10s → keep draining (the new behavior).
+        XCTAssertEqual(disp(hrAgo: 10, nowOffset: 20, progress: true, idle: true),
+                       .keepServing)
+        // Idle + NO recent progress + HR silent → genuine stall still finishes.
+        XCTAssertEqual(disp(hrAgo: 10, nowOffset: 20, progress: false, idle: true),
+                       .finishForLiveHeartRateSilence)
+        // Foreground (not idle) + progressing + HR silent → still finishes to
+        // protect the live HR view the user is watching.
+        XCTAssertEqual(disp(hrAgo: 10, nowOffset: 20, progress: true, idle: false),
+                       .finishForLiveHeartRateSilence)
+        // Idle keeps serving PAST the old 90s cap (at 120s) up to the 300s idle cap.
+        XCTAssertEqual(disp(hrAgo: 2, nowOffset: 120, progress: true, idle: true),
+                       .keepServing)
+        // ...but the extended idle cap still bounds it.
+        XCTAssertEqual(disp(hrAgo: 2, nowOffset: 300, progress: true, idle: true),
+                       .finishForAbsoluteBudget)
+        // Flag-off (not idle) keeps the original 90s absolute cap exactly.
+        XCTAssertEqual(disp(hrAgo: 2, nowOffset: 120, progress: true, idle: false),
+                       .finishForAbsoluteBudget)
+        // Power / thermal park always wins, even idle + progressing.
+        XCTAssertEqual(disp(hrAgo: 10, nowOffset: 20, progress: true, idle: true, power: true),
+                       .finishForPowerPressure)
+    }
+
     func testConnectedMotionBankBackgroundACKBoundaryStopsOnlyExactInactiveSlice() {
         XCTAssertTrue(
             AtriaBLEManager.shouldFinishConnectedMotionBankHistoryAtACKBoundary(
