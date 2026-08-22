@@ -492,16 +492,23 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             let usesCarried = carriedFloor > banked && carriedFloor >= liveObserved
             let usesLive = liveObserved > banked && liveObserved > carriedFloor
             let carriedEndedAt = priorCycleReceipt?.endedAt
+            // When the carried floor wins, the shown count is the prior cycle's
+            // total, captured through the prior receipt's own frontier — NOT the
+            // freshly-rolled cycle's tiny coverage. Reporting this partial's
+            // small coverageFraction/dayEnd here would make accessibilityText
+            // say "N steps so far, motion tracked for 4 percent of your day",
+            // pairing a near-complete total with a coverage figure that does not
+            // describe it. Mirror the no-partial carry below: nil coverage and
+            // the carried frontier, so VoiceOver reads "partially tracked".
             return .init(day: dayStart,
                          count: max(banked, liveObserved, carriedFloor),
                          completeness: .partial,
                          source: usesLive ? .live : .verifiedCanonical,
                          isValidated: usesLive ? liveIsValidated : true,
                          capturedAt: usesCarried
-                            ? [partial.dayEnd, carriedEndedAt]
-                                .compactMap { $0 }.max()
+                            ? carriedEndedAt
                             : (usesLive ? liveCapturedAt : partial.dayEnd),
-                         coverageFraction: coverageFraction,
+                         coverageFraction: usesCarried ? nil : coverageFraction,
                          isOpenCycle: isOpenDay,
                          carriedFromUnconfirmedPriorCycle: usesCarried)
         }
