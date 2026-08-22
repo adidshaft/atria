@@ -401,6 +401,16 @@ extension AtriaBLEManager {
         // stopping the self-sustaining "history incomplete" storm at its source.
         static let historyAbandonedThroughUnix =
             "atria.offlineSync.historyAbandonedThroughUnix.v1"
+        // Clean-slate auto-surfacing: persisted mirror of the in-memory
+        // consecutive zero-progress catch-up slice counter. A degraded strap
+        // that drops the link on every history read accumulates these (each
+        // slice yields durable_rows=0 / no frontier advance); any real progress
+        // resets it to 0. This is the un-foolable "history isn't draining"
+        // signal — unlike flush/frontier timestamps, which 0-row offloads and
+        // live data keep fresh. Drives the "Strap can't catch up → Start fresh"
+        // offer once it crosses the terminal threshold.
+        static let consecutiveZeroProgressSlices =
+            "atria.offlineSync.consecutiveZeroProgressSlices.v1"
         // Drain-keeping P3: last time the HR-independent maintenance ticker
         // re-armed the range-loss drain because the normal (accepted-HR-driven)
         // re-arm loop had gone silent past its floor. A moving value here while a

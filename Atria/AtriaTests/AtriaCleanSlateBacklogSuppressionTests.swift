@@ -95,64 +95,51 @@ final class AtriaCleanSlateBacklogSuppressionTests: XCTestCase {
 }
 
 /// Auto-surfacing of the clean slate: a degraded strap that can't drain must be
-/// OFFERED "Start fresh" automatically, not nag forever. Pure decision tests.
+/// OFFERED "Start fresh" automatically, not nag forever. Pure decision tests
+/// over the consecutive zero-progress slice counter (the un-foolable signal).
 final class AtriaGapTerminalStallTests: XCTestCase {
-    private let window = AtriaMissedDataBannerPresentation.terminalStallWindow // 4h
+    private let threshold = AtriaMissedDataBannerPresentation.terminalStallSlices // 5
     private typealias P = AtriaMissedDataBannerPresentation
 
     func testNotStalledWithoutBacklog() {
         XCTAssertFalse(P.gapIsTerminallyStalled(
             backlogPending: false,
             sequenceGapParkedTerminal: false,
-            secondsSinceFrontierAdvance: 10 * 3600,
-            secondsSinceRangeLossRequested: 10 * 3600))
+            consecutiveZeroProgressSlices: 99))
     }
 
     func testStalledWhenSequenceGapParked() {
         XCTAssertTrue(P.gapIsTerminallyStalled(
             backlogPending: true,
             sequenceGapParkedTerminal: true,
-            secondsSinceFrontierAdvance: nil,
-            secondsSinceRangeLossRequested: 60))
+            consecutiveZeroProgressSlices: 0))
     }
 
-    // Frontier frozen for the whole window + old request → stalled (this is the
-    // degraded-strap case: 0-row offloads keep other timers fresh, but the
-    // frontier — the true progress signal — never moves).
-    func testStalledWhenFrontierFrozenForWindow() {
+    // The degraded-strap case: enough consecutive failed history reads → stalled.
+    func testStalledWhenSlicesCrossThreshold() {
         XCTAssertTrue(P.gapIsTerminallyStalled(
             backlogPending: true,
             sequenceGapParkedTerminal: false,
-            secondsSinceFrontierAdvance: window + 60,
-            secondsSinceRangeLossRequested: window + 60))
-    }
-
-    // Frontier never recorded (nil) but request is old enough → stalled.
-    func testStalledWhenNoFrontierAndRequestOld() {
+            consecutiveZeroProgressSlices: threshold))
         XCTAssertTrue(P.gapIsTerminallyStalled(
             backlogPending: true,
             sequenceGapParkedTerminal: false,
-            secondsSinceFrontierAdvance: nil,
-            secondsSinceRangeLossRequested: window + 1))
+            consecutiveZeroProgressSlices: threshold + 20))
     }
 
-    // Transient reconnect blip: request younger than the window → NOT stalled,
-    // even with a frozen frontier (a strap merely behind, about to drain).
-    func testNotStalledWhenRequestIsRecent() {
+    // A few failed slices during a normal reconnect don't trip it.
+    func testNotStalledBelowThreshold() {
         XCTAssertFalse(P.gapIsTerminallyStalled(
             backlogPending: true,
             sequenceGapParkedTerminal: false,
-            secondsSinceFrontierAdvance: 10 * 3600,
-            secondsSinceRangeLossRequested: 5 * 60))
+            consecutiveZeroProgressSlices: threshold - 1))
     }
 
-    // Frontier advanced recently = real progress (healthy catch-up) → NOT
-    // stalled, even with an old request.
-    func testNotStalledWhenFrontierAdvancedRecently() {
+    // Any real progress resets the counter (0) → healthy catch-up never stalls.
+    func testNotStalledWhenProgressResetTheCounter() {
         XCTAssertFalse(P.gapIsTerminallyStalled(
             backlogPending: true,
             sequenceGapParkedTerminal: false,
-            secondsSinceFrontierAdvance: 10 * 60,
-            secondsSinceRangeLossRequested: window + 60))
+            consecutiveZeroProgressSlices: 0))
     }
 }
