@@ -585,6 +585,54 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
                       "a persistent finalize failure must keep the crash-safe record (unbounded recovery), not force-quit")
     }
 
+    func testMetadataOnlyWorkoutUpgradePreservesUserEditsAndTakesStrongerHeartRate() {
+        // #1 auto-upgrade (2026-08-22): once a strap-drop window drains, a
+        // metadata-only workout is rebuilt from the stronger recompute WITHOUT
+        // discarding the user's edits or changing identity.
+        let start = Date(timeIntervalSince1970: 1_000)
+        let end = Date(timeIntervalSince1970: 4_600)
+        var existing = UserConfirmedWorkout(
+            id: "w1", createdAt: Date(timeIntervalSince1970: 900),
+            start: start, end: end, label: "Morning strength",
+            source: "live_workout_window", confidence: "user_confirmed_no_hr",
+            sessions: 1, samples: 0, avgHR: 0, peakHR: 0, p95HR: 0, p99HR: 0,
+            thresholdHR: 0, streamCoveragePercent: 0, observedDuration: 0,
+            reason: "no_hr", eventTimeZoneIdentifier: "UTC")
+        existing.activityType = "strength_training"
+        existing.exerciseNames = ["Bench", "Squat"]
+
+        var recomputed = UserConfirmedWorkout(
+            id: "w1", createdAt: Date(timeIntervalSince1970: 9_999),
+            start: start, end: end, label: "Live workout",
+            source: "live_workout_window", confidence: "live_window_manual_confirmed",
+            sessions: 1, samples: 200, avgHR: 130, peakHR: 165, p95HR: 160,
+            p99HR: 164, thresholdHR: 150, streamCoveragePercent: 92,
+            observedDuration: 3_600, reason: "confirmed",
+            eventTimeZoneIdentifier: "UTC")
+        recomputed.strain = 8.4
+        recomputed.activityType = "running"          // must NOT override user's edit
+        recomputed.zoneSeconds = ["zone2": 1_200]
+
+        let upgraded = SessionStore.workoutByUpgradingHeartRateMetrics(
+            existing: existing, recomputed: recomputed)
+
+        // Identity + user edits preserved.
+        XCTAssertEqual(upgraded.id, "w1")
+        XCTAssertEqual(upgraded.createdAt, existing.createdAt)
+        XCTAssertEqual(upgraded.label, "Morning strength")
+        XCTAssertEqual(upgraded.activityType, "strength_training")
+        XCTAssertEqual(upgraded.exerciseNames, ["Bench", "Squat"])
+        // HR / effort / strain taken from the stronger recompute.
+        XCTAssertEqual(upgraded.samples, 200)
+        XCTAssertEqual(upgraded.avgHR, 130)
+        XCTAssertEqual(upgraded.peakHR, 165)
+        XCTAssertEqual(upgraded.strain, 8.4)
+        XCTAssertEqual(upgraded.confidence, "live_window_manual_confirmed")
+        XCTAssertEqual(upgraded.zoneSeconds?["zone2"], 1_200)
+        // The upgrade genuinely changed the record (would trigger a save).
+        XCTAssertNotEqual(upgraded, existing)
+    }
+
     func testPendingWorkoutIntentSaveFailsClosedForNonFiniteTerminalState() throws {
         let suite = "AtriaWorkoutSaveDurabilityTests.intent-failure.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

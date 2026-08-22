@@ -19155,6 +19155,10 @@ final class SessionStore: ObservableObject {
         resumeDeferredRecoveredDataRecomputation(
             reason: "foreground_\(reason)"
         )
+        // #1 auto-upgrade: once foreground archive work has replayed newly-drained
+        // history, recompute HR/strain for any workout saved metadata-only during a
+        // strap drop so it stops showing without readings.
+        upgradeMetadataOnlyWorkoutsFromHistoryInBackground()
     }
 
     private func finishConfirmedWorkoutRehydrationCompletions(succeeded: Bool) {
@@ -31222,6 +31226,55 @@ final class SessionStore: ObservableObject {
         }
     }
 
+    /// #1 auto-upgrade (2026-08-22): the user asked that when the strap "comes back
+    /// online" the app should "flush the missing portion and reliably recalculate
+    /// the readings" rather than leave a workout stuck without HR. A segment saved
+    /// metadata-only while the link was dropped (confidence `user_confirmed_no_hr`,
+    /// samples 0) is re-run through the SAME production confirm pipeline; once its
+    /// window's HR/motion has drained, `commitPreparedWorkoutWindowConfirmation`
+    /// upgrades it in place (see `workoutByUpgradingHeartRateMetrics`). A window that
+    /// still has no HR re-saves unchanged, so this is safe to run repeatedly (no
+    /// churn) and never fabricates evidence.
+    func upgradeMetadataOnlyWorkoutsFromHistoryIfNeeded() async {
+        let candidates = cachedConfirmedWorkouts.filter {
+            $0.confidence == "user_confirmed_no_hr" && $0.samples == 0
+        }
+        guard !candidates.isEmpty else { return }
+        let rest = baseline.restingInt ?? 60
+        let maxHR = profile.maxHR
+        AtriaDebugLog("ATRIADBG workout_confirm status=metadata_only_upgrade_sweep candidates=%d",
+                      candidates.count)
+        for workout in candidates {
+            _ = await confirmWorkoutWindowForUIAsync(
+                start: workout.start,
+                end: workout.end,
+                rest: rest,
+                maxHR: maxHR,
+                source: "metadata_only_upgrade_sweep",
+                preserveUserDeclaredActivityWithoutHeartRate: true,
+                activityLabel: workout.label,
+                activityType: workout.activityType,
+                activitySubtype: workout.activitySubtype,
+                exerciseNames: workout.exerciseNames ?? [],
+                strengthSets: workout.strengthSets ?? [],
+                excludedIntervals: workout.excludedIntervals ?? [],
+                reviewSource: workout.reviewSource,
+                reviewCandidateID: workout.reviewCandidateID,
+                workoutSteps: workout.workoutSteps,
+                workoutStepsAreEstimated: workout.workoutStepsAreEstimated,
+                workoutStepsCapturedAt: workout.workoutStepsCapturedAt
+            )
+        }
+    }
+
+    /// Fire-and-forget launch/foreground wrapper for the metadata-only upgrade
+    /// sweep — production reconciliation, not a launch-arg diagnostic.
+    func upgradeMetadataOnlyWorkoutsFromHistoryInBackground() {
+        Task { @MainActor [weak self] in
+            await self?.upgradeMetadataOnlyWorkoutsFromHistoryIfNeeded()
+        }
+    }
+
     /// Device-recovery hook for an exact user-supplied window. Arguments are
     /// `--atria-confirm-workout-window <start-unix> <end-unix> <activity-type>`.
     /// It uses the same production confirmation path as Add Activity and waits
@@ -31652,37 +31705,11 @@ final class SessionStore: ObservableObject {
         var existing = cachedConfirmedWorkouts
         let workoutSource = "live_workout_window"
         let id = confirmedWorkoutID(start: request.start, end: request.end, source: workoutSource)
-        if let index = existing.firstIndex(where: { $0.id == id }) {
-            let already = existing[index]
-            let merged = Self.workoutByMergingUserEditsAndStepEvidence(
-                already,
-                activityLabel: request.activityLabel,
-                activityType: request.activityType,
-                activitySubtype: request.activitySubtype,
-                reviewSource: request.reviewSource,
-                reviewCandidateID: request.reviewCandidateID,
-                activityCalibrationEvidence: prepared.activityCalibrationEvidence,
-                workoutSteps: request.workoutSteps,
-                workoutStepsAreEstimated: request.workoutStepsAreEstimated,
-                workoutStepsCapturedAt: request.workoutStepsCapturedAt
-            )
-            if merged != already {
-                existing[index] = merged
-                guard await saveConfirmedWorkouts(
-                    existing,
-                    stressContextMutation: .init(
-                        previous: already,
-                        next: merged
-                    )
-                ) else { return nil }
-            }
-            settleWorkoutCandidateAfterCanonicalSave(
-                confirmed: merged,
-                originalCandidateWindow: request.settlingCandidateWindow
-            )
-            return merged
-        }
 
+        // Build the freshly computed record up front so it can either UPGRADE an
+        // existing weaker record in place — e.g. a metadata-only save made while the
+        // strap link was dropped, once its window's HR/motion has since drained
+        // (#1 auto-upgrade, 2026-08-22) — or be appended when the window is new.
         let confidence = readiness.ready ? "live_window_user_confirmed" :
             (readiness.nearMiss ? "live_window_near_miss" :
                 (manualConfirmable
@@ -31704,12 +31731,6 @@ final class SessionStore: ObservableObject {
             .filter { !$0.isEmpty }
         let cleanedReview = reviewValue.isEmpty ? nil : reviewValue
         let cleanedReviewCandidateID = reviewCandidateValue.isEmpty ? nil : reviewCandidateValue
-        if !request.strengthSets.isEmpty || !request.excludedIntervals.isEmpty {
-            try? ActiveSessionJournal.mirrorStrengthState(
-                strengthSets: request.strengthSets,
-                excludedIntervals: request.excludedIntervals
-            )
-        }
         let confirmed = UserConfirmedWorkout(
             id: id,
             createdAt: Date(),
@@ -31749,6 +31770,87 @@ final class SessionStore: ObservableObject {
             workoutStepsAreEstimated: request.workoutSteps == nil ? nil : (request.workoutStepsAreEstimated ?? true),
             workoutStepsCapturedAt: request.workoutSteps == nil ? nil : request.workoutStepsCapturedAt
         )
+        if let index = existing.firstIndex(where: { $0.id == id }) {
+            let already = existing[index]
+            // #1 auto-upgrade: the window now yields strictly more HR samples than
+            // the saved record (e.g. a metadata-only save during a strap drop, whose
+            // HR/motion has since drained). Rebuild it in place from the stronger
+            // computation, preserving user edits. Guarded on MORE samples so it can
+            // only upgrade, never regress a good record; a later equal pass no-ops.
+            if confirmed.samples > already.samples {
+                let upgraded = Self.workoutByUpgradingHeartRateMetrics(
+                    existing: already,
+                    recomputed: confirmed
+                )
+                if upgraded != already {
+                    existing[index] = upgraded
+                    guard await saveConfirmedWorkouts(
+                        existing,
+                        stressContextMutation: .init(previous: already, next: upgraded)
+                    ) else { return nil }
+                    AtriaDebugLog("ATRIADBG workout_confirm status=upgraded_from_history id=%@ prev_samples=%d new_samples=%d prev_avg_hr=%d new_avg_hr=%d new_strain=%.2f",
+                                  already.id,
+                                  already.samples,
+                                  upgraded.samples,
+                                  already.avgHR,
+                                  upgraded.avgHR,
+                                  upgraded.strain ?? 0)
+                    let auditSamples = prepared.points.map {
+                        HRSample(t: request.start.addingTimeInterval(max(0, $0.t)), bpm: $0.bpm)
+                    }
+                    let auditUpgraded = upgraded
+                    let auditRest = request.rest
+                    let auditMaxHR = request.maxHR
+                    let auditSex = request.profile.biologicalSex
+                    let auditExclusions = request.excludedIntervals
+                    Task.detached(priority: .utility) {
+                        Self.persistStrainConfirmationAudit(
+                            confirmed: auditUpgraded,
+                            samples: auditSamples,
+                            rest: auditRest,
+                            maxHR: auditMaxHR,
+                            biologicalSex: auditSex,
+                            excludedIntervals: auditExclusions
+                        )
+                    }
+                }
+                settleWorkoutCandidateAfterCanonicalSave(
+                    confirmed: upgraded,
+                    originalCandidateWindow: request.settlingCandidateWindow
+                )
+                return upgraded
+            }
+            let merged = Self.workoutByMergingUserEditsAndStepEvidence(
+                already,
+                activityLabel: request.activityLabel,
+                activityType: request.activityType,
+                activitySubtype: request.activitySubtype,
+                reviewSource: request.reviewSource,
+                reviewCandidateID: request.reviewCandidateID,
+                activityCalibrationEvidence: prepared.activityCalibrationEvidence,
+                workoutSteps: request.workoutSteps,
+                workoutStepsAreEstimated: request.workoutStepsAreEstimated,
+                workoutStepsCapturedAt: request.workoutStepsCapturedAt
+            )
+            if merged != already {
+                existing[index] = merged
+                guard await saveConfirmedWorkouts(
+                    existing,
+                    stressContextMutation: .init(previous: already, next: merged)
+                ) else { return nil }
+            }
+            settleWorkoutCandidateAfterCanonicalSave(
+                confirmed: merged,
+                originalCandidateWindow: request.settlingCandidateWindow
+            )
+            return merged
+        }
+        if !request.strengthSets.isEmpty || !request.excludedIntervals.isEmpty {
+            try? ActiveSessionJournal.mirrorStrengthState(
+                strengthSets: request.strengthSets,
+                excludedIntervals: request.excludedIntervals
+            )
+        }
         existing.append(confirmed)
         guard await saveConfirmedWorkouts(
             existing,
@@ -32336,6 +32438,70 @@ final class SessionStore: ObservableObject {
             merged.workoutStepsCapturedAt = workoutStepsCapturedAt
         }
         return merged
+    }
+
+    /// #1 auto-upgrade (2026-08-22): rebuild a previously weaker / metadata-only
+    /// workout in place from a stronger recompute once its window's HR/motion has
+    /// drained (the user asked that a reconnect "flush the missing portion and
+    /// reliably recalculate the readings"). Identity and every user-edited field are
+    /// preserved from `existing`; only the HR / effort / strain metrics come from
+    /// `recomputed`. The caller guards on `recomputed.samples > existing.samples`,
+    /// so this can only ever UPGRADE — it never regresses a good record, and a later
+    /// equal-sample pass produces an identical struct (idempotent, no churn).
+    nonisolated static func workoutByUpgradingHeartRateMetrics(
+        existing: UserConfirmedWorkout,
+        recomputed: UserConfirmedWorkout
+    ) -> UserConfirmedWorkout {
+        var upgraded = UserConfirmedWorkout(
+            id: existing.id,
+            createdAt: existing.createdAt,
+            start: existing.start,
+            end: existing.end,
+            label: existing.label,
+            source: existing.source,
+            confidence: recomputed.confidence,
+            sessions: recomputed.sessions,
+            samples: recomputed.samples,
+            avgHR: recomputed.avgHR,
+            peakHR: recomputed.peakHR,
+            p95HR: recomputed.p95HR,
+            p99HR: recomputed.p99HR,
+            thresholdHR: recomputed.thresholdHR,
+            streamCoveragePercent: recomputed.streamCoveragePercent,
+            observedDuration: recomputed.observedDuration,
+            reason: recomputed.reason,
+            eventTimeZoneIdentifier: existing.eventTimeZoneIdentifier
+        )
+        // User-edited / identity fields survive untouched.
+        upgraded.activityType = existing.activityType
+        upgraded.activitySubtype = existing.activitySubtype
+        upgraded.exerciseNames = existing.exerciseNames
+        upgraded.strengthSets = existing.strengthSets
+        upgraded.muscularLoadReceipt = existing.muscularLoadReceipt
+        upgraded.excludedIntervals = existing.excludedIntervals
+        upgraded.reviewSource = existing.reviewSource
+        upgraded.reviewCandidateID = existing.reviewCandidateID
+        // Freshly computed effort-derived metrics replace the weaker placeholders.
+        upgraded.activityCalibrationEvidence =
+            recomputed.activityCalibrationEvidence ?? existing.activityCalibrationEvidence
+        upgraded.strain = recomputed.strain
+        upgraded.strainCalibrationVersion = recomputed.strainCalibrationVersion
+        upgraded.activeEnergyKilocalories = recomputed.activeEnergyKilocalories
+        upgraded.activeEnergyConfidence = recomputed.activeEnergyConfidence
+        upgraded.zoneSeconds = recomputed.zoneSeconds
+        upgraded.zoneBoundaries = recomputed.zoneBoundaries
+        // Steps: keep the user's / earlier-captured value when present; otherwise
+        // adopt whatever the recompute produced for the window.
+        if existing.workoutSteps != nil {
+            upgraded.workoutSteps = existing.workoutSteps
+            upgraded.workoutStepsAreEstimated = existing.workoutStepsAreEstimated
+            upgraded.workoutStepsCapturedAt = existing.workoutStepsCapturedAt
+        } else {
+            upgraded.workoutSteps = recomputed.workoutSteps
+            upgraded.workoutStepsAreEstimated = recomputed.workoutStepsAreEstimated
+            upgraded.workoutStepsCapturedAt = recomputed.workoutStepsCapturedAt
+        }
+        return upgraded
     }
 
     /// The trimmed workout start (2026-07-07, user-reported early boundary):

@@ -2218,6 +2218,22 @@ private struct AtriaHealthTimelineProofCard: View, Equatable {
         AtriaHeartRateChartSeries.make(points: points, zoom: 1)
     }
 
+    /// #2 fix (2026-08-22): pin the axis to at least a minimum width so a sparse
+    /// archive (a handful of points spanning seconds/minutes) is not stretched
+    /// across the whole plot — the exact "very small interval stretched to the
+    /// entire graph" symptom. The chart's `resolvePinnedXDomain` only ever WIDENS
+    /// this to cover data outside it, so a genuinely multi-day archive still fills
+    /// the axis. Every other production HR chart already pins its domain; this
+    /// user-visible Vitals proof card was the one caller that omitted it.
+    private var pinnedXDomain: ClosedRange<Date>? {
+        guard let first = points.first?.t, let last = points.last?.t else {
+            return nil
+        }
+        let minimumWidth: TimeInterval = 3_600
+        let upper = max(last, first.addingTimeInterval(minimumWidth))
+        return first...upper
+    }
+
     private var countText: String {
         points.isEmpty ? (isLoading ? "Loading archive" : "No archive points") : "\(points.count) points"
     }
@@ -2261,7 +2277,8 @@ private struct AtriaHealthTimelineProofCard: View, Equatable {
                                      yDomain: series.yDomain,
                                      buckets: series.buckets,
                                      displayContinuity: series.displayContinuity,
-                                     selectedTime: $selectedTime)
+                                     selectedTime: $selectedTime,
+                                     xDomain: pinnedXDomain)
                 .frame(height: 430)
                 .background(Color(uiColor: .tertiarySystemGroupedBackground),
                             in: RoundedRectangle(cornerRadius: 8, style: .continuous))

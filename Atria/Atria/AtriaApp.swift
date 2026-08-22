@@ -1369,6 +1369,10 @@ struct AtriaApp: App {
             // machine-authored confirmed sleep that a durable dismissal
             // tombstone suppresses (the dismissal/auto-confirm race).
             store.reconcileDismissalTombstonesOnLaunch()
+            // #1 auto-upgrade: recompute HR/strain for any workout saved
+            // metadata-only during a strap drop, now that its window may have
+            // drained ("when it comes back online … reliably recalculate").
+            store.upgradeMetadataOnlyWorkoutsFromHistoryInBackground()
             store.exportHealthKitFromLaunchIfRequested(arguments: arguments)
             store.auditHealthKitHRReferenceFromLaunchIfRequested(arguments: arguments)
             schedulePostHealthKitGateStatusIfNeeded(store: store,

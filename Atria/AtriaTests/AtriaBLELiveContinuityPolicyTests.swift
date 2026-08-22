@@ -62,7 +62,7 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
     func testAttendedAndGeneralHistoryDeferWhileOnlyExactMotionBankTokenCanShareLive() throws {
         let source = try managerSource()
         let guardStart = try XCTUnwrap(source.range(
-            of: "if !exactConnectedRealtimePreservingRequest,\n           Self.shouldDeferHistoricalTransportForRealtimeContinuity("
+            of: "if !exactConnectedRealtimePreservingRequest,\n           !naturalGapDrainBypass,\n           Self.shouldDeferHistoricalTransportForRealtimeContinuity("
         ))
         let transactionStart = try XCTUnwrap(source.range(
             of: "return startOfflineHistoricalSync("
@@ -3205,5 +3205,36 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertFalse(drains(naturalGap: false))        // epoch didn't end naturally
         XCTAssertFalse(drains(motionOwner: true))        // workout owns motion
         XCTAssertFalse(drains(thermal: true))            // thermal park
+    }
+
+    /// Regression (device evidence 2026-08-22): the on-connect natural-gap drain
+    /// judged "healthy" from a bare `lastAcceptedHRAt` wall-clock (<10s) window.
+    /// That timestamp survives a natural gap, so a SHORT drop (a 2s teardown then
+    /// reconnect, observed on device) still read as healthy and skipped — yet the
+    /// brief drops that dominate stable wear are exactly the safe windows this path
+    /// exists to use, so it could effectively never fire. Health at the reconnect
+    /// edge must be epoch-relative: HR accepted on THIS connection and still fresh,
+    /// which is false right at didConnect before service/notify rediscovery, so the
+    /// drain runs in the intended pre-HR window and can never seize a live stream.
+    func testOnConnectNaturalGapDrainUsesEpochRelativeHealthNotStaleWallClock() throws {
+        let source = try managerSource()
+        let armStart = try XCTUnwrap(source.range(
+            of: "self.naturalGapDrainArmed = false"
+        ))
+        let triggerMarker = try XCTUnwrap(source.range(
+            of: "status=triggering_on_connect",
+            range: armStart.upperBound..<source.endIndex
+        ))
+        let block = String(source[armStart.lowerBound..<triggerMarker.upperBound])
+        XCTAssertTrue(
+            block.contains(
+                "let healthyEpoch = self.currentConnectionHasFreshHeartRate"
+            ),
+            "the on-connect drain must gate on epoch-relative fresh HR"
+        )
+        XCTAssertFalse(
+            block.contains("nowTs.timeIntervalSince($0) < 10"),
+            "the stale wall-clock HR window survived a natural gap and must be gone"
+        )
     }
 }

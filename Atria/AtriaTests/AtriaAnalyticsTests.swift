@@ -129,6 +129,26 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertEqual(summary.confidence, "rough estimate")
     }
 
+    func testVO2MaxEstimateUsesAgeBasedHRmaxWhenNotMeasured() throws {
+        // #4 (2026-08-22): with no measured max-effort HRmax, VO2max is still shown
+        // from an age-based HRmax — the single highest-impact insight blocker, since
+        // a measured HRmax rarely exists. Honesty-first: the value is labeled
+        // "estimate" and the detail carries "(est.)", never presented as exact.
+        // This age-based-HRmax branch was previously untested (audit 2026-08-22).
+        let summary = AtriaAnalytics.VO2Max.summary(
+            rest: 57,
+            maxHR: 190,
+            restingSamples: 14,
+            maxHRMeasured: false,
+            restingTrend: [60, 59, 58, 57]
+        )
+
+        XCTAssertEqual(try XCTUnwrap(summary.value), 51.0, accuracy: 0.01)
+        XCTAssertEqual(summary.confidence, "estimate")
+        XCTAssertEqual(summary.detail, "estimate · RHR 57 · HRmax 190 (est.)")
+        XCTAssertTrue(summary.narrative.contains("age-based max HR"))
+    }
+
     func testMeasuredSustainedStrengthLoadUsesModerateStrainRange() {
         // Regression point from a real 64-minute strength window: 3,820 seconds
         // of observed strap HR, mean 131 bpm, peak 170 bpm, rest 68, max 190.
@@ -1422,6 +1442,33 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNil(refused.percent)
         XCTAssertEqual(refused.confidence, .learning)
         XCTAssertFalse(refused.usesHRV)
+    }
+
+    func testRecoveryScoresFromHrvAndSleepWhenRestingNowMissing() {
+        // #4 (2026-08-22): recovery must not hide when a current resting-HR reading
+        // is missing but HRV + a confirmed sleep are present. The resting term is
+        // dropped and the remaining weights renormalize at reduced (.unverified)
+        // confidence, rather than returning .learning ("need resting HR") as before.
+        let now = Date()
+        let baseline = PersonalBaseline(restingHR: 60,
+                                        hrvEMA: 50,
+                                        sessions: 3,
+                                        updated: now,
+                                        samples: baselineSamples(count: 3, now: now))
+        let estimate = AtriaAnalytics.Recovery.estimate(hrvSnapshot: nil,
+                                                        fallbackRMSSD: 55,
+                                                        restingNow: nil,
+                                                        baseline: baseline,
+                                                        sleepEfficiency: 0.90,
+                                                        sleepDurationHours: 7.5)
+
+        XCTAssertNotNil(estimate.percent)
+        XCTAssertEqual(estimate.confidence, .unverified)
+        XCTAssertTrue(estimate.usesHRV)
+        // Resting is present as an explicit zero-weight excluded contributor, never
+        // renormalized to own the score.
+        let rhr = estimate.contributors.first { $0.kind == .restingHeartRate }
+        XCTAssertEqual(rhr?.weight, 0)
     }
 
     private static func journalDays(_ recoveries: [Int?], startingAt start: Date, calendar: Calendar) -> [AtriaBehaviorImpact.Day] {
@@ -4543,6 +4590,33 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertNil(summary.earlyEstimateQualifierText)
         // Same estimate as the early phase — only the confidence changed.
         XCTAssertEqual(summary.biologicalAge, fitnessAgeSummary(historyDays: 14).biologicalAge)
+    }
+
+    func testFitnessAgeComputesFromPartialFactorSetAndStaysEarly() {
+        // #4 (2026-08-22): a missing sub-factor (here HRV) is OMITTED rather than
+        // blocking the whole fitness-age estimate — it still computes from VO2max +
+        // the remaining factors, and stays explicitly "early" (partial factor set)
+        // even past the 28-day baseline so the reduced confidence is honest. This
+        // partial-factor branch was previously untested (audit 2026-08-22).
+        let summary = AtriaFitnessAge.summary(inputs: AtriaFitnessAge.Inputs(
+            chronologicalAge: 40,
+            biologicalSex: .female,
+            vo2Max: 36,
+            restingHeartRate: 58,
+            hrvRMSSD: nil,
+            weeklyZone2PlusMinutes: 180,
+            sleepConsistencyPercent: 88,
+            historyDays: 40))
+
+        XCTAssertNotNil(summary.biologicalAge)
+        XCTAssertTrue(summary.blockers.isEmpty)
+        XCTAssertEqual(summary.factors.count, 4)
+        XCTAssertFalse(summary.factors.contains { $0.id == "lnrmssd" })
+        XCTAssertTrue(
+            summary.isEarlyEstimate,
+            "a partial factor set must stay labeled early even past 28 days"
+        )
+        XCTAssertEqual(summary.earlyEstimateDayCount, 40)
     }
 
     func testFitnessAgePaceRequiresFourWeeklyChecks() {
