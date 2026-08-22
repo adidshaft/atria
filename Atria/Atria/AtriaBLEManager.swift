@@ -1616,6 +1616,14 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var historyRecentSweepEnabled = false
     private var historyRecentSweepSent = false
     private var historyRecentSweepOffsets: [UInt32] = [0, 300, 3_600]
+    /// Step 2 (strap-only drain, natural-gap-only): true when the LAST link teardown
+    /// was strap-initiated (a CBError disconnect, e.g. remote_range_loss), i.e. the
+    /// prior live epoch ended NATURALLY rather than by our own cancel. This is the
+    /// window in which `shouldDrainHistoryDuringNaturalGap` may authorize a bounded
+    /// history chunk without ever interrupting a healthy epoch. Currently consumed
+    /// only by a log-only dry-run (`--atria-natural-gap-drain-dryrun`) so a soak can
+    /// confirm the trigger fires in exactly the right windows before any real drain.
+    private var priorConnectionEndedNaturally = false
     private var historySelectorSweepEnabled = false
     private var historySelectorSweepSent = false
     private var historySelectorMode = "current-unix-bare"
@@ -10523,6 +10531,46 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // authority exists only after the durable workout intent has ended.
         let explicitHistoricalRequest =
             attendedHistoricalRequest || explicitPostWorkoutBankRequest
+        if ProcessInfo.processInfo.arguments.contains("--atria-natural-gap-drain-dryrun") {
+            // Step 2 log-only dry-run: evaluate (but never act on) the natural-gap
+            // drain predicate at the real drain-decision point, so a device soak can
+            // confirm it would fire in the safe windows (prior_natural=1,
+            // healthy_epoch=0, backlog=1) and never while a healthy epoch is live —
+            // BEFORE any code is wired to actually seize the link.
+            let nowTs = Date()
+            let healthyEpoch = exactRealtimeEpochOwned
+                && (lastAcceptedHRAt.map { nowTs.timeIntervalSince($0) < 10 } ?? false)
+            let motionOwner = Self.explicitMotionOwnershipBlocksHistory(
+                pendingWorkoutIntentActive:
+                    AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: nowTs),
+                inMemoryLeaseHeld: workoutMotionOwnerStartedAt != nil,
+                calibrationHoldActive:
+                    workoutMotionCalibrationHoldUntil.map { nowTs < $0 } == true
+            )
+            let retained = pendingOfflineHistoricalSyncRequest?.explicitRequest == true
+                || attendedHistoricalRequest
+            let backlog = strapBacklogPendingForCatchUp(now: nowTs)
+            let thermalParked = Self.shouldParkConnectedRawHistoryCatchUpForPowerPressure(
+                thermalState: ProcessInfo.processInfo.thermalState
+            )
+            let wouldDrain = Self.shouldDrainHistoryDuringNaturalGap(
+                retainedExplicitHistoryRequest: retained,
+                strapBacklogPending: backlog,
+                priorEpochEndedNaturally: priorConnectionEndedNaturally,
+                healthyLiveEpochActive: healthyEpoch,
+                explicitMotionOwnershipActive: motionOwner,
+                thermalParked: thermalParked
+            )
+            AtriaDebugLog("ATRIADBG natural_gap_drain_dryrun would_drain=%d reason=%@ retained=%d backlog=%d prior_natural=%d healthy_epoch=%d motion_owner=%d thermal_parked=%d",
+                          wouldDrain ? 1 : 0,
+                          reason,
+                          retained ? 1 : 0,
+                          backlog ? 1 : 0,
+                          priorConnectionEndedNaturally ? 1 : 0,
+                          healthyEpoch ? 1 : 0,
+                          motionOwner ? 1 : 0,
+                          thermalParked ? 1 : 0)
+        }
         if Self.shouldDeferAutomaticHistoryForLiveContinuity(
             linkConnected: connectedLink,
             syncInProgress: offlineHistoricalSyncInProgress,
@@ -45561,6 +45609,15 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             return
         }
         proprietaryFrameReassembler.reset()
+        // Step 2 natural-gap signal: a strap-initiated teardown surfaces a CBError
+        // (remote_range_loss et al.); an app-initiated cancel disconnects with no
+        // error. Only the former leaves a naturally-ended epoch that a bounded
+        // history chunk may safely use. This callback is nonisolated, so hop to the
+        // MainActor to record the flag the (MainActor) drain-decision path reads.
+        let endedNaturally = (error != nil)
+        Task { @MainActor [weak self] in
+            self?.priorConnectionEndedNaturally = endedNaturally
+        }
         let terminalCallbackEpoch =
             bleCallbackEpochFence.invalidate(
                 ifMatching: peripheral.identifier,
