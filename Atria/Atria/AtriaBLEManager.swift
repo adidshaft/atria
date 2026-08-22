@@ -2566,6 +2566,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var connectedMotionBankHistoryBudgetTask: Task<Void, Never>?
     private let connectedMotionBankHistoryLiveSilenceLimit: TimeInterval = 8
     private let connectedMotionBankHistoryAbsoluteLimit: TimeInterval = 90
+    /// #3 drain convergence (flag-gated `--atria-converge-motion-bank-drain`):
+    /// per-arm ceiling for the motion-bank drain while in an idle context
+    /// (charging / background / overnight). Lets a day-long banked backlog make
+    /// real headway in one continuous window instead of yielding after 90s, while
+    /// still bounding continuous same-link occupancy and deferring to the
+    /// power/thermal park. Only consulted when the converge flag is set.
+    private let connectedMotionBankHistoryIdleAbsoluteLimit: TimeInterval = 300
     private let connectedRawHistoryCatchUpIdleEvaluationInterval: TimeInterval = 15
     private let connectedRawHistoryCatchUpProductiveRetryInterval: TimeInterval = 2
     private let connectedRawHistoryCatchUpZeroProgressRetryInterval: TimeInterval = 120
@@ -10352,16 +10359,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         now: Date,
         liveSilenceLimit: TimeInterval,
         absoluteLimit: TimeInterval,
-        powerPressureActive: Bool = false
+        powerPressureActive: Bool = false,
+        // #3 drain convergence (2026-08-23, flag-gated). The defaults below
+        // reproduce the prior behavior EXACTLY (no recent progress, no idle
+        // budget), so default builds are unchanged. When the converge flag is on
+        // and we are in an idle context (charging / background / overnight) with a
+        // page actively landing, a brief 2A37 silence is the page transfer itself —
+        // not a stall — so keep draining instead of abandoning the day-long backlog
+        // after 8s. Bounded by the (extended) absolute budget and the power/thermal
+        // park above; foreground or a genuine no-progress stall still finishes to
+        // protect the live HR view.
+        hasRecentDrainProgress: Bool = false,
+        extendedIdleBudget: Bool = false,
+        idleAbsoluteLimit: TimeInterval = 0
     ) -> ConnectedMotionBankHistoryBudgetDisposition {
         guard !powerPressureActive else {
             return .finishForPowerPressure
         }
-        guard now.timeIntervalSince(startedAt) < absoluteLimit else {
+        let effectiveAbsoluteLimit = extendedIdleBudget
+            ? max(absoluteLimit, idleAbsoluteLimit)
+            : absoluteLimit
+        guard now.timeIntervalSince(startedAt) < effectiveAbsoluteLimit else {
             return .finishForAbsoluteBudget
         }
         let latestLiveProof = max(lastAcceptedHeartRateAt ?? startedAt, startedAt)
-        guard now.timeIntervalSince(latestLiveProof) < liveSilenceLimit else {
+        if now.timeIntervalSince(latestLiveProof) >= liveSilenceLimit {
+            if extendedIdleBudget && hasRecentDrainProgress {
+                return .keepServing
+            }
             return .finishForLiveHeartRateSilence
         }
         return .keepServing
@@ -30281,6 +30306,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                 && self.historicalDrainTelemetry.ackSucceeded > 0
                         )
                 } else {
+                    // #3 drain convergence (flag-gated). When off, the two new
+                    // arguments below are false/0 so the disposition is byte-for-
+                    // byte identical to the prior behavior.
+                    let convergeDrainEnabled = ProcessInfo.processInfo.arguments
+                        .contains("--atria-converge-motion-bank-drain")
+                    // Idle context = the user is not watching live HR (app is
+                    // backgrounded) or the phone is charging (typically overnight /
+                    // at a desk) — the safe windows to drain the day's banked
+                    // backlog continuously.
+                    let idleDrainContext = convergeDrainEnabled
+                        && (UIApplication.shared.applicationState != .active
+                            || self.batteryIsCharging)
+                    // A page/row landed within the HR-silence window → the current
+                    // 2A37 quiet is the page transfer, not a stalled link.
+                    let recentDrainProgress = now.timeIntervalSince(
+                        self.historicalDrainTelemetry.lastProgressAt
+                    ) < self.connectedMotionBankHistoryLiveSilenceLimit
                     disposition = Self
                         .connectedMotionBankHistoryBudgetDisposition(
                             startedAt: startedAt,
@@ -30296,8 +30338,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                                     lowPowerModeEnabled:
                                         ProcessInfo.processInfo
                                             .isLowPowerModeEnabled
-                                )
+                                ),
+                            hasRecentDrainProgress: recentDrainProgress,
+                            extendedIdleBudget: idleDrainContext,
+                            idleAbsoluteLimit:
+                                self.connectedMotionBankHistoryIdleAbsoluteLimit
                         )
+                    let hrSilent = now.timeIntervalSince(
+                        max(self.lastAcceptedHRAt ?? startedAt, startedAt)
+                    ) >= self.connectedMotionBankHistoryLiveSilenceLimit
+                    if idleDrainContext, hrSilent, disposition == .keepServing {
+                        AtriaDebugLog("ATRIADBG converge_motion_bank status=keep_serving_through_hr_silence generation=%llu progress_age_s=%.1f elapsed_s=%.1f charging=%d background=%d",
+                                      generation,
+                                      now.timeIntervalSince(self.historicalDrainTelemetry.lastProgressAt),
+                                      now.timeIntervalSince(startedAt),
+                                      self.batteryIsCharging ? 1 : 0,
+                                      UIApplication.shared.applicationState != .active ? 1 : 0)
+                    }
                 }
                 switch disposition {
                 case .keepServing:
