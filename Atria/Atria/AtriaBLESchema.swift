@@ -391,6 +391,16 @@ extension AtriaBLEManager {
         // the sync-progress footer can show "synced through …" without asking
         // BLE anything. Display-only — never a drain decision input.
         static let drainedThroughUnix = "atria.offlineSync.drainedThroughUnix.v1"
+        // Clean-slate durability (2026-08-22): the instant the user tapped
+        // "Start fresh" to abandon an unrecoverable, un-drainable banked
+        // backlog. Monotonic (only ever moves forward), per verified-history
+        // peripheral. While set AND the drain frontier has not advanced past it
+        // (no genuinely new post-reset data), the backlog detectors treat the
+        // strap's re-presented pre-reset records as .none so the app stops
+        // initiating the history reads that a degraded strap drops the link on —
+        // stopping the self-sustaining "history incomplete" storm at its source.
+        static let historyAbandonedThroughUnix =
+            "atria.offlineSync.historyAbandonedThroughUnix.v1"
         // Drain-keeping P3: last time the HR-independent maintenance ticker
         // re-armed the range-loss drain because the normal (accepted-HR-driven)
         // re-arm loop had gone silent past its floor. A moving value here while a
