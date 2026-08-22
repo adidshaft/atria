@@ -1915,7 +1915,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// ITEM-4 2026-08-15: consecutive zero-progress slices for exponential
     /// backoff — each unproductive retry doubles the wait (cap 15 min)
     /// instead of paying the history handshake every fixed 120 s.
-    private var connectedRawCatchUpConsecutiveZeroProgressSlices = 0
+    // Load the persisted value so consecutive failed slices ACCUMULATE across
+    // app relaunches — otherwise a degraded strap never crosses the clean-slate
+    // stall threshold because every relaunch reset the count to 0.
+    private var connectedRawCatchUpConsecutiveZeroProgressSlices =
+        UserDefaults.standard.integer(
+            forKey: OfflineSyncDefaults.consecutiveZeroProgressSlices
+        )
     private var connectedRawHistoryCatchUpPublicationYield:
         ConnectedRawHistoryCatchUpPublicationYield?
     private var connectedRawHistoryCatchUpPublicationYieldOfferTask:

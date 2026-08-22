@@ -99,20 +99,23 @@ final class AtriaCleanSlateBacklogSuppressionTests: XCTestCase {
 /// over the consecutive zero-progress slice counter (the un-foolable signal).
 final class AtriaGapTerminalStallTests: XCTestCase {
     private let threshold = AtriaMissedDataBannerPresentation.terminalStallSlices // 5
+    private let window = AtriaMissedDataBannerPresentation.terminalStallWindow    // 4h
     private typealias P = AtriaMissedDataBannerPresentation
 
     func testNotStalledWithoutBacklog() {
         XCTAssertFalse(P.gapIsTerminallyStalled(
             backlogPending: false,
             sequenceGapParkedTerminal: false,
-            consecutiveZeroProgressSlices: 99))
+            consecutiveZeroProgressSlices: 99,
+            secondsSinceRangeLossRequested: 99 * 3600))
     }
 
     func testStalledWhenSequenceGapParked() {
         XCTAssertTrue(P.gapIsTerminallyStalled(
             backlogPending: true,
             sequenceGapParkedTerminal: true,
-            consecutiveZeroProgressSlices: 0))
+            consecutiveZeroProgressSlices: 0,
+            secondsSinceRangeLossRequested: 60))
     }
 
     // The degraded-strap case: enough consecutive failed history reads → stalled.
@@ -120,26 +123,35 @@ final class AtriaGapTerminalStallTests: XCTestCase {
         XCTAssertTrue(P.gapIsTerminallyStalled(
             backlogPending: true,
             sequenceGapParkedTerminal: false,
-            consecutiveZeroProgressSlices: threshold))
+            consecutiveZeroProgressSlices: threshold,
+            secondsSinceRangeLossRequested: 60))
+    }
+
+    // Persistent signal: the gap has stayed pending past the window → stalled,
+    // even with the (relaunch-reset) slice counter still low.
+    func testStalledWhenEpisodeAgeExceedsWindow() {
         XCTAssertTrue(P.gapIsTerminallyStalled(
             backlogPending: true,
             sequenceGapParkedTerminal: false,
-            consecutiveZeroProgressSlices: threshold + 20))
+            consecutiveZeroProgressSlices: 1,
+            secondsSinceRangeLossRequested: window + 60))
     }
 
-    // A few failed slices during a normal reconnect don't trip it.
-    func testNotStalledBelowThreshold() {
+    // Neither signal tripped: few failed slices AND a young episode → not stalled.
+    func testNotStalledBelowBothThresholds() {
         XCTAssertFalse(P.gapIsTerminallyStalled(
             backlogPending: true,
             sequenceGapParkedTerminal: false,
-            consecutiveZeroProgressSlices: threshold - 1))
+            consecutiveZeroProgressSlices: threshold - 1,
+            secondsSinceRangeLossRequested: 30 * 60))
     }
 
-    // Any real progress resets the counter (0) → healthy catch-up never stalls.
-    func testNotStalledWhenProgressResetTheCounter() {
+    // Healthy: progress reset the counter AND the episode is fresh → not stalled.
+    func testNotStalledWhenHealthy() {
         XCTAssertFalse(P.gapIsTerminallyStalled(
             backlogPending: true,
             sequenceGapParkedTerminal: false,
-            consecutiveZeroProgressSlices: 0))
+            consecutiveZeroProgressSlices: 0,
+            secondsSinceRangeLossRequested: 5 * 60))
     }
 }
