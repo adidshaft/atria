@@ -1870,7 +1870,8 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
         start: Date,
         end: Date,
         bankCoverage: [DateInterval],
-        strapIdentifier: String
+        strapIdentifier: String,
+        allowOpenTail: Bool = false
     ) -> HistoricalArchive.MotionTickDayEvidenceRead {
         precondition(!Thread.isMainThread)
         guard end > start, !bankCoverage.isEmpty else { return .incomplete }
@@ -1899,7 +1900,8 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
             start: start,
             end: end,
             mergedCoverage: intervals,
-            tolerance: tolerance
+            tolerance: tolerance,
+            allowOpenTail: allowOpenTail
         ).read
     }
 
@@ -1913,7 +1915,8 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
         start: Date,
         end: Date,
         mergedCoverage intervals: [DateInterval],
-        tolerance: TimeInterval
+        tolerance: TimeInterval,
+        allowOpenTail: Bool = false
     ) -> MotionTickDayEvidenceProjection {
         guard end > start, points.count >= 2, !intervals.isEmpty else {
             return .init(read: .incomplete, inspectedPoints: 0)
@@ -1951,8 +1954,23 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
                 inspectedPoints: &inspectedPoints
             ),
             abs(firstTimestamp - requestedStart) <= tolerance,
-            abs(lastTimestamp - requestedEnd) <= tolerance,
             lastTimestamp > firstTimestamp else {
+                continue
+            }
+            // Open-tail relaxation (2026-08-22): the CURRENT cycle's final
+            // coverage interval ends at `now`, but the compact store necessarily
+            // lags `now` (offload cadence), so no decoded row sits within
+            // tolerance of the open end — the strict both-boundaries guard then
+            // discards the whole interval and the day shows "--" even though real
+            // drained rows exist (device evidence: compact_only_missing with
+            // coverage present). For the open tail ONLY, accept the newest decoded
+            // row as the effective end; [lastRow, now] stays honestly missing via
+            // missingCoverageSeconds, so the day is never marked complete. CLOSED
+            // intervals keep the exact both-boundaries integrity.
+            let reachesWindowEnd =
+                abs(requestedEnd - end.timeIntervalSince1970) <= tolerance
+            let isOpenTail = allowOpenTail && reachesWindowEnd
+            guard abs(lastTimestamp - requestedEnd) <= tolerance || isOpenTail else {
                 continue
             }
 
@@ -2101,7 +2119,8 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
         start: Date,
         end: Date,
         bankCoverage: [DateInterval],
-        tolerance: TimeInterval = 3
+        tolerance: TimeInterval = 3,
+        allowOpenTail: Bool = false
     ) -> MotionTickDayEvidenceInspectionResult {
         let window = DateInterval(start: start, end: end)
         let intervals = merge(bankCoverage.compactMap { interval in
@@ -2116,7 +2135,8 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
             start: start,
             end: end,
             mergedCoverage: intervals,
-            tolerance: tolerance
+            tolerance: tolerance,
+            allowOpenTail: allowOpenTail
         )
         return .init(
             read: projection.read,
