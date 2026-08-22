@@ -1624,6 +1624,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// only by a log-only dry-run (`--atria-natural-gap-drain-dryrun`) so a soak can
     /// confirm the trigger fires in exactly the right windows before any real drain.
     private var priorConnectionEndedNaturally = false
+    /// Step 3 (flag-gated `--atria-natural-gap-drain-enable`): armed on a natural
+    /// (strap-initiated) disconnect that left real backlog with no workout/motion
+    /// owner and no thermal park; consumed on the NEXT connect to run ONE bounded
+    /// stop-realtime drain in the pre-HR window (integrity-safe persist-before-ack full
+    /// drain; realtime restores on normal completion). Default builds never set it.
+    private var naturalGapDrainArmed = false
     private var historySelectorSweepEnabled = false
     private var historySelectorSweepSent = false
     private var historySelectorMode = "current-unix-bare"
@@ -10509,6 +10515,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             connectedMotionBankRequestAuthority != nil
                 || connectedRawHistoryCatchUpRequestAuthority != nil
         let exactRealtimeEpochOwned = bleCallbackEpochFence.hasActiveOwner
+        // Step 3 (flag-gated): the natural-gap drain reason may bypass the realtime-
+        // continuity deferrals — but ONLY while there is still no healthy live epoch
+        // (no fresh 2A37 within 10s). This is re-checked HERE (not just at the
+        // didConnect trigger) because the drain routes back through these guards, and
+        // the safe window can close if HR resumes first. If HR has resumed, the
+        // bypass turns off and the ordinary realtime-first deferral protects live HR —
+        // so the Build-5 regression stays impossible.
+        let naturalGapDrainBypass: Bool = {
+            guard reason == "natural_gap_drain",
+                  ProcessInfo.processInfo.arguments
+                    .contains("--atria-natural-gap-drain-enable") else { return false }
+            let nowTs = Date()
+            let healthyEpoch = exactRealtimeEpochOwned
+                && (lastAcceptedHRAt.map { nowTs.timeIntervalSince($0) < 10 } ?? false)
+            return !healthyEpoch
+        }()
         var realtimeConnectInterestIDs = Set<UUID>()
         if let peripheralID = peripheral?.identifier {
             realtimeConnectInterestIDs.insert(peripheralID)
@@ -10571,7 +10593,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           motionOwner ? 1 : 0,
                           thermalParked ? 1 : 0)
         }
-        if Self.shouldDeferAutomaticHistoryForLiveContinuity(
+        if !naturalGapDrainBypass,
+           Self.shouldDeferAutomaticHistoryForLiveContinuity(
             linkConnected: connectedLink,
             syncInProgress: offlineHistoricalSyncInProgress,
             attendedRequest: attendedHistoricalRequest,
@@ -11010,6 +11033,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // HR/motion epoch. User intent raises the retained request's priority;
         // it never grants permission to interrupt current transmission.
         if !exactConnectedRealtimePreservingRequest,
+           !naturalGapDrainBypass,
            Self.shouldDeferHistoricalTransportForRealtimeContinuity(
             linkConnected: connectedLink || exactRealtimeEpochOwned,
             linkConnecting: connectingLink || standingRealtimeConnectOwned,
@@ -11559,7 +11583,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           reason)
             return false
         }
-        let connectedChunkedBackfill = connectedLink
+        // The natural-gap drain wants the stop-realtime full drain (frees the link so
+        // history actually streams), not the realtime-preserving chunked mode that
+        // yields stream5_rx=0. Everywhere else keeps the existing connected-chunked
+        // behavior.
+        let connectedChunkedBackfill = connectedLink && !naturalGapDrainBypass
         let lastAttempt = defaults.object(forKey: OfflineSyncDefaults.lastAttemptAt) as? Date
         let admittedAutomaticConnectedHandoff =
             recoverableGapPending
@@ -45225,6 +45253,38 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             peripheralObjectID: ObjectIdentifier(peripheral)
         )
         let peripheralObjectID = ObjectIdentifier(peripheral)
+        // Step 3 (flag-gated): a genuine reconnect after a natural gap that armed a
+        // drain is the safe window to run ONE bounded stop-realtime full drain BEFORE
+        // live HR re-establishes. Runs on the MainActor; re-checks the healthy-epoch
+        // guard (no fresh 2A37 yet on this new link) so it can never seize a healthy
+        // epoch, then calls the integrity-safe stop-realtime drain that restores
+        // realtime on completion. Default builds never arm this.
+        Task { @MainActor [weak self] in
+            guard let self,
+                  self.naturalGapDrainArmed,
+                  ProcessInfo.processInfo.arguments
+                    .contains("--atria-natural-gap-drain-enable") else { return }
+            self.naturalGapDrainArmed = false
+            let nowTs = Date()
+            let healthyEpoch = self.bleCallbackEpochFence.hasActiveOwner
+                && (self.lastAcceptedHRAt.map { nowTs.timeIntervalSince($0) < 10 } ?? false)
+            guard !healthyEpoch,
+                  self.strapBacklogPendingForCatchUp(now: nowTs) else {
+                AtriaDebugLog("ATRIADBG natural_gap_drain status=skipped_on_connect reason=healthy_epoch_or_no_backlog healthy=%d",
+                              healthyEpoch ? 1 : 0)
+                return
+            }
+            AtriaDebugLog("ATRIADBG natural_gap_drain status=triggering_on_connect action=stop_realtime_bounded_drain")
+            _ = self.startOfflineHistoricalSync(
+                reason: "natural_gap_drain",
+                force: true,
+                explicitRequest: true,
+                connectedChunkedBackfill: false,
+                attemptAt: nowTs,
+                rawOnlyGapFingerprint: nil,
+                gapFingerprint: nil
+            )
+        }
         let diagnosticActive = motionHandshakeDiagnostic != nil
         let interruptedHistoryGeneration: UInt64? = {
             guard heartRateCaptureIntent.snapshot(),
@@ -45616,7 +45676,32 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
         // MainActor to record the flag the (MainActor) drain-decision path reads.
         let endedNaturally = (error != nil)
         Task { @MainActor [weak self] in
-            self?.priorConnectionEndedNaturally = endedNaturally
+            guard let self else { return }
+            self.priorConnectionEndedNaturally = endedNaturally
+            // Step 3 arming (flag-gated `--atria-natural-gap-drain-enable`): a natural
+            // teardown that left real backlog, with no workout/motion owner and no
+            // thermal park, is the safe window to run ONE bounded stop-realtime drain on
+            // the next connect (before HR restarts). The predicate's healthy-epoch guard
+            // still governs the actual run; this only marks the opportunity.
+            guard ProcessInfo.processInfo.arguments
+                .contains("--atria-natural-gap-drain-enable") else { return }
+            let nowTs = Date()
+            let motionOwner = Self.explicitMotionOwnershipBlocksHistory(
+                pendingWorkoutIntentActive:
+                    AtriaPendingWorkoutIntent.isActiveForBLEContinuity(now: nowTs),
+                inMemoryLeaseHeld: self.workoutMotionOwnerStartedAt != nil,
+                calibrationHoldActive:
+                    self.workoutMotionCalibrationHoldUntil.map { nowTs < $0 } == true
+            )
+            let thermalParked = Self.shouldParkConnectedRawHistoryCatchUpForPowerPressure(
+                thermalState: ProcessInfo.processInfo.thermalState
+            )
+            if endedNaturally,
+               self.strapBacklogPendingForCatchUp(now: nowTs),
+               !motionOwner, !thermalParked {
+                self.naturalGapDrainArmed = true
+                AtriaDebugLog("ATRIADBG natural_gap_drain status=armed reason=natural_disconnect_backlog action=drain_on_next_connect_pre_hr")
+            }
         }
         let terminalCallbackEpoch =
             bleCallbackEpochFence.invalidate(
