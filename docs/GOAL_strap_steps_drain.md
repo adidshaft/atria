@@ -101,6 +101,21 @@ sees (it fires ON accepted HR → `healthy_epoch=1`). So you must wire the drain
    bounded chunk completes + ACKs before those fire, and that authority is bound to the
    exact peripheral/epoch.
 
+## IMPORTANT design correction 2026-08-22 (do this FIRST): interleave is PRIMARY, not secondary
+Per the strap's known behavior (memory `atria-strap-idle-link-drop`): during NORMAL wear the
+connection is STABLE (~1 Hz, no drops); the frequent ~15-20s drops happen specifically during
+sustained HISTORY READS (measurement perturbation), not in normal operation. A 90s device soak
+2026-08-22 confirmed a stable window with ZERO natural disconnects. CONSEQUENCE: natural gaps
+are RARE in normal use, so the natural-gap-only drain (Steps 1-3, committed) will seldom fire
+and will NOT move the step total on a typical day. The PRIMARY mechanism must be the bounded
+realtime-pause INTERLEAVE: while connected+stable with backlog and no workout/motion owner,
+pause 2A37 briefly (~seconds), drain one ACK-cursor chunk, resume 2A37, repeat until caught up.
+Safety here is NOT "never pause a healthy epoch" (the natural-gap predicate) — it is "the pause
+is SHORT and self-healing so HR recovers." Soak it hard: HR gaps must stay ~seconds and
+self-heal; steps must climb; back off on any HR-recovery failure or thermal/workout owner.
+Keep the natural-gap drain as the opportunistic bonus, but build+soak the interleave as the
+real fix. This is the corrected top priority for the dedicated session.
+
 ## Soak finding 2026-08-22 (design refinement): natural-gap-only is NOT sufficient
 A soak window showed the strap connection can stay STABLE for 90s+ (no natural disconnect),
 so the natural-gap-only trigger never fires and steps don't catch up during stable stretches.
