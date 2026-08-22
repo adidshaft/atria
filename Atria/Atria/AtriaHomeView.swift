@@ -6343,35 +6343,30 @@ enum AtriaMissedDataBannerPresentation {
     ///   - backlogPending: the durable range-loss/backlog ticket
     ///     (`rangeLossBackfillPending`) — proof of a real gap independent of
     ///     the possibly-stale count.
-    /// After this long with a pending backlog and zero durable progress (and
-    /// nothing actively draining), the gap is treated as terminally stuck and
-    /// the clean-slate ("Start fresh") is offered — the generalization so ANY
-    /// old/degraded strap that can't drain gets the clean experience, not just
-    /// the narrow "ring buffer just-confirmed nearly empty" case.
-    static let terminalStallWindow: TimeInterval = 4 * 60 * 60
+    /// This many consecutive zero-progress catch-up slices (each a connect →
+    /// history read → 0 durable rows / no frontier advance → link drop) means the
+    /// strap genuinely can't hand over its backlog, so the clean-slate is
+    /// offered. Any real progress resets the counter to 0, so a healthy strap —
+    /// or one merely behind and actively draining — never reaches this.
+    static let terminalStallSlices = 5
 
     /// Pure decision: is the gap terminally stalled (offer Start fresh)?
-    /// Keyed on the DRAIN FRONTIER not advancing — the only true progress signal.
-    /// `lastDurableFlushBoundaryOKAt` is deliberately NOT used: a degraded strap
-    /// emits a steady stream of 0-row `finalized_bank_offload` events that keep
-    /// that timestamp fresh (and `activelyDraining` falsely true) while the
-    /// frontier never moves. Fires when a backlog is pending and EITHER the flash
-    /// sequence is parked terminal, OR the frontier has not advanced for the
-    /// whole stall window AND the range-loss request is at least that old (so a
-    /// strap that is merely behind-but-recently-reconnected — and about to drain —
-    /// never trips it; a healthy catch-up advances the frontier and stays clear).
+    /// Keyed on the CONSECUTIVE ZERO-PROGRESS SLICE COUNT — the only un-foolable
+    /// signal. Flush/frontier timestamps were both kept fresh (0-row
+    /// `finalized_bank_offload` churn and live data), which masked the stall on
+    /// device; the slice counter only advances on a genuinely failed history
+    /// read and resets on any real progress. Fires when a backlog is pending and
+    /// either the flash sequence is parked terminal or the failed-slice count
+    /// has crossed the terminal threshold.
     static func gapIsTerminallyStalled(
         backlogPending: Bool,
         sequenceGapParkedTerminal: Bool,
-        secondsSinceFrontierAdvance: TimeInterval?,
-        secondsSinceRangeLossRequested: TimeInterval?,
-        stallWindow: TimeInterval = terminalStallWindow
+        consecutiveZeroProgressSlices: Int,
+        stallSlices: Int = terminalStallSlices
     ) -> Bool {
         guard backlogPending else { return false }
         if sequenceGapParkedTerminal { return true }
-        guard let requestedAge = secondsSinceRangeLossRequested,
-              requestedAge >= stallWindow else { return false }
-        return (secondsSinceFrontierAdvance ?? .infinity) >= stallWindow
+        return consecutiveZeroProgressSlices >= stallSlices
     }
 
     static func copy(strapPendingRecords: Int,
@@ -6380,8 +6375,7 @@ enum AtriaMissedDataBannerPresentation {
                      backgroundLeaseActive: Bool,
                      debtObservedAgeSeconds: TimeInterval? = 0,
                      backlogPending: Bool = false,
-                     secondsSinceRangeLossRequested: TimeInterval? = nil,
-                     secondsSinceFrontierAdvance: TimeInterval? = nil,
+                     consecutiveZeroProgressSlices: Int = 0,
                      sequenceGapParkedTerminal: Bool = false) -> Copy {
         let pending = max(0, strapPendingRecords)
         let minutes = pending / 60
@@ -6403,8 +6397,7 @@ enum AtriaMissedDataBannerPresentation {
         if gapIsTerminallyStalled(
             backlogPending: backlogPending,
             sequenceGapParkedTerminal: sequenceGapParkedTerminal,
-            secondsSinceFrontierAdvance: secondsSinceFrontierAdvance,
-            secondsSinceRangeLossRequested: secondsSinceRangeLossRequested
+            consecutiveZeroProgressSlices: consecutiveZeroProgressSlices
         ) {
             return Copy(
                 title: "Strap can't catch up",
@@ -6527,20 +6520,15 @@ private struct AtriaMissedDataBanner: View, Equatable {
         let debtObservedAt = defaults.object(
             forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtObservedAt
         ) as? Double
-        let requestedAt = defaults.object(
-            forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt
-        ) as? Double
         let sequenceGapParked = defaults.object(
             forKey: AtriaBLEManager.OfflineSyncDefaults.sequenceGapParkedAt
         ) != nil
-        // The drain frontier (durable "synced through") is the true progress
-        // signal — a degraded strap's 0-row offloads never advance it.
-        let frontier = defaults.double(
-            forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+        // The consecutive zero-progress slice count is the un-foolable "history
+        // isn't draining" signal (0-row offloads keep flush/frontier timestamps
+        // fresh, but never advance this).
+        let zeroProgressSlices = defaults.integer(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices
         )
-        let secondsSinceFrontierAdvance: TimeInterval? = frontier > 0
-            ? max(0, Date().timeIntervalSince1970 - frontier)
-            : nil
         return AtriaMissedDataBannerPresentation.copy(
             strapPendingRecords: pending,
             protectsLiveStream: protectsLiveStream,
@@ -6552,10 +6540,7 @@ private struct AtriaMissedDataBanner: View, Equatable {
             backlogPending: defaults.bool(
                 forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
             ),
-            secondsSinceRangeLossRequested: requestedAt.map {
-                max(0, Date().timeIntervalSince1970 - $0)
-            },
-            secondsSinceFrontierAdvance: secondsSinceFrontierAdvance,
+            consecutiveZeroProgressSlices: zeroProgressSlices,
             sequenceGapParkedTerminal: sequenceGapParked
         )
     }

@@ -16367,6 +16367,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         if progress.durableRows > 0 || progress.frontierAdvanceSeconds > 0 {
             connectedRawCatchUpConsecutiveZeroProgressSlices = 0
         }
+        // Persist the counter so the clean-slate stall detector (banner) can read
+        // this un-foolable "history isn't draining" signal without BLE state.
+        UserDefaults.standard.set(
+            connectedRawCatchUpConsecutiveZeroProgressSlices,
+            forKey: OfflineSyncDefaults.consecutiveZeroProgressSlices
+        )
         AtriaDebugLog(
             "ATRIADBG offline_sync status=connected_raw_catch_up_slice generation=%llu reason=%@ durable_rows=%d duration_s=%.3f rows_per_s=%.3f frontier_advance_s=%.3f backlog=%d thermal=%ld action=%@ next_authority=fresh_2a37_exact_object_epoch",
             authority.generation,
@@ -16742,6 +16748,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.removeObject(forKey: OfflineSyncDefaults.flushDebtObservedAt)
         defaults.removeObject(forKey: OfflineSyncDefaults.flushDebtPendingRecords)
         defaults.removeObject(forKey: OfflineSyncDefaults.flushDebtLevel)
+        defaults.removeObject(forKey: OfflineSyncDefaults.consecutiveZeroProgressSlices)
+        connectedRawCatchUpConsecutiveZeroProgressSlices = 0
         historicalRecoveryPresentation = .idle
         reconcileHistoricalRecoveryPresentation(reason: "user_start_fresh")
         AtriaDebugLog(
