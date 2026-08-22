@@ -5607,9 +5607,22 @@ struct AtriaHeartRateAxisChart: View, Equatable {
         guard let xDomain else { return nil }
         let firsts = [buckets?.first?.t, points.first?.t].compactMap { $0 }
         let lasts = [buckets?.last?.t, points.last?.t].compactMap { $0 }
-        let lower = min(xDomain.lowerBound, firsts.min() ?? xDomain.lowerBound)
-        let upper = max(xDomain.upperBound, lasts.max() ?? xDomain.upperBound)
-        return lower <= upper ? lower...upper : xDomain
+        return Self.resolvePinnedXDomain(pinned: xDomain,
+                                         sampleFirst: firsts.min(),
+                                         sampleLast: lasts.max())
+    }
+
+    /// Pure, testable core of `effectiveXDomain` (#2 "tiny interval stretched to
+    /// the whole plot"): the axis is pinned to at least the requested window and
+    /// only ever WIDENS to cover data that falls outside it. A single sparse
+    /// sample therefore renders inside the full pinned window instead of
+    /// collapsing the axis onto that one sample's instant.
+    static func resolvePinnedXDomain(pinned: ClosedRange<Date>,
+                                     sampleFirst: Date?,
+                                     sampleLast: Date?) -> ClosedRange<Date> {
+        let lower = min(pinned.lowerBound, sampleFirst ?? pinned.lowerBound)
+        let upper = max(pinned.upperBound, sampleLast ?? pinned.upperBound)
+        return lower <= upper ? lower...upper : pinned
     }
 
     /// True when neither series has anything to draw. Gates the y-axis so an

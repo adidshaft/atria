@@ -12527,6 +12527,25 @@ final class SessionStore: ObservableObject {
                     ? "none"
                     : todaysFitnessAgeSummary.blockers.joined(separator: ",")
             )
+            // Broad insight coverage (#4 "many insights not showing"): show the
+            // full spread of computable insight surfaces, not only VO2max, so it
+            // is directly observable which categories render vs. are still
+            // learning. Sourced from the newest prepared rollup + the baseline.
+            let newest = preparation.rollupEntries.max { $0.day < $1.day }
+            AtriaDebugLog(
+                "ATRIADBG insight_dump_broad strain=%.2f trimp=%.1f recovery=%d sleep_perf=%d sleep_hours=%.2f hrv_nights=%d hrv_trusted=%d rhr_samples=%d rhr_trusted=%d behavior_insights=%d journal_insights=%d",
+                newest?.strain ?? -1,
+                newest?.trimp ?? -1,
+                newest?.recovery ?? -1,
+                newest?.sleepPerformance ?? -1,
+                (newest?.sleepSeconds ?? 0) / 3600,
+                baseline.freshHRVSampleCount(),
+                baseline.hasTrustedHRVBaseline() ? 1 : 0,
+                baseline.freshRestingSampleCount(),
+                baseline.hasTrustedRestingBaseline() ? 1 : 0,
+                behaviorInsights.count,
+                journalInsightsCache.count
+            )
         }
         if ProcessInfo.processInfo.arguments.contains("--atria-debug-dump-sleep") {
             dumpSleepCandidateDiagnostics(now: preparation.preparedAt)

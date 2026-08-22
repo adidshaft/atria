@@ -116,4 +116,40 @@ final class AtriaSparseChartPresentationTests: XCTestCase {
         XCTAssertGreaterThan(image.size.height, 150,
                              "Explicit headroom must be part of the layout, not clipped away")
     }
+
+    // MARK: - Pinned X-domain (#2: "a very small interval stretched to entire graph")
+
+    private let axisBase = Date(timeIntervalSince1970: 1_785_000_000)
+    private var sixHourWindow: ClosedRange<Date> {
+        axisBase...axisBase.addingTimeInterval(6 * 3_600)
+    }
+
+    /// The reported failure: one (or a few) samples in a 6-hour view stretched
+    /// across the whole plot. With the axis pinned, a single sparse sample must
+    /// render at its true position inside the full window, not collapse the axis.
+    func testSparseSingleSampleStaysInsideFullPinnedWindow() {
+        let mid = axisBase.addingTimeInterval(3 * 3_600)
+        let resolved = AtriaHeartRateAxisChart.resolvePinnedXDomain(
+            pinned: sixHourWindow, sampleFirst: mid, sampleLast: mid)
+        XCTAssertEqual(resolved, sixHourWindow,
+                       "a lone sample must not collapse the 6h axis onto its instant")
+    }
+
+    /// Dense/scrolled data outside the window still widens the axis so nothing clips.
+    func testDomainWidensToCoverDataOutsidePinnedWindow() {
+        let before = axisBase.addingTimeInterval(-3_600)
+        let after = axisBase.addingTimeInterval(7 * 3_600)
+        let resolved = AtriaHeartRateAxisChart.resolvePinnedXDomain(
+            pinned: sixHourWindow, sampleFirst: before, sampleLast: after)
+        XCTAssertEqual(resolved.lowerBound, before)
+        XCTAssertEqual(resolved.upperBound, after)
+    }
+
+    /// No samples at all keeps the requested window (empty plot stays full-width).
+    func testEmptyDataKeepsPinnedWindow() {
+        XCTAssertEqual(
+            AtriaHeartRateAxisChart.resolvePinnedXDomain(
+                pinned: sixHourWindow, sampleFirst: nil, sampleLast: nil),
+            sixHourWindow)
+    }
 }
