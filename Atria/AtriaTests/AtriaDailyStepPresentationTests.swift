@@ -762,6 +762,18 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.completeness, .partial)
         XCTAssertEqual(value.source, .verifiedCanonical)
         XCTAssertTrue(value.carriedFromUnconfirmedPriorCycle)
+        // The carried total must NOT be paired with the fresh cycle's tiny
+        // coverage: VoiceOver must never say "motion tracked for N percent"
+        // beside a near-complete carried count (it would imply the real total
+        // is ~25x higher). Mirror the no-partial carry: nil coverage.
+        XCTAssertNil(value.coverageFraction)
+        XCTAssertFalse(value.accessibilityText.contains("percent of your day"),
+                       value.accessibilityText)
+        XCTAssertTrue(value.accessibilityText.contains("1118 steps so far"),
+                      value.accessibilityText)
+        // Frontier is the carried receipt's own end, never the fresh slice's
+        // later dayEnd (which would overstate how far 1118 was counted).
+        XCTAssertEqual(value.capturedAt, day.addingTimeInterval(-30 * 60))
     }
 
     // When the freshly-rolled cycle's OWN drained slice exceeds the carried
