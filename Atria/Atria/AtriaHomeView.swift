@@ -6349,24 +6349,34 @@ enum AtriaMissedDataBannerPresentation {
     /// offered. Any real progress resets the counter to 0, so a healthy strap —
     /// or one merely behind and actively draining — never reaches this.
     static let terminalStallSlices = 5
+    /// A range-loss episode still pending this long has not drained at all — a
+    /// healthy strap clears the flag as chunks land (resetting the request time),
+    /// so an old request age means genuinely stuck. Persistent (survives
+    /// relaunch) and immediate, unlike the in-memory slice count.
+    static let terminalStallWindow: TimeInterval = 4 * 60 * 60
 
     /// Pure decision: is the gap terminally stalled (offer Start fresh)?
-    /// Keyed on the CONSECUTIVE ZERO-PROGRESS SLICE COUNT — the only un-foolable
-    /// signal. Flush/frontier timestamps were both kept fresh (0-row
-    /// `finalized_bank_offload` churn and live data), which masked the stall on
-    /// device; the slice counter only advances on a genuinely failed history
-    /// read and resets on any real progress. Fires when a backlog is pending and
-    /// either the flash sequence is parked terminal or the failed-slice count
-    /// has crossed the terminal threshold.
+    /// Two un-foolable, persistent signals (either fires): the CONSECUTIVE
+    /// ZERO-PROGRESS SLICE COUNT (advances only on a genuinely failed history
+    /// read, resets on any real progress) and the EPISODE AGE (how long the
+    /// range-loss request has stayed pending without clearing). Flush/frontier
+    /// timestamps are deliberately NOT used — 0-row `finalized_bank_offload`
+    /// churn and live data keep them fresh, which masked the stall on device.
     static func gapIsTerminallyStalled(
         backlogPending: Bool,
         sequenceGapParkedTerminal: Bool,
         consecutiveZeroProgressSlices: Int,
-        stallSlices: Int = terminalStallSlices
+        secondsSinceRangeLossRequested: TimeInterval?,
+        stallSlices: Int = terminalStallSlices,
+        stallWindow: TimeInterval = terminalStallWindow
     ) -> Bool {
         guard backlogPending else { return false }
         if sequenceGapParkedTerminal { return true }
-        return consecutiveZeroProgressSlices >= stallSlices
+        if consecutiveZeroProgressSlices >= stallSlices { return true }
+        if let age = secondsSinceRangeLossRequested, age >= stallWindow {
+            return true
+        }
+        return false
     }
 
     static func copy(strapPendingRecords: Int,
@@ -6376,6 +6386,7 @@ enum AtriaMissedDataBannerPresentation {
                      debtObservedAgeSeconds: TimeInterval? = 0,
                      backlogPending: Bool = false,
                      consecutiveZeroProgressSlices: Int = 0,
+                     secondsSinceRangeLossRequested: TimeInterval? = nil,
                      sequenceGapParkedTerminal: Bool = false) -> Copy {
         let pending = max(0, strapPendingRecords)
         let minutes = pending / 60
@@ -6397,7 +6408,8 @@ enum AtriaMissedDataBannerPresentation {
         if gapIsTerminallyStalled(
             backlogPending: backlogPending,
             sequenceGapParkedTerminal: sequenceGapParkedTerminal,
-            consecutiveZeroProgressSlices: consecutiveZeroProgressSlices
+            consecutiveZeroProgressSlices: consecutiveZeroProgressSlices,
+            secondsSinceRangeLossRequested: secondsSinceRangeLossRequested
         ) {
             return Copy(
                 title: "Strap can't catch up",
@@ -6529,6 +6541,16 @@ private struct AtriaMissedDataBanner: View, Equatable {
         let zeroProgressSlices = defaults.integer(
             forKey: AtriaBLEManager.OfflineSyncDefaults.consecutiveZeroProgressSlices
         )
+        // Episode age: how long the range-loss request has stayed pending. Set
+        // once at episode start (not re-stamped per reconnect), persistent — a
+        // healthy strap clears + resets it as chunks land, so a long age means
+        // genuinely stuck.
+        let rangeLossRequestedAt = defaults.object(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt
+        ) as? Double
+        let secondsSinceRangeLossRequested: TimeInterval? = rangeLossRequestedAt.map {
+            max(0, Date().timeIntervalSince1970 - $0)
+        }
         return AtriaMissedDataBannerPresentation.copy(
             strapPendingRecords: pending,
             protectsLiveStream: protectsLiveStream,
@@ -6541,6 +6563,7 @@ private struct AtriaMissedDataBanner: View, Equatable {
                 forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
             ),
             consecutiveZeroProgressSlices: zeroProgressSlices,
+            secondsSinceRangeLossRequested: secondsSinceRangeLossRequested,
             sequenceGapParkedTerminal: sequenceGapParked
         )
     }
