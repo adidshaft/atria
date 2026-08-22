@@ -1742,6 +1742,20 @@ struct AtriaHomeView: View {
                                   ble.requestOfflineHistoricalSyncIfNeeded(reason: "manual_user_request",
                                                                            force: true)
                               },
+                              catchUpBoostSuggested: ble.catchUpBoostDecision() == .suggest,
+                              catchUpBoostActive: ble.catchUpBoostActive,
+                              catchUpBehindText: AtriaCatchUpBoost.behindDescription(
+                                  behindSeconds: ble.catchUpBoostBehindSeconds()),
+                              onSetCatchUpBoost: { on in
+                                  let rest = model.homeStatsStore.state.restingHeartRate
+                                  let maxHR = model.profileStore.profile.maxHR
+                                  if on {
+                                      ble.enableCatchUpBoost(rest: rest, maxHR: maxHR)
+                                  } else {
+                                      ble.revertCatchUpBoost(rest: rest, maxHR: maxHR,
+                                                             reason: "user_off")
+                                  }
+                              },
                               onNutritionHealthToggle: { store.requestNutritionReadAuthorizationIfEnabled() },
                               backupStatusProvider: { store.sessionBackupStatus() },
                               onWriteBackup: { completion in

@@ -7684,6 +7684,85 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         startLongWearMode(rest: rest, maxHR: maxHR, reason: "collection_profile")
     }
 
+    // MARK: - Catch-up boost (user "offer Coverage when far behind" directive)
+
+    /// How far the durable drain frontier is behind `now`, or nil when unknown.
+    nonisolated func catchUpBoostBehindSeconds(now: Date = Date()) -> TimeInterval? {
+        guard let frontier = UserDefaults.standard.object(
+            forKey: OfflineSyncDefaults.drainedThroughUnix
+        ) as? Double, frontier > 0 else { return nil }
+        let behind = now.timeIntervalSince1970 - frontier
+        return behind >= 0 ? behind : nil
+    }
+
+    /// Whether the catch-up boost is currently engaged.
+    nonisolated var catchUpBoostActive: Bool {
+        UserDefaults.standard.bool(
+            forKey: CollectionProfileDefaults.catchUpBoostActive
+        )
+    }
+
+    /// The presentation decision for the "catch up faster" affordance. Pure
+    /// inputs → pure policy (`AtriaCatchUpBoost`), so the UI just renders it.
+    nonisolated func catchUpBoostDecision(now: Date = Date())
+        -> AtriaCatchUpBoostDecision {
+        AtriaCatchUpBoost.decide(
+            behindSeconds: catchUpBoostBehindSeconds(now: now),
+            backlogPending: Self.drainableStrapBacklogPendingFromDefaults(now: now),
+            boostActive: catchUpBoostActive
+        )
+    }
+
+    /// Turn the boost ON: remember the current profile, switch to Coverage
+    /// (full-protocol motion streaming + warm link via the existing gated
+    /// `setCollectionProfile`), and mark it active so it can auto-revert. The
+    /// Coverage switch still respects the storm fuse, so it never forces full
+    /// protocol onto a genuinely unstable link (protects issue #1).
+    func enableCatchUpBoost(rest: Int, maxHR: Int) {
+        let defaults = UserDefaults.standard
+        guard !catchUpBoostActive else { return }
+        // Only remember a NON-Coverage profile to restore; if we're somehow
+        // already on Coverage, fall back to Balanced on revert.
+        let restore = collectionProfile == .maxCoverage ? .balanced : collectionProfile
+        defaults.set(restore.rawValue,
+                     forKey: CollectionProfileDefaults.catchUpBoostRestoreProfile)
+        defaults.set(true, forKey: CollectionProfileDefaults.catchUpBoostActive)
+        AtriaDebugLog("ATRIADBG catch_up_boost status=enabled restore=%@ behind_s=%.0f",
+                      restore.rawValue,
+                      catchUpBoostBehindSeconds() ?? -1)
+        setCollectionProfile(.maxCoverage, rest: rest, maxHR: maxHR)
+    }
+
+    /// Turn the boost OFF and restore the remembered profile. Safe to call when
+    /// inactive (no-op). The revert is keyed on the caught-up signal, NOT on the
+    /// boost itself, so it can never latch on forever (recovery-state-defect
+    /// class): a cleared backlog reverts even if the frontier is unknown.
+    func revertCatchUpBoost(rest: Int, maxHR: Int, reason: String) {
+        let defaults = UserDefaults.standard
+        guard catchUpBoostActive else { return }
+        let restoreRaw = defaults.string(
+            forKey: CollectionProfileDefaults.catchUpBoostRestoreProfile
+        )
+        let restore = restoreRaw.flatMap(CollectionProfile.init(rawValue:)) ?? .balanced
+        defaults.set(false, forKey: CollectionProfileDefaults.catchUpBoostActive)
+        defaults.removeObject(
+            forKey: CollectionProfileDefaults.catchUpBoostRestoreProfile
+        )
+        AtriaDebugLog("ATRIADBG catch_up_boost status=reverted restore=%@ reason=%@",
+                      restore.rawValue, reason)
+        setCollectionProfile(restore, rest: rest, maxHR: maxHR)
+    }
+
+    /// Periodic hook: if the boost is on and the strap has caught up, turn it
+    /// back off automatically. Call from an existing recurring evaluation
+    /// (maintenance tick / receipt refresh) — cheap and idempotent.
+    func evaluateCatchUpBoostAutoRevert(rest: Int, maxHR: Int, now: Date = Date()) {
+        guard catchUpBoostActive else { return }
+        if catchUpBoostDecision(now: now) == .autoRevert {
+            revertCatchUpBoost(rest: rest, maxHR: maxHR, reason: "caught_up")
+        }
+    }
+
     func applyPersistentLongWearModeIfNeeded(rest: Int, maxHR: Int) {
         guard UserDefaults.standard.bool(forKey: LongWearDefaults.enabled) else {
             longWearModeEnabled = false
@@ -16750,6 +16829,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // Drain-keeping P3: the backlog is resolved, so retire the HR-independent
         // re-arm backstop (it also self-terminates on its next tick as a fallback).
         stopRangeLossBackfillMaintenanceTicker(reason: "range_loss_cleared")
+        // Caught up: if the user's catch-up boost was on, turn it back off now
+        // and restore their previous profile (the ticker may stop before its
+        // next tick, so revert here at the clean clear point too).
+        revertCatchUpBoost(rest: dutyCycleRestHR,
+                           maxHR: maxHRSetting,
+                           reason: "range_loss_cleared")
         AtriaDebugLog("ATRIADBG offline_sync status=range_loss_backfill_cleared reason=%@ new_rows=%d metric_ready=%d metric_rows=%d current_rows=%d",
                       reason,
                       newRows,
@@ -17258,6 +17343,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 if Task.isCancelled { break }
                 maintenanceTickRangeLossBackfillReArmIfDue()
                 scheduleSyncNudgeFromCurrentState()
+                // Turn the catch-up boost back off automatically once the strap
+                // has caught up (keyed on the caught-up signal, not the boost),
+                // so it never latches on and drains battery indefinitely.
+                evaluateCatchUpBoostAutoRevert(rest: dutyCycleRestHR,
+                                               maxHR: maxHRSetting)
             }
         }
     }

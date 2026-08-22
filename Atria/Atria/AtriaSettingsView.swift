@@ -215,6 +215,17 @@ struct AtriaSettingsView: View {
     /// A local-only bundle used to inspect the disclosure before consent.
     var buildResearchPreview: () async -> AtriaResearchBundleBuilder.Built? = { nil }
     let onSyncMissedData: (() -> Bool)?
+    /// "Catch up faster" boost: true when the drain is hours behind and the
+    /// higher-cadence Coverage profile would help sync sooner. Offers a one-tap
+    /// enable; it auto-reverts once the strap catches up.
+    let catchUpBoostSuggested: Bool
+    /// True while the boost is currently engaged (shows the on-state + a way to
+    /// turn it off early).
+    let catchUpBoostActive: Bool
+    /// Short "how far behind" hint for the CTA subtitle, e.g. "~6h behind".
+    let catchUpBehindText: String?
+    /// Turn the boost on (true) or off (false). Nil hides the control entirely.
+    let onSetCatchUpBoost: ((Bool) -> Void)?
     let onNutritionHealthToggle: (() -> Void)?
     let backupStatusProvider: () -> SessionBackupStatus
     /// Starts a required backup on the store's serial utility worker. The
@@ -242,6 +253,9 @@ struct AtriaSettingsView: View {
     @State private var coachAPIKeyDraft = ""
     @State private var exportTapped = false
     @State private var historySyncFeedback: AtriaManualHistorySyncFeedback?
+    /// Local echo of the catch-up boost after a tap, so the row confirms the
+    /// action immediately (the injected state is a snapshot from screen open).
+    @State private var catchUpBoostLocalOn: Bool?
     @State private var backupStatus: SessionBackupStatus
     @State private var backupImportPresented = false
     @State private var backupActionMessage: String?
@@ -313,6 +327,10 @@ struct AtriaSettingsView: View {
          buildResearchBundle: @escaping () async -> AtriaResearchBundleBuilder.Built? = { nil },
          buildResearchPreview: @escaping () async -> AtriaResearchBundleBuilder.Built? = { nil },
          onSyncMissedData: (() -> Bool)? = nil,
+         catchUpBoostSuggested: Bool = false,
+         catchUpBoostActive: Bool = false,
+         catchUpBehindText: String? = nil,
+         onSetCatchUpBoost: ((Bool) -> Void)? = nil,
          onNutritionHealthToggle: (() -> Void)? = nil,
          backupStatusProvider: @escaping () -> SessionBackupStatus = { .missing },
          onWriteBackup: ((@escaping @MainActor (SessionBackupStatus) -> Void) -> Void)? = nil,
@@ -347,6 +365,10 @@ struct AtriaSettingsView: View {
         self.buildResearchBundle = buildResearchBundle
         self.buildResearchPreview = buildResearchPreview
         self.onSyncMissedData = onSyncMissedData
+        self.catchUpBoostSuggested = catchUpBoostSuggested
+        self.catchUpBoostActive = catchUpBoostActive
+        self.catchUpBehindText = catchUpBehindText
+        self.onSetCatchUpBoost = onSetCatchUpBoost
         self.onNutritionHealthToggle = onNutritionHealthToggle
         self.backupStatusProvider = backupStatusProvider
         self.onWriteBackup = onWriteBackup
@@ -936,6 +958,32 @@ struct AtriaSettingsView: View {
                         detail: historySyncFeedback.detail
                     )
                 }
+            }
+
+            if let onSetCatchUpBoost,
+               (catchUpBoostLocalOn ?? catchUpBoostActive) || catchUpBoostSuggested {
+                let isOn = catchUpBoostLocalOn ?? catchUpBoostActive
+                Button {
+                    let next = !isOn
+                    onSetCatchUpBoost(next)
+                    catchUpBoostLocalOn = next
+                } label: {
+                    Label(isOn ? "Turn off catch-up boost" : "Catch up faster",
+                          systemImage: isOn ? "bolt.fill" : "bolt")
+                }
+                .accessibilityHint(isOn
+                    ? "Streaming strap motion at a higher cadence to sync the backlog. Turns off automatically once the strap is caught up."
+                    : "The strap history is \(catchUpBehindText ?? "hours behind"). Streams motion at a higher cadence to sync now, and turns off automatically once caught up. Uses more strap battery.")
+                settingsInfoRow(
+                    icon: isOn ? "bolt.badge.clock.fill" : "bolt.badge.clock",
+                    tint: isOn ? .green : .orange,
+                    title: isOn
+                        ? "Catching up faster"
+                        : "Catch up faster" + (catchUpBehindText.map { " · \($0)" } ?? ""),
+                    detail: isOn
+                        ? "Higher-cadence motion streaming is on so the backlog syncs sooner. Atria turns it back off by itself once the strap is caught up."
+                        : "Strap history is lagging. Stream motion at a higher cadence to sync sooner — it uses more strap battery and stops on its own once caught up."
+                )
             }
             storageFootprintRow
         } header: {

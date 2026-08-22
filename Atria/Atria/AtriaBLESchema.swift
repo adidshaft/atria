@@ -444,6 +444,13 @@ extension AtriaBLEManager {
 
     enum CollectionProfileDefaults {
         static let profile = "atria.collection.profile"
+        /// Whether the user-triggered "catch up faster" boost is currently on
+        /// (temporarily forces the Coverage profile to drain a large backlog).
+        static let catchUpBoostActive = "atria.collection.catchUpBoost.active.v1"
+        /// The profile raw value to restore when the boost auto-reverts after
+        /// the strap catches up.
+        static let catchUpBoostRestoreProfile =
+            "atria.collection.catchUpBoost.restoreProfile.v1"
     }
 
     enum DutyCycleDefaults {
