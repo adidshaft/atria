@@ -56,7 +56,22 @@ primary WHOOP metric — treat this as P0.
 - **Device-validated:** the safety invariant fires correctly — `would_drain=0` while
   `healthy_epoch=1`. Backlog confirmed present (`backlog=1`).
 
-## The Step-3 work to do (the actual fix)
+## STATUS: Step 3 is IMPLEMENTED (commit eb622b8a) — the next run SOAKS it, not re-implements
+The natural-gap bounded-drain wiring + the `naturalGapDrainBypass` (skips the realtime-
+continuity deferrals only while no healthy epoch, forces the stop-realtime full drain) are
+already committed, flag-gated behind `--atria-natural-gap-drain-enable` (default unchanged).
+Device-observed: the wiring FIRES (`natural_gap_drain status=armed` -> `triggering_on_connect`);
+pre-bypass it hit `deferred_realtime_continuity_owner`, which the bypass targets. The
+stream-verification soak is PENDING (was blocked by device availability). So the next
+session's job is: (1) run the soak with the phone free; (2) confirm the bypass lets the drain
+STREAM (`stream5_rx>0`, `durable_rows` climbing, ACK cursor resuming across drops, steps
+climbing toward the real ~10k, live HR continuity intact); (3) if the async didConnect
+trigger keeps losing the race to HR resume (drain logs `skipped_on_connect reason=healthy_epoch`),
+switch to SUPPRESSING realtime-restart on an armed reconnect — which needs a
+nonisolated-readable armed flag (set in the nonisolated didDisconnect, read synchronously in
+the nonisolated didConnect) so realtime doesn't win the race. Then iterate against the soak.
+
+## The Step-3 design (already implemented — reference)
 The eligible drain window (`healthy_epoch=0`) exists only in the **pre-HR instant after a
 natural reconnect** — which the HR-triggered `requestOfflineHistoricalSyncIfNeeded` never
 sees (it fires ON accepted HR → `healthy_epoch=1`). So you must wire the drain into the
