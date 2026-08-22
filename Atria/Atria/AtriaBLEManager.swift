@@ -10523,9 +10523,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // bypass turns off and the ordinary realtime-first deferral protects live HR —
         // so the Build-5 regression stays impossible.
         let naturalGapDrainBypass: Bool = {
-            guard reason == "natural_gap_drain",
-                  ProcessInfo.processInfo.arguments
-                    .contains("--atria-natural-gap-drain-enable") else { return false }
+            guard ProcessInfo.processInfo.arguments
+                .contains("--atria-natural-gap-drain-enable") else { return false }
+            // Natural-gap drain: only while there is still no healthy live epoch
+            // (re-checked here because the drain routes back through these guards).
+            // This is the ONLY reason class allowed to bypass — a stable-connection
+            // "interleave" drain was tried and removed (2026-08-22 design panel): it
+            // dead-ended at the atomic-claim wall draining zero rows AND peeled the
+            // transaction-boundary gate for a whole reason class, i.e. Build-5 risk
+            // with no benefit. Intraday freshness is served by the live IMU estimate,
+            // not by interrupting realtime.
+            guard reason == "natural_gap_drain" else { return false }
             let nowTs = Date()
             let healthyEpoch = exactRealtimeEpochOwned
                 && (lastAcceptedHRAt.map { nowTs.timeIntervalSince($0) < 10 } ?? false)
@@ -45266,8 +45274,18 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                     .contains("--atria-natural-gap-drain-enable") else { return }
             self.naturalGapDrainArmed = false
             let nowTs = Date()
-            let healthyEpoch = self.bleCallbackEpochFence.hasActiveOwner
-                && (self.lastAcceptedHRAt.map { nowTs.timeIntervalSince($0) < 10 } ?? false)
+            // The prior guard computed "healthy" from `lastAcceptedHRAt` on a bare
+            // wall-clock (<10s) window. That timestamp survives a natural gap, so a
+            // SHORT drop (device evidence 2026-08-22: a 2s teardown then reconnect)
+            // still read as healthy and skipped — yet the brief drops that dominate
+            // stable wear are exactly the safe windows this path exists to use, so it
+            // could effectively never fire. Health must be epoch-relative: HR accepted
+            // on THIS connection and still fresh. Right at didConnect no HR has been
+            // re-accepted (service/notify rediscovery has not completed on the new
+            // link), so `currentConnectionHasFreshHeartRate` is false here and the
+            // drain runs in the intended pre-HR window; it can never seize a stream
+            // that has already re-established.
+            let healthyEpoch = self.currentConnectionHasFreshHeartRate
             guard !healthyEpoch,
                   self.strapBacklogPendingForCatchUp(now: nowTs) else {
                 AtriaDebugLog("ATRIADBG natural_gap_drain status=skipped_on_connect reason=healthy_epoch_or_no_backlog healthy=%d",

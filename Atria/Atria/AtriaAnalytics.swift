@@ -1410,28 +1410,34 @@ enum AtriaAnalytics {
                 )
             }
 
-            guard let restingNow else {
-                return Estimate(percent: nil, confidence: .learning,
-                                usesHRV: false,
-                                detail: "learning: need resting HR for the full recovery model",
-                                contributors: [])
-            }
+            // Resting HR sharpens recovery but is not required: HRV (the primary
+            // 60% signal) plus a confirmed sleep already support a reduced-
+            // confidence estimate. When restingNow is absent, drop ONLY the resting
+            // term and renormalize the blend below, rather than hiding recovery
+            // entirely (#4, 2026-08-22 — previously this returned .learning). A
+            // present restingNow keeps the full model — and its own
+            // baseline-not-ready learning state — exactly as before; the blend
+            // arithmetic is unchanged when restingZ != nil.
             let hasTrustedRestingBaseline = baseline.hasTrustedRestingBaseline()
-            let restingStats: (mean: Double, sd: Double, count: Int)
-            if hasTrustedRestingBaseline, let stats = baseline.restingStats {
-                restingStats = stats
-            } else if let restingBaseline = baseline.restingHR, restingBaseline > 0 {
-                restingStats = (mean: restingBaseline,
-                                sd: max(baseline.restingStats?.sd ?? 0, 5),
-                                count: baseline.freshRestingSampleCount())
+            let restingZ: Double?
+            if let restingNow {
+                let restingStats: (mean: Double, sd: Double, count: Int)
+                if hasTrustedRestingBaseline, let stats = baseline.restingStats {
+                    restingStats = stats
+                } else if let restingBaseline = baseline.restingHR, restingBaseline > 0 {
+                    restingStats = (mean: restingBaseline,
+                                    sd: max(baseline.restingStats?.sd ?? 0, 5),
+                                    count: baseline.freshRestingSampleCount())
+                } else {
+                    return Estimate(percent: nil, confidence: .learning,
+                                    usesHRV: false,
+                                    detail: "learning RHR baseline \(baseline.freshRestingSampleCount())/\(PersonalBaseline.trustedMinimumSamples)",
+                                    contributors: [])
+                }
+                restingZ = zScore(Double(restingNow), mean: restingStats.mean, sd: restingStats.sd, minSD: 1.0)
             } else {
-                return Estimate(percent: nil, confidence: .learning,
-                                usesHRV: false,
-                                detail: "learning RHR baseline \(baseline.freshRestingSampleCount())/\(PersonalBaseline.trustedMinimumSamples)",
-                                contributors: [])
+                restingZ = nil
             }
-
-            let restingZ = zScore(Double(restingNow), mean: restingStats.mean, sd: restingStats.sd, minSD: 1.0)
 
             let hrvStats = baseline.lnRMSSDStats
             let hasTrustedHRVBaseline = baseline.hasTrustedHRVBaseline()
@@ -1493,15 +1499,29 @@ enum AtriaAnalytics {
             if !sleepIsPersonal, confidence == .personalBaseline {
                 confidence = .unverified
             }
+            // Without a current resting reading the score is a reduced-input
+            // estimate; never claim the personal-baseline tier (#4, 2026-08-22).
+            if restingZ == nil, confidence == .personalBaseline {
+                confidence = .unverified
+            }
             let respirationZ = respiratoryRecoveryZ(rate: respiratoryRate,
                                                     baseline: respiratoryBaseline)
             let respirationQualified = hasQualifiedRespiratoryEvidence(
                 rate: respiratoryRate,
                 baseline: respiratoryBaseline
             )
-            let observedWeight = 0.95 + (respirationQualified ? 0.05 : 0)
+            // Renormalize across the signals actually observed. With resting
+            // present this is byte-identical to the prior fixed 0.95(+0.05) blend;
+            // with resting absent the 0.20 term drops out and the remaining
+            // weights renormalize so a missing RHR neither hides recovery nor
+            // silently acts as a neutral measurement (#4, 2026-08-22).
+            let restingObserved = restingZ != nil
+            let restingZValue = restingZ ?? 0
+            let observedWeight = 0.60 + 0.15
+                + (restingObserved ? 0.20 : 0)
+                + (respirationQualified ? 0.05 : 0)
             let hrvWeight = 0.60 / observedWeight
-            let restingWeight = 0.20 / observedWeight
+            let restingWeight = restingObserved ? 0.20 / observedWeight : 0
             let sleepWeight = 0.15 / observedWeight
             let respirationWeight = respirationQualified ? 0.05 / observedWeight : 0
             let contributors = [
@@ -1511,10 +1531,15 @@ enum AtriaAnalytics {
                                      detail: hrvDetail,
                                      displayValue: String(format: "HRV %+.1fσ", hrvZ)),
                 Estimate.Contributor(kind: .restingHeartRate,
-                                     zScore: -restingZ,
+                                     zScore: restingObserved ? -restingZValue : 0,
                                      weight: restingWeight,
-                                     detail: String(format: "RHR %.1fσ", -restingZ),
-                                     displayValue: String(format: "Resting HR %+.1fσ", -restingZ)),
+                                     detail: restingObserved
+                                        ? String(format: "RHR %.1fσ", -restingZValue)
+                                        : "RHR unavailable; excluded",
+                                     displayValue: restingObserved
+                                        ? String(format: "Resting HR %+.1fσ", -restingZValue)
+                                        : "Resting HR unavailable",
+                                     direction: restingObserved ? nil : 0),
                 Estimate.Contributor(kind: .sleep,
                                      zScore: sleepZ,
                                      weight: sleepWeight,
@@ -1542,7 +1567,7 @@ enum AtriaAnalytics {
             ]
             let blendedZ = (
                 0.60 * hrvZ
-                    - 0.20 * restingZ
+                    - (restingObserved ? 0.20 * restingZValue : 0)
                     + 0.15 * sleepZ
                     + (respirationQualified ? 0.05 * respirationZ : 0)
             ) / observedWeight
@@ -1552,9 +1577,12 @@ enum AtriaAnalytics {
                 : (respirationZ == 0
                    ? "Resp neutral"
                    : String(format: "Resp z %.1f", respirationZ))
+            let restingDetail = restingObserved
+                ? String(format: "RHR z %.1f", restingZValue)
+                : "RHR n/a"
             return Estimate(percent: percent, confidence: confidence,
                             usesHRV: true,
-                            detail: String(format: "lnRMSSD z %.1f · RHR z %.1f · Sleep z %.1f · %@", hrvZ, restingZ, sleepZ, respirationDetail),
+                            detail: String(format: "lnRMSSD z %.1f · %@ · Sleep z %.1f · %@", hrvZ, restingDetail, sleepZ, respirationDetail),
                             contributors: contributors)
         }
 

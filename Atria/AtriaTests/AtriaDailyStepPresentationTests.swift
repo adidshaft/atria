@@ -192,10 +192,13 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.completeness, .unavailable)
     }
 
-    func testPreliminaryLiveStrapTotalFailsClosedUntilValidated() {
-        // With NO drained coverage there is no verified floor to sanity-check an
-        // unvalidated live count against, so it still fails closed (the 2026-08-22
-        // live estimate only fills gaps against a real drained partial).
+    func testFreshPreliminaryLiveShowsClampedEstimateWithoutDrainedFloor() {
+        // 2026-08-22 (owner-approved, REC-1): reverses the prior fail-closed guard.
+        // With NO drained coverage, a FRESH in-cycle qualified live count is now
+        // surfaced AS AN ESTIMATE rather than withheld — the strap's oldest-first
+        // drain can leave today with zero drained rows for hours while real steps
+        // accrue. Honesty-first is preserved: source stays .live + !isValidated, so
+        // the copy reads "estimate"/"Approximately", never an exact count.
         let capturedAt = day.addingTimeInterval(14 * 3_600)
         let value = AtriaDailyStepPresentation.resolve(
             day: day,
@@ -207,12 +210,58 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
+        XCTAssertEqual(value.count, 4_000)
+        XCTAssertEqual(value.source, .live)
+        XCTAssertEqual(value.completeness, .partial)
+        XCTAssertFalse(value.isValidated)
+        XCTAssertEqual(value.valueText, "4000")
+        XCTAssertEqual(value.detailText, "Today so far · estimate")
+        XCTAssertEqual(
+            value.accessibilityText,
+            "Approximately 4000 steps today so far."
+        )
+    }
+
+    func testStandaloneLiveEstimateIsClampedToPhysiologicalCadence() {
+        // The former fail-closed concern (an unvalidated count could be arbitrarily
+        // wrong) is now bounded by a physiological cadence ceiling: a blown-up model
+        // value cannot exceed what is humanly possible in the elapsed active window.
+        // Here only 100s have elapsed → ceiling = 100 * 3.5 = 350 steps.
+        let dayStart = day
+        let now = dayStart.addingTimeInterval(100)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: dayStart,
+            now: now,
+            liveCount: 999_999,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now,
+            canonicalDays: [],
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.source, .live)
+        XCTAssertFalse(value.isValidated)
+        XCTAssertEqual(value.count, 350)
+    }
+
+    func testStandaloneLiveEstimateNeverFiresWithoutQualifiedModel() {
+        // HR-only radio mode has liveCount==0 (no IMU frames) and an unqualified
+        // model must still fail closed — the estimate branch never fires there.
+        let capturedAt = day.addingTimeInterval(14 * 3_600)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: capturedAt,
+            liveCount: 4_000,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: capturedAt,
+            canonicalDays: [],
+            liveAuthorityQualified: false,
+            calendar: utcCalendar
+        )
+
         XCTAssertNil(value.count)
         XCTAssertEqual(value.source, .none)
-        XCTAssertEqual(value.completeness, .unavailable)
-        XCTAssertFalse(value.isValidated)
-        XCTAssertEqual(value.valueText, "--")
-        XCTAssertEqual(value.detailText, "Strap motion is still validating")
+        XCTAssertEqual(value.unavailabilityReason, .stepModelNotQualified)
     }
 
     func testDisprovenLiveModelFailsClosedEvenWhenStateSaysValidated() {
@@ -252,10 +301,14 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
             calendar: utcCalendar
         )
 
-        XCTAssertNil(value.count)
-        XCTAssertEqual(value.source, .none)
-        XCTAssertEqual(value.completeness, .unavailable)
-        XCTAssertEqual(value.detailText, "Strap motion is still validating")
+        // 2026-08-22 (REC-1): the fresh post-midnight sample is attributed to the
+        // open physiological cycle and, absent any drained coverage, is now shown as
+        // a labeled estimate (previously withheld as "still validating").
+        XCTAssertEqual(value.count, 4_000)
+        XCTAssertEqual(value.source, .live)
+        XCTAssertFalse(value.isValidated)
+        XCTAssertEqual(value.completeness, .partial)
+        XCTAssertEqual(value.detailText, "Today so far · estimate")
     }
 
     func testStaleStrapSubtotalIsUnavailableWithoutCanonicalCoverage() {

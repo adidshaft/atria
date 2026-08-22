@@ -172,3 +172,68 @@ path climbing as the user walks. Prove BOTH.
 - Make the daily step display **feel up to date** between drains: ensure the drained rows
   publish to the Today step tile promptly (revision bump) so the number climbs live as
   chunks land, not only on next launch.
+
+---
+
+## 2026-08-22 RESOLUTION — READ THIS FIRST (supersedes the "interleave" plan above)
+
+A device soak + a 4-angle design panel (with adversarial HR-safety review) settled the
+architecture. The earlier "interleave drain during stable wear" idea is a **dead end and a
+safety risk — it was REVERTED** (see below).
+
+### The wall (device-proven + code-proven)
+1. **Steps read path is HONEST.** `AtriaWhoop4MotionTickCompactStore.motionTickDayEvidenceRead`
+   (~1869) returns `.incomplete` for yesterday because the compact store genuinely has <2
+   decoded rows there, even though `AtriaWhoop4MotionBankCoverageLedger` shows 280 banked
+   coverage intervals + 128 pending offload tickets. The rows are still on the strap flash.
+2. **History only streams under the stop-realtime full drain `[0x16,0x00]`.** The
+   realtime-preserving connected-chunked mode yields `stream5_rx=0` — the firmware sends no
+   history frames while 2A37 is live. See `AtriaBLEManager.swift:11594` comment.
+3. **The drain is walled by `bleCallbackEpochFence` ownership.** Transaction-boundary gate
+   (`AtriaBLEManager.swift` ~14008, `deferred_realtime_owner_at_transaction_boundary`) and
+   the atomic-claim gate (the `installHistoryTransportClaim` closure `guard
+   !bleCallbackEpochFence.hasActiveOwner`, refusal logged `deferred_realtime_owner_at_atomic_claim`).
+   The epoch fence **activates on didConnect (~45316) and invalidates on didDisconnect
+   (~45772)**. So **link-UP ⟹ epoch-OWNED** through all of stable wear; the only
+   epoch-UNOWNED window is link-DOWN (can't drain over a down link).
+4. **∴ Draining banked history rows DURING continuous stable wear requires deliberately
+   stopping live HR** (Build-5 territory). Both adversarial reviewers condemned every
+   stable-wear stop-realtime variant: the HR gap per served page is 9–22s and can extend to
+   30–180s even with zero productive rows (firmware won't interleave 2A37 while serving a
+   page); the budget disposition refuses to cut a live page mid-transfer. Not seconds-negligible.
+5. **No iOS escape hatch.** One GATT/ACL session per device (CoreBluetooth invariant; the
+   retainer already demotes a second CBPeripheral for the same UUID to a passive duplicate).
+   Zero L2CAP in the repo, and a CoC would still share the one ACL + still hit the firmware's
+   realtime-off history gate. Background BLE + state restoration already enabled but the epoch
+   is owned in background too.
+
+### The resolution (what to build)
+- **Prior days (yesterday's true ~10k): natural-gap / pre-HR / link-down drain ONLY.** This
+  session FIXED its trigger: the on-connect drain judged "healthy" from a stale wall-clock
+  `lastAcceptedHRAt < 10s` that SURVIVES the gap, so short drops always skipped. Now uses
+  `currentConnectionHasFreshHeartRate` (epoch-relative; false right at reconnect before HR
+  re-establishes). It correctly `triggering_on_connect` now (device-confirmed 2026-08-22),
+  and firing only in the epoch-unowned link-down/pre-HR window means it can never seize a
+  live stream. **KEEP flag-gated `--atria-natural-gap-drain-enable` until a soak proves no
+  accepted-HR sample is displaced (accepted_hr gap ~0 around every drain slice), then default
+  it on.** Yesterday becomes correct by next morning via the overnight/charging natural gap.
+- **Today (intraday "feel up to date"): the live IMU gyro-cadence estimate**
+  (`AtriaWhoop4GravityCadenceStepModel` → `liveStrapStepResearchCount`). This rides frames
+  already on the shared link — ZERO BLE work, zero HR risk. Proposed **REC-1**: a standalone
+  live branch in `AtriaDailyStepPresentation.resolve` (~L515, the deliberately-omitted
+  branch) that surfaces the live count as today's hero when there is no drained partial,
+  labeled `· estimate` / "Approximately N" (honesty-first LAW: must stay labeled), with a
+  physiological cadence clamp. **Caveat:** yields nothing in HR-only radio mode (no IMU
+  frames) — that state keeps the honest fallback (last completed day, never "--").
+  **STATUS: NOT shipped — reversing the L515-521 guard is a settled product decision, pending
+  the owner's OK.**
+
+### REVERTED this session (do not resurrect without the product decision + device proof)
+- `interleaveTransactionBypass` (was ~14005) — peeled the transaction-boundary gate for a
+  whole reason class; drained zero rows (dead-ended at the atomic-claim wall).
+- `scheduleInterleaveDrainTickerIfEnabled` ticker + call site — the stable-wear stop-realtime
+  premise is exactly the Build-5 regression.
+- `naturalGapDrainBypass`'s `interleave_drain` branch + the `isExplicitUserOfflineSyncReason`
+  `interleave_drain` allowance.
+Kept: the natural-gap `currentConnectionHasFreshHeartRate` fix + its regression test; fixed a
+pre-existing red test (`testAttendedAndGeneralHistoryDefer…`, anchor broke at `eb622b8a`).

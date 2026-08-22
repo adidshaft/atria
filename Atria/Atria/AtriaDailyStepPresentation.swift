@@ -96,6 +96,13 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     /// it. This is the reliability guard on the 2026-08-22 live-estimate change.
     static let liveEstimateCoverageCeiling: Double = 0.6
 
+    /// Physiological cadence ceiling for a standalone live estimate shown with NO
+    /// drained floor to sanity-check against (2026-08-22, owner-approved). Sustained
+    /// human step cadence tops out near 3–3.5 steps/s (elite running); 3.5 is a
+    /// generous backstop so a preliminary/blown-up live model can never render an
+    /// absurd hero number. Caps highs only; an undercount is left honest.
+    static let liveEstimateMaxStepsPerSecond: Double = 3.5
+
     enum Completeness: Equatable, Sendable {
         case complete
         case partial
@@ -512,11 +519,46 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
                          isOpenCycle: isOpenDay,
                          carriedFromUnconfirmedPriorCycle: usesCarried)
         }
+        // 2026-08-22 (owner-approved, REC-1): surface the live IMU gyro-cadence
+        // estimate as the open cycle's number even with NO drained floor, rather
+        // than withholding it. The strap's oldest-first drain can leave today with
+        // zero drained coverage for hours while the user has walked thousands of
+        // steps; the live model is the only up-to-date signal in that window and it
+        // is honest to show it AS AN ESTIMATE. Honesty-first LAW is preserved: this
+        // stays source=.live + isValidated=false, so copy reads "Approximately N
+        // steps" / "Today so far · estimate", never an exact count. The former
+        // concern (an unvalidated count could be arbitrarily wrong) is bounded by a
+        // physiological cadence clamp: the estimate cannot exceed what is humanly
+        // possible in the elapsed active window. Only reached when there is no
+        // partial (the raise-above-floor path above already owns the stuck-low case)
+        // and a FRESH in-cycle live coordinate exists; HR-only radio mode has
+        // liveCount==0, so this never fires there and the honest states below stand.
+        // Freshness is required (liveBelongsToDay, not the looser liveInCycle the
+        // raise-above-floor path may use): with no drained floor a STALE coordinate
+        // must still fail closed as "no longer live", never freeze a stale estimate.
+        let liveEstimateEligible = liveAuthorityQualified
+            && isOpenDay
+            && liveBelongsToDay
+            && liveCount > 0
+        if liveEstimateEligible {
+            let elapsedActiveSeconds = max(0, now.timeIntervalSince(activeWindowStart))
+            let cadenceCeiling = Int(
+                (elapsedActiveSeconds * liveEstimateMaxStepsPerSecond).rounded()
+            )
+            let clampedLive = min(max(0, liveCount), cadenceCeiling)
+            return .init(day: dayStart,
+                         count: clampedLive,
+                         completeness: .partial,
+                         source: .live,
+                         isValidated: false,
+                         capturedAt: liveCapturedAt,
+                         coverageFraction: nil,
+                         isOpenCycle: isOpenDay)
+        }
         // Intentionally NO branch here that surfaces a live count when there is
-        // no drained coverage at all: with no verified floor to sanity-check
-        // against, an unvalidated/preliminary count could be arbitrarily wrong,
-        // and the "stuck low" case the 2026-08-22 change targets always has a
-        // partial (a drained morning slice). Those no-coverage states keep their
+        // no drained coverage at all AND no fresh in-cycle live coordinate: with
+        // no verified floor to sanity-check against, an unvalidated/preliminary
+        // count could be arbitrarily wrong. Those no-coverage states keep their
         // existing specific reasons (still-validating / no-longer-live / prior
         // cycle) below.
         let emptyReason: UnavailabilityReason =

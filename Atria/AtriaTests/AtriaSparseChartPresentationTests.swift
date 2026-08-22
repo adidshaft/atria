@@ -152,4 +152,36 @@ final class AtriaSparseChartPresentationTests: XCTestCase {
                 pinned: sixHourWindow, sampleFirst: nil, sampleLast: nil),
             sixHourWindow)
     }
+
+    /// #2 regression (2026-08-22): the user-visible Vitals proof card
+    /// (AtriaHealthTimelineProofCard) must pin its HR chart's x-domain so a sparse
+    /// archive interval is never stretched across the whole plot. It was the one
+    /// production HR chart that omitted xDomain; guard against re-omission.
+    func testHealthTimelineProofCardPinsChartXDomain() throws {
+        let source = try healthScreenSource()
+        let cardStart = try XCTUnwrap(
+            source.range(of: "struct AtriaHealthTimelineProofCard")
+        )
+        let cardTail = String(source[cardStart.lowerBound...])
+        let chartCall = try XCTUnwrap(
+            cardTail.range(of: "AtriaHeartRateAxisChart(")
+        )
+        let chartAndAfter = String(cardTail[chartCall.lowerBound...].prefix(700))
+        XCTAssertTrue(
+            chartAndAfter.contains("xDomain: pinnedXDomain"),
+            "AtriaHealthTimelineProofCard must pass a pinned xDomain to its HR chart"
+        )
+        XCTAssertTrue(
+            cardTail.contains("private var pinnedXDomain: ClosedRange<Date>?"),
+            "the card must derive a minimum-width pinned domain from its series"
+        )
+    }
+
+    private func healthScreenSource() throws -> String {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaHealthScreen.swift")
+        return try String(contentsOf: url, encoding: .utf8)
+    }
 }
