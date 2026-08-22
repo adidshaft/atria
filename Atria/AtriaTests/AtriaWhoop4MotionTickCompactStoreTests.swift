@@ -2460,6 +2460,80 @@ final class AtriaWhoop4MotionTickCompactStoreTests: XCTestCase {
         )
     }
 
+    // MARK: - Open-tail relaxation (2026-08-22): current-cycle partial publish
+
+    func testOpenTailPublishesPartialWhenCurrentCycleRowsLagNow() {
+        let base = 1_800_000_000.0
+        var points: [AtriaWhoop4MotionTickCompactStore.Point] = []
+        for i in 0..<20 {
+            points.append(dayEvidencePoint(
+                timestamp: base + 5 + Double(i) * 10,
+                tick: 60 + i * 30,
+                identity: String(repeating: "a", count: 32)
+            ))
+        }
+        let start = Date(timeIntervalSince1970: base)
+        // Window ends at "now"; the newest decoded row (base+195) lags it ~405s,
+        // exactly as the compact store lags the still-open bank interval.
+        let now = start.addingTimeInterval(600)
+        let coverage = [DateInterval(start: start.addingTimeInterval(5), end: now)]
+
+        // Strict read (the pre-fix behavior): the now-edge veto discards the
+        // whole open interval → no qualified evidence → the "--" symptom.
+        let strict = AtriaWhoop4MotionTickCompactStore
+            .motionTickDayEvidenceReadForTesting(
+                sortedPoints: points, start: start, end: now, bankCoverage: coverage)
+        XCTAssertEqual(strict.read, .completeNoQualifiedEvidence,
+                       "strict read vetoes the open tail — reproduces the '--'")
+
+        // Open-tail relaxation: publish a real partial up to the last decoded
+        // row, with the undrained [lastRow, now] tail counted honestly as missing
+        // so the day is never marked complete.
+        let relaxed = AtriaWhoop4MotionTickCompactStore
+            .motionTickDayEvidenceReadForTesting(
+                sortedPoints: points, start: start, end: now,
+                bankCoverage: coverage, allowOpenTail: true)
+        // The relaxation's job is to STOP vetoing the open tail so a read that
+        // was `.completeNoQualifiedEvidence` becomes `.qualified` over the actual
+        // decoded rows. (Whether those rows resolve to nonzero step-coverage
+        // seconds is the separately-tested cadence model's job; synthetic gravity
+        // here need not resolve.)
+        guard case .qualified(let evidence) = relaxed.read else {
+            return XCTFail("open tail should publish (qualified), got \(relaxed.read)")
+        }
+        XCTAssertGreaterThanOrEqual(evidence.decodedRows, 2,
+                                    "the open tail's real decoded rows are processed")
+        XCTAssertGreaterThan(evidence.missingCoverageSeconds, 0,
+                             "undrained [lastRow, now] tail stays missing; day never marked complete")
+        XCTAssertLessThanOrEqual(evidence.capturedThrough, now,
+                                 "captured frontier never runs past now")
+    }
+
+    func testOpenTailDoesNotRelaxAClosedIntervalShortOfTheWindowEnd() {
+        let base = 1_800_000_000.0
+        var points: [AtriaWhoop4MotionTickCompactStore.Point] = []
+        for i in 0..<20 {
+            points.append(dayEvidencePoint(
+                timestamp: base + 5 + Double(i) * 10,
+                tick: 60 + i * 30,
+                identity: String(repeating: "a", count: 32)
+            ))
+        }
+        let start = Date(timeIntervalSince1970: base)
+        let now = start.addingTimeInterval(600)
+        // A CLOSED interval ending at base+300 (well short of the window end):
+        // its end-boundary has no nearby row, and it is NOT the open tail, so it
+        // must stay strictly vetoed even with allowOpenTail on.
+        let coverage = [DateInterval(start: start.addingTimeInterval(5),
+                                     end: start.addingTimeInterval(300))]
+        let relaxed = AtriaWhoop4MotionTickCompactStore
+            .motionTickDayEvidenceReadForTesting(
+                sortedPoints: points, start: start, end: now,
+                bankCoverage: coverage, allowOpenTail: true)
+        XCTAssertEqual(relaxed.read, .completeNoQualifiedEvidence,
+                       "a closed interval short of the window end keeps exact both-boundary integrity")
+    }
+
     private func dayEvidencePoint(
         timestamp: TimeInterval,
         tick: Int,

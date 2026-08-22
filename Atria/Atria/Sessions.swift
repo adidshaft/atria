@@ -11747,7 +11747,12 @@ final class SessionStore: ObservableObject {
                         start: window.interval.start,
                         end: window.interval.end,
                         bankCoverage: coverage,
-                        strapIdentifier: strapIdentifier
+                        strapIdentifier: strapIdentifier,
+                        // Open-tail relaxation applies ONLY to the current cycle,
+                        // whose window ends at `now` and whose final interval the
+                        // compact store necessarily lags. The prior cycle ends on
+                        // a real closed boundary and must stay strict.
+                        allowOpenTail: window.role == .current
                     )
                 let compactFingerprintAfter =
                     AtriaWhoop4MotionTickCompactStore.shared.sourceFingerprint(
@@ -11777,12 +11782,27 @@ final class SessionStore: ObservableObject {
                         strapIdentifier: strapIdentifier
                     )
                 case .compactOnlyMissing:
+                    // Record WHICH non-qualified case fired so the field can tell
+                    // a genuine drain backlog (.incomplete — rows still on the
+                    // strap, correct to wait) from the now-edge veto
+                    // (.completeNoQualifiedEvidence — rows exist but were
+                    // discarded). With allowOpenTail on for .current, a case-b
+                    // read now qualifies and publishes; a case still logged here
+                    // for .current is therefore the genuine drain backlog.
+                    let readCase: String
+                    switch compactRead {
+                    case .qualified: readCase = "qualified"
+                    case .completeNoQualifiedEvidence: readCase = "complete_no_qualified_evidence"
+                    case .incomplete: readCase = "incomplete"
+                    }
                     AtriaDebugLog(
-                        "ATRIADBG whoop4_daily_steps status=compact_only_missing reason=%@ generation=%d window=%@ coverage_intervals=%d action=wait_for_compact_checkpoint_or_safe_bounded_migration",
+                        "ATRIADBG whoop4_daily_steps status=compact_only_missing reason=%@ generation=%d window=%@ coverage_intervals=%d read_case=%@ allow_open_tail=%d action=wait_for_compact_checkpoint_or_safe_bounded_migration",
                         reason,
                         generation,
                         window.role.rawValue,
-                        coverage.count
+                        coverage.count,
+                        readCase,
+                        window.role == .current ? 1 : 0
                     )
                 }
             }
@@ -35053,11 +35073,22 @@ final class SessionStore: ObservableObject {
             // above-band bins before the episode and after it. A mere end
             // timestamp, ambient quiet, or absence of motion is never enough,
             // and this remains review-only: it changes no auto-confirm gate.
+            //
+            // 2026-08-22: this path was originally capped at
+            // `captured < minimumAutoConfirmMainSleepDuration` (5h) on the
+            // assumption that any >=5h sleep would be caught by `mainSleep`'s
+            // captured>=5h branch — but `mainSleep` ALSO hard-requires >=90min
+            // 00:00–06:00 core overlap, which a shifted sleep never has, so a
+            // real ~6h afternoon main sleep (the reported 13:15–19:15 case) fell
+            // through BOTH branches and produced no candidate at all. Remove the
+            // upper-duration cap: `!mainSleep` already prevents any double-admit
+            // of a genuine core-overlapping night sleep, and the two-sided
+            // sustained-awake bracing remains the quality gate — so lifting the
+            // cap only extends REVIEW admission to LONGER awake-braced episodes
+            // (more sleep-like, not less), which is exactly the shifted main sleep.
             let shiftedDaytimeReview = !mainSleep
                 && captured >= 150 * 60
                 && span >= AggregateSleepCandidate.strictMinimumDuration
-                && captured < AggregateSleepCandidate
-                    .minimumAutoConfirmMainSleepDuration
                 && Self.sustainedAwakeEvidenceExists(
                     awakeBinStarts: awakeBinStarts,
                     boundary: start,
