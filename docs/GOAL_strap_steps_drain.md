@@ -101,6 +101,17 @@ sees (it fires ON accepted HR → `healthy_epoch=1`). So you must wire the drain
    bounded chunk completes + ACKs before those fire, and that authority is bound to the
    exact peripheral/epoch.
 
+## Soak finding 2026-08-22 (design refinement): natural-gap-only is NOT sufficient
+A soak window showed the strap connection can stay STABLE for 90s+ (no natural disconnect),
+so the natural-gap-only trigger never fires and steps don't catch up during stable stretches.
+The complete fix therefore needs BOTH: (a) the natural-gap drain (safe, already wired), AND
+(b) a bounded realtime-PAUSE interleave for stable-connection periods — drain a small chunk
+with a brief (~few-second) 2A37 pause that HR recovers from, then resume realtime, repeating
+until caught up. (b) is NOT Build-5's full cutover (which failed to restore cleanly); it is a
+short, self-healing pause per chunk, still gated so it never runs while a workout/motion owner
+holds the link. Soak (b) carefully: confirm HR gaps stay small (~seconds, self-healing) and
+steps climb. This is the key remaining design piece.
+
 ## Key test target (user clarification 2026-08-22)
 YESTERDAY was a real ~10k+ step day (completed); TODAY accumulates toward 10k as the user
 walks. The device shows `whoop4_daily_steps window=immediately_prior steps=1118` — i.e.
