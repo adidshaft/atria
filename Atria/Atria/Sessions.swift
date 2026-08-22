@@ -35038,6 +35038,15 @@ final class SessionStore: ObservableObject {
         }
         if !current.isEmpty { episodes.append(current) }
 
+        AtriaDebugLog(
+            "ATRIADBG sleep_physio_draft sessions=%d sleep_bins=%d awake_bins=%d episodes=%d rest=%d",
+            sessions.count,
+            bins.count,
+            awakeBinStarts.count,
+            episodes.count,
+            rest
+        )
+
         var reviewDrafts: [AtriaSleepReviewDraft] = []
         for episode in episodes {
             try cooperativeDeadline?.checkpoint()
@@ -35065,40 +35074,56 @@ final class SessionStore: ObservableObject {
                 && coreOverlap >= AggregateSleepCandidate.minimumAutoConfirmSleepCoreOverlap
                 && (captured >= AggregateSleepCandidate.minimumAutoConfirmMainSleepDuration
                     || coreOverlapFraction >= 0.60)
-            // Handoff-13 CP1: a SHIFTED daytime sleep has zero 00:00–06:00
-            // core overlap by definition, so the night-core gate can never
-            // admit it (the physical Aug-13 09:56–13:39 candidate). Admit a
-            // main-sleep-shaped daytime episode only when POSITIVE sustained
-            // awake evidence braces it on BOTH sides — a run of clearly
-            // above-band bins before the episode and after it. A mere end
-            // timestamp, ambient quiet, or absence of motion is never enough,
-            // and this remains review-only: it changes no auto-confirm gate.
-            //
-            // 2026-08-22: this path was originally capped at
-            // `captured < minimumAutoConfirmMainSleepDuration` (5h) on the
-            // assumption that any >=5h sleep would be caught by `mainSleep`'s
-            // captured>=5h branch — but `mainSleep` ALSO hard-requires >=90min
-            // 00:00–06:00 core overlap, which a shifted sleep never has, so a
-            // real ~6h afternoon main sleep (the reported 13:15–19:15 case) fell
-            // through BOTH branches and produced no candidate at all. Remove the
-            // upper-duration cap: `!mainSleep` already prevents any double-admit
-            // of a genuine core-overlapping night sleep, and the two-sided
-            // sustained-awake bracing remains the quality gate — so lifting the
-            // cap only extends REVIEW admission to LONGER awake-braced episodes
-            // (more sleep-like, not less), which is exactly the shifted main sleep.
+            // Handoff-13 CP1: a SHIFTED daytime sleep has zero 00:00–06:00 core
+            // overlap by definition, so the night-core gate can never admit it
+            // (the physical Aug-13 candidate). It is admitted only as a review
+            // candidate braced by POSITIVE sustained awake evidence — see the
+            // 2026-08-22 refinement at the `shiftedDaytimeReview` definition below
+            // for why the gate is the WAKING transition (awake_after) plus a
+            // sleep-band, main-sleep-sized episode, not the former 5h cap /
+            // two-sided bracing. Ambient quiet or absence of motion is never
+            // enough, and this remains review-only (no auto-confirm gate).
+            let awakeBefore = Self.sustainedAwakeEvidenceExists(
+                awakeBinStarts: awakeBinStarts,
+                boundary: start,
+                side: .before
+            )
+            let awakeAfter = Self.sustainedAwakeEvidenceExists(
+                awakeBinStarts: awakeBinStarts,
+                boundary: end,
+                side: .after
+            )
+            // 2026-08-22 (device-confirmed): require the WAKING transition
+            // (sustained awake activity AFTER the episode) rather than bracing on
+            // BOTH sides. A real 12:00–16:00/155-min shifted sleep had core=0,
+            // awake_after=1, awake_before=0 — the pre-sleep window was a data
+            // gap / sedentary wind-down, so demanding awake_before wrongly
+            // rejected a genuine main sleep. awake_after is the definitive main-
+            // sleep signal and still excludes the documented 22:18–02:05
+            // quiet-awake case (which is FOLLOWED by actual sleep → awake_after
+            // false); an early-morning sleep also wakes into activity, unaffected.
+            // Review-only; episode already requires >=150min of sleep-band HR.
             let shiftedDaytimeReview = !mainSleep
                 && captured >= 150 * 60
                 && span >= AggregateSleepCandidate.strictMinimumDuration
-                && Self.sustainedAwakeEvidenceExists(
-                    awakeBinStarts: awakeBinStarts,
-                    boundary: start,
-                    side: .before
-                )
-                && Self.sustainedAwakeEvidenceExists(
-                    awakeBinStarts: awakeBinStarts,
-                    boundary: end,
-                    side: .after
-                )
+                && awakeAfter
+            // 2026-08-22 diagnostic: surface every physiological-episode gate so
+            // the field can see exactly why a shifted/afternoon sleep is or isn't
+            // admitted (episode detected? which gate fails?). Read-only.
+            AtriaDebugLog(
+                "ATRIADBG sleep_physio_episode start_h=%d end_h=%d captured_min=%.0f span_min=%.0f core_min=%.0f core_frac=%.2f awake_before=%d awake_after=%d awake_bins=%d main_sleep=%d shifted_review=%d",
+                calendar.component(.hour, from: start),
+                endHour,
+                captured / 60,
+                span / 60,
+                coreOverlap / 60,
+                coreOverlapFraction,
+                awakeBefore ? 1 : 0,
+                awakeAfter ? 1 : 0,
+                awakeBinStarts.count,
+                mainSleep ? 1 : 0,
+                shiftedDaytimeReview ? 1 : 0
+            )
             // This fallback has HR bins only. During the day, low HR is not
             // specific to sleep: active wear can contain long low-HR stretches
             // between brief exertion (the physical 2026-07-22 false nap had a
