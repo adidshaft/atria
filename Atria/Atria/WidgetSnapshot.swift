@@ -1509,18 +1509,40 @@ enum WidgetSnapshotPublisher {
                                                        activeSessionID: ble.currentLiveSessionID,
                                                        calendar: calendar,
                                                        now: now)
+        // Keep the widget in lockstep with the Home hero's continuous fold: a
+        // spurious no-sleep-fallback rollover must not zero strain/wear here
+        // either. The fold reaches back over the disjoint pre-boundary slice of
+        // the same wear period (bounded to 18h); a confirmed boundary folds
+        // nothing.
+        let strainAccumulationStart = AtriaHomeModel.continuousTodayAccumulationStart(
+            cycleStart: savedAggregate.day,
+            lastConfirmedWake: AtriaPhysiologicalCycle.latestCompletedMainSleep(
+                now: now,
+                confirmedSleeps: store.confirmedSleeps
+            )?.end,
+            now: now,
+            isUnconfirmedFallback: physiologicalCycle.boundaryKind != .mainSleep
+        )
+        let continuousFold = store.continuousTodayPreBoundaryFold(
+            accumulationStart: strainAccumulationStart,
+            cycleStart: savedAggregate.day,
+            rest: rest ?? 60,
+            maxHR: store.profile.maxHR
+        )
         let strain = dayStrain(saved: savedAggregate,
                                store: store,
                                ble: ble,
-                               rest: rest ?? 60)
+                               rest: rest ?? 60,
+                               additionalSavedTRIMP: continuousFold.addedTRIMP)
         let wearCoverage = AtriaHomeModel.dayWearCoverageFraction(
             observedSeconds: AtriaHomeModel.observedHeartRateUnionSeconds(
                 sessions: store.sessions,
                 windowStart: savedAggregate.day,
                 windowEnd: now
             )
+                + continuousFold.addedObservedSeconds
                 + Double(ble.session.count),
-            dayElapsedSeconds: now.timeIntervalSince(savedAggregate.day)
+            dayElapsedSeconds: now.timeIntervalSince(strainAccumulationStart)
         )
         let baseStrainConfidence = AtriaHomeModel.strainConfidence(
             hasRestingHeartRateEvidence: rest != nil,
@@ -2345,14 +2367,15 @@ enum WidgetSnapshotPublisher {
     private static func dayStrain(saved: SessionStore.HomeSavedAggregate,
                                   store: SessionStore,
                                   ble: AtriaBLEManager,
-                                  rest: Int) -> Double {
+                                  rest: Int,
+                                  additionalSavedTRIMP: Double = 0) -> Double {
         let live = incrementalLiveTRIMP(samples: ble.session,
                                         rest: rest,
                                         max: store.profile.maxHR,
                                         sex: store.profile.biologicalSex,
                                         cycleStart: saved.day)
         let reconciled = SessionStore.mergedTodayTRIMP(
-            savedToday: saved.savedTodayTRIMP,
+            savedToday: saved.savedTodayTRIMP + additionalSavedTRIMP,
             savedActiveSession: saved.savedActiveSessionTRIMP,
             liveActiveSession: live
         )
