@@ -20103,6 +20103,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         resetRadioDiagnosticsForLaunch()
         applyCoexistenceRiskForDebugLaunch(arguments: arguments)
         applyOfflineSyncForDebugLaunch(arguments: arguments)
+        if arguments.contains("--atria-start-fresh-clear-gap") {
+            // Debug-only reliable trigger for the same clean-slate the Settings
+            // "Start fresh · clear stuck strap history" control invokes. Lets a
+            // device verify the durable abandon-frontier suppression over the log
+            // channel without depending on flaky iPhone-Mirroring taps.
+            startFreshAcceptingMissedDataLoss(reason: "launch_arg_start_fresh")
+        }
         UserDefaults.standard.set(false, forKey: CheckpointDefaults.armed)
         UserDefaults.standard.removeObject(forKey: CheckpointDefaults.interval)
         UserDefaults.standard.removeObject(forKey: CheckpointDefaults.label)

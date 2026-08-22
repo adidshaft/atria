@@ -1596,12 +1596,19 @@ struct AtriaTodayScreen: View {
         let baseline = AtriaBaselineTargetSnapshot(sessionProjectionStore.state.baseline)
         let night = latestSleep
         let calendar = Calendar.current
-        let yesterdayRollup = night.flatMap { current -> DailyRollupStoreEntry? in
-            guard let prior = calendar.date(byAdding: .day,
-                                            value: -1,
-                                            to: calendar.startOfDay(for: current.day)) else { return nil }
-            return dayDescendingRollups.first { calendar.isDate($0.day, inSameDayAs: prior) }
-        }
+        // "Yesterday's strain" must be anchored on the current civil day, NOT on
+        // the latest confirmed sleep night. When sleep isn't detected (a degraded
+        // HR-only strap can stay unconfirmed for days) `latestSleep` is nil, and
+        // the old `night.flatMap` anchor collapsed to nil — so the row read "no
+        // strain recorded yesterday" even though a strain rollup for yesterday was
+        // persisted. Anchor on today-1 so the persisted prior-day strain surfaces
+        // regardless of sleep-detection state.
+        let today = calendar.startOfDay(for: Date())
+        let yesterdayRollup: DailyRollupStoreEntry? = calendar
+            .date(byAdding: .day, value: -1, to: today)
+            .flatMap { prior in
+                dayDescendingRollups.first { calendar.isDate($0.day, inSameDayAs: prior) }
+            }
         let model = AtriaTodayMorningWhiteboardModel.make(
             hrvMS: cycle.hrvMS,
             restingHR: cycle.restingHeartRate,

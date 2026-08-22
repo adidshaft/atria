@@ -5496,6 +5496,101 @@ final class AtriaAnalyticsTests: XCTestCase {
         XCTAssertFalse(SessionStore.isReviewWorthySleepCandidate(candidate))
     }
 
+    /// Direct memberwise builder for the degraded-review predicate boundary tests
+    /// (the predicate is a pure function of the candidate's fields, so this exercises
+    /// exactly the gate under test without re-deriving percentiles). eventTimeZoneIdentifier
+    /// is nil so the predicate's sleep-core overlap uses Calendar.current — the same
+    /// calendar utcDate builds the 02:00-05:00 window in, keeping the 3h window fully
+    /// inside the 00:00-06:00 core on every host.
+    private func degradedReviewCandidate(baselineRestingHR: Int, medianHR: Int, hrP90: Int,
+                                         restingHR: Int, hrStandardDeviation: Double,
+                                         elevatedSampleFraction: Double = 0.02,
+                                         hrObservedCoverageFraction: Double,
+                                         qualifiedRRCoverageFraction: Double,
+                                         sessions: Int = 2) -> AggregateSleepCandidate {
+        let start = utcDate(2027, 3, 2, 2, 0)
+        let end = utcDate(2027, 3, 2, 5, 0)
+        return AggregateSleepCandidate(
+            kind: "overnight_sleep", day: start, eventTimeZoneIdentifier: nil,
+            sessions: sessions, start: start, end: end,
+            duration: end.timeIntervalSince(start), span: end.timeIntervalSince(start),
+            maxGap: 0, samples: 15574,
+            hrObservedCoverageFraction: hrObservedCoverageFraction, maximumHRSampleGap: 60,
+            avgHR: (medianHR + hrP90) / 2, peakHR: hrP90 + 6,
+            hrStandardDeviation: hrStandardDeviation, medianHR: medianHR, hrP90: hrP90,
+            elevatedSampleFraction: elevatedSampleFraction,
+            baselineRestingHR: baselineRestingHR, restingHR: restingHR,
+            confidence: .low, reason: "test", motionHintCount: 0, motionHintKinds: "",
+            motionEvidenceSource: "strap_hr_only", motionEvidenceValidated: false,
+            motionShortCount: 0, motionShortMean: nil, motionShortMin: nil, motionShortMax: nil,
+            motionShortOverOneCount: 0, historicalMotionStatus: "none",
+            historicalMotionReason: "none", historicalMotionRows: 0,
+            historicalMotionValidatedRows: 0, historicalMotionCoverageSeconds: 0,
+            historicalMotionMeanVectorDelta: nil, historicalMotionP95VectorDelta: nil,
+            historicalMotionMagnitudeStdDev: nil, historicalMotionArchiveFirstUnix: 0,
+            historicalMotionArchiveLastUnix: 0, historicalMotionNearestSeparationSeconds: 0,
+            historicalMotionValidated: false, denseMorningHROnlyReviewQualified: false,
+            denseLongHROnlyReviewQualified: false,
+            qualifiedRRCoverageFraction: qualifiedRRCoverageFraction)
+    }
+
+    /// 2026-08-22 device night: a motion-starved shifted sleeper's real 3h overnight
+    /// low-HR window (base56/med66/P90 78=+22/rest58/SD8.5/cov1.0/qRR0.93) must surface
+    /// for review through the corroborated-trough envelope — on confirm it yields
+    /// hrv 52ms over 10 qualified RMSSD windows and meets the 3h main-sleep floor.
+    /// Review-only: a 3h / 2-session HR-only night can never auto-confirm.
+    func testCorroboratedTroughOvernightSurfacesForReview() {
+        let c = degradedReviewCandidate(baselineRestingHR: 56, medianHR: 66, hrP90: 78,
+                                        restingHR: 58, hrStandardDeviation: 8.5,
+                                        elevatedSampleFraction: 0.025,
+                                        hrObservedCoverageFraction: 1.0,
+                                        qualifiedRRCoverageFraction: 0.93)
+        XCTAssertTrue(SessionStore.isDegradedHROnlyOvernightSleepCandidate(c))
+        XCTAssertTrue(SessionStore.isReviewWorthySleepCandidate(c))
+        XCTAssertFalse(SessionStore.isAutoConfirmableMainSleepCandidate(c, baselineRestingIsTrusted: true))
+        XCTAssertFalse(SessionStore.isUnambiguousHROnlyMainSleepCandidate(c))
+        XCTAssertFalse(SessionStore.isHighSpecificityFragmentedHROnlyMainSleepCandidate(c))
+    }
+
+    /// The corroborated envelope must NOT rely on RR coverage as the discriminator:
+    /// the 2026-07-23 quiet-awake false positive (base71/med78=+7/P90 92=+21, flat
+    /// floor so restingHR == median) stays hidden even with dense qualified RR,
+    /// because it fails the parasympathetic-trough gate (restingHR 78 > base+4=75,
+    /// and drop 78-78=0 < 6).
+    func testQuietAwakeFlatFloorStaysHiddenEvenWithDenseRR() {
+        let fp = degradedReviewCandidate(baselineRestingHR: 71, medianHR: 78, hrP90: 92,
+                                         restingHR: 78, hrStandardDeviation: 5.5,
+                                         elevatedSampleFraction: 0.0,
+                                         hrObservedCoverageFraction: 1.0,
+                                         qualifiedRRCoverageFraction: 0.95)
+        XCTAssertFalse(SessionStore.isDegradedHROnlyOvernightSleepCandidate(fp))
+        XCTAssertFalse(SessionStore.isReviewWorthySleepCandidate(fp))
+    }
+
+    /// Each corroborator locks one axis: the exact +22 envelope admits, and moving
+    /// any single guard just past its bound rejects.
+    func testCorroboratedTroughBoundaries() {
+        let base = 56
+        func c(medianHR: Int = base + 10, hrP90: Int = base + 22, restingHR: Int = base + 4,
+               sd: Double = 9.5, hrCov: Double = 0.80, qRR: Double = 0.80) -> AggregateSleepCandidate {
+            degradedReviewCandidate(baselineRestingHR: base, medianHR: medianHR, hrP90: hrP90,
+                                    restingHR: restingHR, hrStandardDeviation: sd,
+                                    hrObservedCoverageFraction: hrCov, qualifiedRRCoverageFraction: qRR)
+        }
+        XCTAssertTrue(SessionStore.isDegradedHROnlyOvernightSleepCandidate(c()))            // exact boundary admits
+        XCTAssertFalse(SessionStore.isDegradedHROnlyOvernightSleepCandidate(c(hrP90: base + 23)))  // P90 ceiling
+        XCTAssertFalse(SessionStore.isDegradedHROnlyOvernightSleepCandidate(c(restingHR: base + 5))) // no trough
+        XCTAssertFalse(SessionStore.isDegradedHROnlyOvernightSleepCandidate(c(medianHR: base + 9, restingHR: base + 4))) // drop 5<6
+        XCTAssertFalse(SessionStore.isDegradedHROnlyOvernightSleepCandidate(c(sd: 9.6)))            // envelope
+        XCTAssertFalse(SessionStore.isDegradedHROnlyOvernightSleepCandidate(c(hrCov: 0.79)))        // density
+        XCTAssertFalse(SessionStore.isDegradedHROnlyOvernightSleepCandidate(c(qRR: 0.79)))          // RR quality
+        // The tight base envelope (<=base+18) still admits with NO corroboration.
+        XCTAssertTrue(SessionStore.isDegradedHROnlyOvernightSleepCandidate(
+            degradedReviewCandidate(baselineRestingHR: base, medianHR: base + 6, hrP90: base + 18,
+                                    restingHR: base + 6, hrStandardDeviation: 12.0,
+                                    hrObservedCoverageFraction: 0.5, qualifiedRRCoverageFraction: 0.0)))
+    }
+
     /// An evening couch session (not overnight) must never confirm through the
     /// degraded HR-only tier: near-zero overlap with the sleep-core window (00:00-06:00)
     /// is the primary guardrail against an active/awake evening masquerading as sleep.
