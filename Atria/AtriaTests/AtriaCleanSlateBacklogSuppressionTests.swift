@@ -102,61 +102,57 @@ final class AtriaGapTerminalStallTests: XCTestCase {
 
     func testNotStalledWithoutBacklog() {
         XCTAssertFalse(P.gapIsTerminallyStalled(
-            backlogPending: false, activelyDraining: false,
+            backlogPending: false,
             sequenceGapParkedTerminal: false,
-            secondsSinceLastDurableFlush: 10 * 3600,
-            secondsSinceRangeLossRequested: 10 * 3600))
-    }
-
-    func testNotStalledWhileActivelyDraining() {
-        XCTAssertFalse(P.gapIsTerminallyStalled(
-            backlogPending: true, activelyDraining: true,
-            sequenceGapParkedTerminal: true,
-            secondsSinceLastDurableFlush: 10 * 3600,
+            secondsSinceFrontierAdvance: 10 * 3600,
             secondsSinceRangeLossRequested: 10 * 3600))
     }
 
     func testStalledWhenSequenceGapParked() {
         XCTAssertTrue(P.gapIsTerminallyStalled(
-            backlogPending: true, activelyDraining: false,
+            backlogPending: true,
             sequenceGapParkedTerminal: true,
-            secondsSinceLastDurableFlush: nil,
+            secondsSinceFrontierAdvance: nil,
             secondsSinceRangeLossRequested: 60))
     }
 
-    func testStalledWhenNoProgressForWindow() {
+    // Frontier frozen for the whole window + old request → stalled (this is the
+    // degraded-strap case: 0-row offloads keep other timers fresh, but the
+    // frontier — the true progress signal — never moves).
+    func testStalledWhenFrontierFrozenForWindow() {
         XCTAssertTrue(P.gapIsTerminallyStalled(
-            backlogPending: true, activelyDraining: false,
+            backlogPending: true,
             sequenceGapParkedTerminal: false,
-            secondsSinceLastDurableFlush: window + 60,
+            secondsSinceFrontierAdvance: window + 60,
             secondsSinceRangeLossRequested: window + 60))
     }
 
-    // Never flushed (nil) but request is old enough → stalled.
-    func testStalledWhenNeverFlushedAndRequestOld() {
+    // Frontier never recorded (nil) but request is old enough → stalled.
+    func testStalledWhenNoFrontierAndRequestOld() {
         XCTAssertTrue(P.gapIsTerminallyStalled(
-            backlogPending: true, activelyDraining: false,
+            backlogPending: true,
             sequenceGapParkedTerminal: false,
-            secondsSinceLastDurableFlush: nil,
+            secondsSinceFrontierAdvance: nil,
             secondsSinceRangeLossRequested: window + 1))
     }
 
     // Transient reconnect blip: request younger than the window → NOT stalled,
-    // even with no recent flush.
+    // even with a frozen frontier (a strap merely behind, about to drain).
     func testNotStalledWhenRequestIsRecent() {
         XCTAssertFalse(P.gapIsTerminallyStalled(
-            backlogPending: true, activelyDraining: false,
+            backlogPending: true,
             sequenceGapParkedTerminal: false,
-            secondsSinceLastDurableFlush: 10 * 3600,
+            secondsSinceFrontierAdvance: 10 * 3600,
             secondsSinceRangeLossRequested: 5 * 60))
     }
 
-    // Recent durable flush = real progress → NOT stalled.
-    func testNotStalledWhenRecentFlush() {
+    // Frontier advanced recently = real progress (healthy catch-up) → NOT
+    // stalled, even with an old request.
+    func testNotStalledWhenFrontierAdvancedRecently() {
         XCTAssertFalse(P.gapIsTerminallyStalled(
-            backlogPending: true, activelyDraining: false,
+            backlogPending: true,
             sequenceGapParkedTerminal: false,
-            secondsSinceLastDurableFlush: 10 * 60,
+            secondsSinceFrontierAdvance: 10 * 60,
             secondsSinceRangeLossRequested: window + 60))
     }
 }

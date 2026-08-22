@@ -6351,24 +6351,27 @@ enum AtriaMissedDataBannerPresentation {
     static let terminalStallWindow: TimeInterval = 4 * 60 * 60
 
     /// Pure decision: is the gap terminally stalled (offer Start fresh)?
-    /// Fires when a backlog is pending, nothing is actively draining, and EITHER
-    /// the flash sequence is parked terminal, OR there has been no durable flush
-    /// for the whole stall window AND the range-loss request itself is at least
-    /// that old (so a transient reconnect blip can never trip it). Guarded by
-    /// `activelyDraining` so a healthy long catch-up never reads as stalled.
+    /// Keyed on the DRAIN FRONTIER not advancing — the only true progress signal.
+    /// `lastDurableFlushBoundaryOKAt` is deliberately NOT used: a degraded strap
+    /// emits a steady stream of 0-row `finalized_bank_offload` events that keep
+    /// that timestamp fresh (and `activelyDraining` falsely true) while the
+    /// frontier never moves. Fires when a backlog is pending and EITHER the flash
+    /// sequence is parked terminal, OR the frontier has not advanced for the
+    /// whole stall window AND the range-loss request is at least that old (so a
+    /// strap that is merely behind-but-recently-reconnected — and about to drain —
+    /// never trips it; a healthy catch-up advances the frontier and stays clear).
     static func gapIsTerminallyStalled(
         backlogPending: Bool,
-        activelyDraining: Bool,
         sequenceGapParkedTerminal: Bool,
-        secondsSinceLastDurableFlush: TimeInterval?,
+        secondsSinceFrontierAdvance: TimeInterval?,
         secondsSinceRangeLossRequested: TimeInterval?,
         stallWindow: TimeInterval = terminalStallWindow
     ) -> Bool {
-        guard backlogPending, !activelyDraining else { return false }
+        guard backlogPending else { return false }
         if sequenceGapParkedTerminal { return true }
         guard let requestedAge = secondsSinceRangeLossRequested,
               requestedAge >= stallWindow else { return false }
-        return (secondsSinceLastDurableFlush ?? .infinity) >= stallWindow
+        return (secondsSinceFrontierAdvance ?? .infinity) >= stallWindow
     }
 
     static func copy(strapPendingRecords: Int,
@@ -6378,6 +6381,7 @@ enum AtriaMissedDataBannerPresentation {
                      debtObservedAgeSeconds: TimeInterval? = 0,
                      backlogPending: Bool = false,
                      secondsSinceRangeLossRequested: TimeInterval? = nil,
+                     secondsSinceFrontierAdvance: TimeInterval? = nil,
                      sequenceGapParkedTerminal: Bool = false) -> Copy {
         let pending = max(0, strapPendingRecords)
         let minutes = pending / 60
@@ -6398,9 +6402,8 @@ enum AtriaMissedDataBannerPresentation {
         // "nearly empty" case below, so without this it would nag forever.
         if gapIsTerminallyStalled(
             backlogPending: backlogPending,
-            activelyDraining: activelyDraining,
             sequenceGapParkedTerminal: sequenceGapParkedTerminal,
-            secondsSinceLastDurableFlush: secondsSinceLastFlush,
+            secondsSinceFrontierAdvance: secondsSinceFrontierAdvance,
             secondsSinceRangeLossRequested: secondsSinceRangeLossRequested
         ) {
             return Copy(
@@ -6530,6 +6533,14 @@ private struct AtriaMissedDataBanner: View, Equatable {
         let sequenceGapParked = defaults.object(
             forKey: AtriaBLEManager.OfflineSyncDefaults.sequenceGapParkedAt
         ) != nil
+        // The drain frontier (durable "synced through") is the true progress
+        // signal — a degraded strap's 0-row offloads never advance it.
+        let frontier = defaults.double(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.drainedThroughUnix
+        )
+        let secondsSinceFrontierAdvance: TimeInterval? = frontier > 0
+            ? max(0, Date().timeIntervalSince1970 - frontier)
+            : nil
         return AtriaMissedDataBannerPresentation.copy(
             strapPendingRecords: pending,
             protectsLiveStream: protectsLiveStream,
@@ -6544,6 +6555,7 @@ private struct AtriaMissedDataBanner: View, Equatable {
             secondsSinceRangeLossRequested: requestedAt.map {
                 max(0, Date().timeIntervalSince1970 - $0)
             },
+            secondsSinceFrontierAdvance: secondsSinceFrontierAdvance,
             sequenceGapParkedTerminal: sequenceGapParked
         )
     }
