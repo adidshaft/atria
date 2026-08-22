@@ -11419,7 +11419,12 @@ final class AtriaHomeModel {
             excludedLoadIntervals: input.source.confirmedSleeps.map {
                 DateInterval(start: $0.start, end: $0.end)
             },
-            rawSessionCount: input.source.rawSessionCount
+            rawSessionCount: input.source.rawSessionCount,
+            // GAP-09: fuse logged muscular load into today's Strain on the
+            // off-MainActor path too, so the Home hero matches the widget on
+            // strength-heavy days (the reducer's window filter keeps this
+            // disjoint from the pre-boundary fold below — never double-counted).
+            confirmedWorkouts: input.source.confirmedWorkouts
         )
         // Same-defect carry (2026-08-22): across an UNCONFIRMED no-sleep
         // fallback the synthetic boundary splits ONE continuous wear period, so
@@ -11466,7 +11471,11 @@ final class AtriaHomeModel {
                 excludedLoadIntervals: input.source.confirmedSleeps.map {
                     DateInterval(start: $0.start, end: $0.end)
                 },
-                rawSessionCount: input.source.rawSessionCount
+                rawSessionCount: input.source.rawSessionCount,
+                // GAP-09: the pre-boundary slice must fuse muscular load too;
+                // its window [accumulationStart, cycleStart) is disjoint from
+                // the main aggregate's, so workouts land in exactly one lane.
+                confirmedWorkouts: input.source.confirmedWorkouts
             )
             savedTodayTRIMP += preBoundary.savedTodayTRIMP
             savedTodayMuscularTRIMP += preBoundary.savedTodayMuscularTRIMP

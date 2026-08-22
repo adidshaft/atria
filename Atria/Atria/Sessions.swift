@@ -9209,6 +9209,11 @@ final class SessionStore: ObservableObject {
         let canonicalSessions: [SavedSession]
         let archiveHeartRatePoints: [HistoricalArchive.HeartRatePoint]
         let confirmedSleeps: [UserConfirmedSleep]
+        /// Logged strength sessions whose muscular-equivalent TRIMP (GAP-09)
+        /// must fuse into today's Strain on the off-MainActor Home refresh, the
+        /// SAME array the MainActor widget path passes. Without it the hero
+        /// under-reports muscular load on strength-heavy days versus the widget.
+        let confirmedWorkouts: [UserConfirmedWorkout]
         let profile: AthleteProfile
         let rawSessions: [SavedSession]
         let rawSessionCount: Int
@@ -24921,6 +24926,7 @@ final class SessionStore: ObservableObject {
             canonicalSessions: cachedCanonicalSessions,
             archiveHeartRatePoints: cachedHistoricalTodayHeartRatePoints,
             confirmedSleeps: cachedConfirmedSleeps,
+            confirmedWorkouts: cachedConfirmedWorkouts,
             profile: profile,
             rawSessions: sessions,
             rawSessionCount: sessions.count,
