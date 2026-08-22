@@ -609,6 +609,36 @@ extension AtriaBLEManager {
         return true
     }
 
+    /// Step 1 of the strap-only cutover re-engineering (2026-08-22 user decision):
+    /// the ONLY safe window to drain flash history on a WHOOP4 that shares one link
+    /// between live 2A37/R10 and history is a moment when there is NO healthy live
+    /// epoch to protect — i.e. the strap has just naturally dropped its own link, or
+    /// the current epoch is provably idle/ending. The Build-5 soak proved that
+    /// seizing the link from a HEALTHY epoch cancels live HR; this predicate makes
+    /// that failure un-bypassable by requiring `!healthyLiveEpochActive` as a hard
+    /// precondition, never a soft preference. It authorizes at most a bounded,
+    /// ACK-cursor-advancing history chunk on a reconnect that follows a natural gap;
+    /// live HR remains the highest-priority owner the instant it re-establishes.
+    ///
+    /// Pure/testable: it decides eligibility only. The caller still binds the
+    /// generation/peripheral authority, bounds the chunk, and restores realtime.
+    nonisolated static func shouldDrainHistoryDuringNaturalGap(
+        retainedExplicitHistoryRequest: Bool,
+        strapBacklogPending: Bool,
+        priorEpochEndedNaturally: Bool,
+        healthyLiveEpochActive: Bool,
+        explicitMotionOwnershipActive: Bool,
+        thermalParked: Bool
+    ) -> Bool {
+        // The invariant that protects live HR: never drain while a healthy live
+        // epoch is transmitting. This is checked first and unconditionally.
+        guard !healthyLiveEpochActive else { return false }
+        guard !explicitMotionOwnershipActive, !thermalParked else { return false }
+        return retainedExplicitHistoryRequest
+            && strapBacklogPending
+            && priorEpochEndedNaturally
+    }
+
     /// Drain-keeping continuity (2026-08-07 soak): a `.draining` authority
     /// whose transport died (slice released for live HR, orphaned lease, BLE
     /// drop) used to be resumable ONLY via the interrupted-full-drain

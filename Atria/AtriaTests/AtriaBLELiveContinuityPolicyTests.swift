@@ -3151,4 +3151,59 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             .appendingPathComponent("Atria/AtriaApp.swift")
         return try String(contentsOf: appURL, encoding: .utf8)
     }
+
+    // MARK: - Step 1 of strap-only cutover: drain only during natural gaps
+
+    /// The load-bearing safety invariant (Build-5 lesson): a healthy live epoch is
+    /// NEVER interrupted for history, no matter how strong every other signal is.
+    func testNaturalGapDrainNeverFiresWhileHealthyLiveEpochActive() {
+        // Everything else maximally favors draining, but a healthy epoch is live.
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDrainHistoryDuringNaturalGap(
+                retainedExplicitHistoryRequest: true,
+                strapBacklogPending: true,
+                priorEpochEndedNaturally: true,
+                healthyLiveEpochActive: true,   // ← the protection
+                explicitMotionOwnershipActive: false,
+                thermalParked: false
+            ),
+            "history must never seize a healthy live HR/motion epoch"
+        )
+    }
+
+    /// The one eligible window: a natural gap with a real backlog and a retained
+    /// explicit request, and no healthy epoch to protect.
+    func testNaturalGapDrainFiresOnlyInTheSafeWindow() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDrainHistoryDuringNaturalGap(
+                retainedExplicitHistoryRequest: true,
+                strapBacklogPending: true,
+                priorEpochEndedNaturally: true,
+                healthyLiveEpochActive: false,
+                explicitMotionOwnershipActive: false,
+                thermalParked: false
+            )
+        )
+    }
+
+    /// Each remaining precondition is required: dropping any one blocks the drain.
+    func testNaturalGapDrainRequiresEveryPrecondition() {
+        func drains(retained: Bool = true, backlog: Bool = true, naturalGap: Bool = true,
+                    motionOwner: Bool = false, thermal: Bool = false) -> Bool {
+            AtriaBLEManager.shouldDrainHistoryDuringNaturalGap(
+                retainedExplicitHistoryRequest: retained,
+                strapBacklogPending: backlog,
+                priorEpochEndedNaturally: naturalGap,
+                healthyLiveEpochActive: false,
+                explicitMotionOwnershipActive: motionOwner,
+                thermalParked: thermal
+            )
+        }
+        XCTAssertTrue(drains())                          // baseline safe window admits
+        XCTAssertFalse(drains(retained: false))          // no user/explicit request
+        XCTAssertFalse(drains(backlog: false))           // nothing to drain
+        XCTAssertFalse(drains(naturalGap: false))        // epoch didn't end naturally
+        XCTAssertFalse(drains(motionOwner: true))        // workout owns motion
+        XCTAssertFalse(drains(thermal: true))            // thermal park
+    }
 }
