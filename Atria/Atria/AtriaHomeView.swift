@@ -6343,12 +6343,42 @@ enum AtriaMissedDataBannerPresentation {
     ///   - backlogPending: the durable range-loss/backlog ticket
     ///     (`rangeLossBackfillPending`) — proof of a real gap independent of
     ///     the possibly-stale count.
+    /// After this long with a pending backlog and zero durable progress (and
+    /// nothing actively draining), the gap is treated as terminally stuck and
+    /// the clean-slate ("Start fresh") is offered — the generalization so ANY
+    /// old/degraded strap that can't drain gets the clean experience, not just
+    /// the narrow "ring buffer just-confirmed nearly empty" case.
+    static let terminalStallWindow: TimeInterval = 4 * 60 * 60
+
+    /// Pure decision: is the gap terminally stalled (offer Start fresh)?
+    /// Fires when a backlog is pending, nothing is actively draining, and EITHER
+    /// the flash sequence is parked terminal, OR there has been no durable flush
+    /// for the whole stall window AND the range-loss request itself is at least
+    /// that old (so a transient reconnect blip can never trip it). Guarded by
+    /// `activelyDraining` so a healthy long catch-up never reads as stalled.
+    static func gapIsTerminallyStalled(
+        backlogPending: Bool,
+        activelyDraining: Bool,
+        sequenceGapParkedTerminal: Bool,
+        secondsSinceLastDurableFlush: TimeInterval?,
+        secondsSinceRangeLossRequested: TimeInterval?,
+        stallWindow: TimeInterval = terminalStallWindow
+    ) -> Bool {
+        guard backlogPending, !activelyDraining else { return false }
+        if sequenceGapParkedTerminal { return true }
+        guard let requestedAge = secondsSinceRangeLossRequested,
+              requestedAge >= stallWindow else { return false }
+        return (secondsSinceLastDurableFlush ?? .infinity) >= stallWindow
+    }
+
     static func copy(strapPendingRecords: Int,
                      protectsLiveStream: Bool,
                      secondsSinceLastFlush: TimeInterval?,
                      backgroundLeaseActive: Bool,
                      debtObservedAgeSeconds: TimeInterval? = 0,
-                     backlogPending: Bool = false) -> Copy {
+                     backlogPending: Bool = false,
+                     secondsSinceRangeLossRequested: TimeInterval? = nil,
+                     sequenceGapParkedTerminal: Bool = false) -> Copy {
         let pending = max(0, strapPendingRecords)
         let minutes = pending / 60
         let amount = minutes >= 1 ? "~\(minutes) min" : "under a minute"
@@ -6361,6 +6391,24 @@ enum AtriaMissedDataBannerPresentation {
             if let age = secondsSinceLastFlush, age <= activeDrainRecencyWindow { return true }
             return backgroundLeaseActive
         }()
+
+        // Terminally stalled → offer the clean slate (reuses the ✕ → Start fresh
+        // wiring). This is the degraded-strap generalization: a strap that keeps
+        // dropping the link on every history read never satisfies the narrow
+        // "nearly empty" case below, so without this it would nag forever.
+        if gapIsTerminallyStalled(
+            backlogPending: backlogPending,
+            activelyDraining: activelyDraining,
+            sequenceGapParkedTerminal: sequenceGapParkedTerminal,
+            secondsSinceLastDurableFlush: secondsSinceLastFlush,
+            secondsSinceRangeLossRequested: secondsSinceRangeLossRequested
+        ) {
+            return Copy(
+                title: "Strap can't catch up",
+                subtitle: "No recent progress — start fresh to clear the gap. New data is unaffected.",
+                offersRecovery: false
+            )
+        }
 
         // A stale pending count cannot prove the gap is gone. With a durable
         // backlog ticket still pending, recoverability is unknown-but-likely:
@@ -6476,6 +6524,12 @@ private struct AtriaMissedDataBanner: View, Equatable {
         let debtObservedAt = defaults.object(
             forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtObservedAt
         ) as? Double
+        let requestedAt = defaults.object(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillRequestedAt
+        ) as? Double
+        let sequenceGapParked = defaults.object(
+            forKey: AtriaBLEManager.OfflineSyncDefaults.sequenceGapParkedAt
+        ) != nil
         return AtriaMissedDataBannerPresentation.copy(
             strapPendingRecords: pending,
             protectsLiveStream: protectsLiveStream,
@@ -6486,7 +6540,11 @@ private struct AtriaMissedDataBanner: View, Equatable {
             },
             backlogPending: defaults.bool(
                 forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
-            )
+            ),
+            secondsSinceRangeLossRequested: requestedAt.map {
+                max(0, Date().timeIntervalSince1970 - $0)
+            },
+            sequenceGapParkedTerminal: sequenceGapParked
         )
     }
 

@@ -16714,14 +16714,44 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         defaults.removeObject(forKey: OfflineSyncDefaults.recoveryWindowStart)
         defaults.removeObject(forKey: OfflineSyncDefaults.recoveryWindowEnd)
         assignIfChanged(\.rangeLossBackfillPending, false)
+        // Clean-slate DURABILITY (2026-08-22): clearing the pending flag alone is
+        // not durable — a degraded strap re-presents its un-servable backlog and
+        // the next connect re-arms the flag (fresh-debt / stale-frontier ->
+        // history read -> link drop -> re-mark). Neutralize the three inputs that
+        // re-arm it, all app-side (still ble_commands=0):
+        //  (1) a monotonic "abandoned through" frontier the backlog detectors
+        //      consult (strapBacklogReason / recordFlushDebt) so the app stops
+        //      chasing the pre-reset records;
+        //  (2) advance the drained frontier to now so `.frontierStale` can't fire;
+        //  (3) advance the durable live-continuity anchor so a relaunch's
+        //      restoration gap does not re-open the abandoned window;
+        //  (4) drop the last stale 0x22 flush-debt reading.
+        let nowUnix = now.timeIntervalSince1970
+        let priorAbandon = defaults.double(
+            forKey: OfflineSyncDefaults.historyAbandonedThroughUnix
+        )
+        defaults.set(max(priorAbandon, nowUnix),
+                     forKey: OfflineSyncDefaults.historyAbandonedThroughUnix)
+        let priorFrontier = defaults.double(forKey: OfflineSyncDefaults.drainedThroughUnix)
+        if nowUnix > priorFrontier {
+            defaults.set(nowUnix, forKey: OfflineSyncDefaults.drainedThroughUnix)
+        }
+        let anchorAdvanced = AtriaHistoricalGapLedger.advanceLiveContinuityAnchor(
+            to: now, force: true
+        )
+        defaults.removeObject(forKey: OfflineSyncDefaults.flushDebtObservedAt)
+        defaults.removeObject(forKey: OfflineSyncDefaults.flushDebtPendingRecords)
+        defaults.removeObject(forKey: OfflineSyncDefaults.flushDebtLevel)
         historicalRecoveryPresentation = .idle
         reconcileHistoricalRecoveryPresentation(reason: "user_start_fresh")
         AtriaDebugLog(
-            "ATRIADBG offline_sync status=user_start_fresh_accept_loss reason=%@ authority_abandoned=%d retired_windows=%d remaining_windows=%d ble_commands=0 metric_archive_mutation=0 session_mutation=0",
+            "ATRIADBG offline_sync status=user_start_fresh_accept_loss reason=%@ authority_abandoned=%d retired_windows=%d remaining_windows=%d abandoned_through=%.0f anchor_advanced=%d ble_commands=0 metric_archive_mutation=0 session_mutation=0",
             reason,
             authorityAbandoned ? 1 : 0,
             retirement?.retiredWindows ?? -1,
-            retirement?.remainingWindows ?? -1
+            retirement?.remainingWindows ?? -1,
+            max(priorAbandon, nowUnix),
+            anchorAdvanced ? 1 : 0
         )
     }
 
@@ -17529,6 +17559,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         let records = Int(min(pendingRecords, UInt32(Int32.max)))
         let level = Self.flushDebtLevel(pendingRecords: records)
         let defaults = UserDefaults.standard
+        // Clean-slate durability: a 0x22 report describing only the abandoned
+        // pre-reset backlog must NOT re-stamp fresh debt or re-arm the catch-up
+        // ticker — the history read it would trigger is exactly what a degraded
+        // strap drops the link on, which is the storm we abandoned. A genuine
+        // caught-up reading still records normally (reflects reality, arms
+        // nothing). Suppression lifts once real new data drains past the abandon
+        // instant. Inert for any strap that never ran Start fresh.
+        if level != .caughtUp,
+           Self.historyAbandonedSuppressesBacklog(defaults: defaults) {
+            AtriaDebugLog("ATRIADBG offline_sync status=flush_debt_suppressed_abandoned records=%d action=ignore_pre_reset_backlog",
+                          records)
+            return
+        }
         defaults.set(records, forKey: OfflineSyncDefaults.flushDebtPendingRecords)
         defaults.set(Date().timeIntervalSince1970,
                      forKey: OfflineSyncDefaults.flushDebtObservedAt)
@@ -17612,12 +17655,37 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case unresolvedSliceStart
     }
 
+    /// Clean-slate durability: true while the user has abandoned the pre-reset
+    /// banked history ("Start fresh") AND the drain frontier has not advanced
+    /// past that instant — i.e. the strap's re-presented backlog is entirely the
+    /// abandoned pre-reset data. While true, the whole-backlog detectors
+    /// (`.freshDebt`, `.frontierStale`) must read `.none` so the app stops
+    /// initiating the history reads a degraded strap drops the link on. It lifts
+    /// itself the moment genuinely new post-reset data drains PAST the abandoned
+    /// instant. A specific new-gap `.ticket` (a small, recent window) is
+    /// deliberately NOT suppressed — that still drains normally. Inert for any
+    /// strap that never ran Start fresh (`historyAbandonedThroughUnix` unset).
+    nonisolated static func historyAbandonedSuppressesBacklog(
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        let abandoned = defaults.double(
+            forKey: OfflineSyncDefaults.historyAbandonedThroughUnix
+        )
+        guard abandoned > 0 else { return false }
+        let frontier = defaults.double(forKey: OfflineSyncDefaults.drainedThroughUnix)
+        // Suppressed until the drained frontier advances materially (>1s) past
+        // the abandoned instant — real new data, not a re-read of old pages.
+        return frontier <= abandoned + 1
+    }
+
     nonisolated static func strapBacklogReason(
         now: Date = Date(),
         defaults: UserDefaults = .standard,
         processInstanceID: String = AtriaBLEManager.processInstanceID
     ) -> StrapBacklogReason {
         if defaults.bool(forKey: OfflineSyncDefaults.rangeLossBackfillPending) { return .ticket }
+        // Clean-slate: the abandoned pre-reset backlog is not something to chase.
+        let abandonedSuppresses = historyAbandonedSuppressesBacklog(defaults: defaults)
         if let observedAt = defaults.object(forKey: OfflineSyncDefaults.flushDebtObservedAt) as? Double,
            observedAt.isFinite,
            now.timeIntervalSince1970 - observedAt <= 15 * 60 {
@@ -17630,7 +17698,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // new probe and refresh the truth.  A real range-loss ticket still
             // wins above this branch, and we never advance the durable frontier
             // from debt alone.
-            return flushDebtLevel(pendingRecords: records) == .caughtUp
+            return (flushDebtLevel(pendingRecords: records) == .caughtUp
+                    || abandonedSuppresses)
                 ? .none
                 : .freshDebt
         }
@@ -17644,7 +17713,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return .unresolvedSliceStart
         }
         let frontier = defaults.double(forKey: OfflineSyncDefaults.drainedThroughUnix)
-        if frontier > 0, now.timeIntervalSince1970 - frontier >= frontierBacklogFloorSeconds {
+        if frontier > 0, !abandonedSuppresses,
+           now.timeIntervalSince1970 - frontier >= frontierBacklogFloorSeconds {
             return .frontierStale
         }
         return .none
