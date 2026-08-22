@@ -546,6 +546,45 @@ final class AtriaWorkoutSaveDurabilityTests: XCTestCase {
         XCTAssertTrue(live.contains("Atria couldn't save the workout yet. Try ending it again."))
     }
 
+    /// 2026-08-21 device regression: ending Walk 1 then starting Strength
+    /// recorded nothing — the ended segment's terminal intent occupied the single
+    /// crash-safe slot while its async confirm+flush ran, so beginWorkoutSession
+    /// refused the new segment; only a force-quit's relaunch replay recovered it,
+    /// and the pill sat on "pending". The fix inline-finalizes the terminal
+    /// intent (a metadata-only save needs no strap, so it clears the slot even
+    /// when the link dropped mid-transition), then CONTINUES into the new segment;
+    /// a persistent failure keeps the crash-safe record and retries recovery
+    /// unbounded rather than requiring a force-quit.
+    func testWalkToStrengthTransitionFinalizesTerminalIntentInlineAndContinues() throws {
+        // Enabler: the terminal Walk-1 intent is an explicit user activity with a
+        // positive duration, so it is metadata-only confirmable (no strap needed)
+        // to clear the slot; a non-explicit or zero-duration state is not.
+        XCTAssertTrue(SessionStore.metadataOnlyWorkoutSaveIsConfirmable(
+            isExplicitUserActivity: true, requestedDuration: 60))
+        XCTAssertFalse(SessionStore.metadataOnlyWorkoutSaveIsConfirmable(
+            isExplicitUserActivity: false, requestedDuration: 60))
+        XCTAssertFalse(SessionStore.metadataOnlyWorkoutSaveIsConfirmable(
+            isExplicitUserActivity: true, requestedDuration: 0))
+
+        // Orchestration (source-scanned, matching the sibling terminal-intent
+        // test): beginWorkoutSession must inline-finalize an occupying terminal
+        // intent and then continue into the new segment, never silently refuse it.
+        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        let appDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Atria")
+        let home = try String(contentsOf: appDirectory.appendingPathComponent("AtriaHomeView.swift"),
+                              encoding: .utf8)
+        let start = try XCTUnwrap(home.range(of: "private func beginWorkoutSession(configuration:"))
+        let end = try XCTUnwrap(home.range(of: "private func finalizePendingWorkoutIntent(",
+                                           range: start.upperBound..<home.endIndex))
+        let begin = String(home[start.lowerBound..<end.lowerBound])
+        XCTAssertTrue(begin.contains("await finalizePendingWorkoutIntent(pending"),
+                      "an occupying terminal intent must be inline-finalized, not left to block the new segment")
+        XCTAssertTrue(begin.contains("return await beginWorkoutSession("),
+                      "after finalizing the terminal intent, begin must continue into the new segment")
+        XCTAssertTrue(begin.contains("workoutEndNotice = .retained("),
+                      "a persistent finalize failure must keep the crash-safe record (unbounded recovery), not force-quit")
+    }
+
     func testPendingWorkoutIntentSaveFailsClosedForNonFiniteTerminalState() throws {
         let suite = "AtriaWorkoutSaveDurabilityTests.intent-failure.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
