@@ -24815,6 +24815,58 @@ final class SessionStore: ObservableObject {
         coldSessionDirtyGenerations = coldSessionDirtyGenerations.filter { $0.value > revision }
     }
 
+    /// Additive pre-boundary slice of the SAME continuous wear period, for
+    /// folding into the cumulative Today metrics across an unconfirmed no-sleep
+    /// fallback (see `AtriaHomeModel.continuousTodayAccumulationStart`). The
+    /// window [accumulationStart, cycleStart] is DISJOINT from the current
+    /// [cycleStart, now] aggregate and the load is window-bounded, so folding
+    /// never double-counts. Returns zeros when there is nothing to fold. Keeps
+    /// the widget in lockstep with the Home hero's off-MainActor fold.
+    struct ContinuousTodayFold: Equatable {
+        let addedTRIMP: Double
+        let addedMuscularTRIMP: Double
+        let addedActiveCalories: Double?
+        let addedObservedSeconds: TimeInterval
+        static let none = ContinuousTodayFold(
+            addedTRIMP: 0, addedMuscularTRIMP: 0,
+            addedActiveCalories: nil, addedObservedSeconds: 0
+        )
+    }
+
+    func continuousTodayPreBoundaryFold(accumulationStart: Date,
+                                        cycleStart: Date,
+                                        rest: Int,
+                                        maxHR: Int) -> ContinuousTodayFold {
+        guard accumulationStart < cycleStart else { return .none }
+        let pre = Self.homeSavedAggregate(
+            from: canonicalSessions(),
+            archiveHeartRatePoints: cachedHistoricalTodayHeartRatePoints,
+            rest: rest,
+            maxHR: maxHR,
+            biologicalSex: profile.biologicalSex,
+            profile: profile,
+            activeSessionID: nil,
+            calendar: .current,
+            now: cycleStart,
+            cycleStart: accumulationStart,
+            excludedLoadIntervals: cachedConfirmedSleeps.map {
+                DateInterval(start: $0.start, end: $0.end)
+            },
+            confirmedWorkouts: confirmedWorkouts
+        )
+        let observed = AtriaHomeModel.observedHeartRateUnionSeconds(
+            sessions: sessions,
+            windowStart: accumulationStart,
+            windowEnd: cycleStart
+        )
+        return ContinuousTodayFold(
+            addedTRIMP: pre.savedTodayTRIMP,
+            addedMuscularTRIMP: pre.savedTodayMuscularTRIMP,
+            addedActiveCalories: pre.savedTodayActiveCalories,
+            addedObservedSeconds: observed
+        )
+    }
+
     func homeSavedAggregate(rest: Int,
                             maxHR: Int,
                             activeSessionID: UUID? = nil,

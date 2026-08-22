@@ -9946,6 +9946,15 @@ final class AtriaHomeModel {
         /// sleeper's steps are not stranded in "Yesterday" while today shows
         /// "--" across a fabricated boundary.
         let cycleBoundaryIsUnconfirmedFallback: Bool
+        /// The effective start of the CONTINUOUS active period the cumulative
+        /// Today metrics (strain/TRIMP/calories/wear) integrate over. Equals
+        /// `cycleStart` normally; across an unconfirmed no-sleep fallback it
+        /// reaches back to the pre-boundary slice of the same wear period
+        /// (bounded to an 18h window) so a synthetic rollover does not zero
+        /// those metrics. Steps and the canonical `cycleStart` are deliberately
+        /// NOT keyed to this. Used as the wear-coverage denominator origin so it
+        /// stays consistent with the folded observed seconds.
+        let strainAccumulationStart: Date
         let restingContext: RestingMetricContext
         let savedTodayTRIMP: Double
         let savedActiveSessionTRIMP: Double
@@ -11353,6 +11362,29 @@ final class AtriaHomeModel {
         )
     }
 
+    /// The start of the CONTINUOUS active period the cumulative Today metrics
+    /// (strain/TRIMP/calories/wear) integrate over. For a confirmed boundary —
+    /// or when nothing usable precedes the cycle within the bound — this is
+    /// `cycleStart`, so behaviour is unchanged. Across an UNCONFIRMED no-sleep
+    /// fallback it reaches back to the last confirmed wake (the same unbroken
+    /// wear period the synthetic boundary split), clamped so the total window
+    /// never exceeds a plausible waking day (18h): a stale anchor must not
+    /// integrate multiple days of strain. Always <= cycleStart. Pure + injable
+    /// so the boundary is unit-testable.
+    nonisolated static func continuousTodayAccumulationStart(
+        cycleStart: Date,
+        lastConfirmedWake: Date?,
+        now: Date,
+        isUnconfirmedFallback: Bool
+    ) -> Date {
+        guard isUnconfirmedFallback else { return cycleStart }
+        let floor = now.addingTimeInterval(
+            -AtriaCurrentDayPresentation.maximumWakingDayHeldAcrossMidnight
+        )
+        let candidate = max(lastConfirmedWake ?? floor, floor)
+        return min(candidate, cycleStart)
+    }
+
     private nonisolated static func makeSavedAggregate(
         input: SavedAggregateRefreshInput
     ) -> SavedAggregate {
@@ -11389,33 +11421,89 @@ final class AtriaHomeModel {
             },
             rawSessionCount: input.source.rawSessionCount
         )
+        // Same-defect carry (2026-08-22): across an UNCONFIRMED no-sleep
+        // fallback the synthetic boundary splits ONE continuous wear period, so
+        // the cumulative Today metrics (strain via TRIMP, calories, wear) that
+        // integrate over [cycleStart, now] collapse — "all the numbers went
+        // away". Fold the stranded pre-boundary slice back in over
+        // [accumulationStart, cycleStart]. The two windows are DISJOINT and the
+        // load is window-bounded (dailyLoadTRIMP(within:)), so this partitions
+        // the continuous period — never double-counts, never fabricates. Steps
+        // are deliberately excluded (their receipt pipeline already carries
+        // forward) and the canonical cycleStart is untouched (day identity /
+        // recovery / durable freeze stay put). An unconfirmed sleep inside the
+        // pre-slice contributes ~0 load (sleep = low HR), so it self-corrects.
+        let lastConfirmedWake = AtriaPhysiologicalCycle.latestCompletedMainSleep(
+            now: input.windowEnd,
+            confirmedSleeps: input.source.confirmedSleeps
+        )?.end
+        let accumulationStart = continuousTodayAccumulationStart(
+            cycleStart: cycleStart,
+            lastConfirmedWake: lastConfirmedWake,
+            now: input.windowEnd,
+            isUnconfirmedFallback: cycleBoundaryIsUnconfirmedFallback
+        )
+        var savedTodayTRIMP = aggregate.savedTodayTRIMP
+        var savedTodayMuscularTRIMP = aggregate.savedTodayMuscularTRIMP
+        var savedTodayActiveCalories = aggregate.savedTodayActiveCalories
+        var savedTodayObservedSeconds = observedHeartRateUnionSeconds(
+            sessions: input.source.rawSessions,
+            windowStart: aggregate.day,
+            windowEnd: input.windowEnd
+        )
+        if accumulationStart < cycleStart {
+            let preBoundary = SessionStore.homeSavedAggregate(
+                from: input.source.canonicalSessions,
+                archiveHeartRatePoints: input.source.archiveHeartRatePoints,
+                rest: restingContext.resolved,
+                maxHR: input.source.profile.maxHR,
+                biologicalSex: input.source.profile.biologicalSex,
+                profile: input.source.profile,
+                activeSessionID: nil,
+                calendar: .current,
+                now: cycleStart,
+                cycleStart: accumulationStart,
+                excludedLoadIntervals: input.source.confirmedSleeps.map {
+                    DateInterval(start: $0.start, end: $0.end)
+                },
+                rawSessionCount: input.source.rawSessionCount
+            )
+            savedTodayTRIMP += preBoundary.savedTodayTRIMP
+            savedTodayMuscularTRIMP += preBoundary.savedTodayMuscularTRIMP
+            if let preCalories = preBoundary.savedTodayActiveCalories {
+                savedTodayActiveCalories =
+                    (savedTodayActiveCalories ?? 0) + preCalories
+            }
+            savedTodayObservedSeconds += observedHeartRateUnionSeconds(
+                sessions: input.source.rawSessions,
+                windowStart: accumulationStart,
+                windowEnd: cycleStart
+            )
+        }
         return SavedAggregate(
             cycleStart: aggregate.day,
             cycleBoundaryIsUnconfirmedFallback:
                 cycleBoundaryIsUnconfirmedFallback,
+            strainAccumulationStart: accumulationStart,
             restingContext: restingContext,
-            savedTodayTRIMP: aggregate.savedTodayTRIMP,
+            savedTodayTRIMP: savedTodayTRIMP,
             savedActiveSessionTRIMP: aggregate.savedActiveSessionTRIMP,
-            savedTodayMuscularTRIMP: aggregate.savedTodayMuscularTRIMP,
-            savedTodayActiveCalories: aggregate.savedTodayActiveCalories,
+            savedTodayMuscularTRIMP: savedTodayMuscularTRIMP,
+            savedTodayActiveCalories: savedTodayActiveCalories,
             savedActiveSessionActiveCalories:
                 aggregate.savedActiveSessionActiveCalories,
             savedTodayStrapSteps: aggregate.savedTodayStrapSteps,
             savedActiveSessionStrapSteps: aggregate.savedActiveSessionStrapSteps,
             savedActiveSessionTotalStrapSteps:
                 aggregate.savedActiveSessionTotalStrapSteps,
-            hasSavedToday: aggregate.hasSavedToday,
+            hasSavedToday: aggregate.hasSavedToday || savedTodayTRIMP > 0,
             sessionsCount: aggregate.sessionsCount,
             baselineSamples: input.baseline.freshHRVSampleCount(
                 now: input.windowEnd
             ),
             confirmedWorkouts: input.confirmedWorkouts,
             confirmedSleeps: input.source.confirmedSleeps.count,
-            savedTodayObservedSeconds: observedHeartRateUnionSeconds(
-                sessions: input.source.rawSessions,
-                windowStart: aggregate.day,
-                windowEnd: input.windowEnd
-            )
+            savedTodayObservedSeconds: savedTodayObservedSeconds
         )
     }
 
@@ -12404,7 +12492,12 @@ final class AtriaHomeModel {
         let wearCoverage = Self.dayWearCoverageFraction(
             observedSeconds: savedAggregate.savedTodayObservedSeconds
                 + Double(live.sessionSampleCount),
-            dayElapsedSeconds: now.timeIntervalSince(savedAggregate.cycleStart)
+            // Denominator origin must match the (possibly folded) observed
+            // numerator: across an unconfirmed fallback both span the continuous
+            // active period from strainAccumulationStart, so coverage stays a
+            // true fraction instead of an inflated >1 ratio.
+            dayElapsedSeconds:
+                now.timeIntervalSince(savedAggregate.strainAccumulationStart)
         )
         let baseStrainConfidence = strainConfidence(
             hasRestingHeartRateEvidence: hasRestEvidence,
@@ -12927,6 +13020,10 @@ final class AtriaHomeModel {
         return SavedAggregate(cycleStart: aggregate.day,
                               cycleBoundaryIsUnconfirmedFallback:
                                 cycleBoundaryIsUnconfirmedFallback,
+                              // Cold-start seed: canonical window only; the full
+                              // off-MainActor refresh applies the continuous
+                              // fold. Seeding with cycleStart keeps it honest.
+                              strainAccumulationStart: aggregate.day,
                               restingContext: restingContext,
                               savedTodayTRIMP: aggregate.savedTodayTRIMP,
                               savedActiveSessionTRIMP: aggregate.savedActiveSessionTRIMP,
