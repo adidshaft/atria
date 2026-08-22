@@ -226,6 +226,14 @@ struct AtriaSettingsView: View {
     let catchUpBehindText: String?
     /// Turn the boost on (true) or off (false). Nil hides the control entirely.
     let onSetCatchUpBoost: ((Bool) -> Void)?
+    /// True while a strap-history gap is pending — surfaces the always-available
+    /// "Start fresh" control so a user whose strap can't drain can clear the
+    /// perpetual "history incomplete" state reliably (not only via the banner,
+    /// which may not surface for a degraded strap).
+    let strapHistoryGapPending: Bool
+    /// Abandon the unrecoverable gap and clear the state (durable clean slate,
+    /// no strap erase). Nil hides the control.
+    let onStartFreshClearGap: (() -> Void)?
     let onNutritionHealthToggle: (() -> Void)?
     let backupStatusProvider: () -> SessionBackupStatus
     /// Starts a required backup on the store's serial utility worker. The
@@ -256,6 +264,8 @@ struct AtriaSettingsView: View {
     /// Local echo of the catch-up boost after a tap, so the row confirms the
     /// action immediately (the injected state is a snapshot from screen open).
     @State private var catchUpBoostLocalOn: Bool?
+    @State private var confirmStartFreshFromSettings = false
+    @State private var startFreshDone = false
     @State private var backupStatus: SessionBackupStatus
     @State private var backupImportPresented = false
     @State private var backupActionMessage: String?
@@ -331,6 +341,8 @@ struct AtriaSettingsView: View {
          catchUpBoostActive: Bool = false,
          catchUpBehindText: String? = nil,
          onSetCatchUpBoost: ((Bool) -> Void)? = nil,
+         strapHistoryGapPending: Bool = false,
+         onStartFreshClearGap: (() -> Void)? = nil,
          onNutritionHealthToggle: (() -> Void)? = nil,
          backupStatusProvider: @escaping () -> SessionBackupStatus = { .missing },
          onWriteBackup: ((@escaping @MainActor (SessionBackupStatus) -> Void) -> Void)? = nil,
@@ -369,6 +381,8 @@ struct AtriaSettingsView: View {
         self.catchUpBoostActive = catchUpBoostActive
         self.catchUpBehindText = catchUpBehindText
         self.onSetCatchUpBoost = onSetCatchUpBoost
+        self.strapHistoryGapPending = strapHistoryGapPending
+        self.onStartFreshClearGap = onStartFreshClearGap
         self.onNutritionHealthToggle = onNutritionHealthToggle
         self.backupStatusProvider = backupStatusProvider
         self.onWriteBackup = onWriteBackup
@@ -984,6 +998,42 @@ struct AtriaSettingsView: View {
                         ? "Higher-cadence motion streaming is on so the backlog syncs sooner. Atria turns it back off by itself once the strap is caught up."
                         : "Strap history is lagging. Stream motion at a higher cadence to sync sooner — it uses more strap battery and stops on its own once caught up."
                 )
+            }
+
+            // Always-available clean slate for a strap whose history can't drain.
+            // Reliable path (the missed-data banner may not surface for a
+            // degraded strap): abandon the unrecoverable gap so the "history
+            // incomplete" state clears for good. App-side only — never erases the
+            // strap and never touches saved sessions, workouts, sleep, or health
+            // history.
+            if let onStartFreshClearGap, strapHistoryGapPending {
+                if startFreshDone {
+                    settingsInfoRow(icon: "checkmark.circle.fill", tint: .green,
+                                    title: "Cleared",
+                                    detail: "The strap-history gap was cleared. Live tracking and new data continue normally.")
+                } else {
+                    Button(role: .destructive) {
+                        confirmStartFreshFromSettings = true
+                    } label: {
+                        Label("Start fresh · clear stuck strap history",
+                              systemImage: "sparkles")
+                    }
+                    .accessibilityHint("Clears an unrecoverable strap-history gap that can't finish syncing, so the 'history incomplete' state stops. Your saved workouts, sleep, and recovery history are untouched.")
+                    .confirmationDialog("Clear stuck strap history?",
+                                        isPresented: $confirmStartFreshFromSettings,
+                                        titleVisibility: .visible) {
+                        Button("Clear the gap", role: .destructive) {
+                            onStartFreshClearGap()
+                            startFreshDone = true
+                        }
+                        Button("Keep waiting", role: .cancel) {}
+                    } message: {
+                        Text("Earlier data the strap can no longer hand over will be marked done, so Atria stops trying. Your live tracking, saved workouts, sleep, and recovery history are unaffected.")
+                    }
+                    settingsInfoRow(icon: "arrow.triangle.2.circlepath.circle", tint: .orange,
+                                    title: "Strap history won't finish syncing",
+                                    detail: "If the strap keeps dropping the link, its older banked data can't transfer. Start fresh clears the gap so the app stops nagging; new data is unaffected.")
+                }
             }
             storageFootprintRow
         } header: {
