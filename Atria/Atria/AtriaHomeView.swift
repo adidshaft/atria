@@ -9940,6 +9940,12 @@ final class AtriaHomeModel {
 
     private struct SavedAggregate: Equatable {
         let cycleStart: Date
+        /// The current wake boundary was drawn by an unconfirmed no-sleep
+        /// fallback (a synthetic civil-day rollover), not a confirmed main
+        /// sleep. Drives the step presentation's carry-forward so a shifted
+        /// sleeper's steps are not stranded in "Yesterday" while today shows
+        /// "--" across a fabricated boundary.
+        let cycleBoundaryIsUnconfirmedFallback: Bool
         let restingContext: RestingMetricContext
         let savedTodayTRIMP: Double
         let savedActiveSessionTRIMP: Double
@@ -11357,11 +11363,16 @@ final class AtriaHomeModel {
                 .map(\.restingStable)
                 .flatMap { $0 > 0 ? $0 : nil }
         )
-        let cycleStart = AtriaPhysiologicalCycle.current(
+        let cycle = AtriaPhysiologicalCycle.current(
             now: input.windowEnd,
             confirmedSleeps: input.source.confirmedSleeps,
             calendar: .current
-        ).start
+        )
+        let cycleStart = cycle.start
+        // A `.mainSleep` boundary is a real, confirmed day boundary; anything
+        // else (`.noSleepFallback` / `.initialFallback`) is a synthetic guess
+        // the step presentation may carry a prior receipt across.
+        let cycleBoundaryIsUnconfirmedFallback = cycle.boundaryKind != .mainSleep
         let aggregate = SessionStore.homeSavedAggregate(
             from: input.source.canonicalSessions,
             archiveHeartRatePoints: input.source.archiveHeartRatePoints,
@@ -11380,6 +11391,8 @@ final class AtriaHomeModel {
         )
         return SavedAggregate(
             cycleStart: aggregate.day,
+            cycleBoundaryIsUnconfirmedFallback:
+                cycleBoundaryIsUnconfirmedFallback,
             restingContext: restingContext,
             savedTodayTRIMP: aggregate.savedTodayTRIMP,
             savedActiveSessionTRIMP: aggregate.savedActiveSessionTRIMP,
@@ -12054,7 +12067,9 @@ final class AtriaHomeModel {
             physiologicalDayStart: savedAggregate.cycleStart,
             priorCycleReceipt: priorCycleReceipt.map {
                 .init(steps: $0.steps, endedAt: $0.capturedThrough)
-            }
+            },
+            boundaryIsUnconfirmedFallback:
+                savedAggregate.cycleBoundaryIsUnconfirmedFallback
         )
         // Classify strap-motion availability so the step copy stops promising an
         // endless sync when the transport is a terminal pure-HR fallback (while
@@ -12904,7 +12919,14 @@ final class AtriaHomeModel {
         let aggregate = store.homeSavedAggregate(rest: rest,
                                                  maxHR: maxHR,
                                                  activeSessionID: ble.currentLiveSessionID)
+        let cycleBoundaryIsUnconfirmedFallback = AtriaPhysiologicalCycle.current(
+            now: Date(),
+            confirmedSleeps: store.confirmedSleeps,
+            calendar: .current
+        ).boundaryKind != .mainSleep
         return SavedAggregate(cycleStart: aggregate.day,
+                              cycleBoundaryIsUnconfirmedFallback:
+                                cycleBoundaryIsUnconfirmedFallback,
                               restingContext: restingContext,
                               savedTodayTRIMP: aggregate.savedTodayTRIMP,
                               savedActiveSessionTRIMP: aggregate.savedActiveSessionTRIMP,
