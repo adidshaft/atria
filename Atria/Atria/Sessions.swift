@@ -12302,6 +12302,149 @@ final class SessionStore: ObservableObject {
         completeRequiredHistorySnapshotRefreshesIfPossible()
     }
 
+    /// Read-only, flag-gated (`--atria-debug-dump-sleep`) diagnostic that makes
+    /// the exact reason last night's sleep did not auto-detect observable on the
+    /// device console: first the raw session inventory (is overnight HR even
+    /// being captured?), then every sleep candidate the aggregator forms with
+    /// its discriminator fields and the pass/fail of each auto-confirm gate. It
+    /// mutates nothing and owns no BLE/archive state.
+    private func dumpSleepCandidateDiagnostics(now: Date) {
+        let calendar = Calendar.current
+        let rest = baseline.restingInt ?? 60
+        let baselineRestingIsTrusted = baseline.restingInt != nil
+            && baseline.hasTrustedRestingBaseline(now: now)
+        let baselineRestingIsNearTrusted = baseline.restingInt != nil
+            && baseline.hasNearTrustedRestingBaselineForFragmentedSleep(now: now)
+        let sessions = canonicalSessions(includeActiveJournal: true)
+        let windowStart = now.addingTimeInterval(-48 * 3600)
+        let recent = sessions.filter { $0.end >= windowStart }
+        let totalPoints = recent.reduce(0) { $0 + $1.points.count }
+        AtriaDebugLog(
+            "ATRIADBG sleep_dump_inventory rest=%d resting_trusted=%d resting_near_trusted=%d sessions_48h=%d total_sessions=%d total_hr_points=%d",
+            rest,
+            baselineRestingIsTrusted ? 1 : 0,
+            baselineRestingIsNearTrusted ? 1 : 0,
+            recent.count,
+            sessions.count,
+            totalPoints
+        )
+        for session in recent.sorted(by: { $0.start > $1.start }).prefix(10) {
+            AtriaDebugLog(
+                "ATRIADBG sleep_dump_session start=%.0f end=%.0f dur_min=%.0f hr_points=%d rr_points=%d motion_validated=%d imu_samples=%d",
+                session.start.timeIntervalSince1970,
+                session.end.timeIntervalSince1970,
+                session.end.timeIntervalSince(session.start) / 60,
+                session.points.count,
+                session.rrPoints?.count ?? 0,
+                (session.motionEvidenceValidated ?? false) ? 1 : 0,
+                session.imuSampleCount ?? 0
+            )
+        }
+        let candidates = Self.aggregateSleepCandidates(
+            in: sessions,
+            rest: rest,
+            maxHR: profile.maxHR,
+            calendar: calendar,
+            historicalMotionPolicy: .boundedRecent
+        )
+        AtriaDebugLog("ATRIADBG sleep_dump_candidates count=%d", candidates.count)
+        for candidate in candidates.sorted(by: { $0.start > $1.start }).prefix(6) {
+            let strong = Self.isStrongAutoConfirmableSleepCandidate(candidate)
+            let unambiguous = Self.isUnambiguousHROnlyMainSleepCandidate(candidate)
+            let fragmented = Self.isHighSpecificityFragmentedHROnlyMainSleepCandidate(candidate)
+            let degradedReview = Self.isDegradedHROnlyOvernightSleepCandidate(candidate)
+            let autoConfirmable = Self.isAutoConfirmableMainSleepCandidate(
+                candidate,
+                baselineRestingIsTrusted: baselineRestingIsTrusted,
+                baselineRestingIsNearTrusted: baselineRestingIsNearTrusted
+            )
+            AtriaDebugLog(
+                "ATRIADBG sleep_dump_candidate kind=%@ conf=%@ start=%.0f dur_h=%.2f span_h=%.2f maxGap_min=%.0f sessions=%d samples=%d hrCov=%.2f rrCov=%.2f maxHRgap_min=%.0f avgHR=%d medHR=%d p90=%d sd=%.1f baseRHR=%d restHR=%d elevFrac=%.3f motionValidated=%d | strong=%d unambig=%d frag=%d degradedReview=%d AUTO=%d",
+                candidate.kind,
+                String(describing: candidate.confidence),
+                candidate.start.timeIntervalSince1970,
+                candidate.duration / 3600,
+                candidate.span / 3600,
+                candidate.maxGap / 60,
+                candidate.sessions,
+                candidate.samples,
+                candidate.hrObservedCoverageFraction,
+                candidate.qualifiedRRCoverageFraction,
+                candidate.maximumHRSampleGap / 60,
+                candidate.avgHR,
+                candidate.medianHR,
+                candidate.hrP90,
+                candidate.hrStandardDeviation,
+                candidate.baselineRestingHR,
+                candidate.restingHR,
+                candidate.elevatedSampleFraction,
+                candidate.motionEvidenceValidated ? 1 : 0,
+                strong ? 1 : 0,
+                unambiguous ? 1 : 0,
+                fragmented ? 1 : 0,
+                degradedReview ? 1 : 0,
+                autoConfirmable ? 1 : 0
+            )
+            // Downstream + autonomic evidence: the SAME (hrv, hrvWindowCount) the
+            // HRV baseline seed gates on (needs hrv>0 AND hrvWindowCount>=3), plus
+            // the exact credited duration vs the 3h main-sleep floor. If a
+            // confirmed version of this candidate would still fail these, fixing
+            // detection alone won't lift "1 of 14 nights" / yesterday-strain.
+            let m = Self.confirmedSleepWindowMetrics(
+                from: sessions, start: candidate.start, end: candidate.end, rest: rest
+            )
+            AtriaDebugLog(
+                "ATRIADBG sleep_dump_candidate_hrv start=%.0f dur_s=%.0f floor_s=%.0f meets_floor=%d hrv=%d hrvWindowCount=%d avgHR=%d restHR=%d",
+                candidate.start.timeIntervalSince1970,
+                candidate.duration,
+                AtriaPhysiologicalCycle.minimumMainSleepDuration,
+                candidate.duration >= AtriaPhysiologicalCycle.minimumMainSleepDuration ? 1 : 0,
+                m.hrv ?? -1,
+                m.hrvWindowCount,
+                m.avgHR,
+                m.restingHR
+            )
+        }
+        // Autonomic reference: RMSSD over a recent AWAKE (daytime) window. The
+        // only signal that separates real sleep from quiet-wake is a parasympathetic
+        // RMSSD step-up of the candidate over this awake baseline. If candidate hrv
+        // is NOT materially above this, HR-shape gates cannot safely admit it.
+        if let awake = recent.sorted(by: { $0.start > $1.start }).first(where: { s in
+            let ec = EventCivilTime.eventCalendar(timeZoneIdentifier: s.eventTimeZoneIdentifier, fallback: calendar)
+            let h = ec.component(.hour, from: s.start)
+            return h >= 9 && h <= 19 && s.end.timeIntervalSince(s.start) >= 30 * 60
+        }) {
+            let am = Self.confirmedSleepWindowMetrics(
+                from: sessions, start: awake.start, end: awake.end, rest: rest
+            )
+            AtriaDebugLog(
+                "ATRIADBG sleep_dump_awake_ref start=%.0f dur_min=%.0f hrv=%d hrvWindowCount=%d avgHR=%d restHR=%d",
+                awake.start.timeIntervalSince1970,
+                awake.end.timeIntervalSince(awake.start) / 60,
+                am.hrv ?? -1,
+                am.hrvWindowCount,
+                am.avgHR,
+                am.restingHR
+            )
+        }
+        // Layer-2 evidence for the "no strain recorded yesterday" row: does the
+        // persisted rollup for the prior civil day actually carry a strain, or is
+        // the row nil only because the morning-whiteboard anchor (latestSleep.day)
+        // is nil when sleep isn't detected?
+        let today = calendar.startOfDay(for: now)
+        for rollup in dailyRollupHistory.sorted(by: { $0.day > $1.day }).prefix(5) {
+            let dayDelta = calendar.dateComponents([.day], from: calendar.startOfDay(for: rollup.day), to: today).day ?? -999
+            AtriaDebugLog(
+                "ATRIADBG sleep_dump_rollup day_ago=%d day=%.0f strain=%.2f trimp=%.1f strain_quality=%@",
+                dayDelta,
+                rollup.day.timeIntervalSince1970,
+                rollup.strain ?? -1,
+                rollup.trimp ?? -1,
+                String(describing: rollup.strainEvidenceQuality)
+            )
+        }
+    }
+
     private func persistDailyRollups(from metrics: [SavedDailyMetric]) {
         dailyRollupPreparationRevision &+= 1
         let rollupRevision = dailyRollupPreparationRevision
@@ -12384,6 +12527,9 @@ final class SessionStore: ObservableObject {
                     ? "none"
                     : todaysFitnessAgeSummary.blockers.joined(separator: ",")
             )
+        }
+        if ProcessInfo.processInfo.arguments.contains("--atria-debug-dump-sleep") {
+            dumpSleepCandidateDiagnostics(now: preparation.preparedAt)
         }
         let existingRollups = dailyRollupStore.rollups(last: 400)
         var existingFitnessAgeDeltaByDay: [Date: Int] = [:]
@@ -39004,8 +39150,32 @@ final class SessionStore: ObservableObject {
         // retaining the tighter P90 guard: the July 28 physical sleep was
         // median +10 / P90 +17, whereas the disproven July 23 quiet-awake
         // window still fails decisively at P90 +21.
+        // Base envelope: a tight P90 (<=base+18) surfaces for review with no
+        // further corroboration, exactly as before. Corroborated exception
+        // (2026-08-22): a motion-starved shifted sleeper's real overnight low-HR
+        // window can sit at P90 up to +22 — the device night was base56/med66/
+        // P90 78(=+22)/rest58/SD8.5/cov1.0/qRR0.93, a genuine 3h sleep that on
+        // confirm yields hrv 52ms over 10 qualified RMSSD windows. Admit +22 ONLY
+        // with a real parasympathetic TROUGH (5th-pct resting near baseline AND a
+        // descent well below the night's own median), a smooth envelope, trustworthy
+        // sample density, and dense provenance-qualified RR (a data-quality
+        // precondition, NOT the sleep discriminator). This tier is REVIEW-ONLY —
+        // it never reaches isAutoConfirmableMainSleepCandidate — so a mis-admission
+        // costs exactly one dismissible "Possible sleep · HR/RR estimate" card the
+        // user decides on, never a silent record/HRV/strain write. The 2026-07-23
+        // quiet-awake FP (base71/med78=+7/P90 92=+21, flat floor resting==median)
+        // fails the trough on two axes and stays hidden.
+        let p90WithinBaseEnvelope =
+            candidate.hrP90 <= candidate.baselineRestingHR + 18
+        let p90WithinTroughCorroboratedEnvelope =
+            candidate.hrP90 <= candidate.baselineRestingHR + 22
+            && candidate.restingHR <= candidate.baselineRestingHR + 4
+            && (candidate.medianHR - candidate.restingHR) >= 6
+            && candidate.hrStandardDeviation <= 9.5
+            && candidate.hrObservedCoverageFraction >= AggregateSleepCandidate.minimumAutoConfirmHRCoverageFraction
+            && candidate.qualifiedRRCoverageFraction >= 0.80
         guard candidate.medianHR <= candidate.baselineRestingHR + 10,
-              candidate.hrP90 <= candidate.baselineRestingHR + 18,
+              p90WithinBaseEnvelope || p90WithinTroughCorroboratedEnvelope,
               candidate.elevatedSampleFraction < 0.10 else { return false }
         // Wake/false-night guard: an active evening cannot masquerade as sleep just
         // because a bounded fraction of samples were elevated — bound the total
