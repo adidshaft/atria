@@ -150,6 +150,15 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
     var openCycleReceiptIsCurrent: Bool = false
     /// Set only with `unavailabilityReason == .priorCycleReceiptOnly`.
     var priorCycleReceipt: PriorCycleReceipt? = nil
+    /// True when a prior-cycle receipt was carried forward as THIS open
+    /// cycle's count because the wake boundary is an unconfirmed no-sleep
+    /// fallback (a synthetic civil-day guess), not a confirmed main sleep.
+    /// The steps were recorded in the same continuous, unbroken wear period,
+    /// so a fabricated day boundary must not strand them in "Yesterday" while
+    /// the hero shows "--". Self-corrects once this cycle drains its own
+    /// coverage or a real sleep is confirmed. Never set for a `.mainSleep`
+    /// boundary, where the day boundary is real and the strict split holds.
+    var carriedFromUnconfirmedPriorCycle: Bool = false
     /// Typed strap-motion authority for the forward-looking step copy. `nil`
     /// (default) preserves the existing progress wording for every caller that
     /// does not classify motion; the call site sets it from the BLE snapshot.
@@ -332,6 +341,17 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         /// 2026-07-31: newest receipt ending before the current wake boundary,
         /// disclosed in copy only when the open cycle has nothing to show.
         priorCycleReceipt: PriorCycleReceipt? = nil,
+        /// 2026-08-22: the current wake boundary is an UNCONFIRMED no-sleep
+        /// fallback (a synthetic civil-day rollover), not a confirmed main
+        /// sleep. For a shifted sleeper whose real sleep was not detected, that
+        /// synthetic boundary splits ONE continuous active period in two,
+        /// stranding the already-counted steps in the "prior" cycle while the
+        /// fresh cycle shows "--". When true, the prior receipt is carried
+        /// forward as this open cycle's verified-partial floor instead — the
+        /// steps belong to the same unbroken wear period. `false` (the default,
+        /// and always for a confirmed-sleep boundary) preserves the strict
+        /// "prior steps are never attributed to today" behavior.
+        boundaryIsUnconfirmedFallback: Bool = false,
         calendar: Calendar = .current
     ) -> Self {
         let dayStart = calendar.startOfDay(for: day)
@@ -459,15 +479,31 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
             // low; a high-coverage verified count is the trustworthy total.
             let liveMayFillGap = (coverageFraction ?? 1) < liveEstimateCoverageCeiling
             let liveObserved = (liveInCycle && liveMayFillGap) ? max(0, liveCount) : 0
-            let usesLive = liveObserved > banked
+            // Across an unconfirmed no-sleep fallback the prior receipt is the
+            // SAME continuous wear period as this partial (disjoint windows:
+            // prior ends at the synthetic boundary, this partial begins there).
+            // Keep it as a floor so the freshly-rolled cycle's small early slice
+            // never regresses the shown number below what this active period had
+            // already counted. This only ever RAISES to a real measured prior
+            // count; it never sums (no double-count) and never fabricates.
+            let carriedFloor = boundaryIsUnconfirmedFallback
+                ? max(0, priorCycleReceipt?.steps ?? 0)
+                : 0
+            let usesCarried = carriedFloor > banked && carriedFloor >= liveObserved
+            let usesLive = liveObserved > banked && liveObserved > carriedFloor
+            let carriedEndedAt = priorCycleReceipt?.endedAt
             return .init(day: dayStart,
-                         count: max(banked, liveObserved),
+                         count: max(banked, liveObserved, carriedFloor),
                          completeness: .partial,
                          source: usesLive ? .live : .verifiedCanonical,
                          isValidated: usesLive ? liveIsValidated : true,
-                         capturedAt: usesLive ? liveCapturedAt : partial.dayEnd,
+                         capturedAt: usesCarried
+                            ? [partial.dayEnd, carriedEndedAt]
+                                .compactMap { $0 }.max()
+                            : (usesLive ? liveCapturedAt : partial.dayEnd),
                          coverageFraction: coverageFraction,
-                         isOpenCycle: isOpenDay)
+                         isOpenCycle: isOpenDay,
+                         carriedFromUnconfirmedPriorCycle: usesCarried)
         }
         // Intentionally NO branch here that surfaces a live count when there is
         // no drained coverage at all: with no verified floor to sanity-check
@@ -497,6 +533,32 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         let disclosesPriorCycle = priorCycleReceipt != nil
             && (emptyReason == .noCurrentCycleReceipt
                 || staleLiveIsFromPriorCycle)
+        // 2026-08-22: when this cycle rolled on an UNCONFIRMED no-sleep
+        // fallback and has drained nothing of its own yet, the prior receipt is
+        // the same continuous wear period artificially cut in two by a
+        // synthetic civil-day boundary. Carrying it forward as the open cycle's
+        // verified-partial floor shows the real count already recorded this
+        // wake ("1118 · Counted through 7:02 AM") instead of a broken-looking
+        // "--" with the total stranded in "Yesterday". It is a real measured
+        // count, never fabricated, and self-corrects: once this cycle drains
+        // its own coverage the partial branch above takes over, and once a real
+        // sleep is confirmed the boundary becomes `.mainSleep` and the strict
+        // split returns. A confirmed-sleep boundary (the default) never enters
+        // here — a real new day must not inherit yesterday's steps.
+        if disclosesPriorCycle,
+           boundaryIsUnconfirmedFallback,
+           let carried = priorCycleReceipt,
+           carried.steps > 0 {
+            return .init(day: dayStart,
+                         count: carried.steps,
+                         completeness: .partial,
+                         source: .verifiedCanonical,
+                         isValidated: true,
+                         capturedAt: carried.endedAt,
+                         coverageFraction: nil,
+                         isOpenCycle: isOpenDay,
+                         carriedFromUnconfirmedPriorCycle: true)
+        }
         return .init(day: dayStart,
                      count: nil,
                      completeness: .unavailable,

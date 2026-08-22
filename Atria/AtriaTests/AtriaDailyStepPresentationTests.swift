@@ -667,6 +667,152 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.detailText, "No verified receipt for this cycle")
     }
 
+    // 2026-08-22: a shifted sleeper whose real sleep was NOT detected gets a
+    // synthetic no-sleep-fallback wake boundary that cuts ONE continuous active
+    // period in two. The steps already counted this wake must not be stranded
+    // in "Yesterday" while today shows "--". Across an UNCONFIRMED fallback the
+    // prior receipt is carried forward as the open cycle's verified-partial
+    // floor; across a CONFIRMED sleep boundary the strict split still holds.
+    func testUnconfirmedFallbackCarriesPriorReceiptForwardInsteadOfDoubleDash() {
+        let cycleStart = day.addingTimeInterval(15 * 3_600)
+        let endedAt = cycleStart.addingTimeInterval(-41 * 60)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: cycleStart.addingTimeInterval(600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [],
+            physiologicalDayStart: cycleStart,
+            priorCycleReceipt: .init(steps: 1_118, endedAt: endedAt),
+            boundaryIsUnconfirmedFallback: true,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 1_118)
+        XCTAssertEqual(value.valueText, "1118")
+        XCTAssertEqual(value.completeness, .partial)
+        XCTAssertEqual(value.source, .verifiedCanonical)
+        XCTAssertTrue(value.carriedFromUnconfirmedPriorCycle)
+        XCTAssertEqual(value.capturedAt, endedAt)
+        XCTAssertNotEqual(value.unavailabilityReason, .priorCycleReceiptOnly)
+        XCTAssertTrue(value.detailText.hasPrefix("Counted through "),
+                      value.detailText)
+        // Never leaks the technical "prior cycle" / "yesterday" framing.
+        XCTAssertFalse(value.detailText.contains("Yesterday"))
+        XCTAssertFalse(value.detailText.contains("Prior cycle"))
+        XCTAssertTrue(value.accessibilityText.contains("1118 steps so far"),
+                      value.accessibilityText)
+    }
+
+    // Regression guard: a CONFIRMED main-sleep boundary is a real new day. The
+    // default (false) must keep the strict "prior steps are never today's"
+    // behavior so a real morning does not inherit yesterday's step total.
+    func testConfirmedSleepBoundaryKeepsStrictPriorCycleSplit() {
+        let cycleStart = day.addingTimeInterval(15 * 3_600)
+        let endedAt = cycleStart.addingTimeInterval(-41 * 60)
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: cycleStart.addingTimeInterval(600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [],
+            physiologicalDayStart: cycleStart,
+            priorCycleReceipt: .init(steps: 1_118, endedAt: endedAt),
+            boundaryIsUnconfirmedFallback: false,
+            calendar: utcCalendar
+        )
+
+        XCTAssertNil(value.count)
+        XCTAssertEqual(value.valueText, "--")
+        XCTAssertFalse(value.carriedFromUnconfirmedPriorCycle)
+        XCTAssertEqual(value.unavailabilityReason, .priorCycleReceiptOnly)
+        XCTAssertEqual(value.priorCycleReceipt,
+                       .init(steps: 1_118, endedAt: endedAt))
+    }
+
+    // Once this freshly-rolled cycle drains its own small early slice, the shown
+    // number must not REGRESS below what the same active period already counted.
+    // The carried prior receipt is a non-regressing floor (max, never a sum).
+    func testUnconfirmedFallbackFloorPreventsFreshPartialRegression() {
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: day.addingTimeInterval(2 * 3_600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [stepDay(state: .missing,
+                                    stepCount: nil,
+                                    known: 120,
+                                    covered: 1_800,
+                                    missing: 40_000,
+                                    end: day.addingTimeInterval(1_800))],
+            physiologicalDayStart: day,
+            priorCycleReceipt: .init(
+                steps: 1_118,
+                endedAt: day.addingTimeInterval(-30 * 60)
+            ),
+            boundaryIsUnconfirmedFallback: true,
+            calendar: utcCalendar
+        )
+
+        // max(banked 120, carried 1118) = 1118, never the smaller fresh slice.
+        XCTAssertEqual(value.count, 1_118)
+        XCTAssertEqual(value.completeness, .partial)
+        XCTAssertEqual(value.source, .verifiedCanonical)
+        XCTAssertTrue(value.carriedFromUnconfirmedPriorCycle)
+    }
+
+    // When the freshly-rolled cycle's OWN drained slice exceeds the carried
+    // floor it takes over cleanly — the carry is only ever a floor, never a cap.
+    func testUnconfirmedFallbackFloorYieldsToLargerFreshPartial() {
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: day.addingTimeInterval(6 * 3_600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [stepDay(state: .missing,
+                                    stepCount: nil,
+                                    known: 2_500,
+                                    covered: 18_000,
+                                    missing: 20_000,
+                                    end: day.addingTimeInterval(18_000))],
+            physiologicalDayStart: day,
+            priorCycleReceipt: .init(
+                steps: 1_118,
+                endedAt: day.addingTimeInterval(-30 * 60)
+            ),
+            boundaryIsUnconfirmedFallback: true,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 2_500)
+        XCTAssertFalse(value.carriedFromUnconfirmedPriorCycle)
+    }
+
+    // The widget wrapper must forward the boundary flag so app and widget agree.
+    func testWidgetResolverForwardsUnconfirmedFallbackCarry() {
+        let cycleStart = day.addingTimeInterval(15 * 3_600)
+        let endedAt = cycleStart.addingTimeInterval(-41 * 60)
+        let value = WidgetSnapshotPublisher.resolvedDailySteps(
+            day: day,
+            now: cycleStart.addingTimeInterval(600),
+            liveCount: 0,
+            liveValidationState: "unavailable",
+            liveCapturedAt: nil,
+            canonicalDays: [],
+            physiologicalDayStart: cycleStart,
+            priorCycleReceipt: .init(steps: 1_118, endedAt: endedAt),
+            boundaryIsUnconfirmedFallback: true,
+            calendar: utcCalendar
+        )
+
+        XCTAssertEqual(value.count, 1_118)
+        XCTAssertTrue(value.carriedFromUnconfirmedPriorCycle)
+    }
+
     private var utcCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

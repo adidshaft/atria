@@ -515,6 +515,7 @@ enum WidgetSnapshotPublisher {
             priorCycleReceipt: priorReceipt.map {
                 .init(steps: $0.steps, endedAt: $0.capturedThrough)
             },
+            boundaryIsUnconfirmedFallback: cycle.boundaryKind != .mainSleep,
             calendar: calendar
         )
         let publishedSteps = presentation.count
@@ -1623,6 +1624,8 @@ enum WidgetSnapshotPublisher {
             priorCycleReceipt: priorCycleReceipt.map {
                 .init(steps: $0.steps, endedAt: $0.capturedThrough)
             },
+            boundaryIsUnconfirmedFallback:
+                physiologicalCycle.boundaryKind != .mainSleep,
             calendar: calendar
         )
         let liveHeartRate = AtriaHomeModel.resolvedLiveHeartRate(
@@ -2055,6 +2058,7 @@ enum WidgetSnapshotPublisher {
         liveAuthorityQualified: Bool = true,
         physiologicalDayStart: Date? = nil,
         priorCycleReceipt: AtriaDailyStepPresentation.PriorCycleReceipt? = nil,
+        boundaryIsUnconfirmedFallback: Bool = false,
         calendar: Calendar = .current
     ) -> AtriaDailyStepPresentation {
         AtriaDailyStepPresentation.resolve(
@@ -2067,6 +2071,7 @@ enum WidgetSnapshotPublisher {
             liveAuthorityQualified: liveAuthorityQualified,
             physiologicalDayStart: physiologicalDayStart,
             priorCycleReceipt: priorCycleReceipt,
+            boundaryIsUnconfirmedFallback: boundaryIsUnconfirmedFallback,
             calendar: calendar
         )
     }
