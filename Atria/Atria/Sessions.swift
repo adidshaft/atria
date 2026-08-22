@@ -12335,8 +12335,31 @@ final class SessionStore: ObservableObject {
         // already persisted for them — makeDailyRollupStoreEntries recomputes those
         // rows fresh each refresh and has no way to know a historical delta.
         let today = calendar.startOfDay(for: preparation.preparedAt)
-        let todaysFitnessAgeSummary = biologicalAgeSummary(vo2MaxEstimate: vo2MaxEstimateSummary(rest: baseline.restingInt ?? 60,
-                                                                                                  maxHR: profile.maxHR))
+        let rollupVO2Estimate = vo2MaxEstimateSummary(rest: baseline.restingInt ?? 60,
+                                                      maxHR: profile.maxHR)
+        let todaysFitnessAgeSummary = biologicalAgeSummary(vo2MaxEstimate: rollupVO2Estimate)
+        // 2026-08-22 insight dump (read-only, flag-gated): log the ACTUAL VO2max
+        // and fitness-age values the app computes for display, from this reliable
+        // launch-path computation, so #4's numbers are directly observable in the
+        // device console rather than only inferred from inputs.
+        if ProcessInfo.processInfo.arguments.contains("--atria-debug-dump-insights") {
+            AtriaDebugLog(
+                "ATRIADBG insight_dump rest=%d maxHR=%d resting_samples=%d vo2max_value=%.1f vo2max_confidence=%@ vo2max_detail=%@ bio_age=%d chrono_age=%d age_delta=%d aging_pace=%@ blockers=%@",
+                baseline.restingInt ?? 60,
+                profile.maxHR,
+                baseline.freshRestingSampleCount(),
+                rollupVO2Estimate.value ?? -1,
+                rollupVO2Estimate.confidence,
+                rollupVO2Estimate.detail,
+                todaysFitnessAgeSummary.biologicalAge ?? -1,
+                todaysFitnessAgeSummary.chronologicalAge,
+                todaysFitnessAgeSummary.ageDelta ?? -999,
+                todaysFitnessAgeSummary.agingPaceText,
+                todaysFitnessAgeSummary.blockers.isEmpty
+                    ? "none"
+                    : todaysFitnessAgeSummary.blockers.joined(separator: ",")
+            )
+        }
         let existingRollups = dailyRollupStore.rollups(last: 400)
         var existingFitnessAgeDeltaByDay: [Date: Int] = [:]
         var existingNutritionByDay: [Date: AtriaNutritionSummary] = [:]
