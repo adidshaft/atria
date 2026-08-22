@@ -1756,6 +1756,13 @@ struct AtriaHomeView: View {
                                                              reason: "user_off")
                                   }
                               },
+                              strapHistoryGapPending:
+                                model.collectionLiveStore.state.rangeLossBackfillPending,
+                              onStartFreshClearGap: {
+                                  ble.startFreshAcceptingMissedDataLoss(
+                                      reason: "settings_start_fresh"
+                                  )
+                              },
                               onNutritionHealthToggle: { store.requestNutritionReadAuthorizationIfEnabled() },
                               backupStatusProvider: { store.sessionBackupStatus() },
                               onWriteBackup: { completion in
