@@ -26,6 +26,60 @@ extension AtriaBLEManager {
         }
     }
 
+    /// Nonisolated arm bit for the idle-window / natural-gap stop-realtime
+    /// drain. `didDisconnect` sets it on the callback queue so `didConnect`
+    /// can suppress the 2A37 fast lane in the same execution slice — the
+    /// MainActor `naturalGapDrainArmed` flag loses that race and HR restarts
+    /// before the drain can claim the pipe.
+    final class IdleWindowDrainArmFence: @unchecked Sendable {
+        private let lock = NSLock()
+        private var armed = false
+        private var inFlight = false
+
+        func arm() {
+            lock.lock()
+            armed = true
+            lock.unlock()
+        }
+
+        func markInFlight() {
+            lock.lock()
+            inFlight = true
+            armed = false
+            lock.unlock()
+        }
+
+        /// Drain-owned `didDisconnect`: consume the in-flight bit without
+        /// re-arming. The MainActor hop must not set `naturalGapDrainArmed`.
+        func consumeDrainOwnedDisconnect() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            guard inFlight else { return false }
+            inFlight = false
+            armed = false
+            return true
+        }
+
+        func clear() {
+            lock.lock()
+            armed = false
+            inFlight = false
+            lock.unlock()
+        }
+
+        func snapshot() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return armed
+        }
+
+        func isInFlight() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return inFlight
+        }
+    }
+
     /// Delegate-queue authority for the one radio action that cannot wait for
     /// MainActor after a locked-phone disconnect: reinstalling CoreBluetooth's
     /// standing connection request. Every app-owned cancellation is consumed
@@ -234,7 +288,8 @@ extension AtriaBLEManager {
         supportsNotifications: Bool,
         isNotifying: Bool,
         sparseSentinel: Bool,
-        retryAlreadyIssued: Bool
+        retryAlreadyIssued: Bool,
+        idleWindowDrainOwnsLink: Bool = false
     ) -> Bool {
         peripheralMatches
             && peripheralConnected
@@ -242,14 +297,19 @@ extension AtriaBLEManager {
             && !isNotifying
             && !sparseSentinel
             && !retryAlreadyIssued
+            && !idleWindowDrainOwnsLink
     }
 
     nonisolated static func shouldSynchronouslyEnableDiscoveredHeartRateNotification(
         continuousCaptureWanted: Bool,
         supportsNotifications: Bool,
-        isNotifying: Bool
+        isNotifying: Bool,
+        idleWindowDrainOwnsLink: Bool = false
     ) -> Bool {
-        continuousCaptureWanted && supportsNotifications && !isNotifying
+        continuousCaptureWanted
+            && supportsNotifications
+            && !isNotifying
+            && !idleWindowDrainOwnsLink
     }
 
     /// A locked return-to-range may receive only the CoreBluetooth connection

@@ -681,6 +681,15 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
             sparseSentinel: false,
             retryAlreadyIssued: true
         ), "a refusing CCCD must not create a tight callback loop")
+        XCTAssertFalse(AtriaBLEManager.shouldImmediatelyReenableInactiveHeartRateNotification(
+            peripheralMatches: true,
+            peripheralConnected: true,
+            supportsNotifications: true,
+            isNotifying: false,
+            sparseSentinel: false,
+            retryAlreadyIssued: false,
+            idleWindowDrainOwnsLink: true
+        ), "idle-window setNotify(false) must not be undone by 2a37_inactive_callback")
     }
 
     func testInactiveHeartRateCallbackDoesNotUndoIntentionalSparseDisable() {
@@ -5419,6 +5428,20 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         XCTAssertTrue(AtriaBLEManager.shouldStopRealtimeBeforeHistoricalRecovery(
             diagnosticSelectorOrRangeProbe: true
         ), "only an explicit research probe may retain the stop-first handshake")
+        XCTAssertFalse(AtriaBLEManager.shouldStopRealtimeBeforeHistoricalRecovery(
+            diagnosticSelectorOrRangeProbe: false,
+            idleWindowStopRealtimeDrain: true
+        ), "idle-window must not send 0x0300; device soak failed the following 0x22 write")
+        XCTAssertTrue(
+            AtriaBLEManager.shouldContinueHistoricalServeAfterRealtimeStopTimeout(
+                idleWindowStopRealtimeDrain: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldContinueHistoricalServeAfterRealtimeStopTimeout(
+                idleWindowStopRealtimeDrain: false
+            )
+        )
         XCTAssertEqual(
             AtriaBLEManager.UUIDs.productionHistoryNotify,
             [AtriaBLEManager.UUIDs.strapRX, AtriaBLEManager.UUIDs.strapStream5]
@@ -10889,6 +10912,27 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         ))
         let body = String(source[start.lowerBound..<end.lowerBound])
 
+        XCTAssertTrue(body.contains("historyAdmission status=begin_withheld"))
+        XCTAssertTrue(body.contains("action=no_22"))
+        XCTAssertTrue(source.contains(
+            "shouldIssueProductionHistoryRangeRequest("
+        ))
+        XCTAssertTrue(source.contains(
+            "historyRange status=deferred_admission_ledger"
+        ))
+        XCTAssertTrue(source.contains(
+            "shouldClassifyMissingAdmissionLedgerAsHistoryRangeWriteCallbackFailure("
+        ))
+        XCTAssertFalse(
+            AtriaBLEManager.shouldIssueProductionHistoryRangeRequest(
+                admissionLedgerReady: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldIssueProductionHistoryRangeRequest(
+                admissionLedgerReady: true
+            )
+        )
         XCTAssertTrue(body.contains(
             "sendCommand(Cmd.getDataRange, [0x00], mode: .withResponse)"
         ))
