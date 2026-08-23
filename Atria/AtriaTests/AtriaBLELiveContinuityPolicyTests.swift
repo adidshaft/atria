@@ -3287,4 +3287,927 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             "the stale wall-clock HR window survived a natural gap and must be gone"
         )
     }
+
+    // MARK: - Idle-window stop-realtime drain (flag-gated)
+
+    func testIdleWindowDrainFlagOffNeverSelectsAWindow() {
+        XCTAssertEqual(
+            AtriaBLEManager.selectedIdleWindowHistoryDrain(
+                launchFlagEnabled: false,
+                strapBacklogPending: true,
+                strapIsCharging: true,
+                strapOffWrist: true,
+                appBackgrounded: true,
+                priorEpochEndedNaturally: true,
+                healthyLiveEpochActive: false,
+                attendedForeground: false,
+                explicitMotionOwnershipActive: false,
+                thermalParked: false
+            ),
+            .none,
+            "unflagged default builds must not take the stop-realtime path"
+        )
+    }
+
+    func testIdleWindowDrainNeverSeizesHealthyAttendedEpoch() {
+        XCTAssertEqual(
+            AtriaBLEManager.selectedIdleWindowHistoryDrain(
+                launchFlagEnabled: true,
+                strapBacklogPending: true,
+                strapIsCharging: false,
+                strapOffWrist: false,
+                appBackgrounded: false,
+                priorEpochEndedNaturally: true,
+                healthyLiveEpochActive: true,
+                attendedForeground: true,
+                explicitMotionOwnershipActive: false,
+                thermalParked: false
+            ),
+            .none,
+            "a healthy live epoch on the Home screen must never be selected for drain"
+        )
+    }
+
+    func testIdleWindowDrainSelectsChargingEvenIfEpochLooksHealthy() {
+        XCTAssertEqual(
+            AtriaBLEManager.selectedIdleWindowHistoryDrain(
+                launchFlagEnabled: true,
+                strapBacklogPending: true,
+                strapIsCharging: true,
+                strapOffWrist: false,
+                appBackgrounded: false,
+                priorEpochEndedNaturally: false,
+                healthyLiveEpochActive: true,
+                attendedForeground: true,
+                explicitMotionOwnershipActive: false,
+                thermalParked: false
+            ),
+            .strapCharging
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.idleWindowHistoryDrainMayPauseHeartRate(
+                window: .strapCharging
+            )
+        )
+    }
+
+    func testIdleWindowDrainMatchesSoakContractWindows() {
+        func window(
+            charging: Bool = false,
+            offWrist: Bool = false,
+            background: Bool = false,
+            naturalGap: Bool = false,
+            healthy: Bool = false,
+            attended: Bool = true,
+            motion: Bool = false,
+            thermal: Bool = false,
+            backlog: Bool = true
+        ) -> AtriaBLEManager.IdleWindowHistoryDrainWindow {
+            AtriaBLEManager.selectedIdleWindowHistoryDrain(
+                launchFlagEnabled: true,
+                strapBacklogPending: backlog,
+                strapIsCharging: charging,
+                strapOffWrist: offWrist,
+                appBackgrounded: background,
+                priorEpochEndedNaturally: naturalGap,
+                healthyLiveEpochActive: healthy,
+                attendedForeground: attended,
+                explicitMotionOwnershipActive: motion,
+                thermalParked: thermal
+            )
+        }
+        XCTAssertEqual(window(offWrist: true, healthy: false), .strapOffWrist)
+        XCTAssertEqual(
+            window(healthy: false, attended: true),
+            .naturalGapPreHR,
+            "pre-HR attended connect is the idle-window, not a healthy-epoch seize"
+        )
+        XCTAssertEqual(
+            window(background: true, healthy: false, attended: false),
+            .naturalGapPreHR
+        )
+        XCTAssertEqual(
+            window(naturalGap: true, healthy: false),
+            .naturalGapPreHR
+        )
+        XCTAssertEqual(window(charging: true, backlog: false), .none)
+        XCTAssertEqual(window(charging: true, motion: true), .none)
+        XCTAssertEqual(window(charging: true, thermal: true), .none)
+        XCTAssertEqual(
+            window(background: true, healthy: true, attended: false),
+            .appBackgroundIdle,
+            "background may pause 2A37; healthy attended foreground may not"
+        )
+    }
+
+    func testIdleWindowDrainLaunchFlagIsOffByDefault() {
+        XCTAssertFalse(
+            AtriaBLEManager.idleWindowHistoryDrainIsEnabled(arguments: [])
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.idleWindowHistoryDrainIsEnabled(
+                arguments: ["--atria-enable-debug-logs"]
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.idleWindowHistoryDrainIsEnabled(
+                arguments: [
+                    "--atria-enable-debug-logs",
+                    AtriaBLEManager.idleWindowHistoryDrainEnableArgument
+                ]
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSynchronouslyEnableDiscoveredHeartRateNotification(
+                continuousCaptureWanted: true,
+                supportsNotifications: true,
+                isNotifying: false,
+                idleWindowDrainOwnsLink: true
+            ),
+            "idle-window drain must not re-enable 2A37 mid-slice"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldImmediatelyReenableInactiveHeartRateNotification(
+                peripheralMatches: true,
+                peripheralConnected: true,
+                supportsNotifications: true,
+                isNotifying: false,
+                sparseSentinel: false,
+                retryAlreadyIssued: false,
+                idleWindowDrainOwnsLink: true
+            ),
+            "2a37_inactive_background_return must not undo an idle-window pause"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldSynchronouslyEnableDiscoveredHeartRateNotification(
+                continuousCaptureWanted: true,
+                supportsNotifications: true,
+                isNotifying: false
+            )
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.idleWindowHistoryDrainEnableArgument,
+            "--atria-idle-window-drain-enable"
+        )
+    }
+
+    func testHistoryEndACKIsWithheldUntilPersistSucceeds() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldQueueHistoryEndACK(
+                alreadyAcked: false,
+                archiveWriteFailures: 0
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldQueueHistoryEndACK(
+                alreadyAcked: true,
+                archiveWriteFailures: 0
+            ),
+            "an already-ACKed HISTORY_END must not mint a second ACK"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldQueueHistoryEndACK(
+                alreadyAcked: false,
+                archiveWriteFailures: 1
+            ),
+            "persist-before-ACK: archive failure withholds the strap ACK"
+        )
+    }
+
+    func testIdleWindowDrainPathNeverCancelsThePeripheral() throws {
+        let source = try managerSource()
+        XCTAssertTrue(
+            source.contains("--atria-idle-window-drain-enable")
+        )
+        XCTAssertTrue(
+            source.contains("|| idleWindowDrainBypass")
+        )
+        XCTAssertTrue(
+            source.contains("idleWindowDrainArmFence.snapshot()")
+        )
+
+        let pauseStart = try XCTUnwrap(source.range(
+            of: "private func pauseHeartRateNotifyForIdleWindowDrain("
+        ))
+        let pauseEnd = try XCTUnwrap(source.range(
+            of: "@discardableResult\n    private func evaluateIdleWindowHistoryDrainIfNeeded(",
+            range: pauseStart.upperBound..<source.endIndex
+        ))
+        let pause = String(source[pauseStart.lowerBound..<pauseEnd.lowerBound])
+        XCTAssertTrue(pause.contains("setNotifyValue(false"))
+        XCTAssertFalse(pause.contains("cancelPeripheralConnection("))
+        XCTAssertTrue(pause.contains("startBudgetClock"))
+        XCTAssertTrue(
+            source.contains("startBudgetClock: false"),
+            "soak-2 09:27: pause during orphan replay must not start the 20s handshake clock"
+        )
+
+        let evalStart = try XCTUnwrap(source.range(
+            of: "private func evaluateIdleWindowHistoryDrainIfNeeded("
+        ))
+        let evalEnd = try XCTUnwrap(source.range(
+            of: "@discardableResult\n    func requestOfflineHistoricalSyncIfNeeded(",
+            range: evalStart.upperBound..<source.endIndex
+        ))
+        let eval = String(source[evalStart.lowerBound..<evalEnd.lowerBound])
+        XCTAssertTrue(eval.contains("connectedChunkedBackfill: false"))
+        XCTAssertTrue(eval.contains("preserveConnectedRealtimeOwner: false"))
+        XCTAssertFalse(eval.contains("preserveConnectedRealtimeOwner: true"))
+        XCTAssertFalse(eval.contains("cancelPeripheralConnection("))
+        XCTAssertTrue(
+            eval.contains("action=stop_realtime_bounded_drain_same_epoch")
+        )
+        XCTAssertTrue(
+            source.contains("idleWindowStopRealtimeDrain: idleWindowStopsRealtime")
+        )
+        XCTAssertTrue(
+            source.contains("2a37_already_unsubscribed_no_0300")
+        )
+        XCTAssertTrue(
+            source.contains("idleWindowDrainOwnsLink:\n                            self.idleWindowDrainOwnsHeartRateLink()")
+        )
+        XCTAssertTrue(
+            source.contains("shouldFinishIdleWindowHistoryDrainAtACKBoundary(")
+        )
+        XCTAssertTrue(
+            source.contains("shouldReleaseIdleWindowHistoryDrainWhenPersistAckStalled(")
+        )
+        XCTAssertTrue(
+            source.contains("admitted: historicalDrainTelemetry.admitted")
+        )
+        XCTAssertTrue(
+            source.contains("persist_ack_stalled")
+        )
+        XCTAssertTrue(
+            source.contains("idleWindowDrainArchiveWarmRetry")
+        )
+        XCTAssertTrue(
+            eval.contains("deferred_admission_ledger")
+        )
+        XCTAssertTrue(
+            eval.contains("shouldIssueProductionHistoryRangeRequest(")
+        )
+        XCTAssertTrue(
+            eval.contains("prepareHistoricalAdmissionLedgerIfNeeded(")
+        )
+        XCTAssertTrue(
+            eval.contains("keep_2a37_retry_when_ready_no_pause_no_22")
+        )
+        XCTAssertTrue(
+            eval.contains("shouldPauseHeartRateForIdleWindowHistoryDrain(")
+        )
+        XCTAssertTrue(
+            eval.contains("readyFor: idleWindowHistoryPipeReadyDuration()")
+        )
+        XCTAssertTrue(
+            eval.contains("freshEpochWithoutHeartRate:")
+        )
+        XCTAssertTrue(
+            eval.contains("idleWindowPreferImmediatePause")
+        )
+        XCTAssertTrue(
+            eval.contains("idleWindowDrainArmFence.arm()")
+        )
+        XCTAssertTrue(
+            eval.contains("deferred_history_pipe")
+        )
+        XCTAssertTrue(
+            eval.contains("shouldStartIdleWindowHistoryGeneration(")
+        )
+        XCTAssertTrue(
+            eval.contains("deferred_heart_rate_characteristic")
+        )
+        XCTAssertTrue(
+            source.contains("shouldDiscoverHeartRateServiceForIdleWindowHistoryDrain(")
+        )
+        XCTAssertTrue(
+            source.contains("discover_heart_rate_service")
+        )
+        XCTAssertTrue(
+            eval.contains("scheduleIdleWindowHistoryPipeRetryIfNeeded(")
+        )
+        XCTAssertTrue(
+            eval.contains("deferred_orphan_replay")
+        )
+        XCTAssertTrue(
+            eval.contains("shouldRetryIdleWindowHistoryDrainWhenIngressReplayBlocks(")
+        )
+        XCTAssertTrue(
+            eval.contains("pause_2a37_retry_after_replay_no_22")
+        )
+        XCTAssertTrue(
+            source.contains("shouldSuppressNonIdleWindowHistoryWhileIdleWindowPipeWarms(")
+        )
+        XCTAssertTrue(
+            source.contains("suppress_competing_history")
+        )
+        XCTAssertTrue(
+            source.contains("shouldWaitForIdleWindowHistoricalIngressReplay(")
+        )
+        XCTAssertTrue(
+            source.contains("retry_after_orphan_replay")
+        )
+        XCTAssertTrue(
+            source.contains("waiting_orphan_replay")
+        )
+        XCTAssertTrue(
+            source.contains("triggering_on_state_restore")
+        )
+        XCTAssertTrue(
+            source.contains("pause_2a37_same_epoch_no_cancel")
+        )
+        XCTAssertTrue(
+            source.contains("skip_2a37_bring_up")
+        )
+        XCTAssertFalse(
+            eval.contains("armProbeWhenReady: false")
+        )
+        XCTAssertTrue(
+            source.contains("shouldEnableIdleWindowHistoryNotifications(")
+        )
+        XCTAssertTrue(
+            source.contains("withhold_history_cccd_and_22_until_cccd_off")
+        )
+        XCTAssertTrue(
+            source.contains("enable_history_pipe_then_arm_22"),
+            "after 2A37 CCCD-off, enable the history pipe then arm 0x22"
+        )
+        XCTAssertTrue(
+            source.contains("shouldRestoreIdleWindowHeartRateWhenRangeUnanswered("),
+            "unconfirmed 0x22 restores 2A37; confirmed 0x22 sends 0x16"
+        )
+        XCTAssertTrue(
+            source.contains("send_1600_after_confirmed_22")
+        )
+        XCTAssertTrue(
+            source.contains("shouldDiscoverIdleWindowHistoryTransportWhileHeartRateNotifying(")
+        )
+        XCTAssertTrue(
+            source.contains("primeIdleWindowHistoryTransportDiscoveryIfNeeded(")
+        )
+        let ledgerGate = try XCTUnwrap(eval.range(
+            of: "shouldIssueProductionHistoryRangeRequest("
+        ))
+        let startCall = try XCTUnwrap(eval.range(
+            of: "let started = startOfflineHistoricalSync("
+        ))
+        XCTAssertLessThan(
+            ledgerGate.lowerBound,
+            startCall.lowerBound,
+            "do not pause 2A37 or arm a generation before the admission ledger can authorize 0x22"
+        )
+        XCTAssertTrue(
+            source.contains("admission_ledger_retry")
+        )
+        XCTAssertTrue(
+            source.contains("shouldClassifyMissingAdmissionLedgerAsHistoryRangeWriteCallbackFailure(")
+        )
+        XCTAssertTrue(
+            source.contains("shouldArmNaturalGapDrainAfterDisconnect(")
+        )
+        XCTAssertTrue(
+            source.contains("consumeDrainOwnedDisconnect()")
+        )
+        XCTAssertTrue(
+            source.contains("shouldRediscoverServicesForIdleWindowHistoryDrain(")
+        )
+        XCTAssertTrue(
+            source.contains("skip_180d_rediscover")
+        )
+        XCTAssertTrue(
+            source.contains("shouldClearCachedTXBeforeHistoricalHandshake(")
+        )
+        XCTAssertTrue(
+            source.contains("retry_history_first")
+        )
+        XCTAssertTrue(
+            source.contains("shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect(")
+        )
+        XCTAssertTrue(
+            source.contains("shouldArmIdleWindowHistoryRangeRequest(")
+        )
+        XCTAssertTrue(
+            source.contains("await_2a37_unsubscribed")
+        )
+        XCTAssertTrue(
+            source.contains("2a37_unsubscribe_timeout")
+        )
+        XCTAssertTrue(
+            source.contains("shouldTimeoutIdleWindowHeartRateUnsubscribe(")
+        )
+        let armRealtime = try XCTUnwrap(source.range(of: "func armRealtime()"))
+        let armRealtimeBody = String(source[armRealtime.lowerBound...])
+        XCTAssertTrue(
+            armRealtimeBody.contains("idleWindowDrainAwaitingHeartRateUnsubscribe"),
+            "stream5 notify must not arm 0x22 while 2A37 CCCD-off is in flight"
+        )
+        XCTAssertTrue(
+            source.contains("idleWindowHistoryRangePostNotifySettle(")
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldArmConnectedHistoricalSliceForLiveHeartRateWatchdog(
+                idleWindowDrainOwnsLink: true
+            )
+        )
+    }
+
+    func testIdleWindowDrainStopsAtOneAckThenRestoresHeartRate() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 1
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 0
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: false,
+                acknowledgedPages: 8
+            ),
+            "ordinary production drain must not inherit the one-chunk bound"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForAbsoluteBudget(
+                idleWindowDrainOwnsLink: true,
+                startedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_020)
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForAbsoluteBudget(
+                idleWindowDrainOwnsLink: true,
+                startedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_015)
+            ),
+            "15s still covers 0x22 write-confirm + range settle"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForAbsoluteBudget(
+                idleWindowDrainOwnsLink: true,
+                startedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_038),
+                rangeRequestedAt: Date(timeIntervalSince1970: 1_034)
+            ),
+            "04:33 soak: rediscovery pause clock must not cancel a just-issued 0x22"
+        )
+        let firstFrame = Date(timeIntervalSince1970: 1_010)
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainWhenPersistAckStalled(
+                idleWindowDrainOwnsLink: true,
+                firstFrameAt: firstFrame,
+                lastDurableProgressAt: nil,
+                persisted: 0,
+                acknowledgedPages: 0,
+                now: Date(timeIntervalSince1970: 1_015),
+                admitted: 0
+            ),
+            "soak 1 gen7: frames without admission/persist must restore 2A37 in a few seconds"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainWhenPersistAckStalled(
+                idleWindowDrainOwnsLink: true,
+                firstFrameAt: firstFrame,
+                lastDurableProgressAt: nil,
+                persisted: 0,
+                acknowledgedPages: 0,
+                now: Date(timeIntervalSince1970: 1_014),
+                admitted: 0
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainWhenPersistAckStalled(
+                idleWindowDrainOwnsLink: true,
+                firstFrameAt: nil,
+                lastDurableProgressAt: nil,
+                persisted: 0,
+                acknowledgedPages: 0,
+                now: Date(timeIntervalSince1970: 1_020),
+                admitted: 0
+            ),
+            "handshake with no frames is the absolute budget, not persist-stall"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainWhenPersistAckStalled(
+                idleWindowDrainOwnsLink: true,
+                firstFrameAt: firstFrame,
+                lastDurableProgressAt: nil,
+                persisted: 0,
+                acknowledgedPages: 0,
+                now: Date(timeIntervalSince1970: 1_015),
+                admitted: 5
+            ),
+            "soak-2 04:56: admitted frames with persist in flight must reach ACK"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainWhenPersistAckStalled(
+                idleWindowDrainOwnsLink: true,
+                firstFrameAt: firstFrame,
+                lastDurableProgressAt: Date(timeIntervalSince1970: 1_014),
+                persisted: 20,
+                acknowledgedPages: 0,
+                now: Date(timeIntervalSince1970: 1_015)
+            ),
+            "a page still persisting must be allowed to reach HISTORY_END+ACK"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_010)
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_020)
+            )
+        )
+    }
+
+    func testIdleWindowDrainWithholdsHistoryRangeUntilAdmissionLedgerReady() {
+        XCTAssertFalse(
+            AtriaBLEManager.shouldIssueProductionHistoryRangeRequest(
+                admissionLedgerReady: false
+            ),
+            "04:05 gen1: missing ledger must not send 0x22"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldIssueProductionHistoryRangeRequest(
+                admissionLedgerReady: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldClassifyMissingAdmissionLedgerAsHistoryRangeWriteCallbackFailure(
+                admissionLedgerReady: false
+            ),
+            "a missing ledger is not history_write_22_callback_failed"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldClassifyMissingAdmissionLedgerAsHistoryRangeWriteCallbackFailure(
+                admissionLedgerReady: true
+            ),
+            "once the ledger is open, a later write miss is a real callback failure"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRediscoverServicesForIdleWindowHistoryDrain(
+                txCharacteristicAvailable: true
+            ),
+            "04:41: rediscovering 180D after 2A37 pause caused the 16s drop"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRediscoverServicesForIdleWindowHistoryDrain(
+                txCharacteristicAvailable: false
+            )
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.idleWindowHistoryRangePostNotifySettle(
+                idleWindowDrainOwnsLink: true
+            ),
+            0.4,
+            "soak-2 08:07: 0x22 1ms after stream5 CCCD-on never write-confirmed"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.idleWindowHistoryRangePostNotifySettle(
+                idleWindowDrainOwnsLink: true,
+                historyPipeReadyBeforePause: true
+            ),
+            0.4,
+            "soak-2 08:43: 0x22 1ms after 2A37 CCCD-off never write-confirmed"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.idleWindowHistoryRangePostNotifySettle(
+                idleWindowDrainOwnsLink: false
+            ),
+            3
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldPauseHeartRateForIdleWindowHistoryDrain(
+                historyTransportReady: false
+            ),
+            "soak-2 09:07: restored live-2A37 gen1 must pause before history CCCDs/0x22"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldPauseHeartRateForIdleWindowHistoryDrain(
+                historyTransportReady: false,
+                freshEpochWithoutHeartRate: true
+            ),
+            "soak-2 08:53: pre-HR reconnect must pause immediately so 2A37 cannot re-subscribe before 0x22"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldClearIdleWindowArmFenceWhenDrainDidNotStart(
+                idleWindowStillPreparing: true
+            ),
+            "08:53: clearing the fence after deferred_history_pipe re-enabled 2A37"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldClearIdleWindowArmFenceWhenDrainDidNotStart(
+                idleWindowStillPreparing: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect(
+                drainOwnedDisconnect: true,
+                receivedHistoryFrames: false
+            ),
+            "zero-frame drain-owned drop must reconnect history-first"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect(
+                drainOwnedDisconnect: true,
+                receivedHistoryFrames: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect(
+                drainOwnedDisconnect: false,
+                receivedHistoryFrames: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldPauseHeartRateForIdleWindowHistoryDrain(
+                historyTransportReady: true
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldPauseHeartRateForIdleWindowHistoryDrain(
+                historyTransportReady: true,
+                readyFor: 0.05
+            ),
+            "do not wait to enable history CCCDs on live 2A37 before pause"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldPauseHeartRateForIdleWindowHistoryDrain(
+                historyTransportReady: true,
+                readyFor: 1.0
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldPauseHeartRateForIdleWindowHistoryDrain(
+                historyTransportReady: true,
+                readyFor: 3.0
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldEnableIdleWindowHistoryNotifications(
+                heartRateNotifying: true
+            ),
+            "soak-2 09:07: history CCCD-on while 2A37 live, then 0x22 never write-confirmed"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldEnableIdleWindowHistoryNotifications(
+                heartRateNotifying: false,
+                heartRateCharacteristicAvailable: false
+            ),
+            "soak-2 09:14: nil 2A37 characteristic must not look like notifying=0"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldStartIdleWindowHistoryGeneration(
+                heartRateCharacteristicAvailable: false
+            ),
+            "soak-2 09:14: pause no-ops without heartRateCharacteristic"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldStartIdleWindowHistoryGeneration(
+                heartRateCharacteristicAvailable: true
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDiscoverHeartRateServiceForIdleWindowHistoryDrain(
+                heartRateCharacteristicAvailable: false
+            ),
+            "soak-2 09:18: 2A37 uncached, skip-180D left pause as a no-op"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDiscoverHeartRateServiceForIdleWindowHistoryDrain(
+                heartRateCharacteristicAvailable: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldArmIdleWindowHistoryRangeRequest(
+                heartRateNotifying: false,
+                heartRateCharacteristicAvailable: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldEnableIdleWindowHistoryNotifications(
+                heartRateNotifying: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldSuppressNonIdleWindowHistoryWhileIdleWindowPipeWarms(
+                idleWindowPipeWarming: true,
+                idleWindowReasonAdmitted: false
+            ),
+            "soak-2 08:38: connected_chunked must not start while idle-window pipe warms"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSuppressNonIdleWindowHistoryWhileIdleWindowPipeWarms(
+                idleWindowPipeWarming: true,
+                idleWindowReasonAdmitted: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSuppressNonIdleWindowHistoryWhileIdleWindowPipeWarms(
+                idleWindowPipeWarming: false,
+                idleWindowReasonAdmitted: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRetryIdleWindowHistoryDrainWhenIngressReplayBlocks(
+                idleWindowAdmitted: true,
+                ingressReplayOrSpoolBlocking: true,
+                historicalSyncAlreadyInProgress: false
+            ),
+            "soak-2 09:27: restore admitted idle-window then lost it to orphan replay"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRetryIdleWindowHistoryDrainWhenIngressReplayBlocks(
+                idleWindowAdmitted: true,
+                ingressReplayOrSpoolBlocking: true,
+                historicalSyncAlreadyInProgress: true
+            ),
+            "do not steal an in-flight generation to pause 2A37"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldWaitForIdleWindowHistoricalIngressReplay(
+                orphanReplayInFlight: true,
+                currentGenerationSpoolOpen: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldWaitForIdleWindowHistoricalIngressReplay(
+                orphanReplayInFlight: false,
+                currentGenerationSpoolOpen: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRestoreIdleWindowHeartRateWhenIngressReplayTimesOut(
+                idleWindowPausedHeartRate: true,
+                ingressStillBlocking: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRestoreIdleWindowHeartRateWhenIngressReplayTimesOut(
+                idleWindowPausedHeartRate: true,
+                ingressStillBlocking: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldClearCachedTXBeforeHistoricalHandshake(
+                idleWindowDrainOwnsLink: true
+            ),
+            "soak-2 05:34: nilling TX after pause rediscovered into a 10s drop"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldClearCachedTXBeforeHistoricalHandshake(
+                idleWindowDrainOwnsLink: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldArmIdleWindowHistoryRangeRequest(
+                heartRateNotifying: true
+            ),
+            "soak-2 05:39: 0x22 before 2A37 CCCD-off never write-confirmed"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldArmIdleWindowHistoryRangeRequest(
+                heartRateNotifying: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldTimeoutIdleWindowHeartRateUnsubscribe(
+                elapsed: 1
+            ),
+            "soak-2 07:35: 2A37 CCCD-off arrived at 5.9s; do not abort at 1s"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldTimeoutIdleWindowHeartRateUnsubscribe(
+                elapsed: 8
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldServeIdleWindowHistoryWithoutMatchedRange(
+                idleWindowDrainOwnsLink: true,
+                writeConfirmed: true,
+                elapsedSinceWriteConfirm: 1
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldServeIdleWindowHistoryWithoutMatchedRange(
+                idleWindowDrainOwnsLink: true,
+                writeConfirmed: true,
+                elapsedSinceWriteConfirm: 2.1
+            ),
+            "soak-2 08:14: after confirmed 0x22, send 0x16 even if range is late"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRestoreIdleWindowHeartRateWhenRangeUnanswered(
+                idleWindowDrainOwnsLink: true,
+                writeConfirmed: true,
+                elapsedSinceWriteConfirm: 2.1
+            ),
+            "do not restore 2A37 after a confirmed 0x22; the strap is already in the history window"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRestoreIdleWindowHeartRateWhenRangeUnanswered(
+                idleWindowDrainOwnsLink: true,
+                writeConfirmed: false,
+                elapsedSinceWriteConfirm: 2.1
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDiscoverIdleWindowHistoryTransportWhileHeartRateNotifying(
+                heartRateNotifying: true
+            ),
+            "soak-2 07:49: waiting until 2A37 off to discover TX delayed 0x22 to T+10s"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAbortIdleWindowPauseWhenUnsubscribeLost(
+                heartRateStillNotifying: true
+            ),
+            "soak-2 07:11: 0x22 while 2A37 CCCD-off still in flight never write-confirmed"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAbortIdleWindowPauseWhenUnsubscribeLost(
+                heartRateStillNotifying: false
+            )
+        )
+    }
+
+    func testDrainOwnedDisconnectDoesNotArmNaturalGapDrain() {
+        XCTAssertFalse(
+            AtriaBLEManager.shouldArmNaturalGapDrainAfterDisconnect(
+                endedNaturally: true,
+                drainOwnedDisconnect: true,
+                strapBacklogPending: true,
+                explicitMotionOwnershipActive: false,
+                thermalParked: false
+            ),
+            "not_rearmed must not be followed by natural_gap_drain status=armed"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldArmNaturalGapDrainAfterDisconnect(
+                endedNaturally: true,
+                drainOwnedDisconnect: false,
+                strapBacklogPending: true,
+                explicitMotionOwnershipActive: false,
+                thermalParked: false
+            )
+        )
+        let fence = AtriaBLEManager.IdleWindowDrainArmFence()
+        fence.markInFlight()
+        XCTAssertTrue(fence.isInFlight())
+        XCTAssertTrue(fence.consumeDrainOwnedDisconnect())
+        XCTAssertFalse(fence.isInFlight())
+        XCTAssertFalse(fence.snapshot())
+        XCTAssertFalse(
+            fence.consumeDrainOwnedDisconnect(),
+            "a second disconnect is not drain-owned after the fuse consumes"
+        )
+        fence.arm()
+        XCTAssertTrue(fence.snapshot())
+        XCTAssertFalse(fence.consumeDrainOwnedDisconnect())
+        XCTAssertTrue(fence.snapshot())
+    }
+
+    func testOnConnectIdleWindowDrainRunsAfterInterruptedHistoryHandoff() throws {
+        let source = try managerSource()
+        let connectStart = try XCTUnwrap(source.range(
+            of: "didConnect peripheral: CBPeripheral"
+        ))
+        let disconnectStart = try XCTUnwrap(source.range(
+            of: "didDisconnectPeripheral peripheral: CBPeripheral",
+            range: connectStart.upperBound..<source.endIndex
+        ))
+        let connect = String(source[connectStart.lowerBound..<disconnectStart.lowerBound])
+        let handoff = try XCTUnwrap(connect.range(
+            of: "status=interrupted_owner_handoff_settled"
+        ))
+        let drain = try XCTUnwrap(connect.range(
+            of: "status=triggering_on_connect",
+            range: handoff.upperBound..<connect.endIndex
+        ))
+        XCTAssertLessThan(
+            handoff.lowerBound,
+            drain.lowerBound,
+            "reconnect drain must not race leftover RAW-slice teardown"
+        )
+        XCTAssertTrue(
+            connect.contains("reason: \"idle_window_drain\"")
+        )
+        XCTAssertTrue(
+            connect.contains("preferImmediatePause: true")
+        )
+        XCTAssertTrue(
+            connect.contains("shouldClearIdleWindowArmFenceWhenDrainDidNotStart(")
+        )
+        XCTAssertTrue(
+            connect.contains("pre_hr_same_epoch_no_cancel"),
+            "04:27: didConnect must evaluate idle-window without a natural-gap fence"
+        )
+    }
 }

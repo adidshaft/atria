@@ -1152,4 +1152,72 @@ final class AtriaWhoop4HistoryDrainStateTests: XCTestCase {
         )
         XCTAssertNil(state.failure)
     }
+
+    func testSkippedACKLetsNextGenerationResumeTheSameHistoryEnd() {
+        var interrupted = AtriaWhoop4HistoryDrainState()
+        interrupted.begin(generation: 30)
+        XCTAssertEqual(
+            interrupted.historyEnd(
+                generation: 30,
+                boundaryID: "enddata:aa",
+                ackPayload: [0x17, 0xaa]
+            ),
+            [.durableFlush(generation: 30, boundary: .batch("enddata:aa"))]
+        )
+        XCTAssertEqual(
+            interrupted.durableFlushCompleted(
+                generation: 30,
+                boundary: .batch("enddata:aa"),
+                succeeded: true
+            ),
+            [.sendACK(
+                generation: 30,
+                boundaryID: "enddata:aa",
+                payload: [0x17, 0xaa],
+                attempt: 1
+            )]
+        )
+        // Drop happens before ackCompleted: the strap re-serves this token.
+
+        var resumed = AtriaWhoop4HistoryDrainState()
+        resumed.begin(generation: 31)
+        XCTAssertEqual(
+            resumed.historyEnd(
+                generation: 31,
+                boundaryID: "enddata:aa",
+                ackPayload: [0x17, 0xaa]
+            ),
+            [.durableFlush(generation: 31, boundary: .batch("enddata:aa"))],
+            "an un-ACKed HISTORY_END must be eligible again on the next generation"
+        )
+        XCTAssertEqual(
+            resumed.durableFlushCompleted(
+                generation: 31,
+                boundary: .batch("enddata:aa"),
+                succeeded: true
+            ),
+            [.sendACK(
+                generation: 31,
+                boundaryID: "enddata:aa",
+                payload: [0x17, 0xaa],
+                attempt: 1
+            )]
+        )
+        XCTAssertTrue(
+            resumed.ackCompleted(
+                generation: 31,
+                boundaryID: "enddata:aa",
+                succeeded: true
+            ).isEmpty
+        )
+        XCTAssertEqual(resumed.acknowledgedBatchCount, 1)
+        XCTAssertTrue(
+            resumed.historyEnd(
+                generation: 31,
+                boundaryID: "enddata:aa",
+                ackPayload: [0x17, 0xaa]
+            ).isEmpty,
+            "after persist-before-ACK succeeds, the same cursor must not double-count"
+        )
+    }
 }

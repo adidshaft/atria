@@ -639,6 +639,417 @@ extension AtriaBLEManager {
             && priorEpochEndedNaturally
     }
 
+    /// Flag-gated stop-realtime history drain that may pause 2A37 only where
+    /// there is no live HR to protect. Unflagged default builds never select a
+    /// window. A healthy attended (foreground) epoch is never selected unless
+    /// the strap itself is charging or off-wrist — those states have no live HR
+    /// to seize. Device soak 2026-08-23: production already sends 0x22 first and
+    /// still yields `stream5_rx=0` then `ble_disconnect` ~13s while 2A37 stays
+    /// subscribed, so this path pauses notify on the same connection instead of
+    /// `cancelPeripheralConnection`.
+    nonisolated static let idleWindowHistoryDrainEnableArgument =
+        "--atria-idle-window-drain-enable"
+
+    enum IdleWindowHistoryDrainWindow: String, Equatable, Sendable {
+        case none
+        case strapCharging
+        case strapOffWrist
+        case appBackgroundIdle
+        case naturalGapPreHR
+    }
+
+    nonisolated static func selectedIdleWindowHistoryDrain(
+        launchFlagEnabled: Bool,
+        strapBacklogPending: Bool,
+        strapIsCharging: Bool,
+        strapOffWrist: Bool,
+        appBackgrounded: Bool,
+        priorEpochEndedNaturally: Bool,
+        healthyLiveEpochActive: Bool,
+        attendedForeground: Bool,
+        explicitMotionOwnershipActive: Bool,
+        thermalParked: Bool
+    ) -> IdleWindowHistoryDrainWindow {
+        guard launchFlagEnabled, strapBacklogPending else { return .none }
+        guard !explicitMotionOwnershipActive, !thermalParked else { return .none }
+        _ = priorEpochEndedNaturally
+        // Strap on charger / off-wrist: firmware is not producing a live pulse
+        // to protect even if the epoch fence is owned by the connected link.
+        if strapIsCharging { return .strapCharging }
+        if strapOffWrist && !healthyLiveEpochActive { return .strapOffWrist }
+        // Build-5 contract: never cancel a healthy attended epoch.
+        if healthyLiveEpochActive && attendedForeground { return .none }
+        // Pre-HR (didConnect, first-HR race, natural gap): no live pulse yet.
+        // 2026-08-23 04:27 recapture never armed because didConnect health is
+        // false but this predicate previously required a prior natural drop.
+        if !healthyLiveEpochActive { return .naturalGapPreHR }
+        if appBackgrounded { return .appBackgroundIdle }
+        return .none
+    }
+
+    nonisolated static func idleWindowHistoryDrainIsEnabled(
+        arguments: [String]
+    ) -> Bool {
+        arguments.contains(idleWindowHistoryDrainEnableArgument)
+    }
+
+    nonisolated static func idleWindowHistoryDrainMayPauseHeartRate(
+        window: IdleWindowHistoryDrainWindow
+    ) -> Bool {
+        window != .none
+    }
+
+    /// Persist-before-ACK: a HISTORY_END token must not go on the air until
+    /// its page is durably on disk. Skip the ACK and the strap re-serves the
+    /// same cursor forever; that is the resume mechanism (no SET_READ_POINTER).
+    nonisolated static func shouldQueueHistoryEndACK(
+        alreadyAcked: Bool,
+        archiveWriteFailures: Int
+    ) -> Bool {
+        !alreadyAcked && archiveWriteFailures == 0
+    }
+
+    /// One ACK-cursor chunk is the complete idle-window slice: persist-before-
+    /// ACK already happened, then restore 2A37 on the same epoch. A longer
+    /// hold is the soak-1 61s attended HR gap.
+    nonisolated static func shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+        idleWindowDrainOwnsLink: Bool,
+        acknowledgedPages: Int
+    ) -> Bool {
+        idleWindowDrainOwnsLink && acknowledgedPages >= 1
+    }
+
+    /// A drain-owned drop must not arm the next-connect natural-gap drain.
+    /// Soak 2 logged `not_rearmed` then set `naturalGapDrainArmed` 1ms later.
+    nonisolated static func shouldArmNaturalGapDrainAfterDisconnect(
+        endedNaturally: Bool,
+        drainOwnedDisconnect: Bool,
+        strapBacklogPending: Bool,
+        explicitMotionOwnershipActive: Bool,
+        thermalParked: Bool
+    ) -> Bool {
+        endedNaturally
+            && !drainOwnedDisconnect
+            && strapBacklogPending
+            && !explicitMotionOwnershipActive
+            && !thermalParked
+    }
+
+    /// Give live 2A37 a beat after a bounded chunk before the charging
+    /// window can seize the link again.
+    nonisolated static func shouldAdmitIdleWindowHistoryDrainRetry(
+        lastFinishedAt: Date?,
+        now: Date,
+        minimumResumeInterval: TimeInterval = 20
+    ) -> Bool {
+        guard let lastFinishedAt else { return true }
+        return now.timeIntervalSince(lastFinishedAt) >= minimumResumeInterval
+    }
+
+    /// Fail-closed restore if the handshake never serves a frame. The clock
+    /// starts when `0x22` is requested, not when 2A37 is paused: soak 04:33
+    /// spent 13s in rediscovery, then cancelled the write at the same
+    /// millisecond `historyRange requested` landed. Notify-settle + range
+    /// response + 2s settle + 0x16 still fits in 20s after the write. Pause
+    /// without a range request keeps the pause timestamp so a hung discovery
+    /// still restores. Frame-without-persist is the 5s persist/ACK stall.
+    nonisolated static func shouldReleaseIdleWindowHistoryDrainForAbsoluteBudget(
+        idleWindowDrainOwnsLink: Bool,
+        startedAt: Date?,
+        now: Date,
+        absoluteLimit: TimeInterval = 20,
+        rangeRequestedAt: Date? = nil
+    ) -> Bool {
+        guard idleWindowDrainOwnsLink else { return false }
+        guard let anchor = rangeRequestedAt ?? startedAt else { return false }
+        return now.timeIntervalSince(anchor) >= absoluteLimit
+    }
+
+    /// Soak 1 gen7: stream5_rx=50 admitted=0 persisted=0 pending=47–51 for
+    /// ~20s, then absolute_budget. Restore as soon as frames are landing
+    /// without any admission — do not wait out the handshake absolute cap.
+    /// Soak-2 04:56: admitted=5, decode on the archive queue, persist in
+    /// flight, then this 5s first-frame clock restored 2A37 and the persist
+    /// callback was ignored as stale. Admission progress means the pipeline
+    /// is working; wait for persist/ACK or the 20s absolute budget.
+    nonisolated static func shouldReleaseIdleWindowHistoryDrainWhenPersistAckStalled(
+        idleWindowDrainOwnsLink: Bool,
+        firstFrameAt: Date?,
+        lastDurableProgressAt: Date?,
+        persisted: Int,
+        acknowledgedPages: Int,
+        now: Date,
+        persistAckStallLimit: TimeInterval = 5,
+        admitted: Int = 0
+    ) -> Bool {
+        guard idleWindowDrainOwnsLink, acknowledgedPages == 0 else { return false }
+        if persisted == 0 && admitted > 0 {
+            return false
+        }
+        let stallAnchor: Date?
+        if persisted > 0 {
+            stallAnchor = lastDurableProgressAt
+        } else {
+            stallAnchor = firstFrameAt
+        }
+        guard let stallAnchor else { return false }
+        return now.timeIntervalSince(stallAnchor) >= persistAckStallLimit
+    }
+
+    /// Idle-window drain already unsubscribed 2A37. The 45s live-HR slice
+    /// watchdog would either cancel the link or hold the pause too long.
+    nonisolated static func shouldArmConnectedHistoricalSliceForLiveHeartRateWatchdog(
+        idleWindowDrainOwnsLink: Bool
+    ) -> Bool {
+        !idleWindowDrainOwnsLink
+    }
+
+    /// 0x03 timed out on a live-2A37 production handshake. Idle-window has
+    /// already unsubscribed 2A37, so an unconfirmed stop still proceeds to
+    /// `0x16` instead of cancelling the peripheral.
+    nonisolated static func shouldContinueHistoricalServeAfterRealtimeStopTimeout(
+        idleWindowStopRealtimeDrain: Bool
+    ) -> Bool {
+        idleWindowStopRealtimeDrain
+    }
+
+    /// Soak 2026-08-23 04:05 gen1: notification settle then 1ms
+    /// `history_write_22_callback_failed` with no `historyRange requested` /
+    /// `send mode=wr cmd=22`. `beginProductionHistoricalAdmissionAttempt`
+    /// returned false because the SQLite admission ledger was still nil —
+    /// idle-window calls `startOfflineHistoricalSync` directly and skipped
+    /// `requestOfflineHistoricalSyncIfNeeded`'s ledger gate. Charging soaks
+    /// later succeeded only after `historyAdmission status=ready`. Do not
+    /// issue 0x22, and do not pause 2A37, until that ledger is open.
+    nonisolated static func shouldIssueProductionHistoryRangeRequest(
+        admissionLedgerReady: Bool
+    ) -> Bool {
+        admissionLedgerReady
+    }
+
+    /// A missing admission ledger is not a CoreBluetooth write-callback
+    /// failure. Mapping it to `history_write_22_callback_failed` burned the
+    /// first idle-window slice and blocked uncharged retries.
+    nonisolated static func shouldClassifyMissingAdmissionLedgerAsHistoryRangeWriteCallbackFailure(
+        admissionLedgerReady: Bool
+    ) -> Bool {
+        admissionLedgerReady
+    }
+
+    /// Soak 04:41 gen1: pause 2A37, then `discoverServices` of 180D+6108 on a
+    /// live standard-HR link, wait for skipped RX/stream5 CCCDs, 3s settle,
+    /// 0x22, no range response, `ble_disconnect` at 16.1s (36s HR gap). Soak
+    /// 04:43 sent 0x22 in 3.2s with TX already live and kept the epoch. Skip
+    /// full rediscovery when the command characteristic is already in hand.
+    nonisolated static func shouldRediscoverServicesForIdleWindowHistoryDrain(
+        txCharacteristicAvailable: Bool
+    ) -> Bool {
+        !txCharacteristicAvailable
+    }
+
+    /// Soak-2 09:07 gen1: waited for RX+stream5 on a restored live 2A37
+    /// link, then paused and sent 0x22; WR never confirmed, drop at T+5.9s.
+    /// The same soak's gen2 reconnect kept 2A37 off, enabled the pipe, and
+    /// got matched range + stream5_rx=50 + ACK. Pause even if the history
+    /// pipe is not ready — CCCDs come up after `notifying=0`, like gen2.
+    nonisolated static func shouldPauseHeartRateForIdleWindowHistoryDrain(
+        historyTransportReady: Bool,
+        readyFor: TimeInterval = .greatestFiniteMagnitude,
+        minimumReadyInterval: TimeInterval = 3.0,
+        freshEpochWithoutHeartRate: Bool = false
+    ) -> Bool {
+        _ = (historyTransportReady, readyFor, minimumReadyInterval, freshEpochWithoutHeartRate)
+        return true
+    }
+
+    /// Soak-2 08:53 didConnect: evaluate deferred for the history pipe,
+    /// then the arm fence was cleared and 2A37 re-enabled. Keep the fence
+    /// while the idle-window pipe/ledger is still preparing.
+    nonisolated static func shouldClearIdleWindowArmFenceWhenDrainDidNotStart(
+        idleWindowStillPreparing: Bool
+    ) -> Bool {
+        !idleWindowStillPreparing
+    }
+
+    /// Drain-owned drop with zero frames: keep 2A37 suppressed so the
+    /// next connect is history-first (08:19 gen2), not 2A37-then-pause
+    /// (08:53). After a productive ACK, restore HR as usual.
+    nonisolated static func shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect(
+        drainOwnedDisconnect: Bool,
+        receivedHistoryFrames: Bool
+    ) -> Bool {
+        drainOwnedDisconnect && !receivedHistoryFrames
+    }
+
+    /// Soak-2 09:07 wrote RX+stream5 CCCDs on live 2A37, then paused and
+    /// sent 0x22; WR never confirmed. Gen2 enabled those CCCDs only after
+    /// 2A37 was off and got a matched range. Do not enable history
+    /// notifications while 2A37 is still notifying.
+    /// Soak-2 09:14: `heartRateCharacteristic` was still nil at generation
+    /// start, so pause was a no-op and `isNotifying` read as false — CCCDs
+    /// and 0x22 armed while live HR continued. Require the characteristic.
+    nonisolated static func shouldEnableIdleWindowHistoryNotifications(
+        heartRateNotifying: Bool,
+        heartRateCharacteristicAvailable: Bool = true
+    ) -> Bool {
+        heartRateCharacteristicAvailable && !heartRateNotifying
+    }
+
+    /// Do not open a history generation until 2A37 is in hand so pause
+    /// cannot no-op (soak-2 09:14).
+    nonisolated static func shouldStartIdleWindowHistoryGeneration(
+        heartRateCharacteristicAvailable: Bool
+    ) -> Bool {
+        heartRateCharacteristicAvailable
+    }
+
+    /// Soak-2 09:18 skipped 180D while 2A37 was uncached, so pause never
+    /// ran. Discover only the heart-rate service (not 6108) until 2A37 is
+    /// in hand; 04:41's drop was a full 180D+6108 rediscovery after pause.
+    nonisolated static func shouldDiscoverHeartRateServiceForIdleWindowHistoryDrain(
+        heartRateCharacteristicAvailable: Bool
+    ) -> Bool {
+        !heartRateCharacteristicAvailable
+    }
+
+    /// Soak-2 08:38: idle-window deferred pause for the history pipe, then
+    /// `historical_archive_warm_ready_exact_motion_bank` armed
+    /// `connected_chunked_backfill` on live 2A37 and dropped at ~13s
+    /// (`stream5_rx=0`). While the idle-window pipe is warming, only the
+    /// idle-window / natural-gap reason may start a generation.
+    nonisolated static func shouldSuppressNonIdleWindowHistoryWhileIdleWindowPipeWarms(
+        idleWindowPipeWarming: Bool,
+        idleWindowReasonAdmitted: Bool
+    ) -> Bool {
+        idleWindowPipeWarming && !idleWindowReasonAdmitted
+    }
+
+    /// Soak-2 09:27 restored a live 2A37 link, admitted idle-window, then
+    /// returned at the orphan-replay spool guard without pausing or setting
+    /// the archive-warm retry. RAW `connected_chunked_backfill` later seized
+    /// the same epoch (gen1/2 streamed; gen3 dropped at 12.9s). Keep the
+    /// retry so history-first pause survives the replay.
+    nonisolated static func shouldRetryIdleWindowHistoryDrainWhenIngressReplayBlocks(
+        idleWindowAdmitted: Bool,
+        ingressReplayOrSpoolBlocking: Bool,
+        historicalSyncAlreadyInProgress: Bool
+    ) -> Bool {
+        idleWindowAdmitted
+            && ingressReplayOrSpoolBlocking
+            && !historicalSyncAlreadyInProgress
+    }
+
+    /// Do not arm 0x22 / treat the pipe as ready while the previous-process
+    /// spool is still replaying (soak-2 07:59 blocked evaluate 16s; 09:27
+    /// never paused). The retry loop must wait, not one-shot evaluate.
+    nonisolated static func shouldWaitForIdleWindowHistoricalIngressReplay(
+        orphanReplayInFlight: Bool,
+        currentGenerationSpoolOpen: Bool
+    ) -> Bool {
+        orphanReplayInFlight || currentGenerationSpoolOpen
+    }
+
+    /// If replay is still blocking after the pipe-retry budget, restore 2A37
+    /// rather than leave notify off with no generation.
+    nonisolated static func shouldRestoreIdleWindowHeartRateWhenIngressReplayTimesOut(
+        idleWindowPausedHeartRate: Bool,
+        ingressStillBlocking: Bool
+    ) -> Bool {
+        idleWindowPausedHeartRate && ingressStillBlocking
+    }
+
+    /// Soak-2 05:34: pipe-ready pause then `startOfflineHistoricalSync`
+    /// nilled TX (`txCharacteristic = nil`) and rediscovered after 2A37 was
+    /// already unsubscribed. 0x22 never went out; drop at 10s. Idle-window
+    /// already has TX in hand.
+    nonisolated static func shouldClearCachedTXBeforeHistoricalHandshake(
+        idleWindowDrainOwnsLink: Bool
+    ) -> Bool {
+        !idleWindowDrainOwnsLink
+    }
+
+    /// Production waits 3s after CCCD-on before 0x22 (too long for the
+    /// ~16s window). Soak-2 08:07 sent 0x22 1ms after stream5 CCCD-on
+    /// and the WR never confirmed. Soak-2 08:43 enabled the pipe first
+    /// then sent 0x22 1ms after 2A37 `notifying=0` (`settle_s=0.0`); the
+    /// WR never confirmed and the link dropped at T+7s. Always leave the
+    /// CCCD callback turn (~400ms) before 0x22.
+    nonisolated static func idleWindowHistoryRangePostNotifySettle(
+        idleWindowDrainOwnsLink: Bool,
+        historyPipeReadyBeforePause: Bool = false
+    ) -> TimeInterval {
+        _ = historyPipeReadyBeforePause
+        guard idleWindowDrainOwnsLink else {
+            return AtriaBLEHistoryWriteConfirmationPolicy.postNotificationSettleInterval
+        }
+        return 0.4
+    }
+
+    /// Soak-2 05:39: pause 2A37 and send 0x22 32ms later, before the CCCD
+    /// callback. The WR never confirmed and the link dropped at 10s.
+    /// Soak-1 04:55 sent 0x22 after `notifyState ch=2A37 notifying=0`.
+    nonisolated static func shouldArmIdleWindowHistoryRangeRequest(
+        heartRateNotifying: Bool,
+        heartRateCharacteristicAvailable: Bool = true
+    ) -> Bool {
+        heartRateCharacteristicAvailable && !heartRateNotifying
+    }
+
+    /// Soak-1's CCCD-off was 132ms on a quiet restore-seeded link. Soak-2
+    /// 07:35 gen1: abort at 1s then `notifying=0` arrived at 5.9s. Wait
+    /// long enough for that callback; abort only if it never comes.
+    nonisolated static func shouldTimeoutIdleWindowHeartRateUnsubscribe(
+        elapsed: TimeInterval,
+        limit: TimeInterval = 8
+    ) -> Bool {
+        elapsed >= limit
+    }
+
+    /// Soak-2 08:14 gen1: 0x22 write-confirmed at T+7.3s. Restoring 2A37
+    /// without 0x16 still dropped at T+14.4s. The served trace is 22/00 WR
+    /// → ~2.1s → 16/00. After a confirmed 0x22, send 0x16 even if the
+    /// range response is late. 07:49's drop was 0x16 at T+16.5s, not the
+    /// missing range itself.
+    nonisolated static func shouldServeIdleWindowHistoryWithoutMatchedRange(
+        idleWindowDrainOwnsLink: Bool,
+        writeConfirmed: Bool,
+        elapsedSinceWriteConfirm: TimeInterval,
+        limit: TimeInterval = 2.1
+    ) -> Bool {
+        idleWindowDrainOwnsLink && writeConfirmed && elapsedSinceWriteConfirm >= limit
+    }
+
+    /// Restore 2A37 without 0x16 only when 0x22 itself never write-confirmed.
+    /// After a confirmed 0x22 the strap is already in the history window.
+    nonisolated static func shouldRestoreIdleWindowHeartRateWhenRangeUnanswered(
+        idleWindowDrainOwnsLink: Bool,
+        writeConfirmed: Bool,
+        elapsedSinceWriteConfirm: TimeInterval,
+        limit: TimeInterval = 2.1
+    ) -> Bool {
+        _ = (idleWindowDrainOwnsLink, elapsedSinceWriteConfirm, limit)
+        return idleWindowDrainOwnsLink && !writeConfirmed
+    }
+
+    /// Soak-2 07:49 withheld strap-service discovery until 2A37 CCCD-off,
+    /// so TX was missing and 0x22 went out at T+10s. Discovery is not a
+    /// CCCD write; start it while unsubscribe is in flight.
+    nonisolated static func shouldDiscoverIdleWindowHistoryTransportWhileHeartRateNotifying(
+        heartRateNotifying: Bool
+    ) -> Bool {
+        _ = heartRateNotifying
+        return true
+    }
+
+    /// If 2A37 is still notifying after the unsubscribe timeout, the CCCD
+    /// write never reached the strap. Sending 0x22 anyway jammed the WR
+    /// (soak-2 07:11). Restore 2A37 and abort.
+    nonisolated static func shouldAbortIdleWindowPauseWhenUnsubscribeLost(
+        heartRateStillNotifying: Bool
+    ) -> Bool {
+        heartRateStillNotifying
+    }
+
     /// Drain-keeping continuity (2026-08-07 soak): a `.draining` authority
     /// whose transport died (slice released for live HR, orphaned lease, BLE
     /// drop) used to be resumable ONLY via the interrupted-full-drain
@@ -1690,11 +2101,18 @@ extension AtriaBLEManager {
     /// the production full-drain handshake. On the current physical strap it
     /// timed out and disconnected the link before history could start. Keep the
     /// healthy standard 2A37 path subscribed in production; explicit research
-    /// probes retain the stop-first behavior in isolation.
+    /// probes retain the stop-first behavior in isolation. Idle-window drain
+    /// unsubscribes 2A37 at the GATT CCCD; it must not send `0x0300` — soak
+    /// 2026-08-23 03:14 confirmed 03 then failed the following 0x22 write
+    /// (`history_write_22_callback_failed`, `stream5_rx=0`).
     nonisolated static func shouldStopRealtimeBeforeHistoricalRecovery(
-        diagnosticSelectorOrRangeProbe: Bool
+        diagnosticSelectorOrRangeProbe: Bool,
+        idleWindowStopRealtimeDrain: Bool = false
     ) -> Bool {
-        diagnosticSelectorOrRangeProbe
+        // Idle-window already unsubscribed 2A37. `0x0300` is not part of
+        // the served 22/00 -> 16/00 trace and poisons the next write.
+        _ = idleWindowStopRealtimeDrain
+        return diagnosticSelectorOrRangeProbe
     }
 
     /// GET_DATA_RANGE already provides the matched clock/cursor authority used
