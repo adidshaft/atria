@@ -146,7 +146,12 @@ enum DetectionReasonCopy {
 
     private static let byReasonCode: [String: String] = [
         "already_saved_or_overlapping": "Sleep already logged for that window",
-        "no_strong_candidate": "No confident sleep window overnight yet",
+        // NOT "overnight". This owner's main sleep runs ~13:00-20:30, and the
+        // word quietly asserts the very assumption that is refusing it — a
+        // reader seeing "no confident sleep window overnight" on a day they
+        // slept seven hours in the afternoon learns nothing except that the app
+        // disagrees with them.
+        "no_strong_candidate": "No confident sleep window found yet",
         "contact_compromised_stitched": "Workout candidate suppressed — sensor contact was unreliable",
         "peak_over_rest_zero_rr_artifact": "Workout candidate suppressed — heart-rate spike without a steady beat-to-beat signal (likely contact artifact)",
         "window_ended_over_24h_ago": "Old workout candidate ignored — more than a day ago",
@@ -156,7 +161,7 @@ enum DetectionReasonCopy {
     ]
 
     private static let byKind: [String: String] = [
-        "sleepAutoConfirmed": "Sleep auto-logged from overnight heart rate",
+        "sleepAutoConfirmed": "Sleep auto-logged from heart rate",
         "workoutDetected": "Workout candidate ready to review"
     ]
 }
