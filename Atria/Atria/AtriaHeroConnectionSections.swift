@@ -169,52 +169,6 @@ private struct AtriaHeroHeadlineBlock: View, Equatable {
     }
 }
 
-private struct AtriaHeroHeadlineHost: View {
-    @ObservedObject var statusStore: AtriaHomeModel.StatusStore
-    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
-
-    var body: some View {
-        AtriaHeroHeadlineBlock(guidance: displayGuidance,
-                               status: statusStore.state.status,
-                               heroStatusTint: heroStatusTint)
-            .equatable()
-    }
-
-    private var displayGuidance: Coach.Guidance {
-        let guidance = heroStore.state.guidance
-        guard statusStore.state.status == .connected,
-              needsConnectedDisplayGuidance(guidance) else {
-            return guidance
-        }
-
-        return Coach.Guidance(headline: "Connected and reading live",
-                              detail: "Atria is using the strap as your primary signal while your personal baseline finishes.",
-                              color: .green,
-                              target: guidance.target,
-                              state: guidance.state,
-                              reason: "connected_display_reconciled")
-    }
-
-    private func needsConnectedDisplayGuidance(_ guidance: Coach.Guidance) -> Bool {
-        let combinedText = "\(guidance.headline) \(guidance.detail)".lowercased()
-        return combinedText.contains("looking for your strap")
-            || combinedText.contains("searches for your strap")
-            || combinedText.contains("reconnect")
-            || combinedText.contains("bluetooth")
-            || combinedText.contains("guidance learning")
-            || combinedText.contains("learning:")
-            || combinedText.contains("need baseline")
-    }
-
-    private var heroStatusTint: Color {
-        switch statusStore.state.status {
-        case .connected: return .green
-        case .connecting, .scanning: return .orange
-        case .disconnected: return .blue
-        case .poweredOff: return .orange
-        }
-    }
-}
 
 private struct AtriaHeroStatusCardHost: View, Equatable {
     let status: AtriaBLEManager.Status
@@ -650,16 +604,6 @@ private struct AtriaHeroMetricItem: Identifiable, Equatable {
     var id: String { title }
 }
 
-private struct AtriaHeroMetricRowHost: View {
-    @ObservedObject var statusStore: AtriaHomeModel.StatusStore
-    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
-
-    var body: some View {
-        AtriaHeroMetricRow(liveStatus: statusStore.state.status,
-                           hero: heroStore.state)
-            .equatable()
-    }
-}
 
 private struct AtriaHeroNextActionRow: View, Equatable {
     let nextAction: String
@@ -681,24 +625,6 @@ private struct AtriaHeroNextActionRow: View, Equatable {
     }
 }
 
-private struct AtriaHeroNextActionHost: View {
-    @ObservedObject var statusStore: AtriaHomeModel.StatusStore
-    @ObservedObject var heroStore: AtriaHomeModel.HeroStore
-
-    var body: some View {
-        AtriaHeroNextActionRow(nextAction: displayNextAction)
-            .equatable()
-    }
-
-    private var displayNextAction: String {
-        let nextAction = heroStore.state.nextAction
-        guard statusStore.state.status == .connected,
-              nextAction.localizedCaseInsensitiveContains("reconnect") else {
-            return nextAction
-        }
-        return "Keep wearing while Atria finishes your personal baseline."
-    }
-}
 
 private struct AtriaHeroMetricTile: View, Equatable {
     let title: String
@@ -1285,40 +1211,3 @@ private struct AtriaConnectionStatusCard: View, Equatable {
     }
 }
 
-private struct AtriaConnectionChecklistCard: View, Equatable {
-    let title: String
-    let items: [String]
-    let tint: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(tint)
-                    .frame(width: 8, height: 8)
-                Text(title)
-                    .font(.headline.weight(.semibold))
-            }
-
-            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                HStack(alignment: .top, spacing: 10) {
-                    Text("\(index + 1)")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(tint)
-                        .frame(width: 20, height: 20)
-                        .background(AtriaChecklistBadgeBackground(tint: tint))
-                        .overlay {
-                            Circle()
-                                .stroke(tint.opacity(0.22), lineWidth: 1)
-                        }
-                    Text(item)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-        .padding(18)
-        .atriaCard(emphasis: .soft)
-    }
-}

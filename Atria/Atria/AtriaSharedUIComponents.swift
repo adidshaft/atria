@@ -240,136 +240,8 @@ struct AtriaQuickTile: View, Equatable {
     }
 }
 
-struct AtriaRecoveryMeter: View, Equatable {
-    let estimate: Metrics.RecoveryEstimate
 
-    private var tint: Color {
-        guard let percent = estimate.percent else { return .orange }
-        return Metrics.recoveryColor(percent)
-    }
 
-    private var fillFraction: CGFloat {
-        guard let percent = estimate.percent else { return 0.16 }
-        return CGFloat(min(max(Double(percent) / 100.0, 0), 1))
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Recovery", systemImage: "gauge.with.dots.needle.bottom.50percent")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(tint)
-
-            Text(estimate.percent.map { AtriaMetricFormat.recovery(Double($0)) } ?? "Learning")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
-                .monospacedDigit()
-
-            Capsule(style: .continuous)
-                .fill(Color.white.opacity(0.08))
-                .frame(height: 8)
-                .overlay(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(tint.gradient)
-                        .frame(width: max(18, 120 * fillFraction), height: 8)
-                }
-
-            Text(Self.confidenceText(for: estimate.confidence))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(estimate.confidence == .validated ? .green : .orange)
-
-            Text(estimate.detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.75)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .atriaInsetCard(tint: .green)
-    }
-
-    private static func confidenceText(for confidence: Metrics.RecoveryEstimate.Confidence) -> String {
-        switch confidence {
-        case .learning:
-            return "Building"
-        case .unverified:
-            return "Still improving"
-        case .personalBaseline:
-            return "Personal baseline"
-        case .validated:
-            // 2026-08-14 (assessment P0.3): reserved tier; any legacy arrival
-            // renders as the strongest honest claim.
-            return "Personal baseline"
-        }
-    }
-}
-
-struct AtriaStrainMeter: View, Equatable {
-    let strain: Double
-    let detail: String
-    let confidence: String
-
-    private var tint: Color {
-        Metrics.strainColor(strain)
-    }
-
-    private var fillFraction: CGFloat {
-        CGFloat(min(max(strain / 21.0, 0), 1))
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label("Day strain", systemImage: "flame.fill")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(tint)
-
-            Text(AtriaMetricFormat.strain(strain))
-                .font(.system(size: 30, weight: .bold, design: .rounded))
-                .monospacedDigit()
-
-            Capsule(style: .continuous)
-                .fill(Color.white.opacity(0.08))
-                .frame(height: 8)
-                .overlay(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(tint.gradient)
-                        .frame(width: max(18, 120 * fillFraction), height: 8)
-                }
-
-            Text(confidence)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(confidence == "local" ? .green : .orange)
-
-            Text(detail)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .atriaInsetCard(tint: .orange)
-    }
-}
-
-struct AtriaSummaryRow: View, Equatable {
-    let label: String
-    let value: String
-
-    var body: some View {
-        HStack(alignment: .top) {
-            Text(label)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 86, alignment: .leading)
-            Text(value)
-                .font(.subheadline.monospacedDigit())
-                .foregroundStyle(.primary)
-                .multilineTextAlignment(.trailing)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-        }
-    }
-}
 
 struct AtriaStatusChip: View, Equatable {
     let text: String
@@ -718,15 +590,6 @@ struct AtriaMetricZoneInfoButton: View, Equatable {
     }
 }
 
-struct AtriaSectionDivider: View {
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        Rectangle()
-            .fill(colorScheme == .dark ? Color.white.opacity(0.16) : Color.black.opacity(0.10))
-            .frame(height: 1)
-    }
-}
 
 struct AtriaInlineQuickStat: View, Equatable {
     let label: String
@@ -757,40 +620,6 @@ struct AtriaInlineQuickStat: View, Equatable {
     }
 }
 
-struct AtriaProfileStepperTile: View {
-    let title: String
-    let value: String
-    let decrement: () -> Void
-    let increment: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.title.weight(.bold).monospacedDigit())
-            HStack(spacing: 10) {
-                Button(action: decrement) {
-                    Image(systemName: "minus")
-                        .frame(maxWidth: .infinity, minHeight: 30)
-                }
-                .atriaCardAction(prominent: false, tint: .secondary)
-                .accessibilityLabel("Decrease \(title)")
-
-                Button(action: increment) {
-                    Image(systemName: "plus")
-                        .frame(maxWidth: .infinity, minHeight: 30)
-                }
-                .atriaCardAction(prominent: false, tint: .secondary)
-                .accessibilityLabel("Increase \(title)")
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .atriaInsetCard(tint: .white)
-    }
-}
 
 /// The design handoff's live-heart beat (`@keyframes atria-heart`): a quick
 /// systole to 1.28x then straight back, followed by a long rest — one beat per

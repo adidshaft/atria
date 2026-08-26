@@ -72,22 +72,6 @@ struct AtriaBackdropLayer: View, Equatable {
     }
 }
 
-struct AtriaHeaderTitleBlock: View, Equatable {
-    let headline: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Atria")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
-                .foregroundStyle(.primary)
-            Text(headline)
-                .font(.footnote)
-                .foregroundStyle(.secondary.opacity(0.9))
-                .lineLimit(2)
-                .frame(maxWidth: 280, alignment: .leading)
-        }
-    }
-}
 
 struct AtriaConnectionGuideContext: Equatable {
     let hasEverConnected: Bool

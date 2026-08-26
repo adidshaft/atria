@@ -4468,40 +4468,6 @@ private struct AtriaTodayGlanceTile: View, Equatable {
     }
 }
 
-private struct AtriaTodayInfoRow: View, Equatable {
-    let title: String
-    let value: String
-    let systemImage: String
-    let tint: Color
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 30, height: 30)
-                .background(AtriaIconTileBackground(cornerRadius: 10, tint: tint))
-            Text(title)
-                .font(.subheadline.weight(.bold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.78)
-            Spacer(minLength: 0)
-            Text(value)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(minHeight: 46)
-        .padding(.horizontal, 12)
-        .background(Color(uiColor: .secondarySystemGroupedBackground),
-                    in: RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
-                .stroke(tint.opacity(0.16), lineWidth: 1)
-        }
-    }
-}
 
 private struct AtriaTodayShortcutStrip: View, Equatable {
     let onStartWorkout: () -> Void

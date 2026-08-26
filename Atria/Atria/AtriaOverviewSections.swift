@@ -7824,22 +7824,6 @@ private extension SleepStageKind {
     }
 }
 
-struct AtriaOverviewLaunchChecklistHost: View {
-    @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
-    @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
-    @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
-    let onOpenVitals: () -> Void
-    let onOpenCollection: () -> Void
-
-    var body: some View {
-        AtriaOverviewLaunchChecklist(live: liveStore.state,
-                                     stats: homeStatsStore.state,
-                                     snapshot: snapshotStore.state,
-                                     onOpenVitals: onOpenVitals,
-                                     onOpenCollection: onOpenCollection)
-            .equatable()
-    }
-}
 
 struct AtriaOverviewLaunchChecklist: View, Equatable {
     let live: AtriaHomeModel.CoreLiveState
@@ -13414,93 +13398,6 @@ private struct AtriaDetailComparisonSeesaw: View, Equatable {
     }
 }
 
-private struct AtriaDetailRangeRhythmCard: View {
-    let range: AtriaTrendRange
-    let points: [AtriaDetailChartPoint]
-    let summary: AtriaDetailPeriodSummary
-    let comparison: AtriaDetailComparisonSummary?
-    let tint: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Label("Range rhythm", systemImage: "waveform.path.ecg")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(tint)
-                Spacer(minLength: 8)
-                Text(range.menuLabel)
-                    .font(.caption2.weight(.black))
-                    .foregroundStyle(tint)
-            }
-
-            AtriaDetailRangeDotStrip(points: points, fallbackTint: tint)
-
-            HStack(spacing: 8) {
-                rhythmChip(title: rangeAnchorTitle,
-                           value: summary.latestText,
-                           systemImage: "scope",
-                           prominent: true)
-                rhythmChip(title: "Avg",
-                           value: summary.averageText,
-                           systemImage: "chart.line.flattrend.xyaxis",
-                           prominent: false)
-                rhythmChip(title: "Vs prior",
-                           value: comparison?.deltaText ?? "Building",
-                           systemImage: comparison == nil ? "clock.badge.checkmark" : "arrow.left.arrow.right",
-                           prominent: false)
-            }
-        }
-        .padding(12)
-        .background(tint.opacity(0.065), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(tint.opacity(0.13), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Detail range rhythm. \(range.menuLabel). \(rangeAnchorTitle) \(summary.latestText). Average \(summary.averageText). Versus prior \(comparison?.deltaText ?? "building").")
-    }
-
-    private var rangeAnchorTitle: String {
-        switch range {
-        case .day: return "Today"
-        case .week: return "Week"
-        case .month: return "Month"
-        case .quarter: return "3M"
-        case .sixMonths: return "6M"
-        case .year: return "1Y"
-        case .all: return "All"
-        }
-    }
-
-    private func rhythmChip(title: String,
-                            value: String,
-                            systemImage: String,
-                            prominent: Bool) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: systemImage)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 20, height: 20)
-                .background(tint.opacity(0.12), in: Circle())
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(value)
-                    .font((prominent ? Font.caption : Font.caption2).weight(.black).monospacedDigit())
-                    .foregroundStyle(prominent ? tint : .primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.68)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 8)
-        .background(tint.opacity(prominent ? 0.10 : 0.065), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-    }
-}
 
 private struct AtriaDetailPeriodSummaryStrip: View {
     let summary: AtriaDetailPeriodSummary
@@ -13605,105 +13502,6 @@ private struct AtriaDetailPeriodSummaryStrip: View {
     }
 }
 
-private struct AtriaDetailPeriodReportCard: View, Equatable {
-    let summary: AtriaDetailPeriodSummary
-    let comparison: AtriaDetailComparisonSummary?
-    let tint: Color
-
-    private var movementText: String {
-        switch summary.changeDirection {
-        case .up: return "Up"
-        case .flat: return "Flat"
-        case .down: return "Down"
-        }
-    }
-
-    private var priorText: String {
-        comparison?.deltaText ?? "Building"
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Label("This period", systemImage: "chart.bar.xaxis")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(tint)
-                Spacer(minLength: 8)
-                Text(priorText)
-                    .font(.caption2.weight(.bold).monospacedDigit())
-                    .foregroundStyle(tint)
-                    .lineLimit(1)
-            }
-
-            HStack(spacing: 8) {
-                reportChip(title: "Latest",
-                           value: summary.latestText,
-                           systemImage: "scope",
-                           prominent: true)
-                reportChip(title: "Change",
-                           value: movementText,
-                           systemImage: summary.changeDirection.symbolName,
-                           prominent: false)
-                reportChip(title: "Compare",
-                           value: comparison == nil ? "Build" : "Ready",
-                           systemImage: comparison == nil ? "clock.badge.checkmark" : "arrow.left.arrow.right",
-                           prominent: false)
-            }
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                let markerX = width * summary.latestPosition
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.10))
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.70))
-                        .frame(width: max(8, markerX))
-                    Circle()
-                        .fill(tint)
-                        .frame(width: 12, height: 12)
-                        .offset(x: min(max(markerX - 6, 0), max(width - 12, 0)))
-                }
-            }
-            .frame(height: 12)
-            .accessibilityHidden(true)
-        }
-        .padding(12)
-        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(tint.opacity(0.13), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("This period. Latest \(summary.latestText), change \(summary.changeText), compared with prior \(priorText), average \(summary.averageText).")
-    }
-
-    private func reportChip(title: String,
-                            value: String,
-                            systemImage: String,
-                            prominent: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Image(systemName: systemImage)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 20, height: 20)
-                .background(tint.opacity(0.12), in: Circle())
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(value)
-                .font((prominent ? Font.caption : Font.caption2).weight(.black).monospacedDigit())
-                .foregroundStyle(prominent ? tint : .primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.68)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(9)
-        .background(tint.opacity(prominent ? 0.09 : 0.055),
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-}
 
 private struct AtriaDetailComparisonSummary: Equatable, Sendable {
     let currentText: String
@@ -13742,65 +13540,6 @@ private struct AtriaDetailComparisonSummary: Equatable, Sendable {
     }
 }
 
-private struct AtriaDetailComparisonCard: View, Equatable {
-    let comparison: AtriaDetailComparisonSummary
-    let tint: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Label("Vs prior", systemImage: comparison.changeDirection.symbolName)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-
-                Spacer(minLength: 0)
-
-                Text(comparison.deltaText)
-                    .font(.caption.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(tint)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .layoutPriority(1)
-            }
-
-            comparisonRow(label: "This", value: comparison.currentText, share: comparison.currentShare, isCurrent: true)
-            comparisonRow(label: "Prior", value: comparison.priorText, share: comparison.priorShare, isCurrent: false)
-        }
-        .padding(12)
-        .background(.quaternary.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(tint.opacity(0.12), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Compared with prior window. This \(comparison.currentText), prior \(comparison.priorText), change \(comparison.deltaText).")
-    }
-
-    private func comparisonRow(label: String, value: String, share: Double, isCurrent: Bool) -> some View {
-        HStack(spacing: 8) {
-            Text(label)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .frame(width: 34, alignment: .leading)
-
-            GeometryReader { proxy in
-                Capsule()
-                    .fill((isCurrent ? tint : Color.secondary).opacity(isCurrent ? 0.68 : 0.22))
-                    .frame(width: max(8, proxy.size.width * share))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            }
-            .frame(height: 8)
-
-            Text(value)
-                .font(.caption.weight(.semibold).monospacedDigit())
-                .foregroundStyle(isCurrent ? .primary : .secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.76)
-                .frame(width: 58, alignment: .trailing)
-        }
-    }
-}
 
 private struct AtriaPreparedMetricHistory: Sendable {
     let recovery: [AtriaTrendRange: [AtriaDetailChartPoint]]
@@ -15245,14 +14984,6 @@ struct AtriaInsightsCard: View, Equatable {
     }
 }
 
-struct AtriaOverviewTrendSectionHost: View {
-    @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
-
-    var body: some View {
-        AtriaOverviewTrendSection(snapshot: snapshotStore.state)
-            .equatable()
-    }
-}
 
 struct AtriaOverviewTrendSection: View, Equatable {
     let snapshot: AtriaHomeModel.Snapshot
@@ -15810,119 +15541,6 @@ private struct AtriaJournalImpactGlanceBoard: View, Equatable {
     }
 }
 
-private struct AtriaJournalImpactBalanceRail: View, Equatable {
-    let summaries: [BehaviorCorrelationSummary]
-
-    private var supportSummaries: [BehaviorCorrelationSummary] {
-        summaries.filter { ($0.impactDelta ?? 0) > 0 }
-    }
-
-    private var pressureSummaries: [BehaviorCorrelationSummary] {
-        summaries.filter { ($0.impactDelta ?? 0) < 0 }
-    }
-
-    private var supportValue: Double {
-        min(supportSummaries.reduce(0) { $0 + $1.impactMagnitude } / 12, 1)
-    }
-
-    private var pressureValue: Double {
-        min(pressureSummaries.reduce(0) { $0 + $1.impactMagnitude } / 12, 1)
-    }
-
-    private var leadText: String {
-        if supportValue > pressureValue { return supportSummaries.first?.tag.label ?? "Support" }
-        if pressureValue > supportValue { return pressureSummaries.first?.tag.label ?? "Watch" }
-        return "Balanced"
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack {
-                Label("Recovery balance", systemImage: "arrow.left.and.right")
-                    .font(.caption.weight(.bold))
-                Spacer(minLength: 8)
-                Text(leadText)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            HStack(spacing: 8) {
-                balanceSide(title: "Watch",
-                            value: pressureValue,
-                            count: pressureSummaries.count,
-                            systemImage: "arrow.down.right",
-                            tint: .orange,
-                            alignment: .trailing)
-
-                ZStack {
-                    Circle()
-                        .fill(Color.primary.opacity(0.09))
-                    Circle()
-                        .stroke(Color.cyan.opacity(0.18), lineWidth: 1)
-                    Text("0")
-                        .font(.caption2.weight(.black).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                .frame(width: 28, height: 28)
-                .accessibilityHidden(true)
-
-                balanceSide(title: "Support",
-                            value: supportValue,
-                            count: supportSummaries.count,
-                            systemImage: "arrow.up.right",
-                            tint: .cyan,
-                            alignment: .leading)
-            }
-        }
-        .padding(11)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.cyan.opacity(0.12), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Recovery balance. Watch \(pressureSummaries.count) links, support \(supportSummaries.count) links. Lead \(leadText).")
-    }
-
-    private func balanceSide(title: String,
-                             value: Double,
-                             count: Int,
-                             systemImage: String,
-                             tint: Color,
-                             alignment: HorizontalAlignment) -> some View {
-        VStack(alignment: alignment, spacing: 6) {
-            HStack(spacing: 5) {
-                if alignment == .trailing { Spacer(minLength: 0) }
-                Image(systemName: systemImage)
-                    .font(.caption2.weight(.bold))
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                if alignment == .leading { Spacer(minLength: 0) }
-            }
-            .foregroundStyle(tint)
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                ZStack(alignment: alignment == .leading ? .leading : .trailing) {
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.10))
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.70))
-                        .frame(width: max(8, width * min(max(value, 0), 1)))
-                }
-            }
-            .frame(height: 8)
-            .accessibilityHidden(true)
-
-            Text(count == 1 ? "1 link" : "\(count) links")
-                .font(.caption2.weight(.semibold).monospacedDigit())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
-    }
-}
 
 private struct AtriaJournalImpactMap: View, Equatable {
     let summaries: [BehaviorCorrelationSummary]
@@ -15993,158 +15611,7 @@ private struct AtriaJournalImpactMap: View, Equatable {
     }
 }
 
-private struct AtriaJournalImpactCompass: View, Equatable {
-    let summaries: [BehaviorCorrelationSummary]
-    let taggedDays: Int
 
-    private var supportSummary: BehaviorCorrelationSummary? {
-        summaries.first { ($0.impactDelta ?? 0) > 0 }
-    }
-
-    private var pressureSummary: BehaviorCorrelationSummary? {
-        summaries.first { ($0.impactDelta ?? 0) < 0 }
-    }
-
-    private var learningSummary: BehaviorCorrelationSummary? {
-        summaries.first { $0.impactDelta == nil }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Impact compass")
-                    .font(.caption.weight(.bold))
-                Spacer(minLength: 0)
-                Text("\(taggedDays)d journal")
-                    .font(.caption2.weight(.bold).monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-
-            HStack(spacing: 8) {
-                compassCell(title: "Support",
-                            summary: supportSummary,
-                            fallback: "Still learning",
-                            systemImage: "arrow.up.right",
-                            alignment: .leading)
-                compassCell(title: "Watch",
-                            summary: pressureSummary,
-                            fallback: learningSummary?.tag.label ?? "No pressure",
-                            systemImage: "arrow.down.right",
-                            alignment: .trailing)
-            }
-
-            HStack(spacing: 5) {
-                ForEach(summaries, id: \.tag) { summary in
-                    Capsule()
-                        .fill(Color.cyan.opacity(summary.impactDelta == nil ? 0.18 : 0.72))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 5)
-                        .overlay(alignment: .leading) {
-                            Capsule()
-                                .fill(Color.primary.opacity(0.18))
-                                .frame(width: max(8, 46 * summary.impactProgress), height: 5)
-                        }
-                        .accessibilityHidden(true)
-                }
-            }
-        }
-        .padding(12)
-        .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(Color.cyan.opacity(0.12), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Impact compass. Support \(supportSummary?.tag.label ?? "still learning"). Watch \(pressureSummary?.tag.label ?? "no pressure signal"). \(taggedDays) journal days.")
-    }
-
-    private func compassCell(title: String,
-                             summary: BehaviorCorrelationSummary?,
-                             fallback: String,
-                             systemImage: String,
-                             alignment: HorizontalAlignment) -> some View {
-        VStack(alignment: alignment, spacing: 5) {
-            Label(title, systemImage: systemImage)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-
-            Text(summary?.tag.label ?? fallback)
-                .font(.subheadline.weight(.bold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.76)
-
-            Text(summary.map { "\($0.impactMetricText) \($0.impactValueText)" } ?? "Need more tags")
-                .font(.caption2.weight(.semibold).monospacedDigit())
-                .foregroundStyle(summary == nil ? Color.secondary : Color.cyan)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity, alignment: alignment == .leading ? .leading : .trailing)
-        .padding(10)
-        .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-    }
-}
-
-private struct AtriaJournalImpactFocus: View, Equatable {
-    let summary: BehaviorCorrelationSummary
-
-    private var ringProgress: CGFloat {
-        CGFloat(min(max(summary.impactProgress, 0.12), 1))
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .stroke(Color.primary.opacity(0.14), lineWidth: 5)
-
-                Circle()
-                    .trim(from: 0, to: ringProgress)
-                    .stroke(Color.cyan, style: StrokeStyle(lineWidth: 5, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-
-                Image(systemName: summary.tag.symbolName)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.cyan)
-            }
-            .frame(width: 46, height: 46)
-            .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(summary.impactToneText)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.cyan)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(.cyan.opacity(0.10), in: Capsule())
-                Text(summary.tag.label)
-                    .font(.headline.weight(.bold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-            }
-
-            Spacer(minLength: 0)
-
-            VStack(alignment: .trailing, spacing: 3) {
-                Text("\(summary.impactMetricText) \(summary.impactValueText)")
-                    .font(.headline.weight(.bold).monospacedDigit())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                Text("\(summary.days)d logged")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-        }
-        .padding(12)
-        .background(Color.cyan.opacity(0.08), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Top behavior signal. \(summary.tag.label). \(summary.impactMetricText) \(summary.impactValueText). \(summary.detail).")
-    }
-}
 
 private struct AtriaJournalImpactBar: View, Equatable {
     let summary: BehaviorCorrelationSummary
@@ -16241,16 +15708,6 @@ struct AtriaOverviewTrailingSection: View {
     }
 }
 
-struct AtriaOverviewLiveStrapSectionHost: View {
-    @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
-    @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
-
-    var body: some View {
-        AtriaOverviewLiveStrapSection(live: liveStore.state,
-                                     stats: homeStatsStore.state)
-            .equatable()
-    }
-}
 
 struct AtriaOverviewLiveStrapSection: View, Equatable {
     let live: AtriaHomeModel.CoreLiveState
@@ -16382,53 +15839,6 @@ struct AtriaOverviewCollectionSection: View, Equatable {
     }
 }
 
-private struct AtriaOverviewActionStrip: View {
-    let title: String
-    let primaryTitle: String
-    let primarySystemImage: String
-    let primaryAction: () -> Void
-    let secondaryTitle: String
-    let secondarySystemImage: String
-    let secondaryAction: () -> Void
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            if horizontalSizeClass == .compact {
-                VStack(spacing: 8) {
-                    actionButtons
-                }
-            } else {
-                HStack(spacing: 8) {
-                    actionButtons
-                }
-            }
-        }
-        .padding(12)
-        .atriaInsetCard(tint: .white)
-    }
-
-    @ViewBuilder
-    private var actionButtons: some View {
-        Button(action: primaryAction) {
-            Label(primaryTitle, systemImage: primarySystemImage)
-                .font(.subheadline.weight(.semibold))
-                .frame(maxWidth: .infinity)
-        }
-        .atriaCardAction(tint: .blue)
-
-        Button(action: secondaryAction) {
-            Label(secondaryTitle, systemImage: secondarySystemImage)
-                .font(.subheadline.weight(.semibold))
-                .frame(maxWidth: .infinity)
-        }
-        .atriaCardAction(prominent: false, tint: .gray)
-    }
-}
 
 struct AtriaOverviewBackupSectionHost: View {
     @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
@@ -16580,35 +15990,6 @@ private struct AtriaDisconnectedOverviewAutomaticCard: View, Equatable {
     }
 }
 
-private struct AtriaDisconnectedOverviewCoexistenceCard: View, Equatable {
-    let context: AtriaConnectionGuideContext
-
-    private var tint: Color {
-        context.officialAppCoexistenceRisk == .suspected ? .red : .orange
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.headline.weight(.semibold))
-                .foregroundStyle(tint)
-                .frame(width: 34, height: 34)
-                .background(AtriaIconTileBackground(cornerRadius: 11, tint: tint))
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(context.coexistenceTitle)
-                    .font(.subheadline.weight(.semibold))
-                Text(context.coexistenceDetail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .atriaCard(emphasis: .soft)
-    }
-}
 
 private struct AtriaDisconnectedOverviewChecklistCard: View, Equatable {
     let title: String

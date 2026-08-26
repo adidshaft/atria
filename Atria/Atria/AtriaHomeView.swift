@@ -7182,39 +7182,6 @@ private struct AtriaWorkoutReviewHoldBanner: View, Equatable {
     }
 }
 
-private struct AtriaWorkoutSignalMark: View, Equatable {
-    let progress: Double
-    let heartRate: Int
-    let tint: Color
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(tint.opacity(0.14), lineWidth: 7)
-                .frame(width: 66, height: 66)
-
-            Circle()
-                .trim(from: 0, to: min(max(progress, 0.16), 1))
-                .stroke(
-                    tint,
-                    style: StrokeStyle(lineWidth: 7, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
-                .frame(width: 66, height: 66)
-
-            VStack(spacing: 1) {
-                Text("\(heartRate)")
-                    .font(.system(size: 20, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                Text("BPM")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: 76, height: 76)
-        .accessibilityLabel("Strap HR peak \(heartRate) beats per minute")
-    }
-}
 
 private struct AtriaWorkoutZoneEvidenceStrip: View, Equatable {
     let zone: Metrics.HeartRateZone
