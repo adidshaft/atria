@@ -64,6 +64,22 @@ struct AtriaStepsWeekChart: View {
         // Only full containment is removed here, because it is the only case
         // that is provably duplicate: a contained window's steps all occurred
         // inside the outer window, so the outer receipt already counts them.
+        // The store says the same thing in its own words -- see
+        // `AtriaWhoop4MotionTickDailyStore.mergingCurrentCycleReceipt`: "A
+        // receipt beginning later in the same physiological cycle is only a
+        // CONTAINED SUBSET". That rule governs admitting a receipt to the
+        // CURRENT cycle; this applies the same relationship to closed receipts
+        // being folded onto civil days.
+        //
+        // WHY THEY OVERLAP AT ALL, since deduplicating here treats a symptom:
+        // a receipt's window begins at
+        // `AtriaPhysiologicalCycle.current(...).start`, derived from confirmed
+        // sleeps. When no sleep confirms, that boundary comes from the
+        // no-sleep fallback and MOVES between publications, so successive
+        // publications of one real cycle are written with different starts and
+        // the later lands inside the earlier. On this device 17 of 32 receipts
+        // overlap -- a direct consequence of sleep not confirming, not an
+        // independent bug.
         // PARTIAL overlaps are deliberately left alone — the receipts carry no
         // per-interval breakdown, so there is no honest way to subtract the
         // shared portion, and dropping either whole receipt would delete real
