@@ -11272,8 +11272,17 @@ private struct AtriaPreparedMetricChart: View {
                         .cornerRadius(3)
                 }
             } else {
-                ForEach(points) { point in
-                    AreaMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value))
+                // Split at gaps like the LINE above it. This gradient fill was
+                // the third surface in this file to sweep across days with no
+                // reading while the stroke drawn over it broke correctly — the
+                // min-max band and the Vitals sparkline were the other two.
+                // A filled region is a stronger claim than a stroke, not a
+                // weaker one: it shades area under days that were never
+                // measured.
+                ForEach(points.contiguousDayRuns(), id: \.point.day) { entry in
+                    AreaMark(x: .value("Day", entry.point.day, unit: .day),
+                             y: .value(title, entry.point.value),
+                             series: .value("Fill run", "fill-\(entry.runID)"))
                         .interpolationMethod(.monotone)
                         .foregroundStyle(LinearGradient(colors: [tint.opacity(0.20), tint.opacity(0)],
                                                         startPoint: .top, endPoint: .bottom))
