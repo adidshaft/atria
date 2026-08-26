@@ -739,9 +739,19 @@ final class AtriaWhoop4MotionBankCoverageLedgerTests: XCTestCase {
             source[selectorStart.lowerBound..<selectorEnd.lowerBound]
         )
         // W1-A 2026-08-20: the bare continuation-latch guard became the
-        // unified idle-window radio-ownership predicate.
+        // unified idle-window radio-ownership predicate. That predicate has
+        // since been EXTRACTED into a named helper — the inline
+        // `guard !rawLaneActivelyOwnsRadio` no longer appears in this selector,
+        // though `deferMotionBankOffloadForActiveRawLane` computes exactly it
+        // (`connectedRawContinuationActivelyOwnsRadio(now:)`) and returns true
+        // only when the raw lane owns the radio.
+        //
+        // The invariant this test exists for is unchanged and is asserted
+        // below: the radio-ownership guard must run BEFORE any ledger
+        // mutation, so a motion-bank offload can never mutate cadence state
+        // while the raw lane owns the transport.
         let continuationGuard = try XCTUnwrap(selector.range(
-            of: "guard !rawLaneActivelyOwnsRadio"
+            of: "guard !deferMotionBankOffloadForActiveRawLane("
         ))
         let ledgerMutation = try XCTUnwrap(selector.range(
             of: "repairTransportOnlyClearedWorkoutMotionTicketIfNeeded()"

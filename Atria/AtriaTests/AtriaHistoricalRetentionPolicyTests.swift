@@ -4,8 +4,18 @@ import XCTest
 final class AtriaHistoricalRetentionPolicyTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 2_000_000_000)
 
-    func testSelectsOnlySealedChunksWhollyOutsideFourteenDayHorizon() {
-        let policy = AtriaHistoricalRetentionPolicy.production
+    func testSelectsOnlySealedChunksWhollyOutsideRawHorizon() {
+        // The horizon is FIXED BY THE FIXTURE on purpose. Building this from
+        // `.production` silently pinned the product constant, so when the raw
+        // horizon moved 14 -> 30 days (df11d6c5, 2026-08-19, "raw data
+        // maintained only up to a week or month, but insights are persisted
+        // all the time") the 20-day-old chunk fell INSIDE the horizon, nothing
+        // was selected, and a boundary test went red for a reason that had
+        // nothing to do with the boundary. The product value is pinned
+        // separately below, so a future retune fails at a named site instead of
+        // collaterally breaking this contract.
+        let policy = AtriaHistoricalRetentionPolicy(rawHorizon: 14 * 86_400,
+                                                    maximumRawBytes: 512 * 1024 * 1024)
         let old = chunk("old", daysAgoStart: 20, daysAgoEnd: 19, bytes: 10, sealed: true)
         let overlap = chunk("overlap", daysAgoStart: 15, daysAgoEnd: 13, bytes: 10, sealed: true)
         let activeOld = chunk("active", daysAgoStart: 30, daysAgoEnd: 29, bytes: 10, sealed: false)
@@ -16,6 +26,16 @@ final class AtriaHistoricalRetentionPolicyTests: XCTestCase {
         XCTAssertEqual(plan.candidates.map(\.reason), [.outsideRawHorizon])
         XCTAssertEqual(plan.rawBytesBefore, 30)
         XCTAssertEqual(plan.projectedRawBytes, 20)
+    }
+
+    func testProductionRetentionMatchesTheChosenThirtyDayRawTier() {
+        // The product decision itself, pinned where a change to it is the
+        // point rather than a side effect. 2026-08-19 directive: raw data is
+        // kept for "a week or month"; insights are never pruned.
+        XCTAssertEqual(AtriaHistoricalRetentionPolicy.production.rawHorizon,
+                       30 * 24 * 60 * 60)
+        XCTAssertEqual(AtriaHistoricalRetentionPolicy.production.maximumRawBytes,
+                       512 * 1024 * 1024)
     }
 
     func testHardCapPressureChoosesOldestRemainingSealedChunks() {

@@ -26140,7 +26140,7 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    /// Evaluates the production 14-day / 512-MiB high-volume policy. One
+    /// Evaluates the production 30-day / 512-MiB high-volume policy. One
     /// transaction still retires at most one raw chunk, but the off-main driver
     /// starts fresh verified transactions within a bounded work slice until the
     /// cap is satisfied (or only the active writer prevents it). Deferred and
@@ -26247,7 +26247,7 @@ final class SessionStore: ObservableObject {
     /// lease generation. Revocation is cooperative, threaded, and checked deep.
     ///
     /// The consequence of leaving it closed was measured on 2026-08-19: the
-    /// production 14-day/512 MiB retention policy had **never once been
+    /// production 30-day/512 MiB retention policy had **never once been
     /// evaluated** on a real device, and the container had grown to 5.45 GB with
     /// 2.99 GB of raw segments spanning five weeks. The user asked for exactly
     /// what this graph already implements — raw kept for a bounded window,
@@ -52543,7 +52543,7 @@ final class SessionStore: ObservableObject {
         refreshBackupStatusCacheDeferred(reason: "deferred_session_load")
         // BGTask execution is opportunistic. Evaluate the same once-per-day,
         // shadow-only retention queue after launch content has landed so the
-        // 14-day / 512-MiB policy is not dependent on iOS granting background
+        // 30-day / 512-MiB policy is not dependent on iOS granting background
         // maintenance time.
         reserveArchiveCompactionForSafeBackground()
 

@@ -132,7 +132,19 @@ final class AtriaHistoricalShadowCompactionCoordinatorTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let legacy = chunk(id: "legacy", createdAt: now.addingTimeInterval(-30 * 86_400))
+        // Age derived from the LIVE horizon, not a hardcoded 30 days. When the
+        // raw horizon moved 14 -> 30 days (df11d6c5, 2026-08-19) this fixture
+        // landed exactly ON the boundary, the queue selected nothing, and two
+        // assertions below started passing vacuously against an empty queue
+        // while the other two failed. Deriving the age keeps the chunk outside
+        // whatever the horizon currently is, so a future retune cannot hollow
+        // this test out again.
+        let legacy = chunk(
+            id: "legacy",
+            createdAt: now.addingTimeInterval(
+                -AtriaHistoricalRetentionPolicy.production.rawHorizon - 86_400
+            )
+        )
         let active = activeChunk(id: "active", createdAt: now)
         let sourceURL = directory.appendingPathComponent(legacy.relativePath)
         try Data("raw\n".utf8).write(to: sourceURL)
