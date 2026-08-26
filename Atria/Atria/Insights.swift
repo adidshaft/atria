@@ -1,4 +1,5 @@
 import SwiftUI
+import Charts
 
 /// A personal baseline that LEARNS over time. After each saved session we fold
 /// its stable resting HR into an exponential moving average, so "your normal"
@@ -637,56 +638,12 @@ struct AthleteProfile: Codable, Equatable {
     }
 }
 
-// MARK: - Main-screen baseline card
-
-struct BaselineCard: View {
-    let baseline: PersonalBaseline
-    let currentResting: Int?      // resting of the live session, if any
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Resting baseline", systemImage: "waveform.path.ecg")
-                    .font(.headline)
-                Spacer()
-                if baseline.sessions > 0 {
-                    Text("learned from \(baseline.sessions)")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text(baseline.restingInt.map { "\($0)" } ?? "--")
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
-                Text("bpm").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                feedback
-            }
-        }
-        .padding()
-        .background(.background, in: RoundedRectangle(cornerRadius: 12))
-    }
-
-    @ViewBuilder private var feedback: some View {
-        if let cur = currentResting, let d = baseline.delta(comparedTo: cur) {
-            let below = d <= 0
-            VStack(alignment: .trailing, spacing: 2) {
-                Text("\(below ? "↓" : "↑") \(abs(d)) bpm")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(below ? .green : .orange)
-                Text(below ? "below your norm" : "above your norm")
-                    .font(.caption2).foregroundStyle(.secondary)
-            }
-        } else if baseline.sessions == 0 {
-            Text("finish a session\nto start learning")
-                .font(.caption2).multilineTextAlignment(.trailing)
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
-// MARK: - Resting-HR trend across sessions
-
-import Charts
+// REMOVED 2026-08-26: BaselineCard had no call sites anywhere in the app.
+//
+// `import Charts` lived at line 689 of this file, INSIDE the region the card
+// occupied — legal Swift, and invisible to a `head` of the imports. Removing
+// the card took the import with it and broke RestingTrendChart below, which
+// is the only thing here that actually needs Charts. Hoisted to the top.
 
 struct RestingTrendPoint: Identifiable {
     let id: UUID

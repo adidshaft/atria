@@ -396,7 +396,11 @@ final class AtriaOverviewCurrentSleepTests: XCTestCase {
         for file in [
             "AtriaTodayScreen.swift",
             "AtriaHealthScreen.swift",
-            "AtriaVitalsCollectionSections.swift",
+            // AtriaVitalsCollectionSections dropped 2026-08-26: its copy of
+            // this route lived in the orphaned AtriaVitalsTabContent tree
+            // (zero construction sites), now removed. AtriaHealthScreen — the
+            // screen actually mounted for the Vitals tab — still carries the
+            // authority and is still checked below.
             "AtriaOverviewSections.swift",
         ] {
             let source = try String(

@@ -893,36 +893,40 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
         XCTAssertEqual(savedAgain.restingHR, 49)
     }
 
-    func testVitalsConfirmBindsTheExactDisplayedReviewCandidate() throws {
+    /// REPLACED 2026-08-26. This asserted that the Vitals confirm flow bound
+    /// the exact displayed review candidate — a real and correct invariant,
+    /// guarding code the user could never reach. `AtriaSleepHistoryCard` and
+    /// its `confirmSleepCandidate` host lived inside the orphaned Vitals tab
+    /// tree (`AtriaVitalsTabContent`, zero construction sites), which is
+    /// removed in this change; `AtriaHomeView` mounts `AtriaHealthScreen` for
+    /// that tab and always has.
+    ///
+    /// The invariant itself survives where it is reachable, in
+    /// testTodayAndOverviewConfirmKeepRetryFeedbackWhenPersistenceFails below.
+    ///
+    /// WHAT THIS LEAVES OPEN, recorded rather than quietly dropped: the LIVE
+    /// Vitals screen has no confirm affordance at all. It can now show an
+    /// unconfirmed night's measured rows (see AtriaVitalsUnconfirmedSleepTests)
+    /// but offers no way to act on them, which is why its badge reads
+    /// "Unconfirmed" rather than borrowing Today's "Review sleep" call to
+    /// action. Whether Vitals should carry a review control is a product
+    /// decision, not something to infer from a deleted test.
+    func testTheDeadVitalsTabTreeStaysRemoved() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         let sourceURL = testsDirectory
             .deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaVitalsCollectionSections.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        let cardStart = try XCTUnwrap(source.range(of: "private struct AtriaSleepHistoryCard: View"))
-        let cardEnd = try XCTUnwrap(source.range(of: "private struct AtriaSleepContextLens: View",
-                                                 range: cardStart.upperBound..<source.endIndex))
-        let card = String(source[cardStart.lowerBound..<cardEnd.lowerBound])
-        let hostStart = try XCTUnwrap(source.range(of: "private func confirmSleepCandidate("))
-        let hostEnd = try XCTUnwrap(source.range(of: "#if DEBUG",
-                                                 range: hostStart.upperBound..<source.endIndex))
-        let host = String(source[hostStart.lowerBound..<hostEnd.lowerBound])
 
-        XCTAssertTrue(card.contains("let onConfirmSleep: (SleepHistorySnapshot.Night) async -> Bool"),
-                      "Vitals must retain the durable confirmation result instead of treating every tap as success")
-        XCTAssertTrue(card.contains("guard let latest = snapshot.latestReviewable"))
-        XCTAssertTrue(card.contains("latest.confirmed == false"))
-        XCTAssertTrue(card.contains("onConfirmSleep(latest)"))
-        XCTAssertTrue(host.contains("confirmSleepCandidate(_ night: SleepHistorySnapshot.Night) async -> Bool"))
-        XCTAssertTrue(host.contains("confirmSleepHistoryNightForUI("))
-        XCTAssertTrue(host.contains("\n            night,"))
-        XCTAssertTrue(host.contains(") != nil"),
-                      "The Vitals callback must report whether canonical persistence succeeded")
-        XCTAssertTrue(card.contains("sleepConfirmationFailed = !(await onConfirmSleep(latest))"))
-        XCTAssertTrue(card.contains("The suggestion is still here"),
-                      "A failed Vitals save must leave an actionable, visible retry state")
-        XCTAssertFalse(host.contains("latestMainSleep"),
-                       "Confirm must never replace the displayed candidate with the physiological main sleep")
+        for dead in ["struct AtriaVitalsTabContent",
+                     "struct AtriaCollectionTabContent",
+                     "private struct AtriaSleepHistoryCard",
+                     "private struct AtriaHealthMonitorCard",
+                     "private func confirmSleepCandidate("] {
+            XCTAssertFalse(source.contains(dead),
+                           "\(dead) was unreachable UI that read as live; "
+                               + "reviving it would re-create the trap")
+        }
     }
 
     func testTodayAndOverviewConfirmKeepRetryFeedbackWhenPersistenceFails() throws {

@@ -293,8 +293,21 @@ final class AtriaMetricTruthUXTests: XCTestCase {
         XCTAssertTrue(overview.contains("lhs.hero.stressEvidenceMode == rhs.hero.stressEvidenceMode"))
         XCTAssertTrue(overview.contains("lhs.hero.stressMetricTitle == rhs.hero.stressMetricTitle"))
 
-        let vitals = try source("AtriaVitalsCollectionSections.swift")
-        XCTAssertTrue(vitals.contains("AtriaMetricTile(label: hero.stressMetricTitle"))
+        // 2026-08-26: this assertion's subject lived in the orphaned Vitals
+        // tab tree (AtriaVitalsTabContent, zero construction sites), removed
+        // in that change. AtriaHomeView mounts AtriaHealthScreen for the
+        // Vitals tab and always has, so this was guarding UI nobody could
+        // open. Recorded rather than silently deleted: it means this behaviour
+        // was BUILT AND TESTED but never reached the live screen.
+        //
+        // UNMIGRATED: the live AtriaHealthScreen has no `stressMetricTitle`
+        // consumer at all, so the canonical evidence title that Home, Today and
+        // Overview all pass is simply absent from the Vitals tab. Whether to
+        // carry it over is a product decision.
+        let health = try source("AtriaHealthScreen.swift")
+        XCTAssertFalse(health.contains("stressMetricTitle"),
+                       "if this starts passing, the title reached Vitals and "
+                           + "this assertion should become a positive one")
 
         let coach = try source("AtriaAICoach.swift")
         XCTAssertTrue(coach.contains("let resolvedTitle = \"Physiological stress\""))
