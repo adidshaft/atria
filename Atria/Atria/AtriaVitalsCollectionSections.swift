@@ -1197,18 +1197,55 @@ private struct AtriaHealthMonitorRowView: View, Equatable {
     }
 }
 
+/// One observed day plus the id of the contiguous run it belongs to.
+private struct AtriaHealthMonitorSparkRun: Identifiable, Equatable {
+    let point: AtriaHealthMonitorSparkPoint
+    let segment: Int
+
+    var id: Date { point.day }
+}
+
 private struct AtriaHealthMonitorSparkline: View, Equatable {
     let points: [AtriaHealthMonitorSparkPoint]
     let tint: Color
 
+    /// Observed days split into contiguous runs. `values(from:)` compactMaps
+    /// missing days away, so the seven most recent MEASURED values can span far
+    /// more than seven calendar days — and drawn as one line they were joined
+    /// by a smooth curve through days the strap never measured, with no axis
+    /// label to reveal it. Every other trend surface in the app already breaks
+    /// at gaps; this was the row that did not.
+    private var segmentedPoints: [AtriaHealthMonitorSparkRun] {
+        let ordered = points.sorted { $0.day < $1.day }
+        // assigningSegments sorts by date and preserves that order, and
+        // `ordered` is already in it, so the zip stays aligned.
+        let assigned = AtriaTrendGapPolicy.assigningSegments(
+            to: ordered.map { AtriaTrendPoint.Sample(date: $0.day, value: $0.value) }
+        )
+        return zip(assigned, ordered).map {
+            AtriaHealthMonitorSparkRun(point: $1, segment: $0.segment)
+        }
+    }
+
     var body: some View {
         if points.count >= 2 {
-            Chart(points) { point in
-                LineMark(x: .value("Day", point.day),
-                         y: .value("Value", point.value))
+            let runs = segmentedPoints
+            let singletons = AtriaTrendSparseGrammar.singletonSegments(runs.map(\.segment))
+            Chart(runs) { entry in
+                LineMark(x: .value("Day", entry.point.day),
+                         y: .value("Value", entry.point.value),
+                         series: .value("Run", entry.segment))
                     .interpolationMethod(.monotone)
                     .lineStyle(AtriaChartVisualGrammar.trendLine)
                     .foregroundStyle(tint)
+                // A run of one draws no line, so without this the isolated day
+                // would vanish from a chart that still claims to show it.
+                if singletons.contains(entry.segment) {
+                    PointMark(x: .value("Day", entry.point.day),
+                              y: .value("Value", entry.point.value))
+                        .symbolSize(9)
+                        .foregroundStyle(tint)
+                }
             }
             .atriaGraphPlotSurface()
             .chartXAxis {

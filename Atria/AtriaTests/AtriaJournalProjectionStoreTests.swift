@@ -130,7 +130,13 @@ final class AtriaJournalProjectionStoreTests: XCTestCase {
         XCTAssertEqual(progress.totalCount, 7)
         XCTAssertTrue(progress.isStarted)
         XCTAssertFalse(progress.isComplete)
-        XCTAssertEqual(progress.actionLabel, "Resume check-in · 3 of 7")
+        // The Today card stacks actionLabel directly above statusLabel, so the
+        // progress count must appear in exactly one of them — it used to be in
+        // both, printing "3 of 7" twice one line apart.
+        XCTAssertEqual(progress.actionLabel, "Resume check-in")
+        XCTAssertEqual(progress.statusLabel, "3 of 7")
+        XCTAssertFalse(progress.actionLabel.contains("3 of 7"),
+                       "the count belongs to statusLabel alone")
     }
 
     func testDailyBriefProgressReportsCompletionOnlyWhenEveryCardIsAnswered() {
