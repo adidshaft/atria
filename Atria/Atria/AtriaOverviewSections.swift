@@ -1038,10 +1038,19 @@ private struct AtriaSleepSyncNeededCard: View, Equatable {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(protectsLiveStream ? "Sleep tracking continues" : "Sleep data gap")
                         .font(.headline.weight(.semibold))
-                    Text(protectsLiveStream ? "Live data continues; missing time stays excluded." : "Check the strap for recoverable history.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    // Only the gap branch gets a subtitle. The protected branch
+                    // read "Live data continues; missing time stays excluded.",
+                    // which restated the headline immediately above it AND two
+                    // of the three pills immediately below it (Live: On,
+                    // Metrics: Excluded) — three statements of one fact in one
+                    // card. The gap branch's line survives because it is the
+                    // only place that says what to DO about it.
+                    if !protectsLiveStream {
+                        Text("Check the strap for recoverable history.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
 
@@ -6072,20 +6081,19 @@ private struct AtriaGlanceWidgetManagerSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    // Said once. The section subtitle, the toggle's own caption
+                    // and the accessibility hint each explained the same rail in
+                    // one screenful; the subtitle is the only one that carries
+                    // the reason it defaults off, so it keeps the explanation
+                    // and the other two stop repeating it.
                     managerSection(title: "Layout",
-                                   subtitle: "The daily focus rail repeats Recovery, Strain and Sleep from the ring above. It is off by default.") {
+                                   subtitle: "Repeats Recovery, Strain, Sleep and Live from the ring above, so it is off by default.") {
                         Toggle(isOn: $showDailyFocusRail) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Daily focus rail")
-                                    .font(.footnote.weight(.bold))
-                                Text("Show the Recovery / Strain / Sleep / Live rail under the ring.")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                            Text("Daily focus rail")
+                                .font(.footnote.weight(.bold))
                         }
                         .padding(12)
                         .atriaInsetCard(tint: .secondary)
-                        .accessibilityHint("Restores the focus rail beneath the tri-ring. It duplicates the ring metrics, so it stays off unless you turn it on.")
                     }
 
                     managerSection(title: "More metrics",
@@ -11647,10 +11655,17 @@ private struct AtriaPreparedMetricChart: View {
                               yEnd: .value("Upper", baselineBand.upper))
                     .foregroundStyle(baselineBand.tint.opacity(0.12))
             }
-            ForEach(prepared.minMaxPoints) { point in
-                AreaMark(x: .value("Day", point.day, unit: .day),
-                         yStart: .value("Min", point.bandLower ?? point.value),
-                         yEnd: .value("Max", point.bandUpper ?? point.value))
+            // Split into contiguous day-runs for the same reason the LINE
+            // below is (the 2026-08-03 chart-honesty rule). This band was the
+            // half of the chart that had never been split: the line broke at a
+            // gap while the min-max band underneath it swept straight across
+            // the missing days, so the shaded region claimed a measured spread
+            // on days with no reading at all.
+            ForEach(prepared.minMaxPoints.contiguousDayRuns(), id: \.point.day) { entry in
+                AreaMark(x: .value("Day", entry.point.day, unit: .day),
+                         yStart: .value("Min", entry.point.bandLower ?? entry.point.value),
+                         yEnd: .value("Max", entry.point.bandUpper ?? entry.point.value),
+                         series: .value("Band run", "band-\(entry.runID)"))
                     .interpolationMethod(.linear).foregroundStyle(tint.opacity(0.13))
             }
             if rendersAsDailyBar {

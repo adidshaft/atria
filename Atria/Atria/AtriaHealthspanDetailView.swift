@@ -102,6 +102,15 @@ struct AtriaHealthspanDetailModel: Equatable {
 }
 
 /// Compact, read-only Healthspan detail backed entirely by cached inputs.
+
+/// One fitness-age observation plus the id of the contiguous run it belongs to.
+private struct AtriaHealthspanTrendRun: Identifiable {
+    let point: AtriaHealthspanDetailModel.TrendPoint
+    let runID: Int
+
+    var id: AtriaHealthspanDetailModel.TrendPoint.ID { point.id }
+}
+
 struct AtriaHealthspanDetailView: View {
     let model: AtriaHealthspanDetailModel
     var onViewPlan: (() -> Void)?
@@ -546,6 +555,23 @@ struct AtriaHealthspanDetailView: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// Observations grouped into runs so the curve stops where an observation
+    /// was SKIPPED — without breaking on the series' own coarse cadence.
+    ///
+    /// These come from `weeklyObservations`, one point every seven days, so the
+    /// day-adjacency rule used for once-a-day trends would give every point its
+    /// own run and draw no line at all. The cadence-aware rule infers the real
+    /// spacing from the data and breaks only past it.
+    private var trendRuns: [AtriaHealthspanTrendRun] {
+        let ordered = model.trendPoints.sorted { $0.day < $1.day }
+        let assigned = AtriaTrendGapPolicy.assigningCadenceAwareSegments(
+            to: ordered.map { AtriaTrendPoint.Sample(date: $0.day, value: $0.value) }
+        )
+        return zip(assigned, ordered).map {
+            AtriaHealthspanTrendRun(point: $1, runID: $0.segment)
+        }
+    }
+
     private var trendCard: some View {
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
             HStack(alignment: .firstTextBaseline) {
@@ -559,17 +585,20 @@ struct AtriaHealthspanDetailView: View {
                 }
             }
 
-            Chart(model.trendPoints) { point in
-                LineMark(x: .value("Date", point.day),
-                         y: .value("Fitness age", point.value))
-                    .interpolationMethod(.monotone)
-                    .lineStyle(AtriaChartVisualGrammar.trendLine)
-                    .foregroundStyle(Metrics.electricStrain)
+            Chart {
+                ForEach(trendRuns) { entry in
+                    LineMark(x: .value("Date", entry.point.day),
+                             y: .value("Fitness age", entry.point.value),
+                             series: .value("Run", entry.runID))
+                        .interpolationMethod(.monotone)
+                        .lineStyle(AtriaChartVisualGrammar.trendLine)
+                        .foregroundStyle(Metrics.electricStrain)
 
-                PointMark(x: .value("Date", point.day),
-                          y: .value("Fitness age", point.value))
-                    .symbolSize(point.id == model.trendPoints.last?.id ? 22 : 0)
-                    .foregroundStyle(Metrics.electricStrain)
+                    PointMark(x: .value("Date", entry.point.day),
+                              y: .value("Fitness age", entry.point.value))
+                        .symbolSize(entry.point.id == model.trendPoints.last?.id ? 22 : 0)
+                        .foregroundStyle(Metrics.electricStrain)
+                }
             }
             .atriaGraphPlotSurface()
             .chartXAxis(.hidden)

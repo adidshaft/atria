@@ -3238,6 +3238,54 @@ enum AtriaTrendSparseGrammar {
 }
 
 enum AtriaTrendGapPolicy {
+    /// Segments a series whose natural cadence is NOT daily.
+    ///
+    /// `assigningSegments` breaks whenever two observations are more than a day
+    /// apart, which is right for a once-a-day metric and destroys anything
+    /// sampled less often: fitness age is recorded from `weeklyObservations`,
+    /// so a day-adjacency rule would put every point in its own run and the
+    /// line would disappear entirely rather than break honestly.
+    ///
+    /// So the cadence is inferred from the data — the MEDIAN spacing, which a
+    /// few long gaps cannot drag the way a mean would — and a run ends only
+    /// when a gap exceeds `toleranceMultiplier` times that. A regularly sampled
+    /// series therefore stays one run no matter how coarse its cadence is, and
+    /// only a genuinely SKIPPED observation splits it.
+    static func assigningCadenceAwareSegments(
+        to samples: [AtriaTrendPoint.Sample],
+        toleranceMultiplier: Double = 2.0
+    ) -> [AtriaTrendPoint.Sample] {
+        let ordered = samples.sorted { $0.date < $1.date }
+        guard ordered.count > 2 else {
+            // Two points cannot establish a cadence, so there is no evidence a
+            // gap exists. Leaving them joined is the conservative choice: it
+            // preserves what is drawn today rather than guessing a break.
+            return ordered
+        }
+
+        let spacings = zip(ordered, ordered.dropFirst())
+            .map { $1.date.timeIntervalSince($0.date) }
+            .filter { $0 > 0 }
+            .sorted()
+        guard !spacings.isEmpty else { return ordered }
+
+        let median: TimeInterval = spacings.count % 2 == 1
+            ? spacings[spacings.count / 2]
+            : (spacings[spacings.count / 2 - 1] + spacings[spacings.count / 2]) / 2
+        let limit = median * max(1.0, toleranceMultiplier)
+
+        var segment = 0
+        var previous: Date?
+        return ordered.map { sample in
+            if let previous, sample.date.timeIntervalSince(previous) > limit { segment += 1 }
+            previous = sample.date
+            return AtriaTrendPoint.Sample(date: sample.date,
+                                          value: sample.value,
+                                          segment: segment)
+        }
+    }
+
+
     static func assigningSegments(
         to samples: [AtriaTrendPoint.Sample],
         calendar: Calendar = .current
