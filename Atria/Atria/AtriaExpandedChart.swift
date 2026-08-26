@@ -172,8 +172,16 @@ struct AtriaExpandedChartView: View {
         }
         .preferredColorScheme(.dark)
         .onAppear {
+            restoreReaderPreferences()
             if visibleDays == 0 { visibleDays = spanDays }
         }
+        // Each control writes through as it changes rather than on dismiss, so
+        // a choice survives the app being killed from the sheet.
+        .onChange(of: visibleDays) { _, _ in persistReaderPreferences() }
+        .onChange(of: compareOn) { _, _ in persistReaderPreferences() }
+        .onChange(of: compareMode) { _, _ in persistReaderPreferences() }
+        .onChange(of: chartType) { _, _ in persistReaderPreferences() }
+        .onChange(of: markJournalEvents) { _, _ in persistReaderPreferences() }
         .sheet(isPresented: $showCompareSheet) {
             AtriaGraphCompareSheet(compareOn: $compareOn,
                                    mode: $compareMode,
@@ -579,6 +587,42 @@ struct AtriaExpandedChartView: View {
     /// the current data (e.g. Range after the band went away).
     private var effectiveChartType: AtriaGraphChartType {
         chartTypeOptions.contains(chartType) ? chartType : .line
+    }
+
+    /// Reapply what the reader chose last time for THIS metric.
+    ///
+    /// A stored chart form outranks `defaultChartType`: the default answers
+    /// "what shape suits this metric", which is only the right answer until the
+    /// reader has said otherwise. A remembered range is ignored when it exceeds
+    /// the data actually available, so a six-week choice made when six weeks
+    /// existed does not open onto empty space after a reinstall.
+    private func restoreReaderPreferences() {
+        let stored = AtriaExpandedChartPreferences.load(metric: title)
+        if let days = stored.visibleDays, days > 0, days <= spanDays {
+            visibleDays = days
+        }
+        if let on = stored.compareOn { compareOn = on }
+        if let raw = stored.compareMode,
+           let mode = AtriaGraphCompareMode(rawValue: raw) {
+            compareMode = mode
+        }
+        if let raw = stored.chartType,
+           let type = AtriaGraphChartType(rawValue: raw),
+           chartTypeOptions.contains(type) {
+            chartType = type
+        }
+        if let marks = stored.markJournalEvents { markJournalEvents = marks }
+    }
+
+    private func persistReaderPreferences() {
+        AtriaExpandedChartPreferences.save(
+            .init(visibleDays: visibleDays,
+                  compareOn: compareOn,
+                  compareMode: compareMode.rawValue,
+                  chartType: chartType.rawValue,
+                  markJournalEvents: markJournalEvents),
+            metric: title
+        )
     }
 
     /// `prepared.yDomain` pads 12% around min…max, which is right for a line —
