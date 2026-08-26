@@ -3998,37 +3998,44 @@ private struct AtriaTodayPlanCard: View, Equatable {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Button(action: onOpenJournal) {
-                HStack(spacing: 10) {
-                    Image(systemName: checkIn.isComplete ? "checkmark.circle.fill" : "square.and.pencil")
-                        .font(.subheadline.weight(.bold))
+            // Once the brief is answered it stops taking room on Today. It was
+            // holding a 44pt row plus two lines to say "Done", which is the one
+            // state that needs no action — and Today is the screen with the
+            // least room to spare. The Journal tab is a permanent entry point,
+            // so the answers stay reachable; nothing is lost by clearing it.
+            if !checkIn.isComplete {
+                Button(action: onOpenJournal) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "square.and.pencil")
+                            .font(.subheadline.weight(.bold))
 
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(checkIn.actionLabel)
-                            .font(.subheadline.weight(.semibold))
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text(notificationFallback
-                             ? "In-app reminder · \(checkIn.statusLabel)"
-                             : checkIn.statusLabel)
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(checkIn.actionLabel)
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text(notificationFallback
+                                 ? "In-app reminder · \(checkIn.statusLabel)"
+                                 : checkIn.statusLabel)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer(minLength: 8)
+
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.tertiary)
                     }
-
-                    Spacer(minLength: 8)
-
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .padding(.horizontal, 12)
                 }
-                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                .padding(.horizontal, 12)
+                .buttonStyle(.glass)
+                .buttonBorderShape(.roundedRectangle(radius: 16))
+                .tint(tint)
+                .accessibilityLabel("\(checkIn.actionLabel). \(notificationFallback ? "In-app reminder. " : "")\(checkIn.statusLabel).")
+                .accessibilityHint("Opens today's Journal check-in.")
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.roundedRectangle(radius: 16))
-            .tint(tint)
-            .accessibilityLabel("\(checkIn.actionLabel). \(notificationFallback ? "In-app reminder. " : "")\(checkIn.statusLabel).")
-            .accessibilityHint("Opens today's Journal check-in.")
         }
         .padding(14)
         .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)

@@ -2142,18 +2142,81 @@ enum AtriaVitalsHeartRateTimeline {
     /// data rather than blank time when the strap has been off.
     static func windowed(_ points: [AtriaHomeModel.HeartRateChartPoint],
                          window: Window,
-                         displayBudget: Int = 200) -> [AtriaHomeModel.HeartRateChartPoint] {
+                         displayBudget: Int = 200,
+                         gapThreshold: TimeInterval =
+                            AtriaChartVisualGrammar.traceDisplayContinuityGap)
+        -> [AtriaHomeModel.HeartRateChartPoint] {
         guard let latest = points.last?.t else { return [] }
         let cutoff = latest.addingTimeInterval(-window.seconds)
         let startIndex = firstPointIndex(onOrAfter: cutoff, in: points)
-        let visibleCount = points.count - startIndex
-        guard visibleCount > 0 else { return [] }
-        guard visibleCount > displayBudget else { return Array(points[startIndex...]) }
-        guard displayBudget > 1 else { return [points[points.count - 1]] }
-        let stride = Double(visibleCount - 1) / Double(displayBudget - 1)
-        return (0..<displayBudget).map { index in
-            points[startIndex + Int((Double(index) * stride).rounded())]
+        let visible = Array(points[startIndex...])
+        guard !visible.isEmpty else { return [] }
+        guard visible.count > displayBudget else { return visible }
+        guard displayBudget > 1 else { return [visible[visible.count - 1]] }
+
+        // Runs are split at FULL RESOLUTION, before any thinning.
+        //
+        // This used to be one index-uniform stride across the whole window,
+        // which multiplies every spacing by the same factor: a stretch the
+        // strap recorded once a minute came out of a 10:1 thin ten minutes
+        // apart, and the renderer's five-minute honesty threshold — applied
+        // downstream, to the already-thinned array — then drew a hole through
+        // continuous data. Sparse-but-present stretches lost the budget to
+        // dense ones and disappeared, which is why the middle of the day went
+        // missing while the live tail stayed detailed. Activity Monitor
+        // segments first and has always looked right; this is that order.
+        var runs: [[AtriaHomeModel.HeartRateChartPoint]] = []
+        var current: [AtriaHomeModel.HeartRateChartPoint] = []
+        for point in visible {
+            if let previous = current.last,
+               point.t.timeIntervalSince(previous.t) > gapThreshold {
+                runs.append(current)
+                current = []
+            }
+            current.append(point)
         }
+        if !current.isEmpty { runs.append(current) }
+
+        var out: [AtriaHomeModel.HeartRateChartPoint] = []
+        for run in runs {
+            let share = max(2, Int((Double(run.count) / Double(visible.count)
+                                    * Double(displayBudget)).rounded()))
+            out.append(contentsOf: thinnedWithinRun(run,
+                                                    budget: share,
+                                                    gapThreshold: gapThreshold))
+        }
+        return out
+    }
+
+    /// Thins one continuous run, never stretching the spacing past
+    /// `gapThreshold`. Real gaps are already run boundaries by this point, so
+    /// anything this function widens would be a gap the data does not contain.
+    private static func thinnedWithinRun(
+        _ run: [AtriaHomeModel.HeartRateChartPoint],
+        budget: Int,
+        gapThreshold: TimeInterval
+    ) -> [AtriaHomeModel.HeartRateChartPoint] {
+        guard run.count > budget, let first = run.first, let last = run.last else { return run }
+        let span = last.t.timeIntervalSince(first.t)
+        guard span > 0 else { return [first] }
+        let minimumSpacing = span / Double(max(1, budget - 1))
+
+        var kept: [AtriaHomeModel.HeartRateChartPoint] = [first]
+        for index in 1..<run.count {
+            let point = run[index]
+            guard let anchor = kept.last else { break }
+            if point.t.timeIntervalSince(anchor.t) >= minimumSpacing {
+                kept.append(point)
+            } else if index + 1 < run.count,
+                      run[index + 1].t.timeIntervalSince(anchor.t) > gapThreshold {
+                // Dropping this one would push the next kept point past the
+                // threshold, and the renderer would draw a break that is not
+                // in the data. Density is negotiable; a false gap is not.
+                kept.append(point)
+            }
+        }
+        if kept.last?.t != last.t { kept.append(last) }
+        return kept
     }
 
     private static func firstPointIndex(onOrAfter date: Date,
