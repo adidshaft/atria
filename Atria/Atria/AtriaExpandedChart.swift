@@ -395,7 +395,13 @@ struct AtriaExpandedChartView: View {
                 AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
                 AxisTick().foregroundStyle(.secondary.opacity(0.55))
                 if let date = value.as(Date.self) {
-                    AxisValueLabel {
+                    // Centred ONLY in bar form. A `unit: .day` bar occupies the
+                    // whole day, so its date belongs in the middle of that
+                    // span; line and range plot each point AT its date, where
+                    // centring would shift every label half a day off its own
+                    // point. This view can draw all three, so the flag follows
+                    // whichever is showing.
+                    AxisValueLabel(centered: effectiveChartType == .bars) {
                         Text(date, format: .dateTime.month(.abbreviated).day())
                             .font(.caption2)
                     }

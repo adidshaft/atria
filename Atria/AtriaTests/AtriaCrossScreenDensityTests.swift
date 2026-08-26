@@ -630,7 +630,17 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
 
     func testTodayDistinguishesSettledMorningHRVFromLivePersonalHRV() throws {
         let source = try source("AtriaTodayScreen.swift")
-        let start = try XCTUnwrap(source.range(of: "case .hrv:"))
+        // Anchor inside `glanceItem(for:)` FIRST. `case .hrv:` and
+        // `case .stress:` also appear in `glanceTrend(for:)` earlier in the
+        // file, so slicing on the bare cases silently captured that function
+        // instead and stopped checking the card at all — the assertions then
+        // failed against source that was never meant to contain them.
+        let cards = try XCTUnwrap(
+            source.range(of: "private func glanceItem(for metric: AtriaTodayMetric)")
+        )
+        let start = try XCTUnwrap(
+            source.range(of: "case .hrv:", range: cards.upperBound..<source.endIndex)
+        )
         let end = try XCTUnwrap(
             source.range(of: "case .stress:", range: start.upperBound..<source.endIndex)
         )

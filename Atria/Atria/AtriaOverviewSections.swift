@@ -5703,7 +5703,12 @@ struct AtriaWeeklyReportSheet: View {
                 .chartXAxis {
                     AxisMarks(values: .automatic(desiredCount: 4)) { _ in
                         AxisGridLine()
-                        AxisValueLabel(format: .dateTime.weekday(.abbreviated))
+                        // Bars only here, and a `unit: .day` bar spans its
+                        // whole day — so the weekday must sit at the middle of
+                        // that span, not at midnight where the bar's left edge
+                        // is.
+                        AxisValueLabel(format: .dateTime.weekday(.abbreviated),
+                                       centered: true)
                     }
                 }
                 .frame(height: 120)
@@ -6497,25 +6502,45 @@ struct AtriaStrapStepsDetailSheet: View {
         AtriaStepsWeekChart(stepsByDay: weekSteps, goal: goal)
     }
 
+    /// How close a receipt's end must be to now to count as the cycle still
+    /// running. The current-cycle receipt is rewritten every drain pass, so its
+    /// `windowEnd` trails `now` by minutes, not hours.
+    private var openCycleTolerance: TimeInterval { 90 * 60 }
+
     private func loadWeekSteps() async {
         let calendar = Calendar.current
         guard let identifier = AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers().first else { return }
         let receipts = AtriaWhoop4MotionTickDailyStore.shared.recentReceipts(strapIdentifier: identifier, limit: 14)
+        let now = Date()
+        let today = calendar.startOfDay(for: now)
         var map: [Date: Int] = [:]
         for receipt in receipts {
             // Label by the day the cycle predominantly covers, not the day it
             // woke — a cycle running Sun 20:26 → Mon 20:56 is Monday's, and
             // drawing it on Sunday put a day's steps under the wrong letter.
-            let day = AtriaStepsWeekChart.predominantCivilDay(
-                windowStart: receipt.windowStart,
-                windowEnd: receipt.windowEnd,
-                calendar: calendar
-            )
+            //
+            // EXCEPT for the cycle still running. Predominant coverage is only
+            // stable once a window has closed: an open cycle that began
+            // yesterday morning reads as yesterday's now and would flip to
+            // today's a few hours later, so its bar would migrate between days
+            // while the user watched. It is also the number the card shows as
+            // "today", and the two must agree — on device the card read 5,878
+            // while the chart had folded it into a 7,336 bar on the previous
+            // day (5,878 + a prior 1,458), so the headline total appeared
+            // nowhere on its own chart.
+            let isOpenCycle = receipt.windowEnd >= now.addingTimeInterval(-openCycleTolerance)
+            let day = isOpenCycle
+                ? today
+                : AtriaStepsWeekChart.predominantCivilDay(
+                    windowStart: receipt.windowStart,
+                    windowEnd: receipt.windowEnd,
+                    calendar: calendar
+                )
             // SUM, not max. The store holds one record per cycle start and
-            // cycles do not overlap, so two receipts landing on the same day
-            // are two genuinely different cycles — an irregular schedule can
-            // fit two short ones inside one date. `max` silently dropped the
-            // smaller, under-reporting that day.
+            // cycles do not overlap, so two CLOSED receipts landing on the same
+            // day are two genuinely different cycles — an irregular schedule
+            // can fit two short ones inside one date. `max` silently dropped
+            // the smaller, under-reporting that day.
             map[day, default: 0] += receipt.steps
         }
         weekSteps = map
@@ -11736,7 +11761,13 @@ private struct AtriaPreparedMetricChart: View {
             AxisMarks(values: .automatic(desiredCount: 4)) { _ in
                 AxisGridLine().foregroundStyle(.quaternary)
                 AxisTick()
-                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                // Centred ONLY for bars. A `unit: .day` bar occupies its whole
+                // day, so its label belongs in the middle of that span; a line
+                // plots each point AT its date, so centring would shift every
+                // label half a day off its own point. One chart draws both
+                // shapes, so the flag has to follow the shape.
+                AxisValueLabel(format: .dateTime.month(.abbreviated).day(),
+                               centered: rendersAsDailyBar)
             }
         }
         // Handoff-10 CP3: explicit top headroom instead of `.clipped()`, so
