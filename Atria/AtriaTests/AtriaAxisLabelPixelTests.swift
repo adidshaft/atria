@@ -341,4 +341,42 @@ final class AtriaAxisLabelPixelTests: XCTestCase {
                           "sanity check: without the split the same data is "
                               + "drawn as one continuous line (\(bridged)pt)")
     }
+
+    // MARK: - Does Swift Charts anchor bars at zero on its own?
+
+    func testAnAutomaticYDomainAnchorsBarsAtZero() throws {
+        // Nine charts in the app set NO explicit y-domain for their bars and
+        // rely on Swift Charts doing the right thing — including the steps week
+        // chart the owner reads daily. That is an assumption about a framework,
+        // held across nine surfaces, and it is cheap to measure: render 1.00
+        // and 1.45 with no domain at all and compare the drawn heights.
+        //
+        // If this ever fails, every chart without an explicit `0...` domain is
+        // exaggerating small differences the way the padded-domain bug did.
+        let view = Chart {
+            BarMark(x: .value("Day", day(3), unit: .day), y: .value("Value", 1.0))
+                .foregroundStyle(.red)
+            BarMark(x: .value("Day", day(10), unit: .day), y: .value("Value", 1.45))
+                .foregroundStyle(.red)
+        }
+        .chartXScale(domain: day0...day(14))
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .frame(width: Self.size.width, height: Self.size.height)
+        .background(Color.white)
+        .environment(\.colorScheme, .light)
+
+        let p = try pixels(try render(view))
+        let groups = barColumnGroups(p)
+        XCTAssertEqual(groups.count, 2, "expected exactly two bars")
+
+        let floor = Double(p.height)
+        let shorter = floor - Double(groups[0].top)
+        let taller = floor - Double(groups[1].top)
+        let drawnRatio = taller / shorter
+
+        XCTAssertEqual(drawnRatio, 1.45, accuracy: 0.12,
+                       "with no explicit domain Swift Charts must still anchor "
+                           + "bars at zero; drawn ratio was \(drawnRatio)x")
+    }
 }
