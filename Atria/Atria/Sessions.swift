@@ -38214,10 +38214,42 @@ final class SessionStore: ObservableObject {
             // pool size was never in evidence either way.
             let detail: String
             if strongCandidates.isEmpty {
-                detail = candidatePool.isEmpty
-                    ? "No sleep candidates proposed at all (source: \(reason))"
-                    : "\(candidatePool.count) sleep candidate(s) proposed, none "
-                        + "auto-confirmable (source: \(reason))"
+                if candidatePool.isEmpty {
+                    detail = "No sleep candidates proposed at all (source: \(reason))"
+                } else {
+                    // Name the near-miss. The longest proposed candidate is the
+                    // one most likely to have been the real night, and its HR
+                    // coverage is the gate that most often decides: both
+                    // auto-confirm lanes require
+                    // `minimumAutoConfirmHRCoverageFraction`.
+                    //
+                    // Device 2026-08-27: this owner's real five-hour sleep
+                    // measured 0.789 coverage against a 0.80 floor, missing by
+                    // roughly five minutes of undrained history, and NOTHING
+                    // anywhere said so — the app reported only that no sleep
+                    // was found. A near-miss the user can see is a different
+                    // product from a silent one.
+                    let best = candidatePool.max(by: { $0.duration < $1.duration })
+                    let coverage = best.map {
+                        Int(($0.hrObservedCoverageFraction * 100).rounded())
+                    }
+                    let hours = best.map { $0.duration / 3600 }
+                    let floor = Int(
+                        (AggregateSleepCandidate
+                            .minimumAutoConfirmHRCoverageFraction * 100).rounded()
+                    )
+                    if let coverage, let hours {
+                        detail = String(
+                            format: "%d sleep candidate(s) proposed, none auto-confirmable. "
+                                + "Longest is %.1f h with %d%% heart-rate coverage "
+                                + "(needs %d%%) (source: %@)",
+                            candidatePool.count, hours, coverage, floor, reason
+                        )
+                    } else {
+                        detail = "\(candidatePool.count) sleep candidate(s) proposed, "
+                            + "none auto-confirmable (source: \(reason))"
+                    }
+                }
             } else {
                 detail = "Sleep candidate is still settling so later low-motion "
                     + "fragments can join it (source: \(reason))"
