@@ -206,9 +206,26 @@ final class AtriaHeartRateTimelineWindowTests: XCTestCase {
     }
 
     func testWindowedDownsamplesToBudget() {
+        // Was XCTAssertEqual(..., 200). The budget is now a target rather than
+        // a quota: thinning runs WITHIN each continuous run and is not allowed
+        // to stretch the spacing past the display-continuity threshold, because
+        // an index-uniform stride across the whole window was manufacturing
+        // breaks in continuously recorded data (2026-08-26 device report,
+        // reproduced at 16 false breaks with the largest 20 minutes wide).
+        // Exact-count is the one thing that cannot be promised while that
+        // invariant holds, so assert the intent instead.
         let end = Date(timeIntervalSince1970: 1_800_000_000)
         let pts = points(spanHours: 12, count: 5000, endingAt: end)
-        XCTAssertEqual(AtriaVitalsHeartRateTimeline.windowed(pts, window: .hour12, displayBudget: 200).count, 200)
+        let windowed = AtriaVitalsHeartRateTimeline.windowed(pts,
+                                                             window: .hour12,
+                                                             displayBudget: 200)
+        XCTAssertLessThan(windowed.count, pts.count, "it must still thin")
+        XCTAssertLessThanOrEqual(windowed.count, 260, "and stay near the budget")
+        XCTAssertGreaterThan(windowed.count, 140)
+
+        let gaps = zip(windowed, windowed.dropFirst()).map { $1.t.timeIntervalSince($0.t) }
+        XCTAssertTrue(gaps.allSatisfy { $0 <= AtriaChartVisualGrammar.traceDisplayContinuityGap },
+                      "continuous input must survive thinning without a break")
     }
 
     func testWindowedLargeSortedInputMatchesFilterSemantics() {
@@ -221,7 +238,11 @@ final class AtriaHeartRateTimelineWindowTests: XCTestCase {
         XCTAssertEqual(exact, visible)
 
         let downsampled = AtriaVitalsHeartRateTimeline.windowed(pts, window: .hour12, displayBudget: 200)
-        XCTAssertEqual(downsampled.count, 200)
+        // See testWindowedDownsamplesToBudget: near the budget, not exactly it.
+        XCTAssertLessThanOrEqual(downsampled.count, 260)
+        XCTAssertGreaterThan(downsampled.count, 140)
+        // Endpoints are the part that still must be exact — the newest reading
+        // is the one the card's "Now" value is read against.
         XCTAssertEqual(downsampled.first, visible.first)
         XCTAssertEqual(downsampled.last, visible.last)
     }
