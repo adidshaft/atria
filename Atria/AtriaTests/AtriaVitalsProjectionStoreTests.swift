@@ -66,14 +66,32 @@ final class AtriaVitalsProjectionStoreTests: XCTestCase {
     }
 
     func testVitalsStressCopyNeverCallsAGappedTimelineContinuous() {
-        XCTAssertTrue(AtriaVitalsStressTimelineCopy.gapNote
-            .localizedCaseInsensitiveContains("gaps remain blank"))
-        XCTAssertTrue(AtriaVitalsStressTimelineCopy.gapNote.contains(
-            "HR-only is lower confidence"
-        ))
-        XCTAssertFalse(AtriaVitalsStressTimelineCopy.gapNote.contains(
-            "strap was not collecting"
-        ))
+        // The visible note is deliberately shorter than it used to be. Handoff-12
+        // CP3 moved provenance and confidence prose out of the chart footnote —
+        // "a scored reading shows its zone word and nothing else … not in four
+        // places per viewport" — so asserting the old wording
+        // ("HR-only is lower confidence") pins a policy that was replaced.
+        //
+        // What must NOT change is the rule the test is named for: a gapped
+        // timeline is never described as continuous, and a gap is disclosed as
+        // MISSING rather than explained away.
+        let note = AtriaVitalsStressTimelineCopy.gapNote
+        XCTAssertTrue(note.localizedCaseInsensitiveContains("gap"),
+                      "the note must still tell the reader gaps exist")
+        XCTAssertTrue(note.localizedCaseInsensitiveContains("missing")
+                        || note.localizedCaseInsensitiveContains("blank"),
+                      "and that a gap is absent data, not a low reading")
+        XCTAssertFalse(note.localizedCaseInsensitiveContains("continuous"),
+                       "a gapped timeline is never continuous")
+        XCTAssertFalse(note.contains("strap was not collecting"),
+                       "never assert a CAUSE for a gap that was not observed")
+
+        // The confidence disclosure did not disappear, it moved. VoiceOver is
+        // the floor: it must still carry it even though the footnote no longer
+        // does.
+        XCTAssertTrue(AtriaVitalsStressTimelineCopy.accessibilityLabel
+            .localizedCaseInsensitiveContains("lower confidence"),
+                      "HR-only provenance must survive somewhere non-optional")
         XCTAssertFalse(AtriaVitalsStressTimelineCopy.accessibilityLabel
             .localizedCaseInsensitiveContains("continuous"))
         XCTAssertTrue(AtriaVitalsStressTimelineCopy.accessibilityLabel.contains(
