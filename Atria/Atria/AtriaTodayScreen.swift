@@ -304,6 +304,10 @@ struct AtriaTodayScreen: View {
     /// cache inside it -- survives AtriaTodayScreen being value-recreated by
     /// AtriaHomeView on every live-pulse tick.
     @State private var glanceMemo = AtriaTodayGlanceMemo()
+    /// Daily strap-step totals for the corner sparkline, oldest first. Loaded
+    /// rather than computed in `body`: the receipts live on disk, and the
+    /// glance trend is read on every render.
+    @State private var weekStepTrend: [Double] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AtriaDefault("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AtriaDefault("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
@@ -477,6 +481,11 @@ struct AtriaTodayScreen: View {
                                             }) {
                 showBreathworkSession = false
             }
+        }
+        // Refreshed whenever a step receipt publishes, so the sparkline follows
+        // the same store the Strap steps card reads.
+        .task(id: sessionProjectionStore.state.dailyRollupHistory.count) {
+            await loadWeekStepTrend()
         }
         .onAppear {
             #if DEBUG
@@ -2532,9 +2541,38 @@ struct AtriaTodayScreen: View {
             // Intra-day, not daily: a line must be fed the shape the day
             // actually had.
             return stressIntradaySeries()
+        case .respiratoryRate:
+            return history.compactMap(\.respiratoryRate)
+        case .bodyTemp:
+            return history.compactMap(\.skinTemperatureDeviationCelsius)
+        case .bioAge:
+            return history.compactMap { $0.fitnessAgeDelta.map(Double.init) }
+        case .steps:
+            // Not in the daily rollup — strap steps live in their own receipt
+            // store, so they are loaded into `weekStepTrend` instead.
+            return weekStepTrend
         default:
+            // Deliberately empty, and it must stay that way for these: VO2max,
+            // calories and blood oxygen have NO stored per-day series anywhere
+            // in the app, so there is nothing to draw. A chart here could only
+            // be made of invented numbers, and a blank corner is the honest
+            // answer to "no history for this yet".
             return []
         }
+    }
+
+    /// Loads the strap-step sparkline through the same day-folding rule the
+    /// Overview week chart uses, so the two cannot disagree.
+    private func loadWeekStepTrend() async {
+        guard let identifier = AtriaWhoop4MotionTickDailyStore
+            .persistedStrapIdentifiers().first else { return }
+        let receipts = AtriaWhoop4MotionTickDailyStore.shared
+            .recentReceipts(strapIdentifier: identifier, limit: 14)
+        let totals = AtriaStepsWeekChart.dailyStepTotals(receipts: receipts, now: Date())
+        weekStepTrend = totals
+            .sorted { $0.key < $1.key }
+            .suffix(7)
+            .map { Double($0.value) }
     }
 
     /// Which shape a metric's corner chart takes — one per card, decided by how

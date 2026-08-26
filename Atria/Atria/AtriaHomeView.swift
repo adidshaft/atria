@@ -6040,9 +6040,21 @@ enum AtriaHomeRecoverySyncPresentation {
             titleParts.append("\(savedRecords) saved")
             compactParts.append("\(savedRecords) saved")
         }
+        // "newest", NOT "through". `drainedThroughUnix` is a monotone MAX of
+        // durable record timestamps — `advancedDurableHistoricalFrontier` takes
+        // `.max()` and never regresses, and its own docstring calls it the
+        // "display-only strap-history frontier". A drain fills oldest-first and
+        // routinely lands rows BEHIND it; motion-only records carrying no heart
+        // rate advance it too; and "Start fresh" sets it to now while
+        // abandoning the un-drained backlog outright.
+        //
+        // So "through 7:02 PM" claimed a completeness the value never had, and
+        // the owner's question — "idk when it's fully synced" — is exactly the
+        // question this string appeared to answer and did not. It reports how
+        // far the drain has REACHED, not how much it has filled.
         if let through {
-            titleParts.append("through \(through)")
-            compactParts.append("through \(through)")
+            titleParts.append("newest \(through)")
+            compactParts.append("newest \(through)")
         }
 
         var accessibilityParts = ["History sync in progress."]
@@ -6052,11 +6064,17 @@ enum AtriaHomeRecoverySyncPresentation {
             )
         }
         if let through {
+            // The old VoiceOver line was the strongest claim of the three —
+            // "Strap history is durably synced through X." — and was followed
+            // immediately by "Missing data is not yet verified.", which
+            // contradicted it. One honest sentence replaces both.
             accessibilityParts.append(
-                "Strap history is durably synced through \(through)."
+                "The newest saved record is from \(through). Earlier stretches "
+                    + "may still be filling in."
             )
+        } else {
+            accessibilityParts.append("Missing data is not yet verified.")
         }
-        accessibilityParts.append("Missing data is not yet verified.")
 
         return Copy(title: titleParts.joined(separator: " · "),
                     compactTitle: compactParts.joined(separator: " · "),
@@ -6216,12 +6234,17 @@ enum AtriaSyncProgressFooterPresentation {
         }
         let behind = now.timeIntervalSince(frontier)
         let throughText = "\(timeFormatter.string(from: frontier))\(dayText)"
+        // Same frontier, same correction as the banner above: this reads the
+        // newest-ever watermark, so "through X" and "N behind" both overstated
+        // it. `behind` is `now - frontier` — the AGE OF THE NEWEST RECORD, not
+        // the size of the backlog, which is larger whenever holes remain behind
+        // the frontier.
         return Footer(
-            headline: "Strap history through \(throughText)",
+            headline: "Newest strap record \(throughText)",
             // Numbers-first visible line; the reassurance clauses live in
             // accessibilityDetail (and the icon still shows active/paused).
-            detail: "Through \(throughText) · \(behindText(behind)) behind",
-            accessibilityDetail: "\(behindText(behind)) history backlog · \(liveText)\(stateText)",
+            detail: "Newest \(throughText) · \(behindText(behind)) old",
+            accessibilityDetail: "Newest record \(behindText(behind)) old · \(liveText)\(stateText)",
             active: active
         )
     }

@@ -250,11 +250,20 @@ final class AtriaHomeRecoverySyncPresentationTests: XCTestCase {
             locale: locale
         )
 
-        XCTAssertTrue(copy.title.hasPrefix("Syncing strap history · 271 saved · through "))
+        // "newest", not "through": drainedThroughUnix is a monotone MAX that a
+        // drain routinely lands rows behind, so "through" claimed a
+        // completeness it never had. See AtriaHomeView.copy(...).
+        XCTAssertTrue(copy.title.hasPrefix("Syncing strap history · 271 saved · newest "))
+        XCTAssertFalse(copy.title.contains("through"),
+                       "the frontier must not be worded as coverage")
         XCTAssertTrue(copy.title.contains("9:34"))
         XCTAssertTrue(copy.title.contains("AM"))
         XCTAssertTrue(copy.accessibilityLabel.contains("271 records durably saved"))
-        XCTAssertTrue(copy.accessibilityLabel.contains("durably synced through"))
+        XCTAssertTrue(copy.accessibilityLabel.contains("The newest saved record is from"))
+        XCTAssertTrue(copy.accessibilityLabel.contains("may still be filling in"))
+        XCTAssertFalse(copy.accessibilityLabel.contains("durably synced through"),
+                       "this was the strongest of the three claims and was "
+                           + "immediately contradicted by the sentence after it")
     }
 
     func testCompactCopyKeepsBothProgressSignalsOnNarrowWidths() {
@@ -274,7 +283,7 @@ final class AtriaHomeRecoverySyncPresentationTests: XCTestCase {
                                                        with: "Syncing history"))
         XCTAssertTrue(copy.compactTitle.hasPrefix("Syncing history"))
         XCTAssertTrue(copy.compactTitle.contains("271 saved"))
-        XCTAssertTrue(copy.compactTitle.contains("through"))
+        XCTAssertTrue(copy.compactTitle.contains("newest"))
         XCTAssertLessThan(copy.compactTitle.count, copy.title.count)
     }
 
@@ -307,7 +316,7 @@ final class AtriaHomeRecoverySyncPresentationTests: XCTestCase {
             calendar: calendar,
             locale: locale
         )
-        XCTAssertTrue(yesterday.title.contains("through"))
+        XCTAssertTrue(yesterday.title.contains("newest"))
         XCTAssertTrue(yesterday.title.contains("yesterday"))
         XCTAssertFalse(yesterday.title.contains("saved"))
     }
@@ -408,8 +417,10 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         // show; a stale count must not hide it.
         let f = footer(backlogPending: false, debtRecords: 4_867, debtAge: 41 * 60)
         XCTAssertNotNil(f)
-        XCTAssertTrue(f!.detail.contains("behind"))
-        XCTAssertTrue(f!.accessibilityDetail.contains("history backlog"))
+        // "old", not "behind": the number is now - frontier, i.e. the AGE of
+        // the newest record, not the size of the backlog behind it.
+        XCTAssertTrue(f!.detail.contains("old"))
+        XCTAssertTrue(f!.accessibilityDetail.contains("Newest record"))
     }
 
     func testBehindFrontierAndActivityAreHonest() {
@@ -418,14 +429,14 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         XCTAssertTrue(f!.active)
         // R17: the visible detail is numbers-first; the reassurance
         // clauses are relocated to the accessibility sentence, not deleted.
-        XCTAssertTrue(f!.detail.contains("19h 0m behind"))
-        XCTAssertTrue(f!.detail.contains("Through"))
+        XCTAssertTrue(f!.detail.contains("19h 0m old"))
+        XCTAssertTrue(f!.detail.contains("Newest"))
         XCTAssertFalse(f!.detail.contains("live HR current"))
         XCTAssertFalse(f!.detail.contains("catching up now"))
-        XCTAssertTrue(f!.accessibilityDetail.contains("19h 0m history backlog"))
+        XCTAssertTrue(f!.accessibilityDetail.contains("Newest record 19h 0m old"))
         XCTAssertTrue(f!.accessibilityDetail.contains("live HR current"))
         XCTAssertTrue(f!.accessibilityDetail.contains("catching up now"))
-        XCTAssertTrue(f!.headline.contains("Strap history through"))
+        XCTAssertTrue(f!.headline.contains("Newest strap record"))
         XCTAssertTrue(f!.headline.contains("yesterday"),
                       "a 19h-old frontier at 5 AM lands yesterday morning")
     }
@@ -448,9 +459,9 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         let f = footer(drainedAgo: nil)
         XCTAssertNotNil(f)
         XCTAssertEqual(f!.headline, "Strap history backfill")
-        XCTAssertFalse(f!.detail.contains("history backlog"))
+        XCTAssertFalse(f!.detail.contains("Newest"))
         XCTAssertFalse(f!.detail.contains("Through"))
-        XCTAssertFalse(f!.detail.contains("behind"))
+        XCTAssertFalse(f!.detail.contains("old"))
     }
 
     func testTodayFrontierOmitsDayLabel() {
@@ -458,7 +469,7 @@ final class AtriaSyncProgressFooterPresentationTests: XCTestCase {
         XCTAssertNotNil(f)
         XCTAssertFalse(f!.headline.contains("yesterday"))
         XCTAssertFalse(f!.detail.contains("yesterday"))
-        XCTAssertTrue(f!.detail.contains("30m behind"))
-        XCTAssertTrue(f!.accessibilityDetail.contains("30m history backlog"))
+        XCTAssertTrue(f!.detail.contains("30m old"))
+        XCTAssertTrue(f!.accessibilityDetail.contains("Newest record 30m old"))
     }
 }
