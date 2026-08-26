@@ -6420,11 +6420,11 @@ struct AtriaStrapStepsDetailSheet: View {
                                   value: presentation.detailText,
                                   systemImage: presentation.completeness == .complete
                                     ? "checkmark.seal.fill" : "waveform.path.ecg")
-                        statusRow(title: "Saved today",
-                                  value: presentation.count.map { _ in
-                                    "\(presentation.valueText) steps"
-                                  } ?? "Unavailable",
-                                  systemImage: "clock.arrow.circlepath")
+                        // "Saved today" printed presentation.valueText a third
+                        // time — the 30pt hero above and the goal row below
+                        // already carry it. It also had a nonsense state: a
+                        // partial day with a zero count is non-nil but formats
+                        // as "--", so the pill rendered "-- steps".
                     }
 
                     VStack(alignment: .leading, spacing: 7) {

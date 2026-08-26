@@ -65,7 +65,11 @@ struct AtriaJournalCheckInProgress: Equatable {
 
     var actionLabel: String {
         if isComplete { return "Review check-in" }
-        if isStarted { return "Resume check-in · \(answeredCount) of \(totalCount)" }
+        // The count lives on statusLabel, which the Today card renders on the
+        // very next line — printing it here too made the button read
+        // "Resume check-in · 3 of 15" above a bare "3 of 15", and VoiceOver
+        // speak the pair as one sentence.
+        if isStarted { return "Resume check-in" }
         return "Start check-in"
     }
 

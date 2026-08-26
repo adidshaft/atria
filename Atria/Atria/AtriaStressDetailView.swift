@@ -1032,10 +1032,34 @@ struct AtriaStressDailyTrendCard: View {
             .sorted { $0.day < $1.day }
     }
 
+    /// A day-unit BarMark fills [day, day+24h), so the domain must end at the
+    /// last framed day's following midnight. The old +12h stopped at its noon
+    /// and the plot surface clipped away the right half of that bar, while the
+    /// leading -12h was dead margin no bar could occupy. Same
+    /// [first 00:00, last 24:00) rule the steps week chart uses.
+    ///
+    /// Deliberately NOT swept to the strain/recovery combo chart: that one
+    /// draws LineMark/PointMark, where a point sits ON its date, so its
+    /// symmetric ±12h inset is correct and removing it would clip the marks.
     private var xDomain: ClosedRange<Date> {
-        let lo = calendar.date(byAdding: .hour, value: -12, to: frameStart) ?? frameStart
-        let hi = calendar.date(byAdding: .hour, value: 12, to: frameEnd) ?? frameEnd
-        return lo...hi
+        let hi = calendar.date(byAdding: .day, value: 1, to: frameEnd) ?? frameEnd
+        return frameStart...hi
+    }
+
+    /// Every day in the frame, measured or not. `AxisValueLabel(centered:)`
+    /// centres a label in the step to the NEXT mark, not within the bar's unit,
+    /// so marks have to be exactly one day apart. The old `.stride(count: 3)`
+    /// made the step three days and pushed each label a day and a half right —
+    /// landing it dead centre over the following day's bar.
+    private var axisDays: [Date] {
+        var days: [Date] = []
+        var cursor = frameStart
+        while cursor <= frameEnd {
+            days.append(cursor)
+            guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
+            cursor = next
+        }
+        return days
     }
 
     var body: some View {
@@ -1126,7 +1150,7 @@ struct AtriaStressDailyTrendCard: View {
         .chartXScale(domain: xDomain)
         .chartYScale(domain: 0...1)
         .chartXAxis {
-            AxisMarks(values: .stride(by: .day, count: 3)) { _ in
+            AxisMarks(values: axisDays) { _ in
                 AxisGridLine().foregroundStyle(.secondary.opacity(0.15))
                 AxisValueLabel(format: .dateTime.day(), centered: true)
                     .foregroundStyle(.secondary)
