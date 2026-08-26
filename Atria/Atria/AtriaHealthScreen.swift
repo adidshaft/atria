@@ -284,6 +284,30 @@ enum AtriaHealthCurrentSleepEvidence {
                                           now: now,
                                           calendar: calendar)
     }
+
+    /// Presentation-only companion, for the rows that show a MEASURED value.
+    ///
+    /// `resolve` above is the confirmed-cycle authority, and every sleep row on
+    /// this screen was reading it — including the ones that only display what
+    /// the strap recorded. A night that is measured but not yet confirmed (a
+    /// degraded HR-only strap can stay unconfirmed for days) therefore left
+    /// Vitals saying "No sleep recorded this cycle", Efficiency "--",
+    /// Respiration "--" and no hypnogram, while Today showed the same night's
+    /// duration with a "Review sleep" prompt. Same snapshot, two answers.
+    ///
+    /// This admits a fresh review candidate for DISPLAY only, exactly as
+    /// Overview, Today, the share snapshot and the widget already do. It is
+    /// strictly additive: with no fresh candidate it returns what `resolve`
+    /// returns. Derived numbers — Sufficiency, the composite score — stay on
+    /// `resolve`, because those are claims about the night rather than
+    /// recordings of it.
+    static func resolveDisplay(from snapshot: SleepHistorySnapshot,
+                               now: Date = Date(),
+                               calendar: Calendar = .current) -> SleepHistorySnapshot.Night? {
+        AtriaOverviewCurrentSleep.resolveDisplayEvidence(from: snapshot,
+                                                         now: now,
+                                                         calendar: calendar)
+    }
 }
 
 /// Retained history is useful context when the active wake-to-wake cycle has no
@@ -989,16 +1013,16 @@ struct AtriaHealthScreen: View {
 
     private var sleepStressRequestKey: SleepStressRequestKey {
         SleepStressRequestKey(scope: scope,
-                              nightID: currentMainSleep?.id,
-                              start: currentMainSleep?.start,
-                              end: currentMainSleep?.end,
+                              nightID: currentDisplaySleep?.id,
+                              start: currentDisplaySleep?.start,
+                              end: currentDisplaySleep?.end,
                               restingHeartRate: vitalsStore.state.baseline.restingInt)
     }
 
     @MainActor
     private func refreshSleepStressProjection() async {
         guard scope == .sleep,
-              let sleep = currentMainSleep,
+              let sleep = currentDisplaySleep,
               let start = sleep.start,
               let end = sleep.end,
               end > start else {
@@ -1036,7 +1060,10 @@ struct AtriaHealthScreen: View {
     /// pair -- both computed the same honest way the Today ring and its
     /// caption are (visibilitySpec §2, 2026-07-05).
     private var sleepDetailCard: some View {
-        let currentSleep = currentMainSleep
+        // Measured rows follow what was recorded; the Sufficiency tile below
+        // keeps its own confirmed-only binding because a percentage OF NEED is
+        // a derived claim, not a recording.
+        let currentSleep = currentDisplaySleep
         let previousSleep = currentSleep == nil
             ? AtriaHealthPreviousSleepEvidence.resolve(
                 from: vitalsStore.state.sleepHistorySnapshot
@@ -1053,8 +1080,25 @@ struct AtriaHealthScreen: View {
             ).start
             : nil
         return VStack(alignment: .leading, spacing: 12) {
-            Text("Sleep detail")
-                .font(.title2.weight(.bold))
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Sleep detail")
+                    .font(.title2.weight(.bold))
+                // An unconfirmed night is shown but never presented as settled.
+                // Today and Overview already say "Review sleep" for the same
+                // record; without this the measured rows below would read as
+                // final, which is the opposite error from hiding them.
+                if let currentSleep, !currentSleep.confirmed {
+                    Text(currentSleep.isNapEvidence ? "Review nap" : "Review sleep")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(Metrics.electricSleep)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(Metrics.electricSleep.opacity(0.14),
+                                    in: Capsule(style: .continuous))
+                        .accessibilityLabel("Not yet confirmed. Review sleep.")
+                }
+                Spacer(minLength: 0)
+            }
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 // Drill-in (design UI pass): these tiles used to be dead-taps.
@@ -1066,7 +1110,13 @@ struct AtriaHealthScreen: View {
                 } label: {
                     AtriaMetricTile(label: "Sufficiency",
                                     value: sleepPerformanceValue,
-                                    state: currentSleep == nil ? .learning : .local,
+                                    // Keyed to the CONFIRMED night, not the
+                                    // displayed one: this tile's value comes
+                                    // from sleepPerformancePercentUnified,
+                                    // which requires confirmation. Keying the
+                                    // state to the displayed night would show
+                                    // ".local" over a "--".
+                                    state: currentMainSleep == nil ? .learning : .local,
                                     tint: Metrics.electricSleep,
                                     // A percentage without its numerator and
                                     // denominator left the user guessing what
@@ -1695,7 +1745,7 @@ struct AtriaHealthScreen: View {
         // must not leak into the current wake-to-wake card after a no-sleep
         // rollover; the sleep snapshot already merges any matching rollup
         // respiratory evidence into the current night.
-        guard let value = currentMainSleep?.respiratoryRate else {
+        guard let value = currentDisplaySleep?.respiratoryRate else {
             // Matches every sibling Health Monitor row. Those siblings have all
             // moved onto the deterministic no-value token, so keeping the word
             // here would make respiration the only row speaking the old
@@ -1715,7 +1765,7 @@ struct AtriaHealthScreen: View {
     }
 
     private var sleepValue: String {
-        guard let seconds = currentMainSleep?.duration else {
+        guard let seconds = currentDisplaySleep?.duration else {
             // Consistent with Today/Overview, which now use the deterministic token.
             return AtriaCompactMetricPresentation.noValue
         }
@@ -1903,8 +1953,17 @@ struct AtriaHealthScreen: View {
         return "\u{2191} elevated \u{2014} track how you feel"
     }
 
+    /// The confirmed cycle authority. Use for DERIVED values only.
     private var currentMainSleep: SleepHistorySnapshot.Night? {
         AtriaHealthCurrentSleepEvidence.resolve(
+            from: vitalsStore.state.sleepHistorySnapshot
+        )
+    }
+
+    /// What the strap actually recorded for this cycle, confirmed or not. Use
+    /// for MEASURED values: duration, respiration, efficiency, stages.
+    private var currentDisplaySleep: SleepHistorySnapshot.Night? {
+        AtriaHealthCurrentSleepEvidence.resolveDisplay(
             from: vitalsStore.state.sleepHistorySnapshot
         )
     }

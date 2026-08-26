@@ -56359,19 +56359,6 @@ struct SleepHistorySnapshot: Equatable {
         return AtriaMetricFormat.sleepHours(debt)
     }
 
-    func sleepPlannerTargetHours(goalHours: Double, recoveryPercent: Int?) -> Double {
-        let safeGoal = min(max(goalHours, 4), 12)
-        let debt = sleepDebtHours(goalHours: safeGoal) ?? 0
-        let debtBuffer = min(max(debt * 0.5, 0), 1.5)
-        let recoveryBuffer: Double
-        if let recoveryPercent {
-            recoveryBuffer = recoveryPercent < 34 ? 0.5 : (recoveryPercent < 67 ? 0.25 : 0)
-        } else {
-            recoveryBuffer = 0
-        }
-        return min(10.5, safeGoal + debtBuffer + recoveryBuffer)
-    }
-
     func sleepDebtFootnote(goalHours: Double) -> String {
         guard let debt = sleepDebtHours(goalHours: goalHours) else {
             return "Needs recent sleep records."

@@ -103,7 +103,24 @@ enum AtriaSleepBudget {
         // applies, so a stale or externally supplied debt value can never
         // inflate the need beyond the validated-gated bound (see
         // `maxSleepDebtHours`).
+        // DEBT RECOVERY FRACTION — 0.5.
+        // CHOSEN ENGINEERING VALUE, NO STATED SOURCE. It encodes "roughly half
+        // of a shortfall is worth trying to repay tonight", which is a
+        // plausible reading of partial recoverability but is not taken from any
+        // published figure and has never been calibrated against this owner's
+        // data. Documented rather than changed: moving it moves every shipped
+        // Sleep Need, and there is nothing yet to move it TOWARD.
+        // Note it interacts with the 6-10h clamp below — see `isClamped`: at a
+        // large debt this term is frequently truncated, so its exact value
+        // matters less than it appears.
         let debtAdder = min(max(0, debtHours), maxSleepDebtHours) * 0.5
+        // NAP CREDIT FRACTION — 0.9.
+        // CHOSEN ENGINEERING VALUE, NO STATED SOURCE. It says a nap hour offsets
+        // slightly less than an hour of night sleep, which is directionally
+        // supported by nap sleep being lighter on average, but 0.9 specifically
+        // is a guess. Also note the asymmetry with the debt term above: repaid
+        // sleep counts at 0.5, napped sleep at 0.9, and nothing in the code
+        // explains why those differ.
         let napCredit = max(0, sameDayNapHours) * 0.9
         let total = min(max(safeBase + strainAdder + debtAdder - napCredit, 6), 10)
         return NeedComponents(baseHours: safeBase,
@@ -123,6 +140,27 @@ enum AtriaSleepBudget {
                             sameDayNapHours: sameDayNapHours).totalHours
     }
 
+    /// Recency-weighted shortfall over the recent nights.
+    ///
+    /// THREE UNDOCUMENTED CHOICES LIVE HERE, recorded rather than changed:
+    ///
+    /// 1. WINDOW — 7 nights. A chosen value with no stated source. There is
+    ///    also NO MINIMUM-NIGHTS FLOOR: a single night of history produces a
+    ///    debt, while every other baseline in the app (PersonalBaseline's
+    ///    trusted minimum, the sleep-consistency qualification, the HR-only
+    ///    review tiers) refuses to speak until it has enough evidence. That
+    ///    inconsistency is a decision for the owner, not a bug to patch.
+    ///
+    /// 2. DECAY — 0.75 per step. A chosen value with no stated source.
+    ///
+    /// 3. The decay is POSITIONAL, NOT TEMPORAL, and the distinction is easy to
+    ///    miss: `ageFromNewest` is an index into the supplied list, so a night
+    ///    ten days ago sitting second in the array decays as though it were one
+    ///    night old. With contiguous nightly records the two readings coincide,
+    ///    which is why this has never shown; with gaps — a weekend off-wrist, a
+    ///    drain that has not caught up — they diverge and older shortfalls are
+    ///    weighted too heavily. The word "recency-decayed" below reads as
+    ///    temporal and is the reason this needed saying out loud.
     static func sleepDebt(nights: [(needed: Double, slept: Double)]) -> Double {
         let recent = nights.suffix(7)
         guard !recent.isEmpty else { return 0 }
