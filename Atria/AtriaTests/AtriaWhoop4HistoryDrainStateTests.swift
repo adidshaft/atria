@@ -1220,4 +1220,67 @@ final class AtriaWhoop4HistoryDrainStateTests: XCTestCase {
             "after persist-before-ACK succeeds, the same cursor must not double-count"
         )
     }
+
+    func testConsumeToNowACKsHistoryEndWithoutPersisting() {
+        var state = AtriaWhoop4HistoryDrainState()
+        _ = state.begin(generation: 40, ackWithoutPersisting: true)
+        XCTAssertEqual(
+            state.receiveFrame(
+                generation: 40,
+                frameKey: "page-1",
+                payload: [0x2f, 0, 0, 0x01, 0x00]
+            ),
+            [],
+            "M2 consume-to-now must not persist the page it is about to ACK"
+        )
+        XCTAssertEqual(
+            state.historyEnd(
+                generation: 40,
+                boundaryID: "enddata:token",
+                ackPayload: [0x17, 0x01]
+            ),
+            [.sendACK(
+                generation: 40,
+                boundaryID: "enddata:token",
+                payload: [0x17, 0x01],
+                attempt: 1
+            )]
+        )
+        XCTAssertEqual(
+            state.ackCompleted(
+                generation: 40,
+                boundaryID: "enddata:token",
+                succeeded: true
+            ),
+            []
+        )
+        XCTAssertTrue(state.canReceiveFrame)
+        XCTAssertEqual(state.acknowledgedBatchCount, 1)
+        XCTAssertEqual(state.persistedFrameCount, 0)
+    }
+
+    func testDefaultDrainStillPersistsBeforeACK() {
+        var state = AtriaWhoop4HistoryDrainState()
+        _ = state.begin(generation: 41)
+        XCTAssertEqual(
+            state.receiveFrame(
+                generation: 41,
+                frameKey: "page-1",
+                payload: [0x2f, 0, 0, 0x01, 0x00]
+            ),
+            [.persistFrame(
+                generation: 41,
+                frameKey: "page-1",
+                payload: [0x2f, 0, 0, 0x01, 0x00]
+            )]
+        )
+        XCTAssertTrue(
+            state.historyEnd(
+                generation: 41,
+                boundaryID: "enddata:token",
+                ackPayload: [0x17, 0x01]
+            ).isEmpty,
+            "default drain waits for persist+flush before ACK"
+        )
+    }
 }

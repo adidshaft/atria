@@ -92,6 +92,49 @@ final class AtriaCleanSlateBacklogSuppressionTests: XCTestCase {
         defaults.set(abandon + 2, forKey: K.drainedThroughUnix)
         XCTAssertFalse(AtriaBLEManager.historyAbandonedSuppressesBacklog(defaults: defaults))
     }
+
+    func testLaunchArgStartFreshIsTheSameInAppPathAndInertWhenOmitted() throws {
+        XCTAssertFalse(
+            AtriaBLEManager.shouldApplyLaunchArgStartFresh(
+                arguments: ["--atria-idle-window-drain-enable"]
+            ),
+            "unflagged launches must not Start fresh"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldApplyLaunchArgStartFresh(arguments: [])
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldApplyLaunchArgStartFresh(
+                arguments: [AtriaBLEManager.historyConsumeToNowLaunchArgument]
+            ),
+            "consume-to-now consent is not Start-fresh"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldApplyLaunchArgStartFresh(
+                arguments: [AtriaBLEManager.startFreshClearGapLaunchArgument]
+            )
+        )
+        let managerURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria/AtriaBLEManager.swift")
+        let source = try String(contentsOf: managerURL, encoding: .utf8)
+        XCTAssertTrue(source.contains("shouldApplyLaunchArgStartFresh(arguments:"))
+        XCTAssertTrue(
+            source.contains("startFreshAcceptingMissedDataLoss(reason: \"launch_arg_start_fresh\")")
+        )
+        let applyStart = try XCTUnwrap(source.range(of: "func applyLaunchAutomation("))
+        let applyEnd = try XCTUnwrap(source.range(
+            of: "if arguments.contains(\"--atria-full-protocol-mode\")",
+            range: applyStart.upperBound..<source.endIndex
+        ))
+        let apply = String(source[applyStart.lowerBound..<applyEnd.lowerBound])
+        XCTAssertTrue(apply.contains("shouldApplyLaunchArgStartFresh(arguments:"))
+        XCTAssertFalse(
+            apply.contains("startFreshAcceptingMissedDataLoss(")
+                && !apply.contains("shouldApplyLaunchArgStartFresh(")
+        )
+    }
 }
 
 /// Auto-surfacing of the clean slate: a degraded strap that can't drain must be

@@ -37,6 +37,40 @@ enum AtriaDesignTokens {
         static let xxl: CGFloat = 28
     }
 
+    /// One type scale for data surfaces.
+    ///
+    /// MEASURED 2026-08-26: the app renders `.caption` 1,191 times and
+    /// `.caption2` 524 times, against `.body` 64 and `.largeTitle` once. Almost
+    /// every string is caption-sized, so nothing leads and nothing recedes and
+    /// a tile of three near-identical lines has to be read word by word. The
+    /// owner's report was "too much literature across the app which makes app
+    /// very congested to digest data" — the volume is a symptom; the missing
+    /// hierarchy is the cause.
+    ///
+    /// Three roles, in the order the eye should hit them:
+    ///   value   -- the number. Large, heavy, TABULAR so digits do not jitter
+    ///              between refreshes, and tracked tight because large digits
+    ///              set loose read as separate glyphs.
+    ///   label   -- what the number is. Medium weight carries hierarchy without
+    ///              a second size step.
+    ///   caption -- provenance/qualifier ONLY. If a caption merely restates the
+    ///              label, delete it rather than restyle it; that is what
+    ///              actually reduces the literature.
+    enum Typography {
+        static let metricValue = Font.system(
+            .title2, design: .rounded, weight: .semibold
+        ).monospacedDigit()
+        static let metricValueCompact = Font.system(
+            .title3, design: .rounded, weight: .semibold
+        ).monospacedDigit()
+        static let metricLabel = Font.subheadline.weight(.medium)
+        static let metricCaption = Font.caption2
+
+        /// Large digits set at default tracking read as loose, separate
+        /// glyphs; pair this with `metricValue` on hero numbers.
+        static let valueTracking: CGFloat = -0.5
+    }
+
     /// One motion rhythm. `.snappy` was already the house curve (56 call sites),
     /// but its duration had drifted across ten distinct values -- 0.12, 0.14,
     /// 0.18, 0.2, 0.22, 0.24, 0.25, 0.28, 0.3, 0.35 -- so comparable gestures

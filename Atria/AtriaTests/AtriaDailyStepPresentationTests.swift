@@ -311,6 +311,41 @@ final class AtriaDailyStepPresentationTests: XCTestCase {
         XCTAssertEqual(value.detailText, "Today so far · estimate")
     }
 
+    func testUnresolvedCompactMotionDoesNotPublishLiveEstimate() {
+        let capturedAt = day.addingTimeInterval(600)
+        let unresolved = AtriaHistoricalDailyConsumerProjection.StepDay(
+            localDay: "2033-07-02",
+            dayStart: day,
+            dayEnd: capturedAt,
+            state: .missing,
+            stepCount: nil,
+            knownStepDeltaSum: 0,
+            knownEpochCount: 1,
+            rejectedOrUnknownEpochCount: 0,
+            knownCoverageSeconds: 0,
+            missingCoverageSeconds: 600
+        )
+        let value = AtriaDailyStepPresentation.resolve(
+            day: day,
+            now: capturedAt,
+            liveCount: 4_257,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: capturedAt,
+            canonicalDays: [unresolved],
+            calendar: utcCalendar
+        )
+        XCTAssertNil(value.count)
+        XCTAssertEqual(
+            value.unavailabilityReason,
+            .motionObservedCountUnresolved
+        )
+        XCTAssertEqual(
+            value.detailText,
+            "Strap motion found · count still resolving"
+        )
+        XCTAssertFalse(value.detailText.contains("Today so far · estimate"))
+    }
+
     func testStaleStrapSubtotalIsUnavailableWithoutCanonicalCoverage() {
         // No drained coverage → no verified floor → an unvalidated stale count
         // still fails closed rather than masquerading as today's total.

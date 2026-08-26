@@ -239,6 +239,8 @@ struct AtriaTrendChartCard: View {
                                    tint: metric.tint,
                                    points: expandedChartPoints,
                                    events: events,
+                                   // Open in the form the user just tapped.
+                                   defaultChartType: metric.rendersAsDailyBar ? .bars : .line,
                                    onDismiss: { showExpandedChart = false })
         }
     }
@@ -525,6 +527,18 @@ struct AtriaTrendChartCard: View {
         AtriaTrendSparseGrammar.chartHeight(observedCount: prepared.series.count)
     }
 
+    /// A bar states "this much, measured from zero". The line domains pad
+    /// around min...max, which is right for a level but would render every bar
+    /// as a truncated stub and exaggerate small day-to-day differences — a
+    /// chart that lies. Anchor bar metrics at zero; leave levels padded.
+    private var trendYDomain: ClosedRange<Double> {
+        let base = showsPriorComparison
+            ? prepared.comparisonYDomain
+            : prepared.currentYDomain
+        guard metric.rendersAsDailyBar else { return base }
+        return 0...max(base.upperBound, 1)
+    }
+
     private var coreChart: some View {
         Chart {
             if showsPriorComparison {
@@ -534,7 +548,12 @@ struct AtriaTrendChartCard: View {
                         y: .value("Prior \(metric.shortLabel)", ghostSample.value),
                         series: .value("Series", "prior-\(ghostSample.segment)")
                     )
-                    .interpolationMethod(.monotone)
+                    // Linear for the same reason the current series below is:
+                    // these are daily samples, and monotone bows past the real
+                    // measured days. Drawing the ghost smooth while the current
+                    // line stays angular also made one period look steadier
+                    // than the other purely from interpolation.
+                    .interpolationMethod(.linear)
                     .lineStyle(AtriaChartVisualGrammar.comparisonLine)
                     // Prior-period line in neutral gray, not the metric tint: a
                     // faint-tint ghost overlapped the solid tinted current line
@@ -544,11 +563,22 @@ struct AtriaTrendChartCard: View {
             }
 
             ForEach(prepared.series) { sample in
-                // Area fill is a density signal, not decoration: a handful of
-                // real points must not read as a filled "mountain". It appears
-                // only once the window has 5+ observations AND meets this range's
-                // coverage-confidence target.
-                if trendAreaAllowed {
+                if metric.rendersAsDailyBar {
+                    // One bar per civil day. This also dissolves a family of
+                    // defects this card carried only because per-day data was
+                    // drawn as a line: a one-day window could never reach the
+                    // two-point line gate (so the "D" segment had to be
+                    // amputated), lone days needed a text-only fallback, and a
+                    // whole gap policy existed to stop the line interpolating
+                    // across days the strap never measured. A bar needs one
+                    // datum, and a missing day simply draws nothing.
+                    BarMark(
+                        x: .value("Date", sample.date),
+                        y: .value(metric.shortLabel, sample.value)
+                    )
+                    .foregroundStyle(metric.tint.gradient)
+                    .cornerRadius(3)
+                } else if trendAreaAllowed {
                     AreaMark(
                         x: .value("Date", sample.date),
                         y: .value(metric.shortLabel, sample.value),
@@ -569,28 +599,31 @@ struct AtriaTrendChartCard: View {
                 // A line only ever connects points inside one contiguous run
                 // (same segment); a lone-day segment carries a single datum and
                 // draws nothing, so its PointMark below is what keeps it visible.
-                LineMark(
-                    x: .value("Date", sample.date),
-                    y: .value(metric.shortLabel, sample.value),
-                    series: .value("Series", "current-line-\(sample.segment)")
-                )
-                // Linear keeps the connecting line on the real samples instead of
-                // bowing past them (monotone overshoot).
-                .interpolationMethod(.linear)
-                .lineStyle(AtriaChartVisualGrammar.trendLine)
-                .foregroundStyle(metric.tint)
-
-                // A PointMark for EVERY observed day in a sparse window, and for
-                // every isolated (single-day) segment and the latest reading in a
-                // denser one — never only `prepared.series.last`, which left
-                // earlier singleton days invisible.
-                if trendPointMarkVisible(sample) {
-                    PointMark(
+                if !metric.rendersAsDailyBar {
+                    LineMark(
                         x: .value("Date", sample.date),
-                        y: .value(metric.shortLabel, sample.value)
+                        y: .value(metric.shortLabel, sample.value),
+                        series: .value("Series", "current-line-\(sample.segment)")
                     )
-                    .symbolSize(trendMarksEveryPoint ? 54 : 70)
+                    // Linear keeps the connecting line on the real samples
+                    // instead of bowing past them (monotone overshoot).
+                    .interpolationMethod(.linear)
+                    .lineStyle(AtriaChartVisualGrammar.trendLine)
                     .foregroundStyle(metric.tint)
+
+                    // A PointMark for EVERY observed day in a sparse window,
+                    // and for every isolated (single-day) segment and the
+                    // latest reading in a denser one — never only
+                    // `prepared.series.last`, which left earlier singleton
+                    // days invisible.
+                    if trendPointMarkVisible(sample) {
+                        PointMark(
+                            x: .value("Date", sample.date),
+                            y: .value(metric.shortLabel, sample.value)
+                        )
+                        .symbolSize(trendMarksEveryPoint ? 54 : 70)
+                        .foregroundStyle(metric.tint)
+                    }
                 }
             }
 
@@ -636,9 +669,7 @@ struct AtriaTrendChartCard: View {
         .chartXScale(range: .plotDimension(startPadding: 18, endPadding: 18))
         // Hidden prior data must not flatten the current trace. The wider
         // comparison domain is selected only while that data is visibly drawn.
-        .chartYScale(domain: showsPriorComparison
-                     ? prepared.comparisonYDomain
-                     : prepared.currentYDomain)
+        .chartYScale(domain: trendYDomain)
         .chartXAxis {
             // Labels ride the SAME axis marks as the gridlines (2026-08-01):
             // the previous parallel Spacer-based HStack guessed a 34pt leading
@@ -2961,6 +2992,22 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
     case hrv
 
     var id: String { rawValue }
+
+    /// Owner direction 2026-08-25: a metric that produces ONE value per day
+    /// and ACCUMULATES from zero is a bar; a per-day LEVEL is a line.
+    ///
+    /// Strain accumulates from 0 every physiological day, so zero is both
+    /// meaningful and routinely observed (a rest day really is ~0) and a bar's
+    /// "magnitude from zero" reading is literally true. Resting HR (~50-60) and
+    /// HRV (~40-70) are levels whose zero is never observed — bars from zero
+    /// would push the real 3-4 bpm signal into the top few percent of every
+    /// column and hide it, so those stay lines against their own baseline.
+    var rendersAsDailyBar: Bool {
+        switch self {
+        case .strain: return true
+        case .restingHR, .hrv: return false
+        }
+    }
 
     var shortLabel: String {
         switch self {

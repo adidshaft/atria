@@ -12,6 +12,25 @@ private let atriaVitalsURL = URL(string: "atria://tab/vitals")!
 private let atriaWidgetStrainIdentityColor = Color(red: 0,
                                                    green: 147.0 / 255.0,
                                                    blue: 231.0 / 255.0)
+// Mirrors `Metrics.electricSleep` (#8259FF). The app's standing rule is one
+// identity hue per metric, and its comment is explicit: "sleep owns purple so
+// it stays distinct from strain". The widget used SwiftUI `.indigo` (#5856D6),
+// which is blue-family — against Strain's electric blue the owner's medium
+// widget read as two blues. This is the app's hue, so widget and app now agree.
+private let atriaWidgetSleepIdentityColor = Color(red: 0.51,
+                                                  green: 0.35,
+                                                  blue: 1.0)
+// Remaining identity hues mirrored from the app's `Metrics` (the "one hue per
+// metric across ring + chip + widget" rule). Before this the widget disagreed
+// with itself: Strain was electric blue in `dailyTint` and `.orange` in the
+// metric tiles, and RHR/HRV used raw SwiftUI `.mint`/`.pink` that the app had
+// already replaced because distinct vitals were indistinguishable.
+private let atriaWidgetRHRIdentityColor = Color(red: 0.392,
+                                                green: 0.824,
+                                                blue: 1.0)
+private let atriaWidgetHRVIdentityColor = Color(red: 1.0,
+                                                green: 0.36,
+                                                blue: 0.62)
 
 // Single source of truth for the recovery zone tint used by the ring gauges,
 // the header percent, and the Lock Screen accessory gauge. Gray/secondary
@@ -650,36 +669,88 @@ struct AtriaWidgetEntryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
-    // 2026-08-14 (§13.6): the small aggregate face leads with the morning
-    // whiteboard mirror; the Recovery gauge is demoted to an index elsewhere.
-    // recoveryOnlyWidget stays the pin-anchored extreme-constraint terminal.
+    /// One purpose per widget size (owner direction 2026-08-24: "the steps one
+    /// shows 10 things on a square"). This SUPERSEDES the 2026-08-14 §13.6
+    /// decision to lead the small face with the morning whiteboard mirror —
+    /// on a square that list rendered as a dense stack of rows nobody can read
+    /// at a glance. The square now carries one hero metric; the multi-metric
+    /// layouts live on medium and large, where there is room.
     private var standardSmallWidget: some View {
         VStack(alignment: .leading, spacing: 6) {
             widgetHeader
 
-            AtriaWidgetWhiteboardList(rows: entry.snapshot?.whiteboardRows,
-                                      compact: true)
+            Spacer(minLength: 0)
+
+            Text(recoveryHeroValueText)
+                .font(.system(size: 44, weight: .heavy, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(recoveryHeroTint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.45)
+                .atriaLiveActivityValueTransition(
+                    entry.snapshot?.recoveryPercent ?? -1
+                )
+
+            Text("Recovery")
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+
+            Spacer(minLength: 0)
 
             Text(widgetStatusFooter)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(widgetStatusTint)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(2)
+                .minimumScaleFactor(0.7)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "Recovery \(recoveryHeroValueText). \(widgetStatusFooter)"
+        )
     }
 
-    /// Dynamic Type needs a text-first fallback. Removing the decorative ring
-    /// preserves the same values and evidence without pushing either edge past
-    /// WidgetKit's content margins.
+    /// Dynamic Type needs a text-first fallback. Same single hero, smaller
+    /// type ramp, so neither edge is pushed past WidgetKit's content margins.
     private var accessibleSmallWidget: some View {
         VStack(alignment: .leading, spacing: 4) {
             widgetHeader
-            AtriaWidgetWhiteboardList(rows: entry.snapshot?.whiteboardRows,
-                                      compact: true)
+            Spacer(minLength: 0)
+            Text(recoveryHeroValueText)
+                .font(.title.weight(.heavy))
+                .monospacedDigit()
+                .foregroundStyle(recoveryHeroTint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+            Text("Recovery")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
             Text(widgetStatusFooter)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(widgetStatusTint)
-                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(2)
+                .minimumScaleFactor(0.7)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "Recovery \(recoveryHeroValueText). \(widgetStatusFooter)"
+        )
+    }
+
+    /// "Learning" is the honest token for an uncomputed percent — never a
+    /// fabricated number, and it keeps the neutral secondary tint.
+    private var recoveryHeroValueText: String {
+        entry.snapshot?.recoveryPercent.map { "\($0)%" } ?? "Learning"
+    }
+
+    private var recoveryHeroTint: Color {
+        atriaRecoveryZoneColor(entry.snapshot?.recoveryPercent,
+                               zone: entry.snapshot?.recoveryZone)
     }
 
     private var systemMediumWidget: some View {
@@ -921,7 +992,7 @@ struct AtriaWidgetEntryView: View {
                 zone: entry.snapshot?.recoveryZone
             )
         case .strain: return atriaWidgetStrainIdentityColor
-        case .sleep: return .indigo
+        case .sleep: return atriaWidgetSleepIdentityColor
         }
     }
 
@@ -997,11 +1068,12 @@ struct AtriaWidgetEntryView: View {
         VStack(alignment: .leading, spacing: 14) {
             widgetHeader
 
-            // 2026-08-14 (§13.6): the whiteboard mirror leads the large face;
-            // Recovery stays visible below as a one-line index ("keep as
-            // index"), reusing the pin-anchored recoverySummaryRow.
-            AtriaWidgetWhiteboardList(rows: entry.snapshot?.whiteboardRows,
-                                      compact: false)
+            // Owner screenshot 2026-08-24: this face was clipped top AND
+            // bottom by WidgetKit. It packed a multi-row whiteboard list, the
+            // Recovery index, four metric tiles and the Start/Stop controls
+            // into a fixed-height container. The whiteboard list was the
+            // redundant one — its metrics are the same values the four tiles
+            // below already render — so it goes and the rest fits.
             recoverySummaryRow
 
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
@@ -1611,7 +1683,7 @@ private struct AtriaWidgetDailyConcentricRings: View {
             // Match AtriaTriRingSlot.defaultOrder in the app: Sleep is outer,
             // Recovery is middle, and Strain is inner.
             AtriaWidgetDailyRing(presentation: sleep,
-                                 tint: .indigo,
+                                 tint: atriaWidgetSleepIdentityColor,
                                  lineWidth: 6)
                 .frame(width: 88, height: 88)
             AtriaWidgetDailyRing(presentation: recovery,
@@ -1668,62 +1740,11 @@ private struct AtriaWidgetRecoveryGauge: View {
 }
 
 /// 2026-08-14 (§13.6): whiteboard tone → tint, mirroring the Today card.
-private func atriaWhiteboardToneColor(_ tone: String) -> Color {
-    switch tone {
-    case "supportive": return .green
-    case "caution": return .orange
-    case "strained": return .red
-    default: return .secondary
-    }
-}
-
-/// 2026-08-14 (§13.6): the widget face of the morning whiteboard. Renders the
-/// pre-serialized rows verbatim; nil/empty rows show one honest placeholder
-/// instead of resurrecting a Recovery lead.
-private struct AtriaWidgetWhiteboardList: View {
-    let rows: [AtriaWidgetWhiteboardRow]?
-    let compact: Bool
-
-    var body: some View {
-        if let rows, !rows.isEmpty {
-            VStack(alignment: .leading, spacing: compact ? 4 : 7) {
-                ForEach(rows, id: \.id) { row in
-                    HStack(spacing: 6) {
-                        if compact {
-                            Circle()
-                                .fill(atriaWhiteboardToneColor(row.tone))
-                                .frame(width: 5, height: 5)
-                        } else {
-                            Image(systemName: row.symbol)
-                                .font(.caption2)
-                                .foregroundStyle(atriaWhiteboardToneColor(row.tone))
-                                .frame(width: 14)
-                        }
-                        Text(row.value)
-                            .font(compact ? .caption2.weight(.bold) : .caption.weight(.bold))
-                            .foregroundStyle(atriaWhiteboardToneColor(row.tone))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-                        if !compact {
-                            Text(row.sentence)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.7)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("\(row.value), \(row.sentence)")
-                }
-            }
-        } else {
-            Text("Whiteboard awaiting data · Open Atria")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-        }
-    }
-}
+// `AtriaWidgetWhiteboardList` and its tone-colour helper lived here until
+// 2026-08-24. Both faces that rendered the list (small square, large) now show
+// a focused layout instead — one purpose per widget size — so the view had no
+// call sites left. `AtriaWidgetWhiteboardRow` stays: the snapshot carries it
+// and the per-metric lookups still read individual rows.
 
 struct AtriaStatusWidget: Widget {
     var body: some WidgetConfiguration {
@@ -3261,12 +3282,49 @@ enum AtriaWidgetMetric: String, Identifiable {
     var tint: Color {
         switch self {
         case .steps: return .blue
-        case .strain: return .orange
-        case .hrv: return .pink
+        case .strain: return atriaWidgetStrainIdentityColor
+        case .hrv: return atriaWidgetHRVIdentityColor
         case .bpm: return .red
-        case .sleep: return .indigo
-        case .rhr: return .mint
+        case .sleep: return atriaWidgetSleepIdentityColor
+        case .rhr: return atriaWidgetRHRIdentityColor
         }
+    }
+
+    /// Hold-last-good for the widget face (owner screenshot 2026-08-24: the
+    /// small "Strap steps" widget rendered a bare "--" above "Step stale ·
+    /// last 7:14 AM"). A blank reads as broken; the last known count shown
+    /// dimmed next to its honest stale caption reads as intentional.
+    ///
+    /// Deliberately limited to CUMULATIVE, day-scoped values. A step total is
+    /// monotonic within its cycle, so yesterday-at-7:14's number is still a
+    /// true lower bound on the day. An instantaneous reading (BPM) is not —
+    /// showing a stale one dimmed would imply a pulse that is not there, so
+    /// those keep failing closed to "--".
+    struct Rendered: Equatable {
+        let text: String
+        /// True when `text` is a held last-known value rather than a current
+        /// one. The caller MUST dim it; the status line carries the "stale ·
+        /// last HH:MM" truth.
+        let isStaleLastKnown: Bool
+    }
+
+    func rendered(_ snapshot: AtriaWidgetSnapshot?, now: Date) -> Rendered {
+        let current = value(snapshot, now: now)
+        guard current == "--" else {
+            return Rendered(text: current, isStaleLastKnown: false)
+        }
+        guard case .steps = self,
+              let snapshot,
+              let lastKnown = snapshot.steps,
+              lastKnown >= 0,
+              snapshot.stepsCapturedAt != nil else {
+            return Rendered(text: current, isStaleLastKnown: false)
+        }
+        return Rendered(
+            text: snapshot.stepsValueText
+                ?? atriaStepValueText(snapshot, steps: lastKnown),
+            isStaleLastKnown: true
+        )
     }
 
     var unit: String {
@@ -3479,7 +3537,16 @@ struct AtriaMetricWidgetEntryView: View {
     let metric: AtriaWidgetMetric
     let entry: AtriaWidgetEntry
 
-    private var value: String { metric.value(entry.snapshot, now: entry.date) }
+    private var rendered: AtriaWidgetMetric.Rendered {
+        metric.rendered(entry.snapshot, now: entry.date)
+    }
+    private var value: String { rendered.text }
+    /// A held last-known value must never wear the metric's full identity
+    /// tint — dimming is what separates "this is current" from "this is the
+    /// last number we actually saw".
+    private var valueTint: Color {
+        rendered.isStaleLastKnown ? .secondary : .primary
+    }
 
     var body: some View {
         Group {
@@ -3554,6 +3621,7 @@ struct AtriaMetricWidgetEntryView: View {
             Text(value)
                 .font(.system(size: 42, weight: .heavy, design: .rounded))
                 .monospacedDigit()
+                .foregroundStyle(valueTint)
                 .lineLimit(1)
                 .minimumScaleFactor(0.45)
                 .atriaLiveActivityValueTransition(value)
@@ -3596,6 +3664,7 @@ struct AtriaMetricWidgetEntryView: View {
                 Text(value)
                     .font(.system(size: 48, weight: .heavy, design: .rounded))
                     .monospacedDigit()
+                    .foregroundStyle(valueTint)
                     .lineLimit(1)
                     .minimumScaleFactor(0.45)
                     .atriaLiveActivityValueTransition(value)

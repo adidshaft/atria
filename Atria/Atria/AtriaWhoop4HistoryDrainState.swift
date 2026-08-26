@@ -150,6 +150,9 @@ struct AtriaWhoop4HistoryDrainState: Equatable, Sendable {
     /// Multiple real flash holes can occur in one backlog. Retaining a bounded
     /// set of already replay-confirmed transitions prevents retry oscillation.
     private var confirmedForwardDiscontinuities: [ForwardDiscontinuity] = []
+    /// Consented ACK-consume-to-now walks the strap pointer without a durable
+    /// archive write. Default drains keep persist-before-ACK.
+    private var ackWithoutPersisting = false
 
     init(maximumACKAttempts: Int = 3) {
         self.maximumACKAttempts = max(1, maximumACKAttempts)
@@ -289,11 +292,15 @@ struct AtriaWhoop4HistoryDrainState: Equatable, Sendable {
 
     /// Starts a newer drain generation. Repeated or older begins are ignored so
     /// delayed orchestration cannot erase live progress.
-    mutating func begin(generation newGeneration: UInt64) -> [Effect] {
+    mutating func begin(
+        generation newGeneration: UInt64,
+        ackWithoutPersisting: Bool = false
+    ) -> [Effect] {
         if let generation, newGeneration <= generation {
             return []
         }
         generation = newGeneration
+        self.ackWithoutPersisting = ackWithoutPersisting
         persistedFrameCount = 0
         acknowledgedBatchCount = 0
         terminalWasReceived = false
@@ -472,8 +479,9 @@ struct AtriaWhoop4HistoryDrainState: Equatable, Sendable {
                 // like a dropped-notification gap (for example 405, 366, 406).
                 // UInt16 wrap remains forward because `serialDelta` is 1.
                 if serialDelta <= 0 {
-                    pendingFrameKeys.insert(frameKey)
                     currentBatchFrameCount += 1
+                    if ackWithoutPersisting { return [] }
+                    pendingFrameKeys.insert(frameKey)
                     return [.persistFrame(
                         generation: eventGeneration,
                         frameKey: frameKey,
@@ -490,8 +498,9 @@ struct AtriaWhoop4HistoryDrainState: Equatable, Sendable {
                 requiresPendingForwardDiscontinuityReplay = false
             }
         }
-        pendingFrameKeys.insert(frameKey)
         currentBatchFrameCount += 1
+        if ackWithoutPersisting { return [] }
+        pendingFrameKeys.insert(frameKey)
         return [.persistFrame(
             generation: eventGeneration,
             frameKey: frameKey,
@@ -562,6 +571,20 @@ struct AtriaWhoop4HistoryDrainState: Equatable, Sendable {
 
         switch phase {
         case .listening:
+            if ackWithoutPersisting {
+                pendingFrameKeys.removeAll(keepingCapacity: true)
+                phase = .waitingForACK(
+                    boundaryID: boundaryID,
+                    ackPayload: ackPayload,
+                    attempt: 1
+                )
+                return [.sendACK(
+                    generation: eventGeneration,
+                    boundaryID: boundaryID,
+                    payload: ackPayload,
+                    attempt: 1
+                )]
+            }
             if pendingFrameKeys.isEmpty {
                 phase = .waitingForBatchFlush(boundaryID: boundaryID, ackPayload: ackPayload)
                 return [.durableFlush(
@@ -665,6 +688,7 @@ struct AtriaWhoop4HistoryDrainState: Equatable, Sendable {
 
         switch phase {
         case .listening:
+            if ackWithoutPersisting { return finish() }
             guard currentBatchFrameCount > 0 else { return finish() }
             let boundary = FlushBoundary.terminal(currentBatchNumber)
             if pendingFrameKeys.isEmpty {

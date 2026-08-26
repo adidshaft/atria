@@ -341,8 +341,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_CFBundleDisplayName = Atria;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Atria reads live data from your strap over Bluetooth.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "This app reads Health only to confirm locally captured Atria data appears in Apple Health.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "This app writes local heart-rate sessions, workouts, and user-confirmed sleep to Apple Health when you approve access.";
@@ -377,8 +377,8 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_CFBundleDisplayName = Atria;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription = "Atria reads live data from your strap over Bluetooth.";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "This app reads Health only to confirm locally captured Atria data appears in Apple Health.";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "This app writes local heart-rate sessions, workouts, and user-confirmed sleep to Apple Health when you approve access.";

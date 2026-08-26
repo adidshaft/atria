@@ -11637,6 +11637,27 @@ final class SessionStore: ObservableObject {
         ]
     }
 
+    /// NOT CALLED IN PRODUCTION. Its only caller,
+    /// `refreshPriorCivilDayStrapStepReceipts(reason:backfillDays:)`, was
+    /// deleted in c18ab728 (2026-08-09, "Harden BLE continuity and bounded
+    /// motion sync") because it scanned up to seven days of archive and that
+    /// cost was what the change set out to bound. Two tests still exercise this
+    /// helper, so it reads as covered behaviour — it is not; nothing writes a
+    /// receipt for a day older than `immediatelyPrior`.
+    ///
+    /// The visible consequence is on the weekly steps chart: every bar older
+    /// than the immediately-prior cycle is frozen at whatever the step
+    /// computation produced when that day was last current, and no later fix to
+    /// the computation reaches it. `AtriaWhoop4GravityCadenceStepModel
+    /// .algorithmVersion` does not help — it is a release AUTHORIZATION, not a
+    /// content key, so it is deliberately not bumped when the maths changes.
+    ///
+    /// Kept rather than deleted because it is the correct building block if the
+    /// backfill lane is ever restored under a tighter budget. Do NOT reach for
+    /// a store-level revision key instead: `loadRecordsLocked()` is
+    /// all-or-nothing and its `catch` deletes the file, so invalidating stale
+    /// receipts would erase every bar and only the two refreshed windows would
+    /// ever come back.
     nonisolated static func completedPriorCivilDayWindows(
         now: Date,
         cycleStart: Date,
@@ -11690,6 +11711,22 @@ final class SessionStore: ObservableObject {
         // actually reaches the serial lane. A coalesced trailing admission
         // captures this snapshot again, after any intervening sleep mutation.
         let confirmedSleeps = cachedConfirmedSleeps
+        // Spans that cannot have produced footfalls. The strap counter is a
+        // WRIST-motion counter, so a sustained upper-body or seated session
+        // adds ticks with no steps behind them — on 2026-08-24 a single
+        // 65-minute strength block was 5,232 of the day's 12,956 raw ticks
+        // (40%). Snapshotted on the MainActor alongside the sleeps, then cut
+        // out of step coverage entirely inside the read.
+        let nonGaitWindows: [DateInterval] = cachedConfirmedWorkouts
+            .compactMap { workout in
+                guard workout.end > workout.start,
+                      !AtriaWorkoutActivityType.resolved(
+                          activityType: workout.activityType,
+                          subtype: workout.activitySubtype,
+                          label: workout.label
+                      ).producesFootfalls else { return nil }
+                return DateInterval(start: workout.start, end: workout.end)
+            }
         Self.currentCycleStepReceiptQueue.async { [weak self] in
             var postsEmptyCycleInvalidation = false
             defer {
@@ -11725,21 +11762,46 @@ final class SessionStore: ObservableObject {
                     now: now
                 )
                 if coverage.isEmpty {
-                    AtriaDebugLog(
-                        "ATRIADBG whoop4_daily_steps status=receipt_refresh_skipped reason=%@ generation=%d window=%@ detail=no_bank_coverage window_start=%.3f window_end=%.3f",
-                        reason,
-                        generation,
-                        window.role.rawValue,
-                        window.interval.start.timeIntervalSince1970,
-                        window.interval.end.timeIntervalSince1970
-                    )
+                    // A freshly rolled cycle legitimately has no banked
+                    // coverage. Re-resolve Home/widgets regardless of whether
+                    // stored rows let us continue below — `hasStoredRows` is
+                    // day-bucket granular, so on a day that already holds rows
+                    // it answers true for even a minutes-old cycle, and
+                    // folding it into this branch would silently stop the
+                    // invalidation from ever firing.
                     if window.role == .current {
-                        // A freshly rolled cycle legitimately has no banked
-                        // coverage. Re-resolve Home/widgets, but continue to
-                        // the prior cycle so its late compact rows can advance.
                         postsEmptyCycleInvalidation = true
                     }
-                    continue
+                    // The bank ledger is a 512-entry FIFO and had already
+                    // forgotten whole days that still held tens of thousands
+                    // of decoded rows (2026-08-25: 08-22 and 08-23 scored zero
+                    // steps). An empty ledger is no longer proof of no
+                    // evidence — ask the store's files (one `stat` per day
+                    // bucket) before giving up on the window. Evaluated only
+                    // here so the common non-empty-ledger path never pays the
+                    // store lock.
+                    guard AtriaWhoop4MotionTickCompactStore.shared
+                        .hasStoredRows(
+                            start: window.interval.start,
+                            end: window.interval.end,
+                            strapIdentifier: strapIdentifier
+                        ) else {
+                        AtriaDebugLog(
+                            "ATRIADBG whoop4_daily_steps status=receipt_refresh_skipped reason=%@ generation=%d window=%@ detail=no_bank_coverage_and_no_stored_rows window_start=%.3f window_end=%.3f",
+                            reason,
+                            generation,
+                            window.role.rawValue,
+                            window.interval.start.timeIntervalSince1970,
+                            window.interval.end.timeIntervalSince1970
+                        )
+                        continue
+                    }
+                    AtriaDebugLog(
+                        "ATRIADBG whoop4_daily_steps status=receipt_refresh_on_stored_rows reason=%@ generation=%d window=%@ detail=ledger_evicted_rows_present",
+                        reason,
+                        generation,
+                        window.role.rawValue
+                    )
                 }
                 let compactFingerprintBefore =
                     AtriaWhoop4MotionTickCompactStore.shared.sourceFingerprint(
@@ -11757,7 +11819,8 @@ final class SessionStore: ObservableObject {
                         // whose window ends at `now` and whose final interval the
                         // compact store necessarily lags. The prior cycle ends on
                         // a real closed boundary and must stay strict.
-                        allowOpenTail: window.role == .current
+                        allowOpenTail: window.role == .current,
+                        excludedIntervals: nonGaitWindows
                     )
                 let compactFingerprintAfter =
                     AtriaWhoop4MotionTickCompactStore.shared.sourceFingerprint(
@@ -11858,7 +11921,7 @@ final class SessionStore: ObservableObject {
                 }
             }
             AtriaDebugLog(
-                "ATRIADBG whoop4_daily_steps status=receipt_refresh_complete reason=%@ generation=%d window=%@ changed=%d steps=%d known_s=%d missing_s=%d",
+                "ATRIADBG whoop4_daily_steps status=receipt_refresh_complete reason=%@ generation=%d window=%@ changed=%d steps=%d known_s=%d missing_s=%d read_case=qualified",
                 reason,
                 generation,
                 windowRole.rawValue,
@@ -18912,13 +18975,25 @@ final class SessionStore: ObservableObject {
                     workout: workout,
                     strapIdentifier: strapIdentifier
                 )
-                if Self.shouldScanWorkoutStepEvidence(
+                guard Self.shouldScanWorkoutStepEvidence(
                     cachedFingerprint: cachedNegatives[key],
                     currentFingerprint: compactFingerprint
-                ) {
-                    eligible = (workout, compactFingerprint)
-                    break
-                }
+                ) else { continue }
+                // This pass scans exactly ONE workout, so a candidate with no
+                // stored rows burns the whole pass and the real walk behind it
+                // is never reached. Device 2026-08-25:
+                // `walk_counter_fallback status=unreached reason=window_guard
+                // rows=0 window_s=55` — a 55-second walking workout with no
+                // compact rows was starving the 21-minute walk that did have
+                // 1,308 of them. This probe is stat-only (one per day bucket),
+                // so skipping is far cheaper than the decode it avoids.
+                guard AtriaWhoop4MotionTickCompactStore.shared.hasStoredRows(
+                    start: workout.start,
+                    end: workout.end,
+                    strapIdentifier: strapIdentifier
+                ) else { continue }
+                eligible = (workout, compactFingerprint)
+                break
             }
 
             var attempted = 0
@@ -18932,7 +19007,12 @@ final class SessionStore: ObservableObject {
                     .motionTickWindowRead(
                         start: old.start,
                         end: old.end,
-                        strapIdentifier: strapIdentifier
+                        strapIdentifier: strapIdentifier,
+                        // `originals` is filtered to
+                        // `AtriaWorkoutActivityType.resolved(...) == .walking`
+                        // above, so this window is a walk the user labelled.
+                        // That label is what licenses the counter fallback.
+                        allowCounterFallbackForConfirmedWalk: true
                     )
                 switch read {
                 case .qualified(let tickWindow):
@@ -18990,12 +19070,34 @@ final class SessionStore: ObservableObject {
                 for (original, replacement) in replacements {
                     guard let index = updated.firstIndex(
                         where: { $0.id == original.id }
-                    ),
-                    updated[index] == original,
-                    Self.recoveredWorkoutEvidenceIsStronger(
+                    ) else {
+                        AtriaDebugLog(
+                            "ATRIADBG workout_step_apply status=rejected reason=id_not_found id=%@",
+                            original.id
+                        )
+                        continue
+                    }
+                    guard updated[index] == original else {
+                        AtriaDebugLog(
+                            "ATRIADBG workout_step_apply status=rejected reason=workout_changed_since_scan id=%@",
+                            original.id
+                        )
+                        continue
+                    }
+                    guard Self.recoveredWorkoutEvidenceIsStronger(
                         replacement,
                         than: original
-                    ) else { continue }
+                    ) else {
+                        AtriaDebugLog(
+                            "ATRIADBG workout_step_apply status=rejected reason=not_stronger id=%@ old_steps=%d new_steps=%d old_samples=%d new_samples=%d",
+                            original.id,
+                            original.workoutSteps ?? -1,
+                            replacement.workoutSteps ?? -1,
+                            original.samples,
+                            replacement.samples
+                        )
+                        continue
+                    }
                     updated[index] = replacement
                     applied += 1
                 }
@@ -19062,8 +19164,25 @@ final class SessionStore: ObservableObject {
             )),
             strapIdentifier.uppercased(),
             AtriaWhoop4GravityCadenceStepModel.algorithmVersion,
+            workoutStepScoringRevision,
         ].joined(separator: "|")
     }
+
+    /// Scoring-CONFIGURATION revision, deliberately separate from
+    /// `AtriaWhoop4GravityCadenceStepModel.algorithmVersion`.
+    ///
+    /// That version is a release AUTHORIZATION — its own comment says v17 "is
+    /// authorized only after the provenance-bound physical corpus passes all
+    /// twelve counted walks and four planted-feet controls" — so bumping it to
+    /// flush a cache would assert a re-validation that did not happen.
+    ///
+    /// This key exists for changes that alter what a scan can CONCLUDE without
+    /// touching the authorized model. r2 adds the confirmed-walk counter
+    /// fallback: workouts that cached a negative under r1 were skipped forever
+    /// even though the same rows now resolve, because the cache keys on the
+    /// data fingerprint and the fingerprint had not changed.
+    nonisolated static let workoutStepScoringRevision =
+        "workout-step-scoring-r2-confirmed-walk-counter-fallback"
 
     nonisolated static func shouldScanWorkoutStepEvidence(
         cachedFingerprint: String?,
@@ -57337,7 +57456,11 @@ struct SessionDetail: View {
                 VStack(spacing: 16) {
                     Chart(Array(displayedPoints.enumerated()), id: \.offset) { _, p in
                         LineMark(x: .value("t", p.t), y: .value("bpm", p.bpm))
-                            .interpolationMethod(.linear)
+                            // Dense beat-level series, same as the heart-rate
+                            // traces in Vitals and the Stress monitor — smooth
+                            // it the same way rather than leaving this one
+                            // surface angular.
+                            .interpolationMethod(.monotone)
                             .foregroundStyle(.red.gradient)
                     }
                     .frame(height: 220)

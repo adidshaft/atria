@@ -11116,14 +11116,33 @@ final class AtriaHomeModel {
         // their own authority lane and physiological-cycle clock; never scan them
         // from the 400 ms sessionSampleCount publication cadence.
         refreshLiveSessionDerivedIfNeeded()
-        let next = Self.makeCoreLiveState(ble: ble,
+        var next = Self.makeCoreLiveState(ble: ble,
                                           liveSessionDerived: liveSessionDerived,
                                           savedAggregate: savedAggregate,
                                           canonicalStepDays: store.historySnapshot
                                             .verifiedHistoricalStepEvidenceDays)
+        // Anti-flicker (owner report 2026-08-24): the recovery banner is the
+        // one status every tab renders, and it oscillated fast enough that
+        // Today and Vitals could disagree about the same underlying state.
+        // Debounce the DOWNGRADE here — at the single source — so every
+        // surface agrees and none of them blanks on a transient recompute.
+        // Bounded: a sustained gap still surfaces honestly after the grace.
+        let held = AtriaHoldLastGoodPresentation.resolve(
+            incoming: next.historicalRecoveryPresentation,
+            state: recoveryPresentationHold,
+            now: Date()
+        )
+        recoveryPresentationHold = held.state
+        next.historicalRecoveryPresentation = held.value
         guard next != coreLiveStore.state else { return }
         coreLiveStore.state = next
     }
+
+    /// Carry-over for the recovery-banner anti-flicker debounce above.
+    private var recoveryPresentationHold =
+        AtriaHoldLastGoodPresentation.State<
+            AtriaBLEManager.HistoricalRecoveryPresentation
+        >.initial
 
     func refreshDurableStepReceipt() {
         publishCoreLive()

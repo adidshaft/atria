@@ -1694,6 +1694,12 @@ final class AtriaWhoop4MotionTickDailyStoreTests: XCTestCase {
         XCTAssertTrue(body.contains(
             "case .compactOnlyMissing"
         ))
+        XCTAssertTrue(
+            body.contains(
+                "status=receipt_refresh_complete reason=%@ generation=%d window=%@ changed=%d steps=%d known_s=%d missing_s=%d read_case=qualified"
+            ),
+            "compact .qualified must log read_case=qualified so device soaks can prove a fresh-day window"
+        )
         XCTAssertTrue(body.contains(".motionTickDayEvidenceRead("))
         XCTAssertTrue(body.contains(
             "Self.currentCycleStepReceiptQueue.async"

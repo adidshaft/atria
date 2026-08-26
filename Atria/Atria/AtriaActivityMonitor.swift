@@ -2603,27 +2603,23 @@ struct AtriaActivityMonitorTab: View {
             ForEach(points) { point in
                 // Translucent fill descending to the x-axis, matching the Vitals
                 // Live-monitor HR chart. Same per-segment series as the line so it
-                // never fills across a real gap.
+                // never fills across a real gap. The stroke carries the shared
+                // HR intensity ramp so a pulse reads the same on both tabs.
                 AreaMark(x: .value("Time", point.t),
                          y: .value("Heart rate", point.bpm),
                          series: .value("Observed run", "hr-\(point.segment)"))
                     .interpolationMethod(.monotone)
-                    .foregroundStyle(.linearGradient(colors: [.red.opacity(0.18),
-                                                              .red.opacity(0.02)],
-                                                     startPoint: .bottom,
-                                                     endPoint: .top))
+                    .foregroundStyle(Metrics.heartRateIntensityAreaGradient)
                 LineMark(x: .value("Time", point.t),
                          y: .value("Heart rate", point.bpm),
                          series: .value("Observed run", "hr-\(point.segment)"))
                     .interpolationMethod(.monotone)
                     .lineStyle(AtriaChartVisualGrammar.traceLine)
-                    .foregroundStyle(.linearGradient(colors: [.red, .orange],
-                                                     startPoint: .bottom,
-                                                     endPoint: .top))
+                    .foregroundStyle(Metrics.heartRateIntensityGradient)
                 if point.isOnlyPointInSegment {
                     PointMark(x: .value("Time", point.t),
                               y: .value("Heart rate", point.bpm))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Metrics.heartRateIntensityGradient)
                         .symbolSize(16)
                 }
             }
