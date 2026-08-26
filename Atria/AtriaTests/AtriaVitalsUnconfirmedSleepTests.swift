@@ -163,7 +163,16 @@ final class AtriaVitalsUnconfirmedSleepTests: XCTestCase {
         XCTAssertTrue(health.contains("if let currentSleep, !currentSleep.confirmed"),
                       "showing the night without saying it is unconfirmed would "
                           + "be the opposite error from hiding it")
-        XCTAssertTrue(health.contains("\"Review sleep\""))
+        // NOT "Review sleep": that wording belongs to Today and Overview,
+        // which carry the review control. Vitals has none — the confirm
+        // affordance lived only in the dead AtriaSleepHistoryCard.
+        XCTAssertTrue(health.contains("\"Unconfirmed\""))
+        // Checked as a RENDERED string (quoted, inside a Text) rather than
+        // anywhere in the file — the explanatory comment beside that label has
+        // to be able to name the wording it is deliberately not using.
+        XCTAssertFalse(health.contains("Text(currentSleep.isNapEvidence ? \"Review nap\""),
+                       "a call to action on a screen with no action is worse "
+                           + "than no label")
     }
 
     func testTheScreenStillCannotReachTheRawConfirmedOnlyAccessor() throws {

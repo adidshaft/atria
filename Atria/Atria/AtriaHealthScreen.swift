@@ -1084,18 +1084,22 @@ struct AtriaHealthScreen: View {
                 Text("Sleep detail")
                     .font(.title2.weight(.bold))
                 // An unconfirmed night is shown but never presented as settled.
-                // Today and Overview already say "Review sleep" for the same
-                // record; without this the measured rows below would read as
-                // final, which is the opposite error from hiding them.
+                // Deliberately NOT the "Review sleep" wording Today and Overview
+                // use for the same record: those screens carry the review
+                // control, and this one does not — the confirm affordance lived
+                // only in AtriaSleepHistoryCard, which was part of the dead
+                // Vitals tree removed in this change. A call to action on a
+                // screen with no action is worse than no label, so this states
+                // the status and the accessibility label says where to act.
                 if let currentSleep, !currentSleep.confirmed {
-                    Text(currentSleep.isNapEvidence ? "Review nap" : "Review sleep")
+                    Text(currentSleep.isNapEvidence ? "Unconfirmed nap" : "Unconfirmed")
                         .font(.caption.weight(.bold))
                         .foregroundStyle(Metrics.electricSleep)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 4)
                         .background(Metrics.electricSleep.opacity(0.14),
                                     in: Capsule(style: .continuous))
-                        .accessibilityLabel("Not yet confirmed. Review sleep.")
+                        .accessibilityLabel("Not yet confirmed. Review it on Today.")
                 }
                 Spacer(minLength: 0)
             }

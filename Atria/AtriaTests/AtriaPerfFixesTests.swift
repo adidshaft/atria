@@ -819,19 +819,34 @@ final class AtriaPerfFixesTests: XCTestCase {
     }
 
     func testHealthMonitorUsesTheCurrentPhysiologicalCycleRecoveryEstimate() throws {
+        // 2026-08-26: this assertion's subject lived in the orphaned Vitals
+        // tab tree (AtriaVitalsTabContent, zero construction sites), removed
+        // in that change. AtriaHomeView mounts AtriaHealthScreen for the
+        // Vitals tab and always has, so this was guarding UI nobody could
+        // open. Recorded rather than silently deleted: it means this behaviour
+        // was BUILT AND TESTED but never reached the live screen.
+        //
+        // `healthMonitorRecoveryEstimate` belonged to AtriaHealthMonitorCard.
+        // The invariant it guarded — read the hero's cycle-scoped estimate, do
+        // not rebuild one from dailyRollupHistory, do not stamp it .validated —
+        // is a good one, and the live screen must not reintroduce the shape it
+        // forbade.
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        let sourceURL = testsDirectory
-            .deletingLastPathComponent()
-            .appendingPathComponent("Atria/AtriaVitalsCollectionSections.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        let start = try XCTUnwrap(source.range(of: "private var healthMonitorRecoveryEstimate"))
-        let end = try XCTUnwrap(source.range(of: "private var healthMonitorGuidance",
-                                             range: start.upperBound..<source.endIndex))
-        let property = String(source[start.lowerBound..<end.lowerBound])
+        let health = try String(
+            contentsOf: testsDirectory.deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaHealthScreen.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(health.contains("heroStore.state.recoveryEstimate"),
+                      "the live screen must read the hero's cycle estimate")
 
-        XCTAssertTrue(property.contains("heroStore.state.recoveryEstimate"))
-        XCTAssertFalse(property.contains("dailyRollupHistory"))
-        XCTAssertFalse(property.contains("confidence: .validated"))
+        let vitals = try String(
+            contentsOf: testsDirectory.deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaVitalsCollectionSections.swift"),
+            encoding: .utf8
+        )
+        XCTAssertFalse(vitals.contains("healthMonitorRecoveryEstimate"),
+                       "the dead card must stay removed")
     }
 
     func testCheckpointDiagnosticsDoNotEvaluateWhenLoggingIsDisabled() {

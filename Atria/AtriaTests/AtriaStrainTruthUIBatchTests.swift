@@ -194,17 +194,23 @@ final class AtriaStrainTruthUIBatchTests: XCTestCase {
         XCTAssertFalse(sources.triRing.contains("dash: [2, lineWidth * 1.4]"))
         XCTAssertEqual(sources.triRing.components(separatedBy: "dash: [4, 16]").count - 1,
                        1)
-        XCTAssertFalse(sources.vitals.contains("AtriaStrainBandGauge("))
-        XCTAssertTrue(sources.vitals.contains("AtriaStrainScaleRail("))
-        XCTAssertTrue(sources.vitals.contains("displayValue: hero.strainValue"))
-        XCTAssertTrue(sources.vitals.contains("workouts: vitals.confirmedWorkouts"))
-        XCTAssertTrue(sources.vitals.contains("strainLimitation: strainLimitation"))
-        XCTAssertTrue(sources.vitals.contains("limitation?.improvementHint"))
-        XCTAssertTrue(sources.vitals.contains("limitation?.explanation"))
-        XCTAssertFalse(sources.vitals.contains("\"Finish sync\""))
-        XCTAssertFalse(sources.vitals.localizedCaseInsensitiveContains("sync completes"))
-        XCTAssertTrue(sources.vitals.contains("state: strainIsPartial ? nil : .local"))
-        XCTAssertTrue(sources.vitals.contains("guard !strainIsPartial else { return nil }"))
+        // 2026-08-26: this assertion's subject lived in the orphaned Vitals
+        // tab tree (AtriaVitalsTabContent, zero construction sites), removed
+        // in that change. AtriaHomeView mounts AtriaHealthScreen for the
+        // Vitals tab and always has, so this was guarding UI nobody could
+        // open. Recorded rather than silently deleted: it means this behaviour
+        // was BUILT AND TESTED but never reached the live screen.
+        //
+        // UNMIGRATED, and this is the most substantial of the three: the entire
+        // truth-aware strain rail — AtriaStrainScaleRail with its limitation
+        // explanation, improvement hint, and partial-strain suppression — lived
+        // in AtriaRecoveryStrainCard inside the dead tree. The live Vitals tab
+        // has no strain rail at all. That is a real feature gap, not a
+        // regression from the removal: it was never reachable.
+        XCTAssertFalse(sources.vitals.contains("AtriaStrainScaleRail("),
+                       "the dead card must stay removed")
+        XCTAssertFalse(sources.vitals.contains("AtriaStrainBandGauge("),
+                       "and the gauge it replaced must not come back either")
     }
 
     private func sourceText() throws -> (
