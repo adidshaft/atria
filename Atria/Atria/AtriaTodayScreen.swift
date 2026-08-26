@@ -226,6 +226,10 @@ final class AtriaTodaySessionProjectionStore: ObservableObject {
 struct AtriaTodayScreen: View {
     let liveStore: AtriaHomeModel.CoreLiveStore
     let pulseStore: AtriaHomeModel.HeroPulseStore
+    /// Source of the intra-day stress series behind the Stress card's line
+    /// sparkline — the same archive the Stress monitor renders, so the corner
+    /// chart and the full timeline can never disagree.
+    @ObservedObject var stressMonitorStore: AtriaStressMonitorStore
     // Lifetime reference only. Live HeroStore publishes are observed by the
     // narrow AtriaTodayHeroProjectionHost leaves below, so a 1.5-second strain
     // update cannot invalidate this section-order/lazy-container view.
@@ -2524,9 +2528,48 @@ struct AtriaTodayScreen: View {
             return history.compactMap { $0.rhr.map(Double.init) }
         case .sleepPerformance:
             return history.compactMap { $0.sleepPerformance.map(Double.init) }
+        case .stress:
+            // Intra-day, not daily: a line must be fed the shape the day
+            // actually had.
+            return stressIntradaySeries()
         default:
             return []
         }
+    }
+
+    /// Which shape a metric's corner chart takes — one per card, decided by how
+    /// the metric is sampled, never by how it looks.
+    ///
+    /// Once-a-day values (sleep, steps, recovery, strain, and the nightly
+    /// measures) are bars. Quantities that travel through the day (stress,
+    /// heart rate) are a line, and are fed an INTRA-DAY series — never seven
+    /// daily averages, which would draw a shape the day never had.
+    private func glanceSparklineStyle(
+        for metric: AtriaTodayMetric
+    ) -> AtriaGlanceSparkline.Style {
+        switch metric {
+        case .stress:
+            return .line
+        default:
+            return .bars
+        }
+    }
+
+    /// Today's stress readings, oldest first, for the line sparkline.
+    ///
+    /// Read from the same archive the Stress monitor draws, so the corner chart
+    /// cannot disagree with the full timeline. Bounded to the current
+    /// physiological cycle: a line that silently reached back into yesterday
+    /// would read as today's shape.
+    private func stressIntradaySeries() -> [Double] {
+        let cycleStart = AtriaPhysiologicalDay.current(
+            now: Date(),
+            sleepHistory: sessionProjectionStore.state.sleepHistorySnapshot
+        ).start
+        return stressMonitorStore.history
+            .filter { $0.t >= cycleStart }
+            .sorted { $0.t < $1.t }
+            .map(\.activation)
     }
 
     private func glanceItem(for metric: AtriaTodayMetric) -> AtriaTodayGlanceItem? {
@@ -2539,7 +2582,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .recovery:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2548,7 +2592,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: recoveryMetric.tint,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .strain:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2557,7 +2602,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricStrain,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .load:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2566,7 +2612,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricStrain,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .hrZones:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2575,7 +2622,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: .orange,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .workouts:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2584,7 +2632,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: .mint,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .strainCompare:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2594,7 +2643,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricStrain,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .hrv:
             return AtriaTodayGlanceItem(title: "Morning HRV",
                                         metricKey: metric.rawValue,
@@ -2603,7 +2653,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricHRV,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .stress:
             return AtriaTodayGlanceItem(title: displayHero.stressMetricTitle,
                                         metricKey: metric.rawValue,
@@ -2614,7 +2665,8 @@ struct AtriaTodayScreen: View {
                                         // reading as strain; electricStress (amber) matches its detail sheet.
                                         tint: Metrics.electricStress,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .sleepHistory:
             // Honest learning state: sleepConsistencyText is "--" until the
             // canonical engine's qualified-night minimum is met, so surface
@@ -2632,7 +2684,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .sleepEfficiency:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2652,7 +2705,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .sleepPerformance:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2665,7 +2719,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .rhr:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2674,7 +2729,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricRHR,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .respiratoryRate:
             // Cross-tab consistency (2026-07-09): fall back to the latest recorded
             // night's respiratory rate — like the Vitals Health row — so a real value
@@ -2687,7 +2743,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricRespiratory,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .steps:
             return nil
         case .calories:
@@ -2710,7 +2767,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricGreen,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .bioAge:
             // Time-to-detect (2026-07-05): surface the calibration state
             // ("Calibrating 28-day baseline") while the fitness-age baseline is still
@@ -2728,7 +2786,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricGreen,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .bloodOxygen:
             // Decoder validation and hardware capability are separate facts. Do
             // not blame the strap when Atria has not validated its payload layout.
@@ -2741,7 +2800,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: .secondary,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .bodyTemp:
             let skinTemp = sessionProjectionStore.state.skinTemperatureDeviationSummary
             let decoderAvailable = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
@@ -2758,7 +2818,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: .orange,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .trend:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2767,7 +2828,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: layoutConfig.accent.color,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         case .insights:
             let insights = sessionProjectionStore.state.behaviorInsights
             return AtriaTodayGlanceItem(title: metric.label,
@@ -2777,7 +2839,8 @@ struct AtriaTodayScreen: View {
                                         systemImage: metric.systemImage,
                                         tint: layoutConfig.accent.color,
                                         layoutSize: layoutSize(for: metric),
-                                        trend: glanceTrend(for: metric))
+                                        trend: glanceTrend(for: metric),
+                                        trendStyle: glanceSparklineStyle(for: metric))
         }
     }
 
@@ -3559,8 +3622,24 @@ private struct AtriaTodaySleepSettlementRow: View {
 /// The most recent bar keeps full tint; the rest recede, so the eye lands on
 /// "now" and reads backwards.
 struct AtriaGlanceSparkline: View {
+    /// Shape follows how the metric is SAMPLED, one style per card.
+    ///
+    /// * `.bars` — one reading per day (sleep, steps, recovery, strain, and the
+    ///   nightly measures). A bar states "this much, on that day", which is
+    ///   exactly what a once-a-day number is.
+    /// * `.line` — a quantity that moves continuously through the day (stress,
+    ///   heart rate). A line states "this is how it travelled", which bars
+    ///   cannot say. Drawing daily averages as a line would imply within-day
+    ///   shape that is not in the data, so a line is only ever fed an
+    ///   intra-day series.
+    enum Style: Equatable {
+        case bars
+        case line
+    }
+
     let values: [Double]
     let tint: Color
+    var style: Style = .bars
 
     /// Below this there is no shape to show, only noise.
     static let minimumPoints = 3
@@ -3584,28 +3663,73 @@ struct AtriaGlanceSparkline: View {
     }
 
     var body: some View {
-        let series = Array(values.suffix(Self.maximumBars))
+        // A line keeps far more of the day than seven bars can, so it is
+        // sampled to a wider cap; bars stay one-per-day and bounded at a week.
+        let series = style == .bars
+            ? Array(values.suffix(Self.maximumBars))
+            : Self.resampled(values, to: Self.maximumLinePoints)
         let low = series.min() ?? 0
         let high = series.max() ?? 0
 
         GeometryReader { geo in
-            let count = max(series.count, 1)
-            let slot = geo.size.width / CGFloat(count)
-            let barWidth = max(1.5, slot * 0.55)
-            HStack(alignment: .bottom, spacing: max(1, slot - barWidth)) {
-                ForEach(Array(series.enumerated()), id: \.offset) { index, value in
-                    let height = max(2, geo.size.height * Self.barFraction(
-                        value: value, low: low, high: high
-                    ))
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(index == series.count - 1 ? 0.95 : 0.34))
-                        .frame(width: barWidth, height: height)
+            switch style {
+            case .bars:
+                let count = max(series.count, 1)
+                let slot = geo.size.width / CGFloat(count)
+                let barWidth = max(1.5, slot * 0.55)
+                HStack(alignment: .bottom, spacing: max(1, slot - barWidth)) {
+                    ForEach(Array(series.enumerated()), id: \.offset) { index, value in
+                        let height = max(2, geo.size.height * Self.barFraction(
+                            value: value, low: low, high: high
+                        ))
+                        Capsule(style: .continuous)
+                            .fill(tint.opacity(index == series.count - 1 ? 0.95 : 0.34))
+                            .frame(width: barWidth, height: height)
+                    }
                 }
+                .frame(width: geo.size.width, height: geo.size.height,
+                       alignment: .bottomTrailing)
+            case .line:
+                Path { path in
+                    guard series.count >= 2 else { return }
+                    let step = geo.size.width / CGFloat(series.count - 1)
+                    for (index, value) in series.enumerated() {
+                        // Inset by the stroke so the extremes are not sliced in
+                        // half by the frame.
+                        let usable = geo.size.height - Self.lineWidth
+                        let y = geo.size.height - Self.lineWidth / 2
+                            - usable * Self.barFraction(value: value,
+                                                        low: low,
+                                                        high: high)
+                        let point = CGPoint(x: CGFloat(index) * step, y: y)
+                        if index == 0 {
+                            path.move(to: point)
+                        } else {
+                            path.addLine(to: point)
+                        }
+                    }
+                }
+                .stroke(tint.opacity(0.85),
+                        style: StrokeStyle(lineWidth: Self.lineWidth,
+                                           lineCap: .round,
+                                           lineJoin: .round))
+                .frame(width: geo.size.width, height: geo.size.height)
             }
-            .frame(width: geo.size.width, height: geo.size.height, alignment: .bottomTrailing)
         }
         .frame(width: 34, height: 16)
         .accessibilityHidden(true)
+    }
+
+    static let maximumLinePoints = 24
+    private static let lineWidth: CGFloat = 1.5
+
+    /// Even-stride resample so a whole day fits 34 points wide without
+    /// favouring either end. Series shorter than the cap are returned as-is —
+    /// never padded, because a padded point is a reading that did not happen.
+    static func resampled(_ values: [Double], to cap: Int) -> [Double] {
+        guard cap > 1, values.count > cap else { return values }
+        let stride = Double(values.count - 1) / Double(cap - 1)
+        return (0..<cap).map { values[Int((Double($0) * stride).rounded())] }
     }
 }
 
@@ -3645,6 +3769,10 @@ private struct AtriaTodayGlanceItem: Identifiable, Equatable {
     /// metric without history must show nothing rather than a flat invented
     /// line.
     var trend: [Double] = []
+    /// Bars for a once-a-day value, line for a quantity that moves through the
+    /// day. Defaults to bars so a caller that says nothing gets the shape a
+    /// daily metric should have.
+    var trendStyle: AtriaGlanceSparkline.Style = .bars
 
     var id: String { metricKey }
 
@@ -4200,7 +4328,9 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                     .frame(width: 24, height: 24)
                 Spacer(minLength: 0)
                 if item.trend.count >= AtriaGlanceSparkline.minimumPoints {
-                    AtriaGlanceSparkline(values: item.trend, tint: item.tint)
+                    AtriaGlanceSparkline(values: item.trend,
+                                         tint: item.tint,
+                                         style: item.trendStyle)
                 }
             }
             // Emphasis follows whichever line actually carries information. Once

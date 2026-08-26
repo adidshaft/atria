@@ -176,4 +176,88 @@ final class AtriaGlanceTileLayoutTests: XCTestCase {
         XCTAssertEqual(Spark.maximumBars, 7)
         XCTAssertEqual(Spark.minimumPoints, 3)
     }
+
+    // MARK: - Shape follows sampling
+    //
+    // Owner's rule (2026-08-26): one chart type per card. A once-a-day value
+    // (sleep, steps, recovery, strain, the nightly measures) is bars. A
+    // quantity that travels through the day (stress) is a line.
+
+    func testOnceADayMetricsUseBarsAndIntraDayMetricsUseALine() throws {
+        let source = try todayScreen()
+        let start = try XCTUnwrap(
+            source.range(of: "private func glanceSparklineStyle(")
+        )
+        let body = String(source[start.lowerBound...].prefix(600))
+        XCTAssertTrue(body.contains("case .stress:"),
+                      "stress moves through the day")
+        XCTAssertTrue(body.contains("return .line"))
+        XCTAssertTrue(body.contains("default:\n            return .bars"),
+                      "everything once-a-day stays bars")
+    }
+
+    func testTheLineIsFedAnIntraDaySeriesNotDailyAverages() throws {
+        // Drawing seven daily averages as a line would render a shape the day
+        // never had — the same dishonesty as smoothing a sparse daily trend.
+        let source = try todayScreen()
+        XCTAssertTrue(source.contains("case .stress:\n            // Intra-day"),
+                      "stress must not fall through to the daily rollup lane")
+        XCTAssertTrue(source.contains("return stressIntradaySeries()"))
+        let start = try XCTUnwrap(
+            source.range(of: "private func stressIntradaySeries()")
+        )
+        let body = String(source[start.lowerBound...].prefix(700))
+        XCTAssertTrue(body.contains("$0.t >= cycleStart"),
+                      "the line must be bounded to the current cycle, not "
+                          + "reach back into yesterday")
+        XCTAssertTrue(body.contains("stressMonitorStore.history"),
+                      "and must read the same archive the Stress monitor draws")
+    }
+
+    // MARK: - Resampling a day into 34 points
+
+    func testAShortSeriesIsReturnedUntouchedRatherThanPadded() {
+        // A padded point is a reading that did not happen.
+        let short = [1.0, 2.0, 3.0]
+        XCTAssertEqual(Spark.resampled(short, to: Spark.maximumLinePoints), short)
+    }
+
+    func testALongDayIsSampledDownToTheCap() {
+        let day = (0..<600).map(Double.init)
+        let sampled = Spark.resampled(day, to: Spark.maximumLinePoints)
+        XCTAssertEqual(sampled.count, Spark.maximumLinePoints)
+    }
+
+    func testResamplingKeepsBothEndsSoTheLineStartsAndEndsWhereTheDayDid() {
+        let day = (0..<600).map(Double.init)
+        let sampled = Spark.resampled(day, to: Spark.maximumLinePoints)
+        XCTAssertEqual(sampled.first, day.first,
+                       "the day's first reading must survive")
+        XCTAssertEqual(sampled.last, day.last,
+                       "and its most recent one must be the line's endpoint")
+    }
+
+    func testResamplingPreservesOrderSoTheLineCannotRunBackwards() {
+        let rising = (0..<300).map(Double.init)
+        let sampled = Spark.resampled(rising, to: Spark.maximumLinePoints)
+        XCTAssertEqual(sampled, sampled.sorted(),
+                       "an ascending day must stay ascending")
+    }
+
+    func testResamplingNeverInventsAValueThatWasNotMeasured() {
+        let day = (0..<200).map { Double($0) * 3 }
+        let measured = Set(day)
+        for value in Spark.resampled(day, to: Spark.maximumLinePoints) {
+            XCTAssertTrue(measured.contains(value),
+                          "\(value) was never a reading — resampling must pick "
+                              + "real points, not interpolate between them")
+        }
+    }
+
+    func testDegenerateCapsDoNotCrashOrEmptyTheLine() {
+        let day = (0..<50).map(Double.init)
+        XCTAssertEqual(Spark.resampled(day, to: 1), day)
+        XCTAssertEqual(Spark.resampled(day, to: 0), day)
+        XCTAssertEqual(Spark.resampled([], to: 24), [])
+    }
 }

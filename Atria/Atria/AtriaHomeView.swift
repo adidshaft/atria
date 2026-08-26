@@ -5368,6 +5368,7 @@ struct AtriaHomeView: View {
 
             AtriaTodayScreen(liveStore: model.coreLiveStore,
                              pulseStore: model.heroPulseStore,
+                             stressMonitorStore: model.stressMonitorStore,
                              heroStore: model.heroStore,
                              homeStatsStore: model.homeStatsStore,
                              profileMetricsStore: model.profileMetricsStore,

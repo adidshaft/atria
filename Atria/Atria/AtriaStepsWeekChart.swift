@@ -73,14 +73,13 @@ struct AtriaStepsWeekChart: View {
         let start = calendar.date(byAdding: .day, value: -6, to: end) ?? end
         let days = (0...6).compactMap { calendar.date(byAdding: .day, value: $0, to: start) }
         let hasAny = days.contains { stepsByDay[$0] != nil }
-        // 18h rather than 12h of breathing room at each end. Every bar carries
-        // its count as a centred label above it, and `atriaGraphPlotSurface`
-        // clips the plot area — so at 12h the newest day's label ran past the
-        // clip and was cut mid-number ("5,8" for 5,878), losing exactly the
-        // value the reader came for. The extra six hours is half a bar slot;
-        // it costs a little width and keeps the first and last labels whole.
-        let axisLo = calendar.date(byAdding: .hour, value: -18, to: start) ?? start
-        let axisHi = calendar.date(byAdding: .hour, value: 18, to: end) ?? end
+        // Exactly the seven days, edge to edge. A `unit: .day` BarMark occupies
+        // its whole day slot, so a domain of [first 00:00, last 24:00) gives
+        // each bar precisely one seventh of the width with no dead margin —
+        // the earlier ±18h padding bought room for the end labels at the cost
+        // of insetting every bar from the plot edges.
+        let axisLo = start
+        let axisHi = calendar.date(byAdding: .day, value: 1, to: end) ?? end
 
         VStack(alignment: .leading, spacing: 8) {
             Text("This week")
@@ -125,7 +124,16 @@ struct AtriaStepsWeekChart: View {
                 .chartXAxis {
                     AxisMarks(values: days) { _ in
                         AxisGridLine().foregroundStyle(.secondary.opacity(0.12))
-                        AxisValueLabel(format: .dateTime.weekday(.narrow))
+                        // `centered: true` places the letter in the MIDDLE of
+                        // the day it names, which is where a `unit: .day` bar
+                        // is drawn. Without it the tick sits at midnight while
+                        // the bar occupies the whole day, so every weekday
+                        // letter sat half a day left of its own bar. The grid
+                        // line stays on the boundary, which is correct — only
+                        // the label is centred. (Same treatment the stress
+                        // distribution chart already uses.)
+                        AxisValueLabel(format: .dateTime.weekday(.narrow),
+                                       centered: true)
                             .foregroundStyle(.secondary)
                     }
                 }
