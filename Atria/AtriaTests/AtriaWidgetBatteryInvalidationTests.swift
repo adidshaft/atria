@@ -1942,7 +1942,17 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let now = Date(timeIntervalSince1970: 2_000_000_000)
-        let strapValue = WidgetSnapshotPublisher.resolvedDailySteps(
+        // POLICY CHANGE (2026-08-22): this test used to assert that a
+        // preliminary live count published NOTHING. The owner then chose to
+        // surface the live IMU estimate rather than stare at "--" while the
+        // drain caught up, so `(.live, .partial)` now renders
+        // "Today so far · estimate".
+        //
+        // The honesty invariant did not go away, it moved: an unvalidated count
+        // may be SHOWN but must never be DRESSED as verified. That is what this
+        // test guards now — asserting the old "publish nothing" rule would be
+        // asserting a policy the owner overruled.
+        let preliminary = WidgetSnapshotPublisher.resolvedDailySteps(
             day: now,
             now: now,
             liveCount: 612,
@@ -1950,12 +1960,17 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             liveCapturedAt: now,
             calendar: calendar
         )
-        XCTAssertNil(strapValue.count)
-        XCTAssertEqual(strapValue.source, .none)
-        XCTAssertFalse(strapValue.isValidated)
-        XCTAssertEqual(strapValue.detailText, "Strap motion is still validating")
+        XCTAssertEqual(preliminary.count, 612)
+        XCTAssertEqual(preliminary.source, .live)
+        XCTAssertFalse(preliminary.isValidated,
+                       "a preliminary R10 count is not validated evidence")
+        XCTAssertEqual(preliminary.detailText, "Today so far · estimate",
+                       "it must read as an estimate, never as a verified total")
+        XCTAssertNotEqual(preliminary.detailText, "Today so far · live")
 
-        let strapWins = WidgetSnapshotPublisher.resolvedDailySteps(
+        // A large preliminary value must get the SAME treatment — the label is
+        // driven by provenance, never by how believable the number looks.
+        let largePreliminary = WidgetSnapshotPublisher.resolvedDailySteps(
             day: now,
             now: now,
             liveCount: 4_000,
@@ -1963,9 +1978,38 @@ final class AtriaWidgetBatteryInvalidationTests: XCTestCase {
             liveCapturedAt: now,
             calendar: calendar
         )
-        XCTAssertNil(strapWins.count)
-        XCTAssertEqual(strapWins.source, .none)
-        XCTAssertFalse(strapWins.isValidated)
+        XCTAssertEqual(largePreliminary.count, 4_000)
+        XCTAssertFalse(largePreliminary.isValidated)
+        XCTAssertEqual(largePreliminary.detailText, "Today so far · estimate")
+
+        // And a VALIDATED live count is the one allowed to drop the hedge.
+        let validated = WidgetSnapshotPublisher.resolvedDailySteps(
+            day: now,
+            now: now,
+            liveCount: 612,
+            liveValidationState: "r10_live_validated",
+            liveCapturedAt: now,
+            calendar: calendar
+        )
+        XCTAssertTrue(validated.isValidated)
+        XCTAssertEqual(validated.detailText, "Today so far · live")
+
+        // The point of the test's name: the widget must not compute its own
+        // answer. Identical inputs, identical output, because the widget
+        // delegates to the same resolver Home uses.
+        let home = AtriaDailyStepPresentation.resolve(
+            day: now,
+            now: now,
+            liveCount: 612,
+            liveValidationState: "r10_live_preliminary",
+            liveCapturedAt: now,
+            canonicalDays: [],
+            calendar: calendar
+        )
+        XCTAssertEqual(preliminary.count, home.count)
+        XCTAssertEqual(preliminary.source, home.source)
+        XCTAssertEqual(preliminary.isValidated, home.isValidated)
+        XCTAssertEqual(preliminary.detailText, home.detailText)
     }
 
     func testWidgetResolverUsesPartialCanonicalWhenLiveEvidenceIsStale() {
