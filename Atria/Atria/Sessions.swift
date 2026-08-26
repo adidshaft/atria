@@ -39087,8 +39087,26 @@ final class SessionStore: ObservableObject {
                 detail = "No overnight-started session found for the wake-boundary check (source: \(reason))"
             case "tail_not_awake":
                 detail = "No sustained wake HR detected yet (source: \(reason))"
+            case "sleep_fragmented_below_minimum":
+                detail = "Sleep too fragmented to clear the minimum (source: \(reason))"
+            case "sleep_learning":
+                detail = "Sleep model still learning this schedule (source: \(reason))"
+            case "no_active_or_saved_tail":
+                detail = "No active or saved tail session to check (source: \(reason))"
+            case "candidate_did_not_clear_gates":
+                detail = "Trimmed wake-boundary candidate did not clear the "
+                    + "strong-confirm gates (source: \(reason))"
             default:
-                detail = "Trimmed wake-boundary candidate did not clear the strong-confirm gates (source: \(reason))"
+                // Name the blocker rather than hiding it. Device pull
+                // 2026-08-27 showed six consecutive skips across five hours,
+                // every one of them landing in this default with the generic
+                // "did not clear the strong-confirm gates" text — which does
+                // not say WHICH gate, so neither the owner nor a later reader
+                // can tell why a real 5-hour sleep went undetected. Every
+                // known blocker is now spelled out above; anything new says so
+                // instead of impersonating the gate-failure case.
+                detail = "Wake boundary blocked by \(preparation.blocker) "
+                    + "(source: \(reason))"
             }
             DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
                                                      reason: "wake_boundary_no_wake_detected",
