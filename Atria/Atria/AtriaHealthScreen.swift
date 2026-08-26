@@ -1166,6 +1166,17 @@ struct AtriaHealthScreen: View {
                             )
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
+                        } else if let reason = latestSleepSkipExplanation {
+                            // Say WHY, not just that nothing is here. The app
+                            // already records a reason for every skipped sleep
+                            // candidate and already renders these strings on the
+                            // History screen; withholding it here left the one
+                            // surface that reports the absence unable to explain
+                            // it. Device 2026-08-27: six consecutive skips over
+                            // five hours, and nothing on screen said so.
+                            Text(reason)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
                         } else {
                             Text("Atria will detect and review the next qualified sleep automatically.")
                                 .font(.caption2.weight(.semibold))
@@ -1955,6 +1966,17 @@ struct AtriaHealthScreen: View {
         let z = (value - stats.mean) / stats.sd
         guard z > 1.5 else { return nil }
         return "\u{2191} elevated \u{2014} track how you feel"
+    }
+
+    /// Why the most recent sleep candidate was skipped, if one was, within the
+    /// last day. Read from the same `DetectionEventLog` the History screen
+    /// renders — recorded events only, never inferred.
+    private var latestSleepSkipExplanation: String? {
+        let recent = DetectionEventLog.load()
+            .filter { $0.kind == "sleepCandidateSkipped" }
+            .filter { Date().timeIntervalSince($0.date) <= 24 * 60 * 60 }
+        guard let newest = recent.max(by: { $0.date < $1.date }) else { return nil }
+        return DetectionReasonCopy.text(for: newest)
     }
 
     /// The confirmed cycle authority. Use for DERIVED values only.
