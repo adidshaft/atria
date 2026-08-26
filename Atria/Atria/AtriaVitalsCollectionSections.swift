@@ -1006,7 +1006,16 @@ private struct AtriaDutyCycleToggleCard: View {
                 ble.updateDutyCycleState(reason: "settings_toggle")
             }
 
-            Text("Checks periodically by day. Full detail resumes for sleep, workouts, raised heart rate, and live screens. Daytime HRV gaps are expected.")
+            // Say what the trade BUYS. This described the cost in three
+            // sentences and never named the benefit — "battery" appeared only
+            // in the doc comment above this view, so a toggle called "power
+            // saver" never told the reader what it saves.
+            //
+            // Still three sentences, and still opening with the exact compact
+            // phrasing a 2026 density pass chose (pinned by
+            // AtriaOverviewOnboardingDensityTests): an earlier attempt here
+            // rewrote that opening and the suite correctly refused it.
+            Text("Checks periodically by day. Full detail resumes for sleep, workouts, raised heart rate, and live screens. Saves strap battery; daytime HRV gaps are expected.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
