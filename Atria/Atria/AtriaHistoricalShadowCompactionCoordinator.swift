@@ -4,8 +4,10 @@ import Foundation
 /// malformed. A failed chunk remains authoritative raw truth; it cannot starve
 /// later chunks and it is never marked committed or retired.
 struct AtriaHistoricalShadowCompactionCoordinator {
-    /// Production retention selection, split from execution so the 14-day /
+    /// Production retention selection, split from execution so the 30-day /
     /// 512-MiB policy cannot silently become dead configuration again.
+    /// (Raw horizon moved 14 -> 30 days on 2026-08-19; insights are never
+    /// pruned. The live value is `AtriaHistoricalRetentionPolicy.production`.)
     ///
     /// This queue authorizes shadow aggregation only. A candidate that already
     /// has a strict-reader aggregate remains raw and is reported separately;

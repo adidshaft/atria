@@ -747,25 +747,43 @@ final class AtriaLiveActivityActionTests: XCTestCase {
     }
 
     func testActivityStaleDeadlineRedrawsAtFirstIndependentSensorExpiry() {
+        // Windows are READ, not retyped. The middle case below was written when
+        // heart rate stayed fresh for 90s; that window was later shortened to 6s
+        // (AtriaHomeModel.liveHeartRateFreshnessInterval), which flipped WHICH
+        // sensor expires first — so a correct coordinator started failing an
+        // assertion whose expected value had been hand-computed under the old
+        // constant. Deriving both expectations keeps the invariant this test is
+        // named for while surviving the next retune.
+        let hrWindow = AtriaHomeModel.liveHeartRateFreshnessInterval
+        let stepWindow: TimeInterval = 15
         let fallback = Date(timeIntervalSince1970: 2_000_000_000)
         let oldHeartRate = fallback.addingTimeInterval(-70)
         let reconnectedMotion = fallback.addingTimeInterval(-2)
 
+        // HR already lapsed, so motion's clock is the only live expiry.
         XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
             heartRateCapturedAt: oldHeartRate,
             stepsCapturedAt: reconnectedMotion,
             fallback: fallback
-        ), reconnectedMotion.addingTimeInterval(15))
+        ), reconnectedMotion.addingTimeInterval(stepWindow))
+
+        // Both live: the deadline is the EARLIER of the two independent
+        // expiries, whichever sensor that happens to be under current windows.
+        let freshHRExpiry = fallback.addingTimeInterval(hrWindow)
+        let motionExpiry = reconnectedMotion.addingTimeInterval(stepWindow)
         XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
             heartRateCapturedAt: fallback,
             stepsCapturedAt: reconnectedMotion,
             fallback: fallback
-        ), reconnectedMotion.addingTimeInterval(15))
+        ), min(freshHRExpiry, motionExpiry),
+                       "the redraw must be scheduled at the FIRST sensor to go stale")
+
+        // No sensor at all: fall back to the heart-rate window from now.
         XCTAssertEqual(AtriaLiveActivityCoordinator.sensorStaleDate(
             heartRateCapturedAt: nil,
             stepsCapturedAt: nil,
             fallback: fallback
-        ), fallback.addingTimeInterval(6))
+        ), fallback.addingTimeInterval(hrWindow))
     }
 
     func testExpiredOrUnavailableSourceCannotKeepFreshWorkoutContentGloballyStale() {

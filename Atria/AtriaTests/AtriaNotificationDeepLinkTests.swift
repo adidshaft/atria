@@ -175,11 +175,20 @@ final class AtriaNotificationDeepLinkTests: XCTestCase {
         let dashboardStart = try XCTUnwrap(home.range(
             of: ".onReceive(store.$dashboardRevision.throttle"
         ))
-        let dashboardHandler = String(home[dashboardStart.lowerBound...].prefix(900))
-        XCTAssertTrue(dashboardHandler.contains(
+        let dashboardHandler = String(home[dashboardStart.lowerBound...].prefix(200))
+        // 6eafc7bc moved the closure body verbatim into a named handler to keep
+        // the SwiftUI body type-checkable; follow the dispatch instead of
+        // re-pinning an inline closure.
+        XCTAssertTrue(dashboardHandler.contains("handleDashboardRevisionUpdate()"),
+                      "dashboard publication must drive the review-candidate refresh")
+        let dashboardUpdateStart = try XCTUnwrap(home.range(
+            of: "private func handleDashboardRevisionUpdate()"
+        ))
+        let dashboardUpdate = String(home[dashboardUpdateStart.lowerBound...].prefix(600))
+        XCTAssertTrue(dashboardUpdate.contains(
             "refreshSavedWorkoutReviewCandidate(reason: \"dashboard_revision\")"
         ))
-        XCTAssertTrue(dashboardHandler.contains(
+        XCTAssertTrue(dashboardUpdate.contains(
             "scheduleWorkoutReviewAfterCachePublicationIfNeeded"
         ), "the async review-cache publication must receive one delivery retry")
 
