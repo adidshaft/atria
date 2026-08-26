@@ -50,8 +50,37 @@ struct AtriaStepsWeekChart: View {
         calendar: Calendar = .current
     ) -> [Date: Int] {
         let today = calendar.startOfDay(for: now)
+
+        // Drop receipts whose window is FULLY CONTAINED in another receipt's.
+        //
+        // The sum below is correct for genuinely disjoint cycles, and its own
+        // comment used to justify itself with "cycles do not overlap". The
+        // device says otherwise: of 32 stored receipts, 17 overlap another and
+        // EIGHT sit entirely inside one. Summing those counts the same walking
+        // twice — 15 Aug held two 154-step receipts, one window inside the
+        // other, and shipped 308. 21 Aug shipped 3,442 with a 901-step window
+        // sitting inside an 1,118-step one.
+        //
+        // Only full containment is removed here, because it is the only case
+        // that is provably duplicate: a contained window's steps all occurred
+        // inside the outer window, so the outer receipt already counts them.
+        // PARTIAL overlaps are deliberately left alone — the receipts carry no
+        // per-interval breakdown, so there is no honest way to subtract the
+        // shared portion, and dropping either whole receipt would delete real
+        // steps from outside the overlap.
+        let ordered = receipts.sorted { $0.windowStart < $1.windowStart }
+        let deduplicated = ordered.filter { candidate in
+            !ordered.contains { other in
+                guard other.windowStart != candidate.windowStart
+                        || other.windowEnd != candidate.windowEnd else { return false }
+                let contains = other.windowStart <= candidate.windowStart
+                    && other.windowEnd >= candidate.windowEnd
+                return contains
+            }
+        }
+
         var totals: [Date: Int] = [:]
-        for receipt in receipts {
+        for receipt in deduplicated {
             // Predominant coverage is only stable once a window has CLOSED. An
             // open cycle that began yesterday morning reads as yesterday's now
             // and would flip to today's a few hours later, so its bar would
