@@ -38200,12 +38200,32 @@ final class SessionStore: ObservableObject {
         }
         guard !candidates.isEmpty else {
             let skipReason = strongCandidates.isEmpty ? "no_strong_candidate" : "candidate_not_settled"
-            let detail = strongCandidates.isEmpty
-                ? "No sleep candidates found (source: \(reason))"
-                : "Sleep candidate is still settling so later low-motion fragments can join it (source: \(reason))"
-            AtriaDebugLog("ATRIADBG sleep_auto_confirm status=skipped reason=%@ source=%@ candidates=%d",
+            // Distinguish "nothing was proposed" from "things were proposed and
+            // none can auto-confirm". `strongCandidates` is the AUTO-CONFIRMABLE
+            // subset of `candidatePool`, so the old single message — "No sleep
+            // candidates found" — was reported for both, and they are different
+            // problems with different fixes: an empty POOL means the generator
+            // refused the night, while a full pool with no strong members means
+            // the auto-confirm predicate did.
+            //
+            // This is not hypothetical. Reading that message on 2026-08-27 I
+            // concluded the owner's 13:00-20:30 sleep produced no candidate at
+            // all and spent several passes on the candidate LANES, when the
+            // pool size was never in evidence either way.
+            let detail: String
+            if strongCandidates.isEmpty {
+                detail = candidatePool.isEmpty
+                    ? "No sleep candidates proposed at all (source: \(reason))"
+                    : "\(candidatePool.count) sleep candidate(s) proposed, none "
+                        + "auto-confirmable (source: \(reason))"
+            } else {
+                detail = "Sleep candidate is still settling so later low-motion "
+                    + "fragments can join it (source: \(reason))"
+            }
+            AtriaDebugLog("ATRIADBG sleep_auto_confirm status=skipped reason=%@ source=%@ pool=%d strong=%d",
                           skipReason,
                           reason,
+                          candidatePool.count,
                           strongCandidates.count)
             DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
                                                      reason: skipReason,
