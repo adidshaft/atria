@@ -172,6 +172,24 @@ final class AtriaGlanceTileLayoutTests: XCTestCase {
                              "a real weekly spread must be legible at 16pt tall")
     }
 
+    func testTheStressSeriesIsMemoisedRatherThanRebuiltEveryRender() throws {
+        // glanceItem(for:) runs on every SwiftUI body evaluation. The stress
+        // archive is bounded at 2,880 points (48h), so filtering + sorting it
+        // per render is the exact per-frame recompute AtriaTodayGlanceMemo was
+        // added to prevent — six other glance values already use it.
+        let source = try todayScreen()
+        let start = try XCTUnwrap(source.range(of: "private func stressIntradaySeries()"))
+        let body = String(source[start.lowerBound...].prefix(1_400))
+        XCTAssertTrue(body.contains("glanceMemo.stressSeriesValue"),
+                      "the series must come from the memo on a repeat render")
+        XCTAssertTrue(body.contains("stressMonitorStore.historyRevision"),
+                      "keyed on the store's published revision")
+        XCTAssertTrue(body.contains("glanceMemo.stressSeriesCycleStart == cycleStart"),
+                      "and on the cycle start — a wake rotates the window "
+                          + "without the history changing, which a "
+                          + "revision-only key would miss")
+    }
+
     func testTheChartShowsABoundedNumberOfDays() {
         XCTAssertEqual(Spark.maximumBars, 7)
         XCTAssertEqual(Spark.minimumPoints, 3)
@@ -203,10 +221,18 @@ final class AtriaGlanceTileLayoutTests: XCTestCase {
         XCTAssertTrue(source.contains("case .stress:\n            // Intra-day"),
                       "stress must not fall through to the daily rollup lane")
         XCTAssertTrue(source.contains("return stressIntradaySeries()"))
+        // Bounded by the function's own end, not by a character count. A
+        // fixed-size window broke the moment the body grew a memo — the fifth
+        // time today a distance-based slice failed on a change that did not
+        // touch the behaviour being asserted.
         let start = try XCTUnwrap(
             source.range(of: "private func stressIntradaySeries()")
         )
-        let body = String(source[start.lowerBound...].prefix(700))
+        let end = try XCTUnwrap(
+            source.range(of: "\n    private func",
+                         range: start.upperBound..<source.endIndex)
+        )
+        let body = String(source[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(body.contains("$0.t >= cycleStart"),
                       "the line must be bounded to the current cycle, not "
                           + "reach back into yesterday")
