@@ -192,29 +192,41 @@ final class AtriaMetricTruthUXTests: XCTestCase {
     }
 
     func testTrendAndSleepDurationLabelsDoNotClaimCircadianRhythm() throws {
+        // The "Rhythm" half of this test lived inside
+        // AtriaTrendRangeAssessmentCard, one of the unreachable trend-period
+        // views removed 2026-08-27 — and it used AtriaTrendActionReadoutCard,
+        // removed in the same sweep, as its END BOUNDARY. Two dead structs
+        // holding a live-looking assertion between them.
+        //
+        // Worth naming: three tests in this suite anchor their spans on
+        // `private struct` names, so a struct can be kept alive purely by being
+        // a test's delimiter. That is a bad reason for code to exist.
         let trend = try source("AtriaTrendChart.swift")
-        let assessmentStart = try XCTUnwrap(
-            trend.range(of: "private struct AtriaTrendRangeAssessmentCard")
-        )
-        let assessmentEnd = try XCTUnwrap(
-            trend.range(
-                of: "private struct AtriaTrendActionReadout",
-                range: assessmentStart.upperBound..<trend.endIndex
-            )
-        )
-        let assessment = String(
-            trend[assessmentStart.lowerBound..<assessmentEnd.lowerBound]
-        )
-        XCTAssertTrue(assessment.contains("assessmentBar(label: \"Consistency\""))
-        XCTAssertFalse(assessment.contains("assessmentBar(label: \"Rhythm\""))
+        XCTAssertFalse(trend.contains("assessmentBar(label: \"Rhythm\""),
+                       "no surface may claim circadian rhythm")
+        XCTAssertFalse(trend.contains("AtriaTrendRangeAssessmentCard"),
+                       "the dead assessment card must stay removed")
 
+        // The two POSITIVE assertions here pinned a label inside
+        // AtriaDetailRangeLensCard (lines 13124-13315 of the pre-removal file;
+        // the label sat at 13182). That card had zero construction sites, and a
+        // comment elsewhere in the file already said it "was removed here" —
+        // so the label it names never rendered. Verified by brace-matching the
+        // original rather than by eye: an earlier attribution of that line to
+        // the live AtriaMetricMeaningSheet was wrong, and would have had me
+        // report a regression that did not exist.
+        //
+        // The NEGATIVE assertions are the ones that carry the rule, and they
+        // hold across the whole file rather than inside any one card.
         let overview = try source("AtriaOverviewSections.swift")
-        XCTAssertTrue(overview.contains("Label(\"Sleep duration vs target\""))
-        XCTAssertTrue(overview.contains(
-            ".accessibilityLabel(\"Sleep duration versus target. Latest"
-        ))
-        XCTAssertFalse(overview.contains("Label(\"Sleep rhythm\""))
+        XCTAssertFalse(overview.contains("Label(\"Sleep rhythm\""),
+                       "no surface may claim circadian rhythm")
         XCTAssertFalse(overview.contains(".accessibilityLabel(\"Sleep rhythm."))
+        // The DECLARATION, not any mention: a comment at the old render site
+        // still records that the card was taken out of the layout, and that
+        // history is worth keeping.
+        XCTAssertFalse(overview.contains("private struct AtriaDetailRangeLensCard"),
+                       "the dead lens card must stay removed")
 
         XCTAssertTrue(AtriaAboutMetric.sleep.honestyNote.contains(
             "not a clinical sleep study or a measurement of circadian phase"

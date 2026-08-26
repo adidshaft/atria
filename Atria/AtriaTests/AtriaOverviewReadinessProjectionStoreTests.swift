@@ -87,70 +87,37 @@ final class AtriaOverviewConnectionProjectionStoreTests: XCTestCase {
         withExtendedLifetime(cancellable) {}
     }
 
-    func testOverviewRootObservesOnlyProjectedConnectionStatus() throws {
+    /// REPLACED 2026-08-27. `AtriaOverviewTabContent` was the app's SECOND
+    /// orphaned tab root — zero construction sites, exactly like
+    /// AtriaVitalsTabContent. The Today tab renders `overviewContent` in
+    /// AtriaHomeView, which builds AtriaTodayScreen directly and never touched
+    /// this struct. Removing it orphaned AtriaDisconnectedOverviewHost, which
+    /// orphaned AtriaDisconnectedOverviewProjectionStore and its State — the
+    /// whole chain is gone, along with the behavioural tests that exercised a
+    /// publish-gate nothing could publish to.
+    ///
+    /// The invariants those tests encoded are good ones (a root observes a
+    /// narrow projection, not the whole status store; an equal projection does
+    /// not publish). They are enforced where they matter by
+    /// AtriaOverviewReadinessProjectionStoreTests above, whose store IS live.
+    func testTheDeadOverviewTabRootStaysRemoved() throws {
         let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        let sourceURL = testsDirectory
-            .deletingLastPathComponent()
-            .appendingPathComponent("Atria/AtriaOverviewSections.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        let rootStart = try XCTUnwrap(source.range(of: "struct AtriaOverviewTabContent: View"))
-        let rootEnd = try XCTUnwrap(source.range(of: "private struct AtriaDisconnectedOverviewHost: View"))
-        let root = String(source[rootStart.lowerBound..<rootEnd.lowerBound])
+        let source = try String(
+            contentsOf: testsDirectory.deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaOverviewSections.swift"),
+            encoding: .utf8
+        )
+        for dead in ["struct AtriaOverviewTabContent",
+                     "AtriaDisconnectedOverviewHost",
+                     "AtriaDisconnectedOverviewProjectionStore",
+                     "AtriaDisconnectedOverviewProjectionState"] {
+            XCTAssertFalse(source.contains(dead),
+                           "\(dead) had no reachable consumer")
+        }
 
-        XCTAssertTrue(root.contains("let statusStore: AtriaHomeModel.StatusStore"))
-        XCTAssertTrue(root.contains("@StateObject private var connectionProjection: AtriaOverviewConnectionProjectionStore"))
-        XCTAssertFalse(root.contains("@ObservedObject var statusStore"))
-        XCTAssertTrue(root.contains("if connectionProjection.status != .connected"))
-    }
-}
-
-@MainActor
-final class AtriaDisconnectedOverviewProjectionStoreTests: XCTestCase {
-    private let empty = AtriaDisconnectedOverviewProjectionState(hasSavedData: false,
-                                                                  hasTrendHistory: false)
-
-    func testEqualDisconnectedProjectionDoesNotPublish() {
-        let projection = AtriaDisconnectedOverviewProjectionStore(state: empty)
-        var publications = 0
-        let cancellable = projection.objectWillChange.sink { publications += 1 }
-
-        XCTAssertFalse(projection.refresh(empty))
-        XCTAssertEqual(publications, 0)
-        withExtendedLifetime(cancellable) {}
-    }
-
-    func testRelevantDisconnectedProjectionPublishesExactlyOnce() {
-        let projection = AtriaDisconnectedOverviewProjectionStore(state: empty)
-        var publications = 0
-        let cancellable = projection.objectWillChange.sink { publications += 1 }
-        let returning = AtriaDisconnectedOverviewProjectionState(hasSavedData: true,
-                                                                  hasTrendHistory: true)
-
-        XCTAssertTrue(projection.refresh(returning))
-        XCTAssertEqual(publications, 1)
-        withExtendedLifetime(cancellable) {}
-    }
-
-    func testDisconnectedRootUsesNarrowProjectionAndLeafObservers() throws {
-        let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        let sourceURL = testsDirectory
-            .deletingLastPathComponent()
-            .appendingPathComponent("Atria/AtriaOverviewSections.swift")
-        let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        let hostStart = try XCTUnwrap(source.range(of: "private struct AtriaDisconnectedOverviewHost: View"))
-        let hostEnd = try XCTUnwrap(source.range(of: "struct AtriaDisconnectedOverviewProjectionState"))
-        let host = String(source[hostStart.lowerBound..<hostEnd.lowerBound])
-        let leafStart = try XCTUnwrap(source.range(of: "private struct AtriaDisconnectedFirstTimePanelHost: View"))
-        let leafEnd = try XCTUnwrap(source.range(of: "private struct AtriaDisconnectedOverviewPanel: View"))
-        let leaf = String(source[leafStart.lowerBound..<leafEnd.lowerBound])
-
-        XCTAssertTrue(host.contains("@StateObject private var projectionStore: AtriaDisconnectedOverviewProjectionStore"))
-        XCTAssertFalse(host.contains("@ObservedObject"))
-        XCTAssertTrue(host.contains("projection.hasSavedData"))
-        XCTAssertTrue(host.contains("projection.hasTrendHistory"))
-        XCTAssertTrue(leaf.contains("@ObservedObject var statusStore"))
-        XCTAssertTrue(leaf.contains("@ObservedObject var liveStore"))
-        XCTAssertTrue(leaf.contains("@ObservedObject var homeStatsStore"))
-        XCTAssertTrue(leaf.contains("@ObservedObject var snapshotStore"))
+        // The live root must still exist, so this cannot pass by the file
+        // having been emptied.
+        XCTAssertTrue(source.contains("AtriaOverviewReadinessProjectionStore"),
+                      "the readiness projection is live and must remain")
     }
 }

@@ -1943,8 +1943,10 @@ enum WidgetSnapshotPublisher {
         if widgetDayResolution.strainOverride != nil {
             // The partial current-day override is a lower bound, matching the
             // "Partial · current day" detail published beside it.
+            // No "≥" prefix (2026-08-27): the "Partial · current day" detail
+            // published beside this already says it is a lower bound.
             snapshot.strainValueText =
-                "≥ " + String(format: "%.1f", max(0, presentedWidgetStrain))
+                String(format: "%.1f", max(0, presentedWidgetStrain))
         } else if strainIsCredible, strainPresentation.value != nil {
             snapshot.strainValueText = strainPresentation.valueText
         } else {

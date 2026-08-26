@@ -16,42 +16,6 @@ import SwiftUI
 // (the Overview scatter rail); this is a different surface with a different
 // data source and must not shadow it.
 
-struct AtriaBehaviorImpactMapCard: View {
-    let model: AtriaBehaviorImpactPresentation.Model
-
-    private var rows: [AtriaBehaviorImpactPresentation.Stat] { model.mapRows() }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.md) {
-            AtriaPanelSectionHeader(title: "Impact map",
-                                    subtitle: "Where each logged behavior stands")
-
-            if rows.isEmpty {
-                Text(AtriaBehaviorImpactPresentation.mapEmptyText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(AtriaDesignTokens.Spacing.md)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
-                            .stroke(.quaternary, style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
-                    }
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-                        if index > 0 {
-                            Divider().opacity(0.4)
-                        }
-                        AtriaBehaviorImpactMapRow(stat: row)
-                    }
-                }
-            }
-        }
-        .padding(AtriaDesignTokens.Spacing.lg)
-        .atriaCard(emphasis: .soft)
-    }
-}
 
 struct AtriaBehaviorImpactMapRow: View {
     let stat: AtriaBehaviorImpactPresentation.Stat
