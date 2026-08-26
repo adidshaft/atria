@@ -39,19 +39,51 @@ final class AtriaDayBarAxisAlignmentTests: XCTestCase {
 
     // MARK: - ...but ONLY when it is actually drawing bars
 
-    func testChartsThatSwitchShapeCentreOnlyInBarForm() throws {
-        // These two draw bars OR a line depending on the metric. A line plots
-        // each point AT its date, so centring would shift every label half a
-        // day off its own point. A blanket `centered: true` would fix the bars
-        // and break every line chart in the app.
-        let overview = try source("AtriaOverviewSections.swift")
-        XCTAssertTrue(overview.contains("centered: rendersAsDailyBar"),
-                      "the metric chart must follow the shape it is drawing")
+    func testChartsThatSwitchShapeMarkDayCentresInsteadOfCentringTheLabel() throws {
+        // CORRECTED 2026-08-26, same day the conditional `centered:` shipped.
+        //
+        // `AxisValueLabel(centered:)` centres a label within the step to the
+        // NEXT mark — not within the bar's `unit`. Those coincide only at a
+        // one-day stride, which is why `centered: true` is right on the steps
+        // week chart (marks = the seven days) and wrong on these two, which
+        // pick marks with `.automatic(desiredCount:)`: the stride follows the
+        // window width, so at four marks across a month each label was thrown
+        // about three and a half days right, onto a different bar entirely.
+        // The earlier version of this test pinned that behaviour as correct.
+        //
+        // Marking noon puts the label at the bar's middle at ANY stride,
+        // because it no longer depends on where the next mark falls.
+        for name in ["AtriaOverviewSections.swift", "AtriaExpandedChart.swift"] {
+            let text = try source(name)
+            XCTAssertTrue(text.contains("dayCentreMarks("),
+                          "\(name) must mark day centres when drawing day bars")
+            XCTAssertFalse(text.contains("centered: rendersAsDailyBar"),
+                           "\(name) must not reintroduce step-relative centring")
+            XCTAssertFalse(text.contains("centered: effectiveChartType == .bars"),
+                           "\(name) must not reintroduce step-relative centring")
+        }
+    }
 
-        let expanded = try source("AtriaExpandedChart.swift")
-        XCTAssertTrue(expanded.contains("centered: effectiveChartType == .bars"),
-                      "the expanded chart draws line/bars/range and must "
-                          + "centre only for bars")
+    func testTheScrollableChartKeepsItsLabelDensityAcrossTheWholeDomain() {
+        // Explicit marks do not recompute as you scroll the way `.automatic`
+        // does, so a flat request would leave most screens of a long domain
+        // with no label at all.
+        let sparse = AtriaChartVisualGrammar.scrollableDayMarkCount(
+            totalDays: 90, visibleDays: 7, labelsPerScreen: 6)
+        XCTAssertGreaterThan(sparse, 6,
+                             "90 days shown 7 at a time needs far more than "
+                                 + "six marks to put six on each screen")
+
+        let whole = AtriaChartVisualGrammar.scrollableDayMarkCount(
+            totalDays: 30, visibleDays: 30, labelsPerScreen: 6)
+        XCTAssertEqual(whole, 6, "a fully visible domain wants exactly the "
+                           + "requested density")
+
+        XCTAssertLessThanOrEqual(
+            AtriaChartVisualGrammar.scrollableDayMarkCount(
+                totalDays: 10, visibleDays: 1, labelsPerScreen: 6),
+            10,
+            "never more marks than there are days")
     }
 
     func testNoDayBarChartCentresUnconditionallyWhereALineIsAlsoPossible() throws {
