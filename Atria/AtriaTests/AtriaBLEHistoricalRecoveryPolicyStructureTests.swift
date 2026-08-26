@@ -237,6 +237,64 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         XCTAssertFalse(decision(yieldActive: true))
         XCTAssertFalse(decision(spent: true))
         XCTAssertFalse(decision(at: deadline))
+        XCTAssertFalse(
+            AtriaBLEManager.shouldBlockHistoryTransportForTerminalConsumerMaterialization(
+                materializationInFlight: true,
+                exactConnectedRealtimePreservingRequest: true
+            ),
+            "soak 16: connected-raw persist-before-ACK must run while terminal publication is in flight"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldBlockHistoryTransportForTerminalConsumerMaterialization(
+                materializationInFlight: true,
+                exactConnectedRealtimePreservingRequest: false,
+                idleWindowDrainAdmitted: true
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldBlockHistoryTransportForTerminalConsumerMaterialization(
+                materializationInFlight: true,
+                exactConnectedRealtimePreservingRequest: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldBlockHistoryTransportForTerminalConsumerMaterialization(
+                materializationInFlight: false,
+                exactConnectedRealtimePreservingRequest: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldScheduleTerminalConsumerMaterializationAfterHistoryFinish(
+                terminalAndLiveRestored: true,
+                reachedTerminal: true,
+                compactMotionBankOnly: false,
+                connectedRawCatchUpContinuationPending: false,
+                consumeToNow: true,
+                persistedRows: 0
+            ),
+            "consume HISTORY_COMPLETE with persisted=0 must not latch the materialization lane"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldScheduleTerminalConsumerMaterializationAfterHistoryFinish(
+                terminalAndLiveRestored: true,
+                reachedTerminal: true,
+                compactMotionBankOnly: false,
+                connectedRawCatchUpContinuationPending: false,
+                consumeToNow: false,
+                persistedRows: 40
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldScheduleTerminalConsumerMaterializationAfterHistoryFinish(
+                terminalAndLiveRestored: true,
+                reachedTerminal: true,
+                compactMotionBankOnly: true,
+                connectedRawCatchUpContinuationPending: false,
+                consumeToNow: false,
+                persistedRows: 40
+            ),
+            "compact-only motion-bank share does not schedule terminal materialization"
+        )
     }
 
     func testRawFirstSliceOrchestrationBindsExactGenerationAndFailsOpen() {
@@ -421,7 +479,7 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         // unified idle-window radio-ownership predicate; the ticket
         // housekeeping must still run before the ownership decision.
         let rawContinuation = try XCTUnwrap(motion.range(
-            of: "guard !rawLaneActivelyOwnsRadio"
+            of: "deferMotionBankOffloadForActiveRawLane("
         ))
         XCTAssertLessThan(maintenance.lowerBound, rawContinuation.lowerBound)
     }
@@ -1694,7 +1752,7 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
         XCTAssertTrue(finish.contains("samePeripheral"))
         XCTAssertFalse(finish.contains("reconcileRangeLossBackfillPendingWithArchive("))
         XCTAssertTrue(finalizer.contains("let rangeLossResolved = !compactMotionBankOnly\n            && terminalAndLiveRestored\n            && reconcileRangeLossBackfillPendingWithArchive("))
-        XCTAssertTrue(finalizer.contains("if !compactMotionBankOnly,\n           !connectedRawHistoryCatchUpContinuationPending,\n           terminalAndLiveRestored && offlineHistoricalSyncReachedTerminal"))
+        XCTAssertTrue(finalizer.contains("shouldScheduleTerminalConsumerMaterializationAfterHistoryFinish("))
         XCTAssertTrue(finalizer.contains("scheduleFullDrainConsumerMaterialization(transportGeneration: generation)"))
         XCTAssertTrue(finalizer.contains("lastCompletedHistoricalSyncReachedTerminal = terminalAndLiveRestored\n            && offlineHistoricalSyncReachedTerminal"))
         XCTAssertTrue(finalizer.contains("lastCompletedHistoricalSyncHasOnboardingAuthority = terminalAndLiveRestored\n            && onboardingTransportAuthority"))
@@ -1852,9 +1910,20 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
             "permitsRawFullDrainForwardDiscontinuity",
             "shouldStopRealtimeBeforeHistoricalRecovery",
             "shouldFinishIdleWindowHistoryDrainAtACKBoundary",
+            "shouldReleaseIdleWindowHistoryDrainForHeartRatePause",
+            "shouldReleaseIdleWindowHistoryDrainForAttendedForeground",
+            "shouldTreatConsumeLiveTailAsBacklog",
+            "idleWindowHistoryDrainAbsoluteBudgetLimit",
+            "connectedHistorySliceStartFrontierUnix",
+            "advancedOldestFirstHistoryDrainCursor",
             "shouldArmNaturalGapDrainAfterDisconnect",
             "shouldAdmitIdleWindowHistoryDrainRetry",
             "shouldReleaseIdleWindowHistoryDrainForAbsoluteBudget",
+            "shouldHoldIdleWindowAbsoluteBudgetForInFlightPersist",
+            "shouldApplyLaunchArgHistoryConsumeToNow",
+            "shouldACKIdleWindowHistoryEndWithoutPersisting",
+            "shouldHoldIdleWindowAbsoluteBudgetForPostACKRangeProbe",
+            "shouldQuietIdleWindowStream5BeforePostACKRangeProbe",
             "shouldReleaseIdleWindowHistoryDrainWhenPersistAckStalled",
             "shouldArmConnectedHistoricalSliceForLiveHeartRateWatchdog",
             "shouldContinueHistoricalServeAfterRealtimeStopTimeout",
@@ -1866,10 +1935,15 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
             "shouldDiscoverHeartRateServiceForIdleWindowHistoryDrain",
             "shouldClearIdleWindowArmFenceWhenDrainDidNotStart",
             "shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect",
+            "shouldSkipIdleWindowHeartRateReassert",
+            "shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry",
+            "shouldBlockHistoryTransportForTerminalConsumerMaterialization",
+            "shouldScheduleTerminalConsumerMaterializationAfterHistoryFinish",
             "shouldEnableIdleWindowHistoryNotifications",
             "shouldSuppressNonIdleWindowHistoryWhileIdleWindowPipeWarms",
             "shouldRetryIdleWindowHistoryDrainWhenIngressReplayBlocks",
             "shouldWaitForIdleWindowHistoricalIngressReplay",
+            "shouldDiscardUnackedConsumeIngressSpool",
             "shouldRestoreIdleWindowHeartRateWhenIngressReplayTimesOut",
             "shouldClearCachedTXBeforeHistoricalHandshake",
             "shouldArmIdleWindowHistoryRangeRequest",
@@ -1878,6 +1952,7 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
             "shouldRestoreIdleWindowHeartRateWhenRangeUnanswered",
             "shouldDiscoverIdleWindowHistoryTransportWhileHeartRateNotifying",
             "shouldAbortIdleWindowPauseWhenUnsubscribeLost",
+            "shouldRetryIdleWindowHeartRateUnsubscribe",
             "idleWindowHistoryRangePostNotifySettle",
             "standardHROnlyModeAfterOfflineSync",
             "rangeLossBackfillCanClear",
@@ -1901,6 +1976,8 @@ final class AtriaBLEHistoricalRecoveryPolicyStructureTests: XCTestCase {
             "productionHistoricalExactRangeTransportEnabledAndProven",
             "productionHistoricalClockAuthorityEnabledAndProven",
             "productionHistoricalFullDrainGapRecoveryEnabled",
+            "idleWindowConsumeLiveTailPendingLimit",
+            "idleWindowConsumeLiveTailResumeInterval",
         ]
         for name in constantNames {
             let declaration = "nonisolated static let \(name)"

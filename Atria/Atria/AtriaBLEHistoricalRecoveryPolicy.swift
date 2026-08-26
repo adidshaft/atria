@@ -92,6 +92,129 @@ struct AtriaWhoop4HistoryCursorRange: Equatable, Sendable {
     }
 }
 
+/// Strap GET_DATA_RANGE (0x22) ring cursors captured around persist-before-ACK.
+/// Display `drainedThroughUnix` is not this pointer.
+struct AtriaWhoop4HistoryRangePointerSnapshot: Equatable, Sendable {
+    let writeCursor: UInt32
+    let readCursor: UInt32
+    let pendingRecords: UInt32
+}
+
+enum AtriaWhoop4HistoryRangePointerDisposition: String, Equatable, Sendable {
+    case pointerAdvanced
+    case sameWindowReserve
+    case strapCaughtUp
+    case inconclusive
+}
+
+extension AtriaWhoop4HistoryRangePointerSnapshot {
+    init(_ range: AtriaWhoop4HistoryCursorRange) {
+        self.init(
+            writeCursor: range.writeCursor,
+            readCursor: range.readCursor,
+            pendingRecords: range.pendingRecords
+        )
+    }
+}
+
+enum AtriaWhoop4HistoryRangePointerPolicy {
+    /// Classify whether ACK moved the strap read pointer. `pending` falling
+    /// is consume; a moved read cursor is also consume (write can grow
+    /// faster than one ACK'd page). Unchanged pending+read is the same
+    /// oldest window.
+    /// Soak 15:50→15:52: read 67683→67688, pending 11690→11698 because
+    /// write grew +13 while read moved +5 — still ACK consume, not re-serve.
+    static func disposition(
+        beforeACK: AtriaWhoop4HistoryRangePointerSnapshot?,
+        afterACK: AtriaWhoop4HistoryRangePointerSnapshot?
+    ) -> AtriaWhoop4HistoryRangePointerDisposition {
+        guard let beforeACK, let afterACK else { return .inconclusive }
+        if afterACK.pendingRecords == 0,
+           afterACK.readCursor == afterACK.writeCursor {
+            return .strapCaughtUp
+        }
+        if afterACK.pendingRecords < beforeACK.pendingRecords {
+            return .pointerAdvanced
+        }
+        if afterACK.readCursor != beforeACK.readCursor {
+            return .pointerAdvanced
+        }
+        if afterACK.readCursor == beforeACK.readCursor,
+           afterACK.pendingRecords >= beforeACK.pendingRecords {
+            return .sameWindowReserve
+        }
+        return .inconclusive
+    }
+
+    static func servedPagesAreSameWindow(
+        previousMin: UInt32?,
+        previousMax: UInt32?,
+        currentMin: UInt32?,
+        currentMax: UInt32?
+    ) -> Bool {
+        guard let previousMin, let previousMax,
+              let currentMin, let currentMax else {
+            return false
+        }
+        return previousMin == currentMin && previousMax == currentMax
+    }
+
+    /// Intra-slice GET_DATA_RANGE after ACK is device-proven unanswered.
+    /// Soak 15:50/15:52: stream5 quiet, 0x22 WR-confirmed, no cmdResp for
+    /// ~16s. Cross-slice 0x22 is the after-ACK snapshot. Do not stall 2A37.
+    static func shouldIssueIdleWindowPostACKRangeProbe(
+        idleWindowDrainOwnsLink: Bool,
+        acknowledgedPages: Int,
+        postACKProbeAlreadyIssued: Bool
+    ) -> Bool {
+        _ = (idleWindowDrainOwnsLink, acknowledgedPages, postACKProbeAlreadyIssued)
+        return false
+    }
+
+    /// Consume-to-now / BLE clear is never auto. Consent plus a proven
+    /// pointer-advance or empty ring is required; anything else is a no-op.
+    static func shouldSelectHistoryConsumeOrClear(
+        pointerDisposition: AtriaWhoop4HistoryRangePointerDisposition,
+        explicitConsent: Bool
+    ) -> Bool {
+        guard explicitConsent else { return false }
+        switch pointerDisposition {
+        case .pointerAdvanced, .strapCaughtUp:
+            return true
+        case .sameWindowReserve, .inconclusive:
+            return false
+        }
+    }
+
+    /// Official WHOOP 4 erase-device wire capture (0x19 FE×8 + 00). M0
+    /// proved ACK advances the read pointer; consume-to-now therefore
+    /// walks pages instead of FORCE_TRIM. Keep this predicate false so
+    /// the consented flag cannot fire 0x19 until a later device proof.
+    static func shouldIssueIdleWindowForceTrim(
+        idleWindowDrainOwnsLink: Bool,
+        heartRateNotifying: Bool,
+        consumeConsent: Bool,
+        pointerDisposition: AtriaWhoop4HistoryRangePointerDisposition,
+        alreadyIssued: Bool
+    ) -> Bool {
+        _ = (idleWindowDrainOwnsLink, heartRateNotifying, consumeConsent,
+             pointerDisposition, alreadyIssued)
+        return false
+    }
+
+    /// Start-fresh only after the strap itself reports an empty ring.
+    static func shouldReconcileStartFreshAfterVerifiedStrapZero(
+        pendingRecords: UInt32,
+        readCursor: UInt32,
+        writeCursor: UInt32,
+        consumeConsent: Bool
+    ) -> Bool {
+        consumeConsent
+            && pendingRecords == 0
+            && readCursor == writeCursor
+    }
+}
+
 /// Pure ordering and clock checks for the production WHOOP 4 bootstrap proven
 /// on the physical strap. This grants full-drain transport/clock evidence only;
 /// it never represents an exact-range selector or gap-completion authority.
@@ -668,15 +791,29 @@ extension AtriaBLEManager {
         healthyLiveEpochActive: Bool,
         attendedForeground: Bool,
         explicitMotionOwnershipActive: Bool,
-        thermalParked: Bool
+        thermalParked: Bool,
+        consumeToNow: Bool = false,
+        lastPendingRecords: UInt32? = nil
     ) -> IdleWindowHistoryDrainWindow {
-        guard launchFlagEnabled, strapBacklogPending else { return .none }
+        let consumeLiveTail = shouldTreatConsumeLiveTailAsBacklog(
+            consumeToNow: consumeToNow,
+            lastPendingRecords: lastPendingRecords
+        )
+        guard launchFlagEnabled, strapBacklogPending || consumeLiveTail else {
+            return .none
+        }
         guard !explicitMotionOwnershipActive, !thermalParked else { return .none }
         _ = priorEpochEndedNaturally
         // Strap on charger / off-wrist: firmware is not producing a live pulse
         // to protect even if the epoch fence is owned by the connected link.
         if strapIsCharging { return .strapCharging }
         if strapOffWrist && !healthyLiveEpochActive { return .strapOffWrist }
+        // Consented ACK-consume-to-now may re-pause 2A37 after the resume
+        // interval so later slices keep walking. Unconsented builds still
+        // never seize a healthy attended epoch.
+        if consumeToNow {
+            return healthyLiveEpochActive ? .appBackgroundIdle : .naturalGapPreHR
+        }
         // Build-5 contract: never cancel a healthy attended epoch.
         if healthyLiveEpochActive && attendedForeground { return .none }
         // Pre-HR (didConnect, first-HR race, natural gap): no live pulse yet.
@@ -687,10 +824,29 @@ extension AtriaBLEManager {
         return .none
     }
 
+    /// Kill switch for the now-default idle-window drain. The enable
+    /// argument stays accepted so existing soak scripts keep working, but a
+    /// stock home-screen launch carries no arguments at all — which is why
+    /// the flag-gated build showed "Strap steps --" for a full day while the
+    /// drain never selected a window (device 2026-08-24 19:29).
+    nonisolated static let idleWindowHistoryDrainDisableArgument =
+        "--atria-idle-window-drain-disable"
+
     nonisolated static func idleWindowHistoryDrainIsEnabled(
         arguments: [String]
     ) -> Bool {
-        arguments.contains(idleWindowHistoryDrainEnableArgument)
+        !arguments.contains(idleWindowHistoryDrainDisableArgument)
+    }
+
+    /// Explicit consent for the destructive strap-zero. Default launches
+    /// omit this argument. Never pairs with Start-fresh until 0x22 pending=0.
+    nonisolated static let historyConsumeToNowLaunchArgument =
+        "--atria-confirm-history-consume-to-now"
+
+    nonisolated static func shouldApplyLaunchArgHistoryConsumeToNow(
+        arguments: [String]
+    ) -> Bool {
+        arguments.contains(historyConsumeToNowLaunchArgument)
     }
 
     nonisolated static func idleWindowHistoryDrainMayPauseHeartRate(
@@ -702,21 +858,158 @@ extension AtriaBLEManager {
     /// Persist-before-ACK: a HISTORY_END token must not go on the air until
     /// its page is durably on disk. Skip the ACK and the strap re-serves the
     /// same cursor forever; that is the resume mechanism (no SET_READ_POINTER).
+    /// Soak 15:40: first ACK then post-ACK 0x22 seq=3 was still outstanding
+    /// when a second HISTORY_END tried WR — withhold until the probe lands.
     nonisolated static func shouldQueueHistoryEndACK(
         alreadyAcked: Bool,
-        archiveWriteFailures: Int
+        archiveWriteFailures: Int,
+        postACKRangeProbeIssued: Bool = false
     ) -> Bool {
-        !alreadyAcked && archiveWriteFailures == 0
+        !alreadyAcked
+            && archiveWriteFailures == 0
+            && !postACKRangeProbeIssued
     }
 
-    /// One ACK-cursor chunk is the complete idle-window slice: persist-before-
-    /// ACK already happened, then restore 2A37 on the same epoch. A longer
-    /// hold is the soak-1 61s attended HR gap.
+    /// M2: consented idle-window consume walks the strap pointer by ACK'ing
+    /// HISTORY_END without a durable archive write. Default drains stay
+    /// persist-before-ACK. Never selected without both the idle-window
+    /// owner and explicit consume consent.
+    nonisolated static func shouldACKIdleWindowHistoryEndWithoutPersisting(
+        idleWindowDrainOwnsLink: Bool,
+        consumeToNow: Bool
+    ) -> Bool {
+        idleWindowDrainOwnsLink && consumeToNow
+    }
+
+    /// Worn-background: one ACK-cursor chunk then restore 2A37. Charging /
+    /// off-wrist has no live HR to protect — keep serving until thermal
+    /// park, the longer absolute budget, or attended abort. Consented
+    /// ACK-consume-to-now keeps walking past the first ACK on a large
+    /// leftover, then restores 2A37 once the live-HR pause budget is spent
+    /// so the pill never sits on No signal. A live tail at or below
+    /// `idleWindowConsumeLiveTailPendingLimit` keeps ACK'ing until the
+    /// slice-start pending count is consumed (or the pause budget is
+    /// spent). Soak 14: finishing at the first ACK restored 2A37 and
+    /// waited for a live sample (~7s); the worn write cursor sealed one
+    /// new page in that window, so 0x22 pending stayed 1–2. Pickup abort
+    /// is `shouldReleaseIdleWindowHistoryDrainForAttendedForeground`.
+    nonisolated static let idleWindowConsumeHeartRatePauseLimit: TimeInterval = 18
+    /// Worn soak 8: after the 13k ring collapsed, 0x22 pending stayed 1–9
+    /// because each 18s slice + 20s resume let write grow before the next
+    /// probe. ACK that tail and re-probe immediately.
+    nonisolated static let idleWindowConsumeLiveTailPendingLimit: UInt32 = 16
+    nonisolated static let idleWindowConsumeLiveTailResumeInterval: TimeInterval = 2
+    /// Soak 14 gens 11–21/96–98: a 1–2 page tail plus the 2s resume and
+    /// 2A37 toggle let write grow one page, so pending never hit 0.
+    /// Stay paused and re-issue 0x22 before the next HISTORY_END seals.
+    /// Soak 15 gen 1: ACK'd a 4-page tail to HISTORY_COMPLETE in 5s, then
+    /// restored 2A37 because pending was 4 (>2); the next 0x22 never ran.
+    /// Any live tail at or below `idleWindowConsumeLiveTailPendingLimit`
+    /// keeps 2A37 paused until a later 0x22 or the 18s cap.
+    nonisolated static let idleWindowConsumeLiveTailImmediateResumeInterval: TimeInterval = 0.4
+
+    /// Consented consume must keep walking a 1–9 live tail even when the
+    /// 120-record flush-debt floor already reads "caught up".
+    nonisolated static func shouldTreatConsumeLiveTailAsBacklog(
+        consumeToNow: Bool,
+        lastPendingRecords: UInt32?
+    ) -> Bool {
+        consumeToNow && (lastPendingRecords ?? 0) > 0
+    }
+
     nonisolated static func shouldFinishIdleWindowHistoryDrainAtACKBoundary(
         idleWindowDrainOwnsLink: Bool,
-        acknowledgedPages: Int
+        acknowledgedPages: Int,
+        chargingOrOffWrist: Bool = false,
+        attendedForeground: Bool = false,
+        consumeToNow: Bool = false,
+        sliceStartPendingRecords: UInt32? = nil,
+        heartRatePauseElapsed: TimeInterval = 0
     ) -> Bool {
-        idleWindowDrainOwnsLink && acknowledgedPages >= 1
+        guard idleWindowDrainOwnsLink, acknowledgedPages >= 1 else {
+            return false
+        }
+        if consumeToNow {
+            if let pending = sliceStartPendingRecords,
+               pending <= idleWindowConsumeLiveTailPendingLimit {
+                if acknowledgedPages >= max(Int(pending), 1) {
+                    return true
+                }
+                return heartRatePauseElapsed >= idleWindowConsumeHeartRatePauseLimit
+            }
+            if chargingOrOffWrist { return false }
+            return heartRatePauseElapsed >= idleWindowConsumeHeartRatePauseLimit
+        }
+        if attendedForeground { return true }
+        if chargingOrOffWrist { return false }
+        return true
+    }
+
+    /// 900s consume slices left the pill on No signal (2A37 paused past the
+    /// 30s continuity watchdog). Restore 2A37 from the pause clock, not the
+    /// 0x22 write clock, so handshake slop cannot starve live HR. Charging /
+    /// off-wrist has no pulse to protect — keep the consume walk on the
+    /// longer absolute budget so a still write cursor can reach pending=0.
+    /// Soak 10 gen 31+: 18s pause fired while stream5 was mid-page
+    /// (admitted=0, no HISTORY_END), so ACK never went out and 0x22 pending
+    /// grew. Hold the pause while a consume page is still in the spool.
+    nonisolated static let idleWindowConsumeHeartRatePauseHardCap: TimeInterval = 28
+
+    nonisolated static func shouldReleaseIdleWindowHistoryDrainForHeartRatePause(
+        idleWindowDrainOwnsLink: Bool,
+        consumeToNow: Bool,
+        pausedAt: Date?,
+        now: Date,
+        pauseLimit: TimeInterval = idleWindowConsumeHeartRatePauseLimit,
+        chargingOrOffWrist: Bool = false,
+        acknowledgedPages: Int = 0,
+        consumeIngressInFlight: Bool = false,
+        lastFrameAge: TimeInterval? = nil,
+        stream5Received: Int = 0
+    ) -> Bool {
+        guard idleWindowDrainOwnsLink, consumeToNow, let pausedAt else {
+            return false
+        }
+        if chargingOrOffWrist { return false }
+        let elapsed = now.timeIntervalSince(pausedAt)
+        if elapsed >= idleWindowConsumeHeartRatePauseHardCap { return true }
+        if acknowledgedPages == 0, consumeIngressInFlight { return false }
+        if acknowledgedPages == 0,
+           stream5Received > 0,
+           let lastFrameAge,
+           lastFrameAge < 5 {
+            return false
+        }
+        return elapsed >= pauseLimit
+    }
+
+    /// Pickup mid-chunk: restore 2A37 immediately instead of waiting out
+    /// the handshake absolute budget. A same-launch restore that starts
+    /// pre-HR before scene-active is not pickup — require the chunk to
+    /// have begun unattended and already issued 0x22.
+    nonisolated static func shouldReleaseIdleWindowHistoryDrainForAttendedForeground(
+        idleWindowDrainOwnsLink: Bool,
+        attendedForeground: Bool,
+        drainBeganUnattended: Bool,
+        historyRangeRequested: Bool
+    ) -> Bool {
+        idleWindowDrainOwnsLink
+            && attendedForeground
+            && drainBeganUnattended
+            && historyRangeRequested
+    }
+
+    /// Charging / off-wrist bursts are thermal-bounded, not the 20s worn
+    /// handshake cap (owner-rejected 5s cap; charging soak is the bulk window).
+    /// Worn consume keeps the 20s cap plus the 18s 2A37 pause so the pill
+    /// stays on live HR between slices. Off-wrist consume may use the
+    /// charging burst: write is still and there is no live pulse to seize.
+    nonisolated static func idleWindowHistoryDrainAbsoluteBudgetLimit(
+        chargingOrOffWrist: Bool,
+        consumeToNow: Bool = false
+    ) -> TimeInterval {
+        if consumeToNow && !chargingOrOffWrist { return 20 }
+        return chargingOrOffWrist ? 180 : 20
     }
 
     /// A drain-owned drop must not arm the next-connect natural-gap drain.
@@ -735,15 +1028,79 @@ extension AtriaBLEManager {
             && !thermalParked
     }
 
+    /// Resume beat when there is no live pulse to protect (strap charging or
+    /// off-wrist). Not zero: the transport still needs a moment to settle the
+    /// 2A37 CCCD and history-pipe teardown between chunks.
+    nonisolated static let idleWindowUnprotectedResumeInterval: TimeInterval = 2
+
     /// Give live 2A37 a beat after a bounded chunk before the charging
-    /// window can seize the link again.
+    /// window can seize the link again. Consented consume shortens that
+    /// beat on a live tail / still write cursor so the next 0x22 can
+    /// observe pending=0 before new samples accrue.
     nonisolated static func shouldAdmitIdleWindowHistoryDrainRetry(
         lastFinishedAt: Date?,
         now: Date,
-        minimumResumeInterval: TimeInterval = 20
+        minimumResumeInterval: TimeInterval = 20,
+        consumeToNow: Bool = false,
+        lastPendingRecords: UInt32? = nil,
+        chargingOrOffWrist: Bool = false
     ) -> Bool {
         guard let lastFinishedAt else { return true }
-        return now.timeIntervalSince(lastFinishedAt) >= minimumResumeInterval
+        let interval: TimeInterval
+        if consumeToNow,
+           chargingOrOffWrist
+            || (lastPendingRecords.map {
+                $0 <= idleWindowConsumeLiveTailPendingLimit
+            } == true) {
+            let pending = lastPendingRecords ?? 0
+            interval = pending > 0
+                && pending <= idleWindowConsumeLiveTailPendingLimit
+                ? idleWindowConsumeLiveTailImmediateResumeInterval
+                : idleWindowConsumeLiveTailResumeInterval
+        } else if chargingOrOffWrist {
+            // The 20s beat exists to let live 2A37 breathe between chunks.
+            // On the charger / off the wrist the firmware is not producing a
+            // pulse to protect, so that beat is dead air on the one window
+            // where the backlog can actually be cleared in bulk.
+            interval = idleWindowUnprotectedResumeInterval
+        } else {
+            interval = minimumResumeInterval
+        }
+        return now.timeIntervalSince(lastFinishedAt) >= interval
+    }
+
+    /// Soak 15:30: stream5_rx=20, historicalData decoded, persist still
+    /// queued, 20s absolute budget restored 2A37, then
+    /// `stale_persistence_callback` — ACK never went out. Hold the budget
+    /// while a page is still persisting and un-ACK'd.
+    nonisolated static func shouldHoldIdleWindowAbsoluteBudgetForInFlightPersist(
+        persistPending: Bool,
+        acknowledgedPages: Int
+    ) -> Bool {
+        persistPending && acknowledgedPages == 0
+    }
+
+    /// Soak 15:40: ACK + 0x22 seq=3 while stream5 still notifying; no
+    /// write_confirmed and no data_range_response in 5s. Hold 2A37 paused
+    /// until the post-ACK GET_DATA_RANGE is observed (or the probe gives up).
+    nonisolated static func shouldHoldIdleWindowAbsoluteBudgetForPostACKRangeProbe(
+        postACKProbeIssued: Bool,
+        afterACKRangeObserved: Bool
+    ) -> Bool {
+        postACKProbeIssued && !afterACKRangeObserved
+    }
+
+    /// 0x22 never WR-confirms while a notify pipe is hot (2A37 lesson).
+    /// Quiet stream 5 only; RX must stay notifying so the range response
+    /// can land.
+    nonisolated static func shouldQuietIdleWindowStream5BeforePostACKRangeProbe(
+        idleWindowDrainOwnsLink: Bool,
+        acknowledgedPages: Int,
+        postACKProbeIssued: Bool
+    ) -> Bool {
+        idleWindowDrainOwnsLink
+            && acknowledgedPages >= 1
+            && postACKProbeIssued
     }
 
     /// Fail-closed restore if the handshake never serves a frame. The clock
@@ -772,6 +1129,10 @@ extension AtriaBLEManager {
     /// flight, then this 5s first-frame clock restored 2A37 and the persist
     /// callback was ignored as stale. Admission progress means the pipeline
     /// is working; wait for persist/ACK or the 20s absolute budget.
+    /// Consume-soak gen5: the 5s stall restored 2A37 after a disconnect
+    /// while stream5 was still landing and admission had not yet opened,
+    /// so later generations never ACK'd. Consented consume-to-now waits
+    /// for persist/ACK or the absolute budget instead.
     nonisolated static func shouldReleaseIdleWindowHistoryDrainWhenPersistAckStalled(
         idleWindowDrainOwnsLink: Bool,
         firstFrameAt: Date?,
@@ -780,9 +1141,11 @@ extension AtriaBLEManager {
         acknowledgedPages: Int,
         now: Date,
         persistAckStallLimit: TimeInterval = 5,
-        admitted: Int = 0
+        admitted: Int = 0,
+        consumeToNow: Bool = false
     ) -> Bool {
         guard idleWindowDrainOwnsLink, acknowledgedPages == 0 else { return false }
+        if consumeToNow { return false }
         if persisted == 0 && admitted > 0 {
             return false
         }
@@ -874,11 +1237,60 @@ extension AtriaBLEManager {
     /// Drain-owned drop with zero frames: keep 2A37 suppressed so the
     /// next connect is history-first (08:19 gen2), not 2A37-then-pause
     /// (08:53). After a productive ACK, restore HR as usual.
+    /// Soak 9 gen 23: a verified empty 0x22 (`pending=0`, read==write)
+    /// also has stream5_rx=0, but that is a completed drain, not a
+    /// handshake drop. Suppressing then skipped 2A37 reassert and the
+    /// continuity watchdog hard-reconnected after a 50s gap.
     nonisolated static func shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect(
         drainOwnedDisconnect: Bool,
-        receivedHistoryFrames: Bool
+        receivedHistoryFrames: Bool,
+        verifiedEmptyHistoryCursor: Bool = false,
+        linkStillConnected: Bool = false
     ) -> Bool {
-        drainOwnedDisconnect && !receivedHistoryFrames
+        if verifiedEmptyHistoryCursor { return false }
+        // Soak 12 gen 1: 18s pause finish on a live link armed the fence
+        // (`stream5_rx=0`) and skipped 2A37 reassert. History-first suppress
+        // is for an actual drop, not a still-connected restore.
+        if linkStillConnected { return false }
+        return drainOwnedDisconnect && !receivedHistoryFrames
+    }
+
+    /// Soak 9 gen 23: `finishOfflineHistoricalSync` called reassert while
+    /// the drain still owned 2A37 (`ble_notify_reassert skipped
+    /// detail=idle_window_drain_pauses_2a37`), so `live_restored=0`.
+    /// A verified empty 0x22, or any still-connected finish, is a completed
+    /// drain — reassert must run. Mid-slice scene_active reassert still skips.
+    /// Soak 14: a 1–2 page live tail is not complete; keep 2A37 paused so
+    /// the next 0x22 can land before write seals another page.
+    nonisolated static func shouldSkipIdleWindowHeartRateReassert(
+        idleWindowDrainOwnsLink: Bool,
+        verifiedEmptyHistoryCursor: Bool = false,
+        deferLiveRestoreForConsumeLiveTail: Bool = false
+    ) -> Bool {
+        if verifiedEmptyHistoryCursor { return false }
+        if deferLiveRestoreForConsumeLiveTail { return true }
+        return idleWindowDrainOwnsLink
+    }
+
+    /// Soak 14: ACK of a 1–2 page worn tail plus 2A37 restore + live-sample
+    /// wait (~7s) lets write grow one page, so the next 0x22 never shows
+    /// pending=0. Keep the pause and re-probe immediately. A verified empty
+    /// cursor, pause-budget expiry, or a leftover above 2 pages must still
+    /// restore 2A37 (soak 9 / soak 12).
+    nonisolated static func shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry(
+        consumeToNow: Bool,
+        lastPendingRecords: UInt32?,
+        verifiedEmptyHistoryCursor: Bool,
+        linkStillConnected: Bool,
+        consumePauseElapsed: TimeInterval
+    ) -> Bool {
+        if verifiedEmptyHistoryCursor { return false }
+        guard consumeToNow, linkStillConnected else { return false }
+        if consumePauseElapsed >= idleWindowConsumeHeartRatePauseLimit {
+            return false
+        }
+        let pending = lastPendingRecords ?? 0
+        return pending > 0 && pending <= idleWindowConsumeLiveTailPendingLimit
     }
 
     /// Soak-2 09:07 wrote RX+stream5 CCCDs on live 2A37, then paused and
@@ -944,9 +1356,22 @@ extension AtriaBLEManager {
     /// never paused). The retry loop must wait, not one-shot evaluate.
     nonisolated static func shouldWaitForIdleWindowHistoricalIngressReplay(
         orphanReplayInFlight: Bool,
-        currentGenerationSpoolOpen: Bool
+        currentGenerationSpoolOpen: Bool,
+        consumeToNow: Bool = false
     ) -> Bool {
-        orphanReplayInFlight || currentGenerationSpoolOpen
+        if consumeToNow { return false }
+        return orphanReplayInFlight || currentGenerationSpoolOpen
+    }
+
+    /// Soak 10: consume finish left the production spool file; the next
+    /// generation saw `orphan_not_archived`, latched admission-failed, and
+    /// dropped stream5 so HISTORY_END/ACK never ran. ACK-without-persist
+    /// must discard that file, not fail-closed retain it.
+    nonisolated static func shouldDiscardUnackedConsumeIngressSpool(
+        consumeToNow: Bool,
+        idleWindowDrainOwnsLink: Bool
+    ) -> Bool {
+        consumeToNow && idleWindowDrainOwnsLink
     }
 
     /// If replay is still blocking after the pipe-retry budget, restore 2A37
@@ -1048,6 +1473,16 @@ extension AtriaBLEManager {
         heartRateStillNotifying: Bool
     ) -> Bool {
         heartRateStillNotifying
+    }
+
+    /// Admit-probe 14:40: pause CCCD completed with `notifying=1 err=Unknown
+    /// error` then 8s abort, `stream5_rx=0`. Retry the unsubscribe once
+    /// instead of treating a failed CCCD as lost.
+    nonisolated static func shouldRetryIdleWindowHeartRateUnsubscribe(
+        cccdErrorPresent: Bool,
+        heartRateStillNotifying: Bool
+    ) -> Bool {
+        cccdErrorPresent && heartRateStillNotifying
     }
 
     /// Drain-keeping continuity (2026-08-07 soak): a `.draining` authority
@@ -1268,6 +1703,42 @@ extension AtriaBLEManager {
             && !publicationYieldActive
             && !rawFirstSliceSpent
             && now < deadline
+    }
+
+    /// Soak 16: after strap-zero, connected-raw catch-up was admitted
+    /// (`terminal_publication_parallel_range_loss_raw`) then refused by
+    /// `historicalConsumerMaterializationInFlight`. Terminal publication is a
+    /// local archive projection; it must not block a same-link persist-before-ACK
+    /// / raw catch-up that never mutates the parked journal.
+    nonisolated static func shouldBlockHistoryTransportForTerminalConsumerMaterialization(
+        materializationInFlight: Bool,
+        exactConnectedRealtimePreservingRequest: Bool,
+        idleWindowDrainAdmitted: Bool = false
+    ) -> Bool {
+        guard materializationInFlight else { return false }
+        if exactConnectedRealtimePreservingRequest { return false }
+        if idleWindowDrainAdmitted { return false }
+        return true
+    }
+
+    /// Consume-to-now ACK'd HISTORY_COMPLETE with persisted=0. There is no
+    /// durable journal from that generation to project; scheduling
+    /// terminal materialization latched the lane and blocked go-forward
+    /// persist-before-ACK (soak 16 gen 2 → in_flight until ceiling).
+    nonisolated static func shouldScheduleTerminalConsumerMaterializationAfterHistoryFinish(
+        terminalAndLiveRestored: Bool,
+        reachedTerminal: Bool,
+        compactMotionBankOnly: Bool,
+        connectedRawCatchUpContinuationPending: Bool,
+        consumeToNow: Bool,
+        persistedRows: Int
+    ) -> Bool {
+        guard !compactMotionBankOnly,
+              !connectedRawCatchUpContinuationPending,
+              terminalAndLiveRestored,
+              reachedTerminal else { return false }
+        if consumeToNow && persistedRows <= 0 { return false }
+        return true
     }
 
     /// The persisted workout intent can reach its terminal value just before
@@ -1826,6 +2297,37 @@ extension AtriaBLEManager {
                 0,
                 endFrontierUnix - startFrontierUnix
             )
+        )
+    }
+
+    /// Slice-progress baseline for oldest-first RAW / idle-window drain.
+    /// Never the display `drainedThroughUnix` footer: a later HR-history
+    /// watermark must not zero `frontier_advance_s` for ACK'd older pages.
+    nonisolated static func connectedHistorySliceStartFrontierUnix(
+        oldestFirstDrainCursorUnix: TimeInterval
+    ) -> TimeInterval {
+        guard oldestFirstDrainCursorUnix.isFinite,
+              oldestFirstDrainCursorUnix > 0 else {
+            return 0
+        }
+        return oldestFirstDrainCursorUnix
+    }
+
+    /// Same monotonic-max / future-reject rules as the display frontier, but
+    /// `existing` is the oldest-first ACK cursor. A page newer than that
+    /// cursor is forward progress even when it is still behind the display
+    /// footer.
+    nonisolated static func advancedOldestFirstHistoryDrainCursor(
+        existing: TimeInterval,
+        durableEffectiveUnix: [UInt32],
+        now: Date,
+        futureTolerance: TimeInterval = 5 * 60
+    ) -> TimeInterval? {
+        advancedDurableHistoricalFrontier(
+            existing: existing,
+            durableEffectiveUnix: durableEffectiveUnix,
+            now: now,
+            futureTolerance: futureTolerance
         )
     }
 

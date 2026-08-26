@@ -2928,19 +2928,26 @@ struct AtriaSleepStressCard: View {
                                   title: { $0.rawValue },
                                   selection: $mode)
                 Chart {
+                    // Interpolation follows sample density, not taste. These are
+                    // dense intra-day series already split into `series` at every
+                    // gap, so monotone smooths within a run without bridging one —
+                    // and it matches how the SAME data is drawn in Vitals (heart
+                    // rate) and the Stress monitor. Sparse once-a-day trends stay
+                    // linear, where a smooth curve would bow past the measured
+                    // days and imply values never recorded.
                     if mode == .load {
                         ForEach(points) { point in
                             AreaMark(x: .value("Time", point.reading.date),
                                      y: .value("Load", point.reading.score),
                                      series: .value("Segment", point.segment))
-                                .interpolationMethod(.linear)
+                                .interpolationMethod(.monotone)
                                 .foregroundStyle(.linearGradient(colors: [.blue.opacity(0.14), .green.opacity(0.08), .orange.opacity(0.03)],
                                                                   startPoint: .bottom,
                                                                   endPoint: .top))
                             LineMark(x: .value("Time", point.reading.date),
                                      y: .value("Load", point.reading.score),
                                      series: .value("Segment", point.segment))
-                                .interpolationMethod(.linear)
+                                .interpolationMethod(.monotone)
                                 .lineStyle(AtriaChartVisualGrammar.traceLine)
                                 .foregroundStyle(.linearGradient(colors: [.blue, .green, .orange],
                                                                   startPoint: .bottom,
@@ -2961,12 +2968,12 @@ struct AtriaSleepStressCard: View {
                             AreaMark(x: .value("Time", point.date),
                                      y: .value("BPM", point.bpm),
                                      series: .value("Segment", point.series))
-                                .interpolationMethod(.linear)
+                                .interpolationMethod(.monotone)
                                 .foregroundStyle(Self.hrAreaStyle(for: point.stage))
                             LineMark(x: .value("Time", point.date),
                                      y: .value("BPM", point.bpm),
                                      series: .value("Segment", point.series))
-                                .interpolationMethod(.linear)
+                                .interpolationMethod(.monotone)
                                 .lineStyle(AtriaChartVisualGrammar.traceLine)
                                 .foregroundStyle(Self.hrLineStyle(for: point.stage))
                         }

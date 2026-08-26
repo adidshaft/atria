@@ -236,6 +236,44 @@ enum AtriaWorkoutActivityType: String, CaseIterable, Identifiable, Hashable {
     /// only carried a free-form label/subtype. One shared resolver keeps the
     /// Activity list, timeline, Live Activity and share card iconography in
     /// agreement instead of letting each surface fall back to `figure.run`.
+    /// Whether this activity plausibly produces FOOTFALLS.
+    ///
+    /// The strap counter measures WRIST MOTION, not steps. Over a day that is
+    /// a fair step proxy — the counted physical corpus proved it is silent at
+    /// rest ("preceding 60-second rest delta = 0 ticks") — but a sustained
+    /// upper-body or seated/wheeled activity adds thousands of ticks with no
+    /// footfall behind them. On 2026-08-24 a single 65-minute strength block
+    /// contributed 5,232 of the day's 12,956 raw ticks: 40% of the total.
+    /// That is also the exact shape recorded as a physical FAIL in
+    /// `evidence/2026-07-27-gate4-arm-control-failure` (planted feet, arm
+    /// swinging, 166 published steps).
+    ///
+    /// Deliberately CONSERVATIVE: only activities that clearly cannot produce
+    /// footfalls return false, and everything unlisted defaults to true. An
+    /// error here should under-exclude (a small overcount) rather than silently
+    /// erase real walking.
+    var producesFootfalls: Bool {
+        switch self {
+        // Upper body / stationary strength.
+        case .strength, .powerlifting, .functionalFitness, .barre,
+             .gymnastics, .wrestling, .jiuJitsu:
+            return false
+        // Seated, wheeled or gliding — the feet never strike.
+        case .cycling, .mountainBiking, .spin, .assaultBike, .rowing,
+             .kayaking, .paddleboarding, .surfing, .sailing, .waterSkiing,
+             .wakeboarding, .skateboarding, .inlineSkating, .iceSkating,
+             .skiing, .snowboarding, .horsebackRiding, .swimming,
+             .waterPolo, .elliptical:
+            return false
+        // Held still or floor-based.
+        case .yoga, .pilates, .mobility, .meditation, .breathwork,
+             .sauna, .iceBath, .massage, .climbing:
+            return false
+        default:
+            return true
+        }
+    }
+
     static func resolved(activityType: String?, subtype: String?, label: String) -> Self {
         if let activityType,
            let exact = allCases.first(where: {

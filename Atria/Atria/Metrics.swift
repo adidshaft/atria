@@ -357,6 +357,25 @@ enum Metrics {
     /// Stress amber (#FF9F0A on dark), deepened to a readable amber on light.
     static let electricStress = adaptive(dark: (1.0, 0.624, 0.039), light: (0.80, 0.42, 0.0))
 
+    /// Heart-rate traces encode LEVEL in the stroke: cool at the bottom of the
+    /// plot, warm at the top. Shared so every HR chart in the app speaks one
+    /// visual language — the Vitals timeline used this ramp while the Activity
+    /// live monitor hardcoded a flat red→orange, so the same metric read as
+    /// two different things depending on the tab (owner report 2026-08-25).
+    static let heartRateIntensityGradient = LinearGradient(stops: [
+        .init(color: .cyan, location: 0),
+        .init(color: .green, location: 0.38),
+        .init(color: .orange, location: 0.68),
+        .init(color: .red, location: 1)
+    ], startPoint: .bottom, endPoint: .top)
+
+    static let heartRateIntensityAreaGradient = LinearGradient(stops: [
+        .init(color: .cyan.opacity(0.12), location: 0),
+        .init(color: .green.opacity(0.10), location: 0.38),
+        .init(color: .orange.opacity(0.08), location: 0.68),
+        .init(color: .red.opacity(0.12), location: 1)
+    ], startPoint: .bottom, endPoint: .top)
+
     static func recoveryColor(_ pct: Int) -> Color {
         switch pct {
         case 67...: return electricGreen

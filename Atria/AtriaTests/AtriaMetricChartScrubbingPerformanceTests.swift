@@ -52,7 +52,15 @@ final class AtriaMetricChartScrubbingPerformanceTests: XCTestCase {
         XCTAssertTrue(sheet.contains("AtriaMetricChartDynamicCompanionSignature("))
         XCTAssertTrue(chart.contains("prepared: AtriaMetricChartPreparedData"))
         XCTAssertFalse(chart.contains("prepared = AtriaMetricChartPreparedData"))
-        XCTAssertTrue(chart.contains(".chartYScale(domain: prepared.domain)"))
+        // The invariant is that the Y scale is DERIVED from the prepared data
+        // and never recomputed on the scrub path — not that it is spelled as a
+        // bare `prepared.domain`. Daily-bar metrics anchor the scale at zero
+        // (a bar means "this much, measured from zero", so a padded min...max
+        // domain would render every bar as a truncated stub), which makes the
+        // expression a ternary over `prepared.domain`.
+        XCTAssertTrue(chart.contains(".chartYScale(domain:"))
+        XCTAssertTrue(chart.contains("prepared.domain"),
+                      "the chart's Y scale must come from the prepared inputs")
     }
 
     func testScrubRenderPathHasNoLinearPointOrCompanionScan() throws {

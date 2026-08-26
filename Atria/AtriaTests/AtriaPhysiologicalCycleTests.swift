@@ -158,6 +158,64 @@ final class AtriaPhysiologicalCycleTests: XCTestCase {
         XCTAssertEqual(day.boundaryKind, .noSleepFallback)
     }
 
+    // MARK: - All-nighters that run past one day
+    //
+    // A single missed night was covered above. The `while` loop in
+    // `latestCompletedNoSleepFallback` that walks the boundary forward one
+    // civil day at a time was not, so a genuine 48- or 72-hour stretch awake
+    // rested on untested code. The rule these pin: with no sleep to rotate on,
+    // a new physiological day still starts every 24 hours from when the last
+    // one started — never a single open-ended day that grows without bound.
+
+    func testTwoNightsWithoutSleepRollTheBoundaryTwice() {
+        let main = sleep(id: "main", start: date(1, 0), end: date(1, 7))
+        let day = AtriaPhysiologicalDay.current(now: date(3, 9),
+                                                confirmedSleeps: [main],
+                                                calendar: calendar)
+        XCTAssertEqual(day.start, date(3, 7).addingTimeInterval(30 * 60),
+                       "the boundary must advance to the SECOND rollover")
+        XCTAssertEqual(day.boundaryKind, .noSleepFallback)
+    }
+
+    func testThreeNightsWithoutSleepKeepTheDayBoundedAtTwentyFourHours() {
+        let main = sleep(id: "main", start: date(1, 0), end: date(1, 7))
+        let day = AtriaPhysiologicalDay.current(now: date(4, 20),
+                                                confirmedSleeps: [main],
+                                                calendar: calendar)
+        XCTAssertEqual(day.start, date(4, 7).addingTimeInterval(30 * 60))
+        // The day the user is standing in is never longer than one rollover.
+        XCTAssertLessThanOrEqual(date(4, 20).timeIntervalSince(day.start),
+                                 24 * 60 * 60,
+                                 "an all-nighter must not produce an unbounded day")
+    }
+
+    func testTheRolloverDoesNotFireBeforeItsGrace() {
+        let main = sleep(id: "main", start: date(1, 0), end: date(1, 7))
+        // One minute before wake + 24h + 30m: still the original wake's day.
+        let justBefore = date(2, 7).addingTimeInterval(29 * 60)
+        let day = AtriaPhysiologicalDay.current(now: justBefore,
+                                                confirmedSleeps: [main],
+                                                calendar: calendar)
+        XCTAssertEqual(day.start, date(1, 7))
+        XCTAssertEqual(day.boundaryKind, .mainSleep,
+                       "the grace exists so the rollover cannot race sleep settlement")
+    }
+
+    func testSleepingAgainEndsTheAllNighterRunAtTheRealWake() {
+        // The point of the fallback is to keep days bounded while no sleep is
+        // recorded — not to keep owning the day once one is.
+        let main = sleep(id: "main", start: date(1, 0), end: date(1, 7))
+        let afterTheAllNighter = sleep(id: "recovery-sleep",
+                                       start: date(3, 2),
+                                       end: date(3, 11))
+        let day = AtriaPhysiologicalDay.current(now: date(3, 13),
+                                                confirmedSleeps: [main, afterTheAllNighter],
+                                                calendar: calendar)
+        XCTAssertEqual(day.start, date(3, 11),
+                       "a real wake takes the boundary back from the fallback")
+        XCTAssertEqual(day.boundaryKind, .mainSleep)
+    }
+
     func testUnambiguousHROnlyAutomaticSleepStartsMainSleepCycle() {
         let automatic = sleep(id: "hr-only-main",
                               start: date(1, 23),

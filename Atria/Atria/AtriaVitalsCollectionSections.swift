@@ -1145,8 +1145,15 @@ private struct AtriaHealthMonitorRowView: View, Equatable {
         // needed inside the sparkline card — the row title already names the metric.
         HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 7) {
+                // The label recedes to Medium so the value can lead. Both used
+                // to be `.subheadline.weight(.semibold)` — identical size AND
+                // weight — so the row had no hierarchy and the number you
+                // opened Vitals to read carried no more emphasis than its own
+                // caption. (Measured 2026-08-26: this file runs 91 caption-tier
+                // fonts against 18 larger, the worst ratio in the app.)
                 Text(row.kind.title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(AtriaDesignTokens.Typography.metricLabel)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.82)
 
@@ -1160,14 +1167,21 @@ private struct AtriaHealthMonitorRowView: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .trailing, spacing: 6) {
+                // The value is the reason this row exists, so it takes the
+                // metric-value role: larger, rounded, tabular so digits stop
+                // shifting between refreshes, and tracked tight because large
+                // digits set at default tracking read as loose glyphs.
                 Text(row.valueText)
-                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                    .font(AtriaDesignTokens.Typography.metricValue)
+                    .tracking(AtriaDesignTokens.Typography.valueTracking)
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
 
                 rangePill
             }
-            .frame(width: 86, alignment: .trailing)
+            // Widened with the type: at 86pt a title2 value would spend most of
+            // its life scaled down, which defeats the point of promoting it.
+            .frame(width: 96, alignment: .trailing)
         }
     }
 
@@ -5634,22 +5648,14 @@ struct AtriaHeartRateAxisChart: View, Equatable {
     /// The chart colour is a value scale, not a blanket danger signal. It
     /// rises from calm/cool through working green and amber into red as the
     /// visible heart-rate domain rises, matching the 0–3 stress treatment.
+    // One source of truth so the Activity live monitor and this timeline
+    // cannot drift apart again (see `Metrics.heartRateIntensityGradient`).
     private var heartRateGradient: LinearGradient {
-        LinearGradient(stops: [
-            .init(color: .cyan, location: 0),
-            .init(color: .green, location: 0.38),
-            .init(color: .orange, location: 0.68),
-            .init(color: .red, location: 1)
-        ], startPoint: .bottom, endPoint: .top)
+        Metrics.heartRateIntensityGradient
     }
 
     private var heartRateAreaGradient: LinearGradient {
-        LinearGradient(stops: [
-            .init(color: .cyan.opacity(0.12), location: 0),
-            .init(color: .green.opacity(0.10), location: 0.38),
-            .init(color: .orange.opacity(0.08), location: 0.68),
-            .init(color: .red.opacity(0.12), location: 1)
-        ], startPoint: .bottom, endPoint: .top)
+        Metrics.heartRateIntensityAreaGradient
     }
 
     /// One raw observation tagged with its run so the trace never bridges a

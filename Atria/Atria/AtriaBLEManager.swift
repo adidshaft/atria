@@ -955,6 +955,33 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         case needsAttention
     }
 
+    /// Which banner state a finished recovery generation leaves behind.
+    ///
+    /// Rows are factual progress, not proof that the exact interval was
+    /// recovered, so an unresolved gap must stay visibly unresolved. But
+    /// "partial" is a TERMINAL-sounding claim, and once the idle-window drain
+    /// became default-on the drain runs continuously: every generation ended
+    /// `.partial` and the next one set `.syncing`, so the banner alternated
+    /// "Syncing strap history · through 10:13 AM" ↔ "Recovery partial · 1080
+    /// saved" once per slice (~40 s). Observed on device 2026-08-24.
+    ///
+    /// While the strap still has a backlog the honest description of that
+    /// same state is "still syncing" — another slice is already coming. This
+    /// claims nothing extra: the syncing copy carries the saved-record count
+    /// and the durable frontier time. Only once there is no backlog left to
+    /// work on does an unproven gap settle to `.partial`.
+    nonisolated static func historicalRecoveryPresentationAfterGeneration(
+        rangeLossResolved: Bool,
+        savedRecords: Int,
+        strapBacklogPending: Bool
+    ) -> HistoricalRecoveryPresentation {
+        if rangeLossResolved { return .verified }
+        guard savedRecords > 0 else { return .needsAttention }
+        return strapBacklogPending
+            ? .syncing(savedRecords: savedRecords)
+            : .partial(savedRecords: savedRecords)
+    }
+
     enum OfficialAppCoexistenceRisk: String {
         case advisory
         case suspected
@@ -1631,16 +1658,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     /// stop-realtime drain in the pre-HR window (integrity-safe persist-before-ack full
     /// drain; realtime restores on normal completion). Default builds never set it.
     private var naturalGapDrainArmed = false
-    /// Flag-gated `--atria-idle-window-drain-enable`: 2A37 notify is paused on
-    /// the same connection for one bounded stop-realtime chunk. Restored in
-    /// `finishOfflineHistoricalSync` before the existing 2A37 reassert. Never
-    /// paired with `cancelPeripheralConnection`.
+    /// Default-on (kill switch `--atria-idle-window-drain-disable`): 2A37
+    /// notify is paused on the same connection for one bounded stop-realtime
+    /// chunk. Restored in `finishOfflineHistoricalSync` before the existing
+    /// 2A37 reassert. Never paired with `cancelPeripheralConnection`.
     private var idleWindowDrainPausesHeartRate = false
     private var idleWindowDrainStartedAt: Date?
     private var idleWindowDrainRangeRequestedAt: Date?
     private var idleWindowDrainFirstFrameAt: Date?
+    private var idleWindowDrainLastFrameAt: Date?
     private var idleWindowDrainLastDurableProgressAt: Date?
     private var idleWindowDrainLastFinishedAt: Date?
+    /// Soak 14: cumulative 2A37-off clock across 1–2 page live-tail
+    /// retries so the 18s pause cap still wins over chaining.
+    private var idleWindowConsumeLiveTailPauseStartedAt: Date?
+    private var idleWindowConsumeLiveTailRetryTask: Task<Void, Never>?
+    /// Oldest-first ACK cursor at generation start. Slice
+    /// `frontier_advance_s` is this key, not the display footer.
+    private var idleWindowDrainStartFrontierUnix: TimeInterval = 0
+    private var idleWindowDrainBeganUnattended = false
+    private var idleWindowUnsubscribeRetryCount = 0
+    private var idleWindowRangeBeforeACK: AtriaWhoop4HistoryRangePointerSnapshot?
+    private var idleWindowRangeAfterACK: AtriaWhoop4HistoryRangePointerSnapshot?
+    private var idleWindowServedUnixMin: UInt32?
+    private var idleWindowServedUnixMax: UInt32?
+    private var idleWindowPreviousServedUnixMin: UInt32?
+    private var idleWindowPreviousServedUnixMax: UInt32?
+    private var idleWindowPostACKRangeProbeIssued = false
+    private var idleWindowConsumeToNowConsent = false
     /// Launch/charge trigger can win before the archive is warm or the
     /// admission ledger is open, then the generic resume waits for live HR
     /// and loses the window. Honor one start after those dependencies
@@ -5192,6 +5237,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private var lastCanonicalCheckpointAt: Date?
     private let reconnectWatchdogSeconds: TimeInterval = 20
     private var reconnectWatchdogTask: Task<Void, Never>?
+    private var reissuedStuckRestoredConnecting = false
     private var backgroundReconnectLeaseTask: Task<Void, Never>?
     private var backgroundReconnectLease: UIBackgroundTaskIdentifier = .invalid
     private var backgroundReconnectLeaseReissueUsed = false
@@ -8005,6 +8051,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // CBCentralManager. Scene activation still reaches this public hook,
         // so return before any recovery path touches the unavailable radio.
         guard !bluetoothStartupSuspended, !appReviewDemoMode else { return }
+        restoreIdleWindowHeartRateForAttendedForegroundIfNeeded()
         let now = Date()
         // CoreBluetooth can remain in an impossible settled state even after
         // the system radio is available. A scene activation is a fresh chance
@@ -8118,9 +8165,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return
         }
         guard status == .connected, let peripheral else { return }
-        if idleWindowDrainOwnsHeartRateLink() {
+        let verifiedEmptyHistoryCursor =
+            verifiedEmptyHistoryCursorGeneration != nil
+            && verifiedEmptyHistoryCursorGeneration
+                == offlineHistoricalSyncGeneration
+        if Self.shouldSkipIdleWindowHeartRateReassert(
+            idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
+            verifiedEmptyHistoryCursor: verifiedEmptyHistoryCursor
+        ) {
             AtriaDebugLog("ATRIADBG ble_notify_reassert status=skipped reason=%@ detail=idle_window_drain_pauses_2a37", reason)
             return
+        }
+        if idleWindowDrainOwnsHeartRateLink(), verifiedEmptyHistoryCursor {
+            AtriaDebugLog(
+                "ATRIADBG ble_notify_reassert status=allowed reason=%@ detail=verified_empty_cursor_restore_2a37",
+                reason
+            )
         }
         if dutyCycleState == .sparseSentinel {
             AtriaDebugLog("ATRIADBG ble_notify_reassert status=skipped reason=%@ detail=duty_cycle_sparse", reason)
@@ -10560,7 +10620,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             explicitMotionOwnershipActive: motionOwner,
             thermalParked: Self.shouldParkConnectedRawHistoryCatchUpForPowerPressure(
                 thermalState: ProcessInfo.processInfo.thermalState
-            )
+            ),
+            consumeToNow: idleWindowConsumeToNowConsent,
+            lastPendingRecords: loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
         )
         if idleFlag { return window }
         return window == .naturalGapPreHR ? window : .none
@@ -10592,6 +10654,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // when `startOfflineHistoricalSync` actually opens the slice.
         if startBudgetClock, idleWindowDrainStartedAt == nil {
             idleWindowDrainStartedAt = Date()
+        }
+        if idleWindowConsumeLiveTailPauseStartedAt == nil {
+            idleWindowConsumeLiveTailPauseStartedAt = Date()
         }
         guard let peripheral, peripheral.state == .connected,
               let characteristic = heartRateCharacteristic,
@@ -10824,6 +10889,20 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             }
             guard let self,
                   self.idleWindowDrainAwaitingHeartRateUnsubscribe else { return }
+            if Self.shouldAbortIdleWindowPauseWhenUnsubscribeLost(
+                heartRateStillNotifying: self.heartRateCharacteristic?.isNotifying == true
+            ),
+               self.idleWindowUnsubscribeRetryCount < 1 {
+                self.idleWindowUnsubscribeRetryCount += 1
+                AtriaDebugLog(
+                    "ATRIADBG idle_window_drain status=2a37_unsubscribe_retry action=resend_cccd_off_after_timeout"
+                )
+                self.pauseHeartRateNotifyForIdleWindowDrain(
+                    reason: "idle_window_drain_unsubscribe_timeout_retry"
+                )
+                self.scheduleIdleWindowHeartRateUnsubscribeArmIfNeeded()
+                return
+            }
             self.idleWindowDrainAwaitingHeartRateUnsubscribe = false
             if Self.shouldAbortIdleWindowPauseWhenUnsubscribeLost(
                 heartRateStillNotifying: self.heartRateCharacteristic?.isNotifying == true
@@ -10858,7 +10937,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 let readyFor = self.idleWindowHistoryPipeReadyDuration()
                 let ingressBlocking = Self.shouldWaitForIdleWindowHistoricalIngressReplay(
                     orphanReplayInFlight: self.orphanHistoricalIngressArchiveInFlight,
-                    currentGenerationSpoolOpen: self.historicalIngressSpool != nil
+                    currentGenerationSpoolOpen: self.historicalIngressSpool != nil,
+                    consumeToNow: self.idleWindowConsumeToNowConsent
                 )
                 if ingressBlocking {
                     if attempt % 10 == 0 {
@@ -10896,7 +10976,8 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                !self.offlineHistoricalSyncInProgress {
                 let ingressStillBlocking = Self.shouldWaitForIdleWindowHistoricalIngressReplay(
                     orphanReplayInFlight: self.orphanHistoricalIngressArchiveInFlight,
-                    currentGenerationSpoolOpen: self.historicalIngressSpool != nil
+                    currentGenerationSpoolOpen: self.historicalIngressSpool != nil,
+                    consumeToNow: self.idleWindowConsumeToNowConsent
                 )
                 if Self.shouldRestoreIdleWindowHeartRateWhenIngressReplayTimesOut(
                     idleWindowPausedHeartRate: self.idleWindowDrainPausesHeartRate,
@@ -10925,6 +11006,26 @@ final class AtriaBLEManager: NSObject, ObservableObject {
     private func cancelIdleWindowHistoryPipeRetry() {
         idleWindowDrainHistoryPipeRetryTask?.cancel()
         idleWindowDrainHistoryPipeRetryTask = nil
+        idleWindowConsumeLiveTailRetryTask?.cancel()
+        idleWindowConsumeLiveTailRetryTask = nil
+    }
+
+    private func scheduleIdleWindowConsumeLiveTailRetryIfNeeded() {
+        idleWindowConsumeLiveTailRetryTask?.cancel()
+        let delay = Self.idleWindowConsumeLiveTailImmediateResumeInterval
+        idleWindowConsumeLiveTailRetryTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard let self, !Task.isCancelled else { return }
+            self.idleWindowConsumeLiveTailRetryTask = nil
+            guard !self.offlineHistoricalSyncInProgress else { return }
+            AtriaDebugLog(
+                "ATRIADBG idle_window_drain status=live_tail_retry action=immediate_22_keep_2a37_paused_no_cancel"
+            )
+            _ = self.evaluateIdleWindowHistoryDrainIfNeeded(
+                reason: "idle_window_drain",
+                preferImmediatePause: true
+            )
+        }
     }
 
     private func idleWindowDrainOwnsHeartRateLink() -> Bool {
@@ -10951,11 +11052,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
         guard Self.shouldAdmitIdleWindowHistoryDrainRetry(
             lastFinishedAt: idleWindowDrainLastFinishedAt,
-            now: Date()
+            now: Date(),
+            consumeToNow: idleWindowConsumeToNowConsent,
+            lastPendingRecords: loadIdleWindowAckedHistoryRangePointer()?.pendingRecords,
+            chargingOrOffWrist: batteryIsCharging || !hasContact
         ) else { return false }
         let ingressReplayBlocking = Self.shouldWaitForIdleWindowHistoricalIngressReplay(
             orphanReplayInFlight: orphanHistoricalIngressArchiveInFlight,
-            currentGenerationSpoolOpen: historicalIngressSpool != nil
+            currentGenerationSpoolOpen: historicalIngressSpool != nil,
+            consumeToNow: idleWindowConsumeToNowConsent
         )
         if offlineHistoricalSyncInProgress
             || ingressReplayBlocking
@@ -11055,6 +11160,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             cancelIdleWindowHistoryPipeRetry()
         } else {
             idleWindowDrainPausesHeartRate = false
+            idleWindowDrainLastFinishedAt = Date()
             if historicalArchiveWarmState == .ready {
                 idleWindowDrainArchiveWarmRetry = false
             }
@@ -12102,7 +12208,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // every sync attempt saw the flag, deferred, and never questioned how
         // long it had been set.
         releaseMaterializationLaneIfHeldTooLong()
-        guard !historicalConsumerMaterializationInFlight else {
+        if Self.shouldBlockHistoryTransportForTerminalConsumerMaterialization(
+            materializationInFlight: historicalConsumerMaterializationInFlight,
+            exactConnectedRealtimePreservingRequest:
+                exactConnectedRealtimePreservingRequest,
+            idleWindowDrainAdmitted: naturalGapDrainBypass
+        ) {
             if let authority =
                     transientConnectedMotionBankHistoryRequestAuthority {
                 transientConnectedMotionBankDeferredLocalDependency = .init(
@@ -14569,14 +14680,25 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             force: force,
             explicitRequest: explicitRequest
         ) {
-            if orphanHistoricalIngressArchiveInFlight,
-               let connectedMotionBankRequestAuthority {
-                transientConnectedMotionBankDeferredLocalDependency = .init(
-                    ticketID: connectedMotionBankRequestAuthority.ticketID,
-                    dependency: .orphanArchive
+            if Self.shouldACKIdleWindowHistoryEndWithoutPersisting(
+                idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink()
+                    || idleWindowDrainBypass,
+                consumeToNow: idleWindowConsumeToNowConsent
+            ) {
+                AtriaDebugLog(
+                    "ATRIADBG idle_window_drain status=skip_orphan_archive reason=%@ action=ack_without_persist_no_wait",
+                    reason
                 )
+            } else {
+                if orphanHistoricalIngressArchiveInFlight,
+                   let connectedMotionBankRequestAuthority {
+                    transientConnectedMotionBankDeferredLocalDependency = .init(
+                        ticketID: connectedMotionBankRequestAuthority.ticketID,
+                        dependency: .orphanArchive
+                    )
+                }
+                return false
             }
-            return false
         }
         // Automatic recovery is subordinate to a visible live dashboard. The
         // request stays pending and can run after backgrounding or a later
@@ -14650,9 +14772,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             return false
         }
         let connectedRawHistoryCatchUpStartFrontierUnix =
-            UserDefaults.standard.double(
-            forKey: OfflineSyncDefaults.drainedThroughUnix
-        )
+            Self.connectedHistorySliceStartFrontierUnix(
+                oldestFirstDrainCursorUnix: UserDefaults.standard.double(
+                    forKey: OfflineSyncDefaults.historyDrainCursorUnix
+                )
+            )
         // `startOfflineHistoricalSync` is MainActor-isolated, so no accepted
         // realtime callback can interleave between this synchronous journal
         // flush and the atomic transport claim below. Establish the live
@@ -14792,8 +14916,10 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 .init(
                     generation: syncGeneration,
                     attemptStartedAtUnix: attemptAt.timeIntervalSince1970,
-                    startFrontierUnix: defaults.double(
-                        forKey: OfflineSyncDefaults.drainedThroughUnix
+                    startFrontierUnix: Self.connectedHistorySliceStartFrontierUnix(
+                        oldestFirstDrainCursorUnix: defaults.double(
+                            forKey: OfflineSyncDefaults.historyDrainCursorUnix
+                        )
                     ),
                     endFrontierUnix: 0,
                     durableRowsDelta: 0,
@@ -14831,7 +14957,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 generation: syncGeneration
             ) || idleWindowDrainBypass
         if idleWindowDrainBypass {
+            idleWindowConsumeLiveTailRetryTask?.cancel()
+            idleWindowConsumeLiveTailRetryTask = nil
             idleWindowDrainArmFence.markInFlight()
+            idleWindowDrainBeganUnattended = !foregroundInteractiveMode
+            idleWindowUnsubscribeRetryCount = 0
+            idleWindowRangeBeforeACK = nil
+            idleWindowRangeAfterACK = nil
+            idleWindowServedUnixMin = nil
+            idleWindowServedUnixMax = nil
+            idleWindowPostACKRangeProbeIssued = false
+            idleWindowDrainStartFrontierUnix =
+                Self.connectedHistorySliceStartFrontierUnix(
+                    oldestFirstDrainCursorUnix: defaults.double(
+                        forKey: OfflineSyncDefaults.historyDrainCursorUnix
+                    )
+                )
             pauseHeartRateNotifyForIdleWindowDrain(reason: reason)
         }
         offlineHistoricalSyncExplicitPostWorkoutBankRequest =
@@ -15003,9 +15144,22 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         // generation. If one still exists, fail closed rather than silently
         // replacing it with a new spool.
         if FileManager.default.fileExists(atPath: ingressURL.path) {
-            historicalAdmissionFailed = true
-            historicalIngressSpoolFailure = "orphan_ingress_not_retired"
-            AtriaDebugLog("ATRIADBG historyIngress status=failed generation=%llu reason=orphan_not_archived action=withhold_ack_retain_gap", syncGeneration)
+            if Self.shouldDiscardUnackedConsumeIngressSpool(
+                consumeToNow: idleWindowConsumeToNowConsent,
+                idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink()
+            ) {
+                try? FileManager.default.removeItem(at: ingressURL)
+                historicalAdmissionFailed = false
+                historicalIngressSpoolFailure = nil
+                AtriaDebugLog(
+                    "ATRIADBG historyIngress status=discard_unacked_consume_spool generation=%llu action=ack_without_persist_no_orphan",
+                    syncGeneration
+                )
+            } else {
+                historicalAdmissionFailed = true
+                historicalIngressSpoolFailure = "orphan_ingress_not_retired"
+                AtriaDebugLog("ATRIADBG historyIngress status=failed generation=%llu reason=orphan_not_archived action=withhold_ack_retain_gap", syncGeneration)
+            }
         }
         do {
             historicalIngressSpool = try AtriaWhoop4HistoricalIngressSpool(
@@ -15029,7 +15183,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                       reason,
                       selectedFullDrainGap?.window.id.uuidString ?? "none")
         prepareHistorySequenceContinuity(for: peripheral?.identifier.uuidString)
-        _ = historyDrain.begin(generation: syncGeneration)
+        _ = historyDrain.begin(
+            generation: syncGeneration,
+            ackWithoutPersisting: Self.shouldACKIdleWindowHistoryEndWithoutPersisting(
+                idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
+                consumeToNow: idleWindowConsumeToNowConsent
+            )
+        )
         startHistoricalDrainTelemetry(generation: syncGeneration)
         historicalMetricDurabilityFence.begin(generation: syncGeneration)
         pendingHistoricalRawFrontierGeneration = syncGeneration
@@ -15907,6 +16067,287 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         }
     }
 
+    private func noteIdleWindowHistoryRangePointer(
+        _ range: AtriaWhoop4HistoryCursorRange,
+        generation: UInt64
+    ) {
+        let snapshot = AtriaWhoop4HistoryRangePointerSnapshot(range)
+        if idleWindowPostACKRangeProbeIssued,
+           idleWindowRangeBeforeACK != nil {
+            logIdleWindowHistoryRangePointerDiagnosis(
+                afterACK: snapshot,
+                generation: generation
+            )
+            return
+        }
+        if idleWindowRangeBeforeACK == nil {
+            if let previous = loadIdleWindowAckedHistoryRangePointer() {
+                logIdleWindowHistoryRangePointerDiagnosis(
+                    afterACK: snapshot,
+                    generation: generation,
+                    beforeACKOverride: previous
+                )
+            }
+            idleWindowRangeBeforeACK = snapshot
+            persistIdleWindowAckedHistoryRangePointer(snapshot)
+            AtriaDebugLog(
+                "ATRIADBG historyRange status=pointer_before_ack generation=%llu write=%u read=%u pending=%u served_unix_min=%u served_unix_max=%u",
+                generation,
+                snapshot.writeCursor,
+                snapshot.readCursor,
+                snapshot.pendingRecords,
+                idleWindowServedUnixMin ?? 0,
+                idleWindowServedUnixMax ?? 0
+            )
+        }
+    }
+
+    private func persistIdleWindowAckedHistoryRangePointer(
+        _ snapshot: AtriaWhoop4HistoryRangePointerSnapshot
+    ) {
+        let defaults = UserDefaults.standard
+        defaults.set(
+            Int(snapshot.writeCursor),
+            forKey: OfflineSyncDefaults.idleWindowAckedRangeWriteCursor
+        )
+        defaults.set(
+            Int(snapshot.readCursor),
+            forKey: OfflineSyncDefaults.idleWindowAckedRangeReadCursor
+        )
+        defaults.set(
+            Int(snapshot.pendingRecords),
+            forKey: OfflineSyncDefaults.idleWindowAckedRangePending
+        )
+    }
+
+    private func loadIdleWindowAckedHistoryRangePointer()
+        -> AtriaWhoop4HistoryRangePointerSnapshot?
+    {
+        let defaults = UserDefaults.standard
+        guard defaults.object(
+            forKey: OfflineSyncDefaults.idleWindowAckedRangeReadCursor
+        ) != nil else { return nil }
+        return AtriaWhoop4HistoryRangePointerSnapshot(
+            writeCursor: UInt32(
+                defaults.integer(
+                    forKey: OfflineSyncDefaults.idleWindowAckedRangeWriteCursor
+                )
+            ),
+            readCursor: UInt32(
+                defaults.integer(
+                    forKey: OfflineSyncDefaults.idleWindowAckedRangeReadCursor
+                )
+            ),
+            pendingRecords: UInt32(
+                defaults.integer(
+                    forKey: OfflineSyncDefaults.idleWindowAckedRangePending
+                )
+            )
+        )
+    }
+
+    private func logIdleWindowHistoryRangePointerDiagnosis(
+        afterACK: AtriaWhoop4HistoryRangePointerSnapshot,
+        generation: UInt64,
+        beforeACKOverride: AtriaWhoop4HistoryRangePointerSnapshot? = nil
+    ) {
+        let before = beforeACKOverride ?? idleWindowRangeBeforeACK
+        let disposition = AtriaWhoop4HistoryRangePointerPolicy.disposition(
+            beforeACK: before,
+            afterACK: afterACK
+        )
+        let sameServed = AtriaWhoop4HistoryRangePointerPolicy
+            .servedPagesAreSameWindow(
+                previousMin: idleWindowPreviousServedUnixMin,
+                previousMax: idleWindowPreviousServedUnixMax,
+                currentMin: idleWindowServedUnixMin,
+                currentMax: idleWindowServedUnixMax
+            )
+        AtriaDebugLog(
+            "ATRIADBG historyRange status=pointer_diagnosis generation=%llu before_write=%u before_read=%u before_pending=%u after_write=%u after_read=%u after_pending=%u served_unix_min=%u served_unix_max=%u same_served_window=%d disposition=%@ consume_or_clear=%d",
+            generation,
+            before?.writeCursor ?? 0,
+            before?.readCursor ?? 0,
+            before?.pendingRecords ?? 0,
+            afterACK.writeCursor,
+            afterACK.readCursor,
+            afterACK.pendingRecords,
+            idleWindowServedUnixMin ?? 0,
+            idleWindowServedUnixMax ?? 0,
+            sameServed ? 1 : 0,
+            disposition.rawValue,
+            AtriaWhoop4HistoryRangePointerPolicy.shouldSelectHistoryConsumeOrClear(
+                pointerDisposition: disposition,
+                explicitConsent: idleWindowConsumeToNowConsent
+            ) ? 1 : 0
+        )
+        idleWindowPreviousServedUnixMin = idleWindowServedUnixMin
+        idleWindowPreviousServedUnixMax = idleWindowServedUnixMax
+        idleWindowRangeAfterACK = afterACK
+    }
+
+    /// Soak 8 gen 28/30: 0x22 pending=0 / read==write took
+    /// `forward_cursor_caught_up` → complete_empty and never reached the
+    /// post-settle Start-fresh check (that check is dead: pending=0 already
+    /// returned). Reconcile here, then drop consume consent so later slices
+    /// persist-before-ACK.
+    @discardableResult
+    private func reconcileStartFreshAfterVerifiedEmptyHistoryCursorIfNeeded(
+        range: AtriaWhoop4HistoryCursorRange,
+        generation: UInt64
+    ) -> Bool {
+        guard AtriaWhoop4HistoryRangePointerPolicy
+            .shouldReconcileStartFreshAfterVerifiedStrapZero(
+                pendingRecords: range.pendingRecords,
+                readCursor: range.readCursor,
+                writeCursor: range.writeCursor,
+                consumeConsent: idleWindowConsumeToNowConsent
+            ) else {
+            return false
+        }
+        persistIdleWindowAckedHistoryRangePointer(
+            AtriaWhoop4HistoryRangePointerSnapshot(range)
+        )
+        AtriaDebugLog(
+            "ATRIADBG historyRange status=strap_zero generation=%llu write=%u read=%u pending=%u action=start_fresh_after_verified_reset",
+            generation,
+            range.writeCursor,
+            range.readCursor,
+            range.pendingRecords
+        )
+        idleWindowConsumeToNowConsent = false
+        AtriaDebugLog(
+            "ATRIADBG historyRange status=consume_consent_cleared generation=%llu action=persist_before_ack_go_forward",
+            generation
+        )
+        // Soak 9 gen 23: Start-fresh before finish left 2A37 paused
+        // (`live_restored=0`) until hr_continuity hard_reconnect. Restore
+        // the same-epoch subscription first; Start-fresh is app-side only.
+        if offlineHistoricalSyncInProgress,
+           offlineHistoricalSyncGeneration == generation {
+            finishOfflineHistoricalSync(
+                reason: "idle_window_drain_strap_zero_restore_2a37",
+                generation: generation,
+                resumePendingSync: false
+            )
+        }
+        startFreshAcceptingMissedDataLoss(
+            reason: "verified_strap_history_zero"
+        )
+        return true
+    }
+
+    private func quietIdleWindowStream5ForPostACKRangeProbe() {
+        guard let peripheral, peripheral.state == .connected else { return }
+        for service in peripheral.services ?? []
+            where service.uuid == Self.UUIDs.strapService {
+            for characteristic in service.characteristics ?? []
+                where characteristic.uuid == Self.UUIDs.strapStream5
+                    && characteristic.isNotifying {
+                peripheral.setNotifyValue(false, for: characteristic)
+                strapStream5NotifyConfirmed = false
+                activeProprietaryNotifyUUIDs.remove(Self.UUIDs.strapStream5)
+                idleWindowHistoryNotifyRequestedUUIDs.remove(Self.UUIDs.strapStream5)
+                AtriaDebugLog(
+                    "ATRIADBG idle_window_drain status=stream5_paused reason=post_ack_pointer_probe action=unsubscribe_keep_rx_no_cancel"
+                )
+            }
+        }
+    }
+
+    private func idleWindowStream5IsNotifying() -> Bool {
+        guard let peripheral else { return false }
+        for service in peripheral.services ?? []
+            where service.uuid == Self.UUIDs.strapService {
+            if let stream5 = service.characteristics?.first(where: {
+                $0.uuid == Self.UUIDs.strapStream5
+            }) {
+                return stream5.isNotifying
+            }
+        }
+        return false
+    }
+
+    private func observeIdleWindowPostACKRangeProbe(generation: UInt64) async {
+        defer {
+            if offlineHistoricalSyncInProgress,
+               offlineHistoricalSyncGeneration == generation {
+                AtriaDebugLog(
+                    "ATRIADBG idle_window_drain status=ack_chunk_complete generation=%llu ack_ok=%d action=restore_2a37_same_epoch_no_cancel",
+                    generation,
+                    historicalDrainTelemetry.ackSucceeded
+                )
+                finishOfflineHistoricalSync(
+                    reason: "idle_window_drain_ack_chunk_restore_2a37",
+                    generation: generation,
+                    resumePendingSync: false
+                )
+            }
+        }
+        guard offlineHistoricalSyncInProgress,
+              offlineHistoricalSyncGeneration == generation else {
+            AtriaDebugLog(
+                "ATRIADBG historyRange status=pointer_diagnosis generation=%llu disposition=inconclusive action=post_ack_22_not_sent",
+                generation
+            )
+            return
+        }
+        if Self.shouldQuietIdleWindowStream5BeforePostACKRangeProbe(
+            idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
+            acknowledgedPages: historicalDrainTelemetry.ackSucceeded,
+            postACKProbeIssued: idleWindowPostACKRangeProbeIssued
+        ) {
+            quietIdleWindowStream5ForPostACKRangeProbe()
+            for _ in 0..<40 {
+                if !idleWindowStream5IsNotifying() { break }
+                try? await Task.sleep(for: .milliseconds(50))
+                guard offlineHistoricalSyncInProgress,
+                      offlineHistoricalSyncGeneration == generation else {
+                    return
+                }
+            }
+            AtriaDebugLog(
+                "ATRIADBG idle_window_drain status=stream5_quiet notifying=%d action=post_ack_22_keep_rx",
+                idleWindowStream5IsNotifying() ? 1 : 0
+            )
+        }
+        AtriaDebugLog(
+            "ATRIADBG historyRange status=requested generation=%llu payload=00 attempt=post_ack_pointer_probe mutation=0 action=no_1600",
+            generation
+        )
+        _ = await observeProductionHistoryCursorRange(generation: generation)
+        if idleWindowRangeAfterACK == nil {
+            AtriaDebugLog(
+                "ATRIADBG historyRange status=pointer_diagnosis generation=%llu before_write=%u before_read=%u before_pending=%u after_write=0 after_read=0 after_pending=0 served_unix_min=%u served_unix_max=%u same_served_window=0 disposition=inconclusive consume_or_clear=0",
+                generation,
+                idleWindowRangeBeforeACK?.writeCursor ?? 0,
+                idleWindowRangeBeforeACK?.readCursor ?? 0,
+                idleWindowRangeBeforeACK?.pendingRecords ?? 0,
+                idleWindowServedUnixMin ?? 0,
+                idleWindowServedUnixMax ?? 0
+            )
+        }
+    }
+
+    private func restoreIdleWindowHeartRateForAttendedForegroundIfNeeded() {
+        guard Self.shouldReleaseIdleWindowHistoryDrainForAttendedForeground(
+            idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
+            attendedForeground: true,
+            drainBeganUnattended: idleWindowDrainBeganUnattended,
+            historyRangeRequested: idleWindowDrainRangeRequestedAt != nil
+        ),
+        offlineHistoricalSyncInProgress else { return }
+        AtriaDebugLog(
+            "ATRIADBG idle_window_drain status=attended_foreground_abort generation=%llu action=restore_2a37_same_epoch_no_cancel",
+            offlineHistoricalSyncGeneration
+        )
+        finishOfflineHistoricalSync(
+            reason: "idle_window_drain_attended_foreground_restore_2a37",
+            generation: offlineHistoricalSyncGeneration,
+            resumePendingSync: false
+        )
+    }
+
     @discardableResult
     private func finishIdleWindowHistoryDrainForAbsoluteBudgetIfNeeded(
         generation: UInt64
@@ -15921,19 +16362,58 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 persisted: historicalDrainTelemetry.persisted,
                 acknowledgedPages: historicalDrainTelemetry.ackSucceeded,
                 now: now,
-                admitted: historicalDrainTelemetry.admitted
+                admitted: historicalDrainTelemetry.admitted,
+                consumeToNow: idleWindowConsumeToNowConsent
             )
+        let persistInFlight = Self.shouldHoldIdleWindowAbsoluteBudgetForInFlightPersist(
+            persistPending: historyDrain.pendingPersistenceCount > 0
+                || pendingHistoricalTransportEventCount > 0,
+            acknowledgedPages: historicalDrainTelemetry.ackSucceeded
+        ) || Self.shouldHoldIdleWindowAbsoluteBudgetForPostACKRangeProbe(
+            postACKProbeIssued: idleWindowPostACKRangeProbeIssued,
+            afterACKRangeObserved: idleWindowRangeAfterACK != nil
+        )
         let absoluteBudget =
             Self.shouldReleaseIdleWindowHistoryDrainForAbsoluteBudget(
                 idleWindowDrainOwnsLink: ownsLink,
                 startedAt: idleWindowDrainStartedAt,
                 now: now,
+                absoluteLimit: Self.idleWindowHistoryDrainAbsoluteBudgetLimit(
+                    chargingOrOffWrist: batteryIsCharging || !hasContact,
+                    consumeToNow: idleWindowConsumeToNowConsent
+                ),
                 rangeRequestedAt: idleWindowDrainRangeRequestedAt
             )
-        guard persistAckStalled || absoluteBudget else { return false }
+            && !persistInFlight
+        let heartRatePause =
+            Self.shouldReleaseIdleWindowHistoryDrainForHeartRatePause(
+                idleWindowDrainOwnsLink: ownsLink,
+                consumeToNow: idleWindowConsumeToNowConsent,
+                pausedAt: idleWindowDrainStartedAt,
+                now: now,
+                chargingOrOffWrist: batteryIsCharging || !hasContact,
+                acknowledgedPages: historicalDrainTelemetry.ackSucceeded,
+                consumeIngressInFlight: pendingHistoricalTransportEventCount > 0
+                    || historicalAdmissionBatchInFlight,
+                lastFrameAge: idleWindowDrainLastFrameAt.map {
+                    now.timeIntervalSince($0)
+                },
+                stream5Received: historicalDrainTelemetry.stream5Received
+            )
+        guard persistAckStalled || absoluteBudget || heartRatePause else {
+            return false
+        }
+        let status: String
+        if persistAckStalled {
+            status = "persist_ack_stalled"
+        } else if heartRatePause {
+            status = "heart_rate_pause"
+        } else {
+            status = "absolute_budget"
+        }
         AtriaDebugLog(
             "ATRIADBG idle_window_drain status=%@ generation=%llu stream5_rx=%d persisted=%d ack_ok=%d action=restore_2a37_same_epoch_no_cancel",
-            persistAckStalled ? "persist_ack_stalled" : "absolute_budget",
+            status,
             generation,
             historicalDrainTelemetry.stream5Received,
             historicalDrainTelemetry.persisted,
@@ -15942,7 +16422,9 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         finishOfflineHistoricalSync(
             reason: persistAckStalled
                 ? "idle_window_drain_persist_ack_stalled_restore_2a37"
-                : "idle_window_drain_absolute_budget_restore_2a37",
+                : heartRatePause
+                    ? "idle_window_drain_heart_rate_pause_restore_2a37"
+                    : "idle_window_drain_absolute_budget_restore_2a37",
             generation: generation,
             resumePendingSync: false
         )
@@ -16374,21 +16856,75 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             offlineHistoricalSyncPreservesConnectedRealtimeOwner
                 || compactMotionBankOnly
                 || boundedConnectedRawCatchUp
+        let verifiedEmptyHistoryCursor =
+            verifiedEmptyHistoryCursorGeneration == generation
+        let consumeLiveTailPending =
+            idleWindowRangeBeforeACK?.pendingRecords
+            ?? loadIdleWindowAckedHistoryRangePointer()?.pendingRecords
+        let consumeLiveTailPauseElapsed =
+            (idleWindowConsumeLiveTailPauseStartedAt
+                ?? idleWindowDrainStartedAt)
+                .map { Date().timeIntervalSince($0) } ?? 0
+        let deferLiveHeartRateRestoreForConsumeLiveTail =
+            Self.shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry(
+                consumeToNow: idleWindowConsumeToNowConsent,
+                lastPendingRecords: consumeLiveTailPending,
+                verifiedEmptyHistoryCursor: verifiedEmptyHistoryCursor,
+                linkStillConnected: peripheral?.state == .connected,
+                consumePauseElapsed: consumeLiveTailPauseElapsed
+            )
+        let discardConsumeIngressSpool =
+            Self.shouldDiscardUnackedConsumeIngressSpool(
+                consumeToNow: idleWindowConsumeToNowConsent,
+                idleWindowDrainOwnsLink: idleWindowDrainPausesHeartRate
+                    || idleWindowDrainArmFence.isInFlight()
+                    || idleWindowDrainArmFence.snapshot()
+            )
         let keepHeartRateSuppressedForHistoryFirstRetry =
             Self.shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect(
                 drainOwnedDisconnect: idleWindowDrainPausesHeartRate
                     || idleWindowDrainArmFence.isInFlight(),
-                receivedHistoryFrames: historicalDrainTelemetry.stream5Received > 0
+                receivedHistoryFrames: historicalDrainTelemetry.stream5Received > 0,
+                verifiedEmptyHistoryCursor: verifiedEmptyHistoryCursor,
+                linkStillConnected: peripheral?.state == .connected
             )
         if (idleWindowDrainPausesHeartRate
             || idleWindowDrainArmFence.isInFlight())
-            && historicalDrainTelemetry.stream5Received > 0 {
+            && (historicalDrainTelemetry.stream5Received > 0
+                || verifiedEmptyHistoryCursor) {
             idleWindowDrainLastFinishedAt = Date()
+            let idleWindowSliceProgress =
+                Self.connectedRawHistoryCatchUpSliceProgress(
+                    durableRows: historicalDrainTelemetry.persisted,
+                    startedAt: idleWindowDrainStartedAt ?? Date(),
+                    finishedAt: Date(),
+                    startFrontierUnix: idleWindowDrainStartFrontierUnix,
+                    endFrontierUnix: UserDefaults.standard.double(
+                        forKey: OfflineSyncDefaults.historyDrainCursorUnix
+                    )
+                )
+            AtriaDebugLog(
+                "ATRIADBG idle_window_drain status=slice generation=%llu durable_rows=%d duration_s=%.3f rows_per_s=%.3f frontier_advance_s=%.3f action=oldest_first_ack_cursor",
+                generation,
+                idleWindowSliceProgress.durableRows,
+                idleWindowSliceProgress.durationSeconds,
+                idleWindowSliceProgress.rowsPerSecond,
+                idleWindowSliceProgress.frontierAdvanceSeconds
+            )
         }
         idleWindowDrainPausesHeartRate = false
+        idleWindowDrainStartFrontierUnix = 0
+        idleWindowDrainBeganUnattended = false
+        idleWindowUnsubscribeRetryCount = 0
+        idleWindowRangeBeforeACK = nil
+        idleWindowRangeAfterACK = nil
+        idleWindowServedUnixMin = nil
+        idleWindowServedUnixMax = nil
+        idleWindowPostACKRangeProbeIssued = false
         idleWindowDrainStartedAt = nil
         idleWindowDrainRangeRequestedAt = nil
         idleWindowDrainFirstFrameAt = nil
+        idleWindowDrainLastFrameAt = nil
         idleWindowDrainLastDurableProgressAt = nil
         cancelIdleWindowHistoryPipeRetry()
         idleWindowDrainAwaitingHeartRateUnsubscribe = false
@@ -16404,6 +16940,36 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         } else {
             idleWindowPreferImmediatePause = false
             idleWindowDrainArmFence.clear()
+            heartRateCaptureIntent.update(
+                continuousCaptureWanted: dutyCycleState != .sparseSentinel
+            )
+        }
+        // Soak 9 gen 23: keepHeartRateSuppressed still armed the fence
+        // (stream5_rx=0), then reassert skipped while the drain owned 2A37.
+        // A verified empty cursor must release that ownership before
+        // `reassertHeartRateNotificationsIfConnected` runs below.
+        // Soak 14: a 1–2 page live tail is not empty — keep 2A37 paused
+        // and re-probe 0x22 before write seals another page.
+        if verifiedEmptyHistoryCursor {
+            idleWindowPreferImmediatePause = false
+            idleWindowDrainArmFence.clear()
+            idleWindowConsumeLiveTailPauseStartedAt = nil
+            heartRateCaptureIntent.update(
+                continuousCaptureWanted: dutyCycleState != .sparseSentinel
+            )
+        } else if deferLiveHeartRateRestoreForConsumeLiveTail {
+            idleWindowPreferImmediatePause = true
+            idleWindowDrainArmFence.arm()
+            heartRateCaptureIntent.update(continuousCaptureWanted: false)
+            AtriaDebugLog(
+                "ATRIADBG idle_window_drain status=live_tail_keep_2a37_paused pending=%u pause_elapsed_s=%.3f action=immediate_22_no_hard_reconnect",
+                consumeLiveTailPending ?? 0,
+                consumeLiveTailPauseElapsed
+            )
+        } else if peripheral?.state == .connected {
+            idleWindowPreferImmediatePause = false
+            idleWindowDrainArmFence.clear()
+            idleWindowConsumeLiveTailPauseStartedAt = nil
             heartRateCaptureIntent.update(
                 continuousCaptureWanted: dutyCycleState != .sparseSentinel
             )
@@ -16524,6 +17090,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             // archive/admission durability already gates every ACK, and an
             // uncommitted page remains replayable from the strap.
         }
+        if discardConsumeIngressSpool {
+            historicalIngressSpool?.remove()
+            AtriaDebugLog(
+                "ATRIADBG historyIngress status=discard_unacked_consume_spool generation=%llu action=ack_without_persist_no_orphan",
+                generation
+            )
+        }
         historicalIngressSpool = nil
         historicalIngressDeferredEvent = nil
         offlineHistoricalSyncInProgress = false
@@ -16565,6 +17138,34 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     peripheral?.discoverServices(discoveryServicesForCurrentMode)
                 }
             }
+        }
+
+        // Soak 14: do not wait for a live 2A37 sample (or the 10s
+        // cancelPeripheralConnection rebuild) while a 1–2 page tail still
+        // needs an immediate 0x22. Restore happens on pending=0 or the 18s cap.
+        if deferLiveHeartRateRestoreForConsumeLiveTail {
+            postHistoryLiveRestorationTask?.cancel()
+            postHistoryLiveRestorationTask = nil
+            postHistoryLiveRestorationGeneration = nil
+            finalizeOfflineHistoricalSyncAfterLiveRestoration(
+                reason: reason,
+                generation: generation,
+                rows: rows,
+                newRows: newRows,
+                rawOnlyGapFingerprint: rawOnlyGapFingerprint,
+                gapFingerprint: gapFingerprint,
+                requestedWindowMetricProgress: requestedWindowMetricProgress,
+                ledgerCoverageResolved: ledgerCoverageResolved,
+                terminalAndLiveRestored: false,
+                liveRestored: false,
+                resumePendingSync: shouldResumePendingSync,
+                compactMotionBankOnly: compactMotionBankOnly,
+                connectedRawCatchUpAuthority: connectedRawCatchUpAuthority,
+                connectedRawCatchUpDurableBoundary:
+                    connectedRawCatchUpDurableBoundary
+            )
+            scheduleIdleWindowConsumeLiveTailRetryIfNeeded()
+            return
         }
 
         guard let restorationPeripheral = peripheral,
@@ -16819,17 +17420,12 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     offlineHistoricalRecoveryEpisodeStartRows
             )
         if !compactMotionBankOnly {
-            if rangeLossResolved {
-                historicalRecoveryPresentation = .verified
-            } else if episodeSavedRecords > 0 {
-                // Rows are factual progress, not proof that the exact interval was
-                // recovered. Leave the gap visibly unresolved until authority clears.
-                historicalRecoveryPresentation = .partial(
-                    savedRecords: episodeSavedRecords
+            historicalRecoveryPresentation =
+                Self.historicalRecoveryPresentationAfterGeneration(
+                    rangeLossResolved: rangeLossResolved,
+                    savedRecords: episodeSavedRecords,
+                    strapBacklogPending: strapBacklogPendingForCatchUp(now: Date())
                 )
-            } else {
-                historicalRecoveryPresentation = .needsAttention
-            }
         }
         if rangeLossResolved {
             defaults.removeObject(forKey: OfflineSyncDefaults.sequenceGapFingerprint)
@@ -16849,9 +17445,15 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 forKey: OfflineSyncDefaults.historyStartTimeoutProfileVersion
             )
         }
-        if !compactMotionBankOnly,
-           !connectedRawHistoryCatchUpContinuationPending,
-           terminalAndLiveRestored && offlineHistoricalSyncReachedTerminal {
+        if Self.shouldScheduleTerminalConsumerMaterializationAfterHistoryFinish(
+            terminalAndLiveRestored: terminalAndLiveRestored,
+            reachedTerminal: offlineHistoricalSyncReachedTerminal,
+            compactMotionBankOnly: compactMotionBankOnly,
+            connectedRawCatchUpContinuationPending:
+                connectedRawHistoryCatchUpContinuationPending,
+            consumeToNow: idleWindowConsumeToNowConsent,
+            persistedRows: newRows
+        ) {
             if activeFullDrainEventIdentity?.transportGeneration == generation
                 || activeHistoricalRequestBinding?.transportGeneration == generation {
                 historicalConsumerReceiptRequiredGenerations.insert(generation)
@@ -17016,7 +17618,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                     attemptStartedAtUnix: authority.startedAt.timeIntervalSince1970,
                     startFrontierUnix: authority.startFrontierUnix,
                     endFrontierUnix: defaults.double(
-                        forKey: OfflineSyncDefaults.drainedThroughUnix
+                        forKey: OfflineSyncDefaults.historyDrainCursorUnix
                     ),
                     durableRowsDelta: 0,
                     flushBoundaryIdentity: "connected_raw_slice_\(reason)",
@@ -17044,7 +17646,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
             finishedAt: now,
             startFrontierUnix: authority.startFrontierUnix,
             endFrontierUnix: defaults.double(
-                forKey: OfflineSyncDefaults.drainedThroughUnix
+                forKey: OfflineSyncDefaults.historyDrainCursorUnix
             )
         )
         // Handoff-9 CP2: mint the durable productive-slice receipt at this —
@@ -17068,7 +17670,7 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 attemptStartedAtUnix: authority.startedAt.timeIntervalSince1970,
                 startFrontierUnix: authority.startFrontierUnix,
                 endFrontierUnix: defaults.double(
-                    forKey: OfflineSyncDefaults.drainedThroughUnix
+                    forKey: OfflineSyncDefaults.historyDrainCursorUnix
                 ),
                 durableRowsDelta: progress.durableRows,
                 flushBoundaryIdentity: "connected_raw_slice_\(reason)",
@@ -18507,6 +19109,17 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         /// before its terminal receipt. Scheduling re-arms; the durable
         /// gap/debt/frontier truth is then re-evaluated normally.
         case unresolvedSliceStart
+    }
+
+    /// Same in-app Start fresh as Settings/Home. Default launches omit the
+    /// argument and never invoke `startFreshAcceptingMissedDataLoss`.
+    nonisolated static let startFreshClearGapLaunchArgument =
+        "--atria-start-fresh-clear-gap"
+
+    nonisolated static func shouldApplyLaunchArgStartFresh(
+        arguments: [String]
+    ) -> Bool {
+        arguments.contains(startFreshClearGapLaunchArgument)
     }
 
     /// Clean-slate durability: true while the user has abandoned the pre-reset
@@ -20950,11 +21563,11 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         resetRadioDiagnosticsForLaunch()
         applyCoexistenceRiskForDebugLaunch(arguments: arguments)
         applyOfflineSyncForDebugLaunch(arguments: arguments)
-        if arguments.contains("--atria-start-fresh-clear-gap") {
-            // Debug-only reliable trigger for the same clean-slate the Settings
-            // "Start fresh · clear stuck strap history" control invokes. Lets a
-            // device verify the durable abandon-frontier suppression over the log
-            // channel without depending on flaky iPhone-Mirroring taps.
+        idleWindowConsumeToNowConsent =
+            Self.shouldApplyLaunchArgHistoryConsumeToNow(arguments: arguments)
+        if Self.shouldApplyLaunchArgStartFresh(arguments: arguments) {
+            // Same in-app Start fresh as Settings/Home — not a second
+            // implementation. Unflagged launches never take this path.
             startFreshAcceptingMissedDataLoss(reason: "launch_arg_start_fresh")
         }
         UserDefaults.standard.set(false, forKey: CheckpointDefaults.armed)
@@ -24786,6 +25399,19 @@ final class AtriaBLEManager: NSObject, ObservableObject {
         return .recoverUnsavedPeripheral
     }
 
+    /// Process-kill mid-connect (devicectl --terminate-existing) can leave
+    /// CoreBluetooth's saved peripheral in `.connecting` forever. One
+    /// cancel/reissue unsticks that; later out-of-range waits stay standing.
+    nonisolated static func shouldReissueStuckRestoredConnecting(
+        peripheralState: CBPeripheralState,
+        didConnectThisProcess: Bool,
+        alreadyReissued: Bool
+    ) -> Bool {
+        !alreadyReissued
+            && !didConnectThisProcess
+            && peripheralState == .connecting
+    }
+
     private func startReconnectWatchdog(
         reason: String,
         peripheral: CBPeripheral
@@ -24803,6 +25429,23 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                 peripheralState: peripheral.state
             ) {
             case .observeSavedStandingRequest:
+                if Self.shouldReissueStuckRestoredConnecting(
+                    peripheralState: peripheral.state,
+                    didConnectThisProcess: self.connectedAt != nil,
+                    alreadyReissued: self.reissuedStuckRestoredConnecting
+                ) {
+                    self.reissuedStuckRestoredConnecting = true
+                    AtriaDebugLog(
+                        "ATRIADBG ble_link watchdog reason=%@ action=reissue_stuck_restored_connecting peripheral_state=%d",
+                        reason,
+                        peripheral.state.rawValue
+                    )
+                    self.cancelPeripheralConnection(
+                        peripheral,
+                        reason: "\(reason)_stuck_restored_connecting"
+                    )
+                    return
+                }
                 AtriaDebugLog("ATRIADBG ble_link watchdog reason=%@ action=observe_pending_connect_saved_strap peripheral_state=%d",
                               reason,
                               peripheral.state.rawValue)
@@ -27611,6 +28254,13 @@ final class AtriaBLEManager: NSObject, ObservableObject {
                           cursorRange.capacity,
                           cursorRange.pendingRecords,
                           Self.hex(payload))
+            if matchesProductionRequest,
+               idleWindowDrainOwnsHeartRateLink() {
+                noteIdleWindowHistoryRangePointer(
+                    cursorRange,
+                    generation: offlineHistoricalSyncGeneration
+                )
+            }
         } else {
             AtriaDebugLog("ATRIADBG historyRange status=unparsed mutation=0 payload=%@",
                           Self.hex(payload))
@@ -34187,6 +34837,12 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                     // confirmed 22/00 write. Preserve that exact zero-pending
                     // authority; it is not a fabricated HISTORY_COMPLETE.
                     verifiedEmptyHistoryCursorGeneration = syncGeneration
+                    if reconcileStartFreshAfterVerifiedEmptyHistoryCursorIfNeeded(
+                        range: cursorRange,
+                        generation: syncGeneration
+                    ) {
+                        return
+                    }
                     AtriaDebugLog("ATRIADBG historyRange status=forward_cursor_caught_up generation=%llu authority=matched_2200_zero_pending action=verify_live_then_complete_empty",
                                   syncGeneration)
                     finishOfflineHistoricalSync(
@@ -34244,6 +34900,13 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 }
                 AtriaDebugLog("ATRIADBG historyRange status=post_response_settle_confirmed generation=%llu settle_s=2.0 clock_source=2200 action=send_verified_1600",
                               syncGeneration)
+                if let range = cursorRange,
+                   reconcileStartFreshAfterVerifiedEmptyHistoryCursorIfNeeded(
+                    range: range,
+                    generation: syncGeneration
+                   ) {
+                    return
+                }
                 if productionHistoryReadPreflightRequired {
                     let preflightResult = await performProductionHistoryReadPreflight(
                         generation: syncGeneration
@@ -36096,7 +36759,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             let writeConfirmedAt = Date()
 
             for _ in 0..<AtriaBLEHistoryWriteConfirmationPolicy.maximumPollAttempts {
-                if Self.shouldServeIdleWindowHistoryWithoutMatchedRange(
+                if !idleWindowPostACKRangeProbeIssued,
+                   Self.shouldServeIdleWindowHistoryWithoutMatchedRange(
                     idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
                     writeConfirmed: true,
                     elapsedSinceWriteConfirm: Date().timeIntervalSince(writeConfirmedAt)
@@ -37994,6 +38658,16 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             AtriaDebugLog("ATRIADBG historyMeta status=ignored reason=inactive_or_stale_transport_phase")
             return
         }
+        // Soak 11 gen 4+: consume HISTORY_END sat behind unadmitted stream5
+        // (`admitted=0`, no ACK, read stuck at 83352). ACK-without-persist
+        // must not wait for SQLite admission or a motion-bank ticket.
+        if Self.shouldACKIdleWindowHistoryEndWithoutPersisting(
+            idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
+            consumeToNow: idleWindowConsumeToNowConsent
+        ) {
+            processOrderedHistoryMetadata(payload, historyPhase: historyPhase)
+            return
+        }
         let exactRawAuthorityActive =
             activeConnectedRawHistoryCatchUpAuthority(
                 generation: generation
@@ -38143,9 +38817,14 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                 )
                 return
             }
-            guard Self.shouldQueueHistoryEndACK(
+            let ackWithoutPersisting = Self.shouldACKIdleWindowHistoryEndWithoutPersisting(
+                idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
+                consumeToNow: idleWindowConsumeToNowConsent
+            )
+            guard ackWithoutPersisting || Self.shouldQueueHistoryEndACK(
                 alreadyAcked: false,
-                archiveWriteFailures: historicalArchiveWriteFailures
+                archiveWriteFailures: historicalArchiveWriteFailures,
+                postACKRangeProbeIssued: idleWindowPostACKRangeProbeIssued
             ) else {
                 AtriaDebugLog("ATRIADBG historyAck skip=archive_persist_failed rows=%d rows_since_ack=%d failures=%d archive=%@",
                       historicalArchiveRows,
@@ -38156,7 +38835,8 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             }
             fullDrainHistoryEndPayloads[ackKey] = payload
             pendingHistoryEndACK = (ackKey, ack)
-            AtriaDebugLog("ATRIADBG historyAck status=queued key=%@ pending_persistence=%d action=reduce",
+            AtriaDebugLog("ATRIADBG historyAck status=%@ key=%@ pending_persistence=%d action=reduce",
+                          ackWithoutPersisting ? "queued_without_persist" : "queued",
                           ackKey,
                           historyDrain.pendingPersistenceCount)
             processHistoricalDrainEffects(
@@ -38413,10 +39093,24 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         if historicalDrainTelemetry.generation == generation {
             historicalDrainTelemetry.stream5Received += 1
             historicalDrainTelemetry.noteProgress()
-            if idleWindowDrainOwnsHeartRateLink(),
-               idleWindowDrainFirstFrameAt == nil {
-                idleWindowDrainFirstFrameAt = Date()
+            if idleWindowDrainOwnsHeartRateLink() {
+                let frameAt = Date()
+                if idleWindowDrainFirstFrameAt == nil {
+                    idleWindowDrainFirstFrameAt = frameAt
+                }
+                idleWindowDrainLastFrameAt = frameAt
             }
+        }
+        // Soak 13: consume HISTORY_END is processed immediately. Enqueued
+        // frames later hit receiveFrame after the batch boundary and failed
+        // the drain (`frame_received_after_batch_boundary`, ack_ok=0), so
+        // the live-write tail stayed pending=2. Count stream5 for the pause
+        // hold; do not spool.
+        if Self.shouldACKIdleWindowHistoryEndWithoutPersisting(
+            idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
+            consumeToNow: idleWindowConsumeToNowConsent
+        ) {
+            return
         }
         guard !historicalAdmissionFailed else { return }
         let clock = historyClockRef
@@ -38687,6 +39381,12 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         let generation = frame.generation
         guard offlineHistoricalSyncInProgress,
               generation == offlineHistoricalSyncGeneration else { return }
+        if Self.shouldACKIdleWindowHistoryEndWithoutPersisting(
+            idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
+            consumeToNow: idleWindowConsumeToNowConsent
+        ), !historyDrain.canReceiveFrame {
+            return
+        }
         if historicalDrainTelemetry.generation == generation {
             historicalDrainTelemetry.admitted += 1
             historicalDrainTelemetry.noteProgress()
@@ -38966,6 +39666,16 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                     pendingHistoricalRawFrontierUnix ?? 0,
                     effectiveUnix
                 )
+                if idleWindowDrainOwnsHeartRateLink() {
+                    idleWindowServedUnixMin = min(
+                        idleWindowServedUnixMin ?? effectiveUnix,
+                        effectiveUnix
+                    )
+                    idleWindowServedUnixMax = max(
+                        idleWindowServedUnixMax ?? 0,
+                        effectiveUnix
+                    )
+                }
             }
             lastHistoricalArchivePath = result.persistedPath.isEmpty ? HistoricalArchive.relativePath : result.persistedPath
             if result.archivedUndecodable {
@@ -39084,6 +39794,34 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         defaults.set(advanced, forKey: OfflineSyncDefaults.drainedThroughUnix)
         AtriaDebugLog(
             "ATRIADBG offline_sync status=durable_frontier_advanced generation=%llu from_unix=%.0f through_unix=%.0f authority=canonical_flush_generation_fence",
+            generation,
+            existing,
+            advanced
+        )
+    }
+
+    /// Oldest-first persist-before-ACK cursor. Charging soak of `bb17275a`
+    /// persisted hundreds of rows with `frontier_advance_s=0.000` because
+    /// slice progress used the newest-ever display footer.
+    private func commitOldestFirstHistoryDrainCursor(
+        effectiveUnix: UInt32,
+        generation: UInt64,
+        now: Date = Date()
+    ) {
+        guard offlineHistoricalSyncInProgress,
+              generation == offlineHistoricalSyncGeneration else { return }
+        let defaults = UserDefaults.standard
+        let existing = defaults.double(
+            forKey: OfflineSyncDefaults.historyDrainCursorUnix
+        )
+        guard let advanced = Self.advancedOldestFirstHistoryDrainCursor(
+            existing: existing,
+            durableEffectiveUnix: [effectiveUnix],
+            now: now
+        ) else { return }
+        defaults.set(advanced, forKey: OfflineSyncDefaults.historyDrainCursorUnix)
+        AtriaDebugLog(
+            "ATRIADBG offline_sync status=history_drain_cursor_advanced generation=%llu from_unix=%.0f through_unix=%.0f authority=persist_before_ack_oldest_first",
             generation,
             existing,
             advanced
@@ -39343,6 +40081,10 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
                                     effectiveUnix: rawFrontier,
                                     generation: generation
                                 )
+                                self.commitOldestFirstHistoryDrainCursor(
+                                    effectiveUnix: rawFrontier,
+                                    generation: generation
+                                )
                             }
                             self.pendingHistoricalRawFrontierUnix = nil
                             self.commitDurableHistoricalMetricFacts(
@@ -39362,6 +40104,14 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
             case .sendACK(let generation, let boundaryID, let payload, let attempt):
                 guard offlineHistoricalSyncInProgress,
                       historyDrain.generation == generation else { continue }
+                if idleWindowPostACKRangeProbeIssued {
+                    AtriaDebugLog(
+                        "ATRIADBG historyAck status=withheld key=%@ generation=%llu reason=post_ack_22_probe action=keep_wr_pipe_for_range",
+                        boundaryID,
+                        generation
+                    )
+                    continue
+                }
                 if activeFullDrainEventIdentity?.transportGeneration == generation {
                     guard let permit = fullDrainACKPermits[boundaryID],
                           permit.boundaryIdentifier == boundaryID else {
@@ -42415,11 +43165,36 @@ private func resumePendingWorkoutHistoricalMotionBankOffloadIfNeeded(
         // local finish or 0x16 continuation can advance to another page.
         persistHistorySequenceContinuityAtBoundary()
         processHistoricalDrainEffects(postACKEffects)
+        if idleWindowDrainOwnsHeartRateLink(),
+           let before = idleWindowRangeBeforeACK {
+            persistIdleWindowAckedHistoryRangePointer(before)
+        }
         if offlineHistoricalSyncInProgress,
            Self.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
                 idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
-                acknowledgedPages: historicalDrainTelemetry.ackSucceeded
+                acknowledgedPages: historicalDrainTelemetry.ackSucceeded,
+                chargingOrOffWrist: batteryIsCharging || !hasContact,
+                attendedForeground: foregroundInteractiveMode,
+                consumeToNow: idleWindowConsumeToNowConsent,
+                sliceStartPendingRecords: idleWindowRangeBeforeACK?.pendingRecords,
+                heartRatePauseElapsed: idleWindowDrainStartedAt
+                    .map { Date().timeIntervalSince($0) } ?? 0
            ) {
+            if AtriaWhoop4HistoryRangePointerPolicy
+                .shouldIssueIdleWindowPostACKRangeProbe(
+                    idleWindowDrainOwnsLink: idleWindowDrainOwnsHeartRateLink(),
+                    acknowledgedPages: historicalDrainTelemetry.ackSucceeded,
+                    postACKProbeAlreadyIssued: idleWindowPostACKRangeProbeIssued
+                ) {
+                idleWindowPostACKRangeProbeIssued = true
+                let generation = ackIdentity.generation
+                Task { @MainActor [weak self] in
+                    await self?.observeIdleWindowPostACKRangeProbe(
+                        generation: generation
+                    )
+                }
+                return
+            }
             AtriaDebugLog(
                 "ATRIADBG idle_window_drain status=ack_chunk_complete generation=%llu ack_ok=%d action=restore_2a37_same_epoch_no_cancel",
                 ackIdentity.generation,
@@ -46720,8 +47495,8 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
         // history chunk may safely use. This callback is nonisolated, so hop to the
         // MainActor to record the flag the (MainActor) drain-decision path reads.
         let endedNaturally = (error != nil)
-        let idleWindowFlagEnabled = ProcessInfo.processInfo.arguments.contains(
-            "--atria-idle-window-drain-enable"
+        let idleWindowFlagEnabled = Self.idleWindowHistoryDrainIsEnabled(
+            arguments: ProcessInfo.processInfo.arguments
         )
         let naturalGapFlagEnabled = ProcessInfo.processInfo.arguments.contains(
             "--atria-natural-gap-drain-enable"
@@ -46741,8 +47516,17 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
             if drainOwnedDisconnect {
                 self.idleWindowDrainPausesHeartRate = false
                 self.idleWindowDrainStartedAt = nil
+                self.idleWindowDrainStartFrontierUnix = 0
+                self.idleWindowDrainBeganUnattended = false
+                self.idleWindowUnsubscribeRetryCount = 0
+                self.idleWindowRangeBeforeACK = nil
+                self.idleWindowRangeAfterACK = nil
+                self.idleWindowServedUnixMin = nil
+                self.idleWindowServedUnixMax = nil
+                self.idleWindowPostACKRangeProbeIssued = false
                 self.idleWindowDrainRangeRequestedAt = nil
                 self.idleWindowDrainFirstFrameAt = nil
+                self.idleWindowDrainLastFrameAt = nil
                 self.idleWindowDrainLastDurableProgressAt = nil
                 self.cancelIdleWindowHistoryPipeRetry()
                 self.idleWindowDrainAwaitingHeartRateUnsubscribe = false
@@ -46753,7 +47537,10 @@ extension AtriaBLEManager: CBCentralManagerDelegate {
                 let receivedFrames = self.historicalDrainTelemetry.stream5Received > 0
                 if Self.shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect(
                     drainOwnedDisconnect: true,
-                    receivedHistoryFrames: receivedFrames
+                    receivedHistoryFrames: receivedFrames,
+                    verifiedEmptyHistoryCursor:
+                        self.verifiedEmptyHistoryCursorGeneration
+                            == self.offlineHistoricalSyncGeneration
                 ) {
                     self.idleWindowDrainArmFence.arm()
                     self.heartRateCaptureIntent.update(continuousCaptureWanted: false)
@@ -48799,6 +49586,20 @@ extension AtriaBLEManager: CBPeripheralDelegate {
                 AtriaDebugLog("ATRIADBG ble_notify_enable status=settled notifying=%d error=%@",
                               notifying ? 1 : 0,
                               err ?? "nil")
+                if self.idleWindowDrainAwaitingHeartRateUnsubscribe,
+                   Self.shouldRetryIdleWindowHeartRateUnsubscribe(
+                    cccdErrorPresent: err != nil,
+                    heartRateStillNotifying: notifying
+                   ),
+                   self.idleWindowUnsubscribeRetryCount < 1 {
+                    self.idleWindowUnsubscribeRetryCount += 1
+                    AtriaDebugLog(
+                        "ATRIADBG idle_window_drain status=2a37_unsubscribe_retry action=resend_cccd_off"
+                    )
+                    self.pauseHeartRateNotifyForIdleWindowDrain(
+                        reason: "idle_window_drain_cccd_error_retry"
+                    )
+                }
                 if !notifying,
                    self.idleWindowDrainAwaitingHeartRateUnsubscribe,
                    Self.shouldArmIdleWindowHistoryRangeRequest(

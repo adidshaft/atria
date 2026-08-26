@@ -1130,19 +1130,26 @@ private struct AtriaSleepReviewCard: View {
 
     private var subtitleText: String {
         if isResumedSleep {
-            return "Confirm to link with your earlier sleep. Awake time stays excluded."
+            // Same treatment as the branch below: keep the two facts the user
+            // cannot infer (what it links to, and that awake time is not
+            // counted) and drop the instruction the Confirm button already is.
+            return "Links to your earlier sleep · awake time excluded"
         }
         // Handoff-11 honesty: an HR/RR-only candidate says what the evidence
-        // is — and that motion did not verify it — before asking the user to
-        // confirm. "Not verified" (a bounded or missing read), never "absent".
+        // is — and that motion did not verify it. "Not verified" (a bounded
+        // or missing read), never "absent".
+        //
+        // 2026-08-25: this line was cropped on device ("… Confirm to add to
+        // today'…"). The instruction half was the part that overflowed, and
+        // it only restated the Confirm button sitting directly beneath it.
+        // Keep the provenance — that is the part the user cannot infer — and
+        // let the button speak for the action.
         if night.motionValidated != true {
             return isNap
-                ? "HR/RR estimate · motion not verified. Confirm to save this nap separately."
-                : "HR/RR estimate · motion not verified. Confirm to add to today's recovery."
+                ? "HR/RR estimate · motion unverified · saves as a nap"
+                : "HR/RR estimate · motion unverified"
         }
-        return isNap
-            ? "Confirm to save this nap separately."
-            : "Confirm to add to today's recovery."
+        return isNap ? "Saves as a separate nap" : ""
     }
 
     private var startText: String {
@@ -1179,11 +1186,13 @@ private struct AtriaSleepReviewCard: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
-                    Text(subtitleText)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.82)
+                    if !subtitleText.isEmpty {
+                        Text(subtitleText)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.75)
+                    }
                 }
 
                 Spacer(minLength: 0)
@@ -3289,7 +3298,10 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                        validationState: live.strapStepResearchState,
                                        presentation: live.dailyStepPresentation,
                                        goal: stepsGoal)
-                .presentationDetents([.medium])
+                // The sheet carries a weekly chart plus its legend; a
+                // medium-only detent could not show them, so the chart was
+                // clipped and the sheet could not be dragged open.
+                .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
         .fullScreenCover(isPresented: $showBreathworkSession) {
@@ -6491,10 +6503,20 @@ struct AtriaStrapStepsDetailSheet: View {
         let receipts = AtriaWhoop4MotionTickDailyStore.shared.recentReceipts(strapIdentifier: identifier, limit: 14)
         var map: [Date: Int] = [:]
         for receipt in receipts {
-            let day = calendar.startOfDay(for: receipt.windowStart)
-            // One strongest total per day (the store already keeps the strongest
-            // record per window; guard anyway).
-            map[day] = max(map[day] ?? 0, receipt.steps)
+            // Label by the day the cycle predominantly covers, not the day it
+            // woke — a cycle running Sun 20:26 → Mon 20:56 is Monday's, and
+            // drawing it on Sunday put a day's steps under the wrong letter.
+            let day = AtriaStepsWeekChart.predominantCivilDay(
+                windowStart: receipt.windowStart,
+                windowEnd: receipt.windowEnd,
+                calendar: calendar
+            )
+            // SUM, not max. The store holds one record per cycle start and
+            // cycles do not overlap, so two receipts landing on the same day
+            // are two genuinely different cycles — an irregular schedule can
+            // fit two short ones inside one date. `max` silently dropped the
+            // smaller, under-reporting that day.
+            map[day, default: 0] += receipt.steps
         }
         weekSteps = map
     }
@@ -8680,6 +8702,21 @@ enum AtriaMetricDetailKind: String, Identifiable {
 
     var id: String { rawValue }
 
+    /// Metrics that resolve to ONE value per day and are drawn as bars: a bar
+    /// states "this much, measured from zero", which is what a once-a-day score
+    /// is. Continuous or intra-day metrics stay lines.
+    ///
+    /// Expanding a chart opens in this form so the full-screen view shows the
+    /// same shape that was tapped rather than silently switching to a line.
+    var rendersAsDailyBar: Bool {
+        switch self {
+        case .recovery, .sleep, .strain, .sleepPerformance:
+            return true
+        default:
+            return false
+        }
+    }
+
     var title: String {
         switch self {
         case .recovery: return "Recovery"
@@ -9255,6 +9292,8 @@ struct AtriaMetricDetailSheet: View {
                                        overlays: expandedChartOverlays,
                                        xDomain: expandedChartXDomain,
                                        comparisonPeriodNoun: range.narrativeLabel,
+                                       // Open in the form the user just tapped.
+                                       defaultChartType: metric.rendersAsDailyBar ? .bars : .line,
                                        onDismiss: { showExpandedChart = false })
             }
         }
@@ -9383,6 +9422,8 @@ struct AtriaMetricDetailSheet: View {
             } chart: {
                 chartSlot {
                     metricChart(title: "Recovery",
+                                // Per-day bar: a 0-100 score; zero is meaningful.
+                                rendersAsDailyBar: true,
                                 unit: "%",
                                 tint: Metrics.electricGreen,
                                 points: recoveryDisplayPointsForSelectedPeriod,
@@ -9527,6 +9568,8 @@ struct AtriaMetricDetailSheet: View {
             } chart: {
                 chartSlot {
                     metricChart(title: "Sleep duration",
+                                // Per-day bar: hours accumulated from zero.
+                                rendersAsDailyBar: true,
                                 unit: "h",
                                 tint: Metrics.electricSleep,
                                 points: displayedPoints(auto: preparedHistory.sleep[range] ?? [], raw: preparedHistory.sleepRaw[range] ?? []),
@@ -9579,6 +9622,8 @@ struct AtriaMetricDetailSheet: View {
                 } else {
                     chartSlot {
                         metricChart(title: "Strain",
+                                // Per-day bar: accumulates from 0 each physiological day.
+                                rendersAsDailyBar: true,
                                     unit: "",
                                     tint: Metrics.electricStrain,
                                     points: strainDisplayPointsForSelectedPeriod,
@@ -9604,6 +9649,8 @@ struct AtriaMetricDetailSheet: View {
             } chart: {
                 chartSlot {
                     metricChart(title: "Sleep sufficiency",
+                                // Per-day bar: percent of need, measured from zero.
+                                rendersAsDailyBar: true,
                                 unit: "%",
                                 tint: Metrics.electricSleep,
                                 points: preparedHistory.sleepPerformance[range] ?? [],
@@ -9657,7 +9704,7 @@ struct AtriaMetricDetailSheet: View {
             honestPartialDetail(heroValue: "Live read",
                                 heroState: "Live estimate",
                                 tint: .orange,
-                                bodyText: "Stress is a live, moment-to-moment estimate from heart rate and beat-to-beat timing. The full picture \u{2014} today's timeline, today versus typical, and the day-by-day trend \u{2014} lives in the Stress monitor: open the Stress tile. Guided breathwork can bring an elevated read down.")
+                                bodyText: "A live read from heart rate and beat-to-beat timing. Open the Stress tile for the full timeline and trend \u{2014} breathwork can bring an elevated read down.")
         case .vo2max:
             honestPartialDetail(heroValue: vo2MaxEstimate?.valueText ?? "Learning",
                                 heroState: (vo2MaxEstimate?.value == nil) ? "Learning" : "Estimate",
@@ -9685,7 +9732,7 @@ struct AtriaMetricDetailSheet: View {
                 honestPartialDetail(heroValue: sleepHistory.latestMainSleep?.sleepEfficiencyText ?? "--",
                                     heroState: sleepHistory.latestMainSleep?.displaySleepEfficiency == nil ? "Learning" : "Duration-based estimate",
                                     tint: Metrics.electricSleep,
-                                    bodyText: "Sleep efficiency compares estimated time asleep with time in bed. A night-by-night trend appears after 5 confirmed nights with enough strap motion to separate sleep from still wakefulness.")
+                                    bodyText: "Time asleep compared with time in bed. The night-by-night trend needs 5 confirmed nights with strap motion.")
             }
         case .skinTemperature:
             let decoderAvailable = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
@@ -10737,7 +10784,7 @@ struct AtriaMetricDetailSheet: View {
                 }
                 .font(.caption.weight(.bold).monospacedDigit())
 
-                Text("Split by the activity type of today's workouts \u{2014} heart-rate strain grouped by what you logged, not a muscle-load measurement.")
+                Text("Heart-rate strain grouped by what you logged \u{2014} not a muscle-load measurement.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -10783,7 +10830,7 @@ struct AtriaMetricDetailSheet: View {
                     Spacer(minLength: 0)
                 }
                 .font(.caption.weight(.bold).monospacedDigit())
-                Text("Day Strain above is the combined total of both lanes. The lifting lane uses the labeled provisional set-log mapping (docs/17); sessions without complete RPE add exactly zero.")
+                Text("Day Strain combines both lanes. The lifting lane is provisional: sessions without complete RPE add zero.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -10975,6 +11022,7 @@ struct AtriaMetricDetailSheet: View {
     }
 
     private func metricChart(title: String,
+                             rendersAsDailyBar: Bool = false,
                              unit: String,
                              tint: Color,
                              points: [AtriaDetailChartPoint],
@@ -11046,6 +11094,7 @@ struct AtriaMetricDetailSheet: View {
             title: title,
             unit: unit,
             tint: tint,
+            rendersAsDailyBar: rendersAsDailyBar,
             points: points,
             summary: summary,
             comparison: comparison,
@@ -11429,6 +11478,13 @@ private struct AtriaPreparedMetricChart: View {
     let title: String
     let unit: String
     let tint: Color
+    /// Owner direction 2026-08-25: a metric producing ONE value per day that
+    /// ACCUMULATES from zero is a bar; a per-day LEVEL stays a line. Recovery %,
+    /// sleep hours and sleep performance are magnitudes measured from zero, so a
+    /// bar's reading is literally true for them. Resting HR (~55) and HRV (~60)
+    /// are levels whose zero is never observed — bars from zero would push their
+    /// real few-unit signal into the top sliver of every column.
+    let rendersAsDailyBar: Bool
     let points: [AtriaDetailChartPoint]
     let summary: AtriaDetailPeriodSummary?
     let comparison: AtriaDetailComparisonSummary?
@@ -11446,6 +11502,7 @@ private struct AtriaPreparedMetricChart: View {
     init(title: String,
          unit: String,
          tint: Color,
+         rendersAsDailyBar: Bool = false,
          points: [AtriaDetailChartPoint],
          summary: AtriaDetailPeriodSummary?,
          comparison: AtriaDetailComparisonSummary?,
@@ -11462,6 +11519,7 @@ private struct AtriaPreparedMetricChart: View {
         self.title = title
         self.unit = unit
         self.tint = tint
+        self.rendersAsDailyBar = rendersAsDailyBar
         self.points = points
         self.summary = summary
         self.comparison = comparison
@@ -11570,11 +11628,24 @@ private struct AtriaPreparedMetricChart: View {
                          yEnd: .value("Max", point.bandUpper ?? point.value))
                     .interpolationMethod(.linear).foregroundStyle(tint.opacity(0.13))
             }
-            ForEach(points) { point in
-                AreaMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value))
-                    .interpolationMethod(.monotone)
-                    .foregroundStyle(LinearGradient(colors: [tint.opacity(0.20), tint.opacity(0)],
-                                                    startPoint: .top, endPoint: .bottom))
+            if rendersAsDailyBar {
+                // One bar per civil day. A per-day accumulation drawn as a line
+                // needs two points to render anything, so a single-day window
+                // draws an empty chart and a gap has to be special-cased; a bar
+                // needs one datum and a missing day simply draws nothing.
+                ForEach(points) { point in
+                    BarMark(x: .value("Day", point.day, unit: .day),
+                            y: .value(title, point.value))
+                        .foregroundStyle(point.tint.gradient)
+                        .cornerRadius(3)
+                }
+            } else {
+                ForEach(points) { point in
+                    AreaMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value))
+                        .interpolationMethod(.monotone)
+                        .foregroundStyle(LinearGradient(colors: [tint.opacity(0.20), tint.opacity(0)],
+                                                        startPoint: .top, endPoint: .bottom))
+                }
             }
             if let comparison {
                 RuleMark(y: .value("Prior average", comparison.priorAverage))
@@ -11592,7 +11663,7 @@ private struct AtriaPreparedMetricChart: View {
             // Line split into contiguous day-runs so it BREAKS at gaps instead of
             // drawing a straight segment across days with no reading (2026-08-03
             // chart-honesty rule). Points still render on every real day.
-            ForEach(points.contiguousDayRuns(), id: \.point.day) { entry in
+            ForEach(rendersAsDailyBar ? [] : points.contiguousDayRuns(), id: \.point.day) { entry in
                 LineMark(x: .value("Day", entry.point.day, unit: .day), y: .value(title, entry.point.value),
                          series: .value("Series", "current-\(entry.runID)"))
                     .interpolationMethod(.monotone)
@@ -11607,7 +11678,7 @@ private struct AtriaPreparedMetricChart: View {
                     // normalization space (2026-08-05 O8 repair).
                     .alignsMarkStylesWithPlotArea()
             }
-            ForEach(points) { point in
+            ForEach(rendersAsDailyBar ? [] : points) { point in
                 PointMark(x: .value("Day", point.day, unit: .day), y: .value(title, point.value))
                     .foregroundStyle(point.tint)
             }
@@ -11652,7 +11723,12 @@ private struct AtriaPreparedMetricChart: View {
         }
         .atriaGraphPlotSurface()
         .chartXSelection(value: $scrubbedDay)
-        .chartYScale(domain: prepared.domain)
+        // A bar states "this much, measured from zero". `prepared.domain` pads
+        // around min...max, which is right for a level but would render every
+        // bar as a truncated stub and exaggerate small day-to-day differences.
+        .chartYScale(domain: rendersAsDailyBar
+                     ? 0...max(prepared.domain.upperBound, 1)
+                     : prepared.domain)
         .chartXScale(domain: prepared.xDomain ?? fallbackXDomain)
         .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) }
         .chartYAxisLabel(unit)

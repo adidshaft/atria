@@ -28,6 +28,39 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         }
     }
 
+    func testStuckRestoredConnectingIsReissuedOnce() {
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReissueStuckRestoredConnecting(
+                peripheralState: .connecting,
+                didConnectThisProcess: false,
+                alreadyReissued: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReissueStuckRestoredConnecting(
+                peripheralState: .connecting,
+                didConnectThisProcess: true,
+                alreadyReissued: false
+            ),
+            "a live didConnect this process is a standing wait, not a stuck restore"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReissueStuckRestoredConnecting(
+                peripheralState: .connecting,
+                didConnectThisProcess: false,
+                alreadyReissued: true
+            ),
+            "only one cancel/reissue after process-kill mid-connect"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReissueStuckRestoredConnecting(
+                peripheralState: .disconnected,
+                didConnectThisProcess: false,
+                alreadyReissued: false
+            )
+        )
+    }
+
     func testPriorHistoryFailureCannotMutateSavedStandingConnect() {
         XCTAssertEqual(
             AtriaBLEManager.reconnectWatchdogDisposition(
@@ -10131,7 +10164,7 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
         // W1-A 2026-08-20: the bare continuation-latch guard became the
         // unified idle-window radio-ownership predicate.
         let rawContinuationGuard = try XCTUnwrap(resume.range(
-            of: "guard !rawLaneActivelyOwnsRadio"
+            of: "deferMotionBankOffloadForActiveRawLane("
         ))
         XCTAssertLessThan(
             maintenanceCall.lowerBound,
@@ -12271,14 +12304,27 @@ final class AtriaBLERecoveryCadenceTests: XCTestCase {
 
     func testExplicitHistoryRepairUsesCaptureProvenMinimalServedProfile() throws {
         let source = try leaseManagerSource()
+        let start = try XCTUnwrap(source.range(of: "private func armHistoryOnlyProbe()"))
+        let end = try XCTUnwrap(source.range(
+            of: "private func startSacrificialFastDrainIfNeeded",
+            range: start.upperBound..<source.endIndex
+        ))
+        let body = String(source[start.lowerBound..<end.lowerBound])
         XCTAssertTrue(source.contains("22/00, a 2.1-second settle, then 16/00"))
-        XCTAssertTrue(source.contains("reason=explicit_minimal_served_profile action=preserve_2200_settle_1600"))
-        XCTAssertFalse(source.contains("explicit_profile_bond_confirmed"))
-        XCTAssertFalse(source.contains("listeners=03,04,05 action=allow_1600"))
-        XCTAssertFalse(source.contains("command: Cmd.getBatteryLevel,\n                    payload: [0x00],\n                    generation: syncGeneration"))
-        XCTAssertFalse(source.contains("command: Cmd.forceTrim"))
-        XCTAssertFalse(source.contains("command: Cmd.abortHistoricalTransmits"))
-        XCTAssertFalse(source.contains("command: Cmd.reboot"))
+        XCTAssertTrue(body.contains("reason=explicit_minimal_served_profile action=preserve_2200_settle_1600"))
+        XCTAssertFalse(body.contains("explicit_profile_bond_confirmed"))
+        XCTAssertFalse(body.contains("listeners=03,04,05 action=allow_1600"))
+        XCTAssertFalse(body.contains("command: Cmd.getBatteryLevel,\n                    payload: [0x00],\n                    generation: syncGeneration"))
+        XCTAssertFalse(
+            body.contains("command: Cmd.forceTrim"),
+            "explicit repair must stay 22/00 settle 16/00; FORCE_TRIM is not that profile"
+        )
+        XCTAssertFalse(
+            source.contains("command: Cmd.forceTrim"),
+            "sendHistoryCommandAwaitingWriteConfirmation must not take Cmd.forceTrim"
+        )
+        XCTAssertFalse(body.contains("command: Cmd.abortHistoricalTransmits"))
+        XCTAssertFalse(body.contains("command: Cmd.reboot"))
     }
 
     func testFreshHistoryOwnerReconnectRetainsExplicitListenerProfile() throws {

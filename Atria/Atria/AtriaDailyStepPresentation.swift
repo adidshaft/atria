@@ -536,10 +536,15 @@ struct AtriaDailyStepPresentation: Equatable, Sendable {
         // Freshness is required (liveBelongsToDay, not the looser liveInCycle the
         // raise-above-floor path may use): with no drained floor a STALE coordinate
         // must still fail closed as "no longer live", never freeze a stale estimate.
+        // Compact receipt with firmware ticks and a zero gait subtotal is
+        // unresolved cadence, not "no drained floor". A live IMU estimate
+        // would paper over that as "Today so far · estimate" (store test:
+        // observed motion, steps=0, live 4257 clamped to 2100).
         let liveEstimateEligible = liveAuthorityQualified
             && isOpenDay
             && liveBelongsToDay
             && liveCount > 0
+            && !hasUnresolvedMotionReceipt
         if liveEstimateEligible {
             let elapsedActiveSeconds = max(0, now.timeIntervalSince(activeWindowStart))
             let cadenceCeiling = Int(

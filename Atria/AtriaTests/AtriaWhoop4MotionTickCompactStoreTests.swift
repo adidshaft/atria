@@ -2562,7 +2562,7 @@ final class AtriaWhoop4MotionTickCompactStoreTests: XCTestCase {
         tolerance: TimeInterval = 3
     ) -> HistoricalArchive.MotionTickDayEvidenceRead {
         let window = DateInterval(start: start, end: end)
-        let intervals = mergeReferenceIntervals(bankCoverage.compactMap {
+        let ledgerCoverage = mergeReferenceIntervals(bankCoverage.compactMap {
             interval in
             let clippedStart = max(interval.start, window.start)
             let clippedEnd = min(interval.end, window.end)
@@ -2570,6 +2570,16 @@ final class AtriaWhoop4MotionTickCompactStoreTests: XCTestCase {
                 ? DateInterval(start: clippedStart, end: clippedEnd)
                 : nil
         })
+        // Production credits the coverage the stored rows themselves prove,
+        // unioned with whatever the bank ledger retained. The reference must
+        // model the same union or it stops being a reference.
+        let intervals = mergeReferenceIntervals(
+            ledgerCoverage
+                + AtriaWhoop4MotionTickCompactStore.rowDerivedCoverage(
+                    points: points,
+                    window: window
+                )
+        )
         guard !intervals.isEmpty, points.count >= 2 else {
             return .incomplete
         }
@@ -2669,7 +2679,18 @@ final class AtriaWhoop4MotionTickCompactStoreTests: XCTestCase {
             windowStart: start,
             windowEnd: end,
             motionTicks: totalTicks,
-            steps: estimate?.steps ?? 0,
+            // Production takes the larger of the cadence estimate and the
+            // counter projection, because 1 Hz drained rows make cadence
+            // unrecoverable for normal walking. The reference must model the
+            // same choice or it stops being a reference.
+            steps: max(
+                estimate?.steps ?? 0,
+                AtriaWhoop4MotionTickStepModel.publishedSteps(
+                    motionTicks: totalTicks,
+                    validation: AtriaWhoop4MotionTickStepModel
+                        .physicallyValidatedWhoop4V24
+                ) ?? 0
+            ),
             knownCoverageSeconds: qualifiedSeconds,
             missingCoverageSeconds: max(0, totalSeconds - qualifiedSeconds),
             decodedRows: totalDecodedRows,

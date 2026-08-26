@@ -867,6 +867,316 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         )
     }
 
+    func testHistoryRangePointerDispositionClassifiesAdvanceVersusReServe() {
+        let before = AtriaWhoop4HistoryRangePointerSnapshot(
+            writeCursor: 1_000,
+            readCursor: 100,
+            pendingRecords: 900
+        )
+        XCTAssertEqual(
+            AtriaWhoop4HistoryRangePointerPolicy.disposition(
+                beforeACK: before,
+                afterACK: AtriaWhoop4HistoryRangePointerSnapshot(
+                    writeCursor: 1_000,
+                    readCursor: 150,
+                    pendingRecords: 850
+                )
+            ),
+            .pointerAdvanced
+        )
+        XCTAssertEqual(
+            AtriaWhoop4HistoryRangePointerPolicy.disposition(
+                beforeACK: AtriaWhoop4HistoryRangePointerSnapshot(
+                    writeCursor: 79_373,
+                    readCursor: 67_683,
+                    pendingRecords: 11_690
+                ),
+                afterACK: AtriaWhoop4HistoryRangePointerSnapshot(
+                    writeCursor: 79_386,
+                    readCursor: 67_688,
+                    pendingRecords: 11_698
+                )
+            ),
+            .pointerAdvanced,
+            "soak 15:50→15:52: read moved +5 while write grew +13"
+        )
+        XCTAssertEqual(
+            AtriaWhoop4HistoryRangePointerPolicy.disposition(
+                beforeACK: before,
+                afterACK: before
+            ),
+            .sameWindowReserve
+        )
+        XCTAssertEqual(
+            AtriaWhoop4HistoryRangePointerPolicy.disposition(
+                beforeACK: before,
+                afterACK: AtriaWhoop4HistoryRangePointerSnapshot(
+                    writeCursor: 2_000,
+                    readCursor: 2_000,
+                    pendingRecords: 0
+                )
+            ),
+            .strapCaughtUp
+        )
+        XCTAssertEqual(
+            AtriaWhoop4HistoryRangePointerPolicy.disposition(
+                beforeACK: nil,
+                afterACK: before
+            ),
+            .inconclusive
+        )
+        XCTAssertTrue(
+            AtriaWhoop4HistoryRangePointerPolicy.servedPagesAreSameWindow(
+                previousMin: 10,
+                previousMax: 40,
+                currentMin: 10,
+                currentMax: 40
+            )
+        )
+        XCTAssertFalse(
+            AtriaWhoop4HistoryRangePointerPolicy.servedPagesAreSameWindow(
+                previousMin: 10,
+                previousMax: 40,
+                currentMin: 41,
+                currentMax: 80
+            )
+        )
+        XCTAssertFalse(
+            AtriaWhoop4HistoryRangePointerPolicy.shouldIssueIdleWindowPostACKRangeProbe(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 1,
+                postACKProbeAlreadyIssued: false
+            ),
+            "soak 15:50/15:52: intra-slice post-ACK 0x22 WR-confirms with no cmdResp"
+        )
+        XCTAssertFalse(
+            AtriaWhoop4HistoryRangePointerPolicy.shouldIssueIdleWindowPostACKRangeProbe(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 1,
+                postACKProbeAlreadyIssued: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaWhoop4HistoryRangePointerPolicy.shouldSelectHistoryConsumeOrClear(
+                pointerDisposition: .pointerAdvanced,
+                explicitConsent: false
+            ),
+            "consume/clear is never auto"
+        )
+        XCTAssertFalse(
+            AtriaWhoop4HistoryRangePointerPolicy.shouldSelectHistoryConsumeOrClear(
+                pointerDisposition: .sameWindowReserve,
+                explicitConsent: true
+            ),
+            "do not wipe when ACK re-serves the same window"
+        )
+        XCTAssertTrue(
+            AtriaWhoop4HistoryRangePointerPolicy.shouldSelectHistoryConsumeOrClear(
+                pointerDisposition: .strapCaughtUp,
+                explicitConsent: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaWhoop4HistoryRangePointerPolicy.shouldSelectHistoryConsumeOrClear(
+                pointerDisposition: .inconclusive,
+                explicitConsent: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaWhoop4HistoryRangePointerPolicy.shouldIssueIdleWindowForceTrim(
+                idleWindowDrainOwnsLink: true,
+                heartRateNotifying: false,
+                consumeConsent: false,
+                pointerDisposition: .pointerAdvanced,
+                alreadyIssued: false
+            ),
+            "FORCE_TRIM is never auto"
+        )
+        XCTAssertFalse(
+            AtriaWhoop4HistoryRangePointerPolicy.shouldIssueIdleWindowForceTrim(
+                idleWindowDrainOwnsLink: true,
+                heartRateNotifying: true,
+                consumeConsent: true,
+                pointerDisposition: .pointerAdvanced,
+                alreadyIssued: false
+            ),
+            "do not FORCE_TRIM while 2A37 is notifying"
+        )
+        XCTAssertFalse(
+            AtriaWhoop4HistoryRangePointerPolicy.shouldIssueIdleWindowForceTrim(
+                idleWindowDrainOwnsLink: true,
+                heartRateNotifying: false,
+                consumeConsent: true,
+                pointerDisposition: .pointerAdvanced,
+                alreadyIssued: false
+            ),
+            "M0 ACK-advance: consume-to-now walks pages; do not FORCE_TRIM"
+        )
+        XCTAssertFalse(
+            AtriaWhoop4HistoryRangePointerPolicy.shouldReconcileStartFreshAfterVerifiedStrapZero(
+                pendingRecords: 12_771,
+                readCursor: 67_692,
+                writeCursor: 80_463,
+                consumeConsent: true
+            )
+        )
+        XCTAssertTrue(
+            AtriaWhoop4HistoryRangePointerPolicy.shouldReconcileStartFreshAfterVerifiedStrapZero(
+                pendingRecords: 0,
+                readCursor: 80_463,
+                writeCursor: 80_463,
+                consumeConsent: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldApplyLaunchArgHistoryConsumeToNow(
+                arguments: ["--atria-idle-window-drain-enable"]
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldApplyLaunchArgHistoryConsumeToNow(
+                arguments: [AtriaBLEManager.historyConsumeToNowLaunchArgument]
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldTreatConsumeLiveTailAsBacklog(
+                consumeToNow: true,
+                lastPendingRecords: 6
+            ),
+            "flush-debt caught-up floor is 120; consume must still walk 1-9"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldTreatConsumeLiveTailAsBacklog(
+                consumeToNow: true,
+                lastPendingRecords: 0
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldTreatConsumeLiveTailAsBacklog(
+                consumeToNow: false,
+                lastPendingRecords: 6
+            ),
+            "unconsented idle-window keeps the 120-record caught-up floor"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldACKIdleWindowHistoryEndWithoutPersisting(
+                idleWindowDrainOwnsLink: true,
+                consumeToNow: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldACKIdleWindowHistoryEndWithoutPersisting(
+                idleWindowDrainOwnsLink: true,
+                consumeToNow: false
+            ),
+            "default persist-before-ACK stays on without consume consent"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldACKIdleWindowHistoryEndWithoutPersisting(
+                idleWindowDrainOwnsLink: false,
+                consumeToNow: true
+            ),
+            "ordinary production drain must not inherit ACK-without-persist"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldQuietIdleWindowStream5BeforePostACKRangeProbe(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 1,
+                postACKProbeIssued: true
+            ),
+            "soak 15:40: 0x22 seq=3 never WR-confirmed while stream5 still notifying"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldQuietIdleWindowStream5BeforePostACKRangeProbe(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 1,
+                postACKProbeIssued: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldHoldIdleWindowAbsoluteBudgetForPostACKRangeProbe(
+                postACKProbeIssued: true,
+                afterACKRangeObserved: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldHoldIdleWindowAbsoluteBudgetForPostACKRangeProbe(
+                postACKProbeIssued: true,
+                afterACKRangeObserved: true
+            )
+        )
+    }
+
+    func testOldestFirstHistoryDrainCursorAdvancesIndependentlyOfDisplayFrontier() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let displayFrontier: TimeInterval = 1_790_000_000
+        let previousDrainCursor: TimeInterval = 1_780_000_000
+        let pageUnix: UInt32 = 1_780_000_180
+
+        XCTAssertNil(
+            AtriaBLEManager.advancedDurableHistoricalFrontier(
+                existing: displayFrontier,
+                durableEffectiveUnix: [pageUnix],
+                now: now
+            ),
+            "charging soak: ACK'd pages behind the display footer must not rewrite it"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.advancedOldestFirstHistoryDrainCursor(
+                existing: previousDrainCursor,
+                durableEffectiveUnix: [pageUnix],
+                now: now
+            ),
+            TimeInterval(pageUnix),
+            "productive persist/ACK of newer drain-cursor timestamps must advance"
+        )
+        XCTAssertNil(
+            AtriaBLEManager.advancedOldestFirstHistoryDrainCursor(
+                existing: TimeInterval(pageUnix),
+                durableEffectiveUnix: [pageUnix],
+                now: now
+            ),
+            "rows at-or-behind the drain cursor are not forward progress"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedHistorySliceStartFrontierUnix(
+                oldestFirstDrainCursorUnix: previousDrainCursor
+            ),
+            previousDrainCursor
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.connectedHistorySliceStartFrontierUnix(
+                oldestFirstDrainCursorUnix: 0
+            ),
+            0
+        )
+        let advanced = AtriaBLEManager.connectedRawHistoryCatchUpSliceProgress(
+            durableRows: 54,
+            startedAt: now,
+            finishedAt: now.addingTimeInterval(20),
+            startFrontierUnix: AtriaBLEManager.connectedHistorySliceStartFrontierUnix(
+                oldestFirstDrainCursorUnix: previousDrainCursor
+            ),
+            endFrontierUnix: TimeInterval(pageUnix)
+        )
+        XCTAssertEqual(advanced.frontierAdvanceSeconds, 180, accuracy: 0.001)
+        XCTAssertGreaterThan(advanced.durableRows, 0)
+        let stuckOnDisplayFooter = AtriaBLEManager
+            .connectedRawHistoryCatchUpSliceProgress(
+                durableRows: 54,
+                startedAt: now,
+                finishedAt: now.addingTimeInterval(20),
+                startFrontierUnix: displayFrontier,
+                endFrontierUnix: displayFrontier
+            )
+        XCTAssertEqual(
+            stuckOnDisplayFooter.frontierAdvanceSeconds,
+            0,
+            accuracy: 0.001,
+            "the 40-min charging soak: display footer as both start and end"
+        )
+    }
+
     func testHistoryServeCutoverAlwaysClearsArmedStateAndRetainsPrearm() {
         XCTAssertEqual(
             AtriaBLEManager
@@ -1056,6 +1366,183 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertTrue(source.contains("let generation: UInt64"))
         XCTAssertTrue(source.contains("let startedAt: Date"))
         XCTAssertTrue(source.contains("let startFrontierUnix: TimeInterval"))
+        XCTAssertTrue(source.contains("connectedHistorySliceStartFrontierUnix("))
+        XCTAssertTrue(source.contains("OfflineSyncDefaults.historyDrainCursorUnix"))
+        XCTAssertTrue(source.contains("OfflineSyncDefaults.idleWindowAckedRangeReadCursor"))
+        XCTAssertTrue(source.contains("persistIdleWindowAckedHistoryRangePointer("))
+        XCTAssertTrue(source.contains("commitOldestFirstHistoryDrainCursor("))
+        XCTAssertTrue(source.contains("advancedOldestFirstHistoryDrainCursor("))
+        XCTAssertTrue(source.contains("idle_window_drain status=slice"))
+        XCTAssertTrue(source.contains("attended_foreground_abort"))
+        XCTAssertTrue(source.contains("2a37_unsubscribe_retry"))
+        XCTAssertTrue(source.contains("pointer_diagnosis"))
+        XCTAssertTrue(source.contains("shouldHoldIdleWindowAbsoluteBudgetForInFlightPersist("))
+        XCTAssertTrue(source.contains("shouldHoldIdleWindowAbsoluteBudgetForPostACKRangeProbe("))
+        XCTAssertTrue(source.contains("shouldQuietIdleWindowStream5BeforePostACKRangeProbe("))
+        XCTAssertTrue(source.contains("quietIdleWindowStream5ForPostACKRangeProbe("))
+        XCTAssertTrue(source.contains("shouldACKIdleWindowHistoryEndWithoutPersisting("))
+        XCTAssertTrue(source.contains("ackWithoutPersisting: Self.shouldACKIdleWindowHistoryEndWithoutPersisting("))
+        guard let metadataFn = source.range(of: "private func handleHistoryMetadata(") else {
+            return XCTFail("missing handleHistoryMetadata")
+        }
+        let metadataBody = String(source[metadataFn.lowerBound...].prefix(2_800))
+        guard let consumeMeta = metadataBody.range(
+            of: "shouldACKIdleWindowHistoryEndWithoutPersisting("
+        ),
+        let enqueueMeta = metadataBody.range(
+            of: "enqueueHistoricalIngress(.metadata("
+        ) else {
+            return XCTFail(
+                "consume HISTORY_END must bypass the admission spool"
+            )
+        }
+        XCTAssertTrue(
+            consumeMeta.lowerBound < enqueueMeta.lowerBound,
+            "soak 11 gen 4: ACK-without-persist must not wait for admitted frames"
+        )
+        guard let stream5Fn = source.range(
+            of: "ATRIADBG historyServe status=first_frame generation=%llu action=continue_durable_drain"
+        ) else {
+            return XCTFail("missing stream5 first-frame log")
+        }
+        let stream5Body = String(source[stream5Fn.lowerBound...].prefix(2_400))
+        guard let consumeFrames = stream5Body.range(
+            of: "shouldACKIdleWindowHistoryEndWithoutPersisting("
+        ),
+        let enqueueFrame = stream5Body.range(
+            of: "enqueueHistoricalIngress(.frame("
+        ) else {
+            return XCTFail(
+                "consume stream5 must not spool frames behind HISTORY_END"
+            )
+        }
+        XCTAssertTrue(
+            consumeFrames.lowerBound < enqueueFrame.lowerBound,
+            "soak 13: do not admit consume frames after immediate HISTORY_END"
+        )
+        XCTAssertTrue(source.contains("observeProductionHistoryCursorRange(generation:"))
+        XCTAssertTrue(source.contains("shouldIssueIdleWindowPostACKRangeProbe("))
+        XCTAssertTrue(source.contains("shouldSelectHistoryConsumeOrClear("))
+        XCTAssertFalse(
+            source.contains("shouldIssueIdleWindowForceTrim("),
+            "idle-window handshake does not take a FORCE_TRIM branch"
+        )
+        XCTAssertFalse(
+            source.contains("observeIdleWindowForceTrimAndVerify("),
+            "M0 ACK-advance: idle-window never sends 0x19 FORCE_TRIM"
+        )
+        XCTAssertTrue(source.contains("verified_strap_history_zero"))
+        XCTAssertFalse(
+            source.contains("command: Cmd.forceTrim"),
+            "capture-proven serve is 22/00 then 16/00; do not send FORCE_TRIM"
+        )
+        XCTAssertTrue(source.contains("explicitConsent: idleWindowConsumeToNowConsent"))
+        XCTAssertTrue(source.contains("shouldRetryIdleWindowHeartRateUnsubscribe("))
+        XCTAssertTrue(source.contains("restoreIdleWindowHeartRateForAttendedForegroundIfNeeded("))
+        XCTAssertTrue(source.contains("idleWindowHistoryDrainAbsoluteBudgetLimit("))
+        XCTAssertTrue(source.contains("sliceStartPendingRecords:"))
+        XCTAssertTrue(source.contains("lastPendingRecords:"))
+        XCTAssertTrue(source.contains("persistIdleWindowAckedHistoryRangePointer(snapshot)"))
+        XCTAssertTrue(
+            source.contains("reconcileStartFreshAfterVerifiedEmptyHistoryCursorIfNeeded(")
+        )
+        XCTAssertTrue(source.contains("consume_consent_cleared"))
+        XCTAssertTrue(source.contains("idleWindowConsumeToNowConsent = false"))
+        XCTAssertTrue(source.contains("verifiedEmptyHistoryCursor:"))
+        XCTAssertTrue(source.contains("shouldSkipIdleWindowHeartRateReassert("))
+        XCTAssertTrue(source.contains("shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry("))
+        XCTAssertTrue(source.contains("scheduleIdleWindowConsumeLiveTailRetryIfNeeded("))
+        XCTAssertTrue(source.contains("verified_empty_cursor_restore_2a37"))
+        XCTAssertTrue(source.contains("live_tail_keep_2a37_paused"))
+        XCTAssertTrue(source.contains("shouldBlockHistoryTransportForTerminalConsumerMaterialization("))
+        XCTAssertTrue(source.contains("shouldScheduleTerminalConsumerMaterializationAfterHistoryFinish("))
+        XCTAssertTrue(source.contains("shouldDiscardUnackedConsumeIngressSpool("))
+        XCTAssertTrue(source.contains("discard_unacked_consume_spool"))
+        XCTAssertTrue(source.contains("consumeIngressInFlight:"))
+        XCTAssertTrue(
+            source.contains("verifiedEmptyHistoryCursorGeneration == generation")
+                || source.contains(
+                    "verifiedEmptyHistoryCursorGeneration\n            == generation"
+                )
+        )
+        guard let reconcile = source.range(
+            of: "private func reconcileStartFreshAfterVerifiedEmptyHistoryCursorIfNeeded"
+        ) else {
+            return XCTFail("missing verified empty-cursor Start-fresh helper")
+        }
+        let reconcileBody = String(source[reconcile.lowerBound...].prefix(2_400))
+        guard let finishRange = reconcileBody.range(
+            of: "finishOfflineHistoricalSync("
+        ),
+        let startFreshRange = reconcileBody.range(
+            of: "startFreshAcceptingMissedDataLoss("
+        ) else {
+            return XCTFail("strap-zero must finish the drain and Start-fresh")
+        }
+        XCTAssertTrue(
+            finishRange.lowerBound < startFreshRange.lowerBound,
+            "soak 9 gen 23: restore 2A37 before Start-fresh returns"
+        )
+        guard let finishSync = source.range(
+            of: "private func finishOfflineHistoricalSync("
+        ) else {
+            return XCTFail("missing finishOfflineHistoricalSync")
+        }
+        let finishBody = String(source[finishSync.lowerBound...].prefix(40_000))
+        guard let emptyCursorRelease = finishBody.range(
+            of: "if verifiedEmptyHistoryCursor {"
+        ),
+        let reassertCall = finishBody.range(
+            of: "reassertHeartRateNotificationsIfConnected("
+        ) else {
+            return XCTFail(
+                "verified empty cursor must release the drain fence before reassert"
+            )
+        }
+        XCTAssertTrue(
+            emptyCursorRelease.lowerBound < reassertCall.lowerBound,
+            "soak 9 gen 23: clear idle-window 2A37 ownership before reassert"
+        )
+        XCTAssertTrue(
+            finishBody.contains("idleWindowDrainArmFence.clear()")
+        )
+        XCTAssertTrue(
+            finishBody.contains("else if deferLiveHeartRateRestoreForConsumeLiveTail {"),
+            "soak 14: 1-2 page tail keeps 2A37 paused for the next 0x22"
+        )
+        XCTAssertTrue(
+            finishBody.contains("else if peripheral?.state == .connected {"),
+            "soak 12: a still-connected non-tail finish still restores 2A37"
+        )
+        guard let deferLiveRestore = finishBody.range(
+            of: "if deferLiveHeartRateRestoreForConsumeLiveTail {"
+        ),
+        let liveRestoreWait = finishBody.range(
+            of: "awaiting_post_history_live_sample"
+        ) else {
+            return XCTFail(
+                "live-tail defer must skip the live-sample wait / 10s rebuild"
+            )
+        }
+        XCTAssertTrue(
+            deferLiveRestore.lowerBound < liveRestoreWait.lowerBound,
+            "soak 14: do not wait for 2A37 or cancelPeripheralConnection on a 1-2 page tail"
+        )
+        XCTAssertTrue(
+            finishBody.contains("scheduleIdleWindowConsumeLiveTailRetryIfNeeded()")
+        )
+        guard let pendingZero = source.range(
+            of: "if let cursorRange, cursorRange.pendingRecords == 0"
+        ) else {
+            return XCTFail("missing zero-pending 0x22 early exit")
+        }
+        let pendingZeroBody = String(source[pendingZero.lowerBound...].prefix(1_200))
+        XCTAssertTrue(
+            pendingZeroBody.contains(
+                "reconcileStartFreshAfterVerifiedEmptyHistoryCursorIfNeeded("
+            ),
+            "soak 8 gen 28/30: pending=0 completed empty before Start-fresh"
+        )
         XCTAssertTrue(source.contains(
             "authority.callbackSource.peripheralObjectID\n                == ObjectIdentifier(peripheral)"
         ))
@@ -2482,8 +2969,30 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             "exact_connected_history_authority_lost_before_command"
         ))
         XCTAssertTrue(source.contains(
-            "if !compactMotionBankOnly,\n           !connectedRawHistoryCatchUpContinuationPending,\n           terminalAndLiveRestored && offlineHistoricalSyncReachedTerminal"
+            "shouldScheduleTerminalConsumerMaterializationAfterHistoryFinish("
         ))
+        XCTAssertFalse(
+            AtriaBLEManager.shouldScheduleTerminalConsumerMaterializationAfterHistoryFinish(
+                terminalAndLiveRestored: true,
+                reachedTerminal: true,
+                compactMotionBankOnly: true,
+                connectedRawCatchUpContinuationPending: false,
+                consumeToNow: false,
+                persistedRows: 40
+            ),
+            "compact-only motion-bank share must not latch terminal materialization"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldScheduleTerminalConsumerMaterializationAfterHistoryFinish(
+                terminalAndLiveRestored: true,
+                reachedTerminal: true,
+                compactMotionBankOnly: false,
+                connectedRawCatchUpContinuationPending: true,
+                consumeToNow: false,
+                persistedRows: 40
+            ),
+            "a pending raw catch-up continuation must keep the compact-only hot path"
+        )
         XCTAssertTrue(source.contains(
             "continue_bounded_transport_no_projection_scan"
         ))
@@ -3326,6 +3835,77 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             .none,
             "a healthy live epoch on the Home screen must never be selected for drain"
         )
+        XCTAssertEqual(
+            AtriaBLEManager.selectedIdleWindowHistoryDrain(
+                launchFlagEnabled: true,
+                strapBacklogPending: true,
+                strapIsCharging: false,
+                strapOffWrist: false,
+                appBackgrounded: false,
+                priorEpochEndedNaturally: true,
+                healthyLiveEpochActive: true,
+                attendedForeground: true,
+                explicitMotionOwnershipActive: false,
+                thermalParked: false,
+                consumeToNow: true
+            ),
+            .appBackgroundIdle,
+            "consented consume-to-now must re-arm after HR restore so later slices walk"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.selectedIdleWindowHistoryDrain(
+                launchFlagEnabled: true,
+                strapBacklogPending: false,
+                strapIsCharging: false,
+                strapOffWrist: false,
+                appBackgrounded: false,
+                priorEpochEndedNaturally: true,
+                healthyLiveEpochActive: true,
+                attendedForeground: true,
+                explicitMotionOwnershipActive: false,
+                thermalParked: false,
+                consumeToNow: true,
+                lastPendingRecords: 6
+            ),
+            .appBackgroundIdle,
+            "soak 8: pending 1-9 is a live tail, not flush-debt caught-up"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.selectedIdleWindowHistoryDrain(
+                launchFlagEnabled: true,
+                strapBacklogPending: false,
+                strapIsCharging: false,
+                strapOffWrist: false,
+                appBackgrounded: false,
+                priorEpochEndedNaturally: true,
+                healthyLiveEpochActive: true,
+                attendedForeground: true,
+                explicitMotionOwnershipActive: false,
+                thermalParked: false,
+                consumeToNow: true,
+                lastPendingRecords: 0
+            ),
+            .none,
+            "do not keep walking after 0x22 pending=0"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.selectedIdleWindowHistoryDrain(
+                launchFlagEnabled: true,
+                strapBacklogPending: false,
+                strapIsCharging: false,
+                strapOffWrist: false,
+                appBackgrounded: false,
+                priorEpochEndedNaturally: true,
+                healthyLiveEpochActive: true,
+                attendedForeground: true,
+                explicitMotionOwnershipActive: false,
+                thermalParked: false,
+                consumeToNow: false,
+                lastPendingRecords: 6
+            ),
+            .none,
+            "without consume consent the 120-record floor still applies"
+        )
     }
 
     func testIdleWindowDrainSelectsChargingEvenIfEpochLooksHealthy() {
@@ -3400,11 +3980,16 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         )
     }
 
-    func testIdleWindowDrainLaunchFlagIsOffByDefault() {
-        XCTAssertFalse(
-            AtriaBLEManager.idleWindowHistoryDrainIsEnabled(arguments: [])
+    func testIdleWindowDrainIsOnByDefaultAndHasAKillSwitch() {
+        // Regression for the 2026-08-24 field report ("12 hours, no strap
+        // steps"): a home-screen launch carries no arguments, so the
+        // previously flag-gated drain never selected a window and the bank
+        // never reached the phone.
+        XCTAssertTrue(
+            AtriaBLEManager.idleWindowHistoryDrainIsEnabled(arguments: []),
+            "a stock launch carries no arguments and must still drain"
         )
-        XCTAssertFalse(
+        XCTAssertTrue(
             AtriaBLEManager.idleWindowHistoryDrainIsEnabled(
                 arguments: ["--atria-enable-debug-logs"]
             )
@@ -3415,7 +4000,20 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                     "--atria-enable-debug-logs",
                     AtriaBLEManager.idleWindowHistoryDrainEnableArgument
                 ]
-            )
+            ),
+            "the legacy enable argument stays accepted for soak scripts"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.idleWindowHistoryDrainIsEnabled(
+                arguments: [
+                    AtriaBLEManager.idleWindowHistoryDrainDisableArgument
+                ]
+            ),
+            "the kill switch must still turn the drain off"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.idleWindowHistoryDrainDisableArgument,
+            "--atria-idle-window-drain-disable"
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldSynchronouslyEnableDiscoveredHeartRateNotification(
@@ -3472,12 +4070,22 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             ),
             "persist-before-ACK: archive failure withholds the strap ACK"
         )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldQueueHistoryEndACK(
+                alreadyAcked: false,
+                archiveWriteFailures: 0,
+                postACKRangeProbeIssued: true
+            ),
+            "soak 15:40: second HISTORY_END must not steal the post-ACK 0x22 WR"
+        )
     }
 
     func testIdleWindowDrainPathNeverCancelsThePeripheral() throws {
         let source = try managerSource()
         XCTAssertTrue(
-            source.contains("--atria-idle-window-drain-enable")
+            source.contains("idleWindowHistoryDrainIsEnabled("),
+            "the drain gate must route through the policy predicate, not a "
+                + "literal launch argument"
         )
         XCTAssertTrue(
             source.contains("|| idleWindowDrainBypass")
@@ -3530,6 +4138,12 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             source.contains("shouldFinishIdleWindowHistoryDrainAtACKBoundary(")
         )
         XCTAssertTrue(
+            source.contains("shouldReleaseIdleWindowHistoryDrainForHeartRatePause(")
+        )
+        XCTAssertTrue(
+            source.contains("heart_rate_pause")
+        )
+        XCTAssertTrue(
             source.contains("shouldReleaseIdleWindowHistoryDrainWhenPersistAckStalled(")
         )
         XCTAssertTrue(
@@ -3540,6 +4154,9 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         )
         XCTAssertTrue(
             source.contains("idleWindowDrainArchiveWarmRetry")
+        )
+        XCTAssertTrue(
+            source.contains("skip_orphan_archive")
         )
         XCTAssertTrue(
             eval.contains("deferred_admission_ledger")
@@ -3684,6 +4301,9 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             source.contains("shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect(")
         )
         XCTAssertTrue(
+            source.contains("shouldSkipIdleWindowHeartRateReassert(")
+        )
+        XCTAssertTrue(
             source.contains("shouldArmIdleWindowHistoryRangeRequest(")
         )
         XCTAssertTrue(
@@ -3731,6 +4351,287 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             ),
             "ordinary production drain must not inherit the one-chunk bound"
         )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 3,
+                chargingOrOffWrist: true
+            ),
+            "charging/off-wrist must keep serving past the first ACK"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 1,
+                chargingOrOffWrist: true,
+                attendedForeground: true
+            ),
+            "attended pickup aborts even a charging burst"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 2,
+                consumeToNow: true
+            ),
+            "consented ACK-consume-to-now keeps walking past the first ACK"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 2,
+                chargingOrOffWrist: false,
+                attendedForeground: true,
+                consumeToNow: true
+            ),
+            "console --activate is attended from t=0; consume-to-now still walks until the HR pause budget"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 2,
+                consumeToNow: true,
+                heartRatePauseElapsed: 18
+            ),
+            "restore 2A37 at ACK once the live-HR pause budget is spent"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 1,
+                consumeToNow: true,
+                sliceStartPendingRecords: 6
+            ),
+            "soak 14: first ACK of a 6-page tail restores 2A37 and lets write grow"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 6,
+                consumeToNow: true,
+                sliceStartPendingRecords: 6
+            ),
+            "ACK every slice-start live-tail page, then 0x22"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 1,
+                consumeToNow: true,
+                sliceStartPendingRecords: 2
+            ),
+            "soak 14 gens 96-98: ACK 1 of pending=2 leaves write time to reseal"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 2,
+                consumeToNow: true,
+                sliceStartPendingRecords: 2
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 1,
+                consumeToNow: true,
+                sliceStartPendingRecords: 1
+            ),
+            "pending=1: ACK the last page then 0x22 immediately"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 1,
+                consumeToNow: true,
+                sliceStartPendingRecords: 200
+            ),
+            "a leftover above the live-tail limit still walks until the HR pause budget"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 1,
+                chargingOrOffWrist: true,
+                consumeToNow: true,
+                sliceStartPendingRecords: 3
+            ),
+            "off-wrist live tail: ACK the slice-start pages while write is still"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 3,
+                chargingOrOffWrist: true,
+                consumeToNow: true,
+                sliceStartPendingRecords: 3
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldFinishIdleWindowHistoryDrainAtACKBoundary(
+                idleWindowDrainOwnsLink: true,
+                acknowledgedPages: 4,
+                chargingOrOffWrist: true,
+                consumeToNow: true,
+                sliceStartPendingRecords: 200,
+                heartRatePauseElapsed: 18
+            ),
+            "off-wrist leftover keeps walking past the worn 18s HR pause"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.idleWindowHistoryDrainAbsoluteBudgetLimit(
+                chargingOrOffWrist: false,
+                consumeToNow: true
+            ),
+            20,
+            "consume slices must restore 2A37 on the worn 20s cap, not a 900s pause"
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.idleWindowHistoryDrainAbsoluteBudgetLimit(
+                chargingOrOffWrist: true,
+                consumeToNow: true
+            ),
+            180,
+            "off-wrist consume may walk the still write cursor on the charging burst"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForHeartRatePause(
+                idleWindowDrainOwnsLink: true,
+                consumeToNow: true,
+                pausedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_018)
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForHeartRatePause(
+                idleWindowDrainOwnsLink: true,
+                consumeToNow: true,
+                pausedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_010)
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForHeartRatePause(
+                idleWindowDrainOwnsLink: true,
+                consumeToNow: false,
+                pausedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_040)
+            ),
+            "unconsented idle-window keeps the existing 20s/180s budgets"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForHeartRatePause(
+                idleWindowDrainOwnsLink: true,
+                consumeToNow: true,
+                pausedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_040),
+                chargingOrOffWrist: true
+            ),
+            "off-wrist has no live HR to protect; do not restore at 18s"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForHeartRatePause(
+                idleWindowDrainOwnsLink: true,
+                consumeToNow: true,
+                pausedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_018),
+                acknowledgedPages: 0,
+                consumeIngressInFlight: true
+            ),
+            "soak 10 gen 31: do not 18s-pause a consume page still in the spool"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForHeartRatePause(
+                idleWindowDrainOwnsLink: true,
+                consumeToNow: true,
+                pausedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_018),
+                acknowledgedPages: 0,
+                lastFrameAge: 1,
+                stream5Received: 16
+            ),
+            "stream5 still landing; wait for HISTORY_END before restoring 2A37"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForHeartRatePause(
+                idleWindowDrainOwnsLink: true,
+                consumeToNow: true,
+                pausedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_028),
+                acknowledgedPages: 0,
+                consumeIngressInFlight: true,
+                lastFrameAge: 1,
+                stream5Received: 16
+            ),
+            "hard-cap the consume pause just under the 30s HR continuity watchdog"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDiscardUnackedConsumeIngressSpool(
+                consumeToNow: true,
+                idleWindowDrainOwnsLink: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDiscardUnackedConsumeIngressSpool(
+                consumeToNow: false,
+                idleWindowDrainOwnsLink: true
+            ),
+            "default persist-before-ACK must keep the orphan spool"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDiscardUnackedConsumeIngressSpool(
+                consumeToNow: true,
+                idleWindowDrainOwnsLink: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForAttendedForeground(
+                idleWindowDrainOwnsLink: true,
+                attendedForeground: true,
+                drainBeganUnattended: true,
+                historyRangeRequested: true
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForAttendedForeground(
+                idleWindowDrainOwnsLink: true,
+                attendedForeground: true,
+                drainBeganUnattended: true,
+                historyRangeRequested: false
+            ),
+            "same-launch restore must not abort before 0x22"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForAttendedForeground(
+                idleWindowDrainOwnsLink: true,
+                attendedForeground: false,
+                drainBeganUnattended: true,
+                historyRangeRequested: true
+            )
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.idleWindowHistoryDrainAbsoluteBudgetLimit(
+                chargingOrOffWrist: false
+            ),
+            20
+        )
+        XCTAssertEqual(
+            AtriaBLEManager.idleWindowHistoryDrainAbsoluteBudgetLimit(
+                chargingOrOffWrist: true
+            ),
+            180
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForAbsoluteBudget(
+                idleWindowDrainOwnsLink: true,
+                startedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_080),
+                absoluteLimit: AtriaBLEManager.idleWindowHistoryDrainAbsoluteBudgetLimit(
+                    chargingOrOffWrist: true
+                )
+            ),
+            "charging burst is not the 20s worn handshake cap"
+        )
         XCTAssertTrue(
             AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForAbsoluteBudget(
                 idleWindowDrainOwnsLink: true,
@@ -3745,6 +4646,26 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 now: Date(timeIntervalSince1970: 1_015)
             ),
             "15s still covers 0x22 write-confirm + range settle"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldHoldIdleWindowAbsoluteBudgetForInFlightPersist(
+                persistPending: true,
+                acknowledgedPages: 0
+            ),
+            "soak 15:30: persist still queued, ACK never sent"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldHoldIdleWindowAbsoluteBudgetForInFlightPersist(
+                persistPending: false,
+                acknowledgedPages: 0
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldHoldIdleWindowAbsoluteBudgetForPostACKRangeProbe(
+                postACKProbeIssued: true,
+                afterACKRangeObserved: false
+            ),
+            "soak 15:40: keep 2A37 paused until post-ACK 0x22 observes"
         )
         XCTAssertFalse(
             AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainForAbsoluteBudget(
@@ -3815,6 +4736,19 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             "a page still persisting must be allowed to reach HISTORY_END+ACK"
         )
         XCTAssertFalse(
+            AtriaBLEManager.shouldReleaseIdleWindowHistoryDrainWhenPersistAckStalled(
+                idleWindowDrainOwnsLink: true,
+                firstFrameAt: firstFrame,
+                lastDurableProgressAt: nil,
+                persisted: 0,
+                acknowledgedPages: 0,
+                now: Date(timeIntervalSince1970: 1_015),
+                admitted: 0,
+                consumeToNow: true
+            ),
+            "consume-soak gen5: do not abort a consented walk because admission lagged 5s after reconnect"
+        )
+        XCTAssertFalse(
             AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
                 lastFinishedAt: Date(timeIntervalSince1970: 1_000),
                 now: Date(timeIntervalSince1970: 1_010)
@@ -3824,6 +4758,197 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
             AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
                 lastFinishedAt: Date(timeIntervalSince1970: 1_000),
                 now: Date(timeIntervalSince1970: 1_020)
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_000.2),
+                consumeToNow: true,
+                lastPendingRecords: 6
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_000.5),
+                consumeToNow: true,
+                lastPendingRecords: 6
+            ),
+            "soak 15 gen 1: a 4-6 page tail must 0x22 before restoring 2A37"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_010),
+                consumeToNow: true,
+                lastPendingRecords: 200
+            ),
+            "a leftover above the live-tail limit keeps the 20s HR resume"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_002),
+                consumeToNow: true,
+                chargingOrOffWrist: true
+            ),
+            "off-wrist write is still; re-probe quickly after ACK"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_000.2),
+                consumeToNow: true,
+                lastPendingRecords: 1
+            ),
+            "soak 14 pending=1: 0.4s resume, not 2s"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_000.5),
+                consumeToNow: true,
+                lastPendingRecords: 1
+            ),
+            "pending=1: re-probe 0x22 before write seals another page"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldAdmitIdleWindowHistoryDrainRetry(
+                lastFinishedAt: Date(timeIntervalSince1970: 1_000),
+                now: Date(timeIntervalSince1970: 1_000.5),
+                consumeToNow: true,
+                lastPendingRecords: 2
+            )
+        )
+        XCTAssertEqual(AtriaBLEManager.idleWindowConsumeLiveTailPendingLimit, 16)
+        XCTAssertEqual(AtriaBLEManager.idleWindowConsumeLiveTailResumeInterval, 2)
+        XCTAssertEqual(
+            AtriaBLEManager.idleWindowConsumeLiveTailImmediateResumeInterval,
+            0.4
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry(
+                consumeToNow: true,
+                lastPendingRecords: 1,
+                verifiedEmptyHistoryCursor: false,
+                linkStillConnected: true,
+                consumePauseElapsed: 5
+            ),
+            "soak 14: pending=1 must not restore 2A37 before the next 0x22"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry(
+                consumeToNow: true,
+                lastPendingRecords: 2,
+                verifiedEmptyHistoryCursor: false,
+                linkStillConnected: true,
+                consumePauseElapsed: 8
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry(
+                consumeToNow: true,
+                lastPendingRecords: 1,
+                verifiedEmptyHistoryCursor: true,
+                linkStillConnected: true,
+                consumePauseElapsed: 5
+            ),
+            "soak 9 gen 23: verified empty 0x22 must restore 2A37, not chain"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry(
+                consumeToNow: true,
+                lastPendingRecords: 6,
+                verifiedEmptyHistoryCursor: false,
+                linkStillConnected: true,
+                consumePauseElapsed: 5
+            ),
+            "soak 15 gen 1: HISTORY_COMPLETE of a 4-6 page tail still needs 0x22"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry(
+                consumeToNow: true,
+                lastPendingRecords: 200,
+                verifiedEmptyHistoryCursor: false,
+                linkStillConnected: true,
+                consumePauseElapsed: 5
+            ),
+            "a leftover above the live-tail limit still restores 2A37 between slices"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldDeferLiveHeartRateRestoreForConsumeLiveTailRetry(
+                consumeToNow: true,
+                lastPendingRecords: 1,
+                verifiedEmptyHistoryCursor: false,
+                linkStillConnected: true,
+                consumePauseElapsed: 18
+            ),
+            "18s pause cap restores 2A37 even on a 1-page tail"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSkipIdleWindowHeartRateReassert(
+                idleWindowDrainOwnsLink: true,
+                verifiedEmptyHistoryCursor: true,
+                deferLiveRestoreForConsumeLiveTail: true
+            ),
+            "verified empty cursor wins over live-tail defer"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldSkipIdleWindowHeartRateReassert(
+                idleWindowDrainOwnsLink: false,
+                verifiedEmptyHistoryCursor: false,
+                deferLiveRestoreForConsumeLiveTail: true
+            ),
+            "live-tail defer skips reassert so the next 0x22 can land"
+        )
+    }
+
+    func testVerifiedEmptyHistoryCursorAllowsHeartRateReassertInsteadOfHistoryFirstSuppress() {
+        let emptyCursor = AtriaWhoop4HistoryRangePointerPolicy
+            .shouldReconcileStartFreshAfterVerifiedStrapZero(
+                pendingRecords: 0,
+                readCursor: 82_882,
+                writeCursor: 82_882,
+                consumeConsent: true
+            )
+        XCTAssertTrue(emptyCursor)
+        XCTAssertFalse(
+            AtriaBLEManager.shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect(
+                drainOwnedDisconnect: true,
+                receivedHistoryFrames: false,
+                verifiedEmptyHistoryCursor: emptyCursor
+            ),
+            "soak 9 gen 23: pending=0 / read==write must not select history-first 2A37 suppress"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSkipIdleWindowHeartRateReassert(
+                idleWindowDrainOwnsLink: true,
+                verifiedEmptyHistoryCursor: emptyCursor
+            ),
+            "soak 9 gen 23: finish/reassert is allowed on a verified empty 0x22"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect(
+                drainOwnedDisconnect: true,
+                receivedHistoryFrames: false,
+                verifiedEmptyHistoryCursor: false
+            ),
+            "zero-frame handshake drop without an empty 0x22 still reconnects history-first"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect(
+                drainOwnedDisconnect: true,
+                receivedHistoryFrames: false,
+                verifiedEmptyHistoryCursor: false,
+                linkStillConnected: true
+            ),
+            "soak 12 gen 1: 18s pause finish on a live link must restore 2A37"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldSkipIdleWindowHeartRateReassert(
+                idleWindowDrainOwnsLink: true,
+                verifiedEmptyHistoryCursor: false
             )
         )
     }
@@ -3926,6 +5051,61 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 drainOwnedDisconnect: false,
                 receivedHistoryFrames: false
             )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect(
+                drainOwnedDisconnect: true,
+                receivedHistoryFrames: false,
+                verifiedEmptyHistoryCursor: true
+            ),
+            "soak 9 gen 23: verified 0x22 pending=0 / read==write must restore 2A37, not history-first suppress"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldKeepIdleWindowHeartRateSuppressedAfterDisconnect(
+                drainOwnedDisconnect: true,
+                receivedHistoryFrames: false,
+                verifiedEmptyHistoryCursor:
+                    AtriaWhoop4HistoryRangePointerPolicy
+                        .shouldReconcileStartFreshAfterVerifiedStrapZero(
+                            pendingRecords: 0,
+                            readCursor: 1,
+                            writeCursor: 1,
+                            consumeConsent: true
+                        )
+            ),
+            "consume-consented empty cursor is a completed drain; finish/reassert is allowed"
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldSkipIdleWindowHeartRateReassert(
+                idleWindowDrainOwnsLink: true
+            ),
+            "zero-frame drain still owns 2A37 until HISTORY_END; skip ordinary reassert"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSkipIdleWindowHeartRateReassert(
+                idleWindowDrainOwnsLink: false
+            )
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSkipIdleWindowHeartRateReassert(
+                idleWindowDrainOwnsLink: true,
+                verifiedEmptyHistoryCursor: true
+            ),
+            "soak 9 gen 23: verified empty 0x22 must reassert 2A37 even while the drain still owns the link"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldSkipIdleWindowHeartRateReassert(
+                idleWindowDrainOwnsLink: true,
+                verifiedEmptyHistoryCursor:
+                    AtriaWhoop4HistoryRangePointerPolicy
+                        .shouldReconcileStartFreshAfterVerifiedStrapZero(
+                            pendingRecords: 0,
+                            readCursor: 1,
+                            writeCursor: 1,
+                            consumeConsent: true
+                        )
+            ),
+            "pending=0 / read==write / consume consent must allow finish/reassert"
         )
         XCTAssertTrue(
             AtriaBLEManager.shouldPauseHeartRateForIdleWindowHistoryDrain(
@@ -4044,6 +5224,14 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
                 currentGenerationSpoolOpen: false
             )
         )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldWaitForIdleWindowHistoricalIngressReplay(
+                orphanReplayInFlight: true,
+                currentGenerationSpoolOpen: true,
+                consumeToNow: true
+            ),
+            "ACK-without-persist consume must not wait on orphan archive replay"
+        )
         XCTAssertTrue(
             AtriaBLEManager.shouldRestoreIdleWindowHeartRateWhenIngressReplayTimesOut(
                 idleWindowPausedHeartRate: true,
@@ -4134,6 +5322,19 @@ final class AtriaBLELiveContinuityPolicyTests: XCTestCase {
         XCTAssertFalse(
             AtriaBLEManager.shouldAbortIdleWindowPauseWhenUnsubscribeLost(
                 heartRateStillNotifying: false
+            )
+        )
+        XCTAssertTrue(
+            AtriaBLEManager.shouldRetryIdleWindowHeartRateUnsubscribe(
+                cccdErrorPresent: true,
+                heartRateStillNotifying: true
+            ),
+            "admit-probe 14:40: CCCD-off Unknown error left notifying=1"
+        )
+        XCTAssertFalse(
+            AtriaBLEManager.shouldRetryIdleWindowHeartRateUnsubscribe(
+                cccdErrorPresent: false,
+                heartRateStillNotifying: true
             )
         )
     }

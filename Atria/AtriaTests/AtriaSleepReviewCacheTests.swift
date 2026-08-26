@@ -952,8 +952,13 @@ final class AtriaSleepReviewCacheTests: XCTestCase {
                       "Failure feedback must not leak onto the next candidate")
         XCTAssertTrue(card.contains("night.source == \"resumed_sleep_candidate\""))
         XCTAssertTrue(card.contains("Possible resumed sleep"))
-        XCTAssertTrue(card.contains("Confirm to link with your earlier sleep. Awake time stays excluded."),
-                      "a resumed block must explain that confirmation creates one episode without crediting awake time")
+        // 2026-08-25: the copy was shortened because it cropped on device and
+        // its "Confirm to …" half only restated the Confirm button beneath it.
+        // Both load-bearing facts survive, which is what this assertion is for.
+        XCTAssertTrue(card.contains("Links to your earlier sleep"),
+                      "a resumed block must say confirmation creates one episode")
+        XCTAssertTrue(card.contains("awake time excluded"),
+                      "a resumed block must say awake time is not credited")
 
         let journalHostStart = try XCTUnwrap(source.range(of: "struct AtriaOverviewMorningJournalHost: View"))
         let journalCardEnd = try XCTUnwrap(source.range(of: "private struct AtriaJournalTodayTagStrip: View",

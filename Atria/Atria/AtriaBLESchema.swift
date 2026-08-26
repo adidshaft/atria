@@ -391,6 +391,23 @@ extension AtriaBLEManager {
         // the sync-progress footer can show "synced through …" without asking
         // BLE anything. Display-only — never a drain decision input.
         static let drainedThroughUnix = "atria.offlineSync.drainedThroughUnix.v1"
+        // Oldest-first persist-before-ACK cursor. Distinct from
+        // `drainedThroughUnix` (newest-ever display footer). WHOOP 4.0 has no
+        // seek; ACK'd pages climb this key even when their timestamps sit
+        // behind the display frontier. Slice `frontier_advance_s` is this
+        // cursor, not the display key (charging soak 2026-08-23: persisted>0
+        // with frontier_advance_s=0.000 on every slice).
+        static let historyDrainCursorUnix =
+            "atria.offlineSync.historyDrainCursorUnix.v1"
+        /// Last idle-window 0x22 taken before a confirmed ACK. The next
+        /// slice's 0x22 is the after-ACK snapshot (intra-slice 0x22 after
+        /// ACK does not get a WHOOP 4.0 command response).
+        static let idleWindowAckedRangeWriteCursor =
+            "atria.offlineSync.idleWindowAckedRange.writeCursor.v1"
+        static let idleWindowAckedRangeReadCursor =
+            "atria.offlineSync.idleWindowAckedRange.readCursor.v1"
+        static let idleWindowAckedRangePending =
+            "atria.offlineSync.idleWindowAckedRange.pending.v1"
         // Clean-slate durability (2026-08-22): the instant the user tapped
         // "Start fresh" to abandon an unrecoverable, un-drainable banked
         // backlog. Monotonic (only ever moves forward), per verified-history
@@ -507,6 +524,8 @@ extension AtriaBLEManager {
         static let setClock: UInt8 = 0x0A
         static let getClock: UInt8 = 0x0B
         static let abortHistoricalTransmits: UInt8 = 0x14
+        /// Official WHOOP 4 FORCE_TRIM / erase-device (payload FE×8 + 00).
+        static let forceTrim: UInt8 = 0x19
         static let getBatteryLevel: UInt8 = 0x1A
         static let sendHistoricalData: UInt8 = 0x16
         static let historicalDataResult: UInt8 = 0x17

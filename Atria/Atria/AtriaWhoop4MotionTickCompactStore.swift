@@ -491,6 +491,50 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
             .joined()
     }
 
+    /// Cheap stat-only probe: does the store hold enough rows in this window
+    /// to be worth reading?
+    ///
+    /// Callers used to short-circuit when the motion-bank coverage ledger was
+    /// empty (`detail=no_bank_coverage`). That ledger is a 512-entry FIFO, so
+    /// on 2026-08-25 it had already forgotten 08-22 and 08-23 entirely and
+    /// those days scored zero steps despite holding 88,973 and 53,246 decoded
+    /// rows. With row-derived coverage, "the ledger forgot" no longer means
+    /// "there is no evidence" — so ask the files instead. No decode, no
+    /// buffer: one `stat` per day bucket.
+    func hasStoredRows(
+        start: Date,
+        end: Date,
+        strapIdentifier: String,
+        minimumRows: Int = 2
+    ) -> Bool {
+        guard end > start,
+              !strapIdentifier.isEmpty,
+              UUID(uuidString: strapIdentifier) != nil else { return false }
+        let firstBucket = Self.bucket(for: start.timeIntervalSince1970)
+        let lastBucket = Self.bucket(for: end.timeIntervalSince1970)
+        guard firstBucket <= lastBucket else { return false }
+        let needed = UInt64(max(1, minimumRows) * Self.recordSize)
+        lock.lock()
+        defer { lock.unlock() }
+        for bucket in firstBucket...lastBucket {
+            let url = directoryURL.appendingPathComponent(
+                Self.filename(
+                    strapIdentifier: strapIdentifier,
+                    bucket: bucket
+                )
+            )
+            let attributes = try? fileManager.attributesOfItem(atPath: url.path)
+            // `read()` accepts only regular files; a directory at the bucket
+            // path would otherwise report a size and defeat this short-circuit.
+            guard attributes?[.type] as? FileAttributeType == .typeRegular else {
+                continue
+            }
+            let size = (attributes?[.size] as? NSNumber)?.uint64Value ?? 0
+            if size >= needed { return true }
+        }
+        return false
+    }
+
     /// Strict, fixed-width read for the latest physiological-night settlement.
     /// It never consults canonical JSONL, never repairs a shard, and never
     /// silently skips a malformed row. The complete source prefix is hashed,
@@ -1766,10 +1810,92 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
     /// wall timestamps, so one zero offset governs the whole candidate. A
     /// missing boundary remains incomplete: it is never authority to fall back
     /// to lifetime JSONL from a launch, scene, or BLE callback.
+    /// Counter-derived count for a confirmed walk the cadence model could not
+    /// resolve. Returns `.completeNoQualifiedEvidence` unless explicitly
+    /// enabled, so this is inert for every caller that has not proven the
+    /// window is a user-labelled walk.
+    ///
+    /// The scale is not invented: `evidence/2026-07-27-gate4-prearmed-walk`
+    /// counted 132 real steps against 155 ticks (155/132 = 1.17424), and the
+    /// independent held-out walk predicted 136 from 160 ticks at **0.0%
+    /// error**. That is the same constant `publishedSteps` already uses, and
+    /// it stays fail-closed: `publishedSteps` returns nil unless the frozen
+    /// validation still matches the current algorithm version.
+    private func counterFallbackWindowRead(
+        first: Point,
+        last: Point,
+        enabled: Bool
+    ) -> HistoricalArchive.MotionTickWindowRead {
+        guard enabled else { return .completeNoQualifiedEvidence }
+        let duration = last.timestamp - first.timestamp
+        guard duration > 0 else {
+            AtriaDebugLog(
+                "ATRIADBG walk_counter_fallback status=rejected reason=non_positive_duration"
+            )
+            return .completeNoQualifiedEvidence
+        }
+        let modulus = 65_536
+        let delta = last.tick >= first.tick
+            ? last.tick - first.tick
+            : last.tick + modulus - first.tick
+        // Same rate sanity gate the resolved path applies: a counter that
+        // moved faster than 12 ticks per second is a reset or a wrap, never a
+        // walk.
+        guard delta > 0, Double(delta) <= max(12, duration * 12) else {
+            AtriaDebugLog(
+                "ATRIADBG walk_counter_fallback status=rejected reason=rate_gate delta=%d duration_s=%.0f",
+                delta, duration
+            )
+            return .completeNoQualifiedEvidence
+        }
+        guard let steps = AtriaWhoop4MotionTickStepModel.publishedSteps(
+            motionTicks: delta,
+            validation: AtriaWhoop4MotionTickStepModel
+                .physicallyValidatedWhoop4V24
+        ), steps > 0 else {
+            AtriaDebugLog(
+                "ATRIADBG walk_counter_fallback status=rejected reason=published_steps_nil delta=%d",
+                delta
+            )
+            return .completeNoQualifiedEvidence
+        }
+        AtriaDebugLog(
+            "ATRIADBG walk_counter_fallback status=published delta=%d steps=%d duration_s=%.0f",
+            delta, steps, duration
+        )
+        return .qualified(
+            .init(
+                startTick: first.tick,
+                endTick: last.tick,
+                delta: delta,
+                steps: steps,
+                startCapturedAt: Date(timeIntervalSince1970: first.timestamp),
+                endCapturedAt: Date(timeIntervalSince1970: last.timestamp),
+                coverageFraction: 1,
+                decodedRows: 2
+            )
+        )
+    }
+
+    /// - Parameter allowCounterFallbackForConfirmedWalk: publish a
+    ///   counter-derived count when the cadence model cannot resolve one.
+    ///   DEFAULT OFF, and it must stay off for anything but a workout the user
+    ///   themselves labelled as walking.
+    ///
+    ///   Why the gate is not optional: `evidence/2026-07-27-gate4-arm-control-
+    ///   failure` is a physical run where the feet stayed planted and only the
+    ///   strap arm swung rhythmically. A tick-driven scorer published 166
+    ///   steps — a recorded FAIL. Tick RATE cannot separate that from walking
+    ///   (device 2026-08-24: walk 1.156 ticks/s vs a strength block 1.053
+    ///   ticks/s, 10% apart), and drained rows arrive at ~1.04 Hz, far below
+    ///   the ~1.7-2.2 Hz needed to recover cadence. The user's own workout
+    ///   label is therefore the only evidence available here that excludes the
+    ///   arm-control shape, so the fallback rides on it and nothing else.
     func motionTickWindowRead(
         start: Date,
         end: Date,
-        strapIdentifier: String
+        strapIdentifier: String,
+        allowCounterFallbackForConfirmedWalk: Bool = false
     ) -> HistoricalArchive.MotionTickWindowRead {
         precondition(!Thread.isMainThread)
         guard end > start,
@@ -1807,6 +1933,13 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
                 <= tolerance,
               (last.timestamp - first.timestamp)
                 / end.timeIntervalSince(start) >= 0.9 else {
+            if allowCounterFallbackForConfirmedWalk {
+                AtriaDebugLog(
+                    "ATRIADBG walk_counter_fallback status=unreached reason=window_guard rows=%d window_s=%.0f",
+                    points.count,
+                    end.timeIntervalSince(start)
+                )
+            }
             return .incomplete
         }
         let cadencePoints = points.map {
@@ -1833,7 +1966,18 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
                 ),
                 boundaryTolerance: tolerance
             ) else {
-            return .completeNoQualifiedEvidence
+            // The cadence model could not resolve a defensible cadence. On a
+            // confirmed walk that is expected rather than suspicious: drained
+            // rows sample at ~1.04 Hz (Nyquist 0.52 Hz) while walking runs at
+            // 1.7-2.2 Hz, so the alias simply is not recoverable. Publishing 0
+            // for a real 21-minute walk (device 2026-08-24: 1,457 counter
+            // ticks, model steps 0) is the wrong answer; the counter is right
+            // there and its scale is held-out validated.
+            return counterFallbackWindowRead(
+                first: first,
+                last: last,
+                enabled: allowCounterFallbackForConfirmedWalk
+            )
         }
         let modulus = 65_536
         let delta = selected.last.tick >= selected.first.tick
@@ -1866,34 +2010,61 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
     /// Projects only compact current-cycle points. It performs no canonical
     /// archive enumeration or JSON decoding and is safe on a utility queue
     /// during a locked/background BLE restoration lease.
+    /// - Parameter excludedIntervals: spans that must not contribute steps,
+    ///   i.e. workouts the user labelled as non-gait. See `subtracting(_:from:)`.
     func motionTickDayEvidenceRead(
         start: Date,
         end: Date,
         bankCoverage: [DateInterval],
         strapIdentifier: String,
-        allowOpenTail: Bool = false
+        allowOpenTail: Bool = false,
+        excludedIntervals: [DateInterval] = []
     ) -> HistoricalArchive.MotionTickDayEvidenceRead {
         precondition(!Thread.isMainThread)
-        guard end > start, !bankCoverage.isEmpty else { return .incomplete }
+        guard end > start else { return .incomplete }
         let window = DateInterval(start: start, end: end)
-        let intervals = Self.merge(bankCoverage.compactMap { interval in
+        let ledgerCoverage = Self.merge(bankCoverage.compactMap { interval in
             let clippedStart = max(interval.start, window.start)
             let clippedEnd = min(interval.end, window.end)
             return clippedEnd > clippedStart
                 ? DateInterval(start: clippedStart, end: clippedEnd)
                 : nil
         })
-        guard let firstInterval = intervals.first,
-              let lastInterval = intervals.last else {
-            return .incomplete
-        }
         let tolerance: TimeInterval = 3
+        // Read the whole requested window, not just the spans the live bank
+        // happened to be armed for.
+        //
+        // Device pull 2026-08-25: the bank ledger is a 512-entry FIFO whose
+        // median entry is 24s, so it retained only 9.77h of coverage in total
+        // (oldest 08-24 09:59). Days older than that scored ZERO steps even
+        // though the compact store still held complete ~1Hz rows for them
+        // (08-23: 53,246 rows -> 0 steps). On the current day the drain owns
+        // the link for hours (`sync_cutover`), which keeps the bank from
+        // arming, so the ledger covered 8% of the day and 24,701 rows
+        // collapsed to 145 ticks.
+        //
+        // Coverage is not what makes the count honest — the sequence
+        // reducer's per-pair gates are. It admits a pair only when the flash
+        // counter advanced by a plausible amount for the elapsed time, which
+        // is exactly the proof that the strap was recording across that pair.
+        // A row's existence with an advancing flash counter therefore IS
+        // coverage; the ledger is a weaker proxy for the same fact. Union the
+        // two so recovered rows count, and never drop credit the ledger
+        // already granted.
         let points = read(
-            start: firstInterval.start.addingTimeInterval(-tolerance),
-            end: lastInterval.end.addingTimeInterval(tolerance),
+            start: start.addingTimeInterval(-tolerance),
+            end: end.addingTimeInterval(tolerance),
             strapIdentifier: strapIdentifier
         )
         guard points.count >= 2 else { return .incomplete }
+        let intervals = Self.subtracting(
+            excludedIntervals,
+            from: Self.merge(
+                ledgerCoverage
+                    + Self.rowDerivedCoverage(points: points, window: window)
+            )
+        )
+        guard !intervals.isEmpty else { return .incomplete }
 
         return Self.motionTickDayEvidenceProjection(
             sortedPoints: points,
@@ -1903,6 +2074,157 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
             tolerance: tolerance,
             allowOpenTail: allowOpenTail
         ).read
+    }
+
+    /// Contiguous runs of stored rows, used as first-class coverage.
+    ///
+    /// `maximumGap` matches the cadence model's own
+    /// `maximumContinuousSampleGap` (3s) so a derived interval never claims
+    /// coverage across a hole the model would itself refuse to bridge —
+    /// `knownCoverageSeconds` stays as honest as it was before.
+    ///
+    /// `maximumRunSeconds` bounds each run because the cadence model runs a
+    /// NAIVE O(1.5·N²) DFT per run (`for bin in 1...(count / 2)` over all
+    /// `count` differences × 3 axes). Ledger fragments averaged ~24s, so this
+    /// never mattered; a drained day can hold a single 29,994-row continuous
+    /// run, which is ~2.5e9 operations — roughly two minutes of CPU on a path
+    /// re-driven every few seconds during a drain. Splitting at 90s keeps
+    /// total work at ~1.5·N·90 and matches the ~90s windows the physical
+    /// corpus was actually validated on.
+    ///
+    /// SAFETY: widening coverage cannot manufacture a step. Several
+    /// independent mechanisms hold that line, and none of them is coverage:
+    /// interval membership uses monotonic cursors, so no row is ever a member
+    /// of two intervals; `canonical()` dedupes by flash and fails closed on
+    /// any conflict; the sequence reducer admits a pair only when the flash
+    /// counter advanced proportionally to elapsed time; and the cadence model
+    /// applies its own fail-closed gates on top. Widening coverage only stops
+    /// us discarding rows we already decoded.
+    static func rowDerivedCoverage(
+        points: [Point],
+        window: DateInterval,
+        maximumGap: TimeInterval = 3
+    ) -> [DateInterval] {
+        guard maximumGap > 0, window.end > window.start else { return [] }
+        let stamps = points
+            .map(\.timestamp)
+            .filter(\.isFinite)
+            .sorted()
+        guard stamps.count >= 2 else { return [] }
+        var runs: [DateInterval] = []
+        var runStart = stamps[0]
+        var previous = stamps[0]
+        func closeRun() {
+            guard previous > runStart else { return }
+            let clippedStart = max(Date(timeIntervalSince1970: runStart),
+                                   window.start)
+            let clippedEnd = min(Date(timeIntervalSince1970: previous),
+                                 window.end)
+            if clippedEnd > clippedStart {
+                runs.append(DateInterval(start: clippedStart, end: clippedEnd))
+            }
+        }
+        for stamp in stamps.dropFirst() {
+            if stamp - previous > maximumGap {
+                closeRun()
+                runStart = stamp
+            }
+            previous = stamp
+        }
+        closeRun()
+        return merge(runs)
+    }
+
+    /// Remove non-gait spans (workouts the user labelled Strength, Cycling,
+    /// Yoga, …) from step coverage.
+    ///
+    /// The counter measures WRIST MOTION, so a 65-minute strength block adds
+    /// thousands of ticks that are not footfalls — on 2026-08-24 it was 5,232
+    /// of the day's 12,956, i.e. 40% of the raw total. This is also the exact
+    /// shape `evidence/2026-07-27-gate4-arm-control-failure` recorded as a
+    /// physical FAIL (planted feet, arm swinging, 166 published steps). The
+    /// user's own workout label is the only signal at 1 Hz that reliably
+    /// identifies it, so those spans are cut out of coverage entirely: they
+    /// contribute neither ticks nor known step-coverage seconds.
+    static func subtracting(
+        _ excluded: [DateInterval],
+        from intervals: [DateInterval]
+    ) -> [DateInterval] {
+        guard !excluded.isEmpty else { return intervals }
+        let cuts = merge(excluded)
+        var result: [DateInterval] = []
+        for interval in intervals {
+            var pieces = [interval]
+            for cut in cuts {
+                var next: [DateInterval] = []
+                for piece in pieces {
+                    if cut.end <= piece.start || cut.start >= piece.end {
+                        next.append(piece)
+                        continue
+                    }
+                    if cut.start > piece.start {
+                        next.append(DateInterval(start: piece.start,
+                                                 end: cut.start))
+                    }
+                    if cut.end < piece.end {
+                        next.append(DateInterval(start: cut.end,
+                                                 end: piece.end))
+                    }
+                }
+                pieces = next
+            }
+            result.append(contentsOf: pieces.filter { $0.duration > 0 })
+        }
+        return result
+    }
+
+    /// Split one interval's members into bounded cadence fragments.
+    ///
+    /// The cadence model runs a NAIVE `O(1.5·N²)` DFT per run (`for bin in
+    /// 1...(count / 2)` over all `count` differences × 3 axes). Ledger
+    /// fragments averaged ~24s so that never mattered; once stored rows count
+    /// as coverage a drained day yields intervals of many thousands of rows —
+    /// measured 29,994 on 2026-08-22, about 2.5e9 operations, roughly two
+    /// minutes of CPU on a path re-driven every few seconds during a drain.
+    ///
+    /// Chunking is done HERE, on the cadence input, and deliberately NOT on
+    /// the coverage intervals: the projection's ±3s boundary gate and the
+    /// `allowOpenTail` relaxation both key on interval edges, so splitting
+    /// intervals would silently hand partial credit to intervals the veto is
+    /// meant to reject. Fragments carry no such semantics —
+    /// `estimateCoveredActivityFragments` already splits them again on its own
+    /// 3s continuous-sample gap — so bounding them changes cost, not meaning.
+    /// 90s also matches the ~90s windows the physical corpus was validated on.
+    static func boundedCadenceFragments(
+        _ members: ArraySlice<Point>,
+        maximumRunSeconds: TimeInterval = 90
+    ) -> [ArraySlice<Point>] {
+        guard maximumRunSeconds > 0, members.count >= 2 else {
+            return members.isEmpty ? [] : [members]
+        }
+        guard let first = members.first,
+              let last = members.last,
+              last.timestamp - first.timestamp > maximumRunSeconds else {
+            return [members]
+        }
+        var chunks: [ArraySlice<Point>] = []
+        var chunkStartIndex = members.startIndex
+        var chunkStartStamp = first.timestamp
+        var index = members.startIndex
+        while index < members.endIndex {
+            let stamp = members[index].timestamp
+            if stamp - chunkStartStamp >= maximumRunSeconds,
+               index > chunkStartIndex {
+                chunks.append(members[chunkStartIndex..<index])
+                chunkStartIndex = index
+                chunkStartStamp = stamp
+            }
+            index = members.index(after: index)
+        }
+        if chunkStartIndex < members.endIndex {
+            chunks.append(members[chunkStartIndex..<members.endIndex])
+        }
+        return chunks
     }
 
     /// The compact reader returns points in `(timestamp, identity)` order and
@@ -2006,18 +2328,20 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
             ) else {
                 continue
             }
-            cadenceFragments.append(members.map {
-                CadencePoint(
-                    timestamp: $0.timestamp,
-                    flash: $0.flash,
-                    tick: $0.tick,
-                    gravityX: $0.gravityX,
-                    gravityY: $0.gravityY,
-                    gravityZ: $0.gravityZ,
-                    unknownMotionScalar32: $0.unknownMotionScalar32,
-                    identity: $0.identity
-                )
-            })
+            for chunk in boundedCadenceFragments(members) {
+                cadenceFragments.append(chunk.map {
+                    CadencePoint(
+                        timestamp: $0.timestamp,
+                        flash: $0.flash,
+                        tick: $0.tick,
+                        gravityX: $0.gravityX,
+                        gravityY: $0.gravityY,
+                        gravityZ: $0.gravityZ,
+                        unknownMotionScalar32: $0.unknownMotionScalar32,
+                        identity: $0.identity
+                    )
+                })
+            }
             totalTicks += reduced.ticks
             totalKnownDuration += reduced.knownDuration
             totalDecodedRows += reduced.admittedRows
@@ -2037,6 +2361,24 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
         }
         let estimate = AtriaWhoop4GravityCadenceStepModel
             .estimateCoveredActivityFragments(cadenceFragments)
+        // Counter lane. The cadence model is structurally blind to normal
+        // walking in drained history: rows arrive at ~1.04 Hz (Nyquist
+        // 0.52 Hz) while walking runs at 1.7-2.2 Hz, so a real 21-minute walk
+        // resolved to 0 steps on device (2026-08-24, 1,457 ticks). The strap's
+        // own counter does see it, and its scale is not a guess — the counted
+        // physical corpus measured 132 real steps against 155 ticks and then
+        // predicted a held-out 136-step walk from 160 ticks at 0.0% error.
+        //
+        // Safe as a DAILY total because the same corpus proved the counter is
+        // silent at rest ("preceding 60-second rest delta = 0 ticks"), so idle
+        // time cannot inflate it. Sustained non-gait arm work is the one shape
+        // that can, and those windows are removed from coverage before this
+        // point via `excludedIntervals`.
+        let counterSteps = AtriaWhoop4MotionTickStepModel.publishedSteps(
+            motionTicks: totalTicks,
+            validation: AtriaWhoop4MotionTickStepModel
+                .physicallyValidatedWhoop4V24
+        ) ?? 0
         let unresolved = estimate?.unresolvedMotionSeconds
             ?? totalKnownDuration
         let totalSeconds = max(
@@ -2058,7 +2400,10 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
                     windowStart: start,
                     windowEnd: end,
                     motionTicks: totalTicks,
-                    steps: estimate?.steps ?? 0,
+                    // Whichever lane saw more. Cadence wins when it can
+                    // actually resolve (dense live IMU); the counter carries
+                    // the day when 1 Hz history makes cadence unrecoverable.
+                    steps: max(estimate?.steps ?? 0, counterSteps),
                     knownCoverageSeconds: qualifiedSeconds,
                     missingCoverageSeconds: max(
                         0,
@@ -2123,13 +2468,19 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
         allowOpenTail: Bool = false
     ) -> MotionTickDayEvidenceInspectionResult {
         let window = DateInterval(start: start, end: end)
-        let intervals = merge(bankCoverage.compactMap { interval in
+        // Mirror production: ledger coverage unioned with the coverage the
+        // stored rows themselves prove.
+        let ledgerCoverage = merge(bankCoverage.compactMap { interval in
             let clippedStart = max(interval.start, window.start)
             let clippedEnd = min(interval.end, window.end)
             return clippedEnd > clippedStart
                 ? DateInterval(start: clippedStart, end: clippedEnd)
                 : nil
         })
+        let intervals = merge(
+            ledgerCoverage
+                + rowDerivedCoverage(points: sortedPoints, window: window)
+        )
         let projection = motionTickDayEvidenceProjection(
             sortedPoints: sortedPoints,
             start: start,

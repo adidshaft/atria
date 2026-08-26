@@ -67,6 +67,12 @@ struct AtriaExpandedChartView: View {
     /// Window noun ("week", "month", …) used only to word the compare delta's
     /// scope ("Month-over-month"). The comparison series is always priorPoints.
     var comparisonPeriodNoun: String = "period"
+    /// Form the chart opens in. Expanding a chart should show the SAME shape
+    /// the user just tapped — a once-a-day metric drawn as bars (a bar states
+    /// "this much, measured from zero") opened as a line, which read as a
+    /// different chart of different data. The user can still switch form from
+    /// "Edit this chart"; this only sets where it starts.
+    var defaultChartType: AtriaGraphChartType = .line
     let onDismiss: () -> Void
     private let prepared: AtriaExpandedChartPreparedModel
 
@@ -95,6 +101,7 @@ struct AtriaExpandedChartView: View {
          overlays: [(title: String, unit: String, tint: Color, points: [AtriaDetailChartPoint])] = [],
          xDomain: ClosedRange<Date>? = nil,
          comparisonPeriodNoun: String = "period",
+         defaultChartType: AtriaGraphChartType = .line,
          onDismiss: @escaping () -> Void) {
         self.title = title
         self.unit = unit
@@ -105,6 +112,8 @@ struct AtriaExpandedChartView: View {
         self.events = events
         self.overlays = overlays
         self.comparisonPeriodNoun = comparisonPeriodNoun
+        self.defaultChartType = defaultChartType
+        _chartType = State(initialValue: defaultChartType)
         self.onDismiss = onDismiss
         self.prepared = AtriaExpandedChartPreparedModel(points: points,
                                                         priorPoints: priorPoints,
@@ -380,7 +389,7 @@ struct AtriaExpandedChartView: View {
         .chartScrollableAxes(.horizontal)
         .chartXVisibleDomain(length: max(1, visibleDays) * 86_400)
         .chartXScale(domain: prepared.xDomain)
-        .chartYScale(domain: prepared.yDomain)
+        .chartYScale(domain: barAwareYDomain)
         .chartXAxis {
             AxisMarks(values: .automatic(desiredCount: 6)) { value in
                 AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
@@ -564,6 +573,23 @@ struct AtriaExpandedChartView: View {
     /// the current data (e.g. Range after the band went away).
     private var effectiveChartType: AtriaGraphChartType {
         chartTypeOptions.contains(chartType) ? chartType : .line
+    }
+
+    /// `prepared.yDomain` pads 12% around min…max, which is right for a line —
+    /// it shows a level in context. It is wrong for a bar, which draws from the
+    /// zero baseline: with the floor above zero the bar is clipped at the plot
+    /// edge (`atriaGraphPlotSurface` clips the plot area) and its rendered
+    /// height becomes proportional to `value − domainLower` rather than to
+    /// `value`. A sleep week of 5.5…8.0 h pads to 5.2…8.3, drawing a 1.45×
+    /// difference as roughly 9×.
+    ///
+    /// The two inline surfaces already anchor bars at zero for this reason —
+    /// `AtriaOverviewSections`' metric chart and `AtriaTrendChart.trendYDomain`.
+    /// This is the same rule at the third surface, which now opens in bar form
+    /// by default for once-a-day metrics.
+    private var barAwareYDomain: ClosedRange<Double> {
+        guard effectiveChartType == .bars else { return prepared.yDomain }
+        return 0...max(prepared.yDomain.upperBound, 1)
     }
 
     /// Which comparison modes have real data. Only the previous-period series

@@ -435,7 +435,10 @@ struct AtriaTodayScreen: View {
                                        validationState: liveStore.state.strapStepResearchState,
                                        presentation: liveStore.state.dailyStepPresentation,
                                        goal: stepsGoal)
-                .presentationDetents([.medium])
+                // The sheet carries a weekly chart plus its legend; a
+                // medium-only detent could not show them, so the chart was
+                // clipped and the sheet could not be dragged open.
+                .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showWeeklyReport) {
@@ -2497,6 +2500,35 @@ struct AtriaTodayScreen: View {
         ].joined(separator: "|")
     }
 
+    /// Recent daily readings for a metric's corner sparkline, oldest first.
+    ///
+    /// Reads the same rollup history every other daily surface uses, so the
+    /// chart can never disagree with the number above it. Days without a
+    /// reading are SKIPPED, never interpolated or zero-filled — a gap in the
+    /// record must not draw as a value. Fewer than
+    /// `AtriaGlanceSparkline.minimumPoints` real readings draws nothing at all.
+    private func glanceTrend(for metric: AtriaTodayMetric) -> [Double] {
+        let history = sessionProjectionStore.state.dailyRollupHistory
+            .sorted { $0.day < $1.day }
+            .suffix(7)
+        switch metric {
+        case .recovery:
+            return history.compactMap { $0.recovery.map(Double.init) }
+        case .sleep:
+            return history.compactMap { $0.sleepSeconds.map { $0 / 3_600 } }
+        case .strain, .strainCompare:
+            return history.compactMap(\.strain)
+        case .hrv:
+            return history.compactMap(\.lnRMSSD)
+        case .rhr, .trend:
+            return history.compactMap { $0.rhr.map(Double.init) }
+        case .sleepPerformance:
+            return history.compactMap { $0.sleepPerformance.map(Double.init) }
+        default:
+            return []
+        }
+    }
+
     private func glanceItem(for metric: AtriaTodayMetric) -> AtriaTodayGlanceItem? {
         switch metric {
         case .sleep:
@@ -2506,7 +2538,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(sleepMetric.detail),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .recovery:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2514,7 +2547,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(recoveryMetric.detail),
                                         systemImage: metric.systemImage,
                                         tint: recoveryMetric.tint,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .strain:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2522,7 +2556,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(strainMetric.detail),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricStrain,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .load:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2530,7 +2565,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(displayHero.loadReadinessText),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricStrain,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .hrZones:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2538,7 +2574,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(displayHero.hrZoneMinutes.detailText),
                                         systemImage: metric.systemImage,
                                         tint: .orange,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .workouts:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2546,7 +2583,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(latestConfirmedWorkoutOneLiner),
                                         systemImage: metric.systemImage,
                                         tint: .mint,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .strainCompare:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2555,7 +2593,8 @@ struct AtriaTodayScreen: View {
                                                              ? "Sparse HR" : strainCompareDetailText),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricStrain,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .hrv:
             return AtriaTodayGlanceItem(title: "Morning HRV",
                                         metricKey: metric.rawValue,
@@ -2563,7 +2602,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(displaySettledHRV.detail),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricHRV,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .stress:
             return AtriaTodayGlanceItem(title: displayHero.stressMetricTitle,
                                         metricKey: metric.rawValue,
@@ -2573,7 +2613,8 @@ struct AtriaTodayScreen: View {
                                         // Identity hue (2026-07-09): stress was electricStrain (cool blue),
                                         // reading as strain; electricStress (amber) matches its detail sheet.
                                         tint: Metrics.electricStress,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .sleepHistory:
             // Honest learning state: sleepConsistencyText is "--" until the
             // canonical engine's qualified-night minimum is met, so surface
@@ -2590,7 +2631,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(consistency == "--" ? "Needs \(AtriaSleepConsistency.minimumQualifiedNights) nights" : "Routine consistency"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .sleepEfficiency:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2609,7 +2651,8 @@ struct AtriaTodayScreen: View {
                                                     : "Needs motion data")),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .sleepPerformance:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2621,7 +2664,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail("of need"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricSleep,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .rhr:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2629,7 +2673,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(displaySettledRHR.detail),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricRHR,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .respiratoryRate:
             // Cross-tab consistency (2026-07-09): fall back to the latest recorded
             // night's respiratory rate — like the Vitals Health row — so a real value
@@ -2641,7 +2686,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(respiratory == nil ? "After a sleep" : "/min"),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricRespiratory,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .steps:
             return nil
         case .calories:
@@ -2663,7 +2709,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(vo2.value == nil ? vo2.detail : vo2.compactStatusText),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricGreen,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .bioAge:
             // Time-to-detect (2026-07-05): surface the calibration state
             // ("Calibrating 28-day baseline") while the fitness-age baseline is still
@@ -2680,7 +2727,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(bioAge.isReady ? "Estimate" : bioAge.compactStatusText),
                                         systemImage: metric.systemImage,
                                         tint: Metrics.electricGreen,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .bloodOxygen:
             // Decoder validation and hardware capability are separate facts. Do
             // not blame the strap when Atria has not validated its payload layout.
@@ -2692,7 +2740,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail("Decoder unavailable"),
                                         systemImage: metric.systemImage,
                                         tint: .secondary,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .bodyTemp:
             let skinTemp = sessionProjectionStore.state.skinTemperatureDeviationSummary
             let decoderAvailable = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
@@ -2708,7 +2757,8 @@ struct AtriaTodayScreen: View {
                                             : "Decoder unavailable"),
                                         systemImage: metric.systemImage,
                                         tint: .orange,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .trend:
             return AtriaTodayGlanceItem(title: metric.label,
                                         metricKey: metric.rawValue,
@@ -2716,7 +2766,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(displayRestingTrend.detail),
                                         systemImage: metric.systemImage,
                                         tint: layoutConfig.accent.color,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         case .insights:
             let insights = sessionProjectionStore.state.behaviorInsights
             return AtriaTodayGlanceItem(title: metric.label,
@@ -2725,7 +2776,8 @@ struct AtriaTodayScreen: View {
                                         detail: legendDetail(insights.first?.tagLabel ?? "Keep tagging"),
                                         systemImage: metric.systemImage,
                                         tint: layoutConfig.accent.color,
-                                        layoutSize: layoutSize(for: metric))
+                                        layoutSize: layoutSize(for: metric),
+                                        trend: glanceTrend(for: metric))
         }
     }
 
@@ -3493,6 +3545,70 @@ private struct AtriaTodaySleepSettlementRow: View {
     }
 }
 
+/// The tile's corner chart: a few thin bars, no axes, no labels.
+///
+/// Bars rather than a line because these are daily readings — one value per
+/// day, which is what a bar states. Each bar is drawn from the series' own
+/// floor rather than from zero, so a resting-heart-rate range of 54–58 stays
+/// legible instead of collapsing into four identical full-height stubs; that
+/// is the opposite of the rule for a full-size chart, where a bar must be
+/// zero-anchored to keep its magnitude honest. This is a shape cue at 34×16
+/// points with no axis to read a magnitude off, so it is scaled for shape and
+/// deliberately carries no numbers.
+///
+/// The most recent bar keeps full tint; the rest recede, so the eye lands on
+/// "now" and reads backwards.
+struct AtriaGlanceSparkline: View {
+    let values: [Double]
+    let tint: Color
+
+    /// Below this there is no shape to show, only noise.
+    static let minimumPoints = 3
+    static let maximumBars = 7
+
+    /// Bar height as a fraction of the chart's height, for one value against
+    /// the series' own range.
+    ///
+    /// Extracted so the maths is testable without rendering: a corner chart is
+    /// the kind of thing that silently draws nothing, draws upside down, or
+    /// divides by zero on a flat series, and none of that shows up in a green
+    /// build. Every bar keeps a visible floor so a series minimum still reads
+    /// as a bar rather than disappearing.
+    static func barFraction(value: Double, low: Double, high: Double) -> Double {
+        let span = high - low
+        // A flat series has no shape. Draw an even, low row rather than
+        // dividing by zero or implying a rise that is not in the data.
+        guard span > 0 else { return 0.28 + 0.72 * 0.35 }
+        let normalized = min(max((value - low) / span, 0), 1)
+        return 0.28 + 0.72 * normalized
+    }
+
+    var body: some View {
+        let series = Array(values.suffix(Self.maximumBars))
+        let low = series.min() ?? 0
+        let high = series.max() ?? 0
+
+        GeometryReader { geo in
+            let count = max(series.count, 1)
+            let slot = geo.size.width / CGFloat(count)
+            let barWidth = max(1.5, slot * 0.55)
+            HStack(alignment: .bottom, spacing: max(1, slot - barWidth)) {
+                ForEach(Array(series.enumerated()), id: \.offset) { index, value in
+                    let height = max(2, geo.size.height * Self.barFraction(
+                        value: value, low: low, high: high
+                    ))
+                    Capsule(style: .continuous)
+                        .fill(tint.opacity(index == series.count - 1 ? 0.95 : 0.34))
+                        .frame(width: barWidth, height: height)
+                }
+            }
+            .frame(width: geo.size.width, height: geo.size.height, alignment: .bottomTrailing)
+        }
+        .frame(width: 34, height: 16)
+        .accessibilityHidden(true)
+    }
+}
+
 private struct AtriaTodayGlanceItem: Identifiable, Equatable {
     enum LayoutSize: String, Equatable {
         case compact
@@ -3506,12 +3622,14 @@ private struct AtriaTodayGlanceItem: Identifiable, Equatable {
             }
         }
 
-        var minHeight: CGFloat {
-            switch self {
-            case .wide: return 94
-            case .compact, .wideShort: return 74
-            }
-        }
+        /// One height for every tile in the grid.
+        ///
+        /// These used to differ (94 / 74), so a row of tall tiles sat beside a
+        /// row of short ones and the grid read as ragged rather than as a set.
+        /// The value is the tallest arrangement a tile can hold — icon, value,
+        /// label and a two-line detail — so nothing clips and every card is the
+        /// same size regardless of how much its own detail line says.
+        var minHeight: CGFloat { 100 }
     }
 
     let title: String
@@ -3521,6 +3639,12 @@ private struct AtriaTodayGlanceItem: Identifiable, Equatable {
     let systemImage: String
     let tint: Color
     let layoutSize: LayoutSize
+    /// Recent daily readings, oldest first, for the tile's corner sparkline.
+    /// Defaults to empty so the ~20 `glanceItem(for:)` construction sites that
+    /// have no series to offer stay untouched and simply draw no chart — a
+    /// metric without history must show nothing rather than a flat invented
+    /// line.
+    var trend: [Double] = []
 
     var id: String { metricKey }
 
@@ -4069,10 +4193,16 @@ private struct AtriaTodayGlanceTile: View, Equatable {
         // .semibold and recedes. Tile height stays put -- the stack gap tightens
         // from an off-scale 7 to Spacing.xs, paying for the larger number.
         VStack(alignment: .leading, spacing: AtriaDesignTokens.Spacing.xs) {
-            Image(systemName: item.systemImage)
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(item.tint)
-                .frame(width: 24, height: 24)
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: item.systemImage)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(item.tint)
+                    .frame(width: 24, height: 24)
+                Spacer(minLength: 0)
+                if item.trend.count >= AtriaGlanceSparkline.minimumPoints {
+                    AtriaGlanceSparkline(values: item.trend, tint: item.tint)
+                }
+            }
             // Emphasis follows whichever line actually carries information. Once
             // there is a reading that is the value. Before there is one, every
             // tile's value collapses to the same placeholder word, so a default
@@ -4104,14 +4234,23 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                     .lineLimit(1)
             }
             if !item.detail.isEmpty && item.layoutSize != .wideShort {
+                // Two lines, not one. The stress tile's honest detail —
+                // "Calm · HR-only estimate · lower confidence" — does not fit a
+                // single compact line and was cropping mid-word to
+                // "…lower con…", which reads as a rendering bug and hides the
+                // confidence qualifier that makes the reading honest. Every
+                // tile is now a fixed height sized for two lines, so wrapping
+                // costs no layout.
                 Text(item.detail)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(2)
                     .minimumScaleFactor(0.72)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, minHeight: item.layoutSize.minHeight, alignment: .leading)
+        .frame(maxWidth: .infinity, minHeight: item.layoutSize.minHeight, alignment: .topLeading)
         .padding(AtriaDesignTokens.Spacing.md)
         // Consistency (2026-07-05): route the glance tile's corner radius through the
         // shared chip token instead of a hardcoded 8, so the deck's dominant card
