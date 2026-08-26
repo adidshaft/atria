@@ -2621,55 +2621,6 @@ private struct AtriaResearchManeuverMarkerCard: View, Equatable {
 @MainActor
 
 
-private struct AtriaCollectionCoexistenceWarning: View, Equatable {
-    let risk: AtriaBLEManager.OfficialAppCoexistenceRisk
-    let officialAppInstalled: Bool
-
-    private var title: String {
-        if risk == .suspected {
-            return officialAppInstalled ? "App conflict" : "Connection keeps dropping"
-        }
-        return "Strap check"
-    }
-
-    private var detail: String {
-        switch risk {
-        case .suspected where officialAppInstalled:
-            return "Remove the official strap app, then reconnect."
-        case .suspected:
-            return "Forget the strap in Bluetooth, then reconnect."
-        case .advisory:
-            return "Remove the official strap app if drops return."
-        case .cleared:
-            return "Atria has the strap."
-        }
-    }
-
-    private var tint: Color {
-        risk == .suspected ? .red : .orange
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(tint)
-                .frame(width: 30, height: 30)
-                .background(AtriaIconTileBackground(cornerRadius: 10, tint: tint))
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(12)
-        .atriaInsetCard(tint: tint)
-    }
-}
 
 private struct AtriaCollectionProfilePicker: View, Equatable {
     let selected: AtriaBLEManager.CollectionProfile

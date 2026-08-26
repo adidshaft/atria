@@ -297,8 +297,12 @@ enum Metrics {
 
         var valueText: String {
             guard let value else { return AtriaCompactMetricPresentation.noValue }
-            let numeric = String(format: "%.1f", value)
-            return quality == .partial ? "≥ \(numeric)" : numeric
+            // The "≥" lower-bound marker was removed 2026-08-27 at the owner's
+            // request, matching the decision already made for steps. Partialness
+            // is still stated in words: `coverageText` below prints
+            // "Partial · N% tracked", and `quality`/`confidence` remain the
+            // machine-readable truth for every consumer.
+            return String(format: "%.1f", value)
         }
 
         var coverageText: String? {

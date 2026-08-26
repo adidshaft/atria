@@ -123,197 +123,6 @@ extension EnvironmentValues {
     }
 }
 
-struct AtriaOverviewTabContent: View {
-    let statusStore: AtriaHomeModel.StatusStore
-    @StateObject private var connectionProjection: AtriaOverviewConnectionProjectionStore
-    let liveStore: AtriaHomeModel.CoreLiveStore
-    let pulseStore: AtriaHomeModel.HeroPulseStore
-    let heroStore: AtriaHomeModel.HeroStore
-    let homeStatsStore: AtriaHomeModel.HomeStatsStore
-    let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
-    let snapshotStore: AtriaHomeModel.SnapshotStore
-    let store: SessionStore
-    let hasUnlockedSecondarySections: Bool
-    let aiCoachSettings: AtriaAICoachSettings
-    let aiCoachHasAPIKey: Bool
-    let hapticSettings: AtriaHapticAlertSettings
-    let horizontalSizeClass: UserInterfaceSizeClass?
-    let connectionContext: AtriaConnectionGuideContext
-    let debugShowsSegmentContent: Bool
-    let suppressSleepSyncPrompt: Bool
-    let onAICoachSettingsChange: (AtriaAICoachSettings) -> Void
-    let onSaveAICoachAPIKey: (String) -> Void
-    let onDeleteAICoachAPIKey: () -> Void
-    let onShowConnectionGuide: () -> Void
-    let onOpenVitals: () -> Void
-    let onOpenCollection: () -> Void
-    let onStartWorkout: () -> Void
-
-    init(statusStore: AtriaHomeModel.StatusStore,
-         liveStore: AtriaHomeModel.CoreLiveStore,
-         pulseStore: AtriaHomeModel.HeroPulseStore,
-         heroStore: AtriaHomeModel.HeroStore,
-         homeStatsStore: AtriaHomeModel.HomeStatsStore,
-         profileMetricsStore: AtriaHomeModel.ProfileMetricsStore,
-         snapshotStore: AtriaHomeModel.SnapshotStore,
-         store: SessionStore,
-         hasUnlockedSecondarySections: Bool,
-         aiCoachSettings: AtriaAICoachSettings,
-         aiCoachHasAPIKey: Bool,
-         hapticSettings: AtriaHapticAlertSettings,
-         horizontalSizeClass: UserInterfaceSizeClass?,
-         connectionContext: AtriaConnectionGuideContext,
-         debugShowsSegmentContent: Bool = false,
-         suppressSleepSyncPrompt: Bool = false,
-         initialSegment: AtriaLegacyOverviewDestination = .today,
-         onAICoachSettingsChange: @escaping (AtriaAICoachSettings) -> Void,
-         onSaveAICoachAPIKey: @escaping (String) -> Void,
-         onDeleteAICoachAPIKey: @escaping () -> Void,
-         onShowConnectionGuide: @escaping () -> Void,
-         onOpenVitals: @escaping () -> Void,
-         onOpenCollection: @escaping () -> Void,
-         onStartWorkout: @escaping () -> Void) {
-        self.statusStore = statusStore
-        _connectionProjection = StateObject(wrappedValue: AtriaOverviewConnectionProjectionStore(store: statusStore))
-        self.liveStore = liveStore
-        self.pulseStore = pulseStore
-        self.heroStore = heroStore
-        self.homeStatsStore = homeStatsStore
-        self.profileMetricsStore = profileMetricsStore
-        self.snapshotStore = snapshotStore
-        self.store = store
-        self.hasUnlockedSecondarySections = hasUnlockedSecondarySections
-        self.aiCoachSettings = aiCoachSettings
-        self.aiCoachHasAPIKey = aiCoachHasAPIKey
-        self.hapticSettings = hapticSettings
-        self.horizontalSizeClass = horizontalSizeClass
-        self.connectionContext = connectionContext
-        self.debugShowsSegmentContent = debugShowsSegmentContent
-        self.suppressSleepSyncPrompt = suppressSleepSyncPrompt
-        _ = initialSegment
-        self.onAICoachSettingsChange = onAICoachSettingsChange
-        self.onSaveAICoachAPIKey = onSaveAICoachAPIKey
-        self.onDeleteAICoachAPIKey = onDeleteAICoachAPIKey
-        self.onShowConnectionGuide = onShowConnectionGuide
-        self.onOpenVitals = onOpenVitals
-        self.onOpenCollection = onOpenCollection
-        self.onStartWorkout = onStartWorkout
-    }
-
-    private func openTrendsEntryPoint() {
-        guard hasUnlockedSecondarySections else { return }
-        onOpenVitals()
-    }
-
-    var body: some View {
-        Group {
-            if connectionProjection.status != .connected && !debugShowsSegmentContent {
-                if hasUnlockedSecondarySections {
-                    AtriaDisconnectedOverviewHost(statusStore: statusStore,
-                                                 liveStore: liveStore,
-                                                 pulseStore: pulseStore,
-                                                 heroStore: heroStore,
-                                                 homeStatsStore: homeStatsStore,
-                                                 profileMetricsStore: profileMetricsStore,
-                                                 snapshotStore: snapshotStore,
-                                                 store: store,
-                                                 context: connectionContext,
-                                                 onShowConnectionGuide: onShowConnectionGuide,
-                                                 onOpenVitals: onOpenVitals,
-                                                 onOpenCollection: onOpenCollection)
-                } else {
-                    AtriaLoadingPanel(title: "Preparing saved insights",
-                                      subtitle: "Trends, backup, and data summaries join after the first live dashboard settles.")
-                }
-            } else if !hasUnlockedSecondarySections {
-                LazyVStack(spacing: 18) {
-                    AtriaOverviewLeadingHost(liveStore: liveStore,
-                                             pulseStore: pulseStore,
-                                             heroStore: heroStore,
-                                             homeStatsStore: homeStatsStore,
-                                             profileMetricsStore: profileMetricsStore,
-                                             snapshotStore: snapshotStore,
-                                             store: store,
-                                             hasUnlockedSecondarySections: false,
-                                             aiCoachSettings: aiCoachSettings,
-                                             aiCoachHasAPIKey: aiCoachHasAPIKey,
-                                             hapticSettings: hapticSettings,
-                                             suppressSleepSyncPrompt: suppressSleepSyncPrompt,
-                                             onAICoachSettingsChange: onAICoachSettingsChange,
-                                             onSaveAICoachAPIKey: onSaveAICoachAPIKey,
-                                             onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
-                                             onOpenVitals: onOpenVitals,
-                                             onOpenCollection: onOpenCollection,
-                                             onOpenInsights: openTrendsEntryPoint,
-                                             onStartWorkout: onStartWorkout)
-                    AtriaLoadingPanel(title: "Preparing saved insights",
-                                      subtitle: "Trends, backup, and data summaries join after the first live dashboard settles.")
-                }
-            } else if horizontalSizeClass == .regular {
-                HStack(alignment: .top, spacing: 18) {
-                    LazyVStack(spacing: 18) {
-                        AtriaOverviewLeadingHost(liveStore: liveStore,
-                                                 pulseStore: pulseStore,
-                                                 heroStore: heroStore,
-                                                 homeStatsStore: homeStatsStore,
-                                                 profileMetricsStore: profileMetricsStore,
-                                                 snapshotStore: snapshotStore,
-                                                 store: store,
-                                                 hasUnlockedSecondarySections: hasUnlockedSecondarySections,
-                                                 aiCoachSettings: aiCoachSettings,
-                                                 aiCoachHasAPIKey: aiCoachHasAPIKey,
-                                                 hapticSettings: hapticSettings,
-                                                 suppressSleepSyncPrompt: suppressSleepSyncPrompt,
-                                                 onAICoachSettingsChange: onAICoachSettingsChange,
-                                                 onSaveAICoachAPIKey: onSaveAICoachAPIKey,
-                                                 onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
-                                                 onOpenVitals: onOpenVitals,
-                                                 onOpenCollection: onOpenCollection,
-                                                 onOpenInsights: openTrendsEntryPoint,
-                                                 onStartWorkout: onStartWorkout)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .top)
-
-                    LazyVStack(spacing: 18) {
-                        AtriaOverviewTrailingHost(liveStore: liveStore,
-                                                  homeStatsStore: homeStatsStore,
-                                                  snapshotStore: snapshotStore,
-                                                  hasUnlockedSecondarySections: hasUnlockedSecondarySections,
-                                                  onOpenCollection: onOpenCollection)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .top)
-                }
-            } else {
-                LazyVStack(spacing: 18) {
-                    AtriaOverviewLeadingHost(liveStore: liveStore,
-                                             pulseStore: pulseStore,
-                                             heroStore: heroStore,
-                                             homeStatsStore: homeStatsStore,
-                                             profileMetricsStore: profileMetricsStore,
-                                             snapshotStore: snapshotStore,
-                                             store: store,
-                                             hasUnlockedSecondarySections: hasUnlockedSecondarySections,
-                                             aiCoachSettings: aiCoachSettings,
-                                             aiCoachHasAPIKey: aiCoachHasAPIKey,
-                                             hapticSettings: hapticSettings,
-                                             suppressSleepSyncPrompt: suppressSleepSyncPrompt,
-                                             onAICoachSettingsChange: onAICoachSettingsChange,
-                                             onSaveAICoachAPIKey: onSaveAICoachAPIKey,
-                                             onDeleteAICoachAPIKey: onDeleteAICoachAPIKey,
-                                             onOpenVitals: onOpenVitals,
-                                             onOpenCollection: onOpenCollection,
-                                             onOpenInsights: openTrendsEntryPoint,
-                                             onStartWorkout: onStartWorkout)
-                    AtriaOverviewTrailingHost(liveStore: liveStore,
-                                              homeStatsStore: homeStatsStore,
-                                              snapshotStore: snapshotStore,
-                                              hasUnlockedSecondarySections: hasUnlockedSecondarySections,
-                                              onOpenCollection: onOpenCollection)
-                }
-            }
-        }
-    }
-}
 
 @MainActor
 final class AtriaOverviewConnectionProjectionStore: ObservableObject {
@@ -343,178 +152,10 @@ final class AtriaOverviewConnectionProjectionStore: ObservableObject {
     }
 }
 
-private struct AtriaDisconnectedOverviewHost: View {
-    let statusStore: AtriaHomeModel.StatusStore
-    let liveStore: AtriaHomeModel.CoreLiveStore
-    let pulseStore: AtriaHomeModel.HeroPulseStore
-    let heroStore: AtriaHomeModel.HeroStore
-    let homeStatsStore: AtriaHomeModel.HomeStatsStore
-    let profileMetricsStore: AtriaHomeModel.ProfileMetricsStore
-    let snapshotStore: AtriaHomeModel.SnapshotStore
-    let store: SessionStore
-    @StateObject private var projectionStore: AtriaDisconnectedOverviewProjectionStore
-    let context: AtriaConnectionGuideContext
-    let onShowConnectionGuide: () -> Void
-    let onOpenVitals: () -> Void
-    let onOpenCollection: () -> Void
 
-    init(statusStore: AtriaHomeModel.StatusStore,
-         liveStore: AtriaHomeModel.CoreLiveStore,
-         pulseStore: AtriaHomeModel.HeroPulseStore,
-         heroStore: AtriaHomeModel.HeroStore,
-         homeStatsStore: AtriaHomeModel.HomeStatsStore,
-         profileMetricsStore: AtriaHomeModel.ProfileMetricsStore,
-         snapshotStore: AtriaHomeModel.SnapshotStore,
-         store: SessionStore,
-         context: AtriaConnectionGuideContext,
-         onShowConnectionGuide: @escaping () -> Void,
-         onOpenVitals: @escaping () -> Void,
-         onOpenCollection: @escaping () -> Void) {
-        self.statusStore = statusStore
-        self.liveStore = liveStore
-        self.pulseStore = pulseStore
-        self.heroStore = heroStore
-        self.homeStatsStore = homeStatsStore
-        self.profileMetricsStore = profileMetricsStore
-        self.snapshotStore = snapshotStore
-        self.store = store
-        _projectionStore = StateObject(wrappedValue: AtriaDisconnectedOverviewProjectionStore(store: store))
-        self.context = context
-        self.onShowConnectionGuide = onShowConnectionGuide
-        self.onOpenVitals = onOpenVitals
-        self.onOpenCollection = onOpenCollection
-    }
-
-    #if DEBUG
-    private var debugShowsEmptyStoreCalibrating: Bool {
-        guard let fixtureIndex = ProcessInfo.processInfo.arguments.firstIndex(of: "--atria-ui-fixture") else {
-            return false
-        }
-        let valueIndex = ProcessInfo.processInfo.arguments.index(after: fixtureIndex)
-        return ProcessInfo.processInfo.arguments.indices.contains(valueIndex)
-            && ProcessInfo.processInfo.arguments[valueIndex] == "empty-store-calibrating"
-    }
-    #else
-    private var debugShowsEmptyStoreCalibrating: Bool { false }
-    #endif
-
-    var body: some View {
-        let projection = projectionStore.state
-        VStack(spacing: 18) {
-            if !projection.hasSavedData && !debugShowsEmptyStoreCalibrating {
-                // Brand-new: the user has no saved data yet, so lead with the
-                // one-time setup guidance.
-                AtriaDisconnectedFirstTimePanelHost(statusStore: statusStore,
-                                                    liveStore: liveStore,
-                                                    homeStatsStore: homeStatsStore,
-                                                    snapshotStore: snapshotStore,
-                                                    context: context,
-                                                    onShowConnectionGuide: onShowConnectionGuide,
-                                                    onOpenVitals: onOpenVitals,
-                                                    onOpenCollection: onOpenCollection)
-            } else {
-                // Returning user: their saved rings are the content. Reconnect
-                // status is already the toolbar chip + the slim banner above, so
-                // no second "Waiting for your strap" panel here.
-                AtriaOverviewGuidanceSectionHost(heroStore: heroStore,
-                                                store: store)
-
-                AtriaOverviewReadinessSectionHost(liveStore: liveStore,
-                                                 pulseStore: pulseStore,
-                                                 heroStore: heroStore,
-                                                 profileMetricsStore: profileMetricsStore,
-                                                 snapshotStore: snapshotStore,
-                                                 store: store,
-                                                 subtitle: debugShowsEmptyStoreCalibrating ? "First nights calibrating" : "Last saved readiness")
-
-                // Trends are local history — show them even while the strap is away.
-                if projection.hasTrendHistory {
-                    AtriaOverviewTrendChartHost(store: store)
-                }
-            }
-        }
-    }
-}
-
-struct AtriaDisconnectedOverviewProjectionState: Equatable {
-    let hasSavedData: Bool
-    let hasTrendHistory: Bool
-}
 
 @MainActor
-final class AtriaDisconnectedOverviewProjectionStore: ObservableObject {
-    @Published private(set) var state: AtriaDisconnectedOverviewProjectionState
 
-    private var cancellables = Set<AnyCancellable>()
-
-    init(store: SessionStore) {
-        state = Self.makeState(store: store)
-        bind(to: store)
-    }
-
-    init(state: AtriaDisconnectedOverviewProjectionState) {
-        self.state = state
-    }
-
-    @discardableResult
-    func refresh(_ next: AtriaDisconnectedOverviewProjectionState) -> Bool {
-        guard next != state else { return false }
-        state = next
-        return true
-    }
-
-    private func bind(to store: SessionStore) {
-        Publishers.CombineLatest(store.$sessions, store.$overviewTrendPoints)
-            .dropFirst()
-            .map { sessions, points in
-                AtriaDisconnectedOverviewProjectionState(
-                    hasSavedData: !sessions.isEmpty,
-                    hasTrendHistory: AtriaOverviewTrendPresentation.showsContent(
-                        cachedPointCount: points.count,
-                        debugShowsTrendFixture: false
-                    )
-                )
-            }
-            .removeDuplicates()
-            .sink { [weak self] state in
-                self?.refresh(state)
-            }
-            .store(in: &cancellables)
-    }
-
-    private static func makeState(store: SessionStore) -> AtriaDisconnectedOverviewProjectionState {
-        AtriaDisconnectedOverviewProjectionState(
-            hasSavedData: !store.sessions.isEmpty,
-            hasTrendHistory: AtriaOverviewTrendPresentation.showsContent(
-                cachedPointCount: store.overviewTrendPoints.count,
-                debugShowsTrendFixture: false
-            )
-        )
-    }
-}
-
-private struct AtriaDisconnectedFirstTimePanelHost: View {
-    @ObservedObject var statusStore: AtriaHomeModel.StatusStore
-    @ObservedObject var liveStore: AtriaHomeModel.CoreLiveStore
-    @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore
-    @ObservedObject var snapshotStore: AtriaHomeModel.SnapshotStore
-    let context: AtriaConnectionGuideContext
-    let onShowConnectionGuide: () -> Void
-    let onOpenVitals: () -> Void
-    let onOpenCollection: () -> Void
-
-    var body: some View {
-        AtriaDisconnectedOverviewPanel(status: statusStore.state.status,
-                                       livePulseOverride: liveStore.state.hasRecentHeartRateSample,
-                                       stats: homeStatsStore.state,
-                                       snapshot: snapshotStore.state,
-                                       context: context,
-                                       onShowConnectionGuide: onShowConnectionGuide,
-                                       onOpenVitals: onOpenVitals,
-                                       onOpenCollection: onOpenCollection)
-            .equatable()
-    }
-}
 
 private struct AtriaDisconnectedOverviewPanel: View, Equatable {
     let status: AtriaBLEManager.Status
@@ -720,21 +361,6 @@ private struct AtriaOverviewLeadingHost: View {
     }
 }
 
-private struct AtriaOverviewTrailingHost: View {
-    let liveStore: AtriaHomeModel.CoreLiveStore
-    let homeStatsStore: AtriaHomeModel.HomeStatsStore
-    let snapshotStore: AtriaHomeModel.SnapshotStore
-    let hasUnlockedSecondarySections: Bool
-    let onOpenCollection: () -> Void
-
-    var body: some View {
-        AtriaOverviewTrailingSection(liveStore: liveStore,
-                                     homeStatsStore: homeStatsStore,
-                                     snapshotStore: snapshotStore,
-                                     hasUnlockedSecondarySections: hasUnlockedSecondarySections,
-                                     onOpenCollection: onOpenCollection)
-    }
-}
 
 /// Surfaces a real, auto-detected sleep/nap candidate awaiting confirmation as a
 /// calm review prompt on the home screen. Shows nothing when there is no pending
@@ -4615,8 +4241,14 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var strainIsPartial: Bool {
+        // The "≥" lower-bound marker was removed from strain 2026-08-27, at the
+        // owner's request and matching the same decision already made for steps.
+        // Partialness is still stated — `coverageText` prints "Partial · N%
+        // tracked" and the confidence string carries "partial" — so the honesty
+        // lives in words beside the number instead of a symbol glued to it.
+        // Partialness is read from the confidence string, which was always the
+        // real signal; the prefix check was a second, weaker copy of it.
         hero.strainConfidence.localizedCaseInsensitiveContains("partial")
-            || hero.strainValue.hasPrefix("≥")
     }
 
     private var overviewStrainLimitation:
@@ -10240,8 +9872,13 @@ struct AtriaMetricDetailSheet: View {
             // Latest/Avg/Change the metricChart's summary strip already shows
             // (plus a secondary this-vs-prior seesaw), producing two stacked
             // summary cards ("box inside box") before the chart. One canonical
-            // summary now lives in metricChart. The RangeLensCard struct is kept
-            // as uncalled scaffolding so its gate pins/reuse stay intact.
+            // summary now lives in metricChart.
+            //
+            // The struct itself was then "kept as uncalled scaffolding so its
+            // gate pins stay intact" — i.e. dead code retained to keep tests
+            // passing. Removed 2026-08-27, and the test that depended on it now
+            // asserts the RULE (no surface claims circadian rhythm) across the
+            // whole file instead of scanning inside one unreachable card.
             content()
         }
     }
@@ -10351,8 +9988,10 @@ struct AtriaMetricDetailSheet: View {
         guard let strainHeroRawValue else {
             return AtriaCompactMetricPresentation.noValue
         }
-        let value = AtriaDetailPeriodSummary.valueText(strainHeroRawValue, unit: "")
-        return dayStrainMetricsIncomplete ? "≥ \(value)" : value
+        // No "≥" prefix (2026-08-27): incompleteness is disclosed beside the
+        // number, not welded onto it. `dayStrainMetricsIncomplete` still drives
+        // that disclosure.
+        return AtriaDetailPeriodSummary.valueText(strainHeroRawValue, unit: "")
     }
 
     private var dayStrainMetricsIncomplete: Bool {
@@ -13121,198 +12760,6 @@ private enum AtriaDetailPeriodChangeDirection: Sendable {
     }
 }
 
-private struct AtriaDetailRangeLensCard: View, Equatable {
-    let range: AtriaTrendRange
-    let summary: AtriaDetailPeriodSummary
-    let comparison: AtriaDetailComparisonSummary?
-    let tint: Color
-    let sleepGoalHours: Double
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Label("Trend snapshot", systemImage: "scope")
-                    .font(.caption.weight(.bold))
-                Spacer(minLength: 8)
-                Text(range.menuLabel)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(Color.white.opacity(0.08), in: Capsule())
-            }
-
-            HStack(spacing: 8) {
-                lensStat(title: "Latest", value: summary.latestText, prominent: true)
-                lensStat(title: "Avg", value: summary.averageText, prominent: false)
-                lensStat(title: "Change", value: summary.changeText, prominent: false)
-            }
-
-            if let comparison {
-                comparisonRail(comparison)
-                AtriaDetailComparisonSeesaw(comparison: comparison,
-                                            tint: tint)
-            } else {
-                Text("Prior window fills in with more saved days.")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-            }
-
-            if summary.unit == "h" {
-                sleepDurationVsTarget
-            }
-        }
-        .padding(12)
-        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(tint.opacity(0.14), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Trend snapshot \(range.menuLabel). Latest \(summary.latestText), average \(summary.averageText), change \(summary.changeText).")
-    }
-
-    private var sleepDurationVsTarget: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Label("Sleep duration vs target", systemImage: "moon.zzz.fill")
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(tint)
-                Spacer(minLength: 8)
-                Text(sleepRangeCue)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(tint)
-            }
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                let goalX = width * sleepGoalPosition
-                let latestX = width * sleepLatestPosition
-                ZStack(alignment: .leading) {
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.11))
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.62))
-                        .frame(width: max(8, latestX))
-                    Rectangle()
-                        .fill(.white.opacity(0.78))
-                        .frame(width: 2, height: 16)
-                        .clipShape(Capsule(style: .continuous))
-                        .offset(x: min(max(goalX - 1, 0), max(width - 2, 0)))
-                    Circle()
-                        .fill(tint)
-                        .frame(width: 12, height: 12)
-                        .offset(x: min(max(latestX - 6, 0), max(width - 12, 0)))
-                }
-            }
-            .frame(height: 16)
-            .accessibilityHidden(true)
-
-            HStack(spacing: 8) {
-                sleepMiniStat(title: "Latest", value: summary.latestText)
-                sleepMiniStat(title: "Avg", value: summary.averageText)
-                sleepMiniStat(title: "Target", value: AtriaMetricFormat.sleepHours(sleepGoalHours))
-            }
-        }
-        .padding(10)
-        .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Sleep duration versus target. Latest \(summary.latestText), average \(summary.averageText), target \(AtriaMetricFormat.sleepHours(sleepGoalHours)), \(sleepRangeCue).")
-    }
-
-    private var sleepRangeCue: String {
-        if summary.averageRaw >= sleepGoalHours - 0.5 { return "Near target" }
-        if summary.averageRaw >= sleepGoalHours - 1.5 { return "Small debt" }
-        return "Debt building"
-    }
-
-    private var sleepLatestPosition: Double {
-        min(max(summary.latestRaw / sleepScaleMax, 0.05), 1)
-    }
-
-    private var sleepGoalPosition: Double {
-        min(max(sleepGoalHours / sleepScaleMax, 0.05), 1)
-    }
-
-    private var sleepScaleMax: Double {
-        max(sleepGoalHours + 1.5, summary.latestRaw, summary.averageRaw, 1)
-    }
-
-    private func sleepMiniStat(title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.caption.weight(.semibold).monospacedDigit())
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func lensStat(title: String, value: String, prominent: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font((prominent ? Font.headline : Font.caption).weight(.bold).monospacedDigit())
-                .foregroundStyle(prominent ? tint : .primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-
-    private func comparisonRail(_ comparison: AtriaDetailComparisonSummary) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                Image(systemName: comparison.changeDirection.symbolName)
-                    .font(.caption2.weight(.bold))
-                Text("Vs prior \(comparison.deltaText)")
-                    .font(.caption2.weight(.bold).monospacedDigit())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Spacer(minLength: 0)
-                Text(comparison.priorText)
-                    .font(.caption2.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                    .layoutPriority(1)
-            }
-            .foregroundStyle(tint)
-
-            GeometryReader { proxy in
-                let width = max(proxy.size.width, 1)
-                let currentWidth = max(8, width * comparison.currentShare)
-                let priorWidth = max(8, width * comparison.priorShare)
-                VStack(alignment: .leading, spacing: 4) {
-                    Capsule(style: .continuous)
-                        .fill(tint.opacity(0.70))
-                        .frame(width: currentWidth, height: 7)
-                    Capsule(style: .continuous)
-                        .fill(Color.primary.opacity(0.14))
-                        .frame(width: priorWidth, height: 5)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(height: 18)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    }
-}
 
 private struct AtriaDetailComparisonSeesaw: View, Equatable {
     let comparison: AtriaDetailComparisonSummary
@@ -14985,136 +14432,6 @@ struct AtriaInsightsCard: View, Equatable {
 }
 
 
-struct AtriaOverviewTrendSection: View, Equatable {
-    let snapshot: AtriaHomeModel.Snapshot
-
-    private var trendHeadline: String {
-        snapshot.trendConfidence == "high" ? "History is ready" : "History is building"
-    }
-
-    private var trendCue: String {
-        snapshot.trendConfidence == "high" ? "Use trends for direction" : "Keep wearing for cleaner patterns"
-    }
-
-    private var trendStateText: String {
-        snapshot.trendConfidence == "high" ? "Ready" : "Building"
-    }
-
-    private var trendTint: Color {
-        snapshot.trendConfidence == "high" ? .cyan : .secondary
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            AtriaPanelSectionHeader(title: "Trends", subtitle: "")
-
-            HStack(alignment: .center, spacing: 12) {
-                ZStack {
-                    Circle()
-                        .stroke(trendTint.opacity(0.16), lineWidth: 7)
-                    Circle()
-                        .trim(from: 0, to: trendProgress)
-                        .stroke(trendTint.opacity(0.84),
-                                style: StrokeStyle(lineWidth: 7, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                    Image(systemName: "chart.line.uptrend.xyaxis")
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(trendTint)
-                }
-                .frame(width: 50, height: 50)
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(trendHeadline)
-                        .font(.headline.weight(.bold))
-                        .lineLimit(1)
-                    Text(trendCue)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-
-                Spacer(minLength: 8)
-
-                Text(snapshot.trendCoverageText)
-                    .font(.title2.weight(.black).monospacedDigit())
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-            }
-
-            HStack(spacing: 8) {
-                trendRangeLadder
-                trendMetaChip(title: "Direction",
-                              value: trendStateText,
-                              systemImage: "arrow.up.right.circle.fill",
-                              tint: trendTint)
-                trendMetaChip(title: "Privacy",
-                              value: "Local",
-                              systemImage: "lock.fill",
-                              tint: .secondary)
-            }
-
-            Text(snapshot.trendDetail)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-        }
-        .padding(16)
-        .atriaCard(emphasis: .soft)
-    }
-
-    private var trendProgress: CGFloat {
-        let digits = snapshot.trendCoverageText.filter(\.isNumber)
-        guard let value = Double(digits) else {
-            return snapshot.trendConfidence == "high" ? 1 : 0.34
-        }
-        return CGFloat(min(max(value / 100.0, 0.12), 1))
-    }
-
-    private var trendRangeLadder: some View {
-        HStack(spacing: 6) {
-            ForEach(["D", "W", "M", "3M", "6M"], id: \.self) { label in
-                Text(label)
-                    .font(.caption2.weight(.black).monospacedDigit())
-                    .foregroundStyle(label == "M" ? Color.cyan : Color.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 7)
-                    .background((label == "M" ? Color.cyan : Color.secondary).opacity(label == "M" ? 0.12 : 0.055),
-                                in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 7)
-        .background(Color.cyan.opacity(0.06), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Trend ranges. Day, week, month, 3 months, and 6 months.")
-    }
-
-    private func trendMetaChip(title: String, value: String, systemImage: String, tint: Color) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: systemImage)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(tint)
-                .frame(width: 20, height: 20)
-                .background(tint.opacity(0.10), in: Circle())
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(value)
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(tint.opacity(0.06), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-    }
-}
 
 struct AtriaOverviewBehaviorJournalSection: View {
     @StateObject private var projectionStore: AtriaOverviewBehaviorJournalProjectionStore
@@ -15678,93 +14995,8 @@ private struct AtriaJournalImpactBar: View, Equatable {
     }
 }
 
-struct AtriaOverviewTrailingSection: View {
-    let liveStore: AtriaHomeModel.CoreLiveStore
-    let homeStatsStore: AtriaHomeModel.HomeStatsStore
-    let snapshotStore: AtriaHomeModel.SnapshotStore
-    let hasUnlockedSecondarySections: Bool
-    let onOpenCollection: () -> Void
-
-    var body: some View {
-        Group {
-            if hasUnlockedSecondarySections && showsSavedInsights {
-                VStack(spacing: 16) {
-                    AtriaOverviewCollectionSectionHost(homeStatsStore: homeStatsStore,
-                                                       snapshotStore: snapshotStore,
-                                                       onOpenCollection: onOpenCollection)
-
-                    AtriaOverviewBackupSectionHost(homeStatsStore: homeStatsStore,
-                                                   snapshotStore: snapshotStore)
-                }
-            } else if hasUnlockedSecondarySections {
-                AtriaLoadingPanel(title: "Preparing saved insights",
-                                  subtitle: "Backup state and saved data are settling in the background.")
-            }
-        }
-    }
-
-    private var showsSavedInsights: Bool {
-        snapshotStore.diagnosticsReady || AtriaOverviewTrendChartHost.debugShowsTrendFixture
-    }
-}
 
 
-struct AtriaOverviewLiveStrapSection: View, Equatable {
-    let live: AtriaHomeModel.CoreLiveState
-    let stats: AtriaHomeModel.HomeStatsState
-
-    private var statusTint: Color {
-        switch AtriaLiveSignalTruth.tone(
-            status: live.status,
-            streamState: live.strapStreamState,
-            hasRecentHeartRate: live.hasRecentHeartRateSample
-        ) {
-        case .healthy:
-            return .green
-        case .waiting:
-            return .cyan
-        case .attention:
-            return .orange
-        case .unavailable:
-            return live.status == .poweredOff ? .red : .secondary
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Live strap", subtitle: "Battery and signal")
-
-                Spacer(minLength: 0)
-
-                AtriaStatusChip(text: AtriaLiveSignalTruth.valueText(
-                                    status: live.status,
-                                    streamState: live.strapStreamState,
-                                    hasRecentHeartRate: live.hasRecentHeartRateSample
-                                ),
-                                systemImage: live.status == .connected
-                                    ? live.strapStreamConnectionSymbol : "dot.radiowaves.left.and.right",
-                                tint: statusTint)
-            }
-
-            Text(live.deviceName)
-                .font(.subheadline.weight(.semibold))
-                .fixedSize(horizontal: false, vertical: true)
-
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104), spacing: 12)], spacing: 12) {
-                if live.batteryLevel >= 0 {
-                    AtriaInlineQuickStat(label: "Battery",
-                                         value: live.batteryStatusSummaryText,
-                                         detail: live.batteryDetailText)
-                }
-                AtriaInlineQuickStat(label: "Baseline", value: "\(stats.baselineSamples)/\(PersonalBaseline.trustedMinimumSamples)")
-                AtriaInlineQuickStat(label: "Sessions", value: "\(stats.sessionsCount)")
-            }
-        }
-        .padding(16)
-        .atriaCard(emphasis: .soft)
-    }
-}
 
 struct AtriaOverviewCollectionSectionHost: View {
     @ObservedObject var homeStatsStore: AtriaHomeModel.HomeStatsStore

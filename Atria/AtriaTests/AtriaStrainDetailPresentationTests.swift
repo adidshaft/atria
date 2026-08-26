@@ -119,8 +119,21 @@ final class AtriaStrainDetailPresentationTests: XCTestCase {
         XCTAssertTrue(overview.contains("?? \"Strain data incomplete\""))
         XCTAssertFalse(valueProjection.contains("return \"Incomplete\""),
                        "partial evidence must not replace a real strain number")
-        XCTAssertTrue(valueProjection.contains("dayStrainMetricsIncomplete ? \"≥ \\(value)\" : value"),
-                      "partial cumulative strain is an observed lower bound")
+        // The "≥" lower-bound marker was removed from strain 2026-08-27 at the
+        // owner's request (steps lost the same marker earlier). Partial
+        // cumulative strain is STILL disclosed — by the limitation state and
+        // the "Strain data incomplete" copy asserted just above, and by
+        // `dayStrainMetricsIncomplete` continuing to drive them. What changed
+        // is that the disclosure is words beside the number rather than a
+        // symbol welded to it.
+        XCTAssertFalse(valueProjection.contains("\"≥ \\(value)\""),
+                       "the lower-bound marker is gone from the number itself")
+        // Checked on the whole file, not the value slice: the value expression
+        // no longer branches on incompleteness at all, which is the point of
+        // the change. The signal itself must still exist and still drive the
+        // disclosure asserted above.
+        XCTAssertTrue(overview.contains("private var dayStrainMetricsIncomplete"),
+                      "incompleteness must still be tracked and disclosed")
         XCTAssertTrue(overview.contains(
             "value: currentCycleStrainTruth.exactTrendValue"
         ), "partial cumulative strain must be withheld from exact chart aggregates")
@@ -129,14 +142,18 @@ final class AtriaStrainDetailPresentationTests: XCTestCase {
             .deletingLastPathComponent()
             .appendingPathComponent("Atria/AtriaTodayScreen.swift")
         let today = try String(contentsOf: todayURL, encoding: .utf8)
-        XCTAssertTrue(today.contains("!displayHero.strainValue.hasPrefix(\"≥\")"))
+        XCTAssertFalse(today.contains("hasPrefix(\"≥\")"),
+                       "Today must not sniff a prefix that no longer exists; "
+                           + "partialness is read from the confidence string")
         XCTAssertTrue(today.contains("displayHero.strainConfidence.localizedCaseInsensitiveContains(\"partial\")"))
         // Partial evidence keeps the measured number and names the concrete
         // limitation instead of collapsing every cause into generic sparse-HR
-        // copy. The lower-bound marker remains on the value itself.
+        // copy. The lower-bound MARKER is gone (2026-08-27) but the limitation
+        // copy that explains it is exactly what must remain.
         XCTAssertTrue(today.contains("currentStrainLimitation?.compactState"))
         XCTAssertTrue(today.contains("?? \"Strain data incomplete\""))
-        XCTAssertTrue(today.contains("? \"≥ \\(displayHero.strainValue)\""))
+        XCTAssertFalse(today.contains("\"≥ \\(displayHero.strainValue)\""),
+                       "the ring value is the measured number alone")
     }
 
     func testNoEvidenceStrainRemainsLearningInsteadOfInventedZero() throws {
@@ -174,6 +191,8 @@ final class AtriaStrainDetailPresentationTests: XCTestCase {
         XCTAssertFalse(presentation.contains("return \"0\""),
                        "no evidence must never be presented as a measured zero")
         XCTAssertTrue(presentation.contains("String(format: \"%.1f\", value)"))
-        XCTAssertTrue(presentation.contains("? \"≥ \\(numeric)\""))
+        XCTAssertFalse(presentation.contains("\"≥ \\(numeric)\""),
+                       "removed 2026-08-27; partialness now reads as "
+                           + "\"Partial · N% tracked\" beside the value")
     }
 }

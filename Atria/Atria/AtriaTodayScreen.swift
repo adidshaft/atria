@@ -2052,9 +2052,9 @@ struct AtriaTodayScreen: View {
             target: target
         )
         return AtriaTriRingMetric(title: "Strain",
-                                  value: incomplete && !displayHero.strainValue.hasPrefix("≥")
-                                    ? "≥ \(displayHero.strainValue)"
-                                    : displayHero.strainValue,
+                                  // No "≥" prefix (2026-08-27): the ring's
+                                  // marker row already states partial coverage.
+                                  value: displayHero.strainValue,
                                   // Compact fixed-vocabulary markers, not prose.
                                   // "Partial · sparse HR" described the plumbing
                                   // rather than the number's meaning, and was long
@@ -2118,8 +2118,10 @@ struct AtriaTodayScreen: View {
     }
 
     private var dayStrainIsIncomplete: Bool {
-        if displayHero.strainConfidence.localizedCaseInsensitiveContains("partial")
-            || displayHero.strainValue.hasPrefix("≥") {
+        // Read from the confidence string only: the "≥" prefix it used to also
+        // check was removed from strain on 2026-08-27, and it was always the
+        // weaker of the two signals.
+        if displayHero.strainConfidence.localizedCaseInsensitiveContains("partial") {
             return true
         }
         let calendar = Calendar.current
