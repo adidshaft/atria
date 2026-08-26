@@ -2566,10 +2566,25 @@ struct AtriaTodayScreen: View {
             now: Date(),
             sleepHistory: sessionProjectionStore.state.sleepHistorySnapshot
         ).start
-        return stressMonitorStore.history
+        // Memoised on (historyRevision, cycleStart). Without this the archive's
+        // ~2,880 points were filtered and sorted on EVERY SwiftUI body
+        // evaluation of Today — the same per-render recompute the metric chart
+        // was already audited for. The cycle start is part of the key because a
+        // wake rotates the window without the history changing.
+        let revision = stressMonitorStore.historyRevision
+        if glanceMemo.stressSeriesRevision == revision,
+           glanceMemo.stressSeriesCycleStart == cycleStart,
+           let cached = glanceMemo.stressSeriesValue {
+            return cached
+        }
+        let series = stressMonitorStore.history
             .filter { $0.t >= cycleStart }
             .sorted { $0.t < $1.t }
             .map(\.activation)
+        glanceMemo.stressSeriesRevision = revision
+        glanceMemo.stressSeriesCycleStart = cycleStart
+        glanceMemo.stressSeriesValue = series
+        return series
     }
 
     private func glanceItem(for metric: AtriaTodayMetric) -> AtriaTodayGlanceItem? {
@@ -3076,6 +3091,14 @@ private final class AtriaTodayGlanceMemo {
     var strainMedianRevision: Int?
     var strainMedianDay: Date?
     var strainMedianValue: Double?
+    /// Stress line-sparkline series. The archive holds up to 2,880 points
+    /// (48h), so filtering + sorting it on every body evaluation is exactly the
+    /// per-render cost this memo exists to prevent. Keyed on the store's
+    /// published `historyRevision`, which is the one thing that changes when
+    /// the series changes.
+    var stressSeriesRevision: Int?
+    var stressSeriesCycleStart: Date?
+    var stressSeriesValue: [Double]?
     var workoutsRevision: Int?
     var workoutsWeekStart: Date?
     var workoutsWeekCount: Int?
