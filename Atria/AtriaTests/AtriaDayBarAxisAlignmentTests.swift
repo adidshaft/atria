@@ -96,7 +96,7 @@ final class AtriaDayBarAxisAlignmentTests: XCTestCase {
 
     // MARK: - An open cycle belongs to today, not to whichever day it currently covers
 
-    func testTheOpenCycleIsPinnedToTodayRatherThanItsPredominantDay() throws {
+    func testTheOpenCycleIsPinnedToTodayRatherThanItsPredominantDay() {
         // Predominant-day labelling is only stable once a window CLOSES. An
         // open cycle that began yesterday morning reads as yesterday's now and
         // would flip to today's a few hours later — a bar that migrates
@@ -106,23 +106,68 @@ final class AtriaDayBarAxisAlignmentTests: XCTestCase {
         // while the chart folded it into a 7,336 bar on the previous day
         // (5,878 + a prior 1,458), so the number shown at the top appeared
         // nowhere on its own chart.
-        let source = try source("AtriaOverviewSections.swift")
-        let start = try XCTUnwrap(source.range(of: "private func loadWeekSteps()"))
-        let body = String(source[start.lowerBound...].prefix(2_000))
-        XCTAssertTrue(body.contains("let isOpenCycle"),
-                      "the open cycle must be identified")
-        XCTAssertTrue(body.contains("? today"),
-                      "and pinned to today rather than its predominant day")
-        XCTAssertTrue(body.contains("predominantCivilDay("),
-                      "while CLOSED cycles keep predominant-day labelling")
+        //
+        // Asserted through the real function rather than by scanning
+        // `loadWeekSteps` for its keywords: the rule moved to
+        // AtriaStepsWeekChart so Today's sparkline could share it, and the
+        // source scan broke on the move while the behaviour never changed.
+        let now = Date(timeIntervalSince1970: 1_756_080_000)
+        let today = stepCalendar.startOfDay(for: now)
+
+        let totals = AtriaStepsWeekChart.dailyStepTotals(
+            receipts: [stepReceipt(from: -6 * 3600, to: 0, steps: 5_878, now: now)],
+            now: now,
+            calendar: stepCalendar
+        )
+
+        XCTAssertEqual(totals[today], 5_878,
+                       "the running cycle belongs to today, matching the card")
+        XCTAssertEqual(totals.count, 1,
+                       "and must not also appear on the day it mostly covers")
     }
 
-    func testClosedCyclesStillSumSoATwoSleepDayIsNotUnderReported() throws {
-        let source = try source("AtriaOverviewSections.swift")
-        XCTAssertTrue(source.contains("map[day, default: 0] += receipt.steps"),
-                      "two closed cycles sharing a date are two real cycles")
-        XCTAssertFalse(source.contains("max(map[day] ?? 0, receipt.steps)"),
-                       "the max merge silently dropped the smaller of two")
+    func testClosedCyclesStillSumSoATwoSleepDayIsNotUnderReported() {
+        let now = Date(timeIntervalSince1970: 1_756_080_000)
+        let yesterday = stepCalendar.date(byAdding: .day,
+                                          value: -1,
+                                          to: stepCalendar.startOfDay(for: now))!
+
+        let totals = AtriaStepsWeekChart.dailyStepTotals(
+            receipts: [
+                stepReceipt(from: -20 * 3600, to: -16 * 3600, steps: 1_458, now: now),
+                stepReceipt(from: -14 * 3600, to: -10 * 3600, steps: 900, now: now),
+            ],
+            now: now,
+            calendar: stepCalendar
+        )
+
+        XCTAssertEqual(totals[yesterday], 2_358,
+                       "two closed cycles sharing a date are two real cycles "
+                           + "and must SUM; max silently dropped the smaller")
+    }
+
+    // MARK: - Fixtures for the step-folding rule
+
+    private var stepCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }
+
+    private func stepReceipt(from startOffset: TimeInterval,
+                             to endOffset: TimeInterval,
+                             steps: Int,
+                             now: Date) -> HistoricalArchive.MotionTickDayEvidence {
+        HistoricalArchive.MotionTickDayEvidence(
+            windowStart: now.addingTimeInterval(startOffset),
+            windowEnd: now.addingTimeInterval(endOffset),
+            motionTicks: steps * 2,
+            steps: steps,
+            knownCoverageSeconds: Int(endOffset - startOffset),
+            missingCoverageSeconds: 0,
+            decodedRows: 1_000,
+            capturedThrough: now.addingTimeInterval(endOffset)
+        )
     }
 
     // MARK: - The chart spans its plot

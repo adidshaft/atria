@@ -88,23 +88,58 @@ final class AtriaStepsWeekChartDayLabellingTests: XCTestCase {
     // MARK: - Wiring
 
     func testTheSheetLabelsByCoverageAndSumsCyclesSharingADay() throws {
-        let source = try String(
+        // Was a source scan over AtriaOverviewSections looking for the folding
+        // keywords inline. The rule now lives in AtriaStepsWeekChart so the
+        // Today sparkline can share it — one authority instead of two copies,
+        // which is exactly what the card-vs-chart mismatch came from. Assert
+        // the behaviour and the single home, not where the keywords sit.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let now = Date(timeIntervalSince1970: 1_756_080_000)
+        let yesterday = calendar.date(byAdding: .day,
+                                      value: -1,
+                                      to: calendar.startOfDay(for: now))!
+
+        func receipt(_ startOffset: TimeInterval,
+                     _ endOffset: TimeInterval,
+                     _ steps: Int) -> HistoricalArchive.MotionTickDayEvidence {
+            HistoricalArchive.MotionTickDayEvidence(
+                windowStart: now.addingTimeInterval(startOffset),
+                windowEnd: now.addingTimeInterval(endOffset),
+                motionTicks: steps * 2,
+                steps: steps,
+                knownCoverageSeconds: Int(endOffset - startOffset),
+                missingCoverageSeconds: 0,
+                decodedRows: 1_000,
+                capturedThrough: now.addingTimeInterval(endOffset)
+            )
+        }
+
+        let totals = AtriaStepsWeekChart.dailyStepTotals(
+            receipts: [receipt(-20 * 3600, -16 * 3600, 1_458),
+                       receipt(-14 * 3600, -10 * 3600, 900)],
+            now: now,
+            calendar: calendar
+        )
+        XCTAssertEqual(totals[yesterday], 2_358,
+                       "two cycles predominantly on one date are two real "
+                           + "cycles; max used to drop the smaller")
+
+        // And the wake-date bucketing must be gone, not shadowed.
+        let overview = try String(
             contentsOf: URL(fileURLWithPath: #filePath)
                 .deletingLastPathComponent()
                 .deletingLastPathComponent()
                 .appendingPathComponent("Atria/AtriaOverviewSections.swift"),
             encoding: .utf8
         )
-        XCTAssertTrue(
-            source.contains("AtriaStepsWeekChart.predominantCivilDay("),
-            "the chart's own labelling rule must drive the bucketing"
-        )
         XCTAssertFalse(
-            source.contains("calendar.startOfDay(for: receipt.windowStart)"),
+            overview.contains("calendar.startOfDay(for: receipt.windowStart)"),
             "the wake-date bucketing must be gone, not shadowed"
         )
-        // Two cycles predominantly on one date are two real cycles; `max` used
-        // to silently drop the smaller.
-        XCTAssertTrue(source.contains("map[day, default: 0] += receipt.steps"))
+        XCTAssertTrue(
+            overview.contains("AtriaStepsWeekChart.dailyStepTotals"),
+            "the week chart must fold days through the shared rule"
+        )
     }
 }

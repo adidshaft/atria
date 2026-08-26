@@ -32,6 +32,44 @@ struct AtriaStepsWeekChart: View {
     /// An exact tie — a cycle split evenly across midnight — keeps the EARLIER
     /// day, so the result is deterministic rather than dependent on iteration
     /// order.
+    /// Open-cycle tolerance: a receipt whose window ends within this of now is
+    /// still running.
+    static let openCycleTolerance: TimeInterval = 90 * 60
+
+    /// Strap-step receipts folded onto the civil days their cycles cover.
+    ///
+    /// ONE authority for every surface that draws daily strap steps. The
+    /// Overview week chart and the Today sparkline are the same metric on two
+    /// screens, and this rule is subtle enough that a second copy would drift:
+    /// it already happened once between a card and its own chart, where the
+    /// headline read 5,878 while the chart folded it into a 7,336 bar on the
+    /// previous day.
+    static func dailyStepTotals(
+        receipts: [HistoricalArchive.MotionTickDayEvidence],
+        now: Date,
+        calendar: Calendar = .current
+    ) -> [Date: Int] {
+        let today = calendar.startOfDay(for: now)
+        var totals: [Date: Int] = [:]
+        for receipt in receipts {
+            // Predominant coverage is only stable once a window has CLOSED. An
+            // open cycle that began yesterday morning reads as yesterday's now
+            // and would flip to today's a few hours later, so its bar would
+            // migrate between days while the user watched — and it is also the
+            // number the card shows as "today", which the chart must match.
+            let isOpenCycle = receipt.windowEnd >= now.addingTimeInterval(-openCycleTolerance)
+            let day = isOpenCycle
+                ? today
+                : predominantCivilDay(windowStart: receipt.windowStart,
+                                      windowEnd: receipt.windowEnd,
+                                      calendar: calendar)
+            // SUM, not max: two CLOSED receipts on one day are two genuinely
+            // different cycles, and `max` silently dropped the smaller.
+            totals[day, default: 0] += receipt.steps
+        }
+        return totals
+    }
+
     static func predominantCivilDay(windowStart: Date,
                                     windowEnd: Date,
                                     calendar: Calendar) -> Date {
