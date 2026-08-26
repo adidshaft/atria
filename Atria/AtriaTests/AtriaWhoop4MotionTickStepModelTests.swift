@@ -1127,10 +1127,22 @@ final class AtriaWhoop4MotionTickStepModelTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let handle = try FileHandle(
-            forReadingFrom:
-                repositoryRoot.appendingPathComponent(relativePath)
-        )
+        let url = repositoryRoot.appendingPathComponent(relativePath)
+        // SKIP, do not fail, when the physical corpus is absent. `evidence/` is
+        // gitignored on purpose — "Generated physical-device evidence can
+        // include private health/device data" — so these raw captures are not
+        // in a fresh checkout, and on this machine the run directories retain
+        // only their manifests and checksums. A missing corpus says nothing
+        // about the step model, but four permanently-red tests hide the ones
+        // that do. (Same treatment as AtriaRealShardStepVerificationTests.)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw XCTSkip(
+                "physical corpus not present: \(relativePath). "
+                    + "`evidence/` is gitignored; re-pull the capture to run "
+                    + "this gate."
+            )
+        }
+        let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var byFlash: [UInt32:
             AtriaWhoop4GravityCadenceStepModel.Point] = [:]
