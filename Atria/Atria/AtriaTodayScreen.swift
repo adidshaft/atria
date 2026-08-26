@@ -2713,7 +2713,13 @@ struct AtriaTodayScreen: View {
                                         // without validated motion shows "--" and says why.
                                         detail: legendDetail(
                                             latestSleep?.displaySleepEfficiency != nil
-                                                ? "Sleep"
+                                                // Was "Sleep", under a tile
+                                                // already titled Sleep eff. The
+                                                // convention for this line is a
+                                                // unit or qualifier ("of need",
+                                                // "/min"), so spend it saying
+                                                // what the percentage is OF.
+                                                ? "of time in bed"
                                                 : (latestSleep?.sleepEfficiency == nil
                                                     ? "After a confirmed sleep"
                                                     : "Needs motion data")),
