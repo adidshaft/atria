@@ -102,4 +102,48 @@ final class AtriaStepReceiptOverlapTests: XCTestCase {
         let open = receipt(-6 * 3600, 0, 5_878)
         XCTAssertEqual(totals([open])[today], 5_878)
     }
+
+    // MARK: - Nothing may sum receipts outside the shared authority
+
+    func testOnlyTheSharedAuthoritySumsStepReceipts() throws {
+        // The double count was possible because two surfaces each summed
+        // receipts themselves. They now share `dailyStepTotals`, which drops
+        // contained windows first. A third consumer (Sessions.swift) takes a
+        // single receipt with `.first`, which cannot double count.
+        //
+        // If a new surface starts adding `receipt.steps` together on its own,
+        // it will silently reacquire the bug — 17 of this device's 32 receipts
+        // overlap another, so summing raw receipts is wrong by default, not by
+        // accident.
+        let dir = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Atria")
+        let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+            .filter { $0.hasSuffix(".swift") }
+
+        var summers: [String] = []
+        for name in names {
+            let text = try String(contentsOf: dir.appendingPathComponent(name), encoding: .utf8)
+            for (index, line) in text.components(separatedBy: "\n").enumerated() {
+                guard line.contains("receipt.steps") || line.contains("$0.steps") else { continue }
+                guard line.contains("+=") || line.contains("reduce(") else { continue }
+                summers.append("\(name):\(index + 1)")
+            }
+        }
+
+        XCTAssertEqual(summers, ["AtriaStepsWeekChart.swift:\(sumLineNumber(in: dir))"],
+                       "step receipts may only be summed inside "
+                           + "dailyStepTotals, which deduplicates first: \(summers)")
+    }
+
+    private func sumLineNumber(in dir: URL) -> Int {
+        guard let text = try? String(contentsOf: dir.appendingPathComponent("AtriaStepsWeekChart.swift"),
+                                     encoding: .utf8) else { return -1 }
+        for (index, line) in text.components(separatedBy: "\n").enumerated()
+        where line.contains("totals[day, default: 0] += receipt.steps") {
+            return index + 1
+        }
+        return -1
+    }
 }
