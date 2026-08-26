@@ -11758,16 +11758,30 @@ private struct AtriaPreparedMetricChart: View {
         .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) }
         .chartYAxisLabel(unit)
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                AxisGridLine().foregroundStyle(.quaternary)
-                AxisTick()
-                // Centred ONLY for bars. A `unit: .day` bar occupies its whole
-                // day, so its label belongs in the middle of that span; a line
-                // plots each point AT its date, so centring would shift every
-                // label half a day off its own point. One chart draws both
-                // shapes, so the flag has to follow the shape.
-                AxisValueLabel(format: .dateTime.month(.abbreviated).day(),
-                               centered: rendersAsDailyBar)
+            if rendersAsDailyBar {
+                // A `unit: .day` bar owns its whole day, so its label belongs
+                // at the day's MIDDLE — and the way to put it there is to mark
+                // noon, not to centre the label. `centered:` offsets by half
+                // the step to the NEXT mark, which is only half a day when
+                // marks are one day apart; at `.automatic(desiredCount: 4)`
+                // over a month the step is about a week, so it threw every
+                // label three-and-a-half days right, onto a different bar.
+                AxisMarks(values: AtriaChartVisualGrammar.dayCentreMarks(
+                    in: prepared.xDomain ?? fallbackXDomain,
+                    targetCount: 4
+                )) { _ in
+                    AxisGridLine().foregroundStyle(.quaternary)
+                    AxisTick()
+                    AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                }
+            } else {
+                // A line plots each point AT its date, so the mark belongs on
+                // the date itself and the label stays uncentred.
+                AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+                    AxisGridLine().foregroundStyle(.quaternary)
+                    AxisTick()
+                    AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                }
             }
         }
         // Handoff-10 CP3: explicit top headroom instead of `.clipped()`, so

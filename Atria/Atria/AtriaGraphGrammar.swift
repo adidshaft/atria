@@ -23,6 +23,58 @@ enum AtriaChartVisualGrammar {
     /// and coverage accounting keep their exact meaning.
     static let traceDisplayContinuityGap: TimeInterval = 5 * 60
 
+    /// Axis mark positions for a chart drawn from `BarMark(x:unit:.day)`.
+    ///
+    /// `AxisValueLabel(centered:)` centres a label within the step to the NEXT
+    /// mark — NOT within the bar's `unit`. The two coincide only when marks are
+    /// exactly one day apart, which is why `centered: true` is correct on the
+    /// steps week chart (marks = the seven days) and wrong anywhere the stride
+    /// is wider: at `.automatic(desiredCount: 4)` over a month the step is about
+    /// a week, so every label lands three-and-a-half days right of its own bar.
+    ///
+    /// Placing the mark at the day's CENTRE instead makes the label correct for
+    /// any stride, because it no longer depends on where the next mark is.
+    /// Returns noon of every `strideDays`-th day in the domain.
+    static func dayCentreMarks(in domain: ClosedRange<Date>,
+                               targetCount: Int,
+                               calendar: Calendar = .current) -> [Date] {
+        guard targetCount > 0, domain.upperBound > domain.lowerBound else { return [] }
+
+        var days: [Date] = []
+        var cursor = calendar.startOfDay(for: domain.lowerBound)
+        while cursor < domain.upperBound {
+            if cursor >= calendar.startOfDay(for: domain.lowerBound) { days.append(cursor) }
+            guard let next = calendar.date(byAdding: .day, value: 1, to: cursor) else { break }
+            cursor = next
+            // A domain far wider than any real range would spin here; the app
+            // never asks for one, but a runaway loop is not an acceptable
+            // failure mode for a view body.
+            if days.count > 400 { break }
+        }
+        guard !days.isEmpty else { return [] }
+
+        let strideDays = max(1, Int(ceil(Double(days.count) / Double(targetCount))))
+        return days.enumerated()
+            .filter { $0.offset % strideDays == 0 }
+            .compactMap { calendar.date(byAdding: .hour, value: 12, to: $0.element) }
+    }
+
+    /// Mark density for a SCROLLABLE day-bar chart.
+    ///
+    /// `.automatic(desiredCount:)` recomputes against whatever is on screen, so
+    /// it keeps a steady number of labels while you scroll. Explicit marks do
+    /// not — asking for 6 across a 90-day domain that shows 7 days at a time
+    /// would leave most screens with no label at all. Scaling the request by
+    /// how much of the domain is visible restores the same on-screen density.
+    static func scrollableDayMarkCount(totalDays: Int,
+                                       visibleDays: Int,
+                                       labelsPerScreen: Int) -> Int {
+        guard totalDays > 0, labelsPerScreen > 0 else { return 0 }
+        let visible = max(1, min(visibleDays, totalDays))
+        let scaled = Double(totalDays) * Double(labelsPerScreen) / Double(visible)
+        return max(1, min(Int(scaled.rounded()), totalDays))
+    }
+
     static let trendLine = StrokeStyle(
         lineWidth: 2.25,
         lineCap: .round,

@@ -399,19 +399,35 @@ struct AtriaExpandedChartView: View {
         .chartXScale(domain: prepared.xDomain)
         .chartYScale(domain: barAwareYDomain)
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 6)) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
-                AxisTick().foregroundStyle(.secondary.opacity(0.55))
-                if let date = value.as(Date.self) {
-                    // Centred ONLY in bar form. A `unit: .day` bar occupies the
-                    // whole day, so its date belongs in the middle of that
-                    // span; line and range plot each point AT its date, where
-                    // centring would shift every label half a day off its own
-                    // point. This view can draw all three, so the flag follows
-                    // whichever is showing.
-                    AxisValueLabel(centered: effectiveChartType == .bars) {
-                        Text(date, format: .dateTime.month(.abbreviated).day())
-                            .font(.caption2)
+            if effectiveChartType == .bars {
+                // A `unit: .day` bar owns its whole day, so its label belongs
+                // at the day's MIDDLE — marked directly, rather than asked for
+                // with `centered:`, which offsets by half the step to the NEXT
+                // mark and so drifts further off the bar the wider the window.
+                // This chart also scrolls, so the count is scaled to hold the
+                // same on-screen density that `.automatic` gave.
+                AxisMarks(values: barAxisMarks) { value in
+                    AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
+                    AxisTick().foregroundStyle(.secondary.opacity(0.55))
+                    if let date = value.as(Date.self) {
+                        AxisValueLabel {
+                            Text(date, format: .dateTime.month(.abbreviated).day())
+                                .font(.caption2)
+                        }
+                    }
+                }
+            } else {
+                // Line and range plot each point AT its date, so the mark
+                // belongs on the date and `.automatic` can keep adapting to
+                // whatever the scroll brings on screen.
+                AxisMarks(values: .automatic(desiredCount: 6)) { value in
+                    AxisGridLine().foregroundStyle(.secondary.opacity(0.16))
+                    AxisTick().foregroundStyle(.secondary.opacity(0.55))
+                    if let date = value.as(Date.self) {
+                        AxisValueLabel {
+                            Text(date, format: .dateTime.month(.abbreviated).day())
+                                .font(.caption2)
+                        }
                     }
                 }
             }
@@ -637,6 +653,22 @@ struct AtriaExpandedChartView: View {
     /// `AtriaOverviewSections`' metric chart and `AtriaTrendChart.trendYDomain`.
     /// This is the same rule at the third surface, which now opens in bar form
     /// by default for once-a-day metrics.
+    /// Noon marks across the whole scrollable domain, at a density chosen so a
+    /// screenful shows about as many labels as `.automatic(desiredCount: 6)`
+    /// did before.
+    private var barAxisMarks: [Date] {
+        let domain = prepared.xDomain
+        let totalDays = Calendar.current.dateComponents([.day],
+                                                        from: domain.lowerBound,
+                                                        to: domain.upperBound).day ?? 0
+        let target = AtriaChartVisualGrammar.scrollableDayMarkCount(
+            totalDays: max(totalDays, 1),
+            visibleDays: visibleDays == 0 ? max(totalDays, 1) : visibleDays,
+            labelsPerScreen: 6
+        )
+        return AtriaChartVisualGrammar.dayCentreMarks(in: domain, targetCount: target)
+    }
+
     private var barAwareYDomain: ClosedRange<Double> {
         guard effectiveChartType == .bars else { return prepared.yDomain }
         return 0...max(prepared.yDomain.upperBound, 1)
