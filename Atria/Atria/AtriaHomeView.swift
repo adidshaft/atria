@@ -5100,6 +5100,32 @@ struct AtriaHomeView: View {
                     accessibilityLabel: "Strap history is synced through now, but one older historical interval could not be recovered after repeated attempts and is unavailable."
                 )
             }
+            // A pending range-loss backfill means earlier history is KNOWN to
+            // be missing and is waiting to be refetched. "Synced" on its own
+            // reads as "nothing left to get", and there already is a precedent
+            // for qualifying it — the terminal-park branch directly above.
+            //
+            // Device 2026-08-27: this owner's app showed a bare "Synced" while
+            // `rangeLossBackfillPending` had been true since 24 Aug — three
+            // days — because the frontier was current and the strap reported
+            // caught up. Both of those were true and neither was the whole
+            // truth: 81 minutes of hole in the 26 Aug afternoon is exactly what
+            // that backfill exists to fill, and that hole is why the night's HR
+            // coverage came to 0.789 against the 0.80 auto-confirm floor.
+            //
+            // The frontier claim stays intact; it just stops standing alone.
+            if defaults.bool(
+                forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
+            ) {
+                return Status(
+                    title: "Synced · filling earlier gaps",
+                    symbol: "checkmark.circle.badge.questionmark",
+                    accessibilityLabel: "Strap history is synced through now, "
+                        + "but an earlier stretch is known to be missing and is "
+                        + "still being refetched.",
+                    compactTitle: "Synced · filling gaps"
+                )
+            }
             return Status(title: "Synced",
                           symbol: "checkmark.circle.fill",
                           accessibilityLabel: "Strap history is synced through now.")
