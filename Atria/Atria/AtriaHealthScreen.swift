@@ -780,7 +780,14 @@ struct AtriaHealthScreen: View {
     // VO2max + partial-factor fitness age), so surface it expanded by default
     // instead of hidden behind a collapsed Lab disclosure. Still clearly labeled
     // an estimate, and the user can still collapse the section.
-    @State private var showsLabSection = true
+    /// Fitness age is an EXPERIMENTAL estimate and lives behind a collapsed
+    /// disclosure so it cannot read as a settled metric beside measured ones.
+    /// Expanded by 1f2c1a38 (2026-08-22), collapsed again 2026-08-27 at the
+    /// owner's direction — `AtriaHealthProvisionalPlacementTests
+    /// .testFitnessAgeMountsOnlyInsideTheCollapsedLabSection` has asserted the
+    /// collapsed default throughout, and was the last standing real failure in
+    /// the suite while the two disagreed.
+    @State private var showsLabSection = false
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
     @AtriaDefault(DetectionEventLog.revisionKey) private var detectionsRevision: Int = 0
