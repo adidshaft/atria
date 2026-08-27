@@ -43,6 +43,17 @@ enum AtriaDaytimeQuiescentSleepDetector {
     static let daytimeStartHours = 10...19
     /// At least this fraction of quiet minutes must carry accepted HR.
     static let minimumHRPresence = 0.25
+    /// Low-battery capture-outage tier: when the strap's battery shuts HR off
+    /// mid-window (device-measured 2026-08-27: HR present only 19:37–20:11 of
+    /// a real 15:28–20:12 sleep, presence 0.12, while motion recorded all 284
+    /// minutes), presence below `minimumHRPresence` is still admissible IF the
+    /// observed HR spans at least this many minutes AND motion quiet clears
+    /// the stricter `lowCaptureMinimumQuietCoverage`. The depression gate
+    /// below stays hard either way — a table strap re-worn at the end reads
+    /// awake-level in its tail and still dies there, and an awake worn wrist
+    /// cannot produce the quiet chain in the first place.
+    static let lowCaptureMinimumHRMinutes = 20
+    static let lowCaptureMinimumQuietCoverage = 0.9
     /// Surrounding awake mean must exceed the in-window mean by this much.
     static let minimumHRDepressionBPM = 8.0
     /// Fewer surrounding HR minutes than this is "unknown", and unknown
@@ -181,9 +192,15 @@ enum AtriaDaytimeQuiescentSleepDetector {
                 return Array(lo..<hi)
             }
             let inWindowHR = quietBuckets.compactMap { hrMinutesByBucket[$0] }
-            guard Double(inWindowHR.count)
-                    >= minimumHRPresence * Double(quietBuckets.count),
-                  !inWindowHR.isEmpty else { continue }
+            guard !inWindowHR.isEmpty else { continue }
+            let presence = Double(inWindowHR.count) / Double(max(quietBuckets.count, 1))
+            if presence < minimumHRPresence {
+                // Capture-outage tier: thin HR is admissible only with a
+                // meaningful observed span and near-total motion quiet; the
+                // hard depression gate below applies unchanged.
+                guard inWindowHR.count >= lowCaptureMinimumHRMinutes,
+                      coverage >= lowCaptureMinimumQuietCoverage else { continue }
+            }
 
             let surroundBuckets =
                 Array(Int(start.timeIntervalSince1970 / 60 - 180)
