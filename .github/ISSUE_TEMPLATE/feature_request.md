@@ -2,7 +2,7 @@
 name: Feature request
 about: Propose a local-first Atria improvement
 title: "[Feature] "
-labels: enhancement
+labels: "type: product"
 assignees: ""
 ---
 

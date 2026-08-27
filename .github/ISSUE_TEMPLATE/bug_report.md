@@ -2,7 +2,7 @@
 name: Bug report
 about: Report a reproducible Atria problem
 title: "[Bug] "
-labels: bug
+labels: "type: defect"
 assignees: ""
 ---
 

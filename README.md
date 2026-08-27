@@ -21,6 +21,10 @@
   ·
   <a href="#quick-start">Quick Start</a>
   ·
+  <a href="docs/SETUP.md">Setup Guide</a>
+  ·
+  <a href="docs/README.md">Docs</a>
+  ·
   <a href="CONTRIBUTING.md">Contributing</a>
   ·
   <a href="https://x.com/adidshaft">Contact adidshaft</a>
@@ -105,6 +109,19 @@ Atria is usable for local backup and honest diagnostics on a physical iPhone. Fo
 - Clinically validated HRV. Atria can show local RMSSD as a personal baseline; independent RR/IBI validation is not part of the single-strap user path.
 - Fully validated recovery. Recovery can display as a personal baseline; the validated tier stays gated for export/research uses.
 - Fully automatic workout detection in all gym conditions. Current logic is honest about stream coverage and HR-intensity blockers.
+- **Whole-day step totals.** The strap holds the motion, but the historical drain
+  cannot yet finish against a live HR connection, so Atria withholds the daily
+  number rather than publishing a false lower bound. Counted-walk accuracy is
+  proven (110 truth → 112 strap steps, 1.82% error); autonomous all-day quantity
+  is not. Strap-only by design — no phone pedometer fallback.
+  ([#21](https://github.com/adidshaft/atria/issues/21))
+- **SpO₂.** The WHOOP 4 candidate fields are 1 Hz DC levels with no pulsatile
+  component; a ratio-of-ratios over them collapses to a constant ~80% artifact.
+  No defensible value can be derived from them, so the card stays blank with a
+  named reason. ([#31](https://github.com/adidshaft/atria/issues/31))
+- **Absolute skin temperature.** The thermal field is real and validated, but its
+  absolute scale reads several degrees hot with unknown per-device calibration.
+  Only relative deviation is usable.
 - Any claim that requires WHOOP cloud data. This project intentionally stays local.
 
 ## Quick Start
@@ -123,6 +140,10 @@ open Atria/Atria.xcodeproj
 ```
 
 Select the Atria app target, choose your physical iPhone, set signing if needed, and run.
+
+> **New to the project?** [`docs/SETUP.md`](docs/SETUP.md) covers signing, the
+> device-log harness, the errors you will actually hit, and which logs are safe
+> to share before you post evidence anywhere.
 
 For command-line physical-device verification:
 
@@ -177,10 +198,11 @@ python3 tools/audit_handoff_status.py \
 |---|---|
 | `Atria/` | Native SwiftUI iOS app, widget, HealthKit, BLE, and local metrics code. |
 | `tools/` | Analysis helpers for captures, references, and protocol evidence. |
-| `docs/` | Technical notes, validation plans, and protocol research. |
+| `docs/` | Technical notes, validation plans, and protocol research — start at [`docs/README.md`](docs/README.md). |
 | `scan.py`, `probe.py`, `listen.py`, `whoop_codec.py` | macOS BLE exploration and decode tooling. |
 | `live_device_debug.sh` | Physical-iPhone build/install/launch/log harness. |
 | `assets/` | Logo and README screenshots. |
+| `evidence/` | Physical-device evidence trees. Gitignored — may contain personal health data. |
 
 - [Research validation corpus](docs/research-validation-corpus.md) — the rules and fixtures used for reproducible sensor validation.
 
@@ -193,6 +215,11 @@ The fastest useful contributions are:
 - Improve workout detection from real saved sessions.
 - Decode additional historical/protocol payloads with evidence.
 - Improve docs for setup and troubleshooting.
+
+Start with [`docs/SETUP.md`](docs/SETUP.md) to get a build running, then browse
+[open issues](https://github.com/adidshaft/atria/issues) — they are labelled by
+area (`area: ble`, `area: sleep`, `area: steps`…), by type, and by what each one
+is waiting on (`needs: device proof`, `needs: reference`, `blocked`).
 
 Before opening a PR, read [CONTRIBUTING.md](CONTRIBUTING.md). Do not submit code that estimates HRV from HR-only data or silently promotes low-confidence metrics.
 

@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Setup help for a fresh Mac or iPhone
+    url: https://github.com/adidshaft/atria/blob/main/docs/SETUP.md
+    about: Signing, device logging, and the physical-device workflow before you file anything.
+  - name: WHOOP 4 protocol findings
+    url: https://github.com/adidshaft/atria/blob/main/docs/WHOOP4_PROTOCOL_FINDINGS.md
+    about: What is decoded, what is not, and the evidence behind each claim.
+  - name: Ask adidshaft
+    url: https://x.com/adidshaft
+    about: General questions that are not a bug, a gap, or a validation task.
