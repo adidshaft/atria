@@ -2932,7 +2932,9 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             AtriaStrapStepsDetailSheet(count: live.strapStepResearchCount,
                                        validationState: live.strapStepResearchState,
                                        presentation: live.dailyStepPresentation,
-                                       goal: stepsGoal)
+                                       goal: stepsGoal,
+                                       nonGaitWindows: AtriaCivilDayStepAuthority
+                                           .nonGaitExclusionWindows(workouts: confirmedWorkouts))
                 // The sheet carries a weekly chart plus its legend; a
                 // medium-only detent could not show them, so the chart was
                 // clipped and the sheet could not be dragged open.
@@ -6006,6 +6008,10 @@ struct AtriaStrapStepsDetailSheet: View {
     let validationState: String
     let presentation: AtriaDailyStepPresentation
     let goal: Int
+    /// Confirmed non-gait workout windows (Strength, Cycling) excluded from
+    /// the exact per-day computation, so labelled arm work does not read as
+    /// walking. Defaults empty: no exclusions is the pre-existing behaviour.
+    var nonGaitWindows: [DateInterval] = []
 
     /// Verified per-day step totals (day-start → steps) for the weekly bar chart,
     /// loaded once from the durable motion-tick day store. Days without a
@@ -6139,7 +6145,16 @@ struct AtriaStrapStepsDetailSheet: View {
     }
 
     private var stepsWeekChartCard: some View {
-        AtriaStepsWeekChart(stepsByDay: weekSteps, goal: goal)
+        VStack(alignment: .leading, spacing: 6) {
+            AtriaStepsWeekChart(stepsByDay: weekSteps, goal: goal)
+            // The bars are CALENDAR days computed exactly from the strap's
+            // recorded rows; the count at the top of this sheet is since your
+            // wake. Saying so stops the two honest numbers reading as a bug
+            // when a cycle spans midnight.
+            Text("Bars are calendar days · the count above is since your wake")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
     }
 
     /// How close a receipt's end must be to now to count as the cycle still
@@ -6148,11 +6163,30 @@ struct AtriaStrapStepsDetailSheet: View {
 
     private func loadWeekSteps() async {
         guard let identifier = AtriaWhoop4MotionTickDailyStore.persistedStrapIdentifiers().first else { return }
+        let now = Date()
         let receipts = AtriaWhoop4MotionTickDailyStore.shared.recentReceipts(strapIdentifier: identifier,
                                                                             limit: 14)
-        // Day-folding lives in AtriaStepsWeekChart so Today's sparkline and this
-        // chart cannot drift apart — same metric, two surfaces, one rule.
-        weekSteps = AtriaStepsWeekChart.dailyStepTotals(receipts: receipts, now: Date())
+        // Receipt folding first, shown immediately: it is instant, and it is
+        // the fallback for days whose shards have rotated out.
+        let fallback = AtriaStepsWeekChart.dailyStepTotals(receipts: receipts, now: now)
+        weekSteps = fallback
+        // Then the exact per-calendar-day totals from the shards themselves.
+        // Receipts are cycle-scoped, frozen at publication, and can be missing
+        // for whole days — the 2026-08-27 audit measured a day showing 505
+        // where the shards hold ~7,000, and another showing 0. The authority
+        // replaces every day the rows can answer and leaves the rest alone.
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        let days = (0..<7).compactMap {
+            calendar.date(byAdding: .day, value: -$0, to: today)
+        }
+        weekSteps = await AtriaCivilDayStepAuthority.shared.dailyTotals(
+            days: days,
+            strapIdentifier: identifier,
+            nonGaitExclusions: nonGaitWindows,
+            fallback: fallback,
+            now: now
+        )
     }
 }
 
