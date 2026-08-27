@@ -5117,12 +5117,21 @@ struct AtriaHomeView: View {
             if defaults.bool(
                 forKey: AtriaBLEManager.OfflineSyncDefaults.rangeLossBackfillPending
             ) {
+                // Say HOW MUCH. The backlog that starved sleep confirmation
+                // grew to 15.5 h over three days behind this exact banner; a
+                // size that is visible cannot silently compound. The ledger
+                // read is memoised on its own generation counter so the render
+                // path stats the file only when the ledger actually changed.
+                let backlog = AtriaHomeRecoverySyncPresentation
+                    .memoisedGapBacklogText(defaults: defaults, now: now)
                 return Status(
-                    title: "Synced · filling earlier gaps",
+                    title: backlog.map { "Synced · filling \($0)" }
+                        ?? "Synced · filling earlier gaps",
                     symbol: "checkmark.circle.badge.questionmark",
                     accessibilityLabel: "Strap history is synced through now, "
                         + "but an earlier stretch is known to be missing and is "
-                        + "still being refetched.",
+                        + "still being refetched."
+                        + (backlog.map { " About \($0.replacingOccurrences(of: " of gaps", with: "")) remain." } ?? ""),
                     compactTitle: "Synced · filling gaps"
                 )
             }
@@ -6030,6 +6039,63 @@ enum AtriaHomeRecoverySyncPresentation {
     /// could never read "Synced" between catch-up slices on a healthy link.
     /// Staleness fails closed: an old observation (link lost, app suspended)
     /// never fabricates a synced claim.
+    private static var gapBacklogMemo: (generation: Int, text: String?)?
+
+    /// Ledger-generation-memoised wrapper so the status render only touches
+    /// the ledger file when a drain actually changed it.
+    static func memoisedGapBacklogText(defaults: UserDefaults,
+                                       now: Date) -> String? {
+        let generation = defaults.integer(
+            forKey: AtriaHistoricalGapLedger.generationKey
+        )
+        if let memo = gapBacklogMemo, memo.generation == generation {
+            return memo.text
+        }
+        let text = gapBacklogText(
+            seconds: unresolvedGapSeconds(
+                windows: AtriaHistoricalGapLedger
+                    .windowsForEvidence(defaults: defaults),
+                now: now
+            )
+        )
+        gapBacklogMemo = (generation, text)
+        return text
+    }
+
+    /// Total genuinely-missing time across the gap ledger, in seconds.
+    ///
+    /// A coalesced envelope can SPAN days while missing only minutes — its
+    /// `expectedSecondBits` mask is the truth (device 2026-08-27: a 61.6 h
+    /// envelope whose mask held 15.52 h). An ordinary window with no mask is
+    /// missing end-to-end. `coveredSecondBits` is deliberately ignored: it is
+    /// unpopulated in production data, and treating empty as "no progress"
+    /// would overstate.
+    ///
+    /// This number existing on screen is the point. The 15.5 h backlog that
+    /// starved sleep confirmation for three days was reachable only by pulling
+    /// the container and decoding the mask by hand.
+    static func unresolvedGapSeconds(
+        windows: [AtriaHistoricalGapLedger.Window],
+        now: Date
+    ) -> TimeInterval {
+        windows.reduce(0) { total, window in
+            if let bits = window.expectedSecondBits {
+                let missing = bits.reduce(0) { $0 + $1.nonzeroBitCount }
+                return total + TimeInterval(missing)
+            }
+            let end = window.end ?? now
+            guard end > window.start else { return total }
+            return total + end.timeIntervalSince(window.start)
+        }
+    }
+
+    /// "12m of gaps" / "2.3h of gaps" / nil under a minute (not worth a claim).
+    static func gapBacklogText(seconds: TimeInterval) -> String? {
+        guard seconds >= 60 else { return nil }
+        if seconds < 3_600 { return "\(Int((seconds / 60).rounded()))m of gaps" }
+        return String(format: "%.1fh of gaps", seconds / 3_600)
+    }
+
     static func strapReportsCaughtUp(
         flushDebtLevelRaw: String?,
         flushDebtObservedAtUnix: Double?,
