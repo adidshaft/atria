@@ -207,3 +207,25 @@ final class AtriaUnattributedMotionRunsTests: XCTestCase {
                               + "asked about")
     }
 }
+
+/// The review must come to the wearer, not wait behind a sheet they may never
+/// open — a full wear-day produced ~5,000 unarbitrated steps and the owner
+/// reported "no review cards".
+extension AtriaUnattributedMotionRunsTests {
+    func testTodayKnocksWhenUnverifiedMovementAccumulates() throws {
+        let today = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaTodayScreen.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(today.contains("if unverifiedMovementSteps >= 300 {"),
+                      "the banner mounts once enough unarbitrated movement exists")
+        XCTAssertTrue(today.contains("showStrapStepsDetail = true"),
+                      "and routes to the sheet that holds the review")
+        XCTAssertTrue(today.contains(
+            "AtriaNonGaitArbitrationStore.didChangeNotification"),
+                      "an answer in the sheet must clear the banner promptly")
+    }
+}

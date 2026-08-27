@@ -37348,6 +37348,110 @@ final class SessionStore: ObservableObject {
     /// (which already consults the durable store) reconciles it exactly once
     /// on the next active edge. The strap identity is re-checked here so a
     /// preparation that outlived a re-pair cannot persist a stale claim.
+    private static var daytimeQuiescenceLastAttemptAt: Date?
+    private static let daytimeQuiescenceQueue = DispatchQueue(
+        label: "atria.daytime-quiescence", qos: .utility
+    )
+
+    /// Review-only daytime sleep detection from motion quiescence. Runs only
+    /// when the classic candidate pool came back EMPTY, throttled, off-main,
+    /// and its sole output is a durable pending-review record — the same seam
+    /// the H11 degraded lane uses, surfaced by the existing card with the
+    /// existing dismissal machinery.
+    func maybeScheduleDaytimeQuiescenceReview(reason: String) {
+        let now = Date()
+        if let last = Self.daytimeQuiescenceLastAttemptAt,
+           now.timeIntervalSince(last) < 10 * 60 { return }
+        Self.daytimeQuiescenceLastAttemptAt = now
+
+        // MainActor snapshots; the queue below must not touch self's state.
+        let confirmedSleepWindows: [DateInterval] = confirmedSleeps.compactMap {
+            $0.end > $0.start ? DateInterval(start: $0.start, end: $0.end) : nil
+        }
+        let workoutWindows: [DateInterval] = confirmedWorkouts.compactMap {
+            $0.end > $0.start ? DateInterval(start: $0.start, end: $0.end) : nil
+        }
+        let sleepsSnapshot = confirmedSleeps
+        let dismissedSnapshot = dismissedSleepCandidates
+        let rest = baseline.restingInt ?? 60
+        guard let strapIdentifier = AtriaWhoop4MotionTickDailyStore
+            .persistedStrapIdentifiers().first else { return }
+
+        Self.daytimeQuiescenceQueue.async { [weak self] in
+            let searchStart = now.addingTimeInterval(-26 * 3_600)
+            let points = AtriaWhoop4MotionTickCompactStore.shared
+                .decodedPoints(start: searchStart, end: now,
+                               strapIdentifier: strapIdentifier)
+            guard points.count > 600 else { return }
+            var hrByBucket: [Int: (total: Double, n: Int)] = [:]
+            for point in HistoricalArchive.metricHeartRatePoints(
+                since: searchStart, limit: 40_000
+            ) where point.bpm > 0 {
+                let bucket = Int(point.t.timeIntervalSince1970 / 60)
+                let entry = hrByBucket[bucket] ?? (0, 0)
+                hrByBucket[bucket] = (entry.total + Double(point.bpm), entry.n + 1)
+            }
+            let hrMinutes = hrByBucket.mapValues { $0.total / Double($0.n) }
+            let sustainedUse = AtriaDeviceUseJournal.intervalsOfSustainedUse(
+                in: DateInterval(start: searchStart, end: now),
+                minimumDuration: AtriaDaytimeQuiescentSleepDetector
+                    .sustainedUseMinimumSeconds
+            )
+            guard let candidate = AtriaDaytimeQuiescentSleepDetector.detect(
+                points: points,
+                hrMinutesByBucket: hrMinutes,
+                excluded: confirmedSleepWindows + workoutWindows,
+                sustainedDeviceUse: sustainedUse,
+                now: now
+            ) else {
+                AtriaDebugLog("ATRIADBG daytime_quiescence status=no_candidate reason=%@", reason)
+                return
+            }
+            // Single-slot precedence: a valid record from ANOTHER lane (H11
+            // carries HR/RR evidence) wins; never clobber it. Our own record
+            // for the same rounded window refreshes via fingerprint dedupe.
+            let existing = AtriaPendingSleepReviewStore.load(
+                now: now,
+                confirmedSleeps: sleepsSnapshot,
+                dismissedCandidates: dismissedSnapshot,
+                currentStrapIdentifier: strapIdentifier
+            )
+            if let existing, !existing.id.hasSuffix("daytime_quiescence") {
+                AtriaDebugLog("ATRIADBG daytime_quiescence status=slot_held_by_other id=%@", existing.id)
+                return
+            }
+            let night = AtriaDaytimeQuiescentSleepDetector.night(for: candidate)
+            let outcome = AtriaPendingSleepReviewStore.saveDegradedReview(
+                night,
+                motionBlocker: "daytime_quiescence_motion_only",
+                evidenceFingerprint: candidate.evidenceFingerprint(
+                    strapIdentifier: strapIdentifier
+                ),
+                sourceStrapIdentifier: strapIdentifier,
+                now: now
+            )
+            AtriaDebugLog(
+                "ATRIADBG daytime_quiescence status=%@ window=%@..%@ quiet_h=%.2f hr_in=%.1f hr_out=%.1f",
+                String(describing: outcome),
+                candidate.start.description, candidate.end.description,
+                candidate.observedQuietSeconds / 3_600,
+                candidate.meanInWindowHR, candidate.meanSurroundHR
+            )
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.sleepReviewCacheInputKey = nil
+                self.sleepReviewRefreshDeferredUntilForeground = true
+                if UIApplication.shared.applicationState == .active {
+                    self.scheduleSleepReviewCacheRefresh(
+                        rest: rest,
+                        calendar: .current,
+                        reason: "daytime_quiescence_persisted"
+                    )
+                }
+            }
+        }
+    }
+
     private func persistCompactLatestNightDegradedReview(
         _ review: CompactLatestNightDegradedReviewProposal,
         rest: Int,
@@ -38264,6 +38368,14 @@ final class SessionStore: ObservableObject {
                           reason,
                           candidatePool.count,
                           strongCandidates.count)
+            if candidatePool.isEmpty {
+                // The classic lanes proposed NOTHING. This is exactly the
+                // owner's daytime-sleep wedge (too long for the nap lane,
+                // outside the overnight hours, holes under the 5 h HR-only
+                // floor) — hand the day to the motion-quiescence review
+                // detector, which can only ever produce a review card.
+                maybeScheduleDaytimeQuiescenceReview(reason: reason)
+            }
             DetectionEventLog.append(DetectionEvent(kind: "sleepCandidateSkipped",
                                                      reason: skipReason,
                                                      detail: detail))

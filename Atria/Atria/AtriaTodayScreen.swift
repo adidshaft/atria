@@ -308,6 +308,9 @@ struct AtriaTodayScreen: View {
     /// rather than computed in `body`: the receipts live on disk, and the
     /// glance trend is read on every render.
     @State private var weekStepTrend: [Double] = []
+    /// Estimated steps in today's unarbitrated movement clusters — drives the
+    /// review banner in the plan section.
+    @State private var unverifiedMovementSteps = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AtriaDefault("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AtriaDefault("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
@@ -492,6 +495,13 @@ struct AtriaTodayScreen: View {
         // the same store the Strap steps card reads.
         .task(id: sessionProjectionStore.state.dailyRollupHistory.count) {
             await loadWeekStepTrend()
+        }
+        // An answer given in the steps sheet must clear the banner's count
+        // without waiting for the next receipt publication.
+        .onReceive(NotificationCenter.default.publisher(
+            for: AtriaNonGaitArbitrationStore.didChangeNotification
+        )) { _ in
+            Task { await loadWeekStepTrend() }
         }
         .onAppear {
             #if DEBUG
@@ -755,6 +765,40 @@ struct AtriaTodayScreen: View {
         case .plan:
             if let systemNotifications {
                 systemNotifications
+            }
+
+            // The unverified-movement review lived only inside the steps
+            // sheet, so a wearer who never opened it never saw it — the owner
+            // wore the strap all day and reported "no review cards" while
+            // ~5,000 unarbitrated counter-steps sat waiting. Reviews come to
+            // the wearer, like the workout and sleep banners above.
+            if unverifiedMovementSteps >= 300 {
+                Button {
+                    showStrapStepsDetail = true
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "questionmark.circle")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Unverified movement · ~\(unverifiedMovementSteps) steps")
+                                .font(.subheadline.weight(.semibold))
+                            Text("Tell Atria which stretches were walks")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                }
+                .buttonStyle(AtriaPressableCardStyle())
+                .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
+                .accessibilityHint("Opens the steps sheet to review unverified movement.")
             }
 
             if layoutConfig.showPlan {
@@ -2598,6 +2642,29 @@ struct AtriaTodayScreen: View {
             .sorted { $0.key < $1.key }
             .suffix(7)
             .map { Double($0.value) }
+
+        // Same detector the steps sheet reviews; the banner is only the knock
+        // on the door.
+        let explained: [DateInterval] = store.confirmedWorkouts.compactMap {
+            $0.end > $0.start ? DateInterval(start: $0.start, end: $0.end) : nil
+        } + AtriaNonGaitArbitrationStore.shared.arbitratedWindows()
+        let clusterSteps: Int = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let points = AtriaWhoop4MotionTickCompactStore.shared
+                    .decodedPoints(start: now.addingTimeInterval(-24 * 3_600),
+                                   end: now,
+                                   strapIdentifier: identifier)
+                let clusters = AtriaUnattributedMotionRuns.clusters(
+                    minuteTicks: AtriaUnattributedMotionRuns
+                        .minuteTickTotals(points),
+                    explained: explained
+                )
+                continuation.resume(
+                    returning: clusters.reduce(0) { $0 + $1.estimatedSteps }
+                )
+            }
+        }
+        unverifiedMovementSteps = clusterSteps
     }
 
     /// Which shape a metric's corner chart takes — one per card, decided by how
