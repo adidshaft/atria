@@ -311,6 +311,7 @@ struct AtriaTodayScreen: View {
     /// Estimated steps in today's unarbitrated movement clusters — drives the
     /// review banner in the plan section.
     @State private var unverifiedMovementSteps = 0
+    @State private var showQuietNotificationUpgrade = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AtriaDefault("atria.target.recovery.greenLower") private var recoveryGreenLower: Double = 67
     @AtriaDefault("atria.target.recovery.yellowLower") private var recoveryYellowLower: Double = 34
@@ -799,6 +800,52 @@ struct AtriaTodayScreen: View {
                 .buttonStyle(AtriaPressableCardStyle())
                 .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
                 .accessibilityHint("Opens the steps sheet to review unverified movement.")
+            }
+
+            // Notifications were delivered PROVISIONALLY (quietly) since first
+            // launch: they piled up in Notification Center but never popped
+            // (owner report 2026-08-28). One-shot card; the Settings row keeps
+            // the state visible forever after dismissal.
+            if showQuietNotificationUpgrade {
+                HStack(spacing: 10) {
+                    Button {
+                        LocalNotificationScheduler.requestFullAuthorizationForExplicitEnable()
+                        AtriaNotificationProminenceUpgradeCard.dismiss()
+                        showQuietNotificationUpgrade = false
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "bell.badge")
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(.blue)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Your notifications arrive silently")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("Tap to let sleep and workout alerts pop up")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 8)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                    }
+                    .buttonStyle(AtriaPressableCardStyle())
+
+                    Button {
+                        AtriaNotificationProminenceUpgradeCard.dismiss()
+                        showQuietNotificationUpgrade = false
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Dismiss. You can enable alerts later from Settings.")
+                }
+                .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
+                .accessibilityHint("Asks iOS to show Atria's notifications as normal alerts.")
             }
 
             if layoutConfig.showPlan {
@@ -2671,6 +2718,15 @@ struct AtriaTodayScreen: View {
             }
         }
         unverifiedMovementSteps = clusterSteps
+
+        let prominence = await AtriaNotificationProminence.current()
+        showQuietNotificationUpgrade = AtriaNotificationProminenceUpgradeCard.shouldShow(
+            prominence: prominence,
+            hasDeliveredQuietly: AtriaNotificationProminenceUpgradeCard
+                .hasQuietDeliveryEvidence(),
+            dismissed: AtriaNotificationProminenceUpgradeCard.isDismissed(),
+            masterToggleOn: AtriaNotificationSettings.load().allowNotifications
+        )
     }
 
     /// Which shape a metric's corner chart takes — one per card, decided by how

@@ -36,8 +36,9 @@ final class AtriaPressableCardStyleTests: XCTestCase {
         XCTAssertEqual(
             try source("AtriaTodayScreen.swift")
                 .components(separatedBy: "AtriaPressableCardStyle()").count - 1,
-            5, "the four glance-tile button variants plus the "
-                + "unverified-movement review banner (added 2026-08-28)")
+            6, "the four glance-tile button variants, the unverified-movement "
+                + "review banner, and the quiet-notification upgrade card "
+                + "(both added 2026-08-28)")
         XCTAssertEqual(
             try source("AtriaHealthScreen.swift")
                 .components(separatedBy: "AtriaPressableCardStyle()").count - 1,

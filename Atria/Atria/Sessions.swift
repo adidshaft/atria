@@ -37516,6 +37516,18 @@ final class SessionStore: ObservableObject {
                         reason: "daytime_quiescence_persisted"
                     )
                 }
+                // Event-bound review notification (same rule the qualified
+                // admission lane follows): without it a save from a background
+                // pass waited silently for the next open — "reviews come to
+                // the wearer". The full gate stack (toggle, budget, debounce,
+                // redundant-while-active) applies unchanged inside.
+                if case .saved = outcome {
+                    Task { [weak self] in
+                        guard let self else { return }
+                        await LocalNotificationScheduler
+                            .scheduleAdmittedSleepReview(store: self)
+                    }
+                }
             }
         }
     }
