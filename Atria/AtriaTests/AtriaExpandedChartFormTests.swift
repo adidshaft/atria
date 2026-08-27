@@ -20,23 +20,27 @@ final class AtriaExpandedChartFormTests: XCTestCase {
     }
 
     func testContinuousAndIntraDayMetricsStayLines() {
-        for kind in [AtriaMetricDetailKind.hrv, .restingHeartRate, .respiratoryRate,
-                     .stress, .vo2max, .sleepEfficiency, .skinTemperature,
+        // UPDATED 2026-08-27, with the rule rather than against it. This test
+        // used to pin HRV, resting HR, respiratory rate and sleep efficiency
+        // as lines — contradicting the owner's chart grammar ("HRV etc are
+        // once a day right, then why isnt it bar charts") and making those
+        // tiles draw bars on the card and lines when opened. The line set is
+        // now exactly the metrics that are NOT one value per day.
+        for kind in [AtriaMetricDetailKind.stress, .vo2max, .skinTemperature,
                      .fitnessAge, .hrZones, .bloodOxygen] {
             XCTAssertFalse(kind.rendersAsDailyBar,
-                           "\(kind.rawValue) is not a once-a-day score")
+                           "\(kind.rawValue) stays a line: intra-day, signed, "
+                               + "scale-hostile, or has no stored per-day series")
         }
     }
 
     func testEveryKindIsClassifiedExactlyOnceAndTheSetIsTheExpectedSize() {
         // Guards a new case silently defaulting into "line" without anyone
         // deciding. If this fails, classify the new metric deliberately.
-        let bars = [AtriaMetricDetailKind.recovery, .hrv, .restingHeartRate,
-                    .respiratoryRate, .sleep, .strain, .stress, .vo2max,
-                    .sleepPerformance, .sleepEfficiency, .skinTemperature,
-                    .fitnessAge, .hrZones, .bloodOxygen]
-            .filter(\.rendersAsDailyBar)
-        XCTAssertEqual(bars.count, 4)
+        XCTAssertEqual(
+            AtriaMetricDetailKind.allCases.filter(\.rendersAsDailyBar).count,
+            8
+        )
     }
 
     // MARK: - Wiring

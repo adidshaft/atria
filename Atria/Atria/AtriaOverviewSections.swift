@@ -8332,7 +8332,7 @@ private struct AtriaPlanReadinessMark: View, Equatable {
     }
 }
 
-enum AtriaMetricDetailKind: String, Identifiable {
+enum AtriaMetricDetailKind: String, Identifiable, CaseIterable {
     case recovery
     case hrv
     case restingHeartRate
@@ -8362,8 +8362,25 @@ enum AtriaMetricDetailKind: String, Identifiable {
     /// same shape that was tapped rather than silently switching to a line.
     var rendersAsDailyBar: Bool {
         switch self {
-        case .recovery, .sleep, .strain, .sleepPerformance:
+        // The owner's chart grammar (2026-08-26): a metric that resolves to
+        // ONE value per day draws as bars; a metric that moves through the day
+        // draws as a line. The corner sparklines followed it from the start —
+        // HRV, resting HR and respiratory rate drew bars on the tile and then
+        // silently switched to lines when tapped open, which is exactly the
+        // unpredictability the 2026-08-27 goal names. Aligned here so the
+        // full-screen shape is the shape that was tapped.
+        case .recovery, .sleep, .strain, .sleepPerformance,
+             .hrv, .restingHeartRate, .respiratoryRate, .sleepEfficiency:
             return true
+        // Stated exclusions, each for a reason rather than by omission:
+        //  .stress          intra-day — the rule's own line case
+        //  .skinTemperature a signed DEVIATION; the bar y-domain is anchored
+        //                   at zero and would clip a negative night
+        //  .fitnessAge      an age in years — a bar from zero makes a one-year
+        //                   change invisible, defeating the chart
+        //  .vo2max, .bloodOxygen, .hrZones  render honest no-trend templates;
+        //                   they gain the bar form when a stored per-day
+        //                   series exists to draw
         default:
             return false
         }
