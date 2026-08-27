@@ -36,6 +36,68 @@ enum AtriaUnattributedMotionRuns {
     static let minimumClusterTicks = 250
     static let minimumClusterActiveMinutes = 3
 
+    /// ASKING is rarer than COUNTING. Owner feedback (2026-08-28): a full
+    /// wear day produced a long list of small stretches nobody can remember —
+    /// "it is not guaranteed that the users will remember when they walked".
+    /// Only major, confident motion earns a question; minor clusters stay
+    /// included in the count and are disclosed in aggregate, never itemised.
+    static let askableMinimumSteps = 800
+    static let askableMinimumActiveMinutes = 10
+    static let maximumQuestionsPerDay = 3
+
+    struct Partition: Equatable {
+        /// Worth a question: major, unanswered, capped at
+        /// `maximumQuestionsPerDay`, biggest first.
+        let askable: [Cluster]
+        /// Auto-answered from the wearer's own repeated explicit answers.
+        let autoResolved: [(cluster: Cluster, verdict: AtriaNonGaitArbitrationStore.Verdict)]
+        /// Included in the count, disclosed in aggregate only.
+        let minorSteps: Int
+
+        static func == (lhs: Partition, rhs: Partition) -> Bool {
+            lhs.askable == rhs.askable
+                && lhs.minorSteps == rhs.minorSteps
+                && lhs.autoResolved.map(\.cluster) == rhs.autoResolved.map(\.cluster)
+                && lhs.autoResolved.map(\.verdict) == rhs.autoResolved.map(\.verdict)
+        }
+    }
+
+    /// Split detected clusters into questions, learned answers, and minor
+    /// noise. Learned answers are RECORDED (auto-flagged) so every step
+    /// surface picks them up through the store, and the sheet can show them
+    /// with an undo.
+    static func partition(
+        clusters: [Cluster],
+        store: AtriaNonGaitArbitrationStore,
+        calendar: Calendar = .current,
+        now: Date = Date()
+    ) -> Partition {
+        var askable: [Cluster] = []
+        var auto: [(Cluster, AtriaNonGaitArbitrationStore.Verdict)] = []
+        var minor = 0
+        for cluster in clusters {
+            if let learned = store.learnedVerdict(startingAt: cluster.start,
+                                                  calendar: calendar) {
+                store.record(window: cluster.window, verdict: learned,
+                             auto: true, now: now)
+                auto.append((cluster, learned))
+                continue
+            }
+            if cluster.estimatedSteps >= askableMinimumSteps,
+               cluster.activeMinutes >= askableMinimumActiveMinutes {
+                askable.append(cluster)
+            } else {
+                minor += cluster.estimatedSteps
+            }
+        }
+        askable.sort { $0.estimatedSteps > $1.estimatedSteps }
+        let overflow = askable.dropFirst(maximumQuestionsPerDay)
+        minor += overflow.reduce(0) { $0 + $1.estimatedSteps }
+        return Partition(askable: Array(askable.prefix(maximumQuestionsPerDay)),
+                         autoResolved: auto,
+                         minorSteps: minor)
+    }
+
     struct Cluster: Equatable, Identifiable {
         let start: Date
         let end: Date
@@ -130,9 +192,40 @@ final class AtriaNonGaitArbitrationStore {
         let end: Date
         let verdict: Verdict
         let decidedAt: Date
+        /// True when the app applied a learned verdict rather than the wearer
+        /// tapping. Auto answers never feed learning (no self-compounding)
+        /// and always carry an undo in the sheet. Optional so legacy files
+        /// decode; nil means explicit.
+        var auto: Bool?
 
         var id: Date { start }
         var window: DateInterval { DateInterval(start: start, end: end) }
+        var isAuto: Bool { auto == true }
+    }
+
+    /// The wearer's pattern, learned from EXPLICIT answers only: three
+    /// consistent verdicts for clusters starting in the same 3-hour local
+    /// band, with none contrary, auto-resolve future clusters in that band.
+    /// One contrary answer anywhere in the band disables learning for it —
+    /// ambiguity goes back to the wearer.
+    static let learningMinimumConsistentAnswers = 3
+
+    func learnedVerdict(startingAt start: Date,
+                        calendar: Calendar = .current) -> Verdict? {
+        let band = calendar.component(.hour, from: start) / 3
+        let explicit = answers().filter {
+            !$0.isAuto
+                && calendar.component(.hour, from: $0.start) / 3 == band
+        }
+        let walking = explicit.filter { $0.verdict == .walking }.count
+        let notWalking = explicit.filter { $0.verdict == .notWalking }.count
+        if notWalking >= Self.learningMinimumConsistentAnswers, walking == 0 {
+            return .notWalking
+        }
+        if walking >= Self.learningMinimumConsistentAnswers, notWalking == 0 {
+            return .walking
+        }
+        return nil
     }
 
     static let didChangeNotification =
@@ -176,14 +269,21 @@ final class AtriaNonGaitArbitrationStore {
         answers().map(\.window)
     }
 
-    func record(window: DateInterval, verdict: Verdict, now: Date = Date()) {
+    func record(window: DateInterval, verdict: Verdict,
+                auto: Bool = false, now: Date = Date()) {
         queue.sync {
             var current = cached ?? ((try? Data(contentsOf: url))
                 .flatMap { try? JSONDecoder().decode([Answer].self, from: $0) }
                 ?? [])
+            // An explicit answer always replaces an auto one; an auto answer
+            // never replaces an explicit one — the wearer outranks the model.
+            if auto, current.contains(where: { $0.window == window && !$0.isAuto }) {
+                return
+            }
             current.removeAll { $0.window == window }
             current.append(Answer(start: window.start, end: window.end,
-                                  verdict: verdict, decidedAt: now))
+                                  verdict: verdict, decidedAt: now,
+                                  auto: auto ? true : nil))
             // Bound the file; two months of answers is ample history.
             current.sort { $0.start > $1.start }
             current = Array(current.prefix(200))

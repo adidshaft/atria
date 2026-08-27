@@ -6026,6 +6026,9 @@ struct AtriaStrapStepsDetailSheet: View {
     /// about it again.
     var explainedWindows: [DateInterval] = []
     @State private var unverifiedClusters: [AtriaUnattributedMotionRuns.Cluster] = []
+    @State private var autoResolvedCount = 0
+    @State private var autoResolvedSteps = 0
+    @State private var minorMovementSteps = 0
 
     /// Verified per-day step totals (day-start → steps) for the weekly bar chart,
     /// loaded once from the durable motion-tick day store. Days without a
@@ -6182,7 +6185,11 @@ struct AtriaStrapStepsDetailSheet: View {
                     .monospacedDigit()
                     .foregroundStyle(.secondary)
             }
-            Text("These stretches moved the step counter but aren't a confirmed walk or workout. They're included above — tell Atria which they were.")
+            // Owner feedback (2026-08-28) drove this copy: it must say what
+            // an answer DOES and that the app LEARNS, or the question reads as
+            // busywork. And only a few major stretches are ever asked — the
+            // long list of small ones nobody remembers is gone.
+            Text("A few big stretches of movement aren't a confirmed walk or workout. Not walking removes those steps everywhere; after a few answers Atria learns your pattern and stops asking.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -6213,6 +6220,21 @@ struct AtriaStrapStepsDetailSheet: View {
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityHint("Was this stretch a walk, or other movement like a meal or chores?")
+            }
+
+            if autoResolvedCount > 0 {
+                Text(autoResolvedSteps > 0
+                     ? "\(autoResolvedCount) stretch(es) auto-marked from your earlier answers (−\(autoResolvedSteps) steps). Changed your mind? Answer again above when one is asked."
+                     : "\(autoResolvedCount) stretch(es) auto-marked as walking from your earlier answers.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if minorMovementSteps > 0 {
+                Text("Smaller movement (~\(minorMovementSteps) steps) stays included — too scattered to be worth asking about.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(12)
@@ -6273,22 +6295,32 @@ struct AtriaStrapStepsDetailSheet: View {
     private func refreshUnverifiedClusters(identifier: String, now: Date) async {
         let explained = explainedWindows
             + AtriaNonGaitArbitrationStore.shared.arbitratedWindows()
-        let clusters = await withCheckedContinuation { continuation in
+        let partition = await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
                 let points = AtriaWhoop4MotionTickCompactStore.shared
                     .decodedPoints(start: now.addingTimeInterval(-24 * 3_600),
                                    end: now,
                                    strapIdentifier: identifier)
+                let clusters = AtriaUnattributedMotionRuns.clusters(
+                    minuteTicks: AtriaUnattributedMotionRuns
+                        .minuteTickTotals(points),
+                    explained: explained
+                )
                 continuation.resume(
-                    returning: AtriaUnattributedMotionRuns.clusters(
-                        minuteTicks: AtriaUnattributedMotionRuns
-                            .minuteTickTotals(points),
-                        explained: explained
+                    returning: AtriaUnattributedMotionRuns.partition(
+                        clusters: clusters,
+                        store: .shared,
+                        now: now
                     )
                 )
             }
         }
-        unverifiedClusters = clusters
+        unverifiedClusters = partition.askable
+        autoResolvedCount = partition.autoResolved.count
+        autoResolvedSteps = partition.autoResolved
+            .filter { $0.verdict == .notWalking }
+            .reduce(0) { $0 + $1.cluster.estimatedSteps }
+        minorMovementSteps = partition.minorSteps
     }
 
     private func arbitrate(_ cluster: AtriaUnattributedMotionRuns.Cluster,

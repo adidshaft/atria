@@ -6638,7 +6638,33 @@ private struct AtriaMissedDataBanner: View, Equatable {
     /// buffer pending, P6) AND whether the background drain is actively flushing
     /// (durable-flush recency + active lease) — NOT the stale pending count
     /// alone, which made a working drain read as "stuck at ~8 min".
+    /// A huge backlog is a DECISION, not a status. A fresh user pairing a
+    /// strap that lived with the official WHOOP app inherits weeks of foreign
+    /// flash history; at ~1x replay that backlog never converges, silently
+    /// starves sleep confirmation, and poisons the cycle boundary — the exact
+    /// failure the owner lived through at 15.5 h, met on day one at 10x. Over
+    /// a day of backlog, the banner leads with the choice instead of quietly
+    /// "filling".
+    private var oversizedBacklogText: String? {
+        let seconds = AtriaHomeRecoverySyncPresentation.unresolvedGapSeconds(
+            windows: AtriaHistoricalGapLedger.windowsForEvidence(
+                defaults: .standard),
+            now: Date()
+        )
+        guard seconds >= 24 * 3_600 else { return nil }
+        return String(format: "%.0f days", (seconds / 86_400).rounded())
+    }
+
     private var bannerCopy: AtriaMissedDataBannerPresentation.Copy {
+        if let days = oversizedBacklogText {
+            return .init(
+                title: "This strap holds ~\(days) of history from before Atria",
+                subtitle: "Syncing it all is slow and delays sleep and step "
+                    + "accuracy. Start fresh keeps live tracking and lets "
+                    + "today work now — recommended for a newly paired strap.",
+                offersRecovery: true
+            )
+        }
         let defaults = UserDefaults.standard
         let pending = defaults.integer(
             forKey: AtriaBLEManager.OfflineSyncDefaults.flushDebtPendingRecords

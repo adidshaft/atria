@@ -2659,8 +2659,14 @@ struct AtriaTodayScreen: View {
                         .minuteTickTotals(points),
                     explained: explained
                 )
+                // Only ASKABLE clusters knock; learned answers apply
+                // silently and minor noise never interrupts anyone.
+                let partition = AtriaUnattributedMotionRuns.partition(
+                    clusters: clusters, store: .shared, now: now
+                )
                 continuation.resume(
-                    returning: clusters.reduce(0) { $0 + $1.estimatedSteps }
+                    returning: partition.askable
+                        .reduce(0) { $0 + $1.estimatedSteps }
                 )
             }
         }
