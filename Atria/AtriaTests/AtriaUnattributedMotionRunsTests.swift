@@ -229,3 +229,116 @@ extension AtriaUnattributedMotionRunsTests {
                       "an answer in the sheet must clear the banner promptly")
     }
 }
+
+/// The 2026-08-28 UX redesign: ask rarely, learn, never itemise noise.
+extension AtriaUnattributedMotionRunsTests {
+
+    private func cluster(hour: Int, steps: Int, minutes: Int = 15)
+        -> AtriaUnattributedMotionRuns.Cluster {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        let start = cal.date(from: DateComponents(
+            year: 2026, month: 8, day: 28, hour: hour))!
+        return .init(start: start,
+                     end: start.addingTimeInterval(Double(minutes) * 60),
+                     ticks: Int(Double(steps) * 155.0 / 132.0),
+                     activeMinutes: minutes)
+    }
+
+    private func freshStore() -> AtriaNonGaitArbitrationStore {
+        AtriaNonGaitArbitrationStore(
+            url: FileManager.default.temporaryDirectory
+                .appendingPathComponent("part-\(UUID().uuidString).json"))
+    }
+
+    func testOnlyMajorClustersAreAskedAndTheListIsCapped() {
+        let clusters = [cluster(hour: 8, steps: 2_000),
+                        cluster(hour: 10, steps: 1_500),
+                        cluster(hour: 12, steps: 1_200),
+                        cluster(hour: 14, steps: 900),
+                        cluster(hour: 16, steps: 300),     // minor: below floor
+                        cluster(hour: 18, steps: 850, minutes: 5)] // minor: short
+        let partition = AtriaUnattributedMotionRuns.partition(
+            clusters: clusters, store: freshStore())
+        XCTAssertEqual(partition.askable.count, 3, "never a long list")
+        // Compared through the clusters' own tick-rounded values: the fixture
+        // converts steps->ticks->steps, and 2,000 legitimately round-trips to
+        // 1,999 — asserting the literal failed on arithmetic, not behaviour.
+        XCTAssertEqual(partition.askable.first, clusters[0],
+                       "biggest first — the ones a wearer can actually remember")
+        XCTAssertEqual(partition.askable.map(\.id),
+                       [clusters[0], clusters[1], clusters[2]].map(\.id))
+        XCTAssertEqual(partition.minorSteps,
+                       clusters[3].estimatedSteps + clusters[4].estimatedSteps
+                           + clusters[5].estimatedSteps,
+                       "the fourth major cluster overflows into the aggregate "
+                           + "disclosure along with the noise")
+    }
+
+    func testThreeConsistentAnswersTeachTheBandAndAContraryOneBlocksIt() {
+        let store = freshStore()
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        for day in 25...27 {
+            let start = cal.date(from: DateComponents(
+                year: 2026, month: 8, day: day, hour: 13))!
+            store.record(window: DateInterval(start: start,
+                                              end: start.addingTimeInterval(900)),
+                         verdict: .notWalking)
+        }
+        XCTAssertEqual(store.learnedVerdict(
+            startingAt: cal.date(from: DateComponents(
+                year: 2026, month: 8, day: 28, hour: 13))!,
+            calendar: cal), .notWalking,
+            "three consistent explicit answers teach the 3-hour band")
+        XCTAssertNil(store.learnedVerdict(
+            startingAt: cal.date(from: DateComponents(
+                year: 2026, month: 8, day: 28, hour: 20))!,
+            calendar: cal), "other bands stay unlearned")
+
+        let contrary = cal.date(from: DateComponents(
+            year: 2026, month: 8, day: 24, hour: 14))!
+        store.record(window: DateInterval(start: contrary,
+                                          end: contrary.addingTimeInterval(900)),
+                     verdict: .walking)
+        XCTAssertNil(store.learnedVerdict(
+            startingAt: cal.date(from: DateComponents(
+                year: 2026, month: 8, day: 28, hour: 13))!,
+            calendar: cal),
+            "one contrary answer returns the band to the wearer")
+    }
+
+    func testAutoAnswersApplyEverywhereButNeverCompoundLearning() {
+        let store = freshStore()
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+        for day in 25...27 {
+            let start = cal.date(from: DateComponents(
+                year: 2026, month: 8, day: day, hour: 13))!
+            store.record(window: DateInterval(start: start,
+                                              end: start.addingTimeInterval(900)),
+                         verdict: .notWalking)
+        }
+        let partition = AtriaUnattributedMotionRuns.partition(
+            clusters: [cluster(hour: 13, steps: 1_800)],
+            store: store, calendar: cal)
+        XCTAssertTrue(partition.askable.isEmpty, "learned bands are not asked")
+        XCTAssertEqual(partition.autoResolved.count, 1)
+        XCTAssertEqual(store.notWalkingWindows().count, 4,
+                       "the auto answer joins the exclusion feed durably")
+        // Auto answers are excluded from learning input: the band's explicit
+        // count stays 3, so a later contrary explicit answer still flips it.
+        XCTAssertEqual(store.answers().filter { !$0.isAuto }.count, 3)
+    }
+
+    func testAnExplicitAnswerOutranksAndSurvivesAnAutoOne() {
+        let store = freshStore()
+        let window = DateInterval(start: Date(timeIntervalSince1970: 1_756_100_000),
+                                  end: Date(timeIntervalSince1970: 1_756_101_000))
+        store.record(window: window, verdict: .walking)          // explicit
+        store.record(window: window, verdict: .notWalking, auto: true)
+        XCTAssertEqual(store.answers().first?.verdict, .walking,
+                       "the wearer outranks the model, always")
+        XCTAssertTrue(store.notWalkingWindows().isEmpty)
+    }
+}
