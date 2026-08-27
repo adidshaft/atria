@@ -355,6 +355,7 @@ struct AtriaHapticAlertSettingsCard: View, Equatable {
 /// scheduler can post has a toggle and an honest one-line description here.
 struct AtriaNotificationSettingsCard: View {
     @State private var settings = AtriaNotificationSettings.load()
+    @State private var prominence: AtriaNotificationProminence?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -373,6 +374,10 @@ struct AtriaNotificationSettingsCard: View {
 
             masterToggle
 
+            if settings.allowNotifications, let prominence {
+                prominenceRow(prominence)
+            }
+
             if settings.allowNotifications {
                 VStack(spacing: 8) {
                     ForEach(AtriaNotificationCategory.allCases) { category in
@@ -385,6 +390,48 @@ struct AtriaNotificationSettingsCard: View {
         .padding(14)
         .atriaInsetCard(tint: .blue)
         .animation(.snappy(duration: AtriaDesignTokens.Motion.standard), value: settings.allowNotifications)
+        .task { prominence = await AtriaNotificationProminence.current() }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIApplication.didBecomeActiveNotification
+        )) { _ in
+            // Returning from the system prompt or iOS Settings re-activates
+            // the scene; re-read so the row reflects what the wearer chose.
+            Task { prominence = await AtriaNotificationProminence.current() }
+        }
+    }
+
+    /// Honest delivery-posture row. Without it a provisional (quiet) or
+    /// system-denied state was invisible here: 17 enabled toggles while
+    /// nothing ever popped up (owner report 2026-08-28).
+    private func prominenceRow(_ state: AtriaNotificationProminence) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: state == .full ? "bell.fill" : "bell.slash")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(state == .full ? Color.blue : Color.orange)
+            Text(state.settingsStatusText)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            if state.canRequestUpgradeInApp {
+                Button("Enable alerts") {
+                    LocalNotificationScheduler.requestFullAuthorizationForExplicitEnable()
+                }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.borderless)
+            } else if state == .denied {
+                Button("Open Settings") {
+                    if let url = URL(string: UIApplication.openNotificationSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.borderless)
+            }
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .atriaInsetCard(cornerRadius: 14, tint: state == .full ? .blue : .orange)
     }
 
     private var masterToggle: some View {
