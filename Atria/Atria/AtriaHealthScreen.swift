@@ -1136,7 +1136,7 @@ struct AtriaHealthScreen: View {
                                     // need receipt directly underneath it.
                                     footnote: sleepPerformanceFootnote)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(AtriaPressableCardStyle())
                 .accessibilityHint("Opens sleep sufficiency detail")
                 Button {
                     metricDetail = .sleepEfficiency
@@ -1150,7 +1150,7 @@ struct AtriaHealthScreen: View {
                                     tint: .cyan,
                                     footnote: currentSleep?.sleepEfficiencyFootnote ?? "Duration-based estimate")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(AtriaPressableCardStyle())
                 .accessibilityHint("Opens sleep efficiency detail")
             }
 
@@ -1346,7 +1346,7 @@ struct AtriaHealthScreen: View {
         } label: {
             AtriaHealthFitnessAgeCardHost(profileMetricsStore: profileMetricsStore)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(AtriaPressableCardStyle())
         .accessibilityHint("Opens Healthspan details")
     }
 
