@@ -444,7 +444,11 @@ struct AtriaTodayScreen: View {
                                        presentation: liveStore.state.dailyStepPresentation,
                                        goal: stepsGoal,
                                        nonGaitWindows: AtriaCivilDayStepAuthority
-                                           .nonGaitExclusionWindows(workouts: store.confirmedWorkouts))
+                                           .nonGaitExclusionWindows(workouts: store.confirmedWorkouts),
+                                       explainedWindows: store.confirmedWorkouts.compactMap {
+                                           $0.end > $0.start
+                                               ? DateInterval(start: $0.start, end: $0.end) : nil
+                                       })
                 // The sheet carries a weekly chart plus its legend; a
                 // medium-only detent could not show them, so the chart was
                 // clipped and the sheet could not be dragged open.
@@ -2585,7 +2589,8 @@ struct AtriaTodayScreen: View {
             days: days,
             strapIdentifier: identifier,
             nonGaitExclusions: AtriaCivilDayStepAuthority
-                .nonGaitExclusionWindows(workouts: store.confirmedWorkouts),
+                .nonGaitExclusionWindows(workouts: store.confirmedWorkouts)
+                + AtriaNonGaitArbitrationStore.shared.notWalkingWindows(),
             fallback: fallback,
             now: now
         )

@@ -11727,6 +11727,11 @@ final class SessionStore: ObservableObject {
                       ).producesFootfalls else { return nil }
                 return DateInterval(start: workout.start, end: workout.end)
             }
+            // Plus every window the wearer has answered "Not walking" in the
+            // unverified-movement review — the only channel that can separate
+            // a meal from a walk in this data (2026-08-27: the two are the
+            // same statistical population in every drained signal).
+            + AtriaNonGaitArbitrationStore.shared.notWalkingWindows()
         Self.currentCycleStepReceiptQueue.async { [weak self] in
             var postsEmptyCycleInvalidation = false
             defer {
