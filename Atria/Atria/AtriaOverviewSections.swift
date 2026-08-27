@@ -779,6 +779,11 @@ private struct AtriaSleepReviewCard: View {
         // it only restated the Confirm button sitting directly beneath it.
         // Keep the provenance — that is the part the user cannot infer — and
         // let the button speak for the action.
+        // Provenance must match the evidence. The quiescence lane's whole
+        // case IS motion — calling it "motion unverified" would invert it.
+        if night.source == AtriaDaytimeQuiescentSleepDetector.sourceName {
+            return "Motion-quiet estimate · confirm to save"
+        }
         if night.motionValidated != true {
             return isNap
                 ? "HR/RR estimate · motion unverified · saves as a nap"
