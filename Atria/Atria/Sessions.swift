@@ -37386,24 +37386,50 @@ final class SessionStore: ObservableObject {
         let dismissedSnapshot = dismissedSleepCandidates
         let rest = baseline.restingInt ?? 60
         guard let strapIdentifier = AtriaWhoop4MotionTickDailyStore
-            .persistedStrapIdentifiers().first else { return }
+            .persistedStrapIdentifiers().first else {
+            DetectionEventLog.append(DetectionEvent(
+                kind: "sleepCandidateSkipped",
+                reason: "daytime_quiescence_no_strap",
+                detail: "Motion-quiet scan has no persisted strap identity "
+                    + "(source: \(reason))"
+            ))
+            return
+        }
 
         Self.daytimeQuiescenceQueue.async { [weak self] in
             let searchStart = now.addingTimeInterval(-26 * 3_600)
             let points = AtriaWhoop4MotionTickCompactStore.shared
                 .decodedPoints(start: searchStart, end: now,
                                strapIdentifier: strapIdentifier)
-            guard points.count > 600 else { return }
+            guard points.count > 600 else {
+                DetectionEventLog.append(DetectionEvent(
+                    kind: "sleepCandidateSkipped",
+                    reason: "daytime_quiescence_insufficient_motion",
+                    detail: "Motion-quiet scan found only \(points.count) "
+                        + "motion rows in 26 h (source: \(reason))"
+                ))
+                return
+            }
             var hrByBucket: [Int: (total: Double, n: Int)] = [:]
-            // 110k, NOT 40k: the archive read keeps the NEWEST `limit`
-            // samples, and at ~1 Hz a 40k cap holds only ~11 h — the sleep
-            // window 13+ hours back was truncated away entirely, so the
-            // HR-presence floor refused a real sleep the detector had found.
-            // Field-caught on 2026-08-28: offline test passed (it fed HR from
-            // stress facts), device produced nothing.
-            for point in HistoricalArchive.metricHeartRatePoints(
-                since: searchStart, limit: 110_000
-            ) where point.bpm > 0 {
+            // Exact-window sidecar read, NOT the recent-tail facade: at a
+            // 110k limit the tail facade re-scans the whole archive with
+            // per-line ISO-8601 parsing to keep the newest rows — 144 s of
+            // solid CPU in the 2026-08-28 03:51 cpu_resource report, never
+            // finishing before suspension, so the review card silently never
+            // appeared. The exact read selects only overlapping sealed
+            // chunks via the catalog and serves repeats from sidecars.
+            guard let hrRead = HistoricalArchive.metricHeartRatePoints(
+                start: searchStart, end: now, maximumPoints: 110_000
+            ) else {
+                DetectionEventLog.append(DetectionEvent(
+                    kind: "sleepCandidateSkipped",
+                    reason: "daytime_quiescence_hr_read_incomplete",
+                    detail: "Motion-quiet scan could not complete the exact "
+                        + "HR window read (source: \(reason))"
+                ))
+                return
+            }
+            for point in hrRead.points where point.bpm > 0 {
                 let bucket = Int(point.t.timeIntervalSince1970 / 60)
                 let entry = hrByBucket[bucket] ?? (0, 0)
                 hrByBucket[bucket] = (entry.total + Double(point.bpm), entry.n + 1)
