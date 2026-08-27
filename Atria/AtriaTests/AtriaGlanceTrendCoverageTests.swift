@@ -65,10 +65,16 @@ final class AtriaGlanceTrendCoverageTests: XCTestCase {
     func testBothStepSurfacesFoldDaysThroughTheSameFunction() throws {
         let today = try source("AtriaTodayScreen.swift")
         let overview = try source("AtriaOverviewSections.swift")
-        XCTAssertTrue(today.contains("AtriaStepsWeekChart.dailyStepTotals"),
-                      "the Today sparkline must use the shared rule")
-        XCTAssertTrue(overview.contains("AtriaStepsWeekChart.dailyStepTotals"),
-                      "and so must the Overview week chart")
+        // Layered, and both layers shared: exact per-calendar-day totals from
+        // AtriaCivilDayStepAuthority (2026-08-27 audit: a day showing 505 held
+        // ~7,000 in its shards, another showing 0 held 3,615), with the
+        // receipt fold as the fallback for days whose shards rotated out.
+        for (name, text) in [("Today", today), ("Overview", overview)] {
+            XCTAssertTrue(text.contains("AtriaCivilDayStepAuthority.shared.dailyTotals"),
+                          "\(name) must read exact day totals from the authority")
+            XCTAssertTrue(text.contains("AtriaStepsWeekChart.dailyStepTotals"),
+                          "\(name) must keep the receipt fold as its fallback")
+        }
         XCTAssertFalse(overview.contains("map[day, default: 0] += receipt.steps"),
                        "the second copy of the folding rule must be gone — two "
                            + "copies is how the card and its own chart came to "

@@ -442,7 +442,9 @@ struct AtriaTodayScreen: View {
             AtriaStrapStepsDetailSheet(count: liveStore.state.strapStepResearchCount,
                                        validationState: liveStore.state.strapStepResearchState,
                                        presentation: liveStore.state.dailyStepPresentation,
-                                       goal: stepsGoal)
+                                       goal: stepsGoal,
+                                       nonGaitWindows: AtriaCivilDayStepAuthority
+                                           .nonGaitExclusionWindows(workouts: store.confirmedWorkouts))
                 // The sheet carries a weekly chart plus its legend; a
                 // medium-only detent could not show them, so the chart was
                 // clipped and the sheet could not be dragged open.
@@ -2568,9 +2570,25 @@ struct AtriaTodayScreen: View {
     private func loadWeekStepTrend() async {
         guard let identifier = AtriaWhoop4MotionTickDailyStore
             .persistedStrapIdentifiers().first else { return }
+        let now = Date()
         let receipts = AtriaWhoop4MotionTickDailyStore.shared
             .recentReceipts(strapIdentifier: identifier, limit: 14)
-        let totals = AtriaStepsWeekChart.dailyStepTotals(receipts: receipts, now: Date())
+        let fallback = AtriaStepsWeekChart.dailyStepTotals(receipts: receipts, now: now)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: now)
+        let days = (0..<7).compactMap {
+            calendar.date(byAdding: .day, value: -$0, to: today)
+        }
+        // Same authority as the week chart, so the corner sparkline and the
+        // sheet's bars cannot disagree about a day.
+        let totals = await AtriaCivilDayStepAuthority.shared.dailyTotals(
+            days: days,
+            strapIdentifier: identifier,
+            nonGaitExclusions: AtriaCivilDayStepAuthority
+                .nonGaitExclusionWindows(workouts: store.confirmedWorkouts),
+            fallback: fallback,
+            now: now
+        )
         weekStepTrend = totals
             .sorted { $0.key < $1.key }
             .suffix(7)
