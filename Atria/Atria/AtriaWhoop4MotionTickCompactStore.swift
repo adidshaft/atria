@@ -1507,6 +1507,18 @@ final class AtriaWhoop4MotionTickCompactStore: @unchecked Sendable {
         )
     }
 
+    /// Decoded rows for one window, for consumers that need the per-minute
+    /// texture rather than a reduced total — today that is the unattributed-
+    /// motion detector. Same lock and decode path as every other read.
+    func decodedPoints(
+        start: Date,
+        end: Date,
+        strapIdentifier: String
+    ) -> [Point] {
+        precondition(!Thread.isMainThread)
+        return read(start: start, end: end, strapIdentifier: strapIdentifier)
+    }
+
     func decodedPointsForTesting(
         start: Date,
         end: Date,

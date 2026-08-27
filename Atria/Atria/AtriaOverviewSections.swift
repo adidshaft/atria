@@ -2934,7 +2934,11 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                        presentation: live.dailyStepPresentation,
                                        goal: stepsGoal,
                                        nonGaitWindows: AtriaCivilDayStepAuthority
-                                           .nonGaitExclusionWindows(workouts: confirmedWorkouts))
+                                           .nonGaitExclusionWindows(workouts: confirmedWorkouts),
+                                       explainedWindows: confirmedWorkouts.compactMap {
+                                           $0.end > $0.start
+                                               ? DateInterval(start: $0.start, end: $0.end) : nil
+                                       })
                 // The sheet carries a weekly chart plus its legend; a
                 // medium-only detent could not show them, so the chart was
                 // clipped and the sheet could not be dragged open.
@@ -6012,6 +6016,11 @@ struct AtriaStrapStepsDetailSheet: View {
     /// the exact per-day computation, so labelled arm work does not read as
     /// walking. Defaults empty: no exclusions is the pre-existing behaviour.
     var nonGaitWindows: [DateInterval] = []
+    /// EVERY confirmed workout window, either kind — a labelled block already
+    /// explains its arm motion, so the unverified-movement review must not ask
+    /// about it again.
+    var explainedWindows: [DateInterval] = []
+    @State private var unverifiedClusters: [AtriaUnattributedMotionRuns.Cluster] = []
 
     /// Verified per-day step totals (day-start → steps) for the weekly bar chart,
     /// loaded once from the durable motion-tick day store. Days without a
@@ -6110,6 +6119,10 @@ struct AtriaStrapStepsDetailSheet: View {
                     .padding(12)
                     .atriaInsetCard(tint: status.tint)
 
+                    if !unverifiedClusters.isEmpty {
+                        unverifiedMovementCard
+                    }
+
                     stepsWeekChartCard
                   }
                   .padding()
@@ -6142,6 +6155,63 @@ struct AtriaStrapStepsDetailSheet: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .atriaInsetCard(tint: .secondary)
+    }
+
+    /// Sustained arm motion the strap counted that nothing explains. The
+    /// count above already INCLUDES it — include-with-disclosure, never
+    /// exclude-by-default — and one answer per cluster settles it: walking
+    /// keeps it and stops the asking; not-walking excludes the window
+    /// everywhere steps are computed, through the same machinery a labelled
+    /// Strength block uses. Only the wearer can make this call: on this
+    /// hardware a meal and a constrained-arm walk are the same signal.
+    private var unverifiedMovementCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "questionmark.circle")
+                    .foregroundStyle(.orange)
+                Text("Unverified movement")
+                    .font(.caption.weight(.bold))
+                Spacer(minLength: 0)
+                Text("~\(unverifiedClusters.reduce(0) { $0 + $1.estimatedSteps }) steps")
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            Text("These stretches moved the step counter but aren't a confirmed walk or workout. They're included above — tell Atria which they were.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(unverifiedClusters) { cluster in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("\(cluster.start.formatted(date: .omitted, time: .shortened)) – \(cluster.end.formatted(date: .omitted, time: .shortened))")
+                            .font(.caption.weight(.semibold))
+                        Text("~\(cluster.estimatedSteps) steps · \(cluster.activeMinutes) active min")
+                            .font(.caption2)
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 6)
+                    Button("Walking") {
+                        arbitrate(cluster, verdict: .walking)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered)
+                    .tint(.green)
+                    Button("Not walking") {
+                        arbitrate(cluster, verdict: .notWalking)
+                    }
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered)
+                    .tint(.orange)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityHint("Was this stretch a walk, or other movement like a meal or chores?")
+            }
+        }
+        .padding(12)
+        .atriaInsetCard(tint: .orange)
     }
 
     private var stepsWeekChartCard: some View {
@@ -6183,10 +6253,45 @@ struct AtriaStrapStepsDetailSheet: View {
         weekSteps = await AtriaCivilDayStepAuthority.shared.dailyTotals(
             days: days,
             strapIdentifier: identifier,
-            nonGaitExclusions: nonGaitWindows,
+            // The wearer's "Not walking" answers join the labelled non-gait
+            // blocks — same rule at every step surface.
+            nonGaitExclusions: nonGaitWindows
+                + AtriaNonGaitArbitrationStore.shared.notWalkingWindows(),
             fallback: fallback,
             now: now
         )
+        await refreshUnverifiedClusters(identifier: identifier, now: now)
+    }
+
+    /// Sustained counter activity in the last 24 h that no workout label and
+    /// no prior answer explains — the review section's content.
+    private func refreshUnverifiedClusters(identifier: String, now: Date) async {
+        let explained = explainedWindows
+            + AtriaNonGaitArbitrationStore.shared.arbitratedWindows()
+        let clusters = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let points = AtriaWhoop4MotionTickCompactStore.shared
+                    .decodedPoints(start: now.addingTimeInterval(-24 * 3_600),
+                                   end: now,
+                                   strapIdentifier: identifier)
+                continuation.resume(
+                    returning: AtriaUnattributedMotionRuns.clusters(
+                        minuteTicks: AtriaUnattributedMotionRuns
+                            .minuteTickTotals(points),
+                        explained: explained
+                    )
+                )
+            }
+        }
+        unverifiedClusters = clusters
+    }
+
+    private func arbitrate(_ cluster: AtriaUnattributedMotionRuns.Cluster,
+                           verdict: AtriaNonGaitArbitrationStore.Verdict) {
+        AtriaNonGaitArbitrationStore.shared.record(window: cluster.window,
+                                                   verdict: verdict)
+        unverifiedClusters.removeAll { $0.id == cluster.id }
+        Task { await loadWeekSteps() }
     }
 }
 
