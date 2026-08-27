@@ -131,6 +131,49 @@ final class AtriaDaytimeQuiescentSleepDetectorTests: XCTestCase {
                      "the repo already burned once on HR-only quiet awake time")
     }
 
+    // MARK: - Low-battery capture outage (the measured 2026-08-27 shape)
+
+    /// Device-measured: battery shut HR off for ~5 h mid-sleep; HR exists
+    /// only for the final 35 minutes (depressed), motion recorded every
+    /// minute, and there is NO HR at all before the window.
+    func testALowBatteryHRTailStillDetects() {
+        let day = ownersDay()
+        let tailStart = sleepStart.addingTimeInterval(265 * 60)
+        let wakeAfter = sleepStart.addingTimeInterval(5 * 3_600)
+        let hrMap = hr([(tailStart, 35, 64), (wakeAfter, 180, 79)])
+        let candidate = detect(points: day.points, hr: hrMap)
+        XCTAssertNotNil(candidate,
+                        "a depressed HR tail with near-total motion quiet is "
+                            + "the low-battery capture-outage shape, not a table")
+        // The window's trailing edge legitimately catches a few awake minutes,
+        // so pin the semantic property (depression clears the gate), not an
+        // incidental mean.
+        if let candidate {
+            XCTAssertGreaterThanOrEqual(
+                candidate.meanSurroundHR - candidate.meanInWindowHR,
+                AtriaDaytimeQuiescentSleepDetector.minimumHRDepressionBPM)
+        }
+    }
+
+    func testAnAwakeLevelTailStaysRefusedByTheDepressionGate() {
+        // Same outage shape, but the tail reads at surround level — a strap
+        // re-worn at the end of hours on a table.
+        let day = ownersDay()
+        let tailStart = sleepStart.addingTimeInterval(265 * 60)
+        let wakeAfter = sleepStart.addingTimeInterval(5 * 3_600)
+        let hrMap = hr([(tailStart, 35, 78), (wakeAfter, 180, 79)])
+        XCTAssertNil(detect(points: day.points, hr: hrMap))
+    }
+
+    func testATooThinHRTailStaysRefused() {
+        let day = ownersDay()
+        let tailStart = sleepStart.addingTimeInterval(290 * 60)
+        let wakeAfter = sleepStart.addingTimeInterval(5 * 3_600)
+        let hrMap = hr([(tailStart, 10, 64), (wakeAfter, 180, 79)])
+        XCTAssertNil(detect(points: day.points, hr: hrMap),
+                     "ten depressed minutes are not enough evidence to ask")
+    }
+
     func testASleepBracketedByCaptureVoidWaitsForTheDrain() {
         let day = ownersDay()
         var hrMap = day.hr
