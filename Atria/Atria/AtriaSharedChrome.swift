@@ -58,6 +58,23 @@ struct AtriaSegmentButtonStyle: ButtonStyle {
     }
 }
 
+/// Pressed feedback for tappable CARDS — glance tiles, metric tiles, and any
+/// card whose whole surface is the button. `.plain` renders the label
+/// untouched but gives the finger nothing back; a card that opens a sheet
+/// should acknowledge the press the way the segment and icon buttons above
+/// already do. Scale is gentler than theirs (a large surface at 0.94 lurches).
+struct AtriaPressableCardStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .opacity(configuration.isPressed ? 0.92 : 1)
+            .animation(reduceMotion ? nil : .snappy(duration: AtriaDesignTokens.Motion.quick),
+                       value: configuration.isPressed)
+    }
+}
+
 struct AtriaGlassIconButtonStyle: ButtonStyle {
     var tint: Color = .blue
     // `size` is the visual glass diameter. The outer interaction frame remains

@@ -586,14 +586,14 @@ struct AtriaTodayScreen: View {
             } label: {
                 AtriaTodayGlanceTile(item: item, isBar: isBar)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AtriaPressableCardStyle())
         } else if metric == .insights {
             Button {
                 showInsights = true
             } label: {
                 AtriaTodayGlanceTile(item: item, isBar: isBar)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AtriaPressableCardStyle())
             .accessibilityHint("Shows ranked local insights.")
         } else if let metric, let detail = Self.glanceDetailRoutes[metric] {
             Button {
@@ -601,7 +601,7 @@ struct AtriaTodayScreen: View {
             } label: {
                 AtriaTodayGlanceTile(item: item, isBar: isBar)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AtriaPressableCardStyle())
         } else {
             AtriaTodayGlanceTile(item: item, isBar: isBar)
         }
@@ -621,7 +621,7 @@ struct AtriaTodayScreen: View {
                                              showsDetail: layoutConfig.legendStatStyle != .value,
                                              isBar: isBar)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AtriaPressableCardStyle())
         case .calories:
             AtriaTodayLiveGlanceTileHost(metric: metric,
                                          liveStore: liveStore,
