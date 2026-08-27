@@ -34395,6 +34395,17 @@ final class SessionStore: ObservableObject {
         guard !restoreInitializationBlocked,
               UIApplication.shared.applicationState == .active else { return }
         sleepReviewProjectionForegroundAuthority = true
+        // Second trigger for the daytime-quiescence lane. Its only trigger was
+        // the empty-pool branch of the sleep evaluation — which simply had not
+        // run since install while the owner's real 15:28-20:12 sleep sat
+        // undetected (ring's newest sleep entry predated the install). A
+        // foreground edge is the one moment guaranteed to occur when the owner
+        // looks for the card. Cheap gate: only when no confirmed sleep ended
+        // in the last 20 h — precisely the situation the lane exists for.
+        let recentSleepCutoff = Date().addingTimeInterval(-20 * 3_600)
+        if !confirmedSleeps.contains(where: { $0.end > recentSleepCutoff }) {
+            maybeScheduleDaytimeQuiescenceReview(reason: "foreground_edge")
+        }
         guard sleepReviewRefreshDeferredUntilForeground else { return }
         // A deadline records this exact input as fail-closed ready(nil) to stop
         // 20 ms/UI retry storms. A new active lifecycle is the authority to
@@ -37384,8 +37395,14 @@ final class SessionStore: ObservableObject {
                                strapIdentifier: strapIdentifier)
             guard points.count > 600 else { return }
             var hrByBucket: [Int: (total: Double, n: Int)] = [:]
+            // 110k, NOT 40k: the archive read keeps the NEWEST `limit`
+            // samples, and at ~1 Hz a 40k cap holds only ~11 h — the sleep
+            // window 13+ hours back was truncated away entirely, so the
+            // HR-presence floor refused a real sleep the detector had found.
+            // Field-caught on 2026-08-28: offline test passed (it fed HR from
+            // stress facts), device produced nothing.
             for point in HistoricalArchive.metricHeartRatePoints(
-                since: searchStart, limit: 40_000
+                since: searchStart, limit: 110_000
             ) where point.bpm > 0 {
                 let bucket = Int(point.t.timeIntervalSince1970 / 60)
                 let entry = hrByBucket[bucket] ?? (0, 0)
@@ -37405,6 +37422,15 @@ final class SessionStore: ObservableObject {
                 now: now
             ) else {
                 AtriaDebugLog("ATRIADBG daytime_quiescence status=no_candidate reason=%@", reason)
+                // Ring-visible, so a field failure is diagnosable from a
+                // preferences pull instead of a debugger. This very defect
+                // burned a day: the detector never ran and nothing said so.
+                DetectionEventLog.append(DetectionEvent(
+                    kind: "sleepCandidateSkipped",
+                    reason: "daytime_quiescence_no_candidate",
+                    detail: "Motion-quiet scan found no reviewable daytime "
+                        + "sleep (source: \(reason))"
+                ))
                 return
             }
             // Single-slot precedence: a valid record from ANOTHER lane (H11
@@ -37418,6 +37444,12 @@ final class SessionStore: ObservableObject {
             )
             if let existing, !existing.id.hasSuffix("daytime_quiescence") {
                 AtriaDebugLog("ATRIADBG daytime_quiescence status=slot_held_by_other id=%@", existing.id)
+                DetectionEventLog.append(DetectionEvent(
+                    kind: "sleepCandidateSkipped",
+                    reason: "daytime_quiescence_slot_held",
+                    detail: "Another pending sleep review holds the slot "
+                        + "(source: \(reason))"
+                ))
                 return
             }
             let night = AtriaDaytimeQuiescentSleepDetector.night(for: candidate)
@@ -37437,6 +37469,16 @@ final class SessionStore: ObservableObject {
                 candidate.observedQuietSeconds / 3_600,
                 candidate.meanInWindowHR, candidate.meanSurroundHR
             )
+            DetectionEventLog.append(DetectionEvent(
+                kind: "sleepCandidateSkipped",
+                reason: "daytime_quiescence_\(String(describing: outcome))",
+                detail: String(
+                    format: "Motion-quiet sleep %.1fh, HR %.0f vs %.0f awake "
+                        + "(source: %@)",
+                    candidate.observedQuietSeconds / 3_600,
+                    candidate.meanInWindowHR, candidate.meanSurroundHR, reason
+                )
+            ))
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.sleepReviewCacheInputKey = nil
