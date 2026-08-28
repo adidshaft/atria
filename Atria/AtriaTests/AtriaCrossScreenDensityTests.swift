@@ -30,21 +30,27 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(source.contains("previousCount: priorStrain.count"))
     }
 
-    func testTodayDailyBriefKeepsGuidanceVisibleAndCheckInActionable() throws {
-        let source = try source("AtriaTodayScreen.swift")
-        let planStart = try XCTUnwrap(source.range(of: "private struct AtriaTodayPlanCard"))
-        let planEnd = try XCTUnwrap(source.range(of: "private struct AtriaStrainTargetCard", range: planStart.upperBound..<source.endIndex))
-        let plan = String(source[planStart.lowerBound..<planEnd.lowerBound])
+    /// Owner stack audit 2026-08-28: the Daily Brief left Today for the
+    /// Journal tab (badge = questions remaining), and the whiteboard's four
+    /// rows dissolved into the surfaces that already carried them (rings,
+    /// glance). Pin the departure so neither card quietly returns.
+    func testTodayCarriesNoDailyBriefOrWhiteboard() throws {
+        let today = try source("AtriaTodayScreen.swift")
+        XCTAssertFalse(today.contains("AtriaTodayPlanCard"),
+                       "the Daily Brief moved to the Journal tab")
+        XCTAssertFalse(today.contains("Label(\"Daily brief\""))
+        XCTAssertFalse(today.contains("MorningWhiteboard"),
+                       "HRV/RHR live in glance tiles; Slept/Strain in the rings")
 
-        XCTAssertTrue(plan.contains("Label(\"Daily brief\""))
-        XCTAssertTrue(plan.contains("Text(detail)"))
-        XCTAssertTrue(plan.contains(".buttonStyle(.glass)"))
-        XCTAssertTrue(plan.contains("minHeight: 44"))
-        XCTAssertTrue(plan.contains("checkIn.actionLabel"))
+        let home = try source("AtriaHomeView.swift")
+        XCTAssertTrue(home.contains(".badge(journalCheckInBadgeCount)"),
+                      "the pending check-in knocks from the Journal tab badge")
+        XCTAssertTrue(home.contains("progress.isComplete"),
+                      "a completed check-in hides the badge")
 
-        let weeklyStart = try XCTUnwrap(source.range(of: "private struct AtriaTodayWeeklyPlanTargetRow"))
-        let weeklyEnd = try XCTUnwrap(source.range(of: "private struct AtriaTodayGlanceTile", range: weeklyStart.upperBound..<source.endIndex))
-        let weekly = String(source[weeklyStart.lowerBound..<weeklyEnd.lowerBound])
+        let weeklyStart = try XCTUnwrap(today.range(of: "private struct AtriaTodayWeeklyPlanTargetRow"))
+        let weeklyEnd = try XCTUnwrap(today.range(of: "private struct AtriaTodayGlanceTile", range: weeklyStart.upperBound..<today.endIndex))
+        let weekly = String(today[weeklyStart.lowerBound..<weeklyEnd.lowerBound])
         XCTAssertFalse(weekly.contains("Text(target.detail)"))
         XCTAssertTrue(weekly.contains("target.detail"), "VoiceOver should retain the target rationale")
     }

@@ -361,19 +361,10 @@ struct AtriaTodayScreen: View {
             // the night the ring is already showing.
             sleepSettlementRow
 
-            // Assessment P0.4: the morning whiteboard — HRV vs band, RHR vs
-            // band, hours vs frozen need, yesterday's strain. Measured
-            // numbers lead; the Recovery ring above stays a secondary index.
-            AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
-                morningWhiteboardCard
-            }
-
             // Shown only when the system route could not deliver this morning's
             // nudge. A notification the user switched off deliberately does NOT
             // reach here -- honouring that toggle is the point of it.
-            if !layoutConfig.showPlan {
-                journalFallbackPrompt
-            }
+            journalFallbackPrompt
 
             if layoutConfig.showLiveStrip {
                 AtriaTodayLiveStatusHost(liveStore: liveStore,
@@ -848,19 +839,6 @@ struct AtriaTodayScreen: View {
                 .accessibilityHint("Asks iOS to show Atria's notifications as normal alerts.")
             }
 
-            if layoutConfig.showPlan {
-                AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
-                    AtriaTodayPlanCard(title: planTitle,
-                                       detail: planDetail,
-                                       target: planTargetText,
-                                       tint: dayStrainIsIncomplete
-                                        ? .secondary
-                                        : displayHero.guidance.color,
-                                       checkIn: journalCheckInProgress,
-                                       notificationFallback: morningCheckInNeedsFallback,
-                                       onOpenJournal: onOpenJournal)
-                }
-            }
         case .shortcuts:
             AtriaTodayShortcutStrip(onStartWorkout: onStartWorkout)
         case .weeklyPlan:
@@ -1693,50 +1671,6 @@ struct AtriaTodayScreen: View {
         )
     }
 
-    /// Today reads the sleep ring, center caption, and sleep-performance tile
-    /// several times per body pass. The underlying math scans recent sleep
-    /// nights for debt and rollups for yesterday's strain, so cache it behind
-    /// the existing source revisions instead of rebuilding it on live ticks.
-    /// Assessment P0.4: builds the whiteboard from values already computed by
-    /// the existing authorities — the cycle projection's displayed numbers,
-    /// the same baseline snapshot the detail sheets use, the frozen need via
-    /// sleepNeedSnapshot, and yesterday's persisted rollup row. Non-numeric
-    /// display strings ("Learning") fail safe to a neutral, band-less row.
-    private var morningWhiteboardCard: some View {
-        let cycle = AtriaHealthMetricAuthority.currentCycleProjection(
-            hero: displayHero,
-            sleepHistory: sessionProjectionStore.state.sleepHistorySnapshot)
-        let baseline = AtriaBaselineTargetSnapshot(sessionProjectionStore.state.baseline)
-        let night = latestSleep
-        let calendar = Calendar.current
-        // "Yesterday's strain" must be anchored on the current civil day, NOT on
-        // the latest confirmed sleep night. When sleep isn't detected (a degraded
-        // HR-only strap can stay unconfirmed for days) `latestSleep` is nil, and
-        // the old `night.flatMap` anchor collapsed to nil — so the row read "no
-        // strain recorded yesterday" even though a strain rollup for yesterday was
-        // persisted. Anchor on today-1 so the persisted prior-day strain surfaces
-        // regardless of sleep-detection state.
-        let today = calendar.startOfDay(for: Date())
-        let yesterdayRollup: DailyRollupStoreEntry? = calendar
-            .date(byAdding: .day, value: -1, to: today)
-            .flatMap { prior in
-                dayDescendingRollups.first { calendar.isDate($0.day, inSameDayAs: prior) }
-            }
-        let model = AtriaTodayMorningWhiteboardModel.make(
-            hrvMS: cycle.hrvMS,
-            restingHR: cycle.restingHeartRate,
-            baseline: baseline,
-            sleepDurationText: night?.durationText,
-            nightConfirmed: night?.confirmed,
-            needHours: sleepNeedSnapshot.needHours,
-            yesterdayTRIMP: yesterdayRollup?.trimp,
-            yesterdayStrain: yesterdayRollup?.strain,
-            yesterdayStrainIsPartial: yesterdayRollup?.strainEvidenceQuality == .partial)
-        return AtriaTodayMorningWhiteboardCard(model: model) { kind in
-            metricDetail = kind
-        }
-    }
-
     private var sleepNeedSnapshot: AtriaTodaySleepNeedSnapshot {
         let sleepHistory = sessionProjectionStore.state.sleepHistorySnapshot
         let latest = latestSleep
@@ -2206,14 +2140,6 @@ struct AtriaTodayScreen: View {
         ) ?? (dayStrainIsIncomplete ? .incompleteEvidence : nil)
     }
 
-    private var currentStrainLimitationPresentation:
-        AtriaWorkoutMetricPresentation.StrainLimitationPresentation? {
-        guard dayStrainIsIncomplete else { return nil }
-        return AtriaWorkoutMetricPresentation.strainLimitationPresentation(
-            currentStrainLimitation ?? .incompleteEvidence
-        )
-    }
-
     private var dayStrainIsIncomplete: Bool {
         // Read from the confidence string only: the "≥" prefix it used to also
         // check was removed from strain on 2026-08-27, and it was always the
@@ -2464,58 +2390,6 @@ struct AtriaTodayScreen: View {
 
     private var healthValue: String {
         displayHero.recoveryEstimate.percent.map { "\($0)% recovery" } ?? "Learning"
-    }
-
-    private var planTitle: String {
-        if let limitation = currentStrainLimitationPresentation {
-            return limitation.compactState
-        }
-        return displayHero.guidance.headline
-    }
-
-    private var planDetail: String {
-        if let limitation = currentStrainLimitationPresentation {
-            return limitation.detailText
-        }
-        return displayHero.guidance.detail
-    }
-
-    private var planTargetText: String {
-        guard let target = displayHero.guidance.target else { return "Target building" }
-        // "N to go" is an arithmetic claim about measured strain. While the
-        // strain hero itself shows pending, day strain is unmeasured — the
-        // pill asserting "10.2 to go" beside a "--" strain chip contradicted
-        // it (2026-08-04 WHOOP-alignment review, rank 1).
-        if isPendingHeroValue(displayHero.strainValue) {
-            return String(format: "Target %.1f \u{00b7} strain pending", target)
-        }
-        if let limitation = currentStrainLimitationPresentation {
-            return String(format: "Target %.1f \u{00b7} %@", target, limitation.targetContext)
-        }
-        let remaining = target - displayHero.strain
-        if remaining > 0.05 {
-            return String(format: "Target %.1f \u{00b7} %.1f to go", target, remaining)
-        }
-        return String(format: "Target %.1f \u{00b7} met", target)
-    }
-
-    private var journalCheckInProgress: AtriaJournalCheckInProgress {
-        let calendar = Calendar.current
-        let localDay = sessionProjectionStore.state.localDay
-        let todayEntry = sessionProjectionStore.state.behaviorJournalEntries.first {
-            calendar.isDate($0.day, inSameDayAs: localDay)
-        }
-        return AtriaJournalCheckInProgress.resolve(
-            trackedTags: AtriaTrackedBehaviors.parse(trackedBehaviorsRaw),
-            todayEntry: todayEntry,
-            answersByQuestion: sessionProjectionStore.state.todayJournalAnswers
-        )
-    }
-
-    private var morningCheckInNeedsFallback: Bool {
-        AtriaNotificationAttemptStore.needsInAppFallback(
-            kind: LocalNotificationScheduler.morningCheckInKind
-        )
     }
 
     private var coachContext: AtriaCoachContext {
@@ -4077,27 +3951,18 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
     let pulse: AtriaHomeModel.HeroPulseState
 
     var body: some View {
-        HStack(spacing: 10) {
-            AtriaTodayLivePill(title: "Live",
-                               value: liveStatusText,
-                               systemImage: pulse.heartRate > 0 ? "heart.fill" : "dot.radiowaves.left.and.right",
-                               tint: pulse.heartRate > 0 ? .green : .secondary)
-            // A zone needs a pulse, not calibration. Without a live heart rate
-            // this pill could only ever read "Learning" — repeating, less
-            // precisely and less actionably, what the Live pill beside it
-            // already says ("Bluetooth off", "Disconnected"), and implying a
-            // calibration that is not happening. It appears only when there is
-            // a zone to show.
-            if let heartRateZone = pulse.heartRateZone {
-                AtriaTodayLivePill(title: "Zone",
-                                   value: heartRateZone.shortLabel,
-                                   systemImage: "waveform.path.ecg",
-                                   tint: heartRateZone.tint)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue).\(pulse.heartRateZone.map { " Zone \($0.shortLabel)." } ?? "")")
+        // One pill, not two (owner stack audit 2026-08-28): the zone is a
+        // qualifier of the live pulse, so it rides inside the same pill as
+        // "72 bpm · Z3" instead of claiming its own row space. A zone needs a
+        // pulse — without one it would only repeat what the pill already says.
+        AtriaTodayLivePill(title: pulse.heartRateZone.map { "Live · Zone \($0.shortLabel)" } ?? "Live",
+                           value: liveStatusText,
+                           systemImage: pulse.heartRate > 0 ? "heart.fill" : "dot.radiowaves.left.and.right",
+                           tint: pulse.heartRateZone?.tint
+                               ?? (pulse.heartRate > 0 ? .green : .secondary))
+            .frame(maxWidth: .infinity)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("Live status. \(pulse.heartRate > 0 ? "\(pulse.heartRate) beats per minute" : live.status.rawValue).\(pulse.heartRateZone.map { " Zone \($0.shortLabel)." } ?? "")")
     }
 
     private var liveStatusText: String {
@@ -4153,126 +4018,6 @@ private struct AtriaTodayLivePill: View, Equatable {
     }
 }
 
-private struct AtriaTodayPlanCard: View, Equatable {
-    let title: String
-    let detail: String
-    let target: String
-    let tint: Color
-    let checkIn: AtriaJournalCheckInProgress
-    let notificationFallback: Bool
-    let onOpenJournal: () -> Void
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.title == rhs.title
-            && lhs.detail == rhs.detail
-            && lhs.target == rhs.target
-            && lhs.tint == rhs.tint
-            && lhs.checkIn == rhs.checkIn
-            && lhs.notificationFallback == rhs.notificationFallback
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            dailyBriefHeader
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text(title)
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .layoutPriority(2)
-
-                Text(detail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            // Once the brief is answered it stops taking room on Today. It was
-            // holding a 44pt row plus two lines to say "Done", which is the one
-            // state that needs no action — and Today is the screen with the
-            // least room to spare. The Journal tab is a permanent entry point,
-            // so the answers stay reachable; nothing is lost by clearing it.
-            if !checkIn.isComplete {
-                Button(action: onOpenJournal) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "square.and.pencil")
-                            .font(.subheadline.weight(.bold))
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(checkIn.actionLabel)
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
-                            Text(notificationFallback
-                                 ? "In-app reminder · \(checkIn.statusLabel)"
-                                 : checkIn.statusLabel)
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Spacer(minLength: 8)
-
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    .padding(.horizontal, 12)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.roundedRectangle(radius: 16))
-                .tint(tint)
-                .accessibilityLabel("\(checkIn.actionLabel). \(notificationFallback ? "In-app reminder. " : "")\(checkIn.statusLabel).")
-                .accessibilityHint("Opens today's Journal check-in.")
-            }
-        }
-        .padding(14)
-        .atriaCard(cornerRadius: AtriaDesignTokens.Radius.tile, emphasis: .soft)
-        .accessibilityElement(children: .contain)
-    }
-
-    @ViewBuilder
-    private var dailyBriefHeader: some View {
-        if dynamicTypeSize.isAccessibilitySize {
-            VStack(alignment: .leading, spacing: 4) {
-                dailyBriefLabel
-                targetLabel
-            }
-        } else {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                dailyBriefLabel
-                Spacer(minLength: 8)
-                targetLabel
-            }
-        }
-    }
-
-    private var dailyBriefLabel: some View {
-        Label("Daily brief", systemImage: "sun.max.fill")
-            .font(.caption.weight(.bold))
-            .foregroundStyle(.secondary)
-    }
-
-    private var targetLabel: some View {
-        Text(target)
-            .font(.caption.weight(.bold))
-            .foregroundStyle(tint)
-            .lineLimit(2)
-            .fixedSize(horizontal: false, vertical: true)
-            .layoutPriority(1)
-    }
-}
-
-/// Compact strain-target progress card hosted directly under the ring hero.
-/// The target itself is never computed here -- it is `Coach.guide`'s
-/// existing recovery -> strain-target number (`displayHero.guidance.target`,
-/// the same value already driving `strainMetric`'s ring fill, the ring's
-/// legend chip, and the AI Coach narrative) passed straight through, so
-/// there is exactly one strain-target formula in the app.
 private struct AtriaStrainTargetCard: View, Equatable {
     let currentStrain: Double
     let target: Double?
@@ -4644,196 +4389,6 @@ private struct AtriaTodayShortcutStrip: View, Equatable {
         .buttonBorderShape(.roundedRectangle(radius: AtriaDesignTokens.Radius.chip))
         .tint(.blue)
         .accessibilityLabel("Start activity")
-    }
-}
-
-/// Assessment P0.4 (2026-08-14): the morning whiteboard — measured numbers
-/// lead the day. Pure model, unit-testable without SwiftUI; every band comes
-/// from the SAME displayed baseline authority (AtriaBaselineTargetSnapshot),
-/// the sleep row reads only the frozen need, and nothing here recomputes.
-struct AtriaTodayMorningWhiteboardModel: Equatable {
-    enum Tone: Equatable { case supportive, caution, strained, neutral }
-
-    struct Row: Equatable, Identifiable {
-        let id: String
-        let systemImage: String
-        let valuePhrase: String
-        let sentence: String
-        let tone: Tone
-        let route: AtriaMetricDetailKind
-        /// VoiceOver copy when the visible sentence is a shortened form
-        /// (declutter R22): "calibrating" must survive in the spoken label
-        /// even though the row shows only the progress count.
-        var accessibilitySentence: String? = nil
-    }
-
-    let rows: [Row]
-
-    static func make(hrvMS: Int?,
-                     restingHR: Int?,
-                     baseline: AtriaBaselineTargetSnapshot,
-                     sleepDurationText: String?,
-                     nightConfirmed: Bool?,
-                     needHours: Double?,
-                     yesterdayTRIMP: Double?,
-                     yesterdayStrain: Double?,
-                     yesterdayStrainIsPartial: Bool) -> AtriaTodayMorningWhiteboardModel {
-        var rows: [Row] = []
-
-        // HRV vs the 14–30 night personal band.
-        let hrvSentence: String
-        let hrvTone: Tone
-        var hrvAccessibilitySentence: String? = nil
-        // §13.3 (2026-08-14): z comes from the shared band authority so the
-        // coach sentence and this row can never disagree.
-        if let z = baseline.hrvBandZ(hrvMS: hrvMS),
-           let mean = baseline.hrvLnMean,
-           let sd = baseline.hrvLnSD {
-            let lower = Int(exp(mean - sd).rounded())
-            let upper = Int(exp(mean + sd).rounded())
-            hrvSentence = "typical \(lower)–\(upper) ms"
-            hrvTone = z >= -1 ? .supportive : (z >= -2 ? .caution : .strained)
-        } else {
-            hrvSentence = "\(min(baseline.hrvSampleCount, 14)) of 14 nights"
-            hrvAccessibilitySentence = "calibrating · " + hrvSentence
-            hrvTone = .neutral
-        }
-        rows.append(Row(id: "hrv",
-                        systemImage: "waveform.path.ecg",
-                        valuePhrase: hrvMS.map { "HRV \($0) ms" } ?? "HRV —",
-                        sentence: hrvSentence,
-                        tone: hrvTone,
-                        route: .hrv,
-                        accessibilitySentence: hrvAccessibilitySentence))
-
-        // RHR vs the personal band (lower is supportive).
-        let rhrSentence: String
-        let rhrTone: Tone
-        var rhrAccessibilitySentence: String? = nil
-        if let z = baseline.restingBandZ(restingHR: restingHR),
-           let mean = baseline.restingMean,
-           let sd = baseline.restingSD {
-            rhrSentence = "typical \(Int((mean - sd).rounded()))–\(Int((mean + sd).rounded())) bpm"
-            rhrTone = z <= 1 ? .supportive : (z <= 2 ? .caution : .strained)
-        } else {
-            rhrSentence = "\(min(baseline.restingSampleCount, 14)) of 14 days"
-            rhrAccessibilitySentence = "calibrating · " + rhrSentence
-            rhrTone = .neutral
-        }
-        rows.append(Row(id: "rhr",
-                        systemImage: "heart",
-                        valuePhrase: restingHR.map { "RHR \($0) bpm" } ?? "RHR —",
-                        sentence: rhrSentence,
-                        tone: rhrTone,
-                        route: .restingHeartRate,
-                        accessibilitySentence: rhrAccessibilitySentence))
-
-        // Sleep hours vs THAT night's frozen need — never a recomputation.
-        let sleepSentence: String
-        var sleepAccessibilitySentence: String? = nil
-        if let needHours {
-            sleepSentence = "of \(AtriaMetricFormat.sleepHours(needHours)) need"
-        } else if nightConfirmed == true {
-            // Declutter R22: the legacy-night reason is RELOCATED to the
-            // spoken label (the sleep detail sheet the row routes to lives in
-            // AtriaOverviewSections, outside this pass's files), not deleted.
-            sleepSentence = "need unavailable"
-            sleepAccessibilitySentence = "need unavailable for this legacy night"
-        } else {
-            sleepSentence = "awaiting tonight's sleep"
-        }
-        rows.append(Row(id: "sleep",
-                        systemImage: "moon.zzz",
-                        valuePhrase: sleepDurationText.map { "Slept \($0)" } ?? "Sleep —",
-                        sentence: sleepSentence,
-                        tone: .neutral,
-                        route: .sleep,
-                        accessibilitySentence: sleepAccessibilitySentence))
-
-        // Assessment §13.2 (2026-08-14): yesterday leads with the persisted
-        // TRIMP truth (P1.7 rollup field); the 0–21 display score stays as a
-        // parenthetical skin, "TRIMP 188 (15.0)". Legacy rows without stored
-        // TRIMP keep the display score alone — TRIMP is never reconstructed
-        // by inverting the display curve.
-        let yesterdayHasTRIMP = yesterdayTRIMP.map { $0.isFinite && $0 > 0 } ?? false
-        let yesterdayValue: String
-        if let yesterdayTRIMP, yesterdayHasTRIMP {
-            yesterdayValue = yesterdayStrain.map {
-                String(format: "TRIMP %.0f (%.1f)", yesterdayTRIMP, $0)
-            } ?? String(format: "TRIMP %.0f", yesterdayTRIMP)
-        } else {
-            yesterdayValue = yesterdayStrain.map { String(format: "Strain %.1f", $0) } ?? "Strain —"
-        }
-        rows.append(Row(id: "yesterday",
-                        systemImage: "flame",
-                        valuePhrase: yesterdayValue,
-                        sentence: (yesterdayStrain == nil && !yesterdayHasTRIMP)
-                            ? "no strain recorded yesterday"
-                            : (yesterdayStrainIsPartial ? "yesterday · partial coverage" : "yesterday"),
-                        tone: .neutral,
-                        route: .strain))
-        return AtriaTodayMorningWhiteboardModel(rows: rows)
-    }
-}
-
-private struct AtriaTodayMorningWhiteboardCard: View, Equatable {
-    static func == (lhs: AtriaTodayMorningWhiteboardCard, rhs: AtriaTodayMorningWhiteboardCard) -> Bool {
-        lhs.model == rhs.model
-    }
-
-    let model: AtriaTodayMorningWhiteboardModel
-    let onOpen: (AtriaMetricDetailKind) -> Void
-
-    private func tint(_ tone: AtriaTodayMorningWhiteboardModel.Tone) -> Color {
-        switch tone {
-        case .supportive: return Metrics.electricGreen
-        case .caution: return .orange
-        case .strained: return Metrics.electricRed
-        case .neutral: return .secondary
-        }
-    }
-
-    var body: some View {
-        VStack(spacing: 8) {
-            ForEach(model.rows) { row in
-                Button {
-                    onOpen(row.route)
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: row.systemImage)
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(tint(row.tone))
-                            .frame(width: 24, height: 24)
-                        Text(row.valuePhrase)
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(row.tone == .neutral ? Color.primary : tint(row.tone))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.6)
-                            .layoutPriority(2)
-                        Text(row.sentence)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                            .minimumScaleFactor(0.75)
-                            .layoutPriority(1)
-                        Spacer(minLength: 8)
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.tertiary)
-                    }
-                    .frame(minHeight: 44)
-                    .padding(.horizontal, 12)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(row.valuePhrase), \(row.accessibilitySentence ?? row.sentence)")
-            }
-        }
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: AtriaDesignTokens.Radius.chip, style: .continuous)
-                .fill(Color(uiColor: .secondarySystemGroupedBackground))
-        )
     }
 }
 

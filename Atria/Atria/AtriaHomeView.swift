@@ -1400,6 +1400,10 @@ struct AtriaHomeView: View {
                         journalContent
                     }
                 }
+                // The Daily Brief left Today (owner stack audit 2026-08-28);
+                // the pending check-in now knocks from the tab it lives in.
+                // Badge = questions remaining; hidden at zero.
+                .badge(journalCheckInBadgeCount)
 
                 Tab(HomeTab.plan.title,
                     systemImage: HomeTab.plan.systemImage,
@@ -5469,14 +5473,38 @@ struct AtriaHomeView: View {
             if !debugShowsNorthStarTodayFixture && !shouldLeadWithSystemBanners {
                 overviewSystemBanners
             }
-            // Live strap catch-up progress, always the last row of Overview.
-            if !debugShowsNorthStarTodayFixture {
+            // Live strap catch-up progress, the last row of Overview — but
+            // only when no system banner is up: a banner plus this footer told
+            // the same sync story twice (owner stack audit 2026-08-28). The
+            // footer returns once the banner resolves or is dismissed.
+            if !debugShowsNorthStarTodayFixture,
+               connectionDiagnosis == nil, !shouldShowMissedDataBanner {
                 AtriaSyncProgressFooter(
                     liveHeartRateIsCurrent:
                         model.coreLiveStore.state.hasRecentHeartRateSample
                 )
             }
         }
+    }
+
+    /// Questions left in today's check-in, for the Journal tab badge. Zero
+    /// (hidden) once complete — the badge is the brief's only knock now.
+    private var journalCheckInBadgeCount: Int {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let entry = store.behaviorJournalEntries.first {
+            calendar.isDate($0.day, inSameDayAs: today)
+        }
+        let progress = AtriaJournalCheckInProgress.resolve(
+            trackedTags: AtriaTrackedBehaviors.parse(
+                UserDefaults.standard.string(
+                    forKey: AtriaTrackedBehaviors.storageKey) ?? ""),
+            todayEntry: entry,
+            answersByQuestion: store.journalAnswers.answersByQuestion(
+                for: today, calendar: calendar))
+        return progress.isComplete
+            ? 0
+            : max(0, progress.totalCount - progress.answeredCount)
     }
 
     @ViewBuilder
