@@ -65,8 +65,8 @@ final class AtriaAboutMetricSheetTests: XCTestCase {
     func testCanonicalSpO2ConstantsUseAppLimitationFraming() {
         XCTAssertEqual(AtriaSpO2Copy.wontFakeAPercentage, "Atria won't fake a percentage.")
         XCTAssertEqual(AtriaSpO2Copy.decoderNotVerified, "Decoder not verified")
-        XCTAssertEqual(AtriaSpO2Copy.notAvailableOnStrap,
-                       "Sensor unavailable on this strap")
+        XCTAssertEqual(AtriaSpO2Copy.notAvailableOnThisStrap,
+                       "Not available on this strap")
         XCTAssertEqual(AtriaSpO2Copy.longUnavailable,
                        "Atria can't yet produce a validated SpO2 reading from this strap's sensor. Rather than estimate, it leaves this blank — and tells you why.")
         // The supported-strap state names the app limitation and does not imply

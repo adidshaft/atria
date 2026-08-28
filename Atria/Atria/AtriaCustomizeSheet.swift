@@ -115,19 +115,18 @@ struct AtriaCustomizeSheet: View {
             }
             .pickerStyle(.segmented)
 
-            // Center metric + legend exist only in the concentric layout; the
-            // separate (WHOOP-style) layout gives each ring its own value+label.
+            // The center metric exists only in the concentric layout; the
+            // separate (WHOOP-style) layout gives each ring its own
+            // value+label. `legendStatStyle` used to sit here too, but it
+            // drives the caption line on EVERY glance tile and on only the
+            // ring chips — filed under "Rings" it mispredicted its own scope,
+            // and concentric-gating hid it from separate-layout users whose
+            // tiles it still governs. It now lives with the metrics list it
+            // actually controls (2026-08-28).
             if ringLayout == .concentric {
                 Picker("Center metric", selection: $draft.ringCenterMetric) {
                     ForEach(AtriaHomeLayoutConfig.RingCenterMetric.allCases, id: \.self) { metric in
                         Label(metric.label, systemImage: metric.systemImage).tag(metric)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                Picker("Legend", selection: $draft.legendStatStyle) {
-                    ForEach(AtriaHomeLayoutConfig.LegendStatStyle.allCases, id: \.self) { style in
-                        Text(style.label).tag(style)
                     }
                 }
                 .pickerStyle(.segmented)
@@ -206,6 +205,13 @@ struct AtriaCustomizeSheet: View {
                 }
                 .disabled(!isSelected(metric) && draft.glanceMetrics.count >= AtriaHomeLayoutConfig.maxTodayCards)
             }
+
+            Picker("Card caption", selection: $draft.legendStatStyle) {
+                ForEach(AtriaHomeLayoutConfig.LegendStatStyle.allCases, id: \.self) { style in
+                    Text(style.label).tag(style)
+                }
+            }
+            .pickerStyle(.segmented)
         } header: {
             Text("Metrics")
         } footer: {

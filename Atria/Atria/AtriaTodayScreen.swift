@@ -544,7 +544,7 @@ struct AtriaTodayScreen: View {
         .respiratoryRate: .respiratoryRate,
         .sleep: .sleep,
         .sleepHistory: .sleep,
-        .sleepEfficiency: .sleep,
+        .sleepEfficiency: .sleepEfficiency,
         .sleepPerformance: .sleepPerformance,
         .vo2max: .vo2max,
         .bioAge: .fitnessAge,
@@ -569,14 +569,14 @@ struct AtriaTodayScreen: View {
             Button {
                 showBreathworkSession = true
             } label: {
-                AtriaTodayGlanceTile(item: item, isBar: isBar)
+                AtriaTodayGlanceTile(item: item, isBar: isBar, showsDisclosure: true)
             }
             .buttonStyle(AtriaPressableCardStyle())
         } else if metric == .insights {
             Button {
                 showInsights = true
             } label: {
-                AtriaTodayGlanceTile(item: item, isBar: isBar)
+                AtriaTodayGlanceTile(item: item, isBar: isBar, showsDisclosure: true)
             }
             .buttonStyle(AtriaPressableCardStyle())
             .accessibilityHint("Shows ranked local insights.")
@@ -584,7 +584,7 @@ struct AtriaTodayScreen: View {
             Button {
                 metricDetail = detail
             } label: {
-                AtriaTodayGlanceTile(item: item, isBar: isBar)
+                AtriaTodayGlanceTile(item: item, isBar: isBar, showsDisclosure: true)
             }
             .buttonStyle(AtriaPressableCardStyle())
         } else {
@@ -4182,11 +4182,19 @@ private struct AtriaTodayGlanceTile: View, Equatable {
     /// Horizontal "bar" layout (icon + label left, value right) for the
     /// one-per-row bars glance layout; false renders the default 2-up tile.
     var isBar: Bool = false
+    /// Route audit rule, already honoured by `AtriaTodayHighlightsStrip`: a
+    /// tile that opens something shows a disclosure chevron; a tile with no
+    /// honest route stays chevron-free. Opt-in, so a new construction site is
+    /// inert-looking until it is deliberately routed (2026-08-28: four
+    /// addable tiles opened nothing and looked identical to the fifteen that
+    /// do).
+    var showsDisclosure: Bool = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     static func == (lhs: AtriaTodayGlanceTile, rhs: AtriaTodayGlanceTile) -> Bool {
         lhs.item == rhs.item && lhs.isBar == rhs.isBar
+            && lhs.showsDisclosure == rhs.showsDisclosure
     }
 
     var body: some View {
@@ -4232,6 +4240,11 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                 .foregroundStyle(item.isPending ? .secondary : .primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
+            if showsDisclosure {
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.tertiary)
+            }
         }
         .frame(minHeight: 48)
         .padding(.horizontal, 12)
@@ -4268,6 +4281,11 @@ private struct AtriaTodayGlanceTile: View, Equatable {
                     AtriaGlanceSparkline(values: item.trend,
                                          tint: item.tint,
                                          style: item.trendStyle)
+                }
+                if showsDisclosure {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.tertiary)
                 }
             }
             // Emphasis follows whichever line actually carries information. Once
