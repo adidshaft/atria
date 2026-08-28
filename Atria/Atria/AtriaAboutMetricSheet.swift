@@ -63,7 +63,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
         case .restingHeartRate: return "Resting heart rate"
         case .respiration: return "Respiratory rate"
         case .sleep: return "Sleep"
-        case .vo2max: return "Body Age & VO₂max"
+        case .vo2max: return "Fitness age & VO₂max"
         case .skinTemperature: return "Skin temperature"
         case .bloodOxygen: return "Blood oxygen (SpO₂)"
         }
@@ -175,7 +175,7 @@ enum AtriaAboutMetric: String, Identifiable, CaseIterable {
             // AtriaAnalytics.swift: 15.3 * maxHR/rest clamped 20–80 (Uth–Sørensen);
             // AtriaFitnessAge.swift: five factors → age offset clamped ±12; pace =
             // slope of the weekly offset.
-            return "VO₂max is estimated from the ratio of your measured maximum to resting heart rate (about 15.3 × maxHR ÷ resting HR), then bounded to a plausible range. Body Age combines five factors — VO₂max, resting HR, HRV, weekly zone-2-and-up minutes, and sleep consistency — into an age offset against your calendar age. Pace of aging is the trend of that offset over recent weeks."
+            return "VO₂max is estimated from the ratio of your measured maximum to resting heart rate (about 15.3 × maxHR ÷ resting HR), then bounded to a plausible range. Fitness age combines five factors — VO₂max, resting HR, HRV, weekly zone-2-and-up minutes, and sleep consistency — into an age offset against your calendar age. Pace of aging is the trend of that offset over recent weeks."
         case .skinTemperature:
             return "Atria can see candidate sensor bytes, but it has not verified which field and scale represent wrist temperature. It will not turn raw values into degrees. After a decoder is validated, the intended model averages a night's reading and compares it with at least 3 prior nights as a personal deviation."
         case .bloodOxygen:

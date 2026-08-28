@@ -2955,12 +2955,12 @@ struct AtriaActivityMonitorTab: View {
             // hosts the shared hypnogram + stage breakdown; editing is a
             // button inside it.
             Button { sleepDetail = night } label: { sleepRow(night) }
-                .buttonStyle(.plain)
+                .buttonStyle(AtriaPressableCardStyle())
         case .workout(let workout):
             Button { workoutDetail = workout } label: {
                 workoutRow(workout)
             }
-                .buttonStyle(.plain)
+                .buttonStyle(AtriaPressableCardStyle())
         case .workoutReview(let candidate):
             Button {
                 reviewWorkoutWindow = ReviewWorkoutWindow(id: candidate.id,
@@ -2969,7 +2969,7 @@ struct AtriaActivityMonitorTab: View {
             } label: {
                 workoutReviewRow(candidate)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AtriaPressableCardStyle())
         case .detection(let detection):
             Button {
                 reviewWorkoutWindow = ReviewWorkoutWindow(id: detection.id.uuidString,
@@ -2978,7 +2978,7 @@ struct AtriaActivityMonitorTab: View {
             } label: {
                 detectionRow(detection)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AtriaPressableCardStyle())
         }
     }
 

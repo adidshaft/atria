@@ -163,10 +163,15 @@ final class AtriaStrainTruthUIBatchTests: XCTestCase {
                       "the compact Today ring must retain the measured partial arc")
         XCTAssertTrue(sources.today.contains("fill: strainMetric.fill"),
                       "the Today share projection must retain the same measured arc")
-        XCTAssertTrue(sources.today.contains(
-            "AtriaWorkoutMetricPresentation.strainLimitationPresentation("
-        ))
-        XCTAssertTrue(sources.today.contains("limitation.targetContext"))
+        // 2026-08-28: the Daily Brief left Today for the Journal tab, taking
+        // its target line (and the presentation wrapper that fed it) with it.
+        // The disclosure itself did NOT leave — the strain ring's own detail
+        // still names the limitation, which is the assertion that matters:
+        // an incomplete day must say WHY its target is withheld.
+        XCTAssertTrue(sources.today.contains("currentStrainLimitation?.compactState"),
+                      "the strain ring must still name the limitation")
+        XCTAssertTrue(sources.today.contains("?? \"Strain data incomplete\""),
+                      "and must fall back to an honest phrase, never a blank")
         XCTAssertFalse(sources.today.localizedCaseInsensitiveContains("compare after sync"))
         XCTAssertFalse(sources.today.contains("\"Finish sync\""))
         XCTAssertTrue(sources.today.contains("guard !dayStrainIsIncomplete else { return nil }"))

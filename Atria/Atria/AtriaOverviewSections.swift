@@ -2078,7 +2078,7 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .vo2max: return "VO2max"
         case .bioAge: return "Fitness age"
         case .bloodOxygen: return "Blood oxygen"
-        case .bodyTemp: return "Wrist temp"
+        case .bodyTemp: return "Skin temp"
         case .trend: return "Resting trend"
         case .insights: return "Insights"
         }
@@ -3399,7 +3399,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
     }
 
     private var targetValueText: String {
-        guard let target = hero.guidance.target else { return "Target Building" }
+        guard let target = hero.guidance.target else { return "Target building" }
         return String(format: "%.1f", target)
     }
 
@@ -3842,7 +3842,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
             }
         case .rhr:
             detailButton(.restingHeartRate) {
-                AtriaGlanceMetricCard(title: "RHR",
+                AtriaGlanceMetricCard(title: "Resting HR",
                                       value: restingCalibratingValue ?? metricDisplayValue(hero.restingHeartRateText),
                                       detail: restingCalibratingValue != nil
                                         ? calibratingProgressDetail(samples: restingBaselineSamples)
@@ -3938,7 +3938,7 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                   accessibilityDetail: "\(AtriaSpO2Copy.decoderNotVerified). \(AtriaSpO2Copy.wontFakeAPercentage)")
         case .bodyTemp:
             let decoderAvailable = AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
-            AtriaGlanceMetricCard(title: "Wrist temp",
+            AtriaGlanceMetricCard(title: "Skin temp",
                                   value: AtriaExperimentalSensorCopy.skinTemperatureValue(
                                     summary: skinTemperatureSummary,
                                     decoderAvailable: decoderAvailable),
@@ -4678,11 +4678,40 @@ enum AtriaLiveSignalTruth {
         case unavailable
     }
 
+    /// THE single fresh-pulse rule, shared by every surface that renders the
+    /// connection state (Home pill, Strap screen, Overview focus card, Today
+    /// strip). An accepted pulse is stronger evidence than a lagging stream
+    /// projection: service discovery and the battery read can finish after HR
+    /// notifications resume, so no surface may say "Waiting"/"No signal" while
+    /// BPM is live.
+    ///
+    /// Before this was shared (owner UI-uniformity pass 2026-08-28) the three
+    /// surfaces each carried their own rule and provably disagreed at the same
+    /// instant — the Strap screen even contradicted itself, promoting its
+    /// status to "connected" BECAUSE a pulse existed and then labelling that
+    /// state "No signal".
+    ///
+    /// Low-battery states are deliberately NOT overridden: "Charge strap" and
+    /// "Low battery" outrank "Live" because they tell the wearer something the
+    /// pulse cannot.
+    static func freshPulseOverridesLaggingStream(
+        hasPulseSignal: Bool,
+        streamState: AtriaBLEManager.StrapStreamState
+    ) -> Bool {
+        guard hasPulseSignal else { return false }
+        switch streamState {
+        case .warming, .silentUnknown, .unknown: return true
+        case .live, .lowBatteryShutoff, .lowBatteryReducedDetail: return false
+        }
+    }
+
     static func isLive(status: AtriaBLEManager.Status,
                        streamState: AtriaBLEManager.StrapStreamState,
                        hasRecentHeartRate: Bool) -> Bool {
         guard status == .connected, hasRecentHeartRate else { return false }
-        return streamState == .live || streamState == .unknown
+        return streamState == .live
+            || freshPulseOverridesLaggingStream(hasPulseSignal: hasRecentHeartRate,
+                                                streamState: streamState)
     }
 
     static func valueText(status: AtriaBLEManager.Status,
@@ -7988,8 +8017,10 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
         if let latest = sleepHistory.latestMainSleep, !latest.confirmed {
             return latest.isNapEvidence ? "Nap separate" : "Review"
         }
-        let debt = sleepHistory.sleepDebtText(goalHours: sleepGoalHours)
-        return debt == "--" ? "Building" : debt
+        // The canonical absent token must survive to the surface: rewriting
+        // "--" into "Building" made this card disagree with the glance card one
+        // scroll away and with Today (UI-uniformity pass 2026-08-28).
+        return sleepHistory.sleepDebtText(goalHours: sleepGoalHours)
     }
 
     private var sleepPlanTargetHours: Double {
@@ -8043,16 +8074,13 @@ struct AtriaOverviewGuidanceSection: View, Equatable {
             return latest.isNapEvidence ? "Main sleep safe" : "Confirm window"
         }
         if sleepDebtValueText == "Met" { return "Debt clear" }
-        if sleepDebtValueText == "Building" { return "Debt building" }
         return "Debt \(sleepDebtValueText)"
     }
 
     private var sleepPlanRoutineText: String {
         // Plain-language pass (2026-07-31 device review): "Routine 46%" did
         // not say what the percentage measures. Name the measurement.
-        sleepHistory.sleepConsistencyText == "--"
-            ? "Routine consistency building"
-            : "Routine consistency \(sleepHistory.sleepConsistencyText)"
+        "Routine consistency \(sleepHistory.sleepConsistencyText)"
     }
 
     private var sleepPlanBedtimeText: String? {
@@ -10832,9 +10860,9 @@ struct AtriaMetricDetailSheet: View {
     private func contributorTitle(_ contributor: Metrics.RecoveryEstimate.Contributor) -> String {
         switch contributor.kind {
         case .hrv: return "HRV"
-        case .restingHeartRate: return "RHR"
+        case .restingHeartRate: return "Resting HR"
         case .sleep: return "Sleep"
-        case .respiration: return "Respiration"
+        case .respiration: return "Resp rate"
         }
     }
 
@@ -11736,6 +11764,16 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
         ]
     }
 
+    /// Zone presence is independent of HR density. `zoneSeconds` can be
+    /// non-nil and still carry no Z1+ time — an entirely-Z0 session stores
+    /// only "rest", which this bar does not draw — and legacy rows carry no
+    /// breakdown at all. Measured over the SAME segments the bar draws, so a
+    /// row without zone time no longer paints a complete-looking five-colour
+    /// distribution it does not have (blank beats invented, 2026-08-28).
+    private var hasZoneTime: Bool {
+        zoneSegments.contains { $0.seconds > 0 }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
@@ -11780,7 +11818,7 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
                       systemImage: "waveform.path.badge.minus")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.orange)
-            } else {
+            } else if hasZoneTime {
                 GeometryReader { proxy in
                     HStack(spacing: 2) {
                         ForEach(zoneSegments, id: \.key) { segment in
@@ -11791,6 +11829,12 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
                     }
                 }
                 .frame(height: 8)
+            } else {
+                Label("Zone distribution unavailable for this recording",
+                      systemImage: "waveform.path.ecg.rectangle")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {
@@ -11823,11 +11867,14 @@ private struct AtriaStrainWorkoutRow: View, Equatable {
         if AtriaWorkoutMetricPresentation.metricsAreIncomplete(workout) {
             return "Zones incomplete"
         }
+        // A building/calibrating phrasing here claimed progress that is not
+        // happening: a recording with no zone breakdown will never grow one.
+        guard hasZoneTime else { return "Zones unavailable" }
         let highSeconds = (workout.zoneSeconds?["aerobic"] ?? 0)
             + (workout.zoneSeconds?["anaerobic"] ?? 0)
             + (workout.zoneSeconds?["max"] ?? 0)
         let minutes = Int((highSeconds / 60).rounded())
-        return minutes > 0 ? "\(minutes)m Z3+" : "Zones building"
+        return minutes > 0 ? "\(minutes)m Z3+" : "No Z3+ time"
     }
 }
 

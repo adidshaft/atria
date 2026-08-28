@@ -393,6 +393,18 @@ struct AtriaTriRing: View, Equatable {
         actions[slot] ?? {}
     }
 
+    /// A slot with no action is a READ-ONLY presentation (the frozen day
+    /// browser, the onboarding preview, the share render). Before the
+    /// 2026-08-28 uniformity pass those still consumed the tap through a
+    /// no-op closure, so browsing one day back silently turned the app's most
+    /// prominent control dead — identical chips, nothing happening, the touch
+    /// swallowed rather than passed on, and VoiceOver still announcing
+    /// buttons. The values shown are real saved numbers, so the fix removes
+    /// the false affordance without dimming anything.
+    private func isInteractive(_ slot: AtriaTriRingSlot) -> Bool {
+        actions[slot] != nil
+    }
+
     /// Compress a metric's own detail line into the one-word marker the
     /// separate layout has room for. Returns nil for a settled metric so a
     /// confident ring stays clean — the marker exists to stop a provisional
@@ -453,6 +465,7 @@ struct AtriaTriRing: View, Equatable {
                                         ))
                     }
                     .buttonStyle(.plain)
+                    .disabled(!isInteractive(content.slot))
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .center)
@@ -501,6 +514,7 @@ struct AtriaTriRing: View, Equatable {
                         .frame(width: Self.outerDiameter, height: Self.outerDiameter)
                         .contentShape(AtriaRingBandShape(innerRadius: radii.inner, outerRadius: radii.outer), eoFill: true)
                         .onTapGesture(perform: action(for: content.slot))
+                        .allowsHitTesting(isInteractive(content.slot))
                 }
 
                 centerContent
@@ -512,7 +526,9 @@ struct AtriaTriRing: View, Equatable {
 
             HStack(spacing: 8) {
                 ForEach(slots, id: \.slot) { content in
-                    legendChip(metric: content.metric, action: action(for: content.slot))
+                    legendChip(metric: content.metric,
+                               action: action(for: content.slot))
+                        .disabled(!isInteractive(content.slot))
                 }
             }
         }

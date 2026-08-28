@@ -335,7 +335,8 @@ struct AtriaHistorySection: View, Equatable {
                 } label: {
                     AtriaHistoryStatChip(label: "Detected", value: "\(model.detectedCount)", tint: .cyan)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(AtriaPressableCardStyle())
+                .accessibilityHint("Opens the full detections list")
                 AtriaHistoryStatChip(label: "Baseline", value: "\(model.baselineReady)/\(model.baselineTarget)", tint: Metrics.electricGreen)
             }
         }
@@ -412,8 +413,11 @@ struct AtriaHistorySection: View, Equatable {
                             .foregroundStyle(.secondary)
                     }
                     .foregroundStyle(.primary)
+                    // Same chrome as the sibling card's footer one scroll away.
+                    .padding(12)
+                    .atriaInsetCard(cornerRadius: 16, tint: Color.secondary.opacity(0.08))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(AtriaPressableCardStyle())
             }
         }
         .padding(16)
@@ -434,7 +438,7 @@ struct AtriaHistorySection: View, Equatable {
                     } label: {
                         AtriaHistoryDayRow(day: day)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(AtriaPressableCardStyle())
                 }
             }
             // Gate at the preview length: the old count > 14 threshold left
@@ -455,7 +459,7 @@ struct AtriaHistorySection: View, Equatable {
                     .padding(12)
                     .atriaInsetCard(cornerRadius: 16, tint: Color.secondary.opacity(0.08))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(AtriaPressableCardStyle())
             }
         }
         .padding(16)
@@ -563,6 +567,12 @@ struct AtriaHistoryDayRow: View, Equatable {
                 .foregroundStyle(day.strain != nil ? Metrics.electricStrain : .secondary)
                 .lineLimit(1)
                 .layoutPriority(1)
+
+            // Matches Activity's session rows exactly: a row that opens a
+            // sheet carries the disclosure chevron everywhere (2026-08-28).
+            Image(systemName: "chevron.right")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(.tertiary)
         }
         .padding(12)
         .atriaInsetCard(cornerRadius: 16, tint: day.state == .none ? Color.clear : day.state.tint.opacity(0.5))
@@ -1201,7 +1211,7 @@ struct AtriaHistoryFullScreen: View {
                             } label: {
                                 AtriaHistoryDayRow(day: day)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(AtriaPressableCardStyle())
                         }
                     } header: {
                         monthHeader(group.title)
