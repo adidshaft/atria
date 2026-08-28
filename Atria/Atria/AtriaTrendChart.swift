@@ -855,9 +855,9 @@ private struct AtriaTrendRangeReportCard: View, Equatable {
         let hrvScore = readout.hrv.directionScore(positiveDeltaIsGood: true) ?? 0.5
         let rhrScore = readout.restingHR.directionScore(positiveDeltaIsGood: false) ?? 0.5
         if hrvScore >= rhrScore {
-            return ("Best signal", readout.hrv.deltaText, .cyan, "waveform.path.ecg")
+            return ("Best signal", readout.hrv.deltaText, Metrics.electricHRV, "waveform.path.ecg")
         }
-        return ("Best signal", readout.restingHR.deltaText, .pink, "heart.text.square")
+        return ("Best signal", readout.restingHR.deltaText, Metrics.electricRHR, "heart.text.square")
     }
 
     private var pressureSignal: (title: String, value: String, tint: Color, symbol: String) {
@@ -1948,9 +1948,11 @@ enum AtriaTrendMetric: String, CaseIterable, Identifiable {
 
     var tint: Color {
         switch self {
-        case .restingHR: return .pink
+        // HRV rose, RHR blue. These two were swapped here: RHR wore HRV's
+        // pink and HRV wore RHR's cyan (2026-08-28).
+        case .restingHR: return Metrics.electricRHR
         case .strain: return Metrics.electricStrain
-        case .hrv: return .cyan
+        case .hrv: return Metrics.electricHRV
         }
     }
 

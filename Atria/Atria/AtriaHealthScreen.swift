@@ -1464,7 +1464,7 @@ struct AtriaHealthScreen: View {
                 AtriaHealthMetricRow(title: "Recovery",
                                      value: recoveryValue(live: live),
                                      detail: recoveryDetail(live: live),
-                                     systemImage: "heart.fill",
+                                     systemImage: AtriaTodayMetric.recovery.systemImage,
                                      tint: recoveryTint(live: live),
                                      hint: recoveryHint,
                                      layout: .compactTile,
@@ -1472,7 +1472,7 @@ struct AtriaHealthScreen: View {
                 AtriaHealthMetricRow(title: "Resting HR",
                                      value: restingHeartRateValue(live: live),
                                      detail: restingHeartRateDetail(live: live),
-                                     systemImage: "heart.text.square.fill",
+                                     systemImage: AtriaTodayMetric.rhr.systemImage,
                                      tint: Metrics.electricRHR,
                                      rangeText: restingHeartRateRangeText,
                                      hint: restingHeartRateHint,
@@ -1481,7 +1481,7 @@ struct AtriaHealthScreen: View {
                 AtriaHealthMetricRow(title: "HRV",
                                      value: hrvValue(live: live),
                                      detail: hrvDetail(live: live),
-                                     systemImage: "waveform.path.ecg",
+                                     systemImage: AtriaTodayMetric.hrv.systemImage,
                                      tint: Metrics.electricHRV,
                                      rangeText: hrvRangeText,
                                      hint: hrvHint,
@@ -1501,7 +1501,7 @@ struct AtriaHealthScreen: View {
                 AtriaHealthMetricRow(title: "Resp rate",
                                      value: respiratoryValue,
                                      detail: respiratoryDetail,
-                                     systemImage: "lungs.fill",
+                                     systemImage: AtriaTodayMetric.respiratoryRate.systemImage,
                                      tint: Metrics.electricRespiratory,
                                      rangeText: respiratoryRangeText,
                                      hint: respiratoryHint,
@@ -1510,7 +1510,7 @@ struct AtriaHealthScreen: View {
                 AtriaHealthMetricRow(title: "Sleep",
                                      value: sleepValue,
                                      detail: sleepDetail,
-                                     systemImage: "moon.fill",
+                                     systemImage: AtriaTodayMetric.sleep.systemImage,
                                      tint: Metrics.electricSleep,
                                      hint: sleepHint,
                                      layout: .compactTile,
@@ -1521,7 +1521,7 @@ struct AtriaHealthScreen: View {
                 AtriaHealthMetricRow(title: "VO2max",
                                      value: live.vo2MaxEstimate.valueText,
                                      detail: live.vo2MaxEstimate.compactStatusText,
-                                     systemImage: "lungs.fill",
+                                     systemImage: AtriaTodayMetric.vo2max.systemImage,
                                      tint: live.vo2MaxEstimate.value == nil
                                         ? .secondary
                                         : Metrics.electricGreen,
@@ -1535,7 +1535,7 @@ struct AtriaHealthScreen: View {
                                      detail: AtriaExperimentalSensorCopy.skinTemperatureStatus(
                                         summary: vitalsStore.state.skinTemperatureDeviationSummary,
                                         decoderAvailable: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable),
-                                     systemImage: "thermometer.variable",
+                                     systemImage: AtriaTodayMetric.bodyTemp.systemImage,
                                      tint: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
                                         && vitalsStore.state.skinTemperatureDeviationSummary.isReady
                                         ? Metrics.electricRespiratory
@@ -1550,7 +1550,7 @@ struct AtriaHealthScreen: View {
                                      detail: AtriaExperimentalSensorCopy.bloodOxygenStatus(
                                         strapModel: ble.strapModel,
                                         decoderAvailable: AtriaResearchProbe.validatedSpO2DecoderAvailable),
-                                     systemImage: "drop.degreesign",
+                                     systemImage: AtriaTodayMetric.bloodOxygen.systemImage,
                                      tint: .secondary,
                                      layout: .compactTile,
                                      onTap: { metricDetail = .bloodOxygen })

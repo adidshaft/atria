@@ -2092,12 +2092,12 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .strapSteps: return "figure.walk.motion"
         */
         switch self {
-        case .recovery: return "gauge.with.dots.needle.67percent"
+        case .recovery: return "arrow.clockwise.heart.fill"
         case .strain: return "bolt.fill"
         case .load: return "chart.bar.xaxis"
         case .hrZones: return "chart.bar.fill"
         case .workouts: return "figure.mixed.cardio"
-        case .strainCompare: return "chart.bar.xaxis"
+        case .strainCompare: return "equal.circle"
         case .hrv: return "waveform.path.ecg"
         case .stress: return "bolt.heart.fill"
         case .sleep: return "bed.double.fill"
@@ -2105,10 +2105,10 @@ enum AtriaTodayMetric: String, CaseIterable, Identifiable {
         case .sleepEfficiency: return "percent"
         case .sleepPerformance: return "gauge.with.dots.needle.50percent"
         case .rhr: return "heart.fill"
-        case .respiratoryRate: return "lungs"
+        case .respiratoryRate: return "lungs.fill"
         case .steps: return "shoeprints.fill"
         case .calories: return "flame.fill"
-        case .vo2max: return "lungs.fill"
+        case .vo2max: return "figure.run"
         case .bioAge: return "figure.stand.line.dotted.figure.stand"
         case .bloodOxygen: return "drop.degreesign"
         case .bodyTemp: return "thermometer.variable"
@@ -7166,18 +7166,11 @@ struct AtriaGlanceTargetEditorSheet: View {
 
 private extension AtriaTodayMetric {
     var targetEditorTint: Color {
-        switch self {
-        case .recovery, .steps: return .green
-        case .strain, .load, .calories: return .orange
-        case .hrv, .stress: return .pink
-        case .rhr: return .red
-        case .bioAge: return .purple
-        case .vo2max: return .blue
-        case .respiratoryRate, .bodyTemp: return .teal
-        case .bloodOxygen: return .blue
-        case .sleep, .sleepHistory, .sleepEfficiency: return .cyan
-        default: return .blue
-        }
+        // Settings painted every row in a raw hue that contradicted the
+        // metric's identity colour elsewhere — HRV pink and Resting HR RED,
+        // when the documented rule is HRV rose and RHR blue. One table now
+        // (AtriaMetricIdentity, 2026-08-28).
+        identityTint()
     }
 
     var targetEditorSummary: String {

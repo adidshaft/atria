@@ -9679,18 +9679,12 @@ final class AtriaHomeModel {
         }
 
         /// SF Symbol matching the level, with the bolt overlay while charging.
+        /// One ladder for the whole app (AtriaBatteryIdentity); this file used
+        /// to carry two byte-identical copies (2026-08-28).
         var batterySymbol: String {
             guard batteryLevel >= 0 else { return "questionmark.circle" }
-            if batteryShowsPowered {
-                return "battery.100percent.bolt"
-            }
-            switch batteryLevel {
-            case ..<13: return "battery.0percent"
-            case ..<38: return "battery.25percent"
-            case ..<63: return "battery.50percent"
-            case ..<88: return "battery.75percent"
-            default: return "battery.100percent"
-            }
+            return AtriaBatteryIdentity.systemImage(percent: batteryLevel,
+                                                    isCharging: batteryShowsPowered)
         }
     }
 
@@ -14101,13 +14095,7 @@ enum AtriaTopStatusProjection {
     }
 
     private static func batterySymbol(level: Int) -> String {
-        switch level {
-        case ..<13: return "battery.0percent"
-        case ..<38: return "battery.25percent"
-        case ..<63: return "battery.50percent"
-        case ..<88: return "battery.75percent"
-        default: return "battery.100percent"
-        }
+        AtriaBatteryIdentity.systemImage(percent: level)
     }
 
     static func nextSemanticDeadline(input: AtriaTopStatusProjectionInput,
