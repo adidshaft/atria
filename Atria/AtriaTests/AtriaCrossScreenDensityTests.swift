@@ -303,10 +303,13 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(section.contains("Move \\(metric.label) down"))
         XCTAssertFalse(section.contains("ForEach(Array(selectedMetrics.enumerated())"),
                        "Metric identity must not depend on mutable array offsets")
-        XCTAssertTrue(todaySource.contains("private var glanceKicker"))
-        XCTAssertTrue(todaySource.contains("accessibilityLabel(isEditingGlance ? \"Finish editing At a glance\" : \"Edit At a glance\")"))
-        XCTAssertTrue(todaySource.contains("accessibilityHint(\"Lets you drag cards to reorder and remove cards.\")"),
-                      "The live grid needs a visible compact path into drag-and-drop ordering")
+        // Strict declutter (owner 2026-08-28): the "At a glance" kicker row
+        // is gone; edit mode enters from the top action menu and exits via a
+        // compact Done control that exists only while editing.
+        XCTAssertFalse(todaySource.contains("private var glanceKicker"))
+        XCTAssertTrue(todaySource.contains("Label(isEditingGlance ? \"Finish editing glance\" : \"Edit glance cards\""))
+        XCTAssertTrue(todaySource.contains("accessibilityLabel(\"Finish editing glance cards\")"),
+                      "editing still needs an obvious visible exit")
     }
 
     func testCustomizeCanResetPersistedGlanceOrderToDefaults() throws {
@@ -604,7 +607,7 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertTrue(host.contains("ScrollView(.horizontal, showsIndicators: false)"))
         XCTAssertTrue(host.contains(".scrollTargetBehavior(.paging)"))
         XCTAssertTrue(host.contains(".glassEffect(.regular, in: .rect(cornerRadius: 18))"))
-        XCTAssertTrue(host.contains(".frame(height: 40)"))
+        XCTAssertTrue(host.contains(".frame(height: 32)"))
         XCTAssertTrue(host.contains(".foregroundStyle(.primary)"))
 
         // The negative bottom padding existed only to close the void the

@@ -4655,7 +4655,7 @@ struct AtriaHomeView: View {
                 // bottom padding on the notice, both existed only to close the
                 // void that a floating inset card opened above the greeting.
                 // Edge-to-edge chrome ends flush, so content spaces normally.
-                .padding(.top, 12)
+                .padding(.top, 4)
                 .padding(.bottom, scrollBottomClearance)
                 .frame(maxWidth: .infinity)
             }
@@ -4939,8 +4939,8 @@ struct AtriaHomeView: View {
                                             .accessibilityHidden(true)
                                         }
                                     }
-                                    .padding(.horizontal, 14)
-                                    .frame(height: 40)
+                                    .padding(.horizontal, 12)
+                                    .frame(height: 32)
                                     .containerRelativeFrame(.horizontal)
                                     .glassEffect(.regular, in: .rect(cornerRadius: 18))
                                     .accessibilityElement(children: .combine)
@@ -4956,7 +4956,7 @@ struct AtriaHomeView: View {
                         .contentMargins(.horizontal, 16, for: .scrollContent)
                         .scrollIndicators(.hidden)
                     }
-                    .frame(height: 40)
+                    .frame(height: 32)
                     .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
@@ -13651,7 +13651,10 @@ enum AtriaHomeChromeLayout {
     /// small, explicit portrait lane clear of the Dynamic Island instead of
     /// relying on a nested scroll-view's safe-area propagation.
     static func topChromeClearance(verticalSizeClass: UserInterfaceSizeClass?) -> CGFloat {
-        verticalSizeClass == .regular ? 26 : 0
+        // 26 -> 8 (owner 2026-08-28 strict pass): the safe-area inset already
+        // clears the status bar; the extra clearance was dead air above the
+        // status chip.
+        verticalSizeClass == .regular ? 8 : 0
     }
 
     static func showsHomeStatusChip(workoutIsActive: Bool) -> Bool {
