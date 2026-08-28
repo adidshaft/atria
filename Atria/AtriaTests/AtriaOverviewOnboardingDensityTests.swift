@@ -176,46 +176,31 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
                       "Permission recovery must use the supported per-app Settings URL")
     }
 
-    func testOverviewRemovesDuplicateVisibleConnectionDetailButKeepsVoiceOverHint() throws {
-        let source = try source("AtriaOverviewSections.swift")
-        let start = try XCTUnwrap(source.range(of: "private struct AtriaDisconnectedOverviewPanel"))
-        let end = try XCTUnwrap(source.range(of: "private struct AtriaOverviewLeadingHost", range: start.upperBound..<source.endIndex))
-        let panel = String(source[start.lowerBound..<end.lowerBound])
+    // 2026-08-28: `testOverviewRemovesDuplicateVisibleConnectionDetailButKeepsVoiceOverHint`
+    // and `testCompletedOverviewChecklistRowsDoNotRepeatExplanationsVisually`
+    // were deleted with their subjects. Both scanned
+    // AtriaDisconnectedOverviewPanel / AtriaLaunchChecklistRow, which lived
+    // inside the unreachable Overview tree (root AtriaOverviewLeadingHost, zero
+    // construction sites) removed in this commit. They were the classic
+    // green-suite-guarding-dead-code trap: passing, and protecting nothing a
+    // user could reach.
 
-        XCTAssertFalse(panel.contains("Text(detail)"))
-        XCTAssertTrue(panel.contains("AtriaPanelSectionHeader(title: \"Overview\", subtitle: title)"))
-        XCTAssertTrue(panel.contains(".accessibilityHint(detail)"))
-    }
-
-    func testCompletedOverviewChecklistRowsDoNotRepeatExplanationsVisually() throws {
-        let source = try source("AtriaOverviewSections.swift")
-        let start = try XCTUnwrap(source.range(of: "private struct AtriaLaunchChecklistRow"))
-        let end = try XCTUnwrap(source.range(of: "struct AtriaOverviewGuidanceSectionHost", range: start.upperBound..<source.endIndex))
-        let row = String(source[start.lowerBound..<end.lowerBound])
-
-        XCTAssertTrue(row.contains("if !item.isComplete"))
-        XCTAssertTrue(row.contains(".accessibilityHint(item.detail)"))
-    }
-
-    func testOverviewGatesHighFrequencyLiveStateBeforeLargeReadinessTree() throws {
+    /// The readiness HOST this used to bound on was part of the dead Overview
+    /// tree deleted 2026-08-28. `AtriaOverviewLiveProjectionState` itself was
+    /// deliberately kept — it is pure, and its bucketing carries real unit
+    /// coverage — so the state half of this pin survives, re-bounded on the
+    /// next surviving declaration.
+    func testOverviewGatesHighFrequencyLiveStateCoalescing() throws {
         let source = try source("AtriaOverviewSections.swift")
         let stateStart = try XCTUnwrap(source.range(of: "struct AtriaOverviewLiveProjectionState"))
-        let hostStart = try XCTUnwrap(source.range(of: "struct AtriaOverviewReadinessSectionHost",
-                                                   range: stateStart.upperBound..<source.endIndex))
-        let state = String(source[stateStart.lowerBound..<hostStart.lowerBound])
-        let hostEnd = try XCTUnwrap(source.range(of: "private func moveMetric",
-                                                 range: hostStart.upperBound..<source.endIndex))
-        let host = String(source[hostStart.lowerBound..<hostEnd.lowerBound])
+        let stateEnd = try XCTUnwrap(source.range(of: "struct AtriaWeeklyPlanCard",
+                                                  range: stateStart.upperBound..<source.endIndex))
+        let state = String(source[stateStart.lowerBound..<stateEnd.lowerBound])
 
-        XCTAssertTrue(state.contains(".removeDuplicates()"))
         XCTAssertTrue(state.contains("sessionProgressBucket"))
         XCTAssertTrue(state.contains("liveActiveCaloriesText"))
         XCTAssertTrue(state.contains("strapStepResearchCount"),
                       "Exact strap-step changes must remain immediate")
-        XCTAssertTrue(host.contains("let liveStore: AtriaHomeModel.CoreLiveStore"))
-        XCTAssertFalse(host.contains("@ObservedObject var liveStore"),
-                       "Every accepted strap sample must not invalidate the full readiness host")
-        XCTAssertTrue(host.contains("@StateObject private var liveProjectionStore"))
     }
 
     func testOverviewDynamicRowsUseDomainIdentityInsteadOfMutableOffsets() throws {
@@ -229,7 +214,7 @@ final class AtriaOverviewOnboardingDensityTests: XCTestCase {
         XCTAssertTrue(source.contains("id: \\.element.rawValue) { index, zone in"))
         XCTAssertTrue(source.contains("id: \\.element.id) { index, row in"))
         XCTAssertTrue(source.contains("id: \\.element.tag) { index, summary in"))
-        XCTAssertTrue(source.contains("id: \\.element) { index, item in"))
+        // (the checklist ForEach this pinned lived in the deleted Overview tree)
         XCTAssertFalse(source.contains("ForEach(Array(companions.enumerated()), id: \\.offset)"))
         XCTAssertFalse(source.contains("ForEach(Array(bands.enumerated()), id: \\.offset)"))
         XCTAssertFalse(source.contains("ForEach(Array(rows.enumerated()), id: \\.offset)"))

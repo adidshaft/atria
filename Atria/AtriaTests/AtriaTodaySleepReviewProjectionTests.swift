@@ -232,12 +232,15 @@ final class AtriaTodaySleepReviewProjectionTests: XCTestCase {
         let bannerStart = try XCTUnwrap(
             source.range(of: "private struct AtriaAutoSleepLoggedBanner: View", range: hostStart.upperBound..<source.endIndex)
         )
+        // End markers re-pointed 2026-08-28: the dead Overview tree that used
+        // to follow these declarations was deleted, so the scan now bounds on
+        // the surviving neighbours. This test guards LIVE code.
         let syncStart = try XCTUnwrap(
-            source.range(of: "private struct AtriaSleepSyncNeededHost: View", range: bannerStart.upperBound..<source.endIndex)
+            source.range(of: "private struct AtriaSleepReviewCard: View", range: bannerStart.upperBound..<source.endIndex)
         )
         let sectionStart = try XCTUnwrap(source.range(of: "struct AtriaTodaySleepReviewSection: View"))
         let leadingStart = try XCTUnwrap(
-            source.range(of: "struct AtriaOverviewLeadingSection: View", range: sectionStart.upperBound..<source.endIndex)
+            source.range(of: "enum AtriaOverviewCurrentSleep", range: sectionStart.upperBound..<source.endIndex)
         )
         let chain = String(source[hostStart.lowerBound..<bannerStart.lowerBound])
             + String(source[bannerStart.lowerBound..<syncStart.lowerBound])
@@ -263,7 +266,19 @@ final class AtriaTodaySleepReviewProjectionTests: XCTestCase {
         XCTAssertFalse(chain.contains("store.objectWillChange"))
         XCTAssertTrue(chain.contains("return state.preferredReview"),
                       "Today must resolve a stale snapshot against the growing resident-journal review")
-        XCTAssertTrue(source.contains("AtriaTodaySleepReviewSection(store: store, prioritizesPendingReview: false)"))
+        // 2026-08-28: the call site this pinned (with an explicit
+        // prioritizesPendingReview: false) was in the unreachable Overview
+        // tree deleted that day. Today mounts the section from AtriaHomeView,
+        // which relies on the same default — pin that instead.
+        let home = try String(
+            contentsOf: URL(fileURLWithPath: #filePath)
+                .deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Atria/AtriaHomeView.swift"),
+            encoding: .utf8)
+        XCTAssertTrue(home.contains("AtriaTodaySleepReviewSection(store: store)"))
+        XCTAssertTrue(source.contains("init(store: SessionStore, prioritizesPendingReview: Bool = true)"),
+                      "the live Today mount relies on this default; the explicit "
+                          + "false variant belonged to the deleted Overview surface")
 
         let stateStart = try XCTUnwrap(source.range(of: "struct AtriaTodaySleepReviewProjectionState: Equatable"))
         let stateEnd = try XCTUnwrap(

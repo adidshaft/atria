@@ -520,12 +520,10 @@ final class AtriaCrossScreenDensityTests: XCTestCase {
         XCTAssertFalse(today.contains("AtriaTriRing.zoneTint(.recovery"))
         XCTAssertFalse(today.contains("AtriaTriRing.zoneTint(.strain"))
 
-        let overview = try source("AtriaOverviewSections.swift")
-        XCTAssertTrue(overview.contains("switch recoveryZone?.level"))
-        XCTAssertTrue(overview.contains("let unqualified = pending || strainIsPartial"))
-        XCTAssertTrue(overview.contains("stateTint: unqualified ? nil : qualifiedStrainZone?.tint"),
-                      "pending or partial strain must not receive a confident target-zone tint")
-        XCTAssertFalse(overview.contains("hero.guidance.target ?? 21"))
+        // 2026-08-28: the Overview half of this pin scanned the dead
+        // Overview tree (deleted this commit). The SAME guarantee — the ring
+        // withholds its achievement tint until a real frozen target exists —
+        // is asserted against the live Today ring above.
 
         let home = try source("AtriaHomeView.swift")
         XCTAssertFalse(home.contains("switch recoveryPercent ?? 50"))
