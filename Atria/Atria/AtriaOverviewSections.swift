@@ -9609,7 +9609,7 @@ struct AtriaMetricDetailSheet: View {
             honestPartialDetail(heroValue: AtriaExperimentalSensorCopy.skinTemperatureValue(
                                     summary: summary,
                                     decoderAvailable: decoderAvailable),
-                                heroState: hasReading ? "vs sleep baseline" : (decoderAvailable ? "Building baseline" : "Decoder not verified"),
+                                heroState: hasReading ? "vs sleep baseline" : (decoderAvailable ? "Learning" : "Decoder not verified"),
                                 tint: .teal,
                                 bodyText: AtriaExperimentalSensorCopy.skinTemperatureDetail(
                                     summary: summary,
@@ -11653,6 +11653,21 @@ private struct AtriaPreparedMetricChart: View {
             if let target = scrubbedDay, let onOpenDay { onOpenDay(target) }
         }
         .accessibilityLabel(accessibilitySummary)
+        // The double-tap above is not published as an accessibility
+        // activation, and `scrubbedDay` is only ever set by the drag-based
+        // scrub, so VoiceOver could reach neither the gesture nor the hint
+        // documenting it. The action exists only where the route does, and
+        // falls back to the latest drawn point because a VoiceOver user has
+        // no way to scrub one (2026-08-28).
+        .accessibilityActions {
+            if let onOpenDay {
+                Button("Open this day") {
+                    if let target = scrubbedDay ?? latestVisiblePoint?.day {
+                        onOpenDay(target)
+                    }
+                }
+            }
+        }
     }
 
     /// Handoff-10 CP3: one observation renders a compact terminal summary

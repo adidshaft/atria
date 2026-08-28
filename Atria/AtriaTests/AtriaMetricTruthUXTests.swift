@@ -237,7 +237,7 @@ final class AtriaMetricTruthUXTests: XCTestCase {
         let overview = try source("AtriaOverviewSections.swift")
         XCTAssertTrue(overview.contains("detail: AtriaSpO2Copy.decoderNotVerified"))
         XCTAssertTrue(overview.contains("heroState: AtriaSpO2Copy.decoderNotVerified"))
-        XCTAssertTrue(overview.contains("heroState: hasReading ? \"vs sleep baseline\" : (decoderAvailable ? \"Building baseline\" : \"Decoder not verified\")"))
+        XCTAssertTrue(overview.contains("heroState: hasReading ? \"vs sleep baseline\" : (decoderAvailable ? \"Learning\" : \"Decoder not verified\")"))
         XCTAssertTrue(overview.contains(
             "AtriaGlanceMetricCard(title: \"Blood oxygen\",\n                                  value: \"--\""
         ))
