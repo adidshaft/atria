@@ -3250,7 +3250,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
                                      value: AtriaLiveSignalTruth.valueText(
                                         status: live.status,
                                         streamState: live.strapStreamState,
-                                        hasRecentHeartRate: live.hasRecentHeartRateSample
+                                        hasRecentHeartRate: live.hasRecentHeartRateSample,
+                                        attribution: live.strapWearAttribution
                                      ),
                                      detail: liveFocusDetailText,
                                      systemImage: "waveform.path.ecg",
@@ -3374,7 +3375,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         switch AtriaLiveSignalTruth.tone(
             status: live.status,
             streamState: live.strapStreamState,
-            hasRecentHeartRate: live.hasRecentHeartRateSample
+            hasRecentHeartRate: live.hasRecentHeartRateSample,
+            attribution: live.strapWearAttribution
         ) {
         case .healthy:
             return .green
@@ -3391,7 +3393,8 @@ struct AtriaOverviewReadinessSection: View, Equatable {
         AtriaLiveSignalTruth.detailText(
             status: live.status,
             streamState: live.strapStreamState,
-            hasRecentHeartRate: live.hasRecentHeartRateSample
+            hasRecentHeartRate: live.hasRecentHeartRateSample,
+            attribution: live.strapWearAttribution
         )
     }
 
@@ -4684,11 +4687,19 @@ enum AtriaLiveSignalTruth {
 
     static func valueText(status: AtriaBLEManager.Status,
                           streamState: AtriaBLEManager.StrapStreamState,
-                          hasRecentHeartRate: Bool) -> String {
+                          hasRecentHeartRate: Bool,
+                          attribution: AtriaStrapWearAttribution = .none) -> String {
         if isLive(status: status,
                   streamState: streamState,
                   hasRecentHeartRate: hasRecentHeartRate) {
             return "Live"
+        }
+        if status == .connected {
+            switch attribution {
+            case .charging: return "Charging"
+            case .offWrist: return "Off wrist"
+            case .none: break
+            }
         }
         switch status {
         case .connected:
@@ -4713,11 +4724,19 @@ enum AtriaLiveSignalTruth {
 
     static func detailText(status: AtriaBLEManager.Status,
                            streamState: AtriaBLEManager.StrapStreamState,
-                           hasRecentHeartRate: Bool) -> String {
+                           hasRecentHeartRate: Bool,
+                           attribution: AtriaStrapWearAttribution = .none) -> String {
         if isLive(status: status,
                   streamState: streamState,
                   hasRecentHeartRate: hasRecentHeartRate) {
             return "Heart rate live"
+        }
+        if status == .connected {
+            switch attribution {
+            case .charging: return "No pulse while charging — resumes on wear"
+            case .offWrist: return "Strap streams but sees no pulse"
+            case .none: break
+            }
         }
         switch status {
         case .connected:
@@ -4742,7 +4761,8 @@ enum AtriaLiveSignalTruth {
 
     static func tone(status: AtriaBLEManager.Status,
                      streamState: AtriaBLEManager.StrapStreamState,
-                     hasRecentHeartRate: Bool) -> Tone {
+                     hasRecentHeartRate: Bool,
+                     attribution: AtriaStrapWearAttribution = .none) -> Tone {
         if isLive(status: status,
                   streamState: streamState,
                   hasRecentHeartRate: hasRecentHeartRate) {
@@ -4751,6 +4771,8 @@ enum AtriaLiveSignalTruth {
         guard status == .connected else {
             return status == .connecting || status == .scanning ? .waiting : .unavailable
         }
+        // An attributed charging/off-wrist state is expected, not a fault.
+        if attribution != .none { return .waiting }
         switch streamState {
         case .lowBatteryShutoff, .lowBatteryReducedDetail, .silentUnknown:
             return .attention
