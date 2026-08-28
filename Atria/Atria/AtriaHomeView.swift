@@ -9571,7 +9571,27 @@ final class AtriaHomeModel {
         var isLowBatteryLiveLimited: Bool {
             strapStreamState == .lowBatteryShutoff || strapStreamState == .lowBatteryReducedDetail
         }
+        /// Wear/charge re-attribution for the pulseless states. Device-proven
+        /// 2026-08-28: a charging off-wrist strap flapped "No signal"→"Live"
+        /// all night. Each claim here is evidence-backed (the strap's own
+        /// HR==0 stream, or the bounded charge proof); ambiguity falls
+        /// through to the unchanged honest copy below.
+        var strapWearAttribution: AtriaStrapWearAttribution {
+            AtriaStrapWearAttribution.classify(
+                streamState: strapStreamState,
+                hasFreshPulse: hasRecentHeartRateSample,
+                lastAcceptedPulseAt: lastReadingAt,
+                chargingProven: batteryIsCharging,
+                batteryRecentlyDropping: batteryRecentlyDropping
+            )
+        }
+
         var strapStreamConnectionLabel: String {
+            switch strapWearAttribution {
+            case .charging: return "Charging"
+            case .offWrist: return "Off wrist"
+            case .none: break
+            }
             switch strapStreamState {
             case .live:
                 return "Live"
@@ -9588,6 +9608,11 @@ final class AtriaHomeModel {
             }
         }
         var strapStreamConnectionDetail: String {
+            switch strapWearAttribution {
+            case .charging: return "No pulse while charging — resumes on wear"
+            case .offWrist: return "Strap streams but sees no pulse"
+            case .none: break
+            }
             // Per-state short forms; each keeps the honest state fact
             // (arriving / too low / reduced / connected-but-silent / pending).
             switch strapStreamState {
@@ -9606,6 +9631,11 @@ final class AtriaHomeModel {
             }
         }
         var strapStreamConnectionSymbol: String {
+            switch strapWearAttribution {
+            case .charging: return "battery.100percent.bolt"
+            case .offWrist: return "applewatch.slash"
+            case .none: break
+            }
             switch strapStreamState {
             case .live:
                 return "bolt.heart.fill"

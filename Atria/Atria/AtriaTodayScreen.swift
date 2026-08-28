@@ -4105,7 +4105,8 @@ private struct AtriaTodayLiveStatusStrip: View, Equatable {
         return AtriaLiveSignalTruth.valueText(
             status: live.status,
             streamState: live.strapStreamState,
-            hasRecentHeartRate: live.hasRecentHeartRateSample
+            hasRecentHeartRate: live.hasRecentHeartRateSample,
+            attribution: live.strapWearAttribution
         )
     }
 }
