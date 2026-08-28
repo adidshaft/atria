@@ -319,9 +319,6 @@ struct AtriaTodayScreen: View {
     @AtriaDefault("atria.target.strain.yellowBand") private var strainYellowBand: Double = 3.0
     @AtriaDefault("atria.target.sleep.goalHours") private var sleepGoalHours: Double = 8.0
     @AtriaDefault("atria.sleep.baseNeedHours") private var sleepBaseNeedHours: Double = 8.0
-    /// Optional display name set elsewhere in the app. Empty -- the default
-    /// -- means no greeting is shown; never a fabricated name.
-    @AtriaDefault("atria.user.nickname") private var nickname: String = ""
     @AtriaDefault(AtriaTrackedBehaviors.storageKey) private var trackedBehaviorsRaw: String = ""
     // Glance layout: false = 2-up box grid (default), true = one full-width
     // horizontal bar per metric. The "boxes vs bars" user choice.
@@ -350,11 +347,14 @@ struct AtriaTodayScreen: View {
             // sleep/recovery/strain numbers a second time -- pure
             // duplication -- and was removed; the ring hero plus its legend
             // chips are now the single source of truth for those values.
-            todayHeader
+            // Strict declutter (owner 2026-08-28): the greeting row spent
+            // 44 pt on literature. The action cluster rides the hero's own
+            // day-browser row instead; the greeting is gone.
             AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
                 triRingHero
                     .preference(key: AtriaTodayCompactRingPreferenceKey.self,
                                 value: compactRingPresentation)
+                    .overlay(alignment: .topTrailing) { topActionMenu }
             }
             // Says what the app is doing with last night instead of saying
             // nothing while it settles. Sits under the hero because it is about
@@ -512,27 +512,6 @@ struct AtriaTodayScreen: View {
     }
 
     private static let heroMinScale: CGFloat = 0.6
-
-    /// Time-of-day-aware "Good morning/afternoon/evening, <name>" line shown
-    /// above the ring hero -- nil (and simply omitted) whenever no nickname
-    /// has been set, never a placeholder greeting.
-    // Perf (docs/26 follow-up): cached once instead of building a fresh
-    // autoupdating Calendar (NSCalendar + locale lookup) on every Today body
-    // pass (~700ms live tick + scroll). Coarse morning/afternoon/evening bucket.
-    private static let greetingCalendar = Calendar.current
-
-    private var greetingText: String? {
-        let trimmed = nickname.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        let hour = Self.greetingCalendar.component(.hour, from: Date())
-        let timeOfDay: String
-        switch hour {
-        case 5..<12: timeOfDay = "morning"
-        case 12..<17: timeOfDay = "afternoon"
-        default: timeOfDay = "evening"
-        }
-        return "Good \(timeOfDay), \(trimmed)"
-    }
 
     private var glanceColumns: [GridItem] {
         if horizontalSizeClass == .regular {
@@ -848,7 +827,23 @@ struct AtriaTodayScreen: View {
                 }
             }
         case .glance:
-            glanceKicker
+            // Strict declutter (owner 2026-08-28): the "At a glance" kicker
+            // row is gone; entering edit mode lives in the top action menu,
+            // and a compact Done control appears only while editing.
+            if isEditingGlance {
+                HStack {
+                    Spacer(minLength: 0)
+                    Button("Done") {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
+                            isEditingGlance = false
+                        }
+                    }
+                    .font(.caption.weight(.bold))
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+                    .accessibilityLabel("Finish editing glance cards")
+                }
+            }
 
             AtriaTodayHeroProjectionHost(heroStore: heroStore) { _ in
                 Group {
@@ -894,53 +889,8 @@ struct AtriaTodayScreen: View {
 
     /// Tiny uppercase group kicker: enough structure to breathe, not a
     /// full header card (UX audit 2026-07-07).
-    private func sectionKicker(_ title: String) -> some View {
-        Text(title.uppercased())
-            .font(.caption2.weight(.black))
-            .foregroundStyle(.tertiary)
-            .kerning(0.8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 4)
-            .accessibilityAddTraits(.isHeader)
-    }
 
-    private var glanceKicker: some View {
-        HStack(spacing: 8) {
-            sectionKicker("At a glance")
-            Button {
-                withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
-                    isEditingGlance.toggle()
-                }
-            } label: {
-                Image(systemName: "arrow.up.arrow.down")
-                    .font(.caption.weight(.bold))
-                    .frame(width: 32, height: 32)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .controlSize(.small)
-            .accessibilityLabel(isEditingGlance ? "Finish editing At a glance" : "Edit At a glance")
-            .accessibilityHint("Lets you drag cards to reorder and remove cards.")
-        }
-    }
 
-    /// Greeting and actions share one compact header row. Keeping them as two
-    /// vertically stacked rows spent 44 points on controls plus another stack
-    /// gap before the hero, even though both belong to the same hierarchy.
-    private var todayHeader: some View {
-        HStack(spacing: 8) {
-            if let greetingText {
-                Text(greetingText)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
-            topActionMenu
-        }
-    }
 
     private var topActionMenu: some View {
         GlassEffectContainer(spacing: 4) {
@@ -957,6 +907,14 @@ struct AtriaTodayScreen: View {
                     } label: {
                         Label(glanceLayoutBars ? "Show as grid" : "Show as bars",
                               systemImage: glanceLayoutBars ? "square.grid.2x2" : "rectangle.grid.1x2")
+                    }
+                    Button {
+                        withAnimation(.snappy(duration: AtriaDesignTokens.Motion.standard)) {
+                            isEditingGlance.toggle()
+                        }
+                    } label: {
+                        Label(isEditingGlance ? "Finish editing glance" : "Edit glance cards",
+                              systemImage: "arrow.up.arrow.down")
                     }
                     Menu {
                         ForEach(Array(ringSlots.enumerated()), id: \.offset) { position, current in
