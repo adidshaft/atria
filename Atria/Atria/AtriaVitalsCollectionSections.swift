@@ -2070,10 +2070,10 @@ enum AtriaExperimentalSensorCopy {
         guard hasValidatedSkinTemperatureReading(summary: summary,
                                                   decoderAvailable: decoderAvailable) else {
             return decoderAvailable
-                ? "Wrist temperature deviation is \(summary.detailText.lowercased())."
+                ? "Skin temperature deviation is \(summary.detailText.lowercased())."
                 : "Wrist-temperature decoder not verified."
         }
-        return "Wrist temperature relative sleep signal \(summary.valueText) delta C from baseline, \(summary.footnoteText)."
+        return "Skin temperature relative sleep signal \(summary.valueText) delta C from baseline, \(summary.footnoteText)."
     }
 }
 
@@ -2208,7 +2208,7 @@ private struct AtriaCollectionResearchSignalsCard: View, Equatable {
                                     decoderAvailable: AtriaResearchProbe.validatedSpO2DecoderAvailable),
                                 zone: nil,
                                 targetMetric: nil)
-                AtriaMetricTile(label: "Wrist temp",
+                AtriaMetricTile(label: "Skin temp",
                                 value: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable
                                     ? summary.skinTemperatureDeviation.valueText
                                     : "--",
@@ -2286,7 +2286,7 @@ private struct AtriaResearchSignalInfoSheet: View {
 
                     researchInfoRow(systemImage: "thermometer.variable",
                                     tint: .teal,
-                                    title: "Wrist temperature signal",
+                                    title: "Skin temperature signal",
                                     detail: AtriaExperimentalSensorCopy.skinTemperatureDetail(
                                         summary: skinTemperatureSummary,
                                         decoderAvailable: AtriaResearchProbe.validatedSkinTemperatureDecoderAvailable))
@@ -2359,13 +2359,13 @@ private struct AtriaCollectionBiologicalAgeCard: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
-                AtriaPanelSectionHeader(title: "Body Age", subtitle: summary.narrative)
+                AtriaPanelSectionHeader(title: "Fitness age", subtitle: summary.narrative)
                 Spacer(minLength: 0)
                 AtriaStateBadge(state: summary.isReady ? .estimate : .learning)
             }
 
             LazyVGrid(columns: Self.statColumns, spacing: AtriaMetricTile.gridSpacing) {
-                AtriaMetricTile(label: "Body age",
+                AtriaMetricTile(label: "Fitness age",
                                 value: summary.valueText,
                                 state: summary.isReady ? .estimate : .learning,
                                 tint: biologicalAgeZone?.tint ?? (summary.isReady ? .purple : .orange),

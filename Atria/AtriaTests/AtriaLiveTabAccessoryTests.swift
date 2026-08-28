@@ -688,9 +688,9 @@ final class AtriaLiveTabAccessoryTests: XCTestCase {
 
         XCTAssertEqual(menuActions.components(separatedBy: "Button(action:").count - 1, 2)
         XCTAssertTrue(menuActions.contains("Button(action: onStartActivity)"))
-        XCTAssertTrue(menuActions.contains("Label(\"Start Activity\", systemImage: \"figure.run\")"))
+        XCTAssertTrue(menuActions.contains("Label(\"Start workout\", systemImage: \"figure.run\")"))
         XCTAssertTrue(menuActions.contains("Button(action: onAddActivity)"))
-        XCTAssertTrue(menuActions.contains("Label(\"Add Activity\", systemImage: \"calendar.badge.plus\")"))
+        XCTAssertTrue(menuActions.contains("Label(\"Add workout\", systemImage: \"calendar.badge.plus\")"))
         XCTAssertTrue(chrome.contains("AtriaToolbarIcon(symbol: \"plus\")"))
         XCTAssertTrue(chrome.contains(".buttonStyle(AtriaHeaderActionButtonStyle())"))
         XCTAssertTrue(chrome.contains(".accessibilityLabel(\"Activity shortcuts\")"))

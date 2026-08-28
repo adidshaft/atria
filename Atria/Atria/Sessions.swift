@@ -5646,7 +5646,7 @@ struct BiologicalAgeSummary: Equatable, Codable {
         guard let first = blockers.first else { return "Building 28-day baseline" }
         switch first {
         case "vo2max_learning":
-            return "VO₂ max is still learning"
+            return "VO2max is still learning"
         case "resting_hr_learning":
             return "Building resting HR baseline"
         case "hrv_learning":
@@ -5664,7 +5664,7 @@ struct BiologicalAgeSummary: Equatable, Codable {
     /// shows snake_case to a human.
     private static func humanBlocker(_ raw: String) -> String {
         switch raw {
-        case "vo2max_learning": return "VO₂ max learning"
+        case "vo2max_learning": return "VO2max learning"
         case "resting_hr_learning": return "resting HR baseline"
         case "hrv_learning": return "HRV baseline"
         case "sleep_history_thin": return "3 sleep nights"

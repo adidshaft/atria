@@ -1562,7 +1562,7 @@ struct AtriaSettingsView: View {
                             detail: "\(AtriaSpO2Copy.decoderNotVerified). \(AtriaSpO2Copy.wontFakeAPercentage)")
                 settingsInfoRow(icon: "thermometer.variable",
                             tint: .teal,
-                            title: "Wrist temperature signal",
+                            title: "Skin temperature signal",
                             detail: "Relative wrist-skin deviation only; no core temperature or Health export.")
         } header: {
             Text("Sensors")

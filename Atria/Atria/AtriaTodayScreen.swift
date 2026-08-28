@@ -1618,7 +1618,7 @@ struct AtriaTodayScreen: View {
                                 tint: .blue,
                                 hueTinted: true)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(AtriaPressableCardStyle())
             .accessibilityLabel("Morning check-in. Notifications are off, so this prompt is shown instead. Opens the journal.")
         }
     }
@@ -2841,7 +2841,7 @@ struct AtriaTodayScreen: View {
                                         // Last em dash in the app; the glance grid
                                         // around it already speaks "--".
                                         value: AtriaCompactMetricPresentation.noValue,
-                                        detail: legendDetail("Decoder unavailable"),
+                                        detail: legendDetail(AtriaSpO2Copy.decoderNotVerified),
                                         systemImage: metric.systemImage,
                                         tint: .secondary,
                                         layoutSize: layoutSize(for: metric),
@@ -2857,9 +2857,12 @@ struct AtriaTodayScreen: View {
                                                 summary: skinTemp,
                                                 decoderAvailable: decoderAvailable
                                             ),
-                                        detail: legendDetail(decoderAvailable
-                                            ? skinTemp.detailText
-                                            : "Decoder unavailable"),
+                                        detail: legendDetail(
+                                            AtriaExperimentalSensorCopy
+                                                .skinTemperatureStatus(
+                                                    summary: skinTemp,
+                                                    decoderAvailable: decoderAvailable
+                                                )),
                                         systemImage: metric.systemImage,
                                         tint: .orange,
                                         layoutSize: layoutSize(for: metric),
@@ -4105,7 +4108,9 @@ private struct AtriaTodayWeeklyPlanCard: View, Equatable {
                     .stroke(Metrics.electricStrain.opacity(0.16), lineWidth: 1)
             }
         }
-        .buttonStyle(.plain)
+        // The whole card IS the button into the weekly report, so it presses
+        // like the glance tiles directly below it (UI-uniformity 2026-08-28).
+        .buttonStyle(AtriaPressableCardStyle())
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityText)
         .accessibilityHint("Opens the weekly report.")
@@ -4338,7 +4343,7 @@ private struct AtriaTodayShortcutStrip: View, Equatable {
         Button(action: onStartWorkout) {
             HStack(spacing: 8) {
                 Image(systemName: "plus")
-                Text("Start activity")
+                Text("Start workout")
             }
             .font(.subheadline.weight(.semibold))
             .frame(maxWidth: .infinity, minHeight: 54)
@@ -4346,7 +4351,7 @@ private struct AtriaTodayShortcutStrip: View, Equatable {
         .buttonStyle(.glassProminent)
         .buttonBorderShape(.roundedRectangle(radius: AtriaDesignTokens.Radius.chip))
         .tint(.blue)
-        .accessibilityLabel("Start activity")
+        .accessibilityLabel("Start workout")
     }
 }
 

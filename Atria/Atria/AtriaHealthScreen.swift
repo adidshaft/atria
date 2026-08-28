@@ -1498,7 +1498,7 @@ struct AtriaHealthScreen: View {
             monitorGroupKicker("Sleep & body")
 
             LazyVGrid(columns: monitorGridColumns, alignment: .leading, spacing: 8) {
-                AtriaHealthMetricRow(title: "Respiration",
+                AtriaHealthMetricRow(title: "Resp rate",
                                      value: respiratoryValue,
                                      detail: respiratoryDetail,
                                      systemImage: "lungs.fill",
@@ -1518,7 +1518,7 @@ struct AtriaHealthScreen: View {
                 // Visibility/IA fix (2026-07-05): three rows that previously had
                 // no home on the live Vitals tab. Each opens the real detail
                 // sheet (section 3), not just the education sheet, per spec.
-                AtriaHealthMetricRow(title: "VO2 max",
+                AtriaHealthMetricRow(title: "VO2max",
                                      value: live.vo2MaxEstimate.valueText,
                                      detail: live.vo2MaxEstimate.compactStatusText,
                                      systemImage: "lungs.fill",
@@ -1542,7 +1542,7 @@ struct AtriaHealthScreen: View {
                                         : .secondary,
                                      layout: .compactTile,
                                      onTap: { metricDetail = .skinTemperature })
-                AtriaHealthMetricRow(title: "SpO2",
+                AtriaHealthMetricRow(title: "Blood oxygen",
                                      // Was a lone em dash, sitting directly
                                      // beside a Skin temp row already showing
                                      // "--" for the same state.
@@ -2424,7 +2424,9 @@ private struct AtriaHealthMetricRow: View, Equatable {
         } label: {
             rowContent
         }
-        .buttonStyle(.plain)
+        // A chevron-bearing tile that opens a sheet presses like every other
+        // card that opens a sheet (UI-uniformity pass 2026-08-28).
+        .buttonStyle(AtriaPressableCardStyle())
         .disabled(onTap == nil)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityLabelText)

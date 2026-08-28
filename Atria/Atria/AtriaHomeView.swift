@@ -9632,7 +9632,7 @@ final class AtriaHomeModel {
             case .warming:
                 return "Waiting"
             case .unknown:
-                return hasRecentHeartRateSample ? "Live" : "Pending"
+                return hasRecentHeartRateSample ? "Live" : "Waiting"
             }
         }
         var strapStreamConnectionDetail: String {
@@ -9655,7 +9655,7 @@ final class AtriaHomeModel {
             case .warming:
                 return "Waiting for live heart rate"
             case .unknown:
-                return hasRecentHeartRateSample ? "HR arriving" : "State pending"
+                return hasRecentHeartRateSample ? "HR arriving" : "Waiting for live heart rate"
             }
         }
         var strapStreamConnectionSymbol: String {
@@ -9674,7 +9674,7 @@ final class AtriaHomeModel {
             case .warming:
                 return "waveform.path.ecg"
             case .unknown:
-                return hasRecentHeartRateSample ? "bolt.heart.fill" : "antenna.radiowaves.left.and.right"
+                return hasRecentHeartRateSample ? "bolt.heart.fill" : "waveform.path.ecg"
             }
         }
 
@@ -13730,12 +13730,12 @@ private struct AtriaHomeTopChrome: View {
             // existing sheets and keep the Today page's in-content actions.
             Menu {
                 Button(action: onStartActivity) {
-                    Label("Start Activity", systemImage: "figure.run")
+                    Label("Start workout", systemImage: "figure.run")
                 }
                 .disabled(!activityStartIsAvailable)
 
                 Button(action: onAddActivity) {
-                    Label("Add Activity", systemImage: "calendar.badge.plus")
+                    Label("Add workout", systemImage: "calendar.badge.plus")
                 }
             } label: {
                 AtriaToolbarIcon(symbol: "plus")
@@ -13911,10 +13911,13 @@ enum AtriaTopStatusProjection {
             displayStatus = input.status
         }
 
-        let freshPulseOverridesLaggingStream = hasPulseSignal
-            && (input.strapStreamState == .warming
-                || input.strapStreamState == .silentUnknown
-                || input.strapStreamState == .unknown)
+        // One shared rule for every connection surface (see
+        // AtriaLiveSignalTruth.freshPulseOverridesLaggingStream). This pill was
+        // the original owner of the rule; the Strap screen and the Overview
+        // card now read the same definition instead of each carrying its own.
+        let freshPulseOverridesLaggingStream = AtriaLiveSignalTruth
+            .freshPulseOverridesLaggingStream(hasPulseSignal: hasPulseSignal,
+                                              streamState: input.strapStreamState)
 
         var label: String
         if displayStatus == .connected {
