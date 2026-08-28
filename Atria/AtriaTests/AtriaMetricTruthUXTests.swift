@@ -81,12 +81,15 @@ final class AtriaMetricTruthUXTests: XCTestCase {
     }
 
     func testMetricAcquisitionReasonLivesOnMetricAndVO2NamesItsActualBlocker() throws {
-        let overview = try source("AtriaOverviewSections.swift")
-        XCTAssertTrue(overview.contains("return hero.hrvDetail"))
-        XCTAssertTrue(overview.contains("\"Needs quiet rest or sleep\""))
-        XCTAssertTrue(overview.contains(
-            "\"VO2max unavailable. \\(vo2MaxEstimate.compactStatusText). \\(vo2MaxEstimate.narrative)\""
-        ))
+        // Re-pointed 2026-08-28: these lived on AtriaGlanceMetricCard in the
+        // unreachable Overview tree deleted that day. The same guarantees are
+        // carried by the LIVE Vitals screen: HRV names its own acquisition
+        // reason rather than a generic one, and VO2max shows its real blocker.
+        let vitals = try source("AtriaHealthScreen.swift")
+        XCTAssertTrue(vitals.contains("hrvDetail"))
+        XCTAssertTrue(vitals.contains("\"Needs quiet rest or sleep\""))
+        XCTAssertTrue(vitals.contains("detail: live.vo2MaxEstimate.compactStatusText"),
+                      "VO2max must name its actual blocker, not a generic one")
     }
 
     func testSettingsHasNoTimedFakeHistorySyncState() throws {
@@ -165,23 +168,12 @@ final class AtriaMetricTruthUXTests: XCTestCase {
     }
 
     func testUnavailableMetricCardsUseNeutralToneAndSpecificReasons() throws {
-        let overview = try source("AtriaOverviewSections.swift")
-        XCTAssertTrue(overview.contains(
-            "vo2MaxEstimate.value == nil ? .secondary : .blue"
-        ))
-        XCTAssertTrue(overview.contains(
-            "biologicalAgeSummary.isEarlyEstimate"
-        ))
-        XCTAssertTrue(overview.contains(
-            ": .secondary),\n                                  zone: biologicalAgeZone"
-        ))
-        XCTAssertTrue(overview.contains(
-            "decoderAvailable\n                                    ? (skinTemperatureDeviationZone?.tint ?? Metrics.electricRespiratory)\n                                    : .secondary"
-        ))
-        XCTAssertTrue(overview.contains(
-            "hero.recoveryEstimate.percent == nil\n                                        ? AtriaCompactMetricPresentation.noValue"
-        ))
-
+        // 2026-08-28: the Overview half of this test scanned AtriaGlanceMetricCard's
+        // construction sites, which lived in the unreachable Overview tree deleted
+        // that day. The rule it protected — an unavailable metric wears a NEUTRAL
+        // tone and names a specific reason, never a confident hue implying a
+        // reading — is asserted below against the live Vitals screen, and by
+        // AtriaMetricIdentityTests.testBloodOxygenStaysUntinted.
         let health = try source("AtriaHealthScreen.swift")
         XCTAssertTrue(health.contains(
             "tint: live.vo2MaxEstimate.value == nil\n                                        ? .secondary"
@@ -235,12 +227,15 @@ final class AtriaMetricTruthUXTests: XCTestCase {
 
     func testUnsupportedSensorCardsNameDecoderLimitationAndKeepNoValue() throws {
         let overview = try source("AtriaOverviewSections.swift")
-        XCTAssertTrue(overview.contains("detail: AtriaSpO2Copy.decoderNotVerified"))
         XCTAssertTrue(overview.contains("heroState: AtriaSpO2Copy.decoderNotVerified"))
         XCTAssertTrue(overview.contains("heroState: hasReading ? \"vs sleep baseline\" : (decoderAvailable ? \"Learning\" : \"Decoder not verified\")"))
-        XCTAssertTrue(overview.contains(
-            "AtriaGlanceMetricCard(title: \"Blood oxygen\",\n                                  value: \"--\""
-        ))
+        // Re-pointed 2026-08-28: AtriaGlanceMetricCard was part of the dead
+        // Overview tree that was deleted. The same guarantee — blood oxygen
+        // renders the canonical absent token, never an invented percentage —
+        // is now asserted against the LIVE Today tile.
+        let todayTiles = try source("AtriaTodayScreen.swift")
+        XCTAssertTrue(todayTiles.contains("value: AtriaCompactMetricPresentation.noValue"))
+        XCTAssertTrue(todayTiles.contains("detail: legendDetail(AtriaSpO2Copy.decoderNotVerified)"))
         XCTAssertFalse(AtriaSpO2Copy.decoderNotVerified.localizedCaseInsensitiveContains("available yet"))
 
         let settings = try source("AtriaSettingsView.swift")
@@ -300,10 +295,11 @@ final class AtriaMetricTruthUXTests: XCTestCase {
         XCTAssertTrue(today.contains("title: displayHero.stressMetricTitle"))
         XCTAssertTrue(today.contains("stressEvidenceMode: displayHero.stressEvidenceMode"))
 
-        let overview = try source("AtriaOverviewSections.swift")
-        XCTAssertTrue(overview.contains("AtriaGlanceMetricCard(title: hero.stressMetricTitle"))
-        XCTAssertTrue(overview.contains("lhs.hero.stressEvidenceMode == rhs.hero.stressEvidenceMode"))
-        XCTAssertTrue(overview.contains("lhs.hero.stressMetricTitle == rhs.hero.stressMetricTitle"))
+        // Re-pointed 2026-08-28: these Equatable members were part of the dead
+        // Overview tree. The live equivalents guarding the same render-skipping
+        // correctness live on AtriaHomeView's hero state.
+        XCTAssertTrue(home.contains("&& lhs.stressEvidenceMode == rhs.stressEvidenceMode"))
+        XCTAssertTrue(home.contains("&& lhs.stressMetricTitle == rhs.stressMetricTitle"))
 
         // 2026-08-26: this assertion's subject lived in the orphaned Vitals
         // tab tree (AtriaVitalsTabContent, zero construction sites), removed

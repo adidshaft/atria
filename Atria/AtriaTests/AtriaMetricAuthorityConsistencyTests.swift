@@ -105,17 +105,10 @@ final class AtriaMetricAuthorityConsistencyTests: XCTestCase {
             "sleep?.durationHours / max(sleepGoalHours"
         ))
 
-        let planStart = try XCTUnwrap(overview.range(
-            of: "private var sleepPlanTargetHours"
-        ))
-        let planEnd = try XCTUnwrap(overview.range(
-            of: "private var sleepPlanTargetText",
-            range: planStart.upperBound..<overview.endIndex
-        ))
-        XCTAssertTrue(
-            overview[planStart.lowerBound..<planEnd.lowerBound]
-                .contains("yesterdayStrain: yesterdayStrainForLatestSleep")
-        )
+        // 2026-08-28: the sleep-plan strip this block scanned lived in the
+        // unreachable Overview tree deleted that day. The same rule — a sleep
+        // surface reads YESTERDAY's strain, never today's partial number — is
+        // still pinned on the live hero state immediately below.
 
         let heroStart = try XCTUnwrap(overview.range(
             of: "private var sleepHeroState"
